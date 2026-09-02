@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { VINEXT_PRERENDER_READINESS_PATH } from "vinext/internal/server/headers";
 import type {
   VinextAssetFetcher,
   VinextRequestStageTransport,
@@ -44,6 +45,20 @@ const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
 const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const CLOUDFLARE_EDGE_POLICY_HEADER = "Cloudflare-CDN-Cache-Control";
+
+function isResponseStageReadinessRequest(request: Request): boolean {
+  return (
+    request.url.includes(VINEXT_PRERENDER_READINESS_PATH) &&
+    new URL(request.url).pathname === VINEXT_PRERENDER_READINESS_PATH
+  );
+}
+
+function responseStageUnavailable(): Response {
+  return new Response(null, {
+    status: 503,
+    headers: { "Cache-Control": "no-store" },
+  });
+}
 
 function stripUntrustedTransportHeaders(request: Request): Request {
   if (
@@ -390,15 +405,27 @@ export default {
         requestMethod: stageRequest.method,
         requestUrl: stageRequest.url,
       };
-      if (options.cache === "bypass") {
+      const requiresEntrypoint = isResponseStageReadinessRequest(stageRequest);
+      if (options.cache === "bypass" && !requiresEntrypoint) {
         return invokeResponseStage(stageRequest, env, stageContext, invocation);
       }
-      usedSharedResponseStage = true;
-      const serializedInvocation = JSON.stringify(invocation);
-      const binding = getResponseStageBinding(stageContext, serializedInvocation);
-      return binding
-        ? await binding.fetch(await createCacheFacingRequest(stageRequest, serializedInvocation))
-        : invokeResponseStage(stageRequest, env, stageContext, invocation);
+      if (!requiresEntrypoint) usedSharedResponseStage = true;
+      try {
+        const serializedInvocation = JSON.stringify(invocation);
+        const binding = getResponseStageBinding(stageContext, serializedInvocation);
+        if (!binding) {
+          return requiresEntrypoint
+            ? responseStageUnavailable()
+            : invokeResponseStage(stageRequest, env, stageContext, invocation);
+        }
+        const entrypointRequest = requiresEntrypoint
+          ? stageRequest
+          : await createCacheFacingRequest(stageRequest, serializedInvocation);
+        return await binding.fetch(entrypointRequest);
+      } catch (error) {
+        if (requiresEntrypoint) return responseStageUnavailable();
+        throw error;
+      }
     };
     const { handleRequestStage } = await loadVinextRequestStage<unknown, CloudflareStageContext>();
     return finalizeGatewayResponse(

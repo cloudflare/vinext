@@ -497,6 +497,62 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response).toHaveBeenCalledOnce();
   });
 
+  it("requires the named response entrypoint for readiness bypasses", async () => {
+    // No Next.js test port applies: ctx.exports propagation is a Cloudflare
+    // deployment boundary.
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "pages-prerender-discovery" }, { cache: "bypass" }),
+    );
+    stages.response.mockResolvedValue(
+      new Response(null, {
+        status: 204,
+        headers: { "Cache-Control": "no-store", "X-Vinext-Prerender-Readiness": "1" },
+      }),
+    );
+    const request = new Request(
+      "https://example.com/__vinext/prerender/readiness?attempt=entrypoint",
+    );
+
+    const response = await worker.fetch(
+      request,
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    expect(response.status).toBe(204);
+    expect(binding).toHaveBeenCalledWith({
+      props: {
+        options: { cache: "bypass" },
+        props: { kind: "pages-prerender-discovery" },
+        requestMethod: "GET",
+        requestUrl: request.url,
+      },
+    });
+    expect(stages.response).toHaveBeenCalledOnce();
+    expect((stages.response.mock.calls[0]![0] as Request).url).toBe(request.url);
+  });
+
+  it("fails readiness closed when the named response entrypoint is unavailable", async () => {
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "pages-prerender-discovery" }, { cache: "bypass" }),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://example.com/__vinext/prerender/readiness?attempt=missing"),
+      {},
+      {},
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(stages.response).not.toHaveBeenCalled();
+  });
+
   it("strips forged transport metadata from bypass and fallback renders", async () => {
     for (const cache of ["bypass", "shared"] as const) {
       stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
