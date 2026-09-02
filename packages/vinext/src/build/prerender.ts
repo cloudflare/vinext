@@ -98,9 +98,10 @@ async function startOptionalPrerenderServerPool(
   outDir: string,
   poolSize: number,
   rscEntryPath?: string,
+  serverDir?: string,
 ): Promise<PrerenderServerPool | null> {
   try {
-    return await startPrerenderServerPool(outDir, poolSize, { rscEntryPath });
+    return await startPrerenderServerPool(outDir, poolSize, { rscEntryPath, serverDir });
   } catch (e) {
     // The pool is a performance optimization layered over the already-running
     // in-process prerender server. Startup failure is still before any route has
@@ -1131,6 +1132,7 @@ export async function prerenderApp({
             host: "127.0.0.1",
             outDir: path.dirname(serverDir),
             rscEntryPath: rscBundlePath,
+            serverDir,
             noCompression: true,
             purpose: "prerender",
           });
@@ -1807,6 +1809,7 @@ export async function prerenderApp({
           path.dirname(serverDir),
           poolSize,
           rscBundlePath,
+          serverDir,
         );
         if (renderPool) renderPorts = renderPool.ports;
       }
