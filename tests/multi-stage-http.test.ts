@@ -4,7 +4,10 @@ import { request as sendHttpRequest } from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { KNOWN_ROUTE_FALLBACK_MARKER } from "./fixtures/multi-stage-http/http-stage-cache.runtime";
+import {
+  createHttpStageCacheAdapter,
+  KNOWN_ROUTE_FALLBACK_MARKER,
+} from "./fixtures/multi-stage-http/http-stage-cache.runtime";
 
 const ROOT = process.cwd();
 const FIXTURE_ROOT = path.join(ROOT, "tests/fixtures/multi-stage-http");
@@ -289,6 +292,21 @@ describe("generic HTTP multi-stage transport", () => {
     expect(code).not.toContain("App HTTP stage render-token:");
   });
 
+  it("does not emit deployment stages into the App SSR renderer", () => {
+    const ssrManifest = JSON.parse(
+      fs.readFileSync(path.join(FIXTURE_ROOT, "dist/server/ssr/.vite/manifest.json"), "utf8"),
+    ) as Record<string, ManifestEntry>;
+    expect(
+      Object.entries(ssrManifest).some(
+        ([key, entry]) =>
+          key.includes("vinext-request-stage") ||
+          key.includes("vinext-response-stage") ||
+          entry.src?.includes("vinext-request-stage") ||
+          entry.src?.includes("vinext-response-stage"),
+      ),
+    ).toBe(false);
+  });
+
   it("streams and reuses a shared render below request-specific middleware", async () => {
     const url = `${requestServer.origin}/stream-${Date.now()}`;
     const first = await fetch(url, { headers: { "x-test-visitor": "visitor-a" } });
@@ -337,6 +355,19 @@ describe("generic HTTP multi-stage transport", () => {
     expect(second.headers.get("x-http-stage-cache")).toBe("HIT");
     expect(second.headers.get("x-http-stage-visitor")).toBe("visitor-b");
     expect(renderToken(secondBody)).toBe(renderToken(firstBody));
+  });
+
+  it("clears stale shared-cache policy when an admitted response becomes private", () => {
+    expect(
+      createHttpStageCacheAdapter().buildResponseHeaders({
+        cacheControl: "no-store",
+        tags: ["stale-tag"],
+      }),
+    ).toEqual({
+      "Cache-Control": "no-store",
+      "Cache-Tag": null,
+      "CDN-Cache-Control": null,
+    });
   });
 
   it("preserves pregenerated-path guards in an independent response process", async () => {
