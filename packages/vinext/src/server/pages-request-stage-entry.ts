@@ -72,7 +72,7 @@ import {
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import { hasConfiguredDataCache, registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
+import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
 import { registerLazyDataCacheHandler } from "vinext/shims/cache-handler";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
@@ -235,8 +235,8 @@ async function handleRequest(
 
   // Pass the Worker env so binding-backed adapters (for example KV and Images)
   // can resolve their configured bindings before request handling begins.
-  registerConfiguredCacheAdapters(env);
-  if (hasConfiguredDataCache) {
+  configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
+  if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
     registerLazyDataCacheHandler(async () => {
       // @ts-expect-error -- virtual module resolved by vinext at build time
       const adapters = await import("virtual:vinext-cache-adapters");
