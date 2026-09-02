@@ -398,6 +398,7 @@ describe("AppElementsWire", () => {
     const allowed = new Set([
       path.join(sourceRoot, "routing/app-route-graph.ts"),
       path.join(sourceRoot, "server/app-elements-wire.ts"),
+      path.join(sourceRoot, "server/app-elements-wire-key.ts"),
     ]);
     const rawWireConstruction =
       /`(?:route|page|layout|template):\$\{|`slot:\$\{|["'](?:route|page|layout|template):["']\s*\+|["']slot:["']\s*\+|\.startsWith\(["'](?:slot|layout|page|route|template):["']\)/;
