@@ -1,10 +1,10 @@
 import type { GetStaticPaths, GetStaticProps } from "next";
 
-type Props = { renderToken: string; slug: string };
+type Props = { draftMode: boolean; renderToken: string; slug: string };
 
-export default function StagePage({ renderToken, slug }: Props) {
+export default function StagePage({ draftMode, renderToken, slug }: Props) {
   return (
-    <main data-render-token={renderToken} data-slug={slug}>
+    <main data-draft-mode={String(draftMode)} data-render-token={renderToken} data-slug={slug}>
       HTTP stage render: {renderToken}
     </main>
   );
@@ -12,8 +12,9 @@ export default function StagePage({ renderToken, slug }: Props) {
 
 export const getStaticPaths: GetStaticPaths = () => ({ fallback: "blocking", paths: [] });
 
-export const getStaticProps: GetStaticProps<Props> = ({ params }) => ({
+export const getStaticProps: GetStaticProps<Props> = ({ draftMode, params }) => ({
   props: {
+    draftMode: draftMode === true,
     renderToken: crypto.randomUUID(),
     slug: String(params?.slug),
   },

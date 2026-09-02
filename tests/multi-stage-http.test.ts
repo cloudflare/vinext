@@ -357,6 +357,54 @@ describe("generic HTTP multi-stage transport", () => {
     expect(renderToken(secondBody)).toBe(renderToken(firstBody));
   });
 
+  it("bypasses shared App and Pages renders in draft mode", async () => {
+    const suffix = Date.now();
+    const urls = [
+      `${requestServer.origin}/app-stage/draft-${suffix}`,
+      `${requestServer.origin}/draft-${suffix}`,
+    ];
+
+    const anonymousTokens = new Map<string, string>();
+    for (const url of urls) {
+      const first = await fetch(url);
+      const firstBody = await first.text();
+      const cached = await fetch(url);
+      const cachedBody = await cached.text();
+
+      expect(first.status, firstBody).toBe(200);
+      expect(first.headers.get("x-http-stage-cache")).toBe("MISS");
+      expect(firstBody).toContain('data-draft-mode="false"');
+      expect(cached.headers.get("x-http-stage-cache")).toBe("HIT");
+      expect(renderToken(cachedBody)).toBe(renderToken(firstBody));
+      anonymousTokens.set(url, renderToken(firstBody));
+    }
+
+    const enableDraft = await fetch(`${requestServer.origin}/api/draft-enable`);
+    expect(enableDraft.status, await enableDraft.clone().text()).toBe(200);
+    expect(enableDraft.headers.get("x-http-stage-cache")).toBe("BYPASS");
+    const draftCookie = enableDraft.headers
+      .getSetCookie()
+      .map((cookie) => cookie.split(";", 1)[0])
+      .join("; ");
+    expect(draftCookie).toContain("__prerender_bypass=");
+
+    for (const url of urls) {
+      const draft = await fetch(url, { headers: { cookie: draftCookie } });
+      const draftBody = await draft.text();
+      expect(draft.status, draftBody).toBe(200);
+      expect(draft.headers.get("x-http-stage-cache")).toBe("BYPASS");
+      expect(draft.headers.get("cache-control")).toContain("no-store");
+      expect(draftBody).toContain('data-draft-mode="true"');
+      expect(renderToken(draftBody)).not.toBe(anonymousTokens.get(url));
+
+      const anonymous = await fetch(url);
+      const anonymousBody = await anonymous.text();
+      expect(anonymous.headers.get("x-http-stage-cache")).toBe("HIT");
+      expect(anonymousBody).toContain('data-draft-mode="false"');
+      expect(renderToken(anonymousBody)).toBe(anonymousTokens.get(url));
+    }
+  });
+
   it("clears stale shared-cache policy when an admitted response becomes private", () => {
     expect(
       createHttpStageCacheAdapter().buildResponseHeaders({
