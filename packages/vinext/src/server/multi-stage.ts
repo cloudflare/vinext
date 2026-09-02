@@ -1,13 +1,18 @@
 import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
-import { isVinextRscVaryField } from "./app-rsc-vary.js";
 
-/** Whether a header-blind response-stage cache must reject this response. */
-export function hasUnsupportedResponseStageVary(headers: Headers): boolean {
+/** Whether a response-stage cache must reject a field it did not key itself by. */
+export function hasUnsupportedResponseStageVary(
+  headers: Headers,
+  keyedRequestHeaders: Iterable<string> = [],
+): boolean {
+  const keyedFields = new Set(
+    [...keyedRequestHeaders].map((name) => name.trim().toLowerCase()).filter(Boolean),
+  );
   return (headers.get("Vary") ?? "")
     .split(",")
     .map((name) => name.trim().toLowerCase())
     .filter(Boolean)
-    .some((name) => name === "*" || !isVinextRscVaryField(name));
+    .some((name) => name === "*" || !keyedFields.has(name));
 }
 
 /**
