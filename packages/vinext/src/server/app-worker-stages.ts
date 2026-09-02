@@ -2,12 +2,10 @@ import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type {
   VinextResponseStageCacheability,
   VinextResponseStageDispatchOptions,
-  VinextResponseStageTransport,
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
 export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 7;
-export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -31,7 +29,7 @@ type AppFullRequestWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   trustedPrerenderState: TrustedPrerenderState | null;
 };
 
-export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
+type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   kind: "app-page" | "app-route-handler";
   bypassInterceptionContextCache: boolean;
   canonicalPathname: string;
@@ -93,14 +91,6 @@ export type AppWorkerResponseStageProps =
   | AppMetadataWorkerResponseStageProps
   | AppNotFoundWorkerResponseStageProps
   | HybridPagesWorkerResponseStageProps;
-
-export type DispatchAppWorkerResponseStage =
-  VinextResponseStageTransport<AppWorkerResponseStageProps>;
-
-export type RenderAppWorkerResponseStageLocally = (
-  request: Request,
-  props: AppWorkerResponseStageProps,
-) => Promise<Response>;
 
 /** Normalize a shared App page HEAD request onto its method-invariant GET representation. */
 export function prepareSharedAppPageDispatch(
