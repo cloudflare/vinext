@@ -21,10 +21,15 @@ import {
   hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
+  VIRTUAL_CDN_CACHE_ADAPTER,
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
-import { readAppRouterEntrySource, readPagesRouterEntrySource } from "./worker-entry-source.js";
+import {
+  readAppRequestStageEntrySource,
+  readAppRouterEntrySource,
+  readPagesRequestStageEntrySource,
+} from "./worker-entry-source.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
@@ -39,6 +44,17 @@ import createCloudflareCdnCacheAdapter, {
 describe("generateCacheAdaptersModule", () => {
   it("exposes the public virtual module id", () => {
     expect(VIRTUAL_CACHE_ADAPTERS).toBe("virtual:vinext-cache-adapters");
+  });
+
+  it("emits a CDN-only registrar for request-stage graphs", () => {
+    expect(VIRTUAL_CDN_CACHE_ADAPTER).toBe("virtual:vinext-cdn-cache-adapter");
+    const code = generateCdnCacheAdapterModule({
+      cdn: { adapter: "my-cdn-adapter" },
+      data: { adapter: "my-data-adapter" },
+    });
+    expect(code).toContain(`import __vinextCdnAdapterFactory from "my-cdn-adapter";`);
+    expect(code).not.toContain("my-data-adapter");
+    expect(code).not.toContain("registerDataCacheHandler");
   });
 
   it("emits a no-op registrar when no adapters are configured", () => {
@@ -282,7 +298,7 @@ describe("registration is wired into every router/runtime entry", () => {
   });
 
   it("Pages Router worker entry registers with env", () => {
-    const code = readPagesRouterEntrySource();
+    const code = readPagesRequestStageEntrySource();
     const eagerCdnRegistration = "configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);";
     const validateCdnRequest = "await validateCdnRequest(request)";
     const lazyDataRegistration = code.match(
@@ -295,6 +311,12 @@ describe("registration is wired into every router/runtime entry", () => {
     expect(code.indexOf(eagerCdnRegistration)).toBeLessThan(code.indexOf(validateCdnRequest));
     expect(lazyDataRegistration).toContain('await import("virtual:vinext-cache-adapters")');
     expect(lazyDataRegistration).toContain("adapters.registerConfiguredCacheAdapters(env);");
+  });
+
+  it("App request stage cannot retain the configured data adapter module", () => {
+    const code = readAppRequestStageEntrySource();
+    expect(code).toContain('from "virtual:vinext-cdn-cache-adapter"');
+    expect(code).not.toContain('from "virtual:vinext-cache-adapters"');
   });
 
   it("App Router worker entry validates CDN routing after registering with env", () => {
