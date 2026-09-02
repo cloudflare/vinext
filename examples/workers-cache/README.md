@@ -85,7 +85,7 @@ Cache Rules.
    and Next.js's internal `_N_T_<path>` form. Workers Cache consumes those
    private headers for admission and tag purging. The uncached gateway removes
    them before public egress and returns the browser-facing `Cache-Control:
-   public, max-age=0, must-revalidate` policy. Because Workers Cache requires
+   private, max-age=0, must-revalidate` policy. Because Workers Cache requires
    every `Vary` variant of a URL to use the same cache tags, vinext
    conservatively leaves a tagged response uncached when the rendered response
    declares an application-defined `Vary` field; use a separate URL or
