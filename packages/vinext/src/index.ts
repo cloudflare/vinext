@@ -4661,6 +4661,11 @@ export const loadServerActionClient = ${
         ) {
           return;
         }
+        if (output.format === "iife" || output.format === "umd") {
+          throw new Error(
+            `[vinext] Multi-stage output requires an ES module format; ${JSON.stringify(output.format)} cannot represent independently deployable request and response entries.`,
+          );
+        }
         return {
           ...output,
           chunkFileNames: createMultiStageChunkFileNames(
