@@ -252,6 +252,8 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   expect(browserFetchMiss.ok(), JSON.stringify(browserFetchMissHeaders)).toBe(true);
   expect(browserFetchMissHeaders["content-type"]).toContain("text/html");
   expect(browserFetchMissHeaders["cf-cache-status"]).toBe("MISS");
+  expect(browserFetchMissHeaders["x-vinext-cache"]).toBe("MISS");
+  expect(browserFetchMissHeaders["x-nextjs-cache"]).toBe("MISS");
   expect(browserFetchMissHeaders["cache-control"]).toBe("private, max-age=0, must-revalidate");
   expect(browserFetchMissHeaders["cdn-cache-control"]).toBeUndefined();
   expect(browserFetchMissHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
@@ -260,7 +262,10 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   const browserFetchHit = await request.get(browserFetchUrl.href, {
     headers: { accept: "*/*" },
   });
-  expect(browserFetchHit.headers()["cf-cache-status"]).toBe("HIT");
+  const browserFetchHitHeaders = browserFetchHit.headers();
+  expect(browserFetchHitHeaders["cf-cache-status"]).toBe("HIT");
+  expect(browserFetchHitHeaders["x-vinext-cache"]).toBe("HIT");
+  expect(browserFetchHitHeaders["x-nextjs-cache"]).toBe("HIT");
   expect(await browserFetchHit.text()).toBe(browserFetchBody);
 
   const downstreamOnlyOverride = await request.get(`${baseURL}/api/prewarm-version?downstream=1`, {
@@ -299,7 +304,11 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   const pagesResponse = await getReusableResponseAfterPromotion(
     request,
     `${baseURL}${PAGES_TARGET_PATH}`,
-    htmlHeaders,
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-a",
+      "x-test-visitor-id": "visitor-a",
+    },
     "Pages HTML",
   );
   const pagesResponseHeaders = pagesResponse.headers();
@@ -313,12 +322,73 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
     pagesResponseHeaders["cf-cache-status"],
     `Pages response headers: ${JSON.stringify(pagesResponseHeaders)}`,
   ).toBe("HIT");
-  expect(await pagesResponse.text()).toContain("Pages prewarm target");
+  expect(pagesResponseHeaders["x-workers-config-visitor"]).toBe("config-a");
+  expect(pagesResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
+  const pagesBody = await pagesResponse.text();
+  expect(pagesBody).toContain("Pages prewarm target");
+
+  const secondPagesResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${PAGES_TARGET_PATH}`,
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-b",
+      "x-test-visitor-id": "visitor-b",
+    },
+  );
+  const secondPagesResponseHeaders = secondPagesResponse.headers();
+  expect(secondPagesResponse.ok(), JSON.stringify(secondPagesResponseHeaders)).toBe(true);
+  expect(secondPagesResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
+  expect(
+    secondPagesResponseHeaders["cf-cache-status"],
+    `Second Pages response headers: ${JSON.stringify(secondPagesResponseHeaders)}`,
+  ).toBe("HIT");
+  expect(secondPagesResponseHeaders["x-workers-config-visitor"]).toBe("config-b");
+  expect(secondPagesResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
+  expect(await secondPagesResponse.text()).toBe(pagesBody);
+
+  const pagesDataUrl = `${baseURL}/_next/data/${buildId}/pages-prewarm.json`;
+  const pagesDataResponse = await getReusableResponseAfterPromotion(
+    request,
+    pagesDataUrl,
+    {
+      accept: "application/json",
+      "x-nextjs-data": "1",
+      "x-test-config-visitor": "config-a",
+      "x-test-visitor-id": "visitor-a",
+    },
+    "Pages data",
+  );
+  const pagesDataHeaders = pagesDataResponse.headers();
+  expect(pagesDataResponse.ok(), JSON.stringify(pagesDataHeaders)).toBe(true);
+  expect(pagesDataHeaders["content-type"]).toContain("application/json");
+  expect(pagesDataHeaders["cf-cache-status"]).toBe("HIT");
+  expect(pagesDataHeaders["x-workers-config-visitor"]).toBe("config-a");
+  expect(pagesDataHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
+  const pagesDataBody = await pagesDataResponse.text();
+  expect(JSON.parse(pagesDataBody)).toMatchObject({ pageProps: { draftMode: false } });
+
+  const secondPagesDataResponse = await getResponseAfterPromotion(request, pagesDataUrl, {
+    accept: "application/json",
+    "x-nextjs-data": "1",
+    "x-test-config-visitor": "config-b",
+    "x-test-visitor-id": "visitor-b",
+  });
+  const secondPagesDataHeaders = secondPagesDataResponse.headers();
+  expect(secondPagesDataResponse.ok(), JSON.stringify(secondPagesDataHeaders)).toBe(true);
+  expect(secondPagesDataHeaders["cf-cache-status"]).toBe("HIT");
+  expect(secondPagesDataHeaders["x-workers-config-visitor"]).toBe("config-b");
+  expect(secondPagesDataHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
+  expect(await secondPagesDataResponse.text()).toBe(pagesDataBody);
 
   const appHtmlResponse = await getReusableResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}`,
-    htmlHeaders,
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-a",
+      "x-test-visitor-id": "visitor-a",
+    },
     "App HTML",
   );
   const appHtmlResponseHeaders = appHtmlResponse.headers();
@@ -329,12 +399,84 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
     appHtmlResponseHeaders["cf-cache-status"],
     `App HTML response headers: ${JSON.stringify(appHtmlResponseHeaders)}`,
   ).toBe("HIT");
-  expect(await appHtmlResponse.text()).toContain("Prewarm target");
+  expect(appHtmlResponseHeaders["x-workers-config-visitor"]).toBe("config-a");
+  expect(appHtmlResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
+  const appHtmlBody = await appHtmlResponse.text();
+  expect(appHtmlBody).toContain("Prewarm target");
+
+  const secondAppHtmlResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-b",
+      "x-test-visitor-id": "visitor-b",
+    },
+  );
+  const secondAppHtmlResponseHeaders = secondAppHtmlResponse.headers();
+  expect(secondAppHtmlResponse.ok(), JSON.stringify(secondAppHtmlResponseHeaders)).toBe(true);
+  expect(secondAppHtmlResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
+  expect(
+    secondAppHtmlResponseHeaders["cf-cache-status"],
+    `Second App HTML response headers: ${JSON.stringify(secondAppHtmlResponseHeaders)}`,
+  ).toBe("HIT");
+  expect(secondAppHtmlResponseHeaders["x-workers-config-visitor"]).toBe("config-b");
+  expect(secondAppHtmlResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
+  expect(await secondAppHtmlResponse.text()).toBe(appHtmlBody);
+
+  // Next.js skips its shared response cache in draft mode. This must be
+  // decided in the uncached request entrypoint because a named-entrypoint HIT
+  // cannot inspect the draft cookie before replaying anonymous bytes.
+  const draftRequest = await playwright.request.newContext();
+  try {
+    const enableDraft = await draftRequest.get(`${baseURL}/api/draft-enable`);
+    expect(enableDraft.ok()).toBe(true);
+    expect(enableDraft.headers()["set-cookie"]).toContain("__prerender_bypass=");
+    expect(enableDraft.headers()["cache-control"]).toContain("no-store");
+
+    for (const pathname of [TARGET_PATH, PAGES_TARGET_PATH]) {
+      const draftResponse = await draftRequest.get(`${baseURL}${pathname}`, {
+        headers: htmlHeaders,
+      });
+      const draftHeaders = draftResponse.headers();
+      expect(draftResponse.ok(), JSON.stringify(draftHeaders)).toBe(true);
+      expect(draftHeaders["cf-cache-status"]).not.toBe("HIT");
+      expect(draftHeaders["cache-control"]).toContain("no-store");
+      expect(await draftResponse.text()).toContain(
+        '<output data-testid="draft-mode">true</output>',
+      );
+    }
+  } finally {
+    await draftRequest.dispose();
+  }
+
+  const anonymousAfterDraft = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    htmlHeaders,
+  );
+  expect(anonymousAfterDraft.headers()["cf-cache-status"]).toBe("HIT");
+  expect(await anonymousAfterDraft.text()).toBe(appHtmlBody);
+
+  for (const variant of ["alpha", "beta"]) {
+    const first = await getResponseAfterPromotion(request, `${baseURL}/vary`, {
+      "x-cache-variant": variant,
+    });
+    expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+    expect(await first.text()).toBe(variant);
+    expect(first.headers()["vary"]?.toLowerCase()).toContain("x-cache-variant");
+
+    const cached = await getResponseAfterPromotion(request, `${baseURL}/vary`, {
+      "x-cache-variant": variant,
+    });
+    expect(cached.headers()["cf-cache-status"], JSON.stringify(cached.headers())).toBe("HIT");
+    expect(await cached.text()).toBe(variant);
+  }
 
   const fullResponse = await getReusableResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}?_rsc`,
-    fullHeaders,
+    { ...fullHeaders, "x-test-visitor-id": "visitor-a" },
     "full RSC",
   );
   const fullResponseHeaders = fullResponse.headers();
@@ -345,9 +487,25 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
     fullResponseHeaders["cf-cache-status"],
     `full RSC response headers: ${JSON.stringify(fullResponseHeaders)}`,
   ).toBe("HIT");
+  expect(fullResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
   const fullBody = await fullResponse.text();
   expect(fullBody).toContain(buildId);
   expect(fullBody).toContain("Prewarm target");
+
+  const secondFullResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}?_rsc`,
+    { ...fullHeaders, "x-test-visitor-id": "visitor-b" },
+  );
+  const secondFullResponseHeaders = secondFullResponse.headers();
+  expect(secondFullResponse.ok(), JSON.stringify(secondFullResponseHeaders)).toBe(true);
+  expect(secondFullResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  expect(
+    secondFullResponseHeaders["cf-cache-status"],
+    `Second full RSC response headers: ${JSON.stringify(secondFullResponseHeaders)}`,
+  ).toBe("HIT");
+  expect(secondFullResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
+  expect(await secondFullResponse.text()).toBe(fullBody);
 
   const shellResponse = await getReusableResponseAfterPromotion(
     request,
