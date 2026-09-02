@@ -181,6 +181,42 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response).not.toHaveBeenCalled();
   });
 
+  it("partitions shared dispatches by public request authority", async () => {
+    const cacheFacingRequests: Request[] = [];
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        cacheFacingRequests.push(request);
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page" }, { cache: "shared" }),
+    );
+    stages.response.mockImplementation((request) => Response.json({ url: request.url }));
+
+    const responses = [];
+    for (const url of ["https://tenant-a.example/page", "https://tenant-b.example/page"]) {
+      responses.push(
+        await worker.fetch(new Request(url), {}, { exports: { VinextCachedResponse: binding } }),
+      );
+    }
+
+    expect(cacheFacingRequests).toHaveLength(2);
+    expect(cacheFacingRequests[0]?.url).toMatch(
+      /^https:\/\/tenant-a\.example\/page\?__vinext_cache_key=[0-9a-f]{64}$/,
+    );
+    expect(cacheFacingRequests[1]?.url).toMatch(
+      /^https:\/\/tenant-b\.example\/page\?__vinext_cache_key=[0-9a-f]{64}$/,
+    );
+    expect(cacheFacingRequests[0]?.url).not.toBe(cacheFacingRequests[1]?.url);
+    await expect(responses[0]?.json()).resolves.toEqual({
+      url: "https://tenant-a.example/page",
+    });
+    await expect(responses[1]?.json()).resolves.toEqual({
+      url: "https://tenant-b.example/page",
+    });
+  });
+
   it("does not expose the inner Cloudflare cache policy after gateway personalization", async () => {
     const binding = vi.fn(() => ({
       fetch: vi.fn().mockResolvedValue(
