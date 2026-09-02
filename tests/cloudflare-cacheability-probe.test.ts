@@ -488,6 +488,73 @@ describe("staged Worker cacheability probes", () => {
     ]);
   });
 
+  it("records a rewrite source under the route resolved by the request stage", async () => {
+    const root = createProbeRoot();
+    const source = {
+      ...target("/rewrite-me"),
+      route: {
+        cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true },
+        kind: "app-page" as const,
+        pattern: "/rewrite-me",
+      },
+    };
+    const direct = {
+      ...target("/safe"),
+      route: optimizableRoute("/safe"),
+    };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async () =>
+        Response.json({
+          kind: "app-page",
+          pattern: "/safe",
+          rendererStatic: true,
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [source, direct],
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result).toMatchObject({ classified: 1, probed: 2 });
+    expect(result.cacheableTargets).toEqual([source, direct]);
+    expect(result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/safe")]).toEqual({
+      allowUnknown: true,
+      kind: "app-page",
+      pattern: "/safe",
+      state: "runtime-check",
+      staticPaths: { html: ["/rewrite-me", "/safe"] },
+      unknownState: "static-candidate",
+    });
+  });
+
+  it("rejects an unexpected resolved route without rewrite metadata", async () => {
+    const root = createProbeRoot();
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async () =>
+        Response.json({
+          kind: "app-page",
+          pattern: "/unexpected",
+          rendererStatic: true,
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/expected")],
+    });
+
+    expect(result.failures).toEqual(["/expected: probe resolved to unexpected route /unexpected"]);
+    expect(result.cacheableTargets).toEqual([]);
+  });
+
   it("does not prune siblings when a config cache policy varies within the route pattern", async () => {
     const root = createProbeRoot();
     const route = {

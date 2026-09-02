@@ -392,7 +392,9 @@ export async function probeStagedWorkerCacheability(options: {
       results: new Map(),
       route: target.route,
     };
-    pattern.canPrune &&= target.route.cacheabilityProbe?.canPrunePattern === true;
+    pattern.canPrune &&=
+      target.route.cacheabilityProbe?.canPrunePattern === true &&
+      target.route.cacheabilityProbe.routeMayResolve !== true;
     patterns.set(key, pattern);
 
     const routePathname =
@@ -460,6 +462,41 @@ export async function probeStagedWorkerCacheability(options: {
     return true;
   };
 
+  const moveGroupToResolvedRoute = (
+    group: ConcretePathGroup,
+    route: Pick<PrerenderRoutePattern, "kind" | "pattern">,
+  ): PatternClassification => {
+    const previousPattern = group.pattern;
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    let pattern = patterns.get(key);
+    if (!pattern) {
+      pattern = {
+        canPrune: false,
+        groups: [],
+        key,
+        pathnames: new Set<string>(),
+        pruned: false,
+        results: new Map(),
+        route,
+      };
+      patterns.set(key, pattern);
+    }
+    pattern.canPrune = false;
+    if (pattern === previousPattern) return pattern;
+
+    const previousGroupIndex = previousPattern.groups.indexOf(group);
+    if (previousGroupIndex !== -1) previousPattern.groups.splice(previousGroupIndex, 1);
+    if (
+      !previousPattern.groups.some((candidate) => candidate.routePathname === group.routePathname)
+    ) {
+      previousPattern.pathnames.delete(group.routePathname);
+    }
+    pattern.groups.push(group);
+    pattern.pathnames.add(group.routePathname);
+    group.pattern = pattern;
+    return pattern;
+  };
+
   const classifyConcretePath = async (group: ConcretePathGroup): Promise<void> => {
     if (group.pattern.pruned) {
       skippedPathCount += 1;
@@ -523,15 +560,22 @@ export async function probeStagedWorkerCacheability(options: {
       reportProgress();
       return;
     }
-    if (
-      !target.route ||
-      result.kind !== target.route.kind ||
-      result.pattern !== target.route.pattern
-    ) {
-      failures.push(`${target.label}: probe resolved to unexpected route ${result.pattern ?? ""}`);
+    if (!target.route) {
+      failures.push(`${target.label}: probe resolved without route metadata`);
       completedPathCount += 1;
       reportProgress();
       return;
+    }
+    if (result.kind !== target.route.kind || result.pattern !== target.route.pattern) {
+      if (target.route.cacheabilityProbe?.routeMayResolve !== true) {
+        failures.push(
+          `${target.label}: probe resolved to unexpected route ${result.pattern ?? ""}`,
+        );
+        completedPathCount += 1;
+        reportProgress();
+        return;
+      }
+      moveGroupToResolvedRoute(group, { kind: result.kind, pattern: result.pattern });
     }
 
     const patternIsDefinitelyDynamic =
