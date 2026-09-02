@@ -50,6 +50,7 @@ export async function handleResponseStage(
       rawManifest: __cacheabilityManifest,
       registerCacheAdapters: () => registerConfiguredCacheAdapters(env),
       request,
+      representation: props.cacheability.representation,
       resolvedRoutePathname: props.cacheability.resolvedRoutePathname,
     },
     async (cacheabilityContext) => {

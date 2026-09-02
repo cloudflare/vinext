@@ -90,6 +90,12 @@ function isResponseStageCacheability(value: unknown): value is VinextResponseSta
             typeof entry[0] === "string" &&
             typeof entry[1] === "string",
         ))) &&
+    (cacheability.representation === undefined ||
+      cacheability.representation === "app-route" ||
+      cacheability.representation === "html" ||
+      cacheability.representation === "pages-data" ||
+      cacheability.representation === "rsc-full" ||
+      cacheability.representation === "rsc-loading-shell") &&
     typeof cacheability.resolvedRoutePathname === "string" &&
     cacheability.resolvedRoutePathname.startsWith("/")
   );

@@ -144,8 +144,9 @@ export function createWorkerCacheabilityAdmissionContext(
   requiresCompletedResponseAdmission = rawManifest != null,
   responseVary?: "verbatim",
   resolvedRoutePathname?: string,
+  trustedRepresentation?: CacheabilityRepresentation,
 ): ExecutionContextLike {
-  const identity = cacheabilityRequestIdentity(request);
+  const identity = cacheabilityRequestIdentity(request, trustedRepresentation);
   const routePathname = identity
     ? cacheabilityRoutePathname(
         resolvedRoutePathname ?? new URL(request.url).pathname,

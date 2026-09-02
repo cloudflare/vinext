@@ -453,6 +453,7 @@ describe("Pages Worker request stage", () => {
 
     expect(new URL(dispatch.mock.calls[0]![0].url).pathname).toBe("/page");
     expect(dispatch.mock.calls[0]?.[1]).toMatchObject({
+      cacheability: { representation: "pages-data" },
       renderOptions: { isDataReq: true },
       resolvedUrl: "/page?from=data",
     });

@@ -6,6 +6,10 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 
 const stages = vi.hoisted(() => ({
   api: vi.fn(),
@@ -143,6 +147,54 @@ describe("Pages Worker response stage", () => {
       { isDataReq: true },
       expect.any(Headers),
     );
+  });
+
+  it("admits normalized Pages data using its trusted representation", async () => {
+    const adapter: CdnCacheAdapter = {
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    };
+    stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+    stages.renderPage.mockImplementation(async (...args: unknown[]) => {
+      const context = args[3] as Record<PropertyKey, unknown>;
+      const state = context[CACHEABILITY_REQUEST_STATE] as RouteCacheabilityState;
+      expect(state.admission?.representation).toBe("pages-data");
+      state.route = { kind: "pages-page", pattern: "/page" };
+      state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+      return new Response('{"pageProps":{"cached":true}}');
+    });
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          representation: "pages-data",
+          resolvedRoutePathname: "/page",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: { isDataReq: true },
+        resolvedUrl: "/page",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("s-maxage=60");
+    await expect(response.json()).resolves.toEqual({ pageProps: { cached: true } });
   });
 
   it("dispatches a Pages API with its resolved URL and no outer composition", async () => {

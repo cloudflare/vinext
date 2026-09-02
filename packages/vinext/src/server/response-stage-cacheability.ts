@@ -2,6 +2,7 @@ import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import type { VinextResponseStageDispatchOptions } from "./multi-stage.js";
 import type { WorkerCacheabilityProbeMode } from "./cacheability-request.js";
+import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
 
 export type ResponseStageCacheabilityOptions = {
   buildId: string | null | undefined;
@@ -14,6 +15,8 @@ export type ResponseStageCacheabilityOptions = {
   rawManifest: string | null | undefined;
   /** The trusted route target after request-stage rewrites. */
   resolvedRoutePathname?: string;
+  /** Trusted representation retained when request-stage normalization changes the URL shape. */
+  representation?: CacheabilityRepresentation;
   /** Generated adapter registration, deferred until the response stage executes. */
   registerCacheAdapters(): void;
   request: Request;
@@ -63,6 +66,7 @@ export async function withResponseStageCacheability(
       adapter.requiresCompletedResponseAdmission === true,
       adapter.responseVary,
       options.resolvedRoutePathname,
+      options.representation,
     );
     if (options.policyHeadersAppliedBeforeRender) {
       cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);

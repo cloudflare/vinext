@@ -1,3 +1,5 @@
+import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
+
 /**
  * Transport-neutral cache intent passed from the request stage to an
  * adapter-owned response-stage transport.
@@ -23,6 +25,8 @@ export type VinextResponseStageCacheability = {
   probeMode: VinextCacheabilityProbeMode | null;
   /** Resolved route pathname used for manifest authorization after outer rewrites. */
   resolvedRoutePathname: string;
+  /** Trusted representation retained when request-stage normalization changes the URL shape. */
+  representation?: CacheabilityRepresentation;
 };
 
 /**

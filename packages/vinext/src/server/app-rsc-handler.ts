@@ -1752,6 +1752,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               cacheability: {
                 ...responseStageCacheability(resolvedUrl),
                 policyHeaders: await loadResponseStagePolicy(),
+                ...(isDataRequest ? { representation: "pages-data" as const } : {}),
               },
               allowRscDocumentFallback:
                 didMiddlewareRewritePathname || allowInternalRscDocumentFallback,

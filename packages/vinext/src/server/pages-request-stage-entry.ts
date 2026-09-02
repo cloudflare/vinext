@@ -364,6 +364,7 @@ async function handleRequest(
           cacheability: {
             policyHeaders: transportedPolicyHeaders,
             probeMode,
+            ...(isDataReq ? { representation: "pages-data" as const } : {}),
             resolvedRoutePathname: new URL(resolvedUrl, req.url).pathname,
           },
           kind: "pages-page" as const,
