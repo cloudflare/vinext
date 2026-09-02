@@ -47,11 +47,16 @@ import {
   resolveDevImageRedirect,
 } from "./server/image-optimization.js";
 import { CACHEABILITY_MANIFEST_MODULE } from "./server/cacheability-manifest.js";
+import { PREGENERATED_CONCRETE_PATHS_MODULE } from "./server/pregenerated-concrete-paths.js";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
-import { generateRscEntry } from "./entries/app-rsc-entry.js";
+import {
+  generateAppRequestRscEntry,
+  generateAppResponseRscEntry,
+  generateRscEntry,
+} from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
   VIRTUAL_CDN_CACHE_ADAPTER,
@@ -1113,6 +1118,12 @@ const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
 const RESOLVED_RSC_ENTRY = VIRTUAL_PREFIX + VIRTUAL_RSC_ENTRY;
 const VIRTUAL_CACHEABILITY_MANIFEST = "virtual:vinext-cacheability-manifest";
 const RESOLVED_CACHEABILITY_MANIFEST = VIRTUAL_PREFIX + VIRTUAL_CACHEABILITY_MANIFEST;
+const VIRTUAL_PREGENERATED_CONCRETE_PATHS = "virtual:vinext-pregenerated-concrete-paths";
+const RESOLVED_PREGENERATED_CONCRETE_PATHS = VIRTUAL_PREFIX + VIRTUAL_PREGENERATED_CONCRETE_PATHS;
+const VIRTUAL_APP_REQUEST_ENTRY = "virtual:vinext-app-request-entry";
+const RESOLVED_APP_REQUEST_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_REQUEST_ENTRY;
+const VIRTUAL_APP_RESPONSE_ENTRY = "virtual:vinext-app-response-entry";
+const RESOLVED_APP_RESPONSE_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_RESPONSE_ENTRY;
 const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
@@ -4043,6 +4054,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
             return RESOLVED_CACHEABILITY_MANIFEST;
           }
+          if (cleanId === VIRTUAL_PREGENERATED_CONCRETE_PATHS) {
+            const isWorkerBuildEnvironment = hasAppDir
+              ? this.environment?.name === "rsc"
+              : this.environment !== undefined && isServerEnvironment(this.environment);
+            if (isWorkerBuildEnvironment && this.environment.config?.command === "build") {
+              return { id: `./${PREGENERATED_CONCRETE_PATHS_MODULE}`, external: true };
+            }
+            return RESOLVED_PREGENERATED_CONCRETE_PATHS;
+          }
+          if (cleanId === VIRTUAL_APP_REQUEST_ENTRY) return RESOLVED_APP_REQUEST_ENTRY;
+          if (cleanId === VIRTUAL_APP_RESPONSE_ENTRY) return RESOLVED_APP_RESPONSE_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
           if (cleanId === VIRTUAL_APP_CAPABILITIES) return RESOLVED_APP_CAPABILITIES;
@@ -4072,6 +4094,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY)) {
             return RESOLVED_RSC_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_APP_REQUEST_ENTRY)) {
+            return RESOLVED_APP_REQUEST_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_APP_RESPONSE_ENTRY)) {
+            return RESOLVED_APP_RESPONSE_ENTRY;
           }
           if (cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY)) {
             return RESOLVED_APP_SSR_ENTRY;
@@ -4167,7 +4195,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (id === RESOLVED_CACHEABILITY_MANIFEST) {
             return "export default null;";
           }
-          if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
+          if (id === RESOLVED_PREGENERATED_CONCRETE_PATHS) {
+            return "export {};";
+          }
+          if (
+            (id === RESOLVED_RSC_ENTRY ||
+              id === RESOLVED_APP_REQUEST_ENTRY ||
+              id === RESOLVED_APP_RESPONSE_ENTRY) &&
+            hasAppDir
+          ) {
             recordServerEntryLoad(this.environment?.name, id);
             const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
             const metaRoutes = scanMetadataFiles(appDir);
@@ -4189,13 +4225,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // `routes` value passed to generateRscEntry below so that layout
             // indices in the manifest correspond 1:1 to the route.layouts arrays
             // used during codegen. renderChunk clears this after patching.
-            rscClassificationManifest = collectRouteClassificationManifest(routes);
-            rscActionOwnerRoutes =
-              this.environment.config.command === "build" && hasServerActions ? routes : null;
-            rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
-              (path): path is string => path !== null,
-            );
-            return generateRscEntry(
+            if (id !== RESOLVED_APP_REQUEST_ENTRY) {
+              rscClassificationManifest = collectRouteClassificationManifest(routes);
+              rscActionOwnerRoutes =
+                this.environment.config.command === "build" && hasServerActions ? routes : null;
+              rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
+                (path): path is string => path !== null,
+              );
+            }
+            const generateEntry =
+              id === RESOLVED_APP_REQUEST_ENTRY
+                ? generateAppRequestRscEntry
+                : id === RESOLVED_APP_RESPONSE_ENTRY
+                  ? generateAppResponseRscEntry
+                  : generateRscEntry;
+            return generateEntry(
               appDir,
               routes,
               middlewarePath,
