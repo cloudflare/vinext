@@ -223,7 +223,9 @@ test("deploy-prewarmed App, Pages, and RSC variants are reused", async ({
   expect(pagesResponse.ok(), JSON.stringify(pagesResponseHeaders)).toBe(true);
   expect(pagesResponseHeaders["content-type"]).toContain("text/html");
   expect(pagesResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
-  expect(pagesResponseHeaders["cache-control"]).toContain("public");
+  expect(pagesResponseHeaders["cache-control"]).toBe("private, max-age=0, must-revalidate");
+  expect(pagesResponseHeaders["cdn-cache-control"]).toBeUndefined();
+  expect(pagesResponseHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
   expect(
     pagesResponseHeaders["cf-cache-status"],
     `Pages response headers: ${JSON.stringify(pagesResponseHeaders)}`,
