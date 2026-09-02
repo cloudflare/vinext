@@ -4060,6 +4060,51 @@ describe("createMultiStageChunkFileNames", () => {
     }
   }, 30_000);
 
+  it("rejects single-file output formats before emitting independent stages", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-http-stage-format-"));
+    try {
+      await fsp.mkdir(path.join(root, "src"), { recursive: true });
+      const hostEntry = path.join(root, "src/worker.ts");
+      const entries = {
+        request: path.join(root, "src/request-stage.ts"),
+        response: path.join(root, "src/response-stage.ts"),
+      };
+      await Promise.all([
+        fsp.writeFile(hostEntry, 'export const host = "main";\n'),
+        fsp.writeFile(entries.request, "export default {};\n"),
+        fsp.writeFile(entries.response, "export default {};\n"),
+      ]);
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        plugins: [
+          vinext({
+            disableAppRouter: true,
+            cache: {
+              cdn: {
+                adapter: "/adapter/cache.js",
+                output: { entries, entry: entries.request, type: "multi-stage" },
+              },
+            },
+          }),
+        ],
+        build: {
+          outDir: "dist",
+          rolldownOptions: { input: hostEntry, output: { format: "iife" } },
+          ssr: true,
+        },
+        logLevel: "silent",
+      });
+
+      await expect(builder.buildApp()).rejects.toThrow(
+        '[vinext] Multi-stage output requires an ES module format; "iife" cannot represent independently deployable request and response entries.',
+      );
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps every App response-stage output self-contained across output arrays", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-array-"));
