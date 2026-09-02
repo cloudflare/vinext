@@ -2,7 +2,7 @@ import {
   parseArtifactCompatibilityEnvelope,
   type ArtifactCompatibilityEnvelope,
 } from "./artifact-compatibility.js";
-import { AppElementsWire } from "./app-elements-wire.js";
+import { parseAppElementsWireElementKey } from "./app-elements-wire-key.js";
 import { fnv1a64 } from "../utils/hash.js";
 import { isNonNegativeSafeInteger } from "../utils/number.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -279,7 +279,7 @@ function currentCommitVersionMatchesReplayWindow(
 }
 
 function parseEntryKind(id: string): ClientReuseManifestEntryKind | null {
-  const parsed = AppElementsWire.parseElementKey(id);
+  const parsed = parseAppElementsWireElementKey(id);
   if (parsed === null) return null;
   return parsed.kind;
 }
