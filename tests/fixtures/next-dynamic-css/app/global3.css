@@ -1,0 +1,4 @@
+body {
+  --next-dynamic-css-root: root;
+  color: red;
+}

@@ -168,6 +168,8 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
+import { createAppGlobalCssOwnerPlugin } from "./plugins/app-global-css-owner.js";
+import { createRscCssResourceCrossOriginPlugin } from "./plugins/rsc-css-resource-crossorigin.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
 import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
@@ -244,6 +246,7 @@ import {
   markCssUrlAssetReferences,
   restoreDedupedCssAssetReferences,
 } from "./build/css-url-assets.js";
+import { normalizeRscAssetsManifestCssOrder } from "./build/rsc-css-order.js";
 import {
   augmentSsrManifestFromBundle,
   tryRealpathSync,
@@ -2129,6 +2132,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // load. Matches Turbopack's behaviour for the Next.js
     // `css-modules-data-urls` fixture. See plugins/css-data-url.ts.
     dataUrlCssPlugin(),
+    createAppGlobalCssOwnerPlugin(() => (hasAppDir ? appDir : null)),
+    createRscCssResourceCrossOriginPlugin(),
     createCssModuleImportCompatibilityPlugin(),
     {
       name: "vinext:config",
@@ -7398,6 +7403,27 @@ export const loadServerActionClient = ${
   if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(createRscClientReferenceLoadersPlugin());
+    plugins.push({
+      name: "vinext:rsc-css-order-manifest",
+      apply: "build",
+      buildApp() {
+        const clientManifestPath = path.resolve(
+          root,
+          options.clientOutDir ?? "dist/client",
+          ".vite/manifest.json",
+        );
+        for (const outDir of [
+          options.rscOutDir ?? "dist/server",
+          options.ssrOutDir ?? "dist/server/ssr",
+        ]) {
+          normalizeRscAssetsManifestCssOrder(
+            path.resolve(root, outDir, "__vite_rsc_assets_manifest.js"),
+            clientManifestPath,
+          );
+        }
+        return Promise.resolve();
+      },
+    });
   } else if (manualUseCachePluginPromise) {
     plugins.push(manualUseCachePluginPromise);
   }

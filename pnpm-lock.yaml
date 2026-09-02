@@ -1733,6 +1733,8 @@ importers:
 
   tests/fixtures/middleware-matcher-auth: {}
 
+  tests/fixtures/next-dynamic-css: {}
+
   tests/fixtures/og-font-package: {}
 
   tests/fixtures/pages-app-props: {}

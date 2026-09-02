@@ -1,0 +1,5 @@
+body {
+  --next-dynamic-css-page: page-global;
+  background: white;
+  color: black;
+}
