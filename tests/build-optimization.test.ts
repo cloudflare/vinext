@@ -3980,6 +3980,68 @@ describe("createMultiStageChunkFileNames", () => {
     );
     expect(calls).toBe(2);
   });
+
+  it("applies stage isolation to every server output but not the App SSR renderer", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-hooks-"));
+    try {
+      await fsp.mkdir(path.join(root, "app"), { recursive: true });
+      await fsp.writeFile(
+        path.join(root, "app/page.tsx"),
+        "export default function Page() { return <main>page</main>; }\n",
+      );
+      const plugins = vinext({
+        appDir: root,
+        cache: {
+          cdn: {
+            adapter: "/adapter/cache.js",
+            output: { entry: path.join(root, "adapter-entry.ts"), type: "multi-stage" },
+          },
+        },
+      });
+      const configPlugin = plugins.find(
+        (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      );
+      const outputPlugin = plugins.find(
+        (plugin: any) => plugin.name === "vinext:multi-stage-server-output",
+      );
+      expect(configPlugin).toBeDefined();
+      expect(outputPlugin).toBeDefined();
+      await (configPlugin as any).config(
+        { build: {}, plugins: [], root },
+        { command: "build", mode: "production" },
+      );
+
+      const ssrContext = {
+        environment: { config: { build: { ssr: true } }, name: "ssr" },
+      };
+      expect(
+        await (outputPlugin as any).outputOptions.call(ssrContext, {
+          chunkFileNames: "ssr/[name].js",
+        }),
+      ).toBeUndefined();
+
+      const rscContext = {
+        environment: { config: { build: { ssr: true } }, name: "rsc" },
+      };
+      for (const directory of ["esm", "cjs"]) {
+        const hostGroup = { name: `${directory}-host`, test: /host/ };
+        const output = await (outputPlugin as any).outputOptions.call(rscContext, {
+          chunkFileNames: `${directory}/[name].js`,
+          codeSplitting: { groups: [hostGroup] },
+          entryFileNames: `${directory}/entry-[name].js`,
+        });
+        expect(output.entryFileNames).toBe(`${directory}/entry-[name].js`);
+        expect(output.codeSplitting.groups).toContain(hostGroup);
+        expect(output.chunkFileNames({ name: "ordinary" })).toBe(`${directory}/ordinary.js`);
+        expect(output.chunkFileNames({ name: "app-router-entry" })).toBe(
+          "app-router-entry-[hash].js",
+        );
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("createMultiStageCodeSplittingConfig", () => {

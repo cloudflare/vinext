@@ -1521,6 +1521,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
   let hasCloudflarePlugin = false;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
+  const isMultiStageServerEnvironment = (environment: {
+    config: { build: { ssr?: unknown } };
+    name: string;
+  }): boolean => {
+    if (environment.name === "client") return Boolean(environment.config.build.ssr);
+    return !hasAppDir || environment.name !== "ssr";
+  };
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let resolvedServerExternalPackages: string[] = [];
@@ -4605,38 +4612,25 @@ export const loadServerActionClient = ${
       name: "vinext:multi-stage-server-output",
       apply: "build",
 
-      configEnvironment(name, config) {
-        // Vite's standalone `build.ssr` path still names its sole environment
-        // `client`. Distinguish that server build from the real browser
-        // environment when applying server-stage chunk partitioning.
-        const isStandaloneSsrEnvironment = typeof config.build?.ssr === "string";
-        // App Router's `ssr` environment is the client-component renderer and
-        // must not receive server-stage output configuration. In a Pages-only
-        // build, however, `ssr` is the actual server environment.
+      // Vite calls this hook once for every output member, including an
+      // array-shaped host config. Apply stage isolation per resolved output
+      // without replacing its entry names or host-owned groups.
+      outputOptions(output) {
+        const environment = this.environment;
         if (
           !selectedMultiStageOutput ||
-          (name === "client" && !isStandaloneSsrEnvironment) ||
-          (hasAppDir && name === "ssr" && !isStandaloneSsrEnvironment)
+          !environment ||
+          !isMultiStageServerEnvironment(environment)
         ) {
-          return null;
-        }
-        const bundlerOptions = getBuildBundlerOptions(config.build);
-        const output = bundlerOptions?.output;
-        if (Array.isArray(output)) {
-          return null;
+          return;
         }
         return {
-          build: {
-            ...withBuildBundlerOptions({
-              output: {
-                chunkFileNames: createMultiStageChunkFileNames(
-                  resolveAssetsDir(nextConfig.assetPrefix ?? ""),
-                  output?.chunkFileNames,
-                ),
-                codeSplitting: createMultiStageCodeSplittingConfig(output?.codeSplitting),
-              },
-            }),
-          },
+          ...output,
+          chunkFileNames: createMultiStageChunkFileNames(
+            resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+            output.chunkFileNames,
+          ),
+          codeSplitting: createMultiStageCodeSplittingConfig(output.codeSplitting),
         };
       },
     },
