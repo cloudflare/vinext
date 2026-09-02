@@ -33,8 +33,8 @@ export type VinextResponseStageDispatchOptions = {
    * A shared transport must partition its baseline lookup by the request
    * method, complete request URL (including scheme, authority, exact path, and
    * query), plus the complete serialized stage props; each can affect handler
-   * selection or response bytes. It must additionally honor every response
-   * framework-managed selectors are already represented by that URL and the
+   * selection or response bytes. Framework-managed selectors are already
+   * represented by that URL and the
    * serialized props. A verbatim-capable transport must partition stored
    * variants by every named `Vary` request header and never store `Vary: *`.
    * Other transports must reject application-defined variance themselves or
