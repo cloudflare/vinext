@@ -104,11 +104,16 @@ describe("runPrerender concurrency", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-entry-"));
     fs.mkdirSync(path.join(root, "app"));
     fs.mkdirSync(path.join(root, "dist", "server", ".vite"), { recursive: true });
+    fs.writeFileSync(path.join(root, "dist", "server", "BUILD_ID"), "canonical-build\n");
     fs.writeFileSync(path.join(root, "dist", "server", "index.js"), 'import "host:runtime";\n');
     fs.mkdirSync(path.join(root, "dist", "server", "entries"));
     fs.writeFileSync(
       path.join(root, "dist", "server", "entries", "application-entry.js"),
       "export {};\n",
+    );
+    fs.writeFileSync(
+      path.join(root, "dist", "server", "entries", "BUILD_ID"),
+      "wrong-nested-build\n",
     );
     fs.writeFileSync(
       path.join(root, "dist", "server", ".vite", "manifest.json"),
@@ -129,6 +134,7 @@ describe("runPrerender concurrency", () => {
         expect.objectContaining({
           rscBundlePath: path.join(root, "dist", "server", "entries", "application-entry.js"),
           serverDir: path.join(root, "dist", "server"),
+          config: expect.objectContaining({ buildId: "canonical-build" }),
         }),
       );
     } finally {
