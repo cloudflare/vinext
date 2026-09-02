@@ -248,8 +248,9 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   expect(browserFetchMiss.ok(), JSON.stringify(browserFetchMissHeaders)).toBe(true);
   expect(browserFetchMissHeaders["content-type"]).toContain("text/html");
   expect(browserFetchMissHeaders["cf-cache-status"]).toBe("MISS");
-  expect(browserFetchMissHeaders["cdn-cache-control"]).toContain("public");
-  expect(browserFetchMissHeaders["cache-control"]).not.toContain("no-store");
+  expect(browserFetchMissHeaders["cache-control"]).toBe("private, max-age=0, must-revalidate");
+  expect(browserFetchMissHeaders["cdn-cache-control"]).toBeUndefined();
+  expect(browserFetchMissHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
   const browserFetchBody = await browserFetchMiss.text();
 
   const browserFetchHit = await request.get(browserFetchUrl.href, {

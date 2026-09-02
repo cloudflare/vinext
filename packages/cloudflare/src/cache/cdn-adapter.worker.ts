@@ -333,17 +333,15 @@ function preventRequestCfResponseCaching(response: Response): Response {
  */
 function markSharedResponseStage(
   response: Response,
+  provenanceToken: string,
   exposeEntrypointCacheStatus = false,
 ): Response {
   const headers = new Headers(response.headers);
-  headers.set(SHARED_RESPONSE_STAGE_HEADER, "1");
-  if (exposeEntrypointCacheStatus) {
-    const cacheStatus = headers.get("CF-Cache-Status");
-    if (cacheStatus) {
-      headers.set(VINEXT_CACHE_HEADER, cacheStatus);
-      headers.set(NEXTJS_CACHE_HEADER, cacheStatus);
-    }
-  }
+  const cacheStatus = exposeEntrypointCacheStatus ? headers.get("CF-Cache-Status") : null;
+  headers.set(
+    SHARED_RESPONSE_STAGE_HEADER,
+    cacheStatus ? `${provenanceToken}:${encodeURIComponent(cacheStatus)}` : provenanceToken,
+  );
   return new Response(response.body, {
     headers,
     status: response.status,
@@ -351,21 +349,38 @@ function markSharedResponseStage(
   });
 }
 
-function finalizeGatewayResponse(response: Response): Response {
-  const usedSharedResponseStage = response.headers.get(SHARED_RESPONSE_STAGE_HEADER) === "1";
+function finalizeGatewayResponse(response: Response, provenanceToken: string): Response {
+  const provenance = response.headers.get(SHARED_RESPONSE_STAGE_HEADER);
+  const usedSharedResponseStage =
+    provenance === provenanceToken || provenance?.startsWith(`${provenanceToken}:`) === true;
+  // The marker is reserved for adapter-internal provenance. If outer response
+  // composition replaces it, fail closed rather than forwarding shared cache
+  // policy on a response whose origin can no longer be authenticated.
+  const sharedResponseStageCollision = provenance !== null && !usedSharedResponseStage;
   const cacheControl = response.headers.get("Cache-Control");
-  if (!response.headers.has(CLOUDFLARE_EDGE_POLICY_HEADER) && !usedSharedResponseStage) {
+  if (
+    !response.headers.has(CLOUDFLARE_EDGE_POLICY_HEADER) &&
+    !usedSharedResponseStage &&
+    !sharedResponseStageCollision
+  ) {
     return response;
   }
   const headers = new Headers(response.headers);
   headers.delete(SHARED_RESPONSE_STAGE_HEADER);
   headers.delete(CLOUDFLARE_EDGE_POLICY_HEADER);
-  if (usedSharedResponseStage) {
+  if (usedSharedResponseStage || sharedResponseStageCollision) {
     headers.delete("CDN-Cache-Control");
     headers.delete("Cache-Tag");
+    headers.delete(VINEXT_CACHE_HEADER);
+    headers.delete(NEXTJS_CACHE_HEADER);
     if (!cacheControl || !isNonCacheableCacheControl(cacheControl)) {
       headers.set("Cache-Control", "private, max-age=0, must-revalidate");
     }
+  }
+  if (usedSharedResponseStage && provenance?.startsWith(`${provenanceToken}:`)) {
+    const cacheStatus = decodeURIComponent(provenance.slice(provenanceToken.length + 1));
+    headers.set(VINEXT_CACHE_HEADER, cacheStatus);
+    headers.set(NEXTJS_CACHE_HEADER, cacheStatus);
   }
   return new Response(response.body, {
     headers,
@@ -521,6 +536,7 @@ export default {
     context: CloudflareStageContext | undefined,
   ): Promise<Response> {
     request = stripUntrustedTransportHeaders(request);
+    const sharedResponseStageProvenance = crypto.randomUUID();
     const stageContext = withResponseStagePurge(withWorkerHostRuntime(context, env));
     const dispatchResponseStage: VinextResponseStageTransport = async (
       stageRequest,
@@ -558,13 +574,16 @@ export default {
             ? responseStageUnavailable()
             : markSharedResponseStage(
                 await invokeResponseStage(stageRequest, env, stageContext, invocation),
+                sharedResponseStageProvenance,
               );
         }
         const entrypointRequest = requiresEntrypoint
           ? stageRequest
           : await createCacheFacingRequest(stageRequest, serializedInvocation);
         const response = validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
-        return requiresEntrypoint ? response : markSharedResponseStage(response, true);
+        return requiresEntrypoint
+          ? response
+          : markSharedResponseStage(response, sharedResponseStageProvenance, true);
       } catch (error) {
         if (requiresEntrypoint) return responseStageUnavailable();
         throw error;
@@ -573,6 +592,7 @@ export default {
     const { handleRequestStage } = await loadVinextRequestStage<unknown, CloudflareStageContext>();
     return finalizeGatewayResponse(
       await handleRequestStage(request, env, stageContext, dispatchResponseStage),
+      sharedResponseStageProvenance,
     );
   },
 };
