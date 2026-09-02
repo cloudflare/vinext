@@ -1144,21 +1144,14 @@ describe("App Router entry templates", () => {
       'import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler"',
     );
     expect(code).toContain('dispatchPagesResponseStage(stageRequest, "api")');
-    expect(code).toContain('dispatchPagesResponseStage(stageRequest, "page")');
+    expect(code).toContain('dispatchPagesResponseStage(stageRequest, "page", dataKind)');
     expect(code).toContain("buildId: process.env.__VINEXT_BUILD_ID ?? null");
-    expect(code).toContain(
-      "return __requestHandler(request, ctx, false, dispatchResponseStage, probeMode)",
-    );
-    expect(code).toContain("App request stage requires a response-stage dispatcher");
-    expect(code).toContain('kind: "app-full-request"');
-    expect(code).toContain("const staticFileSignalToken = crypto.randomUUID()");
-    expect(code).toContain(
-      "__restoreStaticFileSignalFromTransport(response, staticFileSignalToken)",
-    );
-    expect(code).toContain('{ cache: "bypass" }');
-    expect(code).toContain('request.headers.get("upgrade")');
-    expect(code).toContain("__usesFullRequestGraph(request, probeMode)");
-    expect(code).toContain("if (!probeMode && /(?:^|,)\\s*(?:no-cache|no-store)");
+    expect(code).toContain("return __dispatchAppRequestStage(request, ctx, dispatchResponseStage");
+    expect(code).toContain("handleRequest: __requestHandler");
+    expect(code).not.toContain('kind: "app-full-request"');
+    expect(code).not.toContain("crypto.randomUUID()");
+    expect(code).not.toContain('request.headers.get("upgrade")');
+    expect(code).not.toContain("__usesFullRequestGraph");
     expect(code).not.toContain("|| __isMetadataPath(pathname)");
   });
 

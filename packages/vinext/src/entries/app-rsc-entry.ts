@@ -19,7 +19,6 @@ import type {
   PrefetchInliningConfig,
 } from "../config/next-config.js";
 import type { ImageConfig } from "../server/image-optimization.js";
-import { APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION } from "../server/app-worker-stages.js";
 import type { AppRoute } from "../routing/app-router.js";
 import { routePatternParts } from "../routing/route-pattern.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
@@ -121,6 +120,10 @@ const appRequestStageContextPath = resolveEntryPath(
   "../server/app-request-stage-context.js",
   import.meta.url,
 );
+const appRequestStageDispatchPath = resolveEntryPath(
+  "../server/app-request-stage-dispatch.js",
+  import.meta.url,
+);
 const appRouteModuleLoaderPath = resolveEntryPath(
   "../server/app-route-module-loader.js",
   import.meta.url,
@@ -140,13 +143,7 @@ const appHookWarningSuppressionPath = resolveEntryPath(
 );
 const serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const appPagesBridgePath = resolveEntryPath("../server/app-pages-bridge.js", import.meta.url);
-const cspPath = resolveEntryPath("../server/csp.js", import.meta.url);
-const appRouteTreePrefetchPath = resolveEntryPath(
-  "../server/app-route-tree-prefetch.js",
-  import.meta.url,
-);
 const routePatternPath = resolveEntryPath("../routing/route-pattern.js", import.meta.url);
-const staticFileSignalPath = resolveEntryPath("../server/static-file-signal.js", import.meta.url);
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -324,13 +321,10 @@ export function generateAppRequestRscEntry(
 import ${JSON.stringify(serverGlobalsPath)};
 import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler";
 import { createAppRscRouteMatcher as __createAppRscRouteMatcher } from ${JSON.stringify(appRscRouteMatchingPath)};
+import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stringify(appRequestStageDispatchPath)};
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { clearAppRequestStageContext as __clearRequestContext, setAppRequestStageNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestStageContextPath)};
-import { isDraftModeRequest, getDraftModeCookieHeader } from "next/headers";
-import { getScriptNonceFromHeaderSources as __getScriptNonce } from ${JSON.stringify(cspPath)};
-import { isRouteTreePrefetchRequest as __isRouteTreePrefetchRequest } from ${JSON.stringify(appRouteTreePrefetchPath)};
 import { matchRoutePattern as __matchRoutePattern } from ${JSON.stringify(routePatternPath)};
-import { restoreStaticFileSignalFromTransport as __restoreStaticFileSignalFromTransport } from ${JSON.stringify(staticFileSignalPath)};
 ${
   middlewarePath
     ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
@@ -345,7 +339,8 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
 }
 ${
   hasPagesDir
-    ? `import * as __pagesRequestEntry from "virtual:vinext-pages-request-entry";
+    ? `import { getDraftModeCookieHeader } from "next/headers";
+import * as __pagesRequestEntry from "virtual:vinext-pages-request-entry";
 import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
@@ -406,22 +401,6 @@ function __isMetadataPath(pathname) {
     return false;
   });
 }
-function __usesFullRequestGraph(request, probeMode) {
-  if (request.method !== "GET" && request.method !== "HEAD") return true;
-  if (request.headers.get("upgrade")?.split(",").some((value) => value.trim().toLowerCase() === "websocket")) return true;
-  if (process.env.VINEXT_PRERENDER === "1") return true;
-  if (isDraftModeRequest(request, __draftModeSecret)) return true;
-  if (request.headers.has("x-vinext-prerender-route-params")) return true;
-  const cacheControl = request.headers.get("cache-control")?.toLowerCase() ?? "";
-  if (!probeMode && /(?:^|,)\\s*(?:no-cache|no-store)(?:\\s*(?:,|$)|\\s*=)/.test(cacheControl)) return true;
-  if (__getScriptNonce(request.headers) !== undefined || __isRouteTreePrefetchRequest(request)) return true;
-  const url = new URL(request.url);
-  const pathname = __basePath && url.pathname.startsWith(__basePath + "/")
-    ? url.pathname.slice(__basePath.length)
-    : url.pathname;
-  return pathname.startsWith("/__vinext/");
-}
-
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
 const __requestHandler = createAppRscRequestHandler({
@@ -501,7 +480,10 @@ const __requestHandler = createAppRscRequestHandler({
           return {
             ...__pagesRequestEntry,
             handleApiRoute(stageRequest) { return dispatchPagesResponseStage(stageRequest, "api"); },
-            renderPage(stageRequest) { return dispatchPagesResponseStage(stageRequest, "page"); },
+            renderPage(stageRequest, pagesUrl) {
+              const dataKind = __pagesRequestEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route.dataKind;
+              return dispatchPagesResponseStage(stageRequest, "page", dataKind);
+            },
           };
         },
         buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
@@ -527,29 +509,14 @@ export default async function handleAppRequestStage(
   probeMode = null,
   prerenderDiscovery = false,
 ) {
-  if (!dispatchResponseStage) {
-    throw new Error("App request stage requires a response-stage dispatcher");
-  }
-  if (__usesFullRequestGraph(request, probeMode)) {
-    const staticFileSignalToken = crypto.randomUUID();
-    const response = await dispatchResponseStage(request, {
-      kind: "app-full-request",
-      buildId: process.env.__VINEXT_BUILD_ID ?? null,
-      cacheability: {
-        policyHeaders: null,
-        probeMode,
-        resolvedRoutePathname: new URL(request.url).pathname,
-      },
-      draftModeCookie: null,
-      middlewareCookieOverlay: null,
-      prerenderDiscovery,
-      protocolVersion: ${APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION},
-      scriptNonce: null,
-      staticFileSignalToken,
-    }, { cache: "bypass" });
-    return __restoreStaticFileSignalFromTransport(response, staticFileSignalToken);
-  }
-  return __requestHandler(request, ctx, false, dispatchResponseStage, probeMode);
+  return __dispatchAppRequestStage(request, ctx, dispatchResponseStage, {
+    basePath: __basePath,
+    buildId: process.env.__VINEXT_BUILD_ID ?? null,
+    draftModeSecret: __draftModeSecret,
+    handleRequest: __requestHandler,
+    prerenderDiscovery,
+    probeMode,
+  });
 }
 `;
 }
@@ -1815,9 +1782,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
               : {}),
             ...(typeof __pagesEntry.renderPage === "function"
               ? {
-            renderPage(stageRequest) {
-                    return dispatchPagesResponseStage(stageRequest, "page");
-            },
+                  renderPage(stageRequest, pagesUrl) {
+                    const dataKind = __pagesEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route.dataKind;
+                    return dispatchPagesResponseStage(stageRequest, "page", dataKind);
+                  },
                 }
               : {}),
           };
