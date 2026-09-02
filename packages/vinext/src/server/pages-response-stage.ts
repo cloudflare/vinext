@@ -73,7 +73,14 @@ export function shouldDispatchPagesResponseStage({
 }: PagesResponseStageDispatchOptions): boolean {
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "HEAD") return false;
-  if (request.headers.get("upgrade")?.toLowerCase() === "websocket") return false;
+  if (
+    request.headers
+      .get("upgrade")
+      ?.split(",")
+      .some((value) => value.trim().toLowerCase() === "websocket")
+  ) {
+    return false;
+  }
 
   // Next.js supplies req/res to `_document.getInitialProps` for getStaticProps
   // renders (`isAutoExport` is false). That makes the ostensibly static render

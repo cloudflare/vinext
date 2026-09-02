@@ -44,6 +44,7 @@ describe("Pages response-stage dispatch", () => {
 
   it("keeps WebSocket upgrades out of the shared response stage", () => {
     expect(shouldDispatch({ headers: { Upgrade: "websocket" } })).toBe(false);
+    expect(shouldDispatch({ headers: { Upgrade: "h2c, WebSocket" } })).toBe(false);
     expect(
       getPagesResponseStageCacheDisposition({
         request: new Request("https://example.com/socket", {
