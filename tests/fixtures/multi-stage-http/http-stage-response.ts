@@ -1,7 +1,4 @@
-import {
-  hasUnsupportedResponseStageVary,
-  type VinextRequestStageTransport,
-} from "vinext/server/multi-stage";
+import type { VinextRequestStageTransport } from "vinext/server/multi-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import {
   deserializeRequest,
@@ -181,6 +178,10 @@ const responseStageFetch = async (transportRequest: Request): Promise<Response> 
   if (envelope.options.cache === "bypass" || !isSharedCacheable(rendered)) {
     return withHostHeaders(rendered, "BYPASS");
   }
+  // A cache hit never needs response admission. Keep even this lightweight
+  // framework policy behind the miss path so the host entry remains a lazy
+  // proxy until it actually renders a response.
+  const { hasUnsupportedResponseStageVary } = await import("vinext/server/multi-stage");
   if (hasUnsupportedResponseStageVary(rendered.headers)) {
     return withHostHeaders(withPrivateHostPolicy(rendered), "BYPASS");
   }
