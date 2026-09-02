@@ -1597,7 +1597,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
-      prerenderSecret,
+      { prerenderSecret },
     );
   }
 
