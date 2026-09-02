@@ -4618,11 +4618,13 @@ export const loadServerActionClient = ${
           fileName: CACHEABILITY_MANIFEST_MODULE,
           source: "export default null;\n",
         });
-        this.emitFile({
-          type: "asset",
-          fileName: PREGENERATED_CONCRETE_PATHS_MODULE,
-          source: "delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n",
-        });
+        if (hasAppDir) {
+          this.emitFile({
+            type: "asset",
+            fileName: PREGENERATED_CONCRETE_PATHS_MODULE,
+            source: "delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n",
+          });
+        }
       },
     },
     {
