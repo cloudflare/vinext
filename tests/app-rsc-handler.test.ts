@@ -547,6 +547,36 @@ describe("createAppRscHandler", () => {
     await expect(response.text()).resolves.toBe("page");
   });
 
+  it.each(["page", "api"] as const)(
+    "does not turn hybrid Pages %s next.config Content-Length into response framing",
+    async (resourceKind) => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(new Response("stage")),
+      );
+      const handler = createHandler({
+        configHeaders: [
+          {
+            source: resourceKind === "api" ? "/api/hybrid" : "/pages",
+            headers: [{ key: "Content-Length", value: "999" }],
+          },
+        ],
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        renderPagesFallback: async (options) =>
+          options.dispatchPagesResponseStage?.(options.request, resourceKind) ?? null,
+      });
+
+      const response = await handler(
+        new Request(`https://example.test/docs/${resourceKind === "api" ? "api/hybrid" : "pages"}`),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(response.headers.get("Content-Length")).toBeNull();
+    },
+  );
+
   it("keeps hybrid static Pages renders with request-aware Documents outside the shared stage", async () => {
     // Next.js supplies req/res to custom _document.getInitialProps for GSP/ISR
     // pages, so their HTML can remain request-specific despite static data.
