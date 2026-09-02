@@ -615,6 +615,7 @@ function inferFinalAppPageCacheability(
   return {
     cacheable: true,
     cacheControl,
+    ...(state.cdnCacheTags ? { tags: state.cdnCacheTags } : {}),
   };
 }
 
@@ -632,6 +633,7 @@ function inferPagesPageCacheability(
   return {
     cacheable: true,
     cacheControl,
+    ...(state.cdnCacheTags ? { tags: state.cdnCacheTags } : {}),
   };
 }
 
