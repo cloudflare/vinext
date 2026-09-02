@@ -703,6 +703,34 @@ describe("prerender path manifest", () => {
     expect(manifest?.routePatterns?.["/safe"]?.cacheabilityProbe?.routeMayResolve).toBeUndefined();
   });
 
+  it("allows the uncached middleware stage to resolve warm routes", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("middleware.ts", "export default function middleware() {}\n");
+    writeFile(
+      "app/middleware-source/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig: await resolveNextConfig({}, tmpDir),
+      requestRouting: "uncached-stage",
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.routePatterns?.["/middleware-source"]?.cacheabilityProbe).toMatchObject({
+      canPrunePattern: true,
+      routeMayResolve: true,
+    });
+  });
+
   it("excludes warm paths shadowed by configured redirects", async () => {
     // Next.js applies config redirects before rendering the filesystem route:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts

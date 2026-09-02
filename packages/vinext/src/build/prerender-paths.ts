@@ -1160,6 +1160,22 @@ function configuredRulesAffectWarmPath(
   );
 }
 
+function hasMiddlewareConventionFile(
+  root: string,
+  appDir: string | null,
+  pagesDir: string | null,
+  pageExtensions: readonly string[],
+): boolean {
+  const routeDir = appDir ?? pagesDir;
+  const routeRoot = routeDir ? path.dirname(routeDir) : root;
+  const conventionDir = routeRoot === path.join(root, "src") ? routeRoot : root;
+  return ["proxy", "middleware"].some((name) =>
+    pageExtensions.some((extension) =>
+      fs.existsSync(path.join(conventionDir, `${name}.${extension}`)),
+    ),
+  );
+}
+
 async function startPathDiscoveryServer(options: {
   serverDir: string;
   pagesBundlePath?: string;
@@ -1328,10 +1344,15 @@ export async function emitPrerenderPathManifest(
     ...config.rewrites.afterFiles,
     ...config.rewrites.fallback,
   ];
+  const middlewareMayResolveWarmPaths =
+    options.requestRouting === "uncached-stage" &&
+    hasMiddlewareConventionFile(root, appDir, pagesDir, config.pageExtensions);
   const routeMayResolveWarmPathSet = new Set(
     options.requestRouting === "uncached-stage"
-      ? [...paths, ...discoveredRouteHandlerPaths].filter((pathname) =>
-          configuredRulesAffectWarmPath(pathname, configuredRewrites, config),
+      ? [...paths, ...discoveredRouteHandlerPaths].filter(
+          (pathname) =>
+            middlewareMayResolveWarmPaths ||
+            configuredRulesAffectWarmPath(pathname, configuredRewrites, config),
         )
       : [],
   );
