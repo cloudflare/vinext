@@ -247,7 +247,7 @@ function readState(ctx: ExecutionContextLike): RouteCacheabilityState | null {
 
 function resolveCacheabilityRepresentation(
   representation: CacheabilityRepresentation,
-  routeKind: "app-page" | "app-route" | "pages-page",
+  routeKind: "app-page" | "app-route" | "pages-api" | "pages-page",
 ): CacheabilityRepresentation {
   // Accept describes the representation a caller would prefer; it does not
   // determine whether the resolved pathname belongs to an App Page or a Route
@@ -257,7 +257,7 @@ function resolveCacheabilityRepresentation(
   if (representation !== "html" && representation !== "app-route") {
     return representation;
   }
-  return routeKind === "app-route" ? "app-route" : "html";
+  return routeKind === "app-route" || routeKind === "pages-api" ? "app-route" : "html";
 }
 
 /** Apply request-stage-vetted positive config policy inside the admission boundary. */
