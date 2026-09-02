@@ -495,6 +495,38 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response).toHaveBeenCalledOnce();
   });
 
+  it("strips forged transport metadata from bypass and fallback renders", async () => {
+    for (const cache of ["bypass", "shared"] as const) {
+      stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+        dispatch(request, { route: "/private" }, { cache }),
+      );
+      stages.response.mockImplementation((request) =>
+        Response.json({
+          authorizationTransport: request.headers.get("x-vinext-internal-authorization"),
+          requestCfTransport: request.headers.get("x-vinext-internal-request-cf"),
+        }),
+      );
+
+      const response = await worker.fetch(
+        new Request("https://example.com/private", {
+          headers: {
+            "x-vinext-internal-authorization": "forged-authorization",
+            "x-vinext-internal-request-cf": "forged-request-cf",
+          },
+        }),
+        {},
+        {},
+      );
+
+      await expect(response.json()).resolves.toEqual({
+        authorizationTransport: null,
+        requestCfTransport: null,
+      });
+      stages.request.mockReset();
+      stages.response.mockReset();
+    }
+  });
+
   it("falls back to an uncached render when loopback exports are unavailable", async () => {
     stages.response.mockResolvedValue(new Response("rendered"));
     stages.request.mockImplementation((_request, _env, _ctx, dispatch) =>

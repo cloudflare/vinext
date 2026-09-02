@@ -44,6 +44,28 @@ const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const CLOUDFLARE_EDGE_POLICY_HEADER = "Cloudflare-CDN-Cache-Control";
 
+function stripUntrustedTransportHeaders(request: Request): Request {
+  if (
+    !request.headers.has(AUTHORIZATION_TRANSPORT_HEADER) &&
+    !request.headers.has(REQUEST_CF_TRANSPORT_HEADER)
+  ) {
+    return request;
+  }
+  const headers = new Headers(request.headers);
+  headers.delete(AUTHORIZATION_TRANSPORT_HEADER);
+  headers.delete(REQUEST_CF_TRANSPORT_HEADER);
+  const sanitized = new Request(request, { headers });
+  const requestCf = Reflect.get(request, "cf");
+  if (requestCf !== undefined) {
+    Object.defineProperty(sanitized, "cf", {
+      configurable: true,
+      enumerable: true,
+      value: requestCf,
+    });
+  }
+  return sanitized;
+}
+
 function withWorkerHostRuntime(
   context: CloudflareStageContext | undefined,
   env?: unknown,
@@ -341,6 +363,7 @@ export default {
     env: unknown,
     context: CloudflareStageContext | undefined,
   ): Promise<Response> {
+    request = stripUntrustedTransportHeaders(request);
     const stageContext = withResponseStagePurge(withWorkerHostRuntime(context, env));
     const dispatchResponseStage: VinextResponseStageTransport = async (
       stageRequest,
