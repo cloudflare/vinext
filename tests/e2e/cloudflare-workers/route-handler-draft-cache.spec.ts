@@ -56,6 +56,12 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     server.kill();
   });
 
+  test("fetches an asset imported with new URL and import.meta.url", async ({ request }) => {
+    const response = await request.get(`${BASE_URL}/api/blob-asset`);
+    expect(response.status()).toBe(200);
+    expect(await response.text()).toBe("Hello from a Worker blob asset!\n");
+  });
+
   test("keeps draft and anonymous route-handler ISR responses isolated", async ({ request }) => {
     const forged = await request.get(`${BASE_URL}/api/draft-isr/forged-${Date.now()}`, {
       headers: { Cookie: "__prerender_bypass=forged" },

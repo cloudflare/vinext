@@ -182,6 +182,8 @@ import { validateMiddlewareModuleExports } from "./plugins/middleware-export-val
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { OgAssetOwnership } from "./plugins/og-asset-ownership.js";
+import { createAssetImportMetaUrlPlugin } from "./plugins/asset-import-meta-url.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -1427,6 +1429,8 @@ export type VinextOptions = {
 type NitroSetupContext = {
   options: {
     dev?: boolean;
+    node?: boolean;
+    preset?: string;
     routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
   };
@@ -1485,6 +1489,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasCloudflarePlugin = false;
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+  let hasNodelessNitroTarget = false;
+  const fetchedAssetOwnership = new OgAssetOwnership();
   let resolvedServerExternalPackages: string[] = [];
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
@@ -6740,7 +6746,14 @@ export const loadServerActionClient = ${
     createRequireContextPlugin(),
     // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))` —
     // see src/plugins/og-assets.ts
-    createOgInlineFetchAssetsPlugin(),
+    createOgInlineFetchAssetsPlugin(fetchedAssetOwnership),
+    // Make general `new URL("./asset", import.meta.url)` fetches work in
+    // server runtimes. Keep this after the specialized OG transform so its
+    // arrayBuffer/readFile patterns retain their narrower output shape.
+    createAssetImportMetaUrlPlugin({
+      isWorkerTarget: () => hasCloudflarePlugin || hasNodelessNitroTarget,
+      ownership: fetchedAssetOwnership,
+    }),
     // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
     createOgAssetsPlugin(),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
@@ -6865,6 +6878,12 @@ export const loadServerActionClient = ${
       name: "vinext:nitro-route-rules",
       nitro: {
         setup: async (nitro: NitroSetupContext) => {
+          // Nitro's default/node-server output retains normal file URL
+          // semantics. Only nodeless presets (Workers/edge runtimes) need the
+          // constructor-wide rewrite because import.meta.url is not a usable
+          // filesystem base there.
+          hasNodelessNitroTarget = nitro.options.node === false;
+
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 

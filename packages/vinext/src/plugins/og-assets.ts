@@ -63,12 +63,13 @@ import { magicStringTransformResult } from "./transform-result.js";
  * correctly inside Cloudflare Workers where `import.meta.url` is not a
  * valid file URL.
  */
-export function createOgInlineFetchAssetsPlugin(): Plugin {
+export function createOgInlineFetchAssetsPlugin(
+  ownership: OgAssetOwnership = new OgAssetOwnership(),
+): Plugin {
   // Build-only cache to avoid repeated file reads during a single production
   // build. Dev mode skips the cache so asset edits are picked up without
   // restarting the Vite server.
   const cache = new Map<string, string>(); // absPath -> base64
-  const ownership = new OgAssetOwnership();
   let isBuild = false;
 
   return {
