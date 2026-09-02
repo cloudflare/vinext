@@ -555,6 +555,54 @@ describe("staged Worker cacheability probes", () => {
     expect(result.cacheableTargets).toEqual([]);
   });
 
+  it("regroups resolved routes independently of probe completion order", async () => {
+    const source = {
+      ...target("/rewrite-me"),
+      route: {
+        cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true },
+        kind: "app-page" as const,
+        pattern: "/rewrite-me",
+      },
+    };
+    const direct = { ...target("/safe"), route: optimizableRoute("/safe") };
+
+    for (const delayedPathname of ["/rewrite-me", "/safe"]) {
+      const result = await probeStagedWorkerCacheability({
+        buildId: "application-build",
+        concurrency: 2,
+        fetchImpl: async (input) => {
+          const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+          if (pathname === delayedPathname) {
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          return Response.json({
+            kind: "app-page",
+            pattern: "/safe",
+            rendererStatic: pathname === "/rewrite-me",
+            ...(pathname === "/safe" ? { scope: "pattern" } : {}),
+            state: pathname === "/safe" ? "dynamic" : "static-candidate",
+            status: 200,
+            version: 1,
+          });
+        },
+        retries: 0,
+        root: createProbeRoot(),
+        targetUrl: "https://example.com",
+        targets: [source, direct],
+      });
+
+      expect(result.failures).toEqual([]);
+      expect(result.cacheableTargets).toEqual([source]);
+      expect(result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/safe")]).toEqual({
+        kind: "app-page",
+        pattern: "/safe",
+        runtimePaths: ["/safe"],
+        state: "runtime-check",
+        staticPaths: { html: ["/rewrite-me"] },
+      });
+    }
+  });
+
   it("does not prune siblings when a config cache policy varies within the route pattern", async () => {
     const root = createProbeRoot();
     const route = {

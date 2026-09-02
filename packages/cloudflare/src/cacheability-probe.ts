@@ -482,6 +482,10 @@ export async function probeStagedWorkerCacheability(options: {
       patterns.set(key, pattern);
     }
     pattern.canPrune = false;
+    // A direct destination probe may have provisionally pruned this pattern
+    // before the routed source completed. Its retained concrete observation is
+    // authoritative once another public path joins the resolved route.
+    pattern.pruned = false;
     if (pattern === previousPattern) return pattern;
 
     const previousGroupIndex = previousPattern.groups.indexOf(group);
@@ -578,6 +582,11 @@ export async function probeStagedWorkerCacheability(options: {
       moveGroupToResolvedRoute(group, { kind: result.kind, pattern: result.pattern });
     }
 
+    group.pattern.results.set(group.routePathname, {
+      rendererStatic: result.rendererStatic === true,
+      representation: target.kind,
+      state: result.state,
+    });
     const patternIsDefinitelyDynamic =
       result.state === "dynamic" && result.scope === "pattern" && group.pattern.canPrune;
     if (patternIsDefinitelyDynamic) {
@@ -588,11 +597,6 @@ export async function probeStagedWorkerCacheability(options: {
       return;
     }
 
-    group.pattern.results.set(group.routePathname, {
-      rendererStatic: result.rendererStatic === true,
-      representation: target.kind,
-      state: result.state,
-    });
     if (result.state === "static-candidate") {
       staticPathCount += 1;
     } else {
