@@ -48,7 +48,7 @@ export function getCdnResponsePolicyHeaderNames(): ReadonlySet<string> {
 }
 
 /** Capture only cache-policy provenance from an outer composition stage. */
-export function captureCdnResponsePolicyHeaders(headers: Headers): Headers {
+function captureCdnResponsePolicyHeaders(headers: Headers): Headers {
   const policy = new Headers();
   for (const name of getCdnResponsePolicyHeaderNames()) {
     const value = headers.get(name);

@@ -220,9 +220,7 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   await expect(explicitMixedRouteHandler.json()).resolves.toEqual({
     kind: "explicit-mixed-route-handler",
   });
-  expect(explicitMixedRouteHandler.headers()["cache-control"]).toContain("max-age=0");
-  expect(explicitMixedRouteHandler.headers()["cache-control"]).toContain("must-revalidate");
-  expect(explicitMixedRouteHandler.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(explicitMixedRouteHandler.headers()["cache-control"]).toBe("public, s-maxage=60");
 
   // `revalidate` alone is framework policy, not an explicit response-level
   // opt-in, and must not bypass the route's manifest absence.

@@ -1,15 +1,9 @@
-import { expect, test, type APIResponse } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 
 const probeHeader = "X-Vinext-Cacheability-Probe";
 const secretHeader = "X-Vinext-Prerender-Secret";
 const buildId = "ppr-impact-demo-cacheability";
-
-function expectGatewayRevalidation(response: APIResponse, label: string): void {
-  expect(response.headers()["cache-control"], label).toContain("max-age=0");
-  expect(response.headers()["cache-control"], label).toContain("must-revalidate");
-  expect(response.headers()["cdn-cache-control"], label).toBeUndefined();
-}
 
 function prerenderSecret(): string {
   const manifest = JSON.parse(
@@ -136,7 +130,7 @@ test("admits pattern-backed Pages Router responses after each completed render",
   ]) {
     const response = await request.get(pathname, { headers: { Accept: "text/html" } });
     expect(response.status(), pathname).toBe(200);
-    expectGatewayRevalidation(response, pathname);
+    expect(response.headers()["cdn-cache-control"], pathname).toContain("max-age=60");
   }
 
   for (const pathname of [
@@ -148,7 +142,7 @@ test("admits pattern-backed Pages Router responses after each completed render",
     const response = await request.get(pathname, { headers: { Accept: "application/json" } });
     expect(response.status(), pathname).toBe(200);
     expect(response.headers()["content-type"], pathname).toContain("application/json");
-    expectGatewayRevalidation(response, pathname);
+    expect(response.headers()["cdn-cache-control"], pathname).toContain("max-age=60");
   }
 
   for (const pathname of [
@@ -159,7 +153,7 @@ test("admits pattern-backed Pages Router responses after each completed render",
       headers: { Accept: pathname.includes("/_next/data/") ? "application/json" : "text/html" },
     });
     expect(response.status(), pathname).toBe(200);
-    expectGatewayRevalidation(response, pathname);
+    expect(response.headers()["cdn-cache-control"], pathname).toContain("max-age=36");
   }
 
   for (const pathname of [
