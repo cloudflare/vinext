@@ -144,6 +144,7 @@ describe("response-stage cacheability", () => {
         rawManifest: null,
         registerCacheAdapters: registerAdapter,
         request: new Request("https://example.com/page"),
+        resolvedRoutePathname: "/resolved/page",
       },
       async (context) => {
         markRenderStarted();
@@ -163,6 +164,7 @@ describe("response-stage cacheability", () => {
     const response = await responsePromise;
     await expect(response.json()).resolves.toMatchObject({
       kind: "app-page",
+      routePathname: "/resolved/page",
       state: "static-candidate",
     });
   });

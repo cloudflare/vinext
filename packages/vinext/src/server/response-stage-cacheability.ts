@@ -42,6 +42,7 @@ export async function withResponseStageCacheability(
       context,
       options.probeMode,
       adapter.responseVary,
+      options.resolvedRoutePathname,
     );
     if (options.policyHeadersAppliedBeforeRender) {
       cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);

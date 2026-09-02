@@ -51,6 +51,8 @@ type CacheabilityProbeResult = {
   reason?: string;
   /** The renderer itself completed with a reusable static policy. */
   rendererStatic?: boolean;
+  /** Concrete pathname resolved by request-stage routing before rendering. */
+  routePathname?: string;
   scope?: "identity" | "pattern";
   state: CacheabilityProbeRouteState;
   status: number;
@@ -138,12 +140,14 @@ export function createWorkerCacheabilityProbeContext(
   base: ExecutionContextLike,
   mode: WorkerCacheabilityProbeMode,
   responseVary?: "verbatim",
+  resolvedRoutePathname?: string,
 ): ExecutionContextLike {
   const state: RouteCacheabilityState = {
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode,
     responsePolicyHeaderNames: [...getCdnResponsePolicyHeaderNames()],
     responseVary,
+    resolvedRoutePathname,
   };
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
     [CACHEABILITY_REQUEST_STATE]: state,
@@ -288,6 +292,7 @@ function probeResponse(
     pattern: state.route?.pattern,
     reason: outcome.reason,
     ...(rendererStatic !== undefined ? { rendererStatic } : {}),
+    ...(state.resolvedRoutePathname ? { routePathname: state.resolvedRoutePathname } : {}),
     ...(routeState === "dynamic"
       ? { scope: state.patternDynamicReason ? ("pattern" as const) : ("identity" as const) }
       : {}),

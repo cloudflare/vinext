@@ -42,6 +42,8 @@ export type RouteCacheabilityState = {
   preserveResponseCachePolicy?: boolean;
   /** Cache-key behavior declared by the active CDN adapter. */
   responseVary?: "verbatim";
+  /** Concrete pathname resolved by the trusted request stage before rendering. */
+  resolvedRoutePathname?: string;
   /** Lowercase cache-policy names owned by core and the active CDN adapter. */
   responsePolicyHeaderNames?: readonly string[];
   probeBailout?: {
