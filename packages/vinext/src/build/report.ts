@@ -218,9 +218,9 @@ function memberExpressionMatches(value: unknown, objectName: string, memberName:
  * Pages `_document` uses this to keep a custom `getInitialProps` implementation
  * out of request-independent response caches. Direct class members, assignments,
  * `Object.assign`, and `Object.defineProperty` are recognized. Imported or
- * re-exported defaults and wrapped variable initializers are treated
- * conservatively because their implementation is outside the source form being
- * classified.
+ * re-exported defaults, wrapped variable initializers, aliases, and calls that
+ * receive the default binding are treated conservatively because their runtime
+ * mutation is outside the source form being classified.
  */
 export function defaultExportMayHaveRuntimeMember(code: string, memberName: string): boolean {
   const program = parseRouteModule(code);
@@ -288,6 +288,12 @@ export function defaultExportMayHaveRuntimeMember(code: string, memberName: stri
     }
     if (declaration?.type === "VariableDeclaration") {
       for (const variable of declaration.declarations) {
+        if (
+          bindingName(variable.id) !== defaultBinding &&
+          astPropertyName(variable.init) === defaultBinding
+        ) {
+          return true;
+        }
         if (bindingName(variable.id) !== defaultBinding) continue;
         foundLocalDeclaration = true;
         if (
@@ -320,18 +326,33 @@ export function defaultExportMayHaveRuntimeMember(code: string, memberName: stri
     const callee = expression.callee;
     const isObjectAssign = memberExpressionMatches(callee, "Object", "assign");
     const isObjectDefineProperty = memberExpressionMatches(callee, "Object", "defineProperty");
-    if (!isObjectAssign && !isObjectDefineProperty) continue;
+    const receivesDefaultBinding = expression.arguments.some(
+      (argument) => astPropertyName(argument) === defaultBinding,
+    );
+    if (!isObjectAssign && !isObjectDefineProperty) {
+      if (receivesDefaultBinding) return true;
+      continue;
+    }
     if (astPropertyName(expression.arguments[0]) !== defaultBinding) continue;
-    if (isObjectDefineProperty && astPropertyName(expression.arguments[1]) === memberName) {
-      return true;
+    if (isObjectDefineProperty) {
+      const property = expression.arguments[1];
+      if (astNodeField(property, "type") !== "Literal") return true;
+      if (astPropertyName(property) === memberName) return true;
+      continue;
     }
     if (isObjectAssign) {
-      const properties = astNodeField(expression.arguments[1], "properties");
-      if (
-        Array.isArray(properties) &&
-        properties.some((property) => astPropertyName(astNodeField(property, "key")) === memberName)
-      ) {
-        return true;
+      for (const source of expression.arguments.slice(1)) {
+        const properties = astNodeField(source, "properties");
+        if (!Array.isArray(properties)) return true;
+        for (const property of properties) {
+          if (
+            astNodeField(property, "type") === "SpreadElement" ||
+            astNodeField(property, "computed") === true ||
+            astPropertyName(astNodeField(property, "key")) === memberName
+          ) {
+            return true;
+          }
+        }
       }
     }
   }
