@@ -105,7 +105,7 @@ export function finalizePagesPreviewResponse(
 ): Response {
   if (preview.data === false && !preview.shouldClear) return response;
   const headers = new Headers(response.headers);
-  if (preview.data !== false) {
+  if (preview.data !== false || preview.shouldClear) {
     applyCdnResponseHeaders(headers, { cacheControl: PAGES_PREVIEW_CACHE_CONTROL });
   }
   if (preview.shouldClear) appendPagesPreviewClearCookies(headers);

@@ -775,6 +775,23 @@ describe("createPagesPageHandler — preview responses", () => {
     expect(response.headers.get("x-example-cache-tag")).toBe("draft-404");
   });
 
+  it("keeps invalid preview-cookie cleanup private", () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = finalizePagesPreviewResponse(
+      new Response("stale preview", {
+        headers: {
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "CDN-Cache-Control": "public, s-maxage=60",
+        },
+      }),
+      { data: false, shouldClear: true },
+    );
+
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.getSetCookie()).toHaveLength(2);
+  });
+
   it("does not expose preview notFound responses to shared Cloudflare caching", async () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const pageRoute = makeRoute(
