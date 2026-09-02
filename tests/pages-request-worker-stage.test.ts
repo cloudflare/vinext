@@ -27,6 +27,11 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  getDataCacheHandler,
+  registerDataCacheHandler,
+  type CacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
 
 const mocks = vi.hoisted(() => ({
   authorizeOnDemandRevalidate: vi.fn<(value: string | null) => boolean>(() => false),
@@ -48,6 +53,7 @@ const mocks = vi.hoisted(() => ({
     },
   })),
   registerCacheAdapters: vi.fn(),
+  registerAllCacheAdapters: vi.fn(),
   registerImageOptimizer: vi.fn(),
   renderResponse: vi.fn(),
   normalizeDataRequest: vi.fn((request: Request) => ({
@@ -66,11 +72,12 @@ function cacheabilityContext(state: RouteCacheabilityState): ExecutionContextLik
 }
 
 vi.mock("virtual:vinext-cdn-cache-adapter", () => ({
+  hasConfiguredDataCache: true,
   registerConfiguredCacheAdapters: mocks.registerCacheAdapters,
 }));
 
 vi.mock("virtual:vinext-cache-adapters", () => ({
-  registerConfiguredCacheAdapters: mocks.registerCacheAdapters,
+  registerConfiguredCacheAdapters: mocks.registerAllCacheAdapters,
 }));
 
 vi.mock("virtual:vinext-image-adapters", () => ({
@@ -102,6 +109,15 @@ vi.mock("../packages/vinext/src/server/pages-response-stage-entry.js", () => ({
 
 describe("Pages Worker request stage", () => {
   beforeEach(() => {
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    for (const key of [
+      Symbol.for("vinext.cacheHandler"),
+      Symbol.for("vinext.configuredCacheHandler"),
+      Symbol.for("vinext.explicitCacheHandler"),
+      Symbol.for("vinext.lazyCacheHandler"),
+    ]) {
+      delete globals[key];
+    }
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     mocks.authorizeOnDemandRevalidate.mockReset();
     mocks.authorizeOnDemandRevalidate.mockReturnValue(false);
@@ -114,6 +130,7 @@ describe("Pages Worker request stage", () => {
         : null,
     );
     mocks.registerCacheAdapters.mockReset();
+    mocks.registerAllCacheAdapters.mockReset();
     mocks.registerImageOptimizer.mockReset();
     mocks.renderResponse.mockReset();
     mocks.renderResponse.mockResolvedValue(new Response("local"));
@@ -126,6 +143,35 @@ describe("Pages Worker request stage", () => {
     }));
     mocks.runMiddleware.mockReset();
     mocks.runMiddleware.mockResolvedValue({ continue: true });
+  });
+
+  it("loads the configured data adapter only when middleware uses the data cache", async () => {
+    const get = vi.fn(async () => null);
+    const configured: CacheHandler = {
+      get,
+      async set() {},
+      async revalidateTag() {},
+    };
+    mocks.registerAllCacheAdapters.mockImplementation(() =>
+      registerDataCacheHandler(() => configured),
+    );
+    mocks.runMiddleware.mockImplementation(async () => {
+      await getDataCacheHandler().get("middleware-key");
+      return { continue: false, response: new Response("terminal middleware") };
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>();
+
+    const response = await handleRequestStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(await response.text()).toBe("terminal middleware");
+    expect(mocks.registerAllCacheAdapters).toHaveBeenCalledOnce();
+    expect(get).toHaveBeenCalledWith("middleware-key", undefined);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it("dispatches an ordinary page with a versioned build envelope", async () => {
