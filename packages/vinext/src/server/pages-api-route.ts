@@ -187,10 +187,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
           if (name.toLowerCase() !== "set-cookie") headers.set(name, value);
         }
         const finalizedCookies = finalized.headers.getSetCookie();
-        if (finalizedCookies.length > 0) {
-          headers.delete("Set-Cookie");
-          for (const cookie of finalizedCookies) headers.append("Set-Cookie", cookie);
-        }
+        for (const cookie of finalizedCookies) headers.append("Set-Cookie", cookie);
         return new Response(finalized.body, {
           headers,
           status: finalized.status,
