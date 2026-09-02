@@ -66,6 +66,11 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  markEdgeRouteHandlerLinkHeaders,
+  markFrameworkLinkHeaders,
+  serializeResponseStageLinkProvenance,
+} from "../packages/vinext/src/server/app-response-header-provenance.js";
 
 type TestRoute = {
   __loadPage?: unknown;
@@ -249,6 +254,85 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("x-test-header")).toBe("applied");
     expect(response.headers.get("x-response-stage")).toBe("yes");
     expect(await response.text()).toBe("response-stage");
+  });
+
+  it("preserves staged config Link ordering before framework preloads", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () => {
+      const response = new Response("response-stage", {
+        headers: { Link: '</framework.woff2>; rel="preload"; as="font"' },
+      });
+      markFrameworkLinkHeaders(response.headers, response.headers.get("link"));
+      return serializeResponseStageLinkProvenance(response);
+    });
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(response.headers.get("link")).toBe(
+      '</config>; rel="describedby", </framework.woff2>; rel="preload"; as="font"',
+    );
+    expect(response.headers.has("x-vinext-app-stage-post-config-link")).toBe(false);
+  });
+
+  it("preserves staged middleware Link ordering before Edge handler links", async () => {
+    const route = createPageRoute({
+      __loadPage: undefined,
+      __loadRouteHandler() {},
+      page: null,
+      pattern: "/route",
+      routeHandler: { GET: () => new Response("get"), runtime: "edge" },
+      routeSegments: ["route"],
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () => {
+      const response = new Response("response-stage", {
+        headers: { Link: '</edge-route>; rel="alternate"' },
+      });
+      markEdgeRouteHandlerLinkHeaders(response.headers, response.headers.get("link"));
+      return serializeResponseStageLinkProvenance(response);
+    });
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/route",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      matchRoute: (pathname) => (pathname === "/route" ? { params: {}, route } : null),
+      middlewareModule: {
+        default() {
+          return new Response(null, {
+            headers: {
+              Link: '</middleware>; rel="preload"',
+              "x-middleware-next": "1",
+            },
+          });
+        },
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/route"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(response.headers.get("link")).toBe(
+      '</middleware>; rel="preload", </edge-route>; rel="alternate"',
+    );
+    expect(response.headers.has("x-vinext-app-stage-post-config-link")).toBe(false);
   });
 
   it("shares the method-invariant App page representation for HEAD and strips its body", async () => {
@@ -466,8 +550,8 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
       ["Cache-Control", "public, s-maxage=60"],
       ["CDN-Cache-Control", "public, s-maxage=120"],
-      ["Vary", "x-visitor"],
     ]);
+    expect(response.headers.get("Vary")).toContain("x-visitor");
     expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
     expect(state.forcedDynamicReason).toBeUndefined();
   });
@@ -517,7 +601,6 @@ describe("createAppRscHandler", () => {
         policyHeaders: [
           ["Cache-Control", "public, s-maxage=36"],
           ["CDN-Cache-Control", "public, s-maxage=120"],
-          ["Vary", "x-visitor"],
         ],
       },
       preHandlerHeaders: [
@@ -1110,9 +1193,7 @@ describe("createAppRscHandler", () => {
 
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
-    expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
-      ["Vary", "Cookie"],
-    ]);
+    expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toBeNull();
     expect(state.forcedDynamicReason).toBeUndefined();
     expect(response.headers.get("Vary")).toContain("Cookie");
     expect(await response.text()).toBe("shared-stage");
