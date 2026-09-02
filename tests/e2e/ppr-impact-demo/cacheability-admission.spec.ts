@@ -189,7 +189,12 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   const certifiedRouteHandler = await request.get("/cacheability/route-handler-static");
   expect(certifiedRouteHandler.status()).toBe(200);
   await expect(certifiedRouteHandler.json()).resolves.toEqual({ kind: "static-route-handler" });
-  expectGatewayCachePolicy(certifiedRouteHandler);
+  // Tagged Workers Cache entries must use one stable Vary shape. Preserve the
+  // handler's custom variant response, but do not admit it under shared tags.
+  expect(certifiedRouteHandler.headers()["cache-control"]).toContain("no-store");
+  expect(certifiedRouteHandler.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(certifiedRouteHandler.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  expect(certifiedRouteHandler.headers()["cache-tag"]).toBeUndefined();
   expect(certifiedRouteHandler.headers()["vary"]?.toLowerCase()).toContain("user-agent");
 
   const largeRouteHandler = await request.get("/cacheability/route-handler-large");
@@ -215,7 +220,10 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
     "/cacheability/route-handler-static?user=one",
   );
   expect(unlistedRouteHandlerQuery.status()).toBe(200);
-  expectGatewayCachePolicy(unlistedRouteHandlerQuery);
+  expect(unlistedRouteHandlerQuery.headers()["cache-control"]).toContain("no-store");
+  expect(unlistedRouteHandlerQuery.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(unlistedRouteHandlerQuery.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
+  expect(unlistedRouteHandlerQuery.headers()["cache-tag"]).toBeUndefined();
 
   // Next.js does not statically generate a GET+POST Route Handler, so this
   // route is intentionally absent from the probe manifest. Its handler-owned
