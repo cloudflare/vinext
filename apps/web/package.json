@@ -36,7 +36,6 @@
     "@vitejs/plugin-rsc": "catalog:",
     "drizzle-kit": "catalog:",
     "postcss": "catalog:",
-    "react-server-dom-webpack": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",

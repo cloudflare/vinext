@@ -1,9 +1,54 @@
+import fs from "node:fs";
+import path from "node:path";
 import { test, expect } from "@playwright/test";
 import { disableDevErrorOverlay, waitForAppRouterHydration } from "../helpers";
 
 const BASE = "http://localhost:4174";
+const APP_FIXTURE = path.resolve(process.cwd(), "tests/fixtures/app-basic");
 
 test.describe("App Router navigation flows", () => {
+  test("uses plugin-rsc's vendored Flight runtime without a direct RSDW dependency", async ({
+    page,
+    request,
+  }) => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(APP_FIXTURE, "package.json"), "utf8"));
+    expect(manifest.dependencies).not.toHaveProperty("react-server-dom-webpack");
+    expect(fs.existsSync(path.join(APP_FIXTURE, "node_modules/react-server-dom-webpack"))).toBe(
+      false,
+    );
+
+    const vendoredRuntime = JSON.parse(
+      fs.readFileSync(
+        path.join(
+          APP_FIXTURE,
+          "node_modules/@vitejs/plugin-rsc/dist/vendor/react-server-dom/package.json",
+        ),
+        "utf8",
+      ),
+    );
+    const react = JSON.parse(
+      fs.readFileSync(path.join(APP_FIXTURE, "node_modules/react/package.json"), "utf8"),
+    );
+    expect(vendoredRuntime.version).toBe(react.version);
+
+    await page.goto(`${BASE}/`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      Reflect.set(window, "__VINEXT_VENDORED_RSC_CANARY__", true);
+    });
+    await page.click('a[href="/about"]');
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(await page.evaluate(() => Reflect.get(window, "__VINEXT_VENDORED_RSC_CANARY__"))).toBe(
+      true,
+    );
+
+    const flight = await request.get(`${BASE}/blog/vendored-runtime.rsc`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(flight.status()).toBe(200);
+    expect(await flight.text()).toContain("vendored-runtime");
+  });
+
   test("multi-page navigation chain without reload", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");

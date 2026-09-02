@@ -509,12 +509,11 @@ fs.writeFileSync(
 pkg.devDependencies = pkg.devDependencies || {}
 pkg.devDependencies.vinext = 'file:.vinext-local-package'
 
-// App Router fixtures need React to satisfy the same peer range as the
-// injected react-server-dom-webpack. If they install an older React pair first,
-// `vinext build` runs its RSC compatibility upgrade and pays for a second
-// package-manager install inside every throwaway test app. Normalize the temp
-// manifest before the first install so the final dependency graph is unchanged
-// but setup is single-pass.
+// App Router fixtures need React to match plugin-rsc's vendored Flight runtime.
+// If they install an older React pair first, `vinext build` runs its RSC
+// compatibility upgrade and pays for a second package-manager install inside
+// every throwaway test app. Normalize the temp manifest before the first install
+// so the final dependency graph is unchanged but setup is single-pass.
 function hasAppRouterDir(root) {
   return fs.existsSync(path.join(root, 'app')) || fs.existsSync(path.join(root, 'src', 'app'))
 }
@@ -575,7 +574,6 @@ for (const dep of [
   'vite',
   '@vitejs/plugin-react',
   '@vitejs/plugin-rsc',
-  'react-server-dom-webpack',
   '@mdx-js/rollup',
   '@mdx-js/react',
   'ipaddr.js',

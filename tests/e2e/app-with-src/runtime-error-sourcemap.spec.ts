@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const BASE = "http://localhost:4181";
+const BASE = `http://localhost:${process.env.VINEXT_APP_WITH_SRC_PORT ?? 4181}`;
 // Keep in sync with the throw in source-mapped-runtime-error.tsx.
 const EXPECTED_THROW_LINE = 33;
 

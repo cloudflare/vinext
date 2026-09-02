@@ -373,13 +373,13 @@ describe("addScripts", () => {
 // ─── Unit Tests: getInitDeps / isDepInstalled ────────────────────────────────
 
 describe("getInitDeps", () => {
-  it("returns vinext + vite + @vitejs/plugin-react + App Router deps for App Router", () => {
+  it("uses plugin-rsc's vendored Flight runtime for App Router by default", () => {
     const deps = getInitDeps(true, "cloudflare");
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
     expect(deps).toContain("@vitejs/plugin-react");
     expect(deps).toContain("@vitejs/plugin-rsc");
-    expect(deps).toContain("react-server-dom-webpack");
+    expect(deps).not.toContain("react-server-dom-webpack");
   });
 
   it("returns vinext + vite + @vitejs/plugin-react for Pages Router", () => {
@@ -416,21 +416,139 @@ function setupFakeReact(dir: string, version: string): void {
   fs.writeFileSync(path.join(reactDir, "index.js"), "");
 }
 
+function setupFakeReactDom(dir: string, version: string): void {
+  const reactDomDir = path.join(dir, "node_modules", "react-dom");
+  fs.mkdirSync(reactDomDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(reactDomDir, "package.json"),
+    JSON.stringify({ name: "react-dom", version, main: "index.js" }),
+  );
+  fs.writeFileSync(path.join(reactDomDir, "index.js"), "");
+}
+
+function setupFakePluginRscVendor(dir: string, version: string): void {
+  const pluginDir = path.join(dir, "node_modules", "@vitejs", "plugin-rsc");
+  const vendorDir = path.join(pluginDir, "dist", "vendor", "react-server-dom");
+  fs.mkdirSync(vendorDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(pluginDir, "package.json"),
+    JSON.stringify({
+      name: "@vitejs/plugin-rsc",
+      version: "0.0.0-test",
+      exports: { "./*": "./dist/*.js" },
+    }),
+  );
+  fs.writeFileSync(path.join(vendorDir, "client.browser.js"), "");
+  fs.writeFileSync(
+    path.join(vendorDir, "package.json"),
+    JSON.stringify({ name: "react-server-dom-webpack", version }),
+  );
+}
+
+function setupFakeRsdw(
+  dir: string,
+  version: string,
+  {
+    declared = true,
+    section = "dependencies",
+  }: {
+    declared?: boolean;
+    section?: "dependencies" | "devDependencies" | "optionalDependencies" | "peerDependencies";
+  } = {},
+): void {
+  const rsdwDir = path.join(dir, "node_modules", "react-server-dom-webpack");
+  fs.mkdirSync(rsdwDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(rsdwDir, "package.json"),
+    JSON.stringify({ name: "react-server-dom-webpack", version, main: "index.js" }),
+  );
+  fs.writeFileSync(path.join(rsdwDir, "index.js"), "");
+  if (declared) {
+    const packagePath = path.join(dir, "package.json");
+    const pkg = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    pkg[section] ??= {};
+    pkg[section]["react-server-dom-webpack"] = version;
+    fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
+  }
+}
+
 describe("getReactUpgradeDeps", () => {
-  it("returns react@latest + react-dom@latest when React is below the RSDW security floor", () => {
+  it("allows matching React 19.2.7 and RSDW overrides through vinext's peer range", () => {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.resolve(import.meta.dirname, "../packages/vinext/package.json"), "utf8"),
+    );
+    const expectedRange = "^19.2.6 || >=19.3.0-0 <19.4.0 || >=0.0.0-0 <0.0.1";
+
+    expect(pkg.peerDependencies.react).toBe(expectedRange);
+    expect(pkg.peerDependencies["react-dom"]).toBe(expectedRange);
+  });
+
+  it("returns react@latest + react-dom@latest when React is below the vendored RSC runtime", () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.5");
+    setupFakeReact(tmpDir, "19.2.7");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual(["react@latest", "react-dom@latest"]);
   });
 
+  it("uses the minimum vendor floor when plugin-rsc is not installed yet", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.7");
+
+    // null models a published vinext install where the optional plugin cannot
+    // resolve; the source workspace's devDependency must not satisfy this test.
+    const deps = getReactUpgradeDeps(tmpDir, null);
+    expect(deps).toEqual(["react@latest", "react-dom@latest"]);
+  });
+
   it("returns empty array when React is new enough", () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.6");
+    setupFakeReact(tmpDir, "19.2.8");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual([]);
+  });
+
+  it("aligns ReactDOM with React when only ReactDOM is below the vendored runtime", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.8");
+    setupFakeReactDom(tmpDir, "19.2.7");
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react-dom@19.2.8"]);
+  });
+
+  it("aligns stable ReactDOM to a newer React patch", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.9");
+    setupFakeReactDom(tmpDir, "19.2.8");
+
+    expect(getReactUpgradeDeps(tmpDir)).toEqual(["react-dom@19.2.9"]);
+  });
+
+  it("aligns stable React to a newer ReactDOM patch", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.8");
+    setupFakeReactDom(tmpDir, "19.2.9");
+
+    expect(getReactUpgradeDeps(tmpDir)).toEqual(["react@19.2.9"]);
+  });
+
+  it("upgrades both mismatched stable packages when both remain below the vendor floor", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.7");
+    setupFakeReactDom(tmpDir, "19.2.6");
+
+    expect(getReactUpgradeDeps(tmpDir)).toEqual(["react@latest", "react-dom@latest"]);
+  });
+
+  it("reads the compatibility floor from the installed plugin-rsc vendor", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.8");
+    setupFakeReactDom(tmpDir, "19.2.8");
+    setupFakePluginRscVendor(tmpDir, "19.2.9");
+
+    expect(getReactUpgradeDeps(tmpDir)).toEqual(["react@latest", "react-dom@latest"]);
   });
 
   it("returns empty array when React is a newer minor version", () => {
@@ -441,6 +559,119 @@ describe("getReactUpgradeDeps", () => {
     expect(deps).toEqual([]);
   });
 
+  it("requires an exact RSDW override for prerelease React", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.3.0-canary-test");
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react-server-dom-webpack@19.3.0-canary-test"]);
+  });
+
+  it("aligns mismatched prerelease React and ReactDOM with the exact RSDW override", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.3.0-canary-react");
+    setupFakeReactDom(tmpDir, "19.3.0-canary-react-dom");
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual([
+      "react@19.3.0-canary-react",
+      "react-dom@19.3.0-canary-react",
+      "react-server-dom-webpack@19.3.0-canary-react",
+    ]);
+  });
+
+  it("preserves an explicitly installed experimental React and RSDW pair", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "0.0.0-experimental-test");
+    setupFakeReactDom(tmpDir, "0.0.0-experimental-test");
+    setupFakeRsdw(tmpDir, "0.0.0-experimental-test");
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual([]);
+  });
+
+  it("preserves an explicitly installed stable RSDW override", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.7");
+    setupFakeReactDom(tmpDir, "19.2.7");
+    setupFakeRsdw(tmpDir, "19.2.7");
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual([]);
+  });
+
+  it("reinstalls an explicit RSDW override shadowed by optionalDependencies", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.7");
+    setupFakeReactDom(tmpDir, "19.2.7");
+    setupFakeRsdw(tmpDir, "19.2.7");
+    const packagePath = path.join(tmpDir, "package.json");
+    const pkg = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+    pkg.optionalDependencies = { "react-server-dom-webpack": "19.2.7" };
+    fs.writeFileSync(packagePath, `${JSON.stringify(pkg, null, 2)}\n`);
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react-server-dom-webpack@19.2.7"]);
+  });
+
+  it("aligns an explicit stable override with incompatible installed React packages", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "18.3.1");
+    setupFakeReactDom(tmpDir, "18.3.1");
+    setupFakeRsdw(tmpDir, "19.2.8");
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react@19.2.8", "react-dom@19.2.8"]);
+  });
+
+  it("aligns an explicit override with a different installed canary pair", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.3.0-canary-react");
+    setupFakeReactDom(tmpDir, "19.3.0-canary-react");
+    setupFakeRsdw(tmpDir, "19.3.0-canary-rsdw");
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react@19.3.0-canary-rsdw", "react-dom@19.3.0-canary-rsdw"]);
+  });
+
+  it("installs an explicitly declared but missing RSDW override", () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: {
+        dependencies: {
+          react: "19.2.8",
+          "react-dom": "19.2.8",
+          "react-server-dom-webpack": "19.2.8",
+        },
+      },
+    });
+    setupFakeReact(tmpDir, "19.2.8");
+    setupFakeReactDom(tmpDir, "19.2.8");
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react-server-dom-webpack@19.2.8"]);
+  });
+
+  it("does not treat an undeclared hoisted RSDW package as an explicit override", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.7");
+    setupFakeRsdw(tmpDir, "19.2.7", { declared: false });
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react@latest", "react-dom@latest"]);
+  });
+
+  for (const section of ["optionalDependencies", "peerDependencies"] as const) {
+    it(`does not treat an RSDW ${section} declaration as a plugin-rsc override`, () => {
+      setupProject(tmpDir, { router: "app" });
+      setupFakeReact(tmpDir, "19.2.7");
+      setupFakeRsdw(tmpDir, "19.2.7", { section });
+
+      const deps = getReactUpgradeDeps(tmpDir);
+      expect(deps).toEqual(["react@latest", "react-dom@latest"]);
+    });
+  }
+
   it("returns upgrade deps when React major is below 19", () => {
     setupProject(tmpDir, { router: "app" });
     setupFakeReact(tmpDir, "18.3.1");
@@ -449,10 +680,35 @@ describe("getReactUpgradeDeps", () => {
     expect(deps).toEqual(["react@latest", "react-dom@latest"]);
   });
 
-  it("returns empty array when node_modules/react does not exist", () => {
+  it("returns empty array when node_modules and exact manifest versions do not exist", () => {
     setupProject(tmpDir, { router: "app" });
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual([]);
+  });
+
+  it("uses exact stable manifest versions when node_modules does not exist", () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: { dependencies: { react: "19.2.7", "react-dom": "19.2.7" } },
+    });
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react@latest", "react-dom@latest"]);
+  });
+
+  it("uses exact canary manifest versions when node_modules does not exist", () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: {
+        dependencies: {
+          react: "19.3.0-canary-test",
+          "react-dom": "19.3.0-canary-test",
+        },
+      },
+    });
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react-server-dom-webpack@19.3.0-canary-test"]);
   });
 });
 
@@ -1159,10 +1415,9 @@ describe("init — dependency installation", () => {
       },
     });
 
-    expect(
-      commands.some((cmd) => cmd.includes("react-server-dom-webpack") && !cmd.includes("-D")),
-    ).toBe(true);
-    expect(result.installedDeps).toContain("react-server-dom-webpack");
+    expect(commands.some((cmd) => cmd.includes("vinext") && !cmd.includes("-D"))).toBe(true);
+    expect(commands.some((cmd) => cmd.includes("react-server-dom-webpack"))).toBe(false);
+    expect(result.installedDeps).not.toContain("react-server-dom-webpack");
     expect(output).toContain("pnpm approve-builds");
   });
 
@@ -1204,16 +1459,16 @@ describe("init — dependency installation", () => {
 
     expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
-    expect(result.installedDeps).toContain("react-server-dom-webpack");
+    expect(result.installedDeps).not.toContain("react-server-dom-webpack");
   });
 
-  it("detects missing react-server-dom-webpack for App Router", async () => {
+  it("does not require react-server-dom-webpack for App Router", async () => {
     setupProject(tmpDir, { router: "app" });
 
     const { result } = await runInit(tmpDir);
 
     expect(result.installedDeps).toContain("@vitejs/plugin-react");
-    expect(result.installedDeps).toContain("react-server-dom-webpack");
+    expect(result.installedDeps).not.toContain("react-server-dom-webpack");
   });
 
   it("does not require @vitejs/plugin-rsc for Pages Router", async () => {
@@ -1234,7 +1489,7 @@ describe("init — dependency installation", () => {
     expect(result.installedDeps).not.toContain("react-server-dom-webpack");
   });
 
-  it("upgrades React before installing dev deps when React is too old (App Router)", async () => {
+  it("installs plugin-rsc before upgrading React to its vendored floor", async () => {
     setupProject(tmpDir, { router: "app" });
     setupFakeReact(tmpDir, "19.2.3");
 
@@ -1248,32 +1503,37 @@ describe("init — dependency installation", () => {
     // The React upgrade should NOT use -D flag (keeps them in dependencies)
     expect(reactUpgradeCall!.cmd).not.toContain("-D");
 
-    // The second exec call should install runtime framework deps (without -D).
+    // The runtime framework deps still install without -D.
     const runtimeDepsCall = execCalls.find(
-      (c) => c.cmd.includes("react-server-dom-webpack") && !c.cmd.includes("-D"),
+      (c) =>
+        c.cmd.includes("vinext") && c.cmd.includes("@vinext/cloudflare") && !c.cmd.includes("-D"),
     );
     expect(runtimeDepsCall).toBeDefined();
 
     // The dev deps install should still use -D.
-    const devDepsCall = execCalls.find(
-      (c) =>
-        c.cmd.includes("@vitejs/plugin-react") &&
-        c.cmd.includes("@vitejs/plugin-rsc") &&
-        c.cmd.includes("-D"),
+    const pluginRscCall = execCalls.find(
+      (c) => c.cmd.includes("@vitejs/plugin-rsc") && c.cmd.includes("-D"),
     );
+    const devDepsCall = execCalls.find(
+      (c) => c.cmd.includes("@vitejs/plugin-react") && c.cmd.includes("-D"),
+    );
+    expect(pluginRscCall).toBeDefined();
     expect(devDepsCall).toBeDefined();
 
-    // React upgrade should come before framework deps that peer on React.
+    // The active vendor is installed before validation, then runtime and
+    // remaining development dependencies follow the compatibility update.
+    const pluginRscIdx = execCalls.indexOf(pluginRscCall!);
     const upgradeIdx = execCalls.indexOf(reactUpgradeCall!);
     const runtimeDepsIdx = execCalls.indexOf(runtimeDepsCall!);
     const devDepsIdx = execCalls.indexOf(devDepsCall!);
+    expect(pluginRscIdx).toBeLessThan(upgradeIdx);
     expect(upgradeIdx).toBeLessThan(runtimeDepsIdx);
     expect(runtimeDepsIdx).toBeLessThan(devDepsIdx);
   });
 
   it("does not upgrade React when version is already compatible", async () => {
     setupProject(tmpDir, { router: "app" });
-    setupFakeReact(tmpDir, "19.2.6");
+    setupFakeReact(tmpDir, "19.2.8");
 
     const { execCalls } = await runInit(tmpDir);
 
@@ -1281,6 +1541,52 @@ describe("init — dependency installation", () => {
     const reactUpgradeCall = execCalls.find((c) => c.cmd.includes("react@latest"));
     expect(reactUpgradeCall).toBeUndefined();
   });
+
+  it("installs plugin-rsc before reading its vendored React floor", async () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.8");
+    setupFakeReactDom(tmpDir, "19.2.8");
+    const commands: string[] = [];
+
+    await runInit(tmpDir, {
+      _exec: (command) => {
+        commands.push(command);
+        if (command.includes("@vitejs/plugin-rsc")) {
+          setupFakePluginRscVendor(tmpDir, "19.2.9");
+        }
+      },
+    });
+    const pluginInstallIndex = commands.findIndex((command) =>
+      command.includes("@vitejs/plugin-rsc"),
+    );
+    const reactUpgradeIndex = commands.findIndex(
+      (command) => command.includes("react@latest") && command.includes("react-dom@latest"),
+    );
+
+    expect(pluginInstallIndex).toBeGreaterThanOrEqual(0);
+    expect(reactUpgradeIndex).toBeGreaterThan(pluginInstallIndex);
+  });
+
+  for (const section of ["optionalDependencies", "peerDependencies"] as const) {
+    it(`forces a prerelease RSDW ${section} declaration into npm dependencies`, async () => {
+      setupProject(tmpDir, {
+        router: "app",
+        extraPkg: {
+          [section]: { "react-server-dom-webpack": "19.3.0-canary-test" },
+        },
+      });
+      setupFakeReact(tmpDir, "19.3.0-canary-test");
+
+      const { execCalls } = await runInit(tmpDir);
+      const compatibilityInstall = execCalls.find((call) =>
+        call.cmd.includes("react-server-dom-webpack@19.3.0-canary-test"),
+      );
+
+      expect(compatibilityInstall?.cmd).toBe(
+        "npm install --save-prod react-server-dom-webpack@19.3.0-canary-test",
+      );
+    });
+  }
 
   function withUserAgent<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
     const previous = process.env.npm_config_user_agent;
@@ -1324,9 +1630,9 @@ describe("init — dependency installation", () => {
     expect(execCalls).toEqual([]);
     expect(pkg.dependencies).toMatchObject({
       vinext: "latest",
-      "react-server-dom-webpack": "latest",
       "@vinext/cloudflare": "latest",
     });
+    expect(pkg.dependencies).not.toHaveProperty("react-server-dom-webpack");
     expect(pkg.devDependencies).toMatchObject({
       vite: "latest",
       "@vitejs/plugin-react": "latest",
@@ -1353,6 +1659,101 @@ describe("init — dependency installation", () => {
     expect(output).toContain(
       "Added dependencies to dependencies:\n      - react\n      - react-dom",
     );
+  });
+
+  it("updates exact old React manifest entries without node_modules or installing", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: { dependencies: { react: "19.2.7", "react-dom": "19.2.7" } },
+    });
+
+    const { execCalls } = await runInit(tmpDir, { install: false });
+    const pkg = readPkg(tmpDir) as { dependencies?: Record<string, string> };
+
+    expect(execCalls).toEqual([]);
+    expect(pkg.dependencies).toMatchObject({ react: "latest", "react-dom": "latest" });
+  });
+
+  it("adds a matching canary RSDW from exact manifest entries without node_modules", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: {
+        dependencies: {
+          react: "19.3.0-canary-test",
+          "react-dom": "19.3.0-canary-test",
+        },
+      },
+    });
+
+    const { execCalls } = await runInit(tmpDir, { install: false });
+    const pkg = readPkg(tmpDir) as { dependencies?: Record<string, string> };
+
+    expect(execCalls).toEqual([]);
+    expect(pkg.dependencies?.["react-server-dom-webpack"]).toBe("19.3.0-canary-test");
+  });
+
+  it("adds a matching RSDW override for prerelease React without installing", async () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.3.0-canary-test");
+
+    const { result, execCalls } = await runInit(tmpDir, { install: false });
+    const pkg = readPkg(tmpDir) as {
+      dependencies?: Record<string, string>;
+    };
+
+    expect(execCalls).toEqual([]);
+    expect(pkg.dependencies?.["react-server-dom-webpack"]).toBe("19.3.0-canary-test");
+    expect(result.installedDeps).toContain("react-server-dom-webpack");
+  });
+
+  for (const section of ["optionalDependencies", "peerDependencies"] as const) {
+    it(`reclassifies a prerelease RSDW ${section} declaration without installing`, async () => {
+      setupProject(tmpDir, {
+        router: "app",
+        extraPkg: {
+          [section]: { "react-server-dom-webpack": "19.3.0-canary-test" },
+        },
+      });
+      setupFakeReact(tmpDir, "19.3.0-canary-test");
+
+      const { result, execCalls } = await runInit(tmpDir, { install: false });
+      const pkg = readPkg(tmpDir) as {
+        dependencies?: Record<string, string>;
+        optionalDependencies?: Record<string, string>;
+        peerDependencies?: Record<string, string>;
+      };
+
+      expect(execCalls).toEqual([]);
+      expect(pkg.dependencies?.["react-server-dom-webpack"]).toBe("19.3.0-canary-test");
+      expect(pkg[section]).not.toHaveProperty("react-server-dom-webpack");
+      expect(result.installedDeps).toContain("react-server-dom-webpack");
+    });
+  }
+
+  it("removes an optional RSDW declaration shadowing an existing dependency", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: {
+        dependencies: {
+          react: "19.2.7",
+          "react-dom": "19.2.7",
+          "react-server-dom-webpack": "19.2.7",
+        },
+        optionalDependencies: { "react-server-dom-webpack": "19.2.7" },
+      },
+    });
+    setupFakeReact(tmpDir, "19.2.7");
+
+    const { result, execCalls } = await runInit(tmpDir, { install: false });
+    const pkg = readPkg(tmpDir) as {
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
+
+    expect(execCalls).toEqual([]);
+    expect(pkg.dependencies?.["react-server-dom-webpack"]).toBe("19.2.7");
+    expect(pkg.optionalDependencies).not.toHaveProperty("react-server-dom-webpack");
+    expect(result.installedDeps).toContain("react-server-dom-webpack");
   });
 
   it("calls exec with bun when bun.lock exists", async () => {

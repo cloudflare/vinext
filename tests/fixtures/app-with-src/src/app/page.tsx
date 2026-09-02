@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { ActionButton } from "./action-button";
 
 export default function HomePage() {
   return (
@@ -7,6 +8,7 @@ export default function HomePage() {
       <Link href="/dev-overlay-recovery" data-testid="link-to-recovery">
         Recovery
       </Link>
+      <ActionButton />
     </>
   );
 }
