@@ -10,7 +10,7 @@ export { PRERENDER_REVALIDATE_HEADER };
  */
 const DEV_REVALIDATE_SECRET_KEY = Symbol.for("vinext.isrCache.devRevalidateSecret");
 
-function getRevalidateSecret(): string {
+export function getRevalidateSecret(): string {
   const baked = process.env.__VINEXT_REVALIDATE_SECRET;
   if (baked) return baked;
 
@@ -34,7 +34,7 @@ function safeEqual(first: string, second: string): boolean {
   return mismatch === 0;
 }
 
-function isRevalidateSecret(value: string | null | undefined): boolean {
+export function isRevalidateSecret(value: string | null | undefined): boolean {
   if (typeof value !== "string" || value.length === 0) return false;
   return safeEqual(value, getRevalidateSecret());
 }
