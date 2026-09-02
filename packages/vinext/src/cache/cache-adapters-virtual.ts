@@ -14,7 +14,6 @@
  * never touches the Workers runtime — instantiation is deferred to the first
  * request.
  */
-import type { VinextMultiStageOutput } from "../server/multi-stage.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import type { VinextMultiStageOutput } from "../server/multi-stage.js";
 
