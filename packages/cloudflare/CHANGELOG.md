@@ -1,5 +1,46 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.7
+
+### Features
+
+#### Cache
+
+- classify and warm static Route Handlers (#3113)
+- probe Pages Router cacheability (#3098)
+- deploy probed manifests in two stages (#3093)
+
+#### Cloudflare
+
+- configure warmup promotion delay (#3017)
+- allow warmup without promotion (#3016)
+- prewarm canonical ISR RSC requests (#3002)
+
+### Bug Fixes
+
+#### Cloudflare
+
+- finalize CDN version metadata output (#3137)
+- support explicit CDN warm targets (#3138)
+- harden post-deploy readiness checks (#3136)
+- restore web CDN warmup deploy (#3135)
+- classify CDN cacheability per concrete route (#3115)
+- discover prewarm paths from staged worker (#3090)
+- verify Worker version IDs during CDN warmup (#3072)
+- complete warmup response and promotion contracts (#3046)
+- harden canonical RSC warmup end to end (#3040)
+- default CDN warmup concurrency to 25 (#3015)
+
+#### Misc
+
+- **Cache:** certify staged cache fills before promotion (#3094)
+- **Cache:** gate CDN admission on probed routes (#3092)
+- **Build:** validate CDN warm discovery and deploy inputs (#3057)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.6
 
 ### Bug Fixes

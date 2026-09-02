@@ -1,5 +1,46 @@
 # vinext
 
+## 1.0.0-beta.9
+
+### Features
+
+#### Cache
+
+- classify and warm static Route Handlers (#3113)
+- probe Pages Router cacheability (#3098)
+- deploy probed manifests in two stages (#3093)
+- probe App Page cacheability on staged Workers (#3091)
+
+#### Misc
+
+- **Cloudflare:** prewarm canonical ISR RSC requests (#3002)
+
+### Bug Fixes
+
+#### Cloudflare
+
+- finalize CDN version metadata output (#3137)
+- harden post-deploy readiness checks (#3136)
+- classify CDN cacheability per concrete route (#3115)
+- discover prewarm paths from staged worker (#3090)
+- verify Worker version IDs during CDN warmup (#3072)
+- complete warmup response and promotion contracts (#3046)
+- harden canonical RSC warmup end to end (#3040)
+
+#### Misc
+
+- **Cache:** preserve Cache Components ownership during probing (#3103)
+- **Cache:** gate CDN admission on probed routes (#3092)
+- **App Router:** support soft navigation in static exports (#3112)
+- **Build:** support trailing-slash static exports (#3081)
+- **App Router:** validate interception context identity (#3078)
+- **App:** authenticate static file signals (#3077)
+- **Build:** validate CDN warm discovery and deploy inputs (#3057)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.8
 
 ### Features
