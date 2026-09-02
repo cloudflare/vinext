@@ -16,6 +16,7 @@ import {
 import { serializeWorkerCacheabilityProbeRoute } from "../packages/vinext/src/server/cacheability-request.js";
 
 const CAPTURE_RSC_REQUEST = "__vinextCaptureWorkerRscRequest";
+const CAPTURE_PRERENDER_STATE = "__vinextCaptureWorkerPrerenderState";
 const REGISTER_CDN_ADAPTER = "__vinextRegisterWorkerCdnAdapter";
 
 function workerEntryVirtualModules(): Plugin {
@@ -42,7 +43,8 @@ export const __basePath = "";
 export const __imageAllowedWidths = [];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
-export default async function rscHandler(request, _ctx, dispatchResponseStage) {
+export default async function rscHandler(request, _ctx, dispatchResponseStage, _probeMode, _prerenderDiscovery, trustedPrerenderState) {
+  globalThis.${CAPTURE_PRERENDER_STATE}?.(trustedPrerenderState);
   if (new URL(request.url).pathname === "/__vinext/prerender/readiness") {
     return dispatchResponseStage(request, { kind: "readiness-test" }, { cache: "bypass" });
   }
@@ -76,6 +78,83 @@ export default async function rscHandler(request, _ctx, dispatchResponseStage) {
 }
 
 describe("App Router Production server worker entry compatibility", () => {
+  it("authenticates prerender state in a Worker request-stage context", async () => {
+    const capturedStates: unknown[] = [];
+    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, () => {});
+    Reflect.set(globalThis, CAPTURE_PRERENDER_STATE, (state: unknown) => {
+      capturedStates.push(state);
+    });
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        appType: "custom",
+        configFile: false,
+        logLevel: "silent",
+        plugins: [workerEntryVirtualModules()],
+        resolve: {
+          alias: {
+            "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+          },
+        },
+        server: { middlewareMode: true },
+      });
+      const entry = (await server.ssrLoadModule(
+        path.resolve(
+          import.meta.dirname,
+          "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
+        ),
+      )) as {
+        handleRequestStage(
+          request: Request,
+          env: unknown,
+          ctx: { hostRuntime: "worker"; waitUntil(): void },
+          dispatchResponseStage: () => Promise<Response>,
+        ): Promise<Response>;
+      };
+      const routeParams = encodeURIComponent(
+        JSON.stringify({ params: { slug: "hello" }, routePattern: "/blog/:slug" }),
+      );
+      const request = (secret: string) =>
+        new Request("https://example.com/blog/hello", {
+          headers: {
+            "x-vinext-prerender-route-params": routeParams,
+            "x-vinext-prerender-secret": secret,
+            "x-vinext-prerender-speculative": "1",
+          },
+        });
+      const ctx = { hostRuntime: "worker" as const, waitUntil() {} };
+
+      await entry.handleRequestStage(
+        request("worker-prerender-secret"),
+        undefined,
+        ctx,
+        async () => new Response("unused"),
+      );
+      await entry.handleRequestStage(
+        request("wrong-secret"),
+        undefined,
+        ctx,
+        async () => new Response("unused"),
+      );
+
+      expect(capturedStates).toEqual([
+        {
+          routeParams: { params: { slug: "hello" }, routePattern: "/blog/:slug" },
+          speculative: true,
+        },
+        null,
+      ]);
+    } finally {
+      await server?.close();
+      Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
+      Reflect.deleteProperty(globalThis, CAPTURE_PRERENDER_STATE);
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
   it("classifies a terminal middleware probe without dispatching the response stage", async () => {
     const capturedRequests: Request[] = [];
     Reflect.set(globalThis, CAPTURE_RSC_REQUEST, (request: Request) => {

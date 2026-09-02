@@ -140,10 +140,10 @@ async function handleRequest(
   }
 
   const missingBuildAsset = isNextStaticPath(url.pathname, workerBasePath, workerAssetPathPrefix);
-  const trustedPrerenderState =
-    ctx.hostRuntime === "node"
-      ? readTrustedPrerenderStateFromHeaders(request.headers, __prerenderSecret)
-      : null;
+  const trustedPrerenderState = readTrustedPrerenderStateFromHeaders(
+    request.headers,
+    __prerenderSecret,
+  );
   const filteredHeaders = ctx.isInternalPagesRevalidation
     ? new Headers(request.headers)
     : filterInternalHeaders(request.headers);

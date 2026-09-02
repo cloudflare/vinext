@@ -42,9 +42,7 @@ function isPrerenderRouteParams(value: unknown): value is PrerenderRouteParams {
   return true;
 }
 
-export function isPrerenderRouteParamsPayload(
-  value: unknown,
-): value is PrerenderRouteParamsPayload {
+function isPrerenderRouteParamsPayload(value: unknown): value is PrerenderRouteParamsPayload {
   if (!isUnknownRecord(value)) return false;
   const keys = Object.keys(value);
   if (keys.length !== 2 && keys.length !== 3) return false;
