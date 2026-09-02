@@ -174,6 +174,20 @@ describe("findVinextCacheConfigInPlugins", () => {
     expect(await findVinextCacheConfigInPlugins(plugins)).toBe(cache);
   });
 
+  it("preserves adapter-owned multi-stage output metadata", async () => {
+    const cache = {
+      cdn: {
+        adapter: "adapter",
+        output: { entry: "/adapter/worker.js", type: "multi-stage" as const },
+      },
+    };
+    const plugins = [{ [VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY]: cache }] as unknown as Parameters<
+      typeof findVinextCacheConfigInPlugins
+    >[0];
+
+    expect(await findVinextCacheConfigInPlugins(plugins)).toBe(cache);
+  });
+
   it("preserves promise-aware cache loading through the internal Vite wrapper", async () => {
     const cache = { data: { adapter: "adapter", options: { binding: "MY_KV" } } };
     const vite = {
