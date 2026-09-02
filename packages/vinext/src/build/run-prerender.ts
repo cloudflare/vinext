@@ -37,6 +37,7 @@ import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js"
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
+import { resolveBuiltRscEntryPath } from "./server-entry.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -101,7 +102,8 @@ type RunPrerenderOptions = {
   pagesBundlePath?: string;
   /**
    * Override the path to the App Router RSC bundle.
-   * Defaults to `<root>/dist/server/index.js`.
+   * Defaults to the App handler recorded in the server build manifest, or
+   * `<root>/dist/server/index.js` for builds without a manifest.
    * Intended for tests that build to a custom outDir.
    */
   rscBundlePath?: string;
@@ -121,9 +123,8 @@ type RunPrerenderOptions = {
  * to stderr/stdout. Returns the full PrerenderResult so callers can pass it to
  * printBuildReport.
  *
- * Works for both plain Node and Cloudflare Workers builds — the CF Workers
- * bundle outputs `dist/server/index.js` which is a standard Node server entry,
- * so no wrangler/miniflare is needed.
+ * Works for both plain Node and hosted builds by resolving the generated App
+ * handler independently of any deployment facade that owns `index.js`.
  *
  * Hybrid projects (both `app/` and `pages/` present) run both prerender
  * phases sharing a single prod server instance. The merged results are written
@@ -167,7 +168,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // cleaned with the rest of vinext's build output on rebuild and co-located
   // with server artifacts.
   const manifestDir = path.join(root, "dist", "server");
-  const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
+  const rscBundlePath =
+    options.rscBundlePath ?? resolveBuiltRscEntryPath(path.join(root, "dist", "server"));
   const serverDir = path.dirname(rscBundlePath);
 
   const config = options.nextConfig
@@ -235,6 +237,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         port: 0,
         host: "127.0.0.1",
         outDir: path.dirname(serverDir),
+        rscEntryPath: rscBundlePath,
         noCompression: true,
         purpose: "prerender",
       });

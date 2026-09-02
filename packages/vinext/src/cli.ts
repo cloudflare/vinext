@@ -64,7 +64,9 @@ import {
 } from "./config/prerender.js";
 import {
   findVinextCacheConfigInPlugins,
+  getConfiguredCdnResponsePolicyHeaderNames,
   hasBuildIdentityResponseHeader,
+  hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
@@ -744,6 +746,12 @@ async function buildApp() {
       responseVary: hasVerbatimResponseVary(buildConfigMetadata.cacheConfig)
         ? "verbatim"
         : undefined,
+      requestRouting: hasUncachedRequestRouting(buildConfigMetadata.cacheConfig)
+        ? "uncached-stage"
+        : undefined,
+      responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
+        buildConfigMetadata.cacheConfig,
+      ),
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
   }

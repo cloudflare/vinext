@@ -4,6 +4,7 @@ import type { Server as HttpServer } from "node:http";
 import {
   loadNextConfig,
   resolveNextConfig,
+  type NextRewrite,
   type ResolvedNextConfig,
 } from "../config/next-config.js";
 import {
@@ -33,13 +34,14 @@ import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
-import { matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
+import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
 import { CACHEABILITY_POLICY_HEADERS } from "vinext/shims/cacheability-classification";
+import { resolveBuiltRscEntryPath } from "./server-entry.js";
 
 export type PrerenderRoutePattern = {
   kind: "app-page" | "app-route" | "pages-page";
@@ -49,9 +51,12 @@ export type PrerenderRoutePattern = {
     canPrunePattern: boolean;
     /** HTML pathname shared by alternate representations of this route. */
     concretePathname?: string;
+    /** The uncached request stage may resolve this public path to another route. */
+    routeMayResolve?: boolean;
+    /** A request representation may terminate before reaching the response stage. */
+    requestStageMayTerminate?: boolean;
   };
 };
-
 export type PrerenderPathManifest = {
   /** App Page HTML paths after hybrid route ownership has been resolved. */
   appPaths?: string[];
@@ -125,6 +130,8 @@ type EmitPrerenderPathManifestOptions = {
   rscBundlePath?: string;
   buildIdentity?: CdnCacheAdapterCapabilities["buildIdentity"];
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
+  requestRouting?: CdnCacheAdapterCapabilities["requestRouting"];
+  responsePolicyHeaderNames?: CdnCacheAdapterCapabilities["responsePolicyHeaderNames"];
   /** Execute dynamic path hooks against an already-uploaded Worker. */
   pathDiscoveryTarget?: {
     baseUrl: string;
@@ -504,6 +511,7 @@ async function collectPagesPaths(options: {
 }): Promise<{
   dataPaths: string[];
   fallbackRoutePatterns: PrerenderRoutePattern[];
+  nonDynamicPaths: string[];
   paths: string[];
 }> {
   const [pageRoutes, apiRoutes] = await Promise.all([
@@ -516,6 +524,8 @@ async function collectPagesPaths(options: {
   const dataPaths: string[] = [];
   const seenDataPaths = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
+  const nonDynamicPaths: string[] = [];
+  const seenNonDynamicPaths = new Set<string>();
 
   for (const route of pageRoutes) {
     if (apiPatterns.has(route.pattern)) continue;
@@ -532,10 +542,12 @@ async function collectPagesPaths(options: {
         for (const locale of options.i18n.locales) {
           const pathname = localizePagesPath(route.pattern, locale, options.i18n);
           addPath(paths, seen, pathname);
+          addPath(nonDynamicPaths, seenNonDynamicPaths, pathname);
           if (hasStaticProps || hasServerSideProps) addPath(dataPaths, seenDataPaths, pathname);
         }
       } else {
         addPath(paths, seen, route.pattern);
+        addPath(nonDynamicPaths, seenNonDynamicPaths, route.pattern);
         if (hasStaticProps || hasServerSideProps) {
           addPath(dataPaths, seenDataPaths, route.pattern);
         }
@@ -609,7 +621,7 @@ async function collectPagesPaths(options: {
     }
   }
 
-  return { dataPaths, fallbackRoutePatterns, paths };
+  return { dataPaths, fallbackRoutePatterns, nonDynamicPaths, paths };
 }
 
 async function excludePagesApiWarmPaths(options: {
@@ -697,6 +709,7 @@ async function collectAppPaths(options: {
 }): Promise<{
   fallbackRoutePatterns: PrerenderRoutePattern[];
   loadingShellPaths: string[];
+  nonDynamicPaths: string[];
   paths: string[];
   routeHandlerPaths: string[];
 }> {
@@ -708,6 +721,8 @@ async function collectAppPaths(options: {
   const routeHandlerPaths: string[] = [];
   const seenRouteHandlerPaths = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
+  const nonDynamicPaths: string[] = [];
+  const seenNonDynamicPaths = new Set<string>();
   const staticParamsCache = new Map<string, Promise<Record<string, string | string[]>[] | null>>();
   let requireNonEmptyStaticParams = false;
   const staticParamsMap = new Proxy({} as StaticParamsMap, {
@@ -790,6 +805,7 @@ async function collectAppPaths(options: {
 
     if (!route.isDynamic) {
       addDiscoveredPath(route.pattern);
+      addPath(nonDynamicPaths, seenNonDynamicPaths, route.pattern);
       continue;
     }
 
@@ -887,7 +903,13 @@ async function collectAppPaths(options: {
     }
   }
 
-  return { fallbackRoutePatterns, loadingShellPaths, paths, routeHandlerPaths };
+  return {
+    fallbackRoutePatterns,
+    loadingShellPaths,
+    nonDynamicPaths,
+    paths,
+    routeHandlerPaths,
+  };
 }
 
 async function resolveAppWarmPaths(options: {
@@ -995,7 +1017,6 @@ async function resolveAppWarmPaths(options: {
   };
 }
 
-const CACHEABILITY_POLICY_HEADER_NAMES = new Set<string>(CACHEABILITY_POLICY_HEADERS);
 function cachePolicyRuleMatchesWarmPath(
   pathname: string,
   rule: ResolvedNextConfig["headers"][number],
@@ -1077,9 +1098,16 @@ function routePatternCouldIntersectCachePolicyRule(
 function annotateCacheabilityProbeSafety(
   routePatterns: Record<string, PrerenderRoutePattern>,
   config: Pick<ResolvedNextConfig, "basePath" | "headers" | "i18n" | "trailingSlash">,
+  routeMayResolve: ReadonlySet<string>,
+  requestStageMayTerminate: ReadonlySet<string>,
+  responsePolicyHeaderNames: readonly string[],
 ): Record<string, PrerenderRoutePattern> {
+  const cacheabilityPolicyHeaderNames = new Set([
+    ...CACHEABILITY_POLICY_HEADERS,
+    ...responsePolicyHeaderNames.map((name) => name.trim().toLowerCase()).filter(Boolean),
+  ]);
   const cachePolicyRules = config.headers.filter((rule) =>
-    rule.headers.some((header) => CACHEABILITY_POLICY_HEADER_NAMES.has(header.key.toLowerCase())),
+    rule.headers.some((header) => cacheabilityPolicyHeaderNames.has(header.key.toLowerCase())),
   );
   const matchingPolicyRules = new Map(
     Object.keys(routePatterns).map((pathname) => [
@@ -1123,19 +1151,21 @@ function annotateCacheabilityProbeSafety(
         pathname,
         {
           ...route,
-          cacheabilityProbe: { canPrunePattern },
+          cacheabilityProbe: {
+            canPrunePattern,
+            ...(routeMayResolve.has(pathname) ? { routeMayResolve: true } : {}),
+            ...(requestStageMayTerminate.has(pathname) ? { requestStageMayTerminate: true } : {}),
+          },
         },
       ];
     }),
   );
 }
 
-function configuredRouteAffectsWarmPath(
+function configuredRulesAffectWarmPath(
   pathname: string,
-  config: Pick<
-    ResolvedNextConfig,
-    "basePath" | "i18n" | "redirects" | "rewrites" | "trailingSlash"
-  >,
+  rules: ReadonlyArray<NextRewrite>,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
 ): boolean {
   const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
   const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
@@ -1144,17 +1174,47 @@ function configuredRouteAffectsWarmPath(
       normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
     ),
   );
-  const rewrites = [
-    ...config.rewrites.beforeFiles,
-    ...config.rewrites.afterFiles,
-    ...config.rewrites.fallback,
-  ];
-  return [...rewrites, ...config.redirects].some((rule) =>
+  return rules.some((rule) =>
     Array.from(matchPathnames).some((matchPathname) =>
       matchesRewriteSource(matchPathname, rule, {
         basePath: config.basePath,
         hadBasePath: true,
       }),
+    ),
+  );
+}
+
+/**
+ * Whether a configured rewrite can replace a route-owned warm response.
+ * Non-dynamic filesystem routes win before `afterFiles`, while every concrete
+ * path discovered here wins dynamic matching before `fallback`.
+ */
+function configuredRewritesCanReplaceWarmPath(
+  pathname: string,
+  rewrites: ResolvedNextConfig["rewrites"],
+  hasNonDynamicRoute: boolean,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+  include: (rewrite: NextRewrite) => boolean,
+): boolean {
+  const applicableRewrites = [
+    ...rewrites.beforeFiles.filter(include),
+    ...(hasNonDynamicRoute ? [] : rewrites.afterFiles.filter(include)),
+  ];
+  return configuredRulesAffectWarmPath(pathname, applicableRewrites, config);
+}
+
+function hasMiddlewareConventionFile(
+  root: string,
+  appDir: string | null,
+  pagesDir: string | null,
+  pageExtensions: readonly string[],
+): boolean {
+  const routeDir = appDir ?? pagesDir;
+  const routeRoot = routeDir ? path.dirname(routeDir) : root;
+  const conventionDir = routeRoot === path.join(root, "src") ? routeRoot : root;
+  return ["proxy", "middleware"].some((name) =>
+    pageExtensions.some((extension) =>
+      fs.existsSync(path.join(conventionDir, `${name}.${extension}`)),
     ),
   );
 }
@@ -1187,9 +1247,10 @@ export async function emitPrerenderPathManifest(
 
   if (!appDir && !pagesDir) return null;
 
-  const defaultRscBundlePath = options.routeRootConfig?.rscOutDir
-    ? path.join(path.resolve(root, options.routeRootConfig.rscOutDir), "index.js")
-    : path.join(root, "dist", "server", "index.js");
+  const rscServerDir = options.routeRootConfig?.rscOutDir
+    ? path.resolve(root, options.routeRootConfig.rscOutDir)
+    : path.join(root, "dist", "server");
+  const defaultRscBundlePath = resolveBuiltRscEntryPath(rscServerDir);
   const rscBundlePath = options.rscBundlePath ?? defaultRscBundlePath;
   const pagesBundlePath = options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js");
   const bundleServerDir = fs.existsSync(rscBundlePath)
@@ -1217,6 +1278,7 @@ export async function emitPrerenderPathManifest(
   const seenRouteHandlerPaths = new Set<string>();
   const discoveredLoadingShellPaths: string[] = [];
   const seenLoadingShellPaths = new Set<string>();
+  const discoveredNonDynamicPathSet = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   await withPrerenderEndpoints(async () => {
     let prodServer: { server: HttpServer; port: number } | null = null;
@@ -1293,6 +1355,9 @@ export async function emitPrerenderPathManifest(
         for (const pathname of appPathResult.routeHandlerPaths) {
           addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
         }
+        for (const pathname of appPathResult.nonDynamicPaths) {
+          discoveredNonDynamicPathSet.add(pathname);
+        }
         fallbackRoutePatterns.push(...appPathResult.fallbackRoutePatterns);
       }
 
@@ -1312,6 +1377,9 @@ export async function emitPrerenderPathManifest(
         for (const pathname of pagesPathResult.dataPaths) {
           addPath(discoveredPagesDataPaths, seenPagesDataPaths, pathname);
         }
+        for (const pathname of pagesPathResult.nonDynamicPaths) {
+          discoveredNonDynamicPathSet.add(pathname);
+        }
         fallbackRoutePatterns.push(...pagesPathResult.fallbackRoutePatterns);
       }
     } finally {
@@ -1321,10 +1389,54 @@ export async function emitPrerenderPathManifest(
     }
   });
 
+  const hasStagedRequestRouting = options.requestRouting === "uncached-stage";
+  const middlewareMayRouteWarmPaths =
+    hasStagedRequestRouting &&
+    hasMiddlewareConventionFile(root, appDir, pagesDir, config.pageExtensions);
+  const routedWarmPaths = [...paths, ...discoveredRouteHandlerPaths];
+  const routeMayResolveWarmPathSet = new Set(
+    hasStagedRequestRouting
+      ? routedWarmPaths.filter(
+          (pathname) =>
+            middlewareMayRouteWarmPaths ||
+            configuredRewritesCanReplaceWarmPath(
+              pathname,
+              config.rewrites,
+              discoveredNonDynamicPathSet.has(pathname),
+              config,
+              (rewrite) => !isExternalUrl(rewrite.destination),
+            ),
+        )
+      : [],
+  );
+  const requestStageMayTerminateWarmPathSet = new Set(
+    hasStagedRequestRouting
+      ? routedWarmPaths.filter(
+          (pathname) =>
+            middlewareMayRouteWarmPaths ||
+            configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
+            configuredRewritesCanReplaceWarmPath(
+              pathname,
+              config.rewrites,
+              discoveredNonDynamicPathSet.has(pathname),
+              config,
+              (rewrite) => isExternalUrl(rewrite.destination),
+            ),
+        )
+      : [],
+  );
   const excludedWarmPathSet = new Set(
-    options.responseVary
-      ? [...paths, ...discoveredRouteHandlerPaths].filter((pathname) =>
-          configuredRouteAffectsWarmPath(pathname, config),
+    options.responseVary && !hasStagedRequestRouting
+      ? routedWarmPaths.filter(
+          (pathname) =>
+            configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
+            configuredRewritesCanReplaceWarmPath(
+              pathname,
+              config.rewrites,
+              discoveredNonDynamicPathSet.has(pathname),
+              config,
+              () => true,
+            ),
         )
       : [],
   );
@@ -1382,7 +1494,13 @@ export async function emitPrerenderPathManifest(
       "",
     ),
   );
-  const routePatterns = annotateCacheabilityProbeSafety(appOwnedWarmPaths.routePatterns, config);
+  const routePatterns = annotateCacheabilityProbeSafety(
+    appOwnedWarmPaths.routePatterns,
+    config,
+    routeMayResolveWarmPathSet,
+    requestStageMayTerminateWarmPathSet,
+    options.responsePolicyHeaderNames ?? [],
+  );
   for (let index = 0; index < resolvedPagesDataWarmPaths.length; index++) {
     const route = routePatterns[resolvedPagesDataWarmPaths[index]];
     if (route) {

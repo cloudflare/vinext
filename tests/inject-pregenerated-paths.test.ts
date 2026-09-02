@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { injectPregeneratedConcretePaths } from "../packages/vinext/src/build/inject-pregenerated-paths.js";
-import { clearPregeneratedConcretePaths } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
+import {
+  clearPregeneratedConcretePaths,
+  PREGENERATED_CONCRETE_PATHS_MODULE,
+} from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 
 let tmpDir: string;
 
@@ -140,6 +143,37 @@ describe("injectPregeneratedConcretePaths", () => {
     const entryUrl = pathToFileURL(path.join(tmpDir, "dist/server/index.js")).href;
     const workerEntry: unknown = await import(`${entryUrl}?t=${Date.now()}`);
     expect(workerEntry).toMatchObject({ renderedPaths: ["/blog/post-a"] });
+  });
+
+  it("hydrates an independently deployed response-stage entry", async () => {
+    const registryModuleUrl = pathToFileURL(
+      path.resolve("packages/vinext/src/server/pregenerated-concrete-paths.ts"),
+    ).href;
+    writeFile("dist/server/index.js", "export default { fetch() {} };\n");
+    writeFile(
+      "dist/server/vinext-response-stage.js",
+      [
+        `import "./${PREGENERATED_CONCRETE_PATHS_MODULE}";`,
+        `import { getRenderedConcreteUrlPathsForRoute, initPregeneratedPathsFromGlobals } from ${JSON.stringify(registryModuleUrl)};`,
+        "initPregeneratedPathsFromGlobals();",
+        'export const renderedPaths = [...(getRenderedConcreteUrlPathsForRoute("/blog/:slug") ?? [])];',
+        "export default { fetch() {} };",
+        "",
+      ].join("\n"),
+    );
+    writeFile(
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "test",
+        pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
+      }),
+    );
+
+    injectPregeneratedConcretePaths(tmpDir);
+
+    const entryUrl = pathToFileURL(path.join(tmpDir, "dist/server/vinext-response-stage.js")).href;
+    const responseEntry: unknown = await import(`${entryUrl}?t=${Date.now()}`);
+    expect(responseEntry).toMatchObject({ renderedPaths: ["/blog/post-a"] });
   });
 
   it("strips an earlier injection when the manifest is corrupt", () => {
