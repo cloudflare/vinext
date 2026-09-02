@@ -17,8 +17,8 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
-  isVinextRscVaryField,
 } from "./headers.js";
+import { isVinextRscVaryField } from "./app-rsc-vary.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
 import {
   CACHEABILITY_ADMISSION_ISOLATE_BODY_LIMIT,

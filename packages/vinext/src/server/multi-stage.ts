@@ -1,5 +1,5 @@
 import type { CacheabilityRepresentation } from "./cacheability-manifest.js";
-import { isVinextRscVaryField } from "./headers.js";
+import { isVinextRscVaryField } from "./app-rsc-vary.js";
 
 /** Whether a header-blind response-stage cache must reject this response. */
 export function hasUnsupportedResponseStageVary(headers: Headers): boolean {
