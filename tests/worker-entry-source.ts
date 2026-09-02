@@ -9,21 +9,6 @@ export function readAppRouterEntrySource(): string {
   );
 }
 
-export function readAppRequestStageEntrySource(): string {
-  const sourceUrl = new URL(
-    "../packages/vinext/src/server/app-request-stage-independent-entry.ts",
-    import.meta.url,
-  );
-  if (fs.existsSync(sourceUrl)) return fs.readFileSync(sourceUrl, "utf-8");
-  return fs.readFileSync(
-    new URL(
-      "../packages/vinext/src/server/app-request-stage-independent-entry.js",
-      import.meta.url,
-    ),
-    "utf-8",
-  );
-}
-
 export function readPagesRouterEntrySource(): string {
   return readPagesRequestStageEntrySource();
 }
@@ -37,7 +22,7 @@ export function readPagesSingleEntrySource(): string {
   );
 }
 
-export function readPagesRequestStageEntrySource(): string {
+function readPagesRequestStageEntrySource(): string {
   const sourceUrl = new URL(
     "../packages/vinext/src/server/pages-request-stage-entry.ts",
     import.meta.url,

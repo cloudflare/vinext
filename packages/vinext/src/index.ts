@@ -19,7 +19,11 @@ import {
   invalidateRouteCache,
   matchRoute,
 } from "./routing/pages-router.js";
-import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
+import {
+  generatePagesRequestEntry as _generatePagesRequestEntry,
+  generatePagesResponseEntry as _generatePagesResponseEntry,
+  generateServerEntry as _generateServerEntry,
+} from "./entries/pages-server-entry.js";
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import {
   appRouteGraph,
@@ -50,7 +54,9 @@ import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
+  VIRTUAL_CDN_CACHE_ADAPTER,
   VIRTUAL_CACHE_ADAPTERS,
+  generateCdnCacheAdapterModule,
   generateCacheAdaptersModule,
   hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
@@ -1093,6 +1099,10 @@ const VIRTUAL_WORKER_ENTRY = "virtual:vinext-worker-entry";
 const RESOLVED_WORKER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_WORKER_ENTRY;
 const VIRTUAL_SERVER_ENTRY = "virtual:vinext-server-entry";
 const RESOLVED_SERVER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_SERVER_ENTRY;
+const VIRTUAL_PAGES_REQUEST_ENTRY = "virtual:vinext-pages-request-entry";
+const RESOLVED_PAGES_REQUEST_ENTRY = VIRTUAL_PREFIX + VIRTUAL_PAGES_REQUEST_ENTRY;
+const VIRTUAL_PAGES_RESPONSE_ENTRY = "virtual:vinext-pages-response-entry";
+const RESOLVED_PAGES_RESPONSE_ENTRY = VIRTUAL_PREFIX + VIRTUAL_PAGES_RESPONSE_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
 const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
 const VIRTUAL_PAGES_CLIENT_ASSETS = "virtual:vinext-pages-client-assets";
@@ -1113,6 +1123,8 @@ const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
 const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
+/** CDN-only registrar kept out of the data-cache response graph. */
+const RESOLVED_CDN_CACHE_ADAPTER = VIRTUAL_PREFIX + VIRTUAL_CDN_CACHE_ADAPTER;
 /** Virtual module that registers the config-driven image optimizer (see VinextOptions.images). */
 const RESOLVED_IMAGE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_IMAGE_ADAPTERS;
 /** Virtual module for composed instrumentation-client bootstrap. */
@@ -1598,6 +1610,33 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       instrumentationPath,
       publicFiles,
       { prerenderSecret },
+    );
+  }
+
+  async function generatePagesRequestEntry(configuredPublicDir: string | false): Promise<string> {
+    const publicFiles =
+      isServeCommand && devPublicFileRoutes
+        ? [...devPublicFileRoutes].sort()
+        : scanPublicFileRoutes(root, configuredPublicDir === "" ? false : configuredPublicDir);
+    return _generatePagesRequestEntry(
+      pagesDir,
+      nextConfig,
+      fileMatcher,
+      middlewarePath,
+      instrumentationPath,
+      publicFiles,
+      prerenderSecret,
+    );
+  }
+
+  function generatePagesResponseEntry(): Promise<string> {
+    return _generatePagesResponseEntry(
+      pagesDir,
+      nextConfig,
+      fileMatcher,
+      middlewarePath,
+      instrumentationPath,
+      prerenderSecret,
     );
   }
 
@@ -3962,9 +4001,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
+          if (cleanId === VIRTUAL_PAGES_REQUEST_ENTRY) return RESOLVED_PAGES_REQUEST_ENTRY;
+          if (cleanId === VIRTUAL_PAGES_RESPONSE_ENTRY) return RESOLVED_PAGES_RESPONSE_ENTRY;
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
           if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY)) {
             return RESOLVED_SERVER_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_PAGES_REQUEST_ENTRY)) {
+            return RESOLVED_PAGES_REQUEST_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_PAGES_RESPONSE_ENTRY)) {
+            return RESOLVED_PAGES_RESPONSE_ENTRY;
           }
           if (cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY)) {
             return RESOLVED_CLIENT_ENTRY;
@@ -3991,6 +4038,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             cleanId.endsWith("/" + VIRTUAL_CACHE_ADAPTERS)
           ) {
             return RESOLVED_CACHE_ADAPTERS;
+          }
+          if (
+            cleanId === VIRTUAL_CDN_CACHE_ADAPTER ||
+            cleanId.endsWith("/" + VIRTUAL_CDN_CACHE_ADAPTER)
+          ) {
+            return RESOLVED_CDN_CACHE_ADAPTER;
           }
           if (
             cleanId === VIRTUAL_IMAGE_ADAPTERS ||
@@ -4048,6 +4101,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return await generateServerEntry(
               this.environment.config.publicDir === "" ? false : this.environment.config.publicDir,
             );
+          }
+          if (id === RESOLVED_PAGES_REQUEST_ENTRY) {
+            recordServerEntryLoad(this.environment?.name, id);
+            return await generatePagesRequestEntry(
+              this.environment.config.publicDir === "" ? false : this.environment.config.publicDir,
+            );
+          }
+          if (id === RESOLVED_PAGES_RESPONSE_ENTRY) {
+            recordServerEntryLoad(this.environment?.name, id);
+            return await generatePagesResponseEntry();
           }
           if (id === RESOLVED_CLIENT_ENTRY) {
             return await generateClientEntry();
@@ -4179,6 +4242,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_CACHE_ADAPTERS) {
             return generateCacheAdaptersModule(options.cache);
+          }
+          if (id === RESOLVED_CDN_CACHE_ADAPTER) {
+            return generateCdnCacheAdapterModule(options.cache);
           }
           if (id === RESOLVED_IMAGE_ADAPTERS) {
             return generateImageAdaptersModule(options.images);
