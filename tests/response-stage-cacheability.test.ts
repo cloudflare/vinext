@@ -71,10 +71,12 @@ describe("response-stage cacheability", () => {
         return new Promise<void>(() => {});
       },
     });
-    const route = { kind: "app-page" as const, pattern: "/page" };
-    const request = new Request("https://example.com/page", {
+    const route = { kind: "app-page" as const, pattern: "/你好" };
+    const serializedRoute = serializeWorkerCacheabilityProbeRoute(route);
+    expect(serializedRoute).toContain("%E4%BD%A0%E5%A5%BD");
+    const request = new Request("https://example.com/%E4%BD%A0%E5%A5%BD", {
       headers: {
-        [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: serializeWorkerCacheabilityProbeRoute(route),
+        [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: serializedRoute,
       },
     });
 
@@ -87,7 +89,7 @@ describe("response-stage cacheability", () => {
     expect(cancelCalled).toBe(true);
     await expect(response.json()).resolves.toMatchObject({
       kind: "app-page",
-      pattern: "/page",
+      pattern: "/你好",
       scope: "identity",
       state: "dynamic",
       status: 307,

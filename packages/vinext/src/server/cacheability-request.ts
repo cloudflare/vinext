@@ -85,7 +85,7 @@ export type WorkerCacheabilityProbeRoute = {
 
 /** Encode the trusted route identity carried by a staged probe request. */
 export function serializeWorkerCacheabilityProbeRoute(route: WorkerCacheabilityProbeRoute): string {
-  return JSON.stringify([route.kind, route.pattern]);
+  return encodeURIComponent(JSON.stringify([route.kind, route.pattern]));
 }
 
 /** Read route identity only after the surrounding probe request is authenticated. */
@@ -95,7 +95,7 @@ export function readWorkerCacheabilityProbeRoute(
   const raw = request.headers.get(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER);
   if (!raw) return null;
   try {
-    const value = JSON.parse(raw) as unknown;
+    const value = JSON.parse(decodeURIComponent(raw)) as unknown;
     if (!Array.isArray(value) || value.length !== 2) return null;
     const [kind, pattern] = value;
     if (
