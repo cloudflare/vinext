@@ -93,6 +93,7 @@ export default {
         "src/server/app-hook-warning-suppression.ts",
         "src/server/app-post-middleware-context.ts",
         "src/server/app-request-context.ts",
+        "src/server/app-route-handler-middleware-context.ts",
         "src/server/app-rsc-error-handler.ts",
         "src/server/isr-cache.ts",
         "src/server/rsc-stream-hints.ts",
