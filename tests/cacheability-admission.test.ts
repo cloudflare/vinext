@@ -18,6 +18,8 @@ import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 const encoder = new TextEncoder();
@@ -168,6 +170,64 @@ function staticAppRouteManifest(): { raw: string; route: CacheabilityManifestRou
 describe("single-request cacheability admission", () => {
   const request = new Request("https://example.com/page", {
     headers: { Accept: "text/html" },
+  });
+
+  it("retains canonical adapter tag inputs across completed-response admission", async () => {
+    const calls: string[][] = [];
+    const adapter = {
+      buildResponseHeaders({
+        cacheControl,
+        tags,
+      }: {
+        cacheControl: string;
+        tags?: readonly string[];
+      }) {
+        if (tags) calls.push([...tags]);
+        return {
+          "Cache-Control": cacheControl,
+          "Cache-Tag": tags?.map((tag) => `platform:${tag}`).join(",") ?? null,
+        };
+      },
+      async get() {
+        return null;
+      },
+      ownsBackgroundRevalidation: false,
+      async revalidateTag() {},
+      requiresCompletedResponseAdmission: true,
+      async set() {},
+    };
+    setCdnCacheAdapter(adapter);
+    try {
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        null,
+        "build-a",
+        true,
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "pages-page", pattern: "/page" };
+      const headers = new Headers();
+      await runWithExecutionContext(context, () =>
+        applyCdnResponseHeaders(headers, {
+          cacheControl: "s-maxage=60",
+          tags: ["posts", "platform:posts"],
+        }),
+      );
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("static", { headers }),
+        context,
+      );
+
+      expect(calls).toEqual([
+        ["posts", "platform:posts"],
+        ["posts", "platform:posts"],
+      ]);
+      expect(response.headers.get("Cache-Tag")).toBe("platform:posts,platform:platform:posts");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("admits a completed static response without a build manifest", async () => {

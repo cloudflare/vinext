@@ -312,7 +312,7 @@ function restoreResponseStageRequest(
   };
 }
 
-function preventRequestCfResponseCaching(response: Response): Response {
+function preventResponseCaching(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
   headers.delete("CDN-Cache-Control");
@@ -387,6 +387,15 @@ function finalizeGatewayResponse(response: Response, provenanceToken: string): R
     status: response.status,
     statusText: response.statusText,
   });
+}
+
+function hasTaggedCustomVary(response: Response): boolean {
+  if (!response.headers.get("Cache-Tag")) return false;
+  const varyFields = (response.headers.get("Vary") ?? "")
+    .split(",")
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean);
+  return varyFields.some((name) => !FRAMEWORK_RESPONSE_VARY_FIELDS.has(name));
 }
 
 function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
@@ -516,8 +525,16 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
       invocation.requestMethod,
     );
     const response = await invokeResponseStage(restored.request, this.env, context, invocation);
+    // Workers Cache variants share one purge identity and therefore must carry
+    // exactly the same Cache-Tag values. Application-defined Vary fields can
+    // also influence cacheTag() calls, and this boundary cannot prove that the
+    // resulting tag set is invariant across variants, so fail closed. The RSC
+    // selectors are already partitioned by the response-stage invocation.
+    // https://developers.cloudflare.com/workers/cache/#content-negotiation-with-vary
     return stampResponseStageBuildIdentity(
-      restored.didAccessRequestCf() ? preventRequestCfResponseCaching(response) : response,
+      restored.didAccessRequestCf() || hasTaggedCustomVary(response)
+        ? preventResponseCaching(response)
+        : response,
     );
   }
 

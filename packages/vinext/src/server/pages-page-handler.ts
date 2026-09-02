@@ -77,6 +77,7 @@ import {
   NEXTJS_CACHE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_CACHE_HEADER,
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
@@ -125,11 +126,19 @@ export function finalizePagesPreviewResponse(
 function withPagesCacheState(
   response: Response,
   state: "MISS" | "HIT" | "STALE" | "REVALIDATED",
+  revalidatedPathname?: string,
 ): Response {
   const headers = new Headers(response.headers);
   if (state === "REVALIDATED") {
     headers.set(NEXTJS_CACHE_HEADER, state);
     headers.delete(VINEXT_CACHE_HEADER);
+    if (revalidatedPathname !== undefined) {
+      const stem =
+        revalidatedPathname.length > 1 && revalidatedPathname.endsWith("/")
+          ? revalidatedPathname.slice(0, -1)
+          : revalidatedPathname;
+      headers.set(VINEXT_REVALIDATED_CACHE_TAG_HEADER, encodeCacheTag(`_N_T_${stem || "/"}`));
+    }
   } else {
     setCacheStateHeaders(headers, state);
   }
@@ -973,7 +982,11 @@ export function createPagesPageHandler(
           notFoundResponse = stripPagesNotFoundFramingHeaders(notFoundResponse);
 
           if (isOnDemandRevalidate) {
-            notFoundResponse = withPagesCacheState(notFoundResponse, "REVALIDATED");
+            notFoundResponse = withPagesCacheState(
+              notFoundResponse,
+              "REVALIDATED",
+              isrCachePathname,
+            );
           } else if (pageDataResult.cacheState) {
             notFoundResponse = withPagesCacheState(notFoundResponse, pageDataResult.cacheState);
           }
@@ -982,7 +995,7 @@ export function createPagesPageHandler(
         if (pageDataResult.kind === "response") {
           let response =
             isOnDemandRevalidate && pageDataResult.onDemandRevalidateSuccess !== false
-              ? withPagesCacheState(pageDataResult.response, "REVALIDATED")
+              ? withPagesCacheState(pageDataResult.response, "REVALIDATED", isrCachePathname)
               : pageDataResult.response;
           if (shouldApplyErrorResponsePolicy) {
             response = applyPagesErrorCachePolicy(
@@ -1057,11 +1070,15 @@ export function createPagesPageHandler(
               headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
           } else if (isStaticPropsRoute) {
             if (isrRevalidateSeconds !== null) {
+              const stem = isrCachePathname.endsWith("/")
+                ? isrCachePathname.slice(0, -1)
+                : isrCachePathname;
               applyCdnResponseHeaders(headers, {
                 cacheControl: buildMissIsrCacheControl(
                   isrRevalidateSeconds,
                   vinextConfig.expireTime,
                 ),
+                tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
               });
             } else if (shouldUseNextDeployCacheControl()) {
               headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
