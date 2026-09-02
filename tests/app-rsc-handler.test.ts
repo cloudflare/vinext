@@ -491,6 +491,62 @@ describe("createAppRscHandler", () => {
     });
   });
 
+  it("composes hybrid Pages middleware cookies once across the response stage", async () => {
+    // Next.js exposes middleware headers to Pages data functions, then emits
+    // them once on the final response. Exercise both halves of the staged
+    // bridge so the transported snapshot cannot be replayed by the gateway.
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/app/pages/index.js
+    let responseStageHandler: ReturnType<typeof createHandler>;
+    const renderPagesFallback: NonNullable<HandlerOptions["renderPagesFallback"]> = async (
+      options,
+    ) => {
+      if (options.dispatchPagesResponseStage) {
+        return options.dispatchPagesResponseStage(options.request, "page", "server");
+      }
+
+      expect(options.initialResponseHeaders?.get("Content-Length")).toBeNull();
+      const headers = new Headers(options.initialResponseHeaders);
+      headers.append("Set-Cookie", "middleware=one; Path=/");
+      headers.append("Set-Cookie", "handler=two; Path=/");
+      headers.set("Content-Length", "4");
+      return new Response("page", { headers });
+    };
+    const options = {
+      configHeaders: [],
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      middlewareModule: {
+        default() {
+          const headers = new Headers({
+            "Content-Length": "999",
+            "x-middleware-next": "1",
+          });
+          headers.append("Set-Cookie", "middleware=one; Path=/");
+          return new Response(null, { headers });
+        },
+      },
+      renderPagesFallback,
+    } satisfies Partial<TestHandlerOptions>;
+    responseStageHandler = createHandler(options);
+    const requestStageHandler = createHandler(options);
+    const dispatchResponseStage: DispatchAppWorkerResponseStage = (request, props, stageOptions) =>
+      responseStageHandler.handleResponseStage(request, null, props, stageOptions);
+
+    const response = await requestStageHandler(
+      new Request("https://example.test/docs/pages"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(response.headers.getSetCookie()).toEqual([
+      "middleware=one; Path=/",
+      "handler=two; Path=/",
+    ]);
+    expect(response.headers.get("Content-Length")).toBe("4");
+    await expect(response.text()).resolves.toBe("page");
+  });
+
   it("keeps hybrid static Pages renders with request-aware Documents outside the shared stage", async () => {
     // Next.js supplies req/res to custom _document.getInitialProps for GSP/ISR
     // pages, so their HTML can remain request-specific despite static data.
