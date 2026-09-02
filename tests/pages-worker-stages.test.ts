@@ -472,6 +472,87 @@ describe("Pages Worker response stage", () => {
     );
   });
 
+  it("returns staged cookies once while preserving handler-authored cookies and lengths", async () => {
+    // Next.js composes middleware/config headers once around the final Pages
+    // response. The response stage may expose them to user code, but must not
+    // replay that inherited snapshot across the stage boundary.
+    stages.renderPage.mockImplementation(async (...args: unknown[]) => {
+      const renderHeaders = args[4] as Headers;
+      const initialHeaders = args[6] as Headers;
+      expect(renderHeaders.get("Content-Length")).toBeNull();
+      expect(initialHeaders.get("Content-Length")).toBeNull();
+      expect(initialHeaders.getSetCookie()).toEqual(["middleware=one; Path=/"]);
+
+      const headers = new Headers(initialHeaders);
+      headers.append("Set-Cookie", "middleware=one; Path=/");
+      headers.append("Set-Cookie", "handler=two; Path=/");
+      headers.set("Content-Length", "4");
+      return new Response("page", { headers });
+    });
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/gssp"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/gssp" },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/gssp",
+        stagedHeaders: [
+          ["content-length", "999"],
+          ["set-cookie", "middleware=one; Path=/"],
+        ],
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.headers.getSetCookie()).toEqual([
+      "middleware=one; Path=/",
+      "handler=two; Path=/",
+    ]);
+    expect(response.headers.get("Content-Length")).toBe("4");
+  });
+
+  it("does not replay inherited staged cookies from Pages API responses", async () => {
+    stages.api.mockImplementation(async (...args: unknown[]) => {
+      const initialHeaders = args[5] as Headers;
+      expect(initialHeaders.get("Content-Length")).toBeNull();
+      return new Response("api", { headers: initialHeaders });
+    });
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/api/headers"),
+      undefined,
+      undefined,
+      {
+        apiUrl: "/api/headers",
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/api/headers",
+        },
+        kind: "pages-api",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: [
+          ["content-length", "999"],
+          ["set-cookie", "middleware=one; Path=/"],
+        ],
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(response.headers.get("Content-Length")).toBeNull();
+  });
+
   it("admits an explicitly public Pages API response", async () => {
     const adapter: CdnCacheAdapter = {
       buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),

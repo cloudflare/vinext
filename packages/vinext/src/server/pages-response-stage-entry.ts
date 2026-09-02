@@ -12,7 +12,10 @@ import type {
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
-import { applyResponseStagePolicyHeaders } from "./response-stage-policy.js";
+import {
+  applyResponseStagePolicyHeaders,
+  stripInheritedResponseStageCookies,
+} from "./response-stage-policy.js";
 import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
 import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
 import { validateCdnRequest } from "./cache-control.js";
@@ -87,6 +90,9 @@ export async function renderPagesResponse(
 
   registerConfiguredImageOptimizer(env);
   const renderHeaders = new Headers(stagedHeaders ?? props.stagedHeaders ?? []);
+  // A request-stage Content-Length describes neither the page nor API body.
+  // Do not expose it as response-owned state; user code can still set its own.
+  renderHeaders.delete("Content-Length");
   const initialResponseHeaders = new Headers(renderHeaders);
   // Legacy/local callers may supply policy metadata without a staged snapshot.
   // Keep that fallback while treating policy as admission provenance rather
@@ -159,7 +165,7 @@ export async function renderPagesResponse(
       ),
     );
   };
-  const response = await withResponseStageCacheability(
+  let response = await withResponseStageCacheability(
     {
       buildId: pagesEntry.buildId,
       cache: props.kind === "pages-prerender-discovery" ? "bypass" : dispatchOptions.cache,
@@ -175,6 +181,7 @@ export async function renderPagesResponse(
     },
     handle,
   );
+  response = stripInheritedResponseStageCookies(response, renderHeaders);
   if (props.kind !== "pages-page") return response;
 
   const runtimeDataKind = pagesEntry.getRuntimePageDataKind(props.resolvedUrl, request);
