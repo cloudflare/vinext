@@ -1551,7 +1551,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   });
   const pagesClientAssetsOutputDirs = new Set<string>();
   const resolvePagesClientAssetsOutputDir = (environmentName: string, outputDir: string): string =>
-    !hasAppDir && environmentName === "ssr" ? path.dirname(outputDir) : outputDir;
+    !selectedMultiStageOutput && !hasAppDir && environmentName === "ssr"
+      ? path.dirname(outputDir)
+      : outputDir;
   let pagesClientAssetsModule: string | null = null;
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
   // so request handling can use O(1) membership checks without filesystem I/O.

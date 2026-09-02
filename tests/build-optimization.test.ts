@@ -4224,6 +4224,92 @@ describe("createMultiStageChunkFileNames", () => {
     }
   }, 30_000);
 
+  it("keeps every Pages response-stage output self-contained across output arrays", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-stage-output-array-"));
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
+      await Promise.all([
+        fsp.mkdir(path.join(root, "pages"), { recursive: true }),
+        fsp.mkdir(path.join(root, "stage"), { recursive: true }),
+      ]);
+      await Promise.all([
+        fsp.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" })),
+        fsp.writeFile(
+          path.join(root, "pages/index.tsx"),
+          "export default function Page() { return <main>page</main>; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/adapter.ts"),
+          "export default function createAdapter() { return { ownsBackgroundRevalidation: false, async get() { return null; }, async set() {}, buildResponseHeaders() { return {}; }, async revalidateTag() {} }; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/request.ts"),
+          'export const load = () => import("virtual:vinext-request-stage"); export default {};\n',
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/response.ts"),
+          'export const load = () => import("virtual:vinext-response-stage"); export default {};\n',
+        ),
+      ]);
+
+      const requestEntry = path.join(root, "stage/request.ts");
+      const responseEntry = path.join(root, "stage/response.ts");
+      const outputDirs = ["esm", "second"].map((name) => path.join(root, "dist", name));
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        plugins: [
+          vinext({
+            disableAppRouter: true,
+            cache: {
+              cdn: {
+                adapter: path.join(root, "stage/adapter.ts"),
+                output: {
+                  entries: { request: requestEntry, response: responseEntry },
+                  entry: requestEntry,
+                  type: "multi-stage",
+                },
+              },
+            },
+          }),
+        ],
+        build: {
+          outDir: path.join(root, "dist/common"),
+          rolldownOptions: {
+            input: requestEntry,
+            output: outputDirs.map((dir) => ({ dir, format: "es" as const })),
+          },
+          ssr: true,
+        },
+        logLevel: "silent",
+      });
+
+      await builder.buildApp();
+
+      for (const [index, outputDir] of outputDirs.entries()) {
+        await expect(
+          fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
+        ).resolves.toContain("export default");
+        const outputFiles = await fsp.readdir(outputDir, { recursive: true });
+        const responseStageFile = outputFiles.find((file) =>
+          /^vinext-response-stage-.+\.js$/.test(path.basename(file)),
+        );
+        expect(responseStageFile).toBeDefined();
+        const responseStage = (await import(
+          `${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`
+        )) as { load(): Promise<unknown> };
+        await expect(responseStage.load()).resolves.toBeDefined();
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("keeps transform-only response-stage outputs self-contained across output arrays", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-host-output-array-"));
