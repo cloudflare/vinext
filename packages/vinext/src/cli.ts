@@ -65,6 +65,7 @@ import {
 import {
   findVinextCacheConfigInPlugins,
   hasBuildIdentityResponseHeader,
+  hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
@@ -743,6 +744,9 @@ async function buildApp() {
         : undefined,
       responseVary: hasVerbatimResponseVary(buildConfigMetadata.cacheConfig)
         ? "verbatim"
+        : undefined,
+      requestRouting: hasUncachedRequestRouting(buildConfigMetadata.cacheConfig)
+        ? "uncached-stage"
         : undefined,
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });

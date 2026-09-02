@@ -4,6 +4,7 @@ import { isUnknownRecord } from "../utils/record.js";
 export {
   findVinextCacheConfigInPlugins,
   hasBuildIdentityResponseHeader,
+  hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   requiresRouteCacheabilityProbeManifest,
   loadVinextCacheConfigFromViteConfig,

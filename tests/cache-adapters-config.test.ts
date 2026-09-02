@@ -17,6 +17,7 @@ import {
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
   hasBuildIdentityResponseHeader,
+  hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
@@ -297,8 +298,17 @@ describe("cdnAdapter builder + factory", () => {
       routeCacheability: "probe-manifest",
     });
     expect(hasBuildIdentityResponseHeader({ cdn: descriptor })).toBe(true);
+    expect(
+      hasUncachedRequestRouting({
+        cdn: {
+          adapter: "staged-cache",
+          capabilities: { requestRouting: "uncached-stage" },
+        },
+      }),
+    ).toBe(true);
     expect(hasVerbatimResponseVary({ cdn: descriptor })).toBe(true);
     expect(hasBuildIdentityResponseHeader({ cdn: { adapter: "custom-cache" } })).toBe(false);
+    expect(hasUncachedRequestRouting({ cdn: { adapter: "url-only-cache" } })).toBe(false);
     expect(hasVerbatimResponseVary({ cdn: { adapter: "url-only-cache" } })).toBe(false);
   });
 

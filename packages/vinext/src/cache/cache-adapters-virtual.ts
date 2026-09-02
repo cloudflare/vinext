@@ -43,6 +43,14 @@ export type CdnCacheAdapterCapabilities = {
    */
   responseVary?: "verbatim";
   /**
+   * Rewrites and other request routing run before the shared response stage,
+   * and the resolved response-stage invocation participates in cache identity.
+   *
+   * Warm planners may therefore request rewrite source paths: conditional and
+   * default route resolutions cannot reuse one another's cached response.
+   */
+  requestRouting?: "uncached-stage";
+  /**
    * Cacheable App Page responses require a build-bound probe manifest before
    * the adapter may emit public CDN cache policy. Cloudflare deploy tooling
    * carries that manifest as a module in a second Worker version.
@@ -73,6 +81,10 @@ export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<st
 
 export function hasVerbatimResponseVary(cache?: VinextCacheConfig | null): boolean {
   return cache?.cdn?.capabilities?.responseVary === "verbatim";
+}
+
+export function hasUncachedRequestRouting(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.requestRouting === "uncached-stage";
 }
 
 export function hasBuildIdentityResponseHeader(cache?: VinextCacheConfig | null): boolean {

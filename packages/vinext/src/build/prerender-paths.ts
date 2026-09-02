@@ -4,6 +4,7 @@ import type { Server as HttpServer } from "node:http";
 import {
   loadNextConfig,
   resolveNextConfig,
+  type NextRewrite,
   type ResolvedNextConfig,
 } from "../config/next-config.js";
 import {
@@ -125,6 +126,7 @@ type EmitPrerenderPathManifestOptions = {
   rscBundlePath?: string;
   buildIdentity?: CdnCacheAdapterCapabilities["buildIdentity"];
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
+  requestRouting?: CdnCacheAdapterCapabilities["requestRouting"];
   /** Execute dynamic path hooks against an already-uploaded Worker. */
   pathDiscoveryTarget?: {
     baseUrl: string;
@@ -1130,12 +1132,10 @@ function annotateCacheabilityProbeSafety(
   );
 }
 
-function configuredRouteAffectsWarmPath(
+function configuredRulesAffectWarmPath(
   pathname: string,
-  config: Pick<
-    ResolvedNextConfig,
-    "basePath" | "i18n" | "redirects" | "rewrites" | "trailingSlash"
-  >,
+  rules: ReadonlyArray<NextRewrite>,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
 ): boolean {
   const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
   const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
@@ -1144,12 +1144,7 @@ function configuredRouteAffectsWarmPath(
       normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
     ),
   );
-  const rewrites = [
-    ...config.rewrites.beforeFiles,
-    ...config.rewrites.afterFiles,
-    ...config.rewrites.fallback,
-  ];
-  return [...rewrites, ...config.redirects].some((rule) =>
+  return rules.some((rule) =>
     Array.from(matchPathnames).some((matchPathname) =>
       matchesRewriteSource(matchPathname, rule, {
         basePath: config.basePath,
@@ -1322,10 +1317,18 @@ export async function emitPrerenderPathManifest(
     }
   });
 
+  const configuredRewrites = [
+    ...config.rewrites.beforeFiles,
+    ...config.rewrites.afterFiles,
+    ...config.rewrites.fallback,
+  ];
   const excludedWarmPathSet = new Set(
     options.responseVary
-      ? [...paths, ...discoveredRouteHandlerPaths].filter((pathname) =>
-          configuredRouteAffectsWarmPath(pathname, config),
+      ? [...paths, ...discoveredRouteHandlerPaths].filter(
+          (pathname) =>
+            configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
+            (options.requestRouting !== "uncached-stage" &&
+              configuredRulesAffectWarmPath(pathname, configuredRewrites, config)),
         )
       : [],
   );

@@ -651,6 +651,54 @@ describe("prerender path manifest", () => {
     expect(manifest?.loadingShellPaths).toEqual(["/safe"]);
   });
 
+  it("warms rewrite source paths when routing runs in an uncached stage", async () => {
+    // Rewrite-aware prefetches can resolve a public URL to a different route:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/concurrent-navigations/mismatching-prefetch.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/rewrite-me/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+    writeFile("app/rewrite-me/loading.tsx", "export default function Loading() { return null; }\n");
+    writeFile(
+      "app/safe/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+    writeFile("app/safe/loading.tsx", "export default function Loading() { return null; }\n");
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      {
+        rewrites: () => [
+          {
+            source: "/rewrite-me",
+            destination: "/safe",
+            has: [{ type: "header", key: "x-route-variant", value: "1" }],
+          },
+        ],
+      },
+      tmpDir,
+    );
+
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig,
+      requestRouting: "uncached-stage",
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.paths).toEqual(["/rewrite-me", "/safe"]);
+    expect(manifest?.excludedWarmPaths).toBeUndefined();
+    expect(manifest?.rscPaths).toEqual(["/rewrite-me", "/safe"]);
+    expect(manifest?.loadingShellPaths).toEqual(["/rewrite-me", "/safe"]);
+  });
+
   it("excludes warm paths shadowed by configured redirects", async () => {
     // Next.js applies config redirects before rendering the filesystem route:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
@@ -680,6 +728,7 @@ describe("prerender path manifest", () => {
 
     const manifest = await emitPrerenderPathManifest({
       nextConfig,
+      requestRouting: "uncached-stage",
       responseVary: "verbatim",
       root: tmpDir,
     });
