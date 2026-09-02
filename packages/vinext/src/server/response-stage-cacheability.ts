@@ -36,29 +36,20 @@ export async function withResponseStageCacheability(
   const adapter = getCdnCacheAdapter();
 
   let context = options.context;
+  let cacheability: typeof import("./cacheability-request.js") | undefined;
   if (options.probeMode) {
-    const cacheability = await import("./cacheability-request.js");
+    cacheability = await import("./cacheability-request.js");
     context = cacheability.createWorkerCacheabilityProbeContext(
       context,
       options.probeMode,
       adapter.responseVary,
       options.resolvedRoutePathname,
     );
-    if (options.policyHeadersAppliedBeforeRender) {
-      cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);
-    }
-    const rendered = await render(context);
-    const response = options.policyHeadersAppliedBeforeRender
-      ? rendered
-      : cacheability.applyResponseStageCachePolicy(rendered, context, options.policyHeaders);
-    return cacheability.finalizeWorkerCacheabilityResponse(response, context);
-  }
-
-  const requiresAdmission =
+  } else if (
     options.cache === "shared" &&
-    (options.rawManifest != null || adapter.requiresCompletedResponseAdmission === true);
-  if (requiresAdmission) {
-    const cacheability = await import("./cacheability-request.js");
+    (options.rawManifest != null || adapter.requiresCompletedResponseAdmission === true)
+  ) {
+    cacheability = await import("./cacheability-request.js");
     context = cacheability.createWorkerCacheabilityAdmissionContext(
       context,
       options.request,
@@ -70,15 +61,15 @@ export async function withResponseStageCacheability(
       options.representation,
       { applyCompletedResponsePolicy: true },
     );
-    if (options.policyHeadersAppliedBeforeRender) {
-      cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);
-    }
-    const rendered = await render(context);
-    const response = options.policyHeadersAppliedBeforeRender
-      ? rendered
-      : cacheability.applyResponseStageCachePolicy(rendered, context, options.policyHeaders);
-    return cacheability.finalizeWorkerCacheabilityResponse(response, context);
   }
 
-  return render(context);
+  if (!cacheability) return render(context);
+  if (options.policyHeadersAppliedBeforeRender) {
+    cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);
+  }
+  const rendered = await render(context);
+  const response = options.policyHeadersAppliedBeforeRender
+    ? rendered
+    : cacheability.applyResponseStageCachePolicy(rendered, context, options.policyHeaders);
+  return cacheability.finalizeWorkerCacheabilityResponse(response, context);
 }
