@@ -32,6 +32,7 @@ export const vinextConfig = {};
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
 export const buildId = "worker-build";
 export const pageRoutes = [];
+export const getRuntimePageDataKind = () => "static";
 export async function renderPage(request, _resolvedUrl, _route, ctx) {
   const state = ctx[CACHEABILITY_REQUEST_STATE];
   if (state) {
