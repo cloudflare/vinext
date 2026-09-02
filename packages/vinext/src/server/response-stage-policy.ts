@@ -19,6 +19,42 @@ export function applyResponseStagePolicyHeaders(
   }
 }
 
+/**
+ * Remove the copy of staged cookies that a response handler inherited before
+ * it ran. The request stage composes those cookies again after transport, so
+ * retaining the inherited copies would emit them twice. Multiset subtraction
+ * preserves additional identical cookies deliberately appended by user code.
+ */
+export function stripInheritedResponseStageCookies(
+  response: Response,
+  stagedHeaders: Headers,
+): Response {
+  const stagedCookies = stagedHeaders.getSetCookie();
+  if (stagedCookies.length === 0) return response;
+
+  const responseCookies = response.headers.getSetCookie();
+  let removed = false;
+  for (const stagedCookie of stagedCookies) {
+    const index = responseCookies.indexOf(stagedCookie);
+    if (index === -1) continue;
+    responseCookies.splice(index, 1);
+    removed = true;
+  }
+  if (!removed) return response;
+
+  const headers = new Headers(response.headers);
+  headers.delete("Set-Cookie");
+  for (const cookie of responseCookies) headers.append("Set-Cookie", cookie);
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
+}
+
 /** Replace transported Vary fields with the effective request-stage value. */
 export function withResponseStageVary(
   policyHeaders: ReadonlyArray<readonly [string, string]> | null | undefined,
