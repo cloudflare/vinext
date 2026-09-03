@@ -48,7 +48,8 @@ type RestoredResponseStageRequest = {
   request: Request;
 };
 
-const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
+const CACHED_RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
+const UNCACHED_RESPONSE_STAGE_EXPORT = "VinextUncachedResponse";
 const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const CLOUDFLARE_EDGE_POLICY_HEADER = "Cloudflare-CDN-Cache-Control";
@@ -186,9 +187,10 @@ function hasPurge(value: unknown): value is Required<Pick<StageBinding, "purge">
 
 function getResponseStageBinding(
   context: CloudflareStageContext,
+  exportName: typeof CACHED_RESPONSE_STAGE_EXPORT | typeof UNCACHED_RESPONSE_STAGE_EXPORT,
   serializedInvocation: string,
 ): StageBinding | null {
-  const binding = context.exports?.[RESPONSE_STAGE_EXPORT];
+  const binding = context.exports?.[exportName];
   if (typeof binding !== "function") return null;
 
   // Configurable-entrypoint props cross a Workers RPC boundary. Some vinext
@@ -399,7 +401,7 @@ function hasTaggedCustomVary(response: Response): boolean {
 }
 
 function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
-  const factory = context.exports?.[RESPONSE_STAGE_EXPORT];
+  const factory = context.exports?.[CACHED_RESPONSE_STAGE_EXPORT];
   if (typeof factory !== "function") return context;
   const fallback = context.cache;
   return {
@@ -414,7 +416,10 @@ function withResponseStagePurge(context: CloudflareStageContext): CloudflareStag
   };
 }
 
-function getResponseStageInvocation(value: unknown): CloudflareResponseStageInvocation | null {
+function getResponseStageInvocation(
+  value: unknown,
+  expectedCache?: VinextResponseStageDispatchOptions["cache"],
+): CloudflareResponseStageInvocation | null {
   if (!value || typeof value !== "object") return null;
   const expectedResponseStageBuildIdentity = Reflect.get(
     value,
@@ -452,6 +457,7 @@ function getResponseStageInvocation(value: unknown): CloudflareResponseStageInvo
   } else {
     return null;
   }
+  if (expectedCache !== undefined && cache !== expectedCache) return null;
   const requestUrl = Reflect.get(value, "requestUrl");
   if (typeof requestUrl !== "string") return null;
   const requestMethod = Reflect.get(value, "requestMethod");
@@ -504,7 +510,7 @@ async function invokeResponseStage(
 export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
   async fetch(request: Request): Promise<Response> {
     const context = withWorkerHostRuntime(this.ctx, this.env);
-    const invocation = getResponseStageInvocation(context.props);
+    const invocation = getResponseStageInvocation(context.props, "shared");
     if (!invocation) {
       return stampResponseStageBuildIdentity(
         new Response("Invalid vinext response-stage invocation", {
@@ -545,6 +551,31 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
   }
 }
 
+/** Uncached response entrypoint. Bypass and probe renders execute only here. */
+export class VinextUncachedResponse extends WorkerEntrypoint<unknown, unknown> {
+  async fetch(request: Request): Promise<Response> {
+    const context = withWorkerHostRuntime(this.ctx, this.env);
+    const invocation = getResponseStageInvocation(context.props, "bypass");
+    if (!invocation) {
+      return stampResponseStageBuildIdentity(
+        new Response("Invalid vinext response-stage invocation", {
+          status: 400,
+          headers: { "Cache-Control": "no-store" },
+        }),
+      );
+    }
+    if (
+      invocation.expectedResponseStageBuildIdentity !== undefined &&
+      invocation.expectedResponseStageBuildIdentity !== getVinextCdnBuildIdentity()
+    ) {
+      return stampResponseStageBuildIdentity(responseStageUnavailable());
+    }
+    return stampResponseStageBuildIdentity(
+      await invokeResponseStage(request, this.env, context, invocation),
+    );
+  }
+}
+
 /** Uncached gateway: request routing and middleware always execute here. */
 export default {
   async fetch(
@@ -570,10 +601,7 @@ export default {
         requestMethod: stageRequest.method,
         requestUrl: stageRequest.url,
       };
-      const requiresEntrypoint = isResponseStageReadinessRequest(stageRequest);
-      if (options.cache === "bypass" && !requiresEntrypoint) {
-        return invokeResponseStage(stageRequest, env, stageContext, invocation);
-      }
+      const usesSharedCache = options.cache === "shared";
       try {
         const serializedInvocation = JSON.stringify({
           ...invocation,
@@ -585,24 +613,23 @@ export default {
                   cache: RESPONSE_STAGE_WIRE_CACHE[options.cache] satisfies ResponseStageWireCache,
                 },
         });
-        const binding = getResponseStageBinding(stageContext, serializedInvocation);
+        const binding = getResponseStageBinding(
+          stageContext,
+          usesSharedCache ? CACHED_RESPONSE_STAGE_EXPORT : UNCACHED_RESPONSE_STAGE_EXPORT,
+          serializedInvocation,
+        );
         if (!binding) {
-          return requiresEntrypoint
-            ? responseStageUnavailable()
-            : markSharedResponseStage(
-                await invokeResponseStage(stageRequest, env, stageContext, invocation),
-                sharedResponseStageProvenance,
-              );
+          return responseStageUnavailable();
         }
-        const entrypointRequest = requiresEntrypoint
-          ? stageRequest
-          : await createCacheFacingRequest(stageRequest, serializedInvocation);
+        const entrypointRequest = usesSharedCache
+          ? await createCacheFacingRequest(stageRequest, serializedInvocation)
+          : stageRequest;
         const response = validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
-        return requiresEntrypoint
-          ? response
-          : markSharedResponseStage(response, sharedResponseStageProvenance, true);
+        return usesSharedCache
+          ? markSharedResponseStage(response, sharedResponseStageProvenance, true)
+          : response;
       } catch (error) {
-        if (requiresEntrypoint) return responseStageUnavailable();
+        if (isResponseStageReadinessRequest(stageRequest)) return responseStageUnavailable();
         throw error;
       }
     };

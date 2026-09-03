@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
+const CACHED_RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
+const UNCACHED_RESPONSE_STAGE_EXPORT = "VinextUncachedResponse";
 const CTX_EXPORTS_DEFAULT_DATE = "2025-11-17";
 
 type WranglerWorkerExport = {
@@ -78,7 +79,7 @@ export function configureWorkersCacheEntrypoints(
       : [...compatibilityFlags, "enable_ctx_exports"]
     : compatibilityFlags.filter((flag) => flag !== "enable_ctx_exports");
 
-  for (const name of ["default", RESPONSE_STAGE_EXPORT]) {
+  for (const name of ["default", CACHED_RESPONSE_STAGE_EXPORT, UNCACHED_RESPONSE_STAGE_EXPORT]) {
     const existing = configuredExports[name];
     if (existing?.type !== undefined && existing.type !== "worker") {
       throw new Error(
@@ -97,10 +98,15 @@ export function configureWorkersCacheEntrypoints(
         type: "worker",
         cache: { enabled: false },
       },
-      [RESPONSE_STAGE_EXPORT]: {
-        ...configuredExports[RESPONSE_STAGE_EXPORT],
+      [CACHED_RESPONSE_STAGE_EXPORT]: {
+        ...configuredExports[CACHED_RESPONSE_STAGE_EXPORT],
         type: "worker",
         cache: { enabled: true },
+      },
+      [UNCACHED_RESPONSE_STAGE_EXPORT]: {
+        ...configuredExports[UNCACHED_RESPONSE_STAGE_EXPORT],
+        type: "worker",
+        cache: { enabled: false },
       },
     },
   };
