@@ -46,13 +46,6 @@ export function appRequestUsesFullResponseGraph(
   if (isDraftModeRequest(request, options.draftModeSecret)) return true;
   if (request.headers.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)) return true;
 
-  const cacheControl = request.headers.get("cache-control")?.toLowerCase() ?? "";
-  if (
-    !options.probeMode &&
-    /(?:^|,)\s*(?:no-cache|no-store)(?:\s*(?:,|$)|\s*=)/.test(cacheControl)
-  ) {
-    return true;
-  }
   if (
     getScriptNonceFromHeaderSources(request.headers) !== undefined ||
     isRouteTreePrefetchRequest(request)

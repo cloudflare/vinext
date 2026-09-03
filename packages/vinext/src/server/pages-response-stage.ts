@@ -5,7 +5,6 @@ import { MIDDLEWARE_SET_COOKIE_HEADER } from "./headers.js";
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 
 const PREVIEW_COOKIE_NAMES = new Set(["__prerender_bypass", "__next_preview_data"]);
-const BYPASS_CACHE_CONTROL_DIRECTIVES = new Set(["no-cache", "no-store"]);
 
 export function hasPagesPreviewCookie(cookieHeader: string | null): boolean {
   if (!cookieHeader) return false;
@@ -15,20 +14,6 @@ export function hasPagesPreviewCookie(cookieHeader: string | null): boolean {
     if (PREVIEW_COOKIE_NAMES.has(name)) return true;
   }
   return false;
-}
-
-function hasCacheBypassDirective(
-  cacheControl: string | null,
-  directives = BYPASS_CACHE_CONTROL_DIRECTIVES,
-): boolean {
-  if (!cacheControl) return false;
-  return cacheControl.split(",").some((directive) => {
-    const separator = directive.indexOf("=");
-    const name = (separator === -1 ? directive : directive.slice(0, separator))
-      .trim()
-      .toLowerCase();
-    return directives.has(name);
-  });
 }
 
 function hasStagedCacheBypass(stagedHeaders: Headers | undefined): boolean {
@@ -57,8 +42,9 @@ export type PagesResponseStageCacheDisposition = VinextResponseStageDispatchOpti
  *
  * Next.js does not construct a static response-cache key in draft mode and
  * handles authenticated on-demand revalidation outside ordinary cache reuse.
- * Request cache bypass directives and non-idempotent methods likewise need to
- * reach the renderer, while CSP nonces are embedded in the rendered body.
+ * Non-idempotent methods need to reach the renderer, while CSP nonces are
+ * embedded in the rendered body. Request Cache-Control remains visible on a
+ * cache miss, but does not bypass an existing host-cache entry in production.
  *
  * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
  * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
@@ -89,7 +75,6 @@ export function shouldDispatchPagesResponseStage({
   if (hasRequestAwareDocument && routeDataKind === "static") return false;
 
   if (hasPagesPreviewCookie(request.headers.get("cookie"))) return false;
-  if (hasCacheBypassDirective(request.headers.get("cache-control"))) return false;
   if (requestHeadersChanged) return false;
   if (hasStagedCacheBypass(stagedHeaders)) return false;
 
