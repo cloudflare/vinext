@@ -415,6 +415,138 @@ describe("staged Worker cacheability probes", () => {
     expect(result.speculativeTargets).toEqual([data]);
   });
 
+  it("authorizes deferred representations within mixed dynamic patterns", async () => {
+    const root = createProbeRoot();
+    const route = {
+      cacheabilityProbe: { canPrunePattern: true, requestStageMayTerminate: true },
+      kind: "app-page" as const,
+      pattern: "/posts/:slug",
+    };
+    const firstHtml = { ...target("/posts/one"), route };
+    const firstRsc = {
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: "/posts/one (RSC full)",
+      pathname: "/posts/one?_rsc",
+      route,
+      sourcePathname: "/posts/one",
+    };
+    const secondHtml = { ...target("/posts/two"), route };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async (input) => {
+        const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        return Response.json({
+          kind: "app-page",
+          pattern: route.pattern,
+          ...(pathname.endsWith("/one")
+            ? { scope: "identity", state: "dynamic", terminal: true }
+            : { rendererStatic: true, state: "static-candidate" }),
+          status: pathname.endsWith("/one") ? 307 : 200,
+          version: 1,
+        });
+      },
+      root,
+      targetUrl: "https://example.com",
+      targets: [firstHtml, firstRsc, secondHtml],
+    });
+
+    expect(result).toMatchObject({ probed: 2, speculativeTargets: [firstRsc] });
+    const manifestRoute = Object.values(result.manifest.routes)[0];
+    expect(cacheabilityManifestRouteState(manifestRoute, "/posts/one", "rsc-full")).toBe(
+      "runtime-check",
+    );
+  });
+
+  it("unlocks sibling paths without waiting for every pattern representative", async () => {
+    const root = createProbeRoot();
+    const slow = target("/slow");
+    const fastRoute = optimizableRoute("/fast/:slug");
+    const fastFirst = { ...target("/fast/one"), route: fastRoute };
+    const fastSecond = { ...target("/fast/two"), route: fastRoute };
+    let slowCompleted = false;
+    let siblingStartedBeforeSlowCompleted = false;
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 2,
+      fetchImpl: async (input) => {
+        const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        if (pathname === "/slow") {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          slowCompleted = true;
+        } else if (pathname === "/fast/two") {
+          siblingStartedBeforeSlowCompleted = !slowCompleted;
+        }
+        return Response.json({
+          kind: "app-page",
+          pattern: pathname === "/slow" ? "/slow" : fastRoute.pattern,
+          rendererStatic: true,
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        });
+      },
+      root,
+      targetUrl: "https://example.com",
+      targets: [slow, fastFirst, fastSecond],
+    });
+
+    expect(result).toMatchObject({ failures: [], probed: 3 });
+    expect(siblingStartedBeforeSlowCompleted).toBe(true);
+  });
+
+  it("does not prune destination siblings before route-moving probes settle", async () => {
+    const root = createProbeRoot();
+    const destinationRoute = optimizableRoute("/posts/:slug");
+    const destinationFirst = { ...target("/posts/one"), route: destinationRoute };
+    const destinationSecond = { ...target("/posts/two"), route: destinationRoute };
+    const sourceRoute = {
+      cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true },
+      kind: "app-page" as const,
+      pattern: "/source",
+    };
+    const source = { ...target("/source"), route: sourceRoute };
+    const probedPathnames: string[] = [];
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 2,
+      fetchImpl: async (input) => {
+        const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        probedPathnames.push(pathname);
+        if (pathname === "/source") {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return Response.json({
+            kind: "app-page",
+            pattern: destinationRoute.pattern,
+            rendererStatic: true,
+            routePathname: "/posts/source",
+            state: "static-candidate",
+            status: 200,
+            version: 1,
+          });
+        }
+        return Response.json({
+          kind: "app-page",
+          pattern: destinationRoute.pattern,
+          ...(pathname.endsWith("/one")
+            ? { scope: "pattern", state: "dynamic" }
+            : { rendererStatic: true, state: "static-candidate" }),
+          status: 200,
+          version: 1,
+        });
+      },
+      root,
+      targetUrl: "https://example.com",
+      targets: [destinationFirst, destinationSecond, source],
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(probedPathnames).toEqual(
+      expect.arrayContaining(["/posts/one", "/source", "/posts/two"]),
+    );
+    expect(result.probed).toBe(3);
+  });
+
   it("does not prune a terminal-capable pattern from one representation", async () => {
     const root = createProbeRoot();
     const route = {

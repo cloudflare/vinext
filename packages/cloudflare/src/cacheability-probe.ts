@@ -688,31 +688,58 @@ export async function probeStagedWorkerCacheability(options: {
     reportProgress();
   };
 
-  const runGroups = async (scheduledGroups: ConcretePathGroup[]): Promise<void> => {
-    let nextIndex = 0;
-    const worker = async (): Promise<void> => {
-      while (!limitFailure && !phaseTimedOut && nextIndex < scheduledGroups.length) {
-        await classifyConcretePath(scheduledGroups[nextIndex++]);
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, scheduledGroups.length) }, () => worker()),
-    );
-  };
-
   reportProgress();
-  const representativeGroups: ConcretePathGroup[] = [];
-  const siblingGroups: ConcretePathGroup[] = [];
-  const scheduledPatterns = new Set<string>();
-  for (const group of groups) {
-    if (scheduledPatterns.has(group.pattern.key)) siblingGroups.push(group);
-    else {
-      scheduledPatterns.add(group.pattern.key);
-      representativeGroups.push(group);
+  let activeProbes = 0;
+  const slotWaiters: Array<() => void> = [];
+  const acquireProbeSlot = async (): Promise<void> => {
+    if (activeProbes < concurrency) {
+      activeProbes++;
+      return;
     }
-  }
-  await runGroups(representativeGroups);
-  if (!limitFailure && !phaseTimedOut) await runGroups(siblingGroups);
+    await new Promise<void>((resolve) => slotWaiters.push(resolve));
+  };
+  const releaseProbeSlot = (): void => {
+    const next = slotWaiters.shift();
+    if (next) next();
+    else activeProbes--;
+  };
+  let pendingRouteMovers = groups.filter(
+    (group) => group.primary.route?.cacheabilityProbe?.routeMayResolve === true,
+  ).length;
+  let settleRouteMovers: (() => void) | undefined;
+  const routeMoversSettled =
+    pendingRouteMovers === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          settleRouteMovers = resolve;
+        });
+  const runGroup = async (group: ConcretePathGroup): Promise<void> => {
+    const mayResolveRoute = group.primary.route?.cacheabilityProbe?.routeMayResolve === true;
+    while (true) {
+      if (!mayResolveRoute && group.pattern.pruned && pendingRouteMovers > 0) {
+        await routeMoversSettled;
+      }
+      await acquireProbeSlot();
+      if (!mayResolveRoute && group.pattern.pruned && pendingRouteMovers > 0) {
+        releaseProbeSlot();
+        continue;
+      }
+      break;
+    }
+    try {
+      if (!limitFailure && !phaseTimedOut) await classifyConcretePath(group);
+    } finally {
+      releaseProbeSlot();
+      if (mayResolveRoute && --pendingRouteMovers === 0) settleRouteMovers?.();
+    }
+  };
+  const initialPatternGroups = Array.from(patterns.values(), (pattern) => [...pattern.groups]);
+  await Promise.all(
+    initialPatternGroups.map(async ([representative, ...siblings]) => {
+      await runGroup(representative);
+      await Promise.all(siblings.map(runGroup));
+    }),
+  );
   if (limitFailure) throw limitFailure;
   if (phaseTimedOut || Date.now() >= getDeadlineAt()) {
     throw new Error(`cacheability probing made no progress for ${phaseTimeoutMs}ms`);
@@ -791,12 +818,14 @@ export async function probeStagedWorkerCacheability(options: {
         continue;
       }
 
-      if (result?.terminal !== true) runtimePathSet.add(group.routePathname);
+      const pairedTargets = group.targets.filter((target) => target !== group.primary);
+      if (result?.terminal !== true || pairedTargets.length > 0) {
+        runtimePathSet.add(group.routePathname);
+      }
       // A representation-specific response policy can make an RSC/data
       // sibling reusable even when the representative HTML render is private.
       // The final completed render decides admission without another probe.
       if (!pattern.pruned) {
-        const pairedTargets = group.targets.filter((target) => target !== group.primary);
         cacheableTargets.push(...pairedTargets);
         speculativeTargets.push(...pairedTargets);
       }
