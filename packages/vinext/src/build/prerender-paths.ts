@@ -24,6 +24,7 @@ import {
   classifyAppRouteHandler,
   classifyPagesRoute,
   extractExportConstString,
+  extractMiddlewareMatcherConfig,
 } from "./report.js";
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
@@ -42,6 +43,7 @@ import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
 import { CACHEABILITY_POLICY_HEADERS } from "vinext/shims/cacheability-classification";
 import { resolveBuiltRscEntryPath } from "./server-entry.js";
+import { matchesMiddlewarePathname, type MatcherConfig } from "../server/middleware-matcher.js";
 
 export type PrerenderRoutePattern = {
   kind: "app-page" | "app-route" | "pages-page";
@@ -1203,20 +1205,22 @@ function configuredRewritesCanReplaceWarmPath(
   return configuredRulesAffectWarmPath(pathname, applicableRewrites, config);
 }
 
-function hasMiddlewareConventionFile(
+function findMiddlewareConventionFile(
   root: string,
   appDir: string | null,
   pagesDir: string | null,
   pageExtensions: readonly string[],
-): boolean {
+): string | null {
   const routeDir = appDir ?? pagesDir;
   const routeRoot = routeDir ? path.dirname(routeDir) : root;
   const conventionDir = routeRoot === path.join(root, "src") ? routeRoot : root;
-  return ["proxy", "middleware"].some((name) =>
-    pageExtensions.some((extension) =>
-      fs.existsSync(path.join(conventionDir, `${name}.${extension}`)),
-    ),
-  );
+  for (const name of ["proxy", "middleware"]) {
+    for (const extension of pageExtensions) {
+      const filePath = path.join(conventionDir, `${name}.${extension}`);
+      if (fs.existsSync(filePath)) return filePath;
+    }
+  }
+  return null;
 }
 
 async function startPathDiscoveryServer(options: {
@@ -1396,15 +1400,25 @@ export async function emitPrerenderPathManifest(
   });
 
   const hasStagedRequestRouting = options.requestRouting === "uncached-stage";
-  const middlewareMayRouteWarmPaths =
-    hasStagedRequestRouting &&
-    hasMiddlewareConventionFile(root, appDir, pagesDir, config.pageExtensions);
+  const middlewarePath = hasStagedRequestRouting
+    ? findMiddlewareConventionFile(root, appDir, pagesDir, config.pageExtensions)
+    : null;
+  const middlewareMatcher = middlewarePath
+    ? extractMiddlewareMatcherConfig(middlewarePath)
+    : undefined;
+  const middlewareMayRouteWarmPath = (pathname: string): boolean =>
+    middlewarePath !== null &&
+    matchesMiddlewarePathname(
+      pathname,
+      middlewareMatcher as MatcherConfig | undefined,
+      config.i18n,
+    );
   const routedWarmPaths = [...paths, ...discoveredRouteHandlerPaths];
   const routeMayResolveWarmPathSet = new Set(
     hasStagedRequestRouting
       ? routedWarmPaths.filter(
           (pathname) =>
-            middlewareMayRouteWarmPaths ||
+            middlewareMayRouteWarmPath(pathname) ||
             configuredRewritesCanReplaceWarmPath(
               pathname,
               config.rewrites,
@@ -1419,7 +1433,7 @@ export async function emitPrerenderPathManifest(
     hasStagedRequestRouting
       ? routedWarmPaths.filter(
           (pathname) =>
-            middlewareMayRouteWarmPaths ||
+            middlewareMayRouteWarmPath(pathname) ||
             configuredRulesAffectWarmPath(pathname, config.redirects, config) ||
             configuredRewritesCanReplaceWarmPath(
               pathname,

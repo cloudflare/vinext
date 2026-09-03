@@ -1062,6 +1062,50 @@ describe("prerender path manifest", () => {
     });
   });
 
+  it("does not expand staged middleware probes beyond its pathname matcher", async () => {
+    // Ported from Next.js: test/e2e/app-dir/middleware-matching/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/middleware-matching/index.test.ts
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "middleware.ts",
+      [
+        'export const config = { matcher: "/middleware-source" };',
+        "export default function middleware() {}",
+      ].join("\n"),
+    );
+    for (const pathname of ["middleware-source", "outside"]) {
+      writeFile(
+        `app/${pathname}/page.tsx`,
+        "export const revalidate = 60; export default function Page() {}\n",
+      );
+    }
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const manifest = await emitPrerenderPathManifest({
+      nextConfig: await resolveNextConfig({}, tmpDir),
+      requestRouting: "uncached-stage",
+      responseVary: "verbatim",
+      root: tmpDir,
+    });
+
+    expect(manifest?.routePatterns?.["/middleware-source"]?.cacheabilityProbe).toMatchObject({
+      requestStageMayTerminate: true,
+      routeMayResolve: true,
+    });
+    expect(
+      manifest?.routePatterns?.["/outside"]?.cacheabilityProbe?.requestStageMayTerminate,
+    ).toBeUndefined();
+    expect(
+      manifest?.routePatterns?.["/outside"]?.cacheabilityProbe?.routeMayResolve,
+    ).toBeUndefined();
+  });
+
   it("retains redirect sources only when routing runs in an uncached stage", async () => {
     // Next.js applies config redirects before rendering the filesystem route:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts
