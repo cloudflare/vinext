@@ -58,6 +58,8 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   capturedDynamicUsageBeforeContextCleanup?: () => boolean;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
+  /** Private marker surrounding this render's injected client trace metadata. */
+  clientTraceMetadataMarker?: string;
   consumeDynamicUsage: () => boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
   createHtmlRenderObservation?: BuildAppPageCacheRenderObservation;
@@ -286,7 +288,7 @@ export function finalizeAppPageHtmlCacheResponse(
 
   const cachePromise = (async () => {
     try {
-      const cachedHtml = await readStreamAsText(streamForCache);
+      let cachedHtml = await readStreamAsText(streamForCache);
 
       if (
         options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
@@ -304,6 +306,14 @@ export function finalizeAppPageHtmlCacheResponse(
       if (!cacheControl) {
         options.isrDebug?.("HTML cache write skipped (no cache policy)", htmlKey);
         return;
+      }
+
+      // Gate on the marker so the trace-metadata module stays out of the
+      // RSC server graph for the common case where the feature is unset. Do
+      // this only after proving that a cache write will actually happen.
+      if (options.clientTraceMetadataMarker) {
+        const { stripClientTraceMetadataBlock } = await import("./client-trace-metadata.js");
+        cachedHtml = stripClientTraceMetadataBlock(cachedHtml, options.clientTraceMetadataMarker);
       }
 
       const pageTags = options.getPageTags();

@@ -847,7 +847,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               basePath: options.basePath,
               captureRscData: true,
               cleanPathname: options.cleanPathname,
-              clientTraceMetadata: options.clientTraceMetadata,
               element: revalidatedElement,
               getFontLinks: options.getFontLinks,
               getFontPreloads: options.getFontPreloads,

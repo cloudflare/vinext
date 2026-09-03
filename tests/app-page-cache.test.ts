@@ -9,6 +9,10 @@ import {
   readAppPageFallbackShellCacheResponse,
   scheduleAppPageRscCacheWrite,
 } from "../packages/vinext/src/server/app-page-cache.js";
+import {
+  markClientTraceMetadataBlock,
+  renderClientTraceMetadataTags,
+} from "../packages/vinext/src/server/client-trace-metadata.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -1209,6 +1213,62 @@ describe("app page cache helpers", () => {
       },
     ]);
     expect(debugCalls).toEqual([["HTML cache written", "html:/fresh"]]);
+  });
+
+  it("keeps request-scoped client trace metadata out of the stored HTML", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const storedHtml: string[] = [];
+    // Rendered by the same helper App SSR injects into the head, so the test
+    // breaks if either the emitted or the stripped tag shape drifts.
+    const traceMetaHTML = renderClientTraceMetadataTags([
+      { key: "traceparent", value: "00-abc-def-01" },
+      { key: "baggage", value: "tenant=alice,user=alice-123" },
+    ]);
+    const traceMetadataMarker = "private-render-marker";
+    const markedTraceMetaHTML = markClientTraceMetadataBlock(traceMetaHTML, traceMetadataMarker);
+    expect(traceMetaHTML).not.toBe("");
+
+    const response = finalizeAppPageHtmlCacheResponse(
+      new Response(
+        `<head><meta name="baggage" content="application-policy"/>${markedTraceMetaHTML}</head><h1>page</h1>`,
+        {
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        },
+      ),
+      {
+        capturedRscDataPromise: null,
+        cleanPathname: "/traced",
+        clientTraceMetadataMarker: traceMetadataMarker,
+        consumeDynamicUsage() {
+          return false;
+        },
+        getPageTags() {
+          return ["/traced"];
+        },
+        isrHtmlKey(pathname) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        async isrSet(_key, data) {
+          storedHtml.push(data.html);
+        },
+        revalidateSeconds: 60,
+        waitUntil(promise) {
+          pendingCacheWrites.push(promise);
+        },
+      },
+    );
+
+    // The generating request still gets its own trace context...
+    await expect(response.text()).resolves.toContain("tenant=alice,user=alice-123");
+    await pendingCacheWrites[0];
+
+    // ...but the entry every later user is served from carries none of it.
+    expect(storedHtml).toEqual([
+      '<head><meta name="baggage" content="application-policy"/></head><h1>page</h1>',
+    ]);
   });
 
   it("skips HTML and RSC cache writes when dynamic usage appears during stream rendering", async () => {
