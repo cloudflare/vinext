@@ -81,6 +81,14 @@ async function expectScroll(page: Page, position: { x: number; y: number }) {
     .toEqual(position);
 }
 
+async function setScrollPaddingTop(page: Page, scrollPaddingTop: string) {
+  await page.evaluate((padding) => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`html { scroll-padding-top: ${padding}; }`);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  }, scrollPaddingTop);
+}
+
 async function readElementDocumentTop(page: Page, selector: string) {
   return page
     .locator(selector)
@@ -192,6 +200,40 @@ test.describe("Next.js compat: App Router autoscroll", () => {
     await push(page, "/nextjs-compat/router-autoscroll/10/100/100/1000/page2");
     await expect(page.locator("#page")).toHaveText("page2");
     await expectScroll(page, { x: 0, y: 50 });
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  for (const scrollPaddingTop of ["100px", "50%"] as const) {
+    test(`scrolls when the page top is obscured by ${scrollPaddingTop} scroll padding`, async ({
+      page,
+    }) => {
+      await page.goto(`${ROUTE_BASE}/10/100/100/1000/page1`);
+      await waitForControls(page);
+      await setScrollPaddingTop(page, scrollPaddingTop);
+
+      await scrollTo(page, { x: 0, y: 50 });
+      await push(page, "/nextjs-compat/router-autoscroll/10/100/100/1000/page2");
+      await expect(page.locator("#page")).toHaveText("page2");
+      await expectScroll(page, { x: 0, y: 0 });
+    });
+  }
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  test("keeps the scroll position when the page top is below the scroll padding boundary", async ({
+    page,
+  }) => {
+    await page.goto(`${ROUTE_BASE}/10/1000/100/1000/page1`);
+    await waitForControls(page);
+    await setScrollPaddingTop(page, "100px");
+
+    await scrollTo(page, { x: 0, y: 800 });
+    await push(page, "/nextjs-compat/router-autoscroll/10/1000/100/1000/page2");
+    await expect(page.locator("#page")).toHaveText("page2");
+    await expectScroll(page, { x: 0, y: 800 });
   });
 
   // Ported from Next.js:
