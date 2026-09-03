@@ -32,6 +32,51 @@ function createMatch(
 }
 
 describe("pages api route", () => {
+  it("lets a handler override response headers installed before user code", async () => {
+    const response = await handlePagesApiRoute({
+      initialResponseHeaders: new Headers({
+        "Cache-Control": "public, s-maxage=60",
+        Vary: "x-visitor",
+        "x-config-variant": "preview",
+        "x-from-middleware": "present",
+      }),
+      match: createMatch((_req, res) => {
+        expect(res.getHeader("x-config-variant")).toBe("preview");
+        expect(res.getHeader("x-from-middleware")).toBe("present");
+        res.setHeader("Cache-Control", "private, no-store");
+        res.json({ ok: true });
+      }),
+      request: new Request("https://example.com/api/policy"),
+      url: "/api/policy",
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Vary")).toBe("x-visitor");
+    expect(response.headers.get("x-config-variant")).toBe("preview");
+    expect(response.headers.get("x-from-middleware")).toBe("present");
+  });
+
+  it("exposes all staged cookies to Node API handlers without collapsing them", async () => {
+    const initialResponseHeaders = new Headers();
+    initialResponseHeaders.append("Set-Cookie", "middleware=one; Path=/");
+    initialResponseHeaders.append(
+      "Set-Cookie",
+      "config=two; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/",
+    );
+
+    const response = await handlePagesApiRoute({
+      initialResponseHeaders,
+      match: createMatch((_req, res) => {
+        expect(res.getHeader("Set-Cookie")).toEqual(initialResponseHeaders.getSetCookie());
+        res.end("ok");
+      }),
+      request: new Request("https://example.com/api/cookies"),
+      url: "/api/cookies",
+    });
+
+    expect(response.headers.getSetCookie()).toEqual(initialResponseHeaders.getSetCookie());
+  });
+
   it("does not expose process environment variables on the request", async () => {
     const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
     process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
@@ -448,6 +493,37 @@ describe("pages api route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ id: "req-42" });
+  });
+
+  it("preserves multiple cookies returned by a staged edge API handler", async () => {
+    const initialResponseHeaders = new Headers();
+    initialResponseHeaders.append("Set-Cookie", "middleware=one; Path=/");
+    const response = await handlePagesApiRoute({
+      initialResponseHeaders,
+      match: createMatch(
+        () => {
+          const headers = new Headers();
+          headers.append("Set-Cookie", "middleware=one; Path=/");
+          headers.append("Set-Cookie", "handler=one; Path=/");
+          headers.append(
+            "Set-Cookie",
+            "handler=two; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/",
+          );
+          return new Response("edge", { headers });
+        },
+        {},
+        { runtime: "edge" },
+      ),
+      request: new Request("https://example.com/api/cookies"),
+      url: "/api/cookies",
+    });
+
+    expect(response.headers.getSetCookie()).toEqual([
+      "middleware=one; Path=/",
+      "middleware=one; Path=/",
+      "handler=one; Path=/",
+      "handler=two; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/",
+    ]);
   });
 
   it("removes stale encoding headers after Node fetch decodes an edge API response", async () => {

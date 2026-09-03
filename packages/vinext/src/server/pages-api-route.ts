@@ -102,6 +102,8 @@ type HandlePagesApiRouteOptions = {
    */
   ctx?: ExecutionContextLike;
   edgeRuntime?: EdgeApiExecutionRuntime;
+  /** Headers installed before user code, matching Next.js custom-route ordering. */
+  initialResponseHeaders?: Headers;
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;
@@ -173,7 +175,24 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       );
       const response = await route.module.default(nextRequest);
       if (response instanceof Response) {
-        return finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker");
+        const finalized = finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker");
+        if (
+          !options.initialResponseHeaders ||
+          !options.initialResponseHeaders.keys().next().value
+        ) {
+          return finalized;
+        }
+        const headers = new Headers(options.initialResponseHeaders);
+        for (const [name, value] of finalized.headers) {
+          if (name.toLowerCase() !== "set-cookie") headers.set(name, value);
+        }
+        const finalizedCookies = finalized.headers.getSetCookie();
+        for (const cookie of finalizedCookies) headers.append("Set-Cookie", cookie);
+        return new Response(finalized.body, {
+          headers,
+          status: finalized.status,
+          statusText: finalized.statusText,
+        });
       }
 
       throw new Error("Edge API route did not return a Response");
@@ -204,6 +223,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     const { req, res, responsePromise } = createPagesReqRes({
       allowedRevalidateHeaderKeys: options.nextConfig?.allowedRevalidateHeaderKeys,
       body,
+      initialResponseHeaders: options.initialResponseHeaders,
       query,
       request: options.request,
       trustedRevalidateOrigin: options.trustedRevalidateOrigin,
