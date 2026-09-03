@@ -1788,7 +1788,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     actionError: normalizedProgressiveActionError,
     actionFailed,
     handlerStart,
-    interceptionContext: interceptionContextHeader,
+    interceptionContext: isRscRequest ? interceptionContextHeader : null,
     interceptionId: interceptionIdHeader,
     interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
     isProgressiveActionRender,
