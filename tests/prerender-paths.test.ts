@@ -1130,6 +1130,31 @@ describe("prerender path manifest", () => {
     ).toBeUndefined();
   });
 
+  it("uses runtime pathname decoding and locale provenance for middleware probe scope", async () => {
+    const { matchesMiddlewareWarmPath } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const i18n = {
+      defaultLocale: "en",
+      domains: [{ defaultLocale: "fr", domain: "fr.example.com" }],
+      locales: ["en", "fr"],
+    };
+
+    expect(matchesMiddlewareWarmPath("/%64ecoded", "/decoded", null)).toBe(true);
+    expect(
+      matchesMiddlewareWarmPath("/localized", [{ locale: false, source: "/en/localized" }], i18n),
+    ).toBe(true);
+    expect(
+      matchesMiddlewareWarmPath("/localized", [{ locale: false, source: "/fr/localized" }], i18n),
+    ).toBe(true);
+    expect(
+      matchesMiddlewareWarmPath(
+        "/fr/localized",
+        [{ locale: false, source: "/en/fr/localized" }],
+        i18n,
+      ),
+    ).toBe(false);
+  });
+
   it("retains redirect sources only when routing runs in an uncached stage", async () => {
     // Next.js applies config redirects before rendering the filesystem route:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts

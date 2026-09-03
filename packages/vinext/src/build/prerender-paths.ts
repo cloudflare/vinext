@@ -1227,6 +1227,38 @@ function findMiddlewareConventionFile(
   return null;
 }
 
+/** @internal Match the pathname forms and locale provenance used by middleware runtime. */
+export function matchesMiddlewareWarmPath(
+  pathname: string,
+  matcher: MatcherConfig | undefined,
+  i18n: ResolvedNextConfig["i18n"],
+): boolean {
+  const firstSegment = pathname.split("/", 3)[1]?.toLowerCase();
+  const localeContexts: Array<MiddlewareLocaleMatchContext | undefined> = i18n
+    ? i18n.locales.some((locale) => locale.toLowerCase() === firstSegment)
+      ? [{ kind: "literal" }]
+      : Array.from(
+          new Set([
+            i18n.defaultLocale,
+            ...(i18n.domains?.map((domain) => domain.defaultLocale) ?? []),
+          ]),
+          (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
+        )
+    : [undefined];
+  const matchPathnames = [pathname];
+  try {
+    const decodedPathname = decodeURIComponent(pathname);
+    if (decodedPathname !== pathname) matchPathnames.push(decodedPathname);
+  } catch {
+    // Match runtime middleware behavior: malformed encoding is non-fatal.
+  }
+  return matchPathnames.some((matchPathname) =>
+    localeContexts.some((localeContext) =>
+      matchesMiddlewarePathname(matchPathname, matcher, i18n, localeContext),
+    ),
+  );
+}
+
 async function startPathDiscoveryServer(options: {
   serverDir: string;
   pagesBundlePath?: string;
@@ -1411,28 +1443,8 @@ export async function emitPrerenderPathManifest(
     ? extractMiddlewareMatcherConfig(middlewarePath)
     : undefined;
   const configuredMatcher = middlewareMatcher as MatcherConfig | undefined;
-  const defaultLocaleContexts: MiddlewareLocaleMatchContext[] = config.i18n
-    ? Array.from(
-        new Set([
-          config.i18n.defaultLocale,
-          ...(config.i18n.domains?.map((domain) => domain.defaultLocale) ?? []),
-        ]),
-        (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
-      )
-    : [];
-  const middlewareMayRouteWarmPath = (pathname: string): boolean => {
-    if (middlewarePath === null) return false;
-    if (!config.i18n) return matchesMiddlewarePathname(pathname, configuredMatcher);
-    const firstSegment = pathname.split("/", 3)[1]?.toLowerCase();
-    const localeContexts: MiddlewareLocaleMatchContext[] = config.i18n.locales.some(
-      (locale) => locale.toLowerCase() === firstSegment,
-    )
-      ? [{ kind: "literal" }]
-      : defaultLocaleContexts;
-    return localeContexts.some((localeContext) =>
-      matchesMiddlewarePathname(pathname, configuredMatcher, config.i18n, localeContext),
-    );
-  };
+  const middlewareMayRouteWarmPath = (pathname: string): boolean =>
+    middlewarePath !== null && matchesMiddlewareWarmPath(pathname, configuredMatcher, config.i18n);
   const routedWarmPaths = [...paths, ...discoveredRouteHandlerPaths];
   const routeMayResolveWarmPathSet = new Set(
     hasStagedRequestRouting
