@@ -1140,6 +1140,7 @@ describe("prerender path manifest", () => {
     };
 
     expect(matchesMiddlewareWarmPath("/%64ecoded", "/decoded", null)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/你好", "/%E4%BD%A0%E5%A5%BD", null)).toBe(true);
     expect(
       matchesMiddlewareWarmPath("/localized", [{ locale: false, source: "/en/localized" }], i18n),
     ).toBe(true);
