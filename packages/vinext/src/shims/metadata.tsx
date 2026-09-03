@@ -345,13 +345,19 @@ export type MetadataMergeEntry = {
   contributesTitle?: boolean;
   isPage?: boolean;
   metadata: Metadata;
+  /**
+   * Whether this entry's `title.template` becomes the parent template for later entries.
+   * Setting this to false keeps the current title contribution while preventing its
+   * template from wrapping a title from the same route-tree layer.
+   */
+  stashesTitleTemplate?: boolean;
 };
 
 /**
  * Merge metadata from multiple sources (layouts + page).
  *
  * The list is ordered [rootLayout, nestedLayout, ..., page].
- * Title template from layouts applies to the page title but NOT to
+ * Title templates from ancestor layouts apply to child titles but NOT to
  * the segment that defines the template itself. `title.absolute`
  * skips all templates. `title.default` is the fallback when no
  * child provides a title.
@@ -516,7 +522,7 @@ export function postProcessMetadata(merged: Metadata): Metadata {
  * Merge metadata from multiple sources (layouts + page).
  *
  * The list is ordered [rootLayout, nestedLayout, ..., page].
- * Title template from layouts applies to the page title but NOT to
+ * Title templates from ancestor layouts apply to child titles but NOT to
  * the segment that defines the template itself. `title.absolute`
  * skips all templates. `title.default` is the fallback when no
  * child provides a title.
@@ -536,6 +542,7 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
     const meta = entry.metadata;
     const isPage = Boolean(entry.isPage);
     const contributesTitle = entry.contributesTitle !== false;
+    const stashesTitleTemplate = entry.stashesTitleTemplate !== false;
 
     // Merge non-title keys
     for (const key of Object.keys(meta)) {
@@ -561,6 +568,7 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
     // title.default is wrapped by the ancestor template, not by its own template.
     if (
       contributesTitle &&
+      stashesTitleTemplate &&
       !isPage &&
       meta.title &&
       typeof meta.title === "object" &&

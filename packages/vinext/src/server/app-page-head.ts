@@ -775,8 +775,23 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     // with no title suppression.
     // Reference: https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
     const primaryPageHasTitle = pageMetadata != null && pageMetadata.title !== undefined;
+    const hasPrimaryPageLayer =
+      options.pageModule != null &&
+      options.routeSegments != null &&
+      options.layoutTreePositions != null;
     const metadataEntries: MetadataMergeEntry[] = [
-      ...layoutMetadataResults.filter(isPresent).map((entry) => ({ metadata: entry })),
+      ...layoutMetadataResults.flatMap((metadata, index) => {
+        if (!metadata) return [];
+
+        const isSameLayerAsPage =
+          hasPrimaryPageLayer && layoutInputs[index]?.treePosition === routeSegments.length;
+        return [
+          {
+            metadata,
+            ...(isSameLayerAsPage ? { stashesTitleTemplate: false } : {}),
+          },
+        ];
+      }),
       ...(pageMetadata ? [{ isPage: true, metadata: pageMetadata }] : []),
       ...parallelMetadataResults
         .filter(isPresent)
