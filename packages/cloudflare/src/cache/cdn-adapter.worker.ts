@@ -59,7 +59,9 @@ type CloudflareResponseInit = ResponseInit & {
 const CACHED_RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
 const UNCACHED_RESPONSE_STAGE_EXPORT = "VinextUncachedResponse";
 const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
+const REQUEST_CACHE_CONTROL_TRANSPORT_HEADER = "x-vinext-internal-request-cache-control";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
+const REQUEST_PRAGMA_TRANSPORT_HEADER = "x-vinext-internal-request-pragma";
 const CLOUDFLARE_EDGE_POLICY_HEADER = "Cloudflare-CDN-Cache-Control";
 const SHARED_RESPONSE_STAGE_HEADER = "x-vinext-cloudflare-shared-response-stage";
 const RESPONSE_STAGE_WIRE_CACHE = {
@@ -136,13 +138,17 @@ function validateResponseStageBuildIdentity(response: Response): Response {
 function stripUntrustedTransportHeaders(request: Request): Request {
   if (
     !request.headers.has(AUTHORIZATION_TRANSPORT_HEADER) &&
-    !request.headers.has(REQUEST_CF_TRANSPORT_HEADER)
+    !request.headers.has(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER) &&
+    !request.headers.has(REQUEST_CF_TRANSPORT_HEADER) &&
+    !request.headers.has(REQUEST_PRAGMA_TRANSPORT_HEADER)
   ) {
     return request;
   }
   const headers = new Headers(request.headers);
   headers.delete(AUTHORIZATION_TRANSPORT_HEADER);
+  headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
+  headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
   const sanitized = new Request(request, { headers });
   const requestCf = Reflect.get(request, "cf");
   if (requestCf !== undefined) {
@@ -261,14 +267,26 @@ async function createCacheFacingRequest(
   const url = new URL(request.url);
   url.searchParams.set("__vinext_cache_key", key);
   const headers = new Headers(request.headers);
+  const requestCacheControl = headers.get("Cache-Control");
+  const requestPragma = headers.get("Pragma");
+  headers.delete("Cache-Control");
+  headers.delete("Pragma");
   headers.delete("Authorization");
   headers.delete(AUTHORIZATION_TRANSPORT_HEADER);
+  headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
+  headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
   if (authorization !== null) {
     headers.set(AUTHORIZATION_TRANSPORT_HEADER, encodeURIComponent(authorization));
   }
   if (serializedRequestCf !== null) {
     headers.set(REQUEST_CF_TRANSPORT_HEADER, serializedRequestCf);
+  }
+  if (requestCacheControl !== null) {
+    headers.set(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER, encodeURIComponent(requestCacheControl));
+  }
+  if (requestPragma !== null) {
+    headers.set(REQUEST_PRAGMA_TRANSPORT_HEADER, encodeURIComponent(requestPragma));
   }
   const init = {
     // Explicitly replace inherited inbound `cf` metadata. In workerd,
@@ -280,7 +298,14 @@ async function createCacheFacingRequest(
   } satisfies RequestInit & {
     cf: { vary: { default: { action: "passthrough" } } };
   };
-  return new Request(new Request(url, request), init);
+  // Construct from the URL rather than cloning the inbound request. Workers
+  // carries cache-bypass state from browser reloads outside the visible header
+  // map, and cloning would leak that state into the cache-enabled entrypoint
+  // even after the directives above were transported privately.
+  return new Request(url, {
+    ...init,
+    method: request.method,
+  });
 }
 
 function restoreResponseStageRequest(
@@ -290,10 +315,16 @@ function restoreResponseStageRequest(
 ): RestoredResponseStageRequest {
   const headers = new Headers(request.headers);
   const serializedAuthorization = headers.get(AUTHORIZATION_TRANSPORT_HEADER);
+  const serializedRequestCacheControl = headers.get(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   const serializedRequestCf = headers.get(REQUEST_CF_TRANSPORT_HEADER);
+  const serializedRequestPragma = headers.get(REQUEST_PRAGMA_TRANSPORT_HEADER);
+  headers.delete("Cache-Control");
+  headers.delete("Pragma");
   headers.delete("Authorization");
   headers.delete(AUTHORIZATION_TRANSPORT_HEADER);
+  headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
+  headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
   if (serializedAuthorization !== null) {
     try {
       headers.set("Authorization", decodeURIComponent(serializedAuthorization));
@@ -305,6 +336,20 @@ function restoreResponseStageRequest(
   if (serializedRequestCf !== null) {
     try {
       requestCf = JSON.parse(decodeURIComponent(serializedRequestCf));
+    } catch {
+      // Malformed internal metadata is stripped rather than exposed to userland.
+    }
+  }
+  if (serializedRequestCacheControl !== null) {
+    try {
+      headers.set("Cache-Control", decodeURIComponent(serializedRequestCacheControl));
+    } catch {
+      // Malformed internal metadata is stripped rather than exposed to userland.
+    }
+  }
+  if (serializedRequestPragma !== null) {
+    try {
+      headers.set("Pragma", decodeURIComponent(serializedRequestPragma));
     } catch {
       // Malformed internal metadata is stripped rather than exposed to userland.
     }
