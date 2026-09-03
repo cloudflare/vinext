@@ -367,13 +367,7 @@ function findSourceFiles(
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (
-        entry.name === "node_modules" ||
-        entry.name === ".next" ||
-        entry.name === "dist" ||
-        entry.name === ".git"
-      )
-        continue;
+      if (IGNORED_DIRECTORIES.has(entry.name)) continue;
       results.push(...findSourceFiles(fullPath, extensions));
     } else if (extensions.some((ext) => entry.name.endsWith(ext))) {
       results.push(fullPath);
@@ -381,6 +375,27 @@ function findSourceFiles(
   }
   return results;
 }
+
+/**
+ * Directories that never contain application source: dependency trees,
+ * VCS data, and — importantly for migrations — build output from other
+ * toolchains (Next.js/OpenNext/Nitro/wrangler). Scanning them reports
+ * bundled artifacts as source and produces false compatibility findings.
+ */
+const IGNORED_DIRECTORIES = new Set([
+  "node_modules",
+  ".git",
+  ".next",
+  "dist",
+  ".open-next",
+  ".wrangler",
+  ".vinext",
+  ".output",
+  ".turbo",
+  ".vercel",
+  "build",
+  "out",
+]);
 
 /**
  * Find files that can contribute to the application compatibility surface.
