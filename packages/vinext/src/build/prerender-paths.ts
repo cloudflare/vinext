@@ -1233,7 +1233,8 @@ export function matchesMiddlewareWarmPath(
   matcher: MatcherConfig | undefined,
   i18n: ResolvedNextConfig["i18n"],
 ): boolean {
-  const firstSegment = pathname.split("/", 3)[1]?.toLowerCase();
+  const encodedPathname = new URL(pathname, "https://vinext.invalid").pathname;
+  const firstSegment = encodedPathname.split("/", 3)[1]?.toLowerCase();
   const localeContexts: Array<MiddlewareLocaleMatchContext | undefined> = i18n
     ? i18n.locales.some((locale) => locale.toLowerCase() === firstSegment)
       ? [{ kind: "literal" }]
@@ -1245,10 +1246,10 @@ export function matchesMiddlewareWarmPath(
           (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
         )
     : [undefined];
-  const matchPathnames = [pathname];
+  const matchPathnames = [encodedPathname];
   try {
-    const decodedPathname = decodeURIComponent(pathname);
-    if (decodedPathname !== pathname) matchPathnames.push(decodedPathname);
+    const decodedPathname = decodeURIComponent(encodedPathname);
+    if (decodedPathname !== encodedPathname) matchPathnames.push(decodedPathname);
   } catch {
     // Match runtime middleware behavior: malformed encoding is non-fatal.
   }
