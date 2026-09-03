@@ -453,6 +453,40 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(context?.asPath).toBe("/about?x=1");
   });
 
+  it("preserves gSSP status and individual cookies on data responses", async () => {
+    const cookies = [
+      "session=expired; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/",
+      "notice=reauthenticate; Path=/",
+    ];
+    const routes = [
+      makeRoute(
+        "/about",
+        makePageModule({
+          getServerSideProps: async ({
+            res,
+          }: {
+            res: {
+              statusCode: number;
+              setHeader(name: string, value: string | string[]): void;
+            };
+          }) => {
+            res.statusCode = 401;
+            res.setHeader("Set-Cookie", cookies);
+            return { props: {} };
+          },
+        }),
+      ),
+    ];
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: routes }));
+    const dataUrl = "/_next/data/test-build-id/about.json";
+
+    const response = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+
+    expect(response.status).toBe(401);
+    expect(response.headers.getSetCookie()).toEqual(cookies);
+    expect(response.headers.get("content-type")).toContain("application/json");
+  });
+
   it("marks preview data and forces private no-store caching", async () => {
     const routeModule = makePageModule({
       getStaticProps: async ({ previewData }: { previewData: unknown }) => ({
