@@ -35,6 +35,7 @@ import {
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
+import { stripVTControlCharacters } from "node:util";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
 
@@ -62,26 +63,65 @@ function isApproveBuildsError(error: unknown): boolean {
   );
 }
 
-function hasAutomaticallyIgnoredBuilds(output: string): boolean {
-  const automaticallyIgnored = output.match(
-    /Automatically ignored builds during installation:\s*\n([\s\S]*?)(?:\n\s*\n|$)/i,
+type PnpmIgnoredBuildsState =
+  | { kind: "pending"; packages: string[] }
+  | { kind: "none" }
+  | { kind: "error"; reason: string };
+
+function parsePnpmIgnoredBuilds(output: string): PnpmIgnoredBuildsState {
+  const automaticallyIgnored = stripVTControlCharacters(output).match(
+    /Automatically ignored builds during installation:[^\S\r\n]*\r?\n([\s\S]*?)(?:\r?\n[^\S\r\n]*\r?\n|$)/i,
   )?.[1];
-  if (!automaticallyIgnored) return false;
-  return automaticallyIgnored
-    .split("\n")
-    .map((line) => line.trim())
-    .some(
+  if (automaticallyIgnored === undefined) {
+    return { kind: "error", reason: "pnpm ignored-builds returned an unrecognized response" };
+  }
+
+  const packages = automaticallyIgnored
+    .split(/\r?\n/)
+    .map((line) => line.trim().replace(/^[-*]\s+/, ""))
+    .filter(
       (line) => line.length > 0 && !/^none\.?$/i.test(line) && !/^cannot identify\b/i.test(line),
     );
+
+  return packages.length > 0
+    ? { kind: "pending", packages: [...new Set(packages)] }
+    : { kind: "none" };
 }
 
-function inspectPnpmIgnoredBuilds(root: string): string {
-  const result = spawnSync("pnpm", ["ignored-builds"], {
+function hasNewPnpmIgnoredBuilds(
+  before: PnpmIgnoredBuildsState | undefined,
+  after: PnpmIgnoredBuildsState | undefined,
+): boolean {
+  if (!before || after?.kind !== "pending") return false;
+  if (before.kind === "none") return true;
+  if (before.kind === "error") return false;
+
+  const previousPackages = new Set(before.packages);
+  return after.packages.some((packageName) => !previousPackages.has(packageName));
+}
+
+function inspectPnpmIgnoredBuilds(root: string): PnpmIgnoredBuildsState {
+  const { error, status, stdout, stderr } = spawnSync("pnpm", ["ignored-builds"], {
     cwd: root,
     encoding: "utf-8",
     stdio: ["ignore", "pipe", "pipe"],
   });
-  return `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+
+  if (error) {
+    return {
+      kind: "error",
+      reason: error.message,
+    };
+  }
+
+  if (status !== 0) {
+    return {
+      kind: "error",
+      reason: `pnpm ignored-builds exited with code ${status}`,
+    };
+  }
+
+  return parsePnpmIgnoredBuilds(`${stdout ?? ""}\n${stderr ?? ""}`);
 }
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -108,7 +148,7 @@ export type InitOptions = {
   /** @internal — override exec for testing (avoids ESM spy issues) */
   _exec?: (
     cmd: string,
-    opts: { cwd: string; stdio: string },
+    opts: { cwd: string; stdio: "inherit" },
   ) => string | void | Promise<string | void>;
   /** @internal — override pnpm ignored-builds inspection for testing */
   _inspectPnpmIgnoredBuilds?: (root: string) => string;
@@ -342,7 +382,7 @@ async function installDeps(
   deps: string[],
   exec: (
     cmd: string,
-    opts: { cwd: string; stdio: string },
+    opts: { cwd: string; stdio: "inherit" },
   ) => string | void | Promise<string | void>,
   { dev = true }: { dev?: boolean } = {},
 ): Promise<string> {
@@ -464,32 +504,20 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   const exec =
     options._exec ??
-    ((cmd: string, opts: { cwd: string; stdio: string }) =>
-      new Promise<string>((resolve, reject) => {
+    ((cmd: string, opts: { cwd: string; stdio: "inherit" }) =>
+      new Promise<void>((resolve, reject) => {
         const child = spawn(cmd, {
           cwd: opts.cwd,
           shell: true,
-          stdio: ["inherit", "pipe", "pipe"],
+          stdio: opts.stdio,
         });
-        let output = "";
-        child.stdout.on("data", (chunk: Buffer) => {
-          const text = chunk.toString();
-          output += text;
-          process.stdout.write(text);
-        });
-        child.stderr.on("data", (chunk: Buffer) => {
-          const text = chunk.toString();
-          output += text;
-          process.stderr.write(text);
-        });
-        child.on("error", (error) => reject(Object.assign(error, { output })));
+        child.on("error", reject);
         child.on("close", (status) => {
-          if (status === 0) resolve(output);
+          if (status === 0) resolve();
           else {
             reject(
               Object.assign(new Error(`Command failed with exit code ${status}: ${cmd}`), {
                 status,
-                output,
               }),
             );
           }
@@ -601,6 +629,45 @@ export async function init(options: InitOptions): Promise<InitResult> {
   let dependencyInstallNeedsApproval = false;
   const dependencyEntriesAdded: string[] = [];
   const devDependencyEntriesAdded: string[] = [];
+  const inspectIgnoredBuilds = (): PnpmIgnoredBuildsState | undefined => {
+    if (pmName !== "pnpm" || !shouldInstall) return undefined;
+    if (options._inspectPnpmIgnoredBuilds) {
+      try {
+        return parsePnpmIgnoredBuilds(options._inspectPnpmIgnoredBuilds(root));
+      } catch (error) {
+        return {
+          kind: "error",
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+    // A custom command executor should not cause tests or embedders to spawn pnpm.
+    return options._exec ? undefined : inspectPnpmIgnoredBuilds(root);
+  };
+  const installWithApprovalDetection = async (
+    deps: string[],
+    installOptions: { dev?: boolean } = {},
+  ): Promise<boolean> => {
+    const before = inspectIgnoredBuilds();
+    try {
+      const installOutput = await installDeps(root, deps, exec, installOptions);
+      const after = inspectIgnoredBuilds();
+      if (isApproveBuildsError(installOutput) || after?.kind === "pending") {
+        dependencyInstallNeedsApproval = true;
+      }
+      return true;
+    } catch (error) {
+      const after = inspectIgnoredBuilds();
+      if (
+        pmName !== "pnpm" ||
+        (!isApproveBuildsError(error) && !hasNewPnpmIgnoredBuilds(before, after))
+      ) {
+        throw error;
+      }
+      dependencyInstallNeedsApproval = true;
+      return false;
+    }
+  };
 
   // For App Router: react-server-dom-webpack requires react/react-dom versions
   // to match exactly (e.g. rsdw@19.2.6 needs react@^19.2.6). If the installed
@@ -616,17 +683,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
           "    ",
         ),
       );
-      try {
-        if (shouldInstall) {
-          const installOutput = await installDeps(root, reactUpgrade, exec, { dev: false });
-          if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
-        } else {
-          const added = addDependencyEntries(root, reactUpgrade, { dev: false });
-          dependencyEntriesAdded.push(...added);
-        }
-      } catch (error) {
-        if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
-        dependencyInstallNeedsApproval = true;
+      if (shouldInstall) {
+        await installWithApprovalDetection(reactUpgrade, { dev: false });
+      } else {
+        const added = addDependencyEntries(root, reactUpgrade, { dev: false });
+        dependencyEntriesAdded.push(...added);
       }
     }
   }
@@ -634,18 +695,13 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (missingDependencies.length > 0) {
     console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing dependencies:"))}`);
     console.log(formatList(missingDependencies, "    "));
-    try {
-      if (shouldInstall) {
-        const installOutput = await installDeps(root, missingDependencies, exec, { dev: false });
+    if (shouldInstall) {
+      if (await installWithApprovalDetection(missingDependencies, { dev: false })) {
         dependencyEntriesAdded.push(...missingDependencies);
-        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
-      } else {
-        const added = addDependencyEntries(root, missingDependencies, { dev: false });
-        dependencyEntriesAdded.push(...added);
       }
-    } catch (error) {
-      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
-      dependencyInstallNeedsApproval = true;
+    } else {
+      const added = addDependencyEntries(root, missingDependencies, { dev: false });
+      dependencyEntriesAdded.push(...added);
     }
     console.log();
   }
@@ -653,38 +709,15 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (missingDevDependencies.length > 0) {
     console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing devDependencies:"))}`);
     console.log(formatList(missingDevDependencies, "    "));
-    try {
-      if (shouldInstall) {
-        const installOutput = await installDeps(root, missingDevDependencies, exec);
+    if (shouldInstall) {
+      if (await installWithApprovalDetection(missingDevDependencies)) {
         devDependencyEntriesAdded.push(...missingDevDependencies);
-        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
-      } else {
-        const added = addDependencyEntries(root, missingDevDependencies, { dev: true });
-        devDependencyEntriesAdded.push(...added);
       }
-    } catch (error) {
-      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
-      dependencyInstallNeedsApproval = true;
+    } else {
+      const added = addDependencyEntries(root, missingDevDependencies, { dev: true });
+      devDependencyEntriesAdded.push(...added);
     }
     console.log();
-  }
-
-  if (
-    pmName === "pnpm" &&
-    shouldInstall &&
-    !dependencyInstallNeedsApproval &&
-    !options._exec &&
-    hasAutomaticallyIgnoredBuilds(inspectPnpmIgnoredBuilds(root))
-  ) {
-    dependencyInstallNeedsApproval = true;
-  } else if (
-    pmName === "pnpm" &&
-    shouldInstall &&
-    !dependencyInstallNeedsApproval &&
-    options._inspectPnpmIgnoredBuilds &&
-    hasAutomaticallyIgnoredBuilds(options._inspectPnpmIgnoredBuilds(root))
-  ) {
-    dependencyInstallNeedsApproval = true;
   }
 
   // ── Step 7: Print summary ──────────────────────────────────────────────

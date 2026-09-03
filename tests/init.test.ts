@@ -1117,6 +1117,54 @@ describe("init — dependency installation", () => {
     expect(output).toContain("Added dependencies to devDependencies:");
   });
 
+  it("detects newly blocked builds after pnpm exits without capturable output", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    let installStarted = false;
+    let installAttempts = 0;
+    const inspectPnpmIgnoredBuilds = vi.fn(() =>
+      installStarted
+        ? "Automatically ignored builds during installation:\n  esbuild\n"
+        : "Automatically ignored builds during installation:\n  None\n",
+    );
+
+    const { output } = await runInit(tmpDir, {
+      _exec: () => {
+        installStarted = true;
+        installAttempts++;
+        if (installAttempts === 1) {
+          throw Object.assign(new Error("Command failed with exit code 1: pnpm add vinext"), {
+            status: 1,
+          });
+        }
+      },
+      _inspectPnpmIgnoredBuilds: inspectPnpmIgnoredBuilds,
+    });
+
+    expect(inspectPnpmIgnoredBuilds.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(output).toContain("Dependency installation is waiting for build-script approval");
+    expect(output).toContain("pnpm approve-builds");
+  });
+
+  it("does not hide a generic pnpm failure when pending builds did not change", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    const inspectPnpmIgnoredBuilds = vi.fn(
+      () => "Automatically ignored builds during installation:\n  esbuild\n",
+    );
+
+    await expect(
+      runInit(tmpDir, {
+        _exec: () => {
+          throw Object.assign(new Error("pnpm registry request timed out"), { status: 1 });
+        },
+        _inspectPnpmIgnoredBuilds: inspectPnpmIgnoredBuilds,
+      }),
+    ).rejects.toThrow("pnpm registry request timed out");
+
+    expect(inspectPnpmIgnoredBuilds.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it("does not request approval when pnpm has no automatically ignored builds", async () => {
     setupProject(tmpDir, { router: "pages" });
     writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
