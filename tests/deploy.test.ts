@@ -3649,14 +3649,115 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.customDomain).toBe("example.co.uk");
   });
 
+  it("uses a route object's hostname pattern instead of its enclosing zone", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        routes: [{ pattern: "APP.example.com/blog/*", zone_name: "example.com" }],
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+      routeZoneName: "example.com",
+    });
+  });
+
+  it("supports the singular JSON route field", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        route: {
+          pattern: "app.example.com/blog/*",
+          zone_id: "zone-id",
+        },
+      }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+      routeZoneId: "zone-id",
+    });
+  });
+
+  it("does not treat a wildcard route as one concrete traffic hostname", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["*.example.com/*"] }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBeUndefined();
+  });
+
+  it("does not silently analyze only the first of multiple Worker routes", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({ routes: ["app.example.com/blog/*", "app.example.com/docs/*"] }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope: "multiple Worker routes — TPR requires one traffic scope",
+    });
+  });
+
+  it("does not count ignored workers.dev routes as a second traffic scope", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        routes: ["my-worker.workers.dev/*", "app.example.com/blog/*"],
+      }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+    });
+    expect(parseWranglerConfig(tmpDir)?.unsupportedTrafficScope).toBeUndefined();
+  });
+
+  it("does not treat a pattern-less zone_name as a traffic hostname", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: [{ zone_name: "example.com" }] }));
+    expect(parseWranglerConfig(tmpDir)?.customDomain).toBeUndefined();
+  });
+
+  it.each(["http", "https"])("rejects a %s-only route as an ambiguous traffic scope", (scheme) => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({ routes: [`${scheme}://app.example.com/*`] }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope:
+        "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics",
+    });
+  });
+
   it("extracts custom domain from custom_domains array", () => {
     writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBe("shop.example.com.au");
   });
 
+  it("does not silently analyze only the first of multiple custom domains", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({ custom_domains: ["app.example.com", "docs.example.com"] }),
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope: "multiple Worker custom domains — TPR requires one traffic scope",
+    });
+  });
+
   it("ignores workers.dev domains", () => {
-    writeFile(tmpDir, "wrangler.json", JSON.stringify({ routes: ["my-app.workers.dev/*"] }));
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({
+        routes: ["my-app.workers.dev/*"],
+        custom_domains: ["MY-APP.WORKERS.DEV"],
+      }),
+    );
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBeUndefined();
   });
@@ -3730,6 +3831,63 @@ pattern = "staging.example.com/*"
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging",
       customDomain: "staging.example.com",
+    });
+  });
+
+  it("preserves top-level TOML route zone and path selectors", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `
+name = "my-worker"
+
+[[routes]]
+pattern = "app.example.com/blog/*"
+zone_name = "example.com"
+`,
+    );
+
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+      routeZoneName: "example.com",
+    });
+  });
+
+  it.each([
+    {
+      name: "singular inline-table route",
+      route: `route = { pattern = "app.example.com/blog/*", zone_id = "zone-id" }`,
+    },
+    {
+      name: "plural inline-table routes array",
+      route: `routes = [{ pattern = "app.example.com/blog/*", zone_id = "zone-id" }]`,
+    },
+  ])("parses a top-level TOML $name", ({ route }) => {
+    writeFile(tmpDir, "wrangler.toml", route);
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      customDomain: "app.example.com",
+      routePathLike: "/blog/%",
+      routeZoneId: "zone-id",
+    });
+  });
+
+  it("rejects multiple top-level TOML string routes", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `routes = ["app.example.com/blog/*", "app.example.com/docs/*"]`,
+    );
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope: "multiple Worker routes — TPR requires one traffic scope",
+    });
+  });
+
+  it("rejects a scheme-qualified top-level TOML routes array", () => {
+    writeFile(tmpDir, "wrangler.toml", `routes = ["https://app.example.com/*"]`);
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      unsupportedTrafficScope:
+        "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics",
     });
   });
 });

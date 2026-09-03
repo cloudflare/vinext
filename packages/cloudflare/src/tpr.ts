@@ -58,12 +58,12 @@ export type TPRResult = {
   skipped?: string;
 };
 
-type TrafficEntry = {
+export type TrafficEntry = {
   path: string;
   requests: number;
 };
 
-type SelectedRoutes = {
+export type SelectedRoutes = {
   routes: TrafficEntry[];
   totalRequests: number;
   coveredRequests: number;
@@ -80,6 +80,10 @@ type WranglerConfig = {
   accountId?: string;
   kvNamespaceId?: string;
   customDomain?: string;
+  routePathLike?: string;
+  routeZoneId?: string;
+  routeZoneName?: string;
+  unsupportedTrafficScope?: string;
   name?: string;
   legacyEnv?: boolean;
   env?: Record<string, WranglerEnvironmentConfig>;
@@ -88,6 +92,14 @@ type WranglerConfig = {
 export type WranglerEnvironmentConfig = {
   customDomain?: string;
   name?: string;
+};
+
+type WranglerRouteTarget = {
+  hostname: string;
+  pathLike?: string;
+  scheme?: "http" | "https";
+  zoneId?: string;
+  zoneName?: string;
 };
 
 // ─── Wrangler Config Parsing ─────────────────────────────────────────────────
@@ -274,9 +286,27 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     }
   }
 
-  // Custom domain — check routes[] and custom_domains[]
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
-  if (domain) result.customDomain = domain;
+  // Custom domain — check route, routes[], and custom_domains[]
+  const routeValues = extractRouteValues(config);
+  const routeTargets = extractRouteTargets(routeValues);
+  const customDomains = extractDomainsFromCustomDomains(config);
+  if (routeTargets.length > 1) {
+    result.unsupportedTrafficScope = "multiple Worker routes — TPR requires one traffic scope";
+  } else if (routeTargets[0]?.scheme) {
+    result.unsupportedTrafficScope =
+      "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics";
+  } else if (routeTargets[0]) {
+    const routeTarget = routeTargets[0];
+    result.customDomain = routeTarget.hostname;
+    result.routePathLike = routeTarget.pathLike;
+    result.routeZoneId = routeTarget.zoneId;
+    result.routeZoneName = routeTarget.zoneName;
+  } else if (customDomains.length > 1) {
+    result.unsupportedTrafficScope =
+      "multiple Worker custom domains — TPR requires one traffic scope";
+  } else if (customDomains[0]) {
+    result.customDomain = customDomains[0];
+  }
 
   const env = extractEnvConfigs(config.env);
   if (env) result.env = env;
@@ -303,55 +333,157 @@ function extractEnvironmentConfig(config: Record<string, unknown>): WranglerEnvi
   if (typeof config.name === "string" && config.name.length > 0) {
     result.name = config.name;
   }
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
+  const domain =
+    extractRouteTargets(extractRouteValues(config))[0]?.hostname ??
+    extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
   return result;
 }
 
-function extractDomainFromRoutes(routes: unknown): string | null {
-  if (!Array.isArray(routes)) return null;
+function extractRouteValues(config: Record<string, unknown>): unknown[] {
+  const routes: unknown[] = [];
+  if (config.route !== undefined) routes.push(config.route);
+  if (Array.isArray(config.routes)) routes.push(...config.routes);
+  return routes;
+}
+
+function extractRouteTargets(routes: unknown): WranglerRouteTarget[] {
+  if (!Array.isArray(routes)) return [];
+  const targets: WranglerRouteTarget[] = [];
 
   for (const route of routes) {
     if (typeof route === "string") {
-      const domain = cleanDomain(route);
-      if (domain && !domain.includes("workers.dev")) return domain;
+      const target = parseRoutePattern(route);
+      if (target && !target.hostname.includes("workers.dev")) targets.push(target);
     } else if (route && typeof route === "object") {
       const r = route as Record<string, unknown>;
-      const pattern =
-        typeof r.zone_name === "string"
-          ? r.zone_name
-          : typeof r.pattern === "string"
-            ? r.pattern
-            : null;
+      const pattern = typeof r.pattern === "string" ? r.pattern : null;
       if (pattern) {
-        const domain = cleanDomain(pattern);
-        if (domain && !domain.includes("workers.dev")) return domain;
+        const target = parseRoutePattern(pattern);
+        if (target && !target.hostname.includes("workers.dev")) {
+          targets.push({
+            ...target,
+            zoneId: typeof r.zone_id === "string" ? r.zone_id : undefined,
+            zoneName: typeof r.zone_name === "string" ? r.zone_name.toLowerCase() : undefined,
+          });
+        }
       }
     }
   }
-  return null;
+  return targets;
+}
+
+function parseRoutePattern(raw: string): WranglerRouteTarget | null {
+  const scheme = raw.match(/^(https?):\/\//i)?.[1]?.toLowerCase() as "http" | "https" | undefined;
+  const withoutProtocol = raw.replace(/^https?:\/\//i, "");
+  const slashIndex = withoutProtocol.indexOf("/");
+  const hostname = (slashIndex === -1 ? withoutProtocol : withoutProtocol.slice(0, slashIndex))
+    .replace(/\/+$/, "")
+    .toLowerCase();
+  if (!hostname || hostname.includes("*")) return null;
+
+  const routePath = slashIndex === -1 ? "" : withoutProtocol.slice(slashIndex);
+  if (!routePath || routePath === "/*") return { hostname, scheme };
+
+  // Cloudflare GraphQL uses SQL LIKE syntax. Preserve literal URL-encoded
+  // percent signs and underscores while translating route wildcards.
+  const pathLike = routePath
+    .replaceAll("\\", "\\\\")
+    .replaceAll("%", "\\%")
+    .replaceAll("_", "\\_")
+    .replaceAll("*", "%");
+  return { hostname, pathLike, scheme };
 }
 
 function extractDomainFromCustomDomains(config: Record<string, unknown>): string | null {
+  return extractDomainsFromCustomDomains(config)[0] ?? null;
+}
+
+function extractDomainsFromCustomDomains(config: Record<string, unknown>): string[] {
+  const domains: string[] = [];
   // Workers Custom Domains: "custom_domains": ["example.com"]
   if (Array.isArray(config.custom_domains)) {
     for (const d of config.custom_domains) {
-      if (typeof d === "string" && !d.includes("workers.dev")) {
-        return cleanDomain(d);
-      }
+      if (typeof d !== "string") continue;
+      const domain = cleanDomain(d);
+      if (domain && !domain.includes("workers.dev")) domains.push(domain);
     }
   }
-  return null;
+  return domains;
 }
 
 /** Strip protocol and trailing wildcards from a route pattern to get a bare domain. */
 function cleanDomain(raw: string): string | null {
-  const cleaned = raw
-    .replace(/^https?:\/\//, "")
-    .replace(/\/\*$/, "")
-    .replace(/\/+$/, "")
-    .split("/")[0]; // Take only the host part
-  return cleaned || null;
+  return parseRoutePattern(raw)?.hostname ?? null;
+}
+
+function getTomlRootBody(content: string): string {
+  const lines: string[] = [];
+  for (const line of content.split("\n")) {
+    if (parseTomlSectionHeader(line)) break;
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+function parseTomlRouteTable(table: string): WranglerRouteTarget | null {
+  const pattern = table.match(/\bpattern\s*=\s*"([^"]+)"/)?.[1];
+  if (!pattern) return null;
+  const target = parseRoutePattern(pattern);
+  if (!target || target.hostname.includes("workers.dev")) return null;
+  return {
+    ...target,
+    zoneId: table.match(/\bzone_id\s*=\s*"([^"]+)"/)?.[1],
+    zoneName: table.match(/\bzone_name\s*=\s*"([^"]+)"/)?.[1]?.toLowerCase(),
+  };
+}
+
+function extractTomlInlineRouteTargets(content: string): WranglerRouteTarget[] {
+  const root = getTomlRootBody(content);
+  const targets: WranglerRouteTarget[] = [];
+
+  const scalar = root.match(/^route\s*=\s*"([^"]+)"/m)?.[1];
+  if (scalar) {
+    const target = parseRoutePattern(scalar);
+    if (target && !target.hostname.includes("workers.dev")) targets.push(target);
+  }
+
+  const inlineTable = root.match(/^route\s*=\s*\{([^}]*)\}/m)?.[1];
+  if (inlineTable) {
+    const target = parseTomlRouteTable(inlineTable);
+    if (target) targets.push(target);
+  }
+
+  const routesArray = root.match(/^routes\s*=\s*\[([\s\S]*?)\]/m)?.[1];
+  if (routesArray) {
+    const tables = [...routesArray.matchAll(/\{([^{}]*)\}/g)];
+    for (const table of tables) {
+      const target = parseTomlRouteTable(table[1]);
+      if (target) targets.push(target);
+    }
+
+    const stringsOnly = routesArray.replaceAll(/\{[^{}]*\}/g, "");
+    for (const match of stringsOnly.matchAll(/"([^"]+)"/g)) {
+      const target = parseRoutePattern(match[1]);
+      if (target && !target.hostname.includes("workers.dev")) targets.push(target);
+    }
+  }
+
+  return targets;
+}
+
+function applyTomlRouteTargets(result: WranglerConfig, targets: WranglerRouteTarget[]): void {
+  if (targets.length > 1) {
+    result.unsupportedTrafficScope = "multiple Worker routes — TPR requires one traffic scope";
+  } else if (targets[0]?.scheme) {
+    result.unsupportedTrafficScope =
+      "scheme-specific Worker route — TPR cannot safely combine HTTP and HTTPS analytics";
+  } else if (targets[0]) {
+    result.customDomain = targets[0].hostname;
+    result.routePathLike = targets[0].pathLike;
+    result.routeZoneId = targets[0].zoneId;
+    result.routeZoneName = targets[0].zoneName;
+  }
 }
 
 /**
@@ -387,31 +519,12 @@ function extractFromTOML(content: string): WranglerConfig {
     }
   }
 
-  // routes — both string and table forms
-  // route = "example.com/*"
-  const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
-  if (routeMatch) {
-    const domain = cleanDomain(routeMatch[1]);
-    if (domain && !domain.includes("workers.dev")) {
-      result.customDomain = domain;
-    }
+  const routeTargets = extractTomlInlineRouteTargets(content);
+  for (const block of content.split(/\[\[routes\]\]/).slice(1)) {
+    const target = parseTomlRouteTable(block.split(/\[\[/)[0]);
+    if (target) routeTargets.push(target);
   }
-
-  // [[routes]] blocks
-  if (!result.customDomain) {
-    const routeBlocks = content.split(/\[\[routes\]\]/);
-    for (let i = 1; i < routeBlocks.length; i++) {
-      const block = routeBlocks[i].split(/\[\[/)[0];
-      const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
-      if (patternMatch) {
-        const domain = cleanDomain(patternMatch[1]);
-        if (domain && !domain.includes("workers.dev")) {
-          result.customDomain = domain;
-          break;
-        }
-      }
-    }
-  }
+  applyTomlRouteTargets(result, routeTargets);
 
   const env = extractEnvConfigsFromTOML(content);
   if (env) result.env = env;
@@ -505,7 +618,11 @@ function extractTomlRoutesArrayDomain(section: string): string | null {
 }
 
 function extractTomlRouteBlockDomain(section: string): string | null {
-  const patternMatch = section.match(/^(?:pattern|zone_name)\s*=\s*"([^"]+)"/m);
+  // `zone_name` identifies the enclosing zone, while `pattern` identifies
+  // the hostname actually routed to this Worker. Prefer the latter when both
+  // are present so traffic from sibling hostnames is not mixed together.
+  const patternMatch =
+    section.match(/^pattern\s*=\s*"([^"]+)"/m) ?? section.match(/^zone_name\s*=\s*"([^"]+)"/m);
   if (!patternMatch) return null;
   const domain = cleanDomain(patternMatch[1]);
   return domain && !domain.includes("workers.dev") ? domain : null;
@@ -531,35 +648,91 @@ export function domainCandidates(domain: string): string[] {
   return candidates;
 }
 
+type ResolvedZone = {
+  id: string;
+  accountId?: string;
+};
+
+type ZoneApiResponse = {
+  success: boolean;
+  result?: ResolvedZoneApiResult | ResolvedZoneApiResult[];
+  errors?: Array<{ message?: string }>;
+};
+
+type ResolvedZoneApiResult = {
+  id: string;
+  account?: { id?: string };
+};
+
+async function requestZone(url: string, apiToken: string): Promise<ZoneApiResponse> {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Zone lookup failed: ${response.status} ${response.statusText}`);
+  }
+
+  const data = (await response.json()) as ZoneApiResponse;
+  if (!data.success) {
+    const detail = data.errors
+      ?.map((error) => error.message)
+      .filter(Boolean)
+      .join("; ");
+    throw new Error(`Zone lookup failed${detail ? `: ${detail}` : ""}`);
+  }
+  return data;
+}
+
+function resolvedZone(result: ResolvedZoneApiResult): ResolvedZone {
+  return { id: result.id, accountId: result.account?.id };
+}
+
+async function resolveZoneByName(name: string, apiToken: string): Promise<ResolvedZone | null> {
+  const data = await requestZone(
+    `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(name)}`,
+    apiToken,
+  );
+  const result = Array.isArray(data.result) ? data.result[0] : undefined;
+  return result ? resolvedZone(result) : null;
+}
+
+async function resolveZoneById(id: string, apiToken: string): Promise<ResolvedZone | null> {
+  const data = await requestZone(
+    `https://api.cloudflare.com/client/v4/zones/${encodeURIComponent(id)}`,
+    apiToken,
+  );
+  const result = !Array.isArray(data.result) ? data.result : undefined;
+  return result ? resolvedZone(result) : null;
+}
+
 /** Resolve zone ID from a domain name via the Cloudflare API. */
-async function resolveZoneId(domain: string, apiToken: string): Promise<string | null> {
-  // Try progressively longer domain candidates until one matches a zone.
-  // This handles all public suffixes without a hardcoded TLD list —
-  // for simple TLDs (.com, .io) the 2-part candidate hits on the first try;
-  // for multi-part TLDs (.co.uk, .com.au) it takes one extra call.
-  for (const candidate of domainCandidates(domain)) {
-    const response = await fetch(
-      `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(candidate)}`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiToken}`,
-          "Content-Type": "application/json",
-        },
-      },
-    );
-
-    if (!response.ok) continue;
-
-    const data = (await response.json()) as {
-      success: boolean;
-      result?: Array<{ id: string }>;
-    };
-    if (data.success && data.result?.length) {
-      return data.result[0].id;
-    }
+async function resolveZone(domain: string, apiToken: string): Promise<ResolvedZone | null> {
+  // Prefer the longest matching zone when Wrangler did not provide an
+  // explicit zone selector. DNS uses a delegated child zone over its parent.
+  for (const candidate of domainCandidates(domain).reverse()) {
+    const zone = await resolveZoneByName(candidate, apiToken);
+    if (zone) return zone;
   }
 
   return null;
+}
+
+async function resolveConfiguredZone(
+  config: WranglerConfig,
+  apiToken: string,
+): Promise<ResolvedZone | null> {
+  if (config.routeZoneId) return resolveZoneById(config.routeZoneId, apiToken);
+  if (config.routeZoneName) return resolveZoneByName(config.routeZoneName, apiToken);
+  return config.customDomain ? resolveZone(config.customDomain, apiToken) : null;
+}
+
+/** Resolve zone ID from a domain name via the Cloudflare API. */
+export async function resolveZoneId(domain: string, apiToken: string): Promise<string | null> {
+  return (await resolveZone(domain, apiToken))?.id ?? null;
 }
 
 /** Resolve the account ID associated with the API token. */
@@ -585,30 +758,66 @@ async function resolveAccountId(apiToken: string): Promise<string | null> {
 // ─── Traffic Querying ────────────────────────────────────────────────────────
 
 /**
- * Query Cloudflare zone analytics for top page paths by request count
- * over the given time window.
+ * Query Cloudflare zone analytics for one hostname's top page paths by
+ * request count over the given time window. The Groups dataset has no cursor
+ * pagination, so the maximum 10,000-row window is used.
  */
-async function queryTraffic(
+export async function queryTraffic(
   zoneTag: string,
   apiToken: string,
   windowHours: number,
+  hostname: string,
+  pathLike?: string,
 ): Promise<TrafficEntry[]> {
   const now = new Date();
   const start = new Date(now.getTime() - windowHours * 60 * 60 * 1000);
 
-  const query = `{
+  const pathVariableDeclaration = pathLike ? "\n    $pathLike: string!" : "";
+  const pathFilter = pathLike ? "\n            clientRequestPath_like: $pathLike" : "";
+  const query = `query TPRTraffic(
+    $zoneTag: string!
+    $start: Time!
+    $end: Time!
+    $hostname: string!${pathVariableDeclaration}
+  ) {
     viewer {
-      zones(filter: { zoneTag: "${zoneTag}" }) {
+      zones(filter: { zoneTag: $zoneTag }) {
         httpRequestsAdaptiveGroups(
           limit: 10000
-          orderBy: [sum_requests_DESC]
+          orderBy: [count_DESC]
           filter: {
-            datetime_geq: "${start.toISOString()}"
-            datetime_lt: "${now.toISOString()}"
+            datetime_geq: $start
+            datetime_lt: $end
+            clientRequestHTTPHost: $hostname
+            edgeResponseStatus_lt: 400${pathFilter}
             requestSource: "eyeball"
+            AND: [
+              { clientRequestPath_neq: "/api" }
+              { clientRequestPath_notlike: "/api/%" }
+              { clientRequestPath_neq: "/_next" }
+              { clientRequestPath_notlike: "/_next/%" }
+              { clientRequestPath_neq: "/__vinext" }
+              { clientRequestPath_notlike: "/__vinext/%" }
+              { clientRequestPath_notlike: "%.js" }
+              { clientRequestPath_notlike: "%.css" }
+              { clientRequestPath_notlike: "%.png" }
+              { clientRequestPath_notlike: "%.jpg" }
+              { clientRequestPath_notlike: "%.jpeg" }
+              { clientRequestPath_notlike: "%.gif" }
+              { clientRequestPath_notlike: "%.svg" }
+              { clientRequestPath_notlike: "%.ico" }
+              { clientRequestPath_notlike: "%.woff" }
+              { clientRequestPath_notlike: "%.woff2" }
+              { clientRequestPath_notlike: "%.ttf" }
+              { clientRequestPath_notlike: "%.eot" }
+              { clientRequestPath_notlike: "%.map" }
+              { clientRequestPath_notlike: "%.webp" }
+              { clientRequestPath_notlike: "%.avif" }
+              { clientRequestPath_notlike: "%.rsc" }
+            ]
           }
         ) {
-          sum { requests }
+          count
           dimensions { clientRequestPath }
         }
       }
@@ -621,7 +830,16 @@ async function queryTraffic(
       Authorization: `Bearer ${apiToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({
+      query,
+      variables: {
+        zoneTag,
+        start: start.toISOString(),
+        end: now.toISOString(),
+        hostname,
+        ...(pathLike ? { pathLike } : {}),
+      },
+    }),
   });
 
   if (!response.ok) {
@@ -634,7 +852,7 @@ async function queryTraffic(
       viewer?: {
         zones?: Array<{
           httpRequestsAdaptiveGroups?: Array<{
-            sum: { requests: number };
+            count: number;
             dimensions: { clientRequestPath: string };
           }>;
         }>;
@@ -652,22 +870,28 @@ async function queryTraffic(
   return filterTrafficPaths(
     groups.map((g) => ({
       path: g.dimensions.clientRequestPath,
-      requests: g.sum.requests,
+      requests: g.count,
     })),
   );
 }
 
 /** Filter out non-page requests (static assets, API routes, internal routes). */
-function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
+export function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
   return entries.filter((e) => {
     if (!e.path.startsWith("/")) return false;
     // Static assets
     if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path))
       return false;
     // API routes
-    if (e.path.startsWith("/api/")) return false;
+    if (e.path === "/api" || e.path.startsWith("/api/")) return false;
     // Internal routes
-    if (e.path.startsWith("/_next/") || e.path.startsWith("/__vinext/")) return false;
+    if (
+      e.path === "/_next" ||
+      e.path.startsWith("/_next/") ||
+      e.path === "/__vinext" ||
+      e.path.startsWith("/__vinext/")
+    )
+      return false;
     // RSC requests
     if (e.path.endsWith(".rsc")) return false;
     return true;
@@ -680,7 +904,7 @@ function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
  * Walk the ranked traffic list, accumulating request counts until the
  * coverage target is met or the hard cap is reached.
  */
-function selectRoutes(
+export function selectRoutes(
   traffic: TrafficEntry[],
   coverageTarget: number,
   limit: number,
@@ -1032,6 +1256,9 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   }
 
   // ── 3. Check for custom domain ────────────────────────────────
+  if (wranglerConfig.unsupportedTrafficScope) {
+    return skip(wranglerConfig.unsupportedTrafficScope);
+  }
   if (!wranglerConfig.customDomain) {
     return skip("no custom domain — zone analytics unavailable");
   }
@@ -1041,24 +1268,38 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
     return skip("no VINEXT_KV_CACHE KV namespace configured");
   }
 
-  // ── 5. Resolve account ID ─────────────────────────────────────
-  const accountId = wranglerConfig.accountId ?? (await resolveAccountId(apiToken));
+  // ── 5. Resolve zone and account IDs ───────────────────────────
+  console.log(`  TPR: Analyzing traffic for ${wranglerConfig.customDomain} (last ${windowHours}h)`);
+
+  let zone: ResolvedZone | null;
+  try {
+    zone = await resolveConfiguredZone(wranglerConfig, apiToken);
+  } catch (err) {
+    return skip(err instanceof Error ? err.message : `zone lookup failed: ${String(err)}`);
+  }
+  if (!zone) {
+    return skip(`could not resolve zone for ${wranglerConfig.customDomain}`);
+  }
+
+  // If account_id is omitted, use the account that owns the resolved zone.
+  // Selecting the first account visible to a multi-account token can point KV
+  // uploads at a different account from the application.
+  const accountId =
+    wranglerConfig.accountId ?? zone.accountId ?? (await resolveAccountId(apiToken));
   if (!accountId) {
     return skip("could not resolve Cloudflare account ID");
   }
 
-  // ── 6. Resolve zone ID ────────────────────────────────────────
-  console.log(`  TPR: Analyzing traffic for ${wranglerConfig.customDomain} (last ${windowHours}h)`);
-
-  const zoneId = await resolveZoneId(wranglerConfig.customDomain, apiToken);
-  if (!zoneId) {
-    return skip(`could not resolve zone for ${wranglerConfig.customDomain}`);
-  }
-
-  // ── 7. Query traffic data ─────────────────────────────────────
+  // ── 6. Query traffic data ─────────────────────────────────────
   let traffic: TrafficEntry[];
   try {
-    traffic = await queryTraffic(zoneId, apiToken, windowHours);
+    traffic = await queryTraffic(
+      zone.id,
+      apiToken,
+      windowHours,
+      wranglerConfig.customDomain,
+      wranglerConfig.routePathLike,
+    );
   } catch (err) {
     return skip(`analytics query failed: ${err instanceof Error ? err.message : String(err)}`);
   }
