@@ -139,13 +139,32 @@ type InitResult = {
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
 
-export function generateViteConfig(_isAppRouter: boolean, prerender = false): string {
+export function generateViteConfig(
+  _isAppRouter: boolean,
+  prerender = false,
+  extras: { hasTailwind?: boolean } = {},
+): string {
   const vinextCall = prerender ? `vinext({ prerender: { routes: "*" } })` : "vinext()";
-  return `import vinext from "vinext";
+  // Without extras the output stays byte-identical to the historical
+  // template so existing snapshots keep passing.
+  if (!extras.hasTailwind) {
+    return `import vinext from "vinext";
 import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [${vinextCall}],
+});
+`;
+  }
+  return `import vinext from "vinext";
+import { defineConfig } from "vite";
+import tailwindcss from "@tailwindcss/vite";
+
+export default defineConfig({
+  plugins: [
+    tailwindcss(),
+    ${vinextCall},
+  ],
 });
 `;
 }
@@ -160,7 +179,10 @@ export function addScripts(
   root: string,
   port: number | false,
   platform: InitPlatform = "node",
-  options: { warmCdnCache?: boolean; scriptNames?: "namespaced" | "standard" } = {},
+  options: {
+    warmCdnCache?: boolean;
+    scriptNames?: "namespaced" | "standard";
+  } = {},
 ): string[] {
   const pkgPath = path.join(root, "package.json");
   if (!fs.existsSync(pkgPath)) return [];
@@ -219,6 +241,7 @@ export type InitDependencyGroups = {
 export function getInitDependencyGroups(
   isAppRouter: boolean,
   platform: InitPlatform,
+  project?: { hasMDX?: boolean; hasTailwind?: boolean },
 ): InitDependencyGroups {
   const dependencies = ["vinext"];
   const devDependencies = ["vite", "@vitejs/plugin-react"];
@@ -230,11 +253,19 @@ export function getInitDependencyGroups(
     dependencies.push("@vinext/cloudflare");
     devDependencies.push("@cloudflare/vite-plugin", "wrangler");
   }
+  // Framework onboarding: MDX rendering and Tailwind v4 both need a Vite
+  // plugin that the plain dependency graph does not pull in.
+  if (project?.hasMDX) devDependencies.push("@mdx-js/rollup");
+  if (project?.hasTailwind) devDependencies.push("@tailwindcss/vite");
   return { dependencies, devDependencies };
 }
 
-export function getInitDeps(isAppRouter: boolean, platform: InitPlatform): string[] {
-  const groups = getInitDependencyGroups(isAppRouter, platform);
+export function getInitDeps(
+  isAppRouter: boolean,
+  platform: InitPlatform,
+  project?: { hasMDX?: boolean; hasTailwind?: boolean },
+): string[] {
+  const groups = getInitDependencyGroups(isAppRouter, platform, project);
   return [...groups.dependencies, ...groups.devDependencies];
 }
 
@@ -418,6 +449,7 @@ type PlatformSetupContext = {
   force: boolean;
   prerender?: boolean;
   today?: string;
+  hasTailwind?: boolean;
 };
 
 type PlatformSetupResult = {
@@ -439,7 +471,9 @@ function setupNodePlatform(context: PlatformSetupContext): PlatformSetupResult {
 
   fs.writeFileSync(
     context.existingViteConfigPath ?? path.join(context.root, "vite.config.ts"),
-    generateViteConfig(context.isAppRouter, context.prerender),
+    generateViteConfig(context.isAppRouter, context.prerender, {
+      hasTailwind: context.hasTailwind,
+    }),
     "utf-8",
   );
   return {
@@ -519,7 +553,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   const viteConfigExists = hasViteConfig(root);
 
-  const isApp = detectProject(root).isAppRouter;
+  const projectInfo = detectProject(root);
+  const isApp = projectInfo.isAppRouter;
   const pmName = detectPackageManagerName(root);
   const shouldInstall = options.install ?? true;
 
@@ -580,6 +615,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     force: options.force ?? false,
     prerender: options.prerender,
     today: options._today,
+    hasTailwind: projectInfo.hasTailwind,
   };
   const platformSetup =
     platform === "cloudflare"
@@ -593,7 +629,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
-  const neededDeps = getInitDependencyGroups(isApp, platform);
+  const neededDeps = getInitDependencyGroups(isApp, platform, projectInfo);
   const missingDependencies = neededDeps.dependencies.filter((dep) => !isDepInstalled(root, dep));
   const missingDevDependencies = neededDeps.devDependencies.filter(
     (dep) => !isDepInstalled(root, dep),
@@ -618,10 +654,14 @@ export async function init(options: InitOptions): Promise<InitResult> {
       );
       try {
         if (shouldInstall) {
-          const installOutput = await installDeps(root, reactUpgrade, exec, { dev: false });
+          const installOutput = await installDeps(root, reactUpgrade, exec, {
+            dev: false,
+          });
           if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
         } else {
-          const added = addDependencyEntries(root, reactUpgrade, { dev: false });
+          const added = addDependencyEntries(root, reactUpgrade, {
+            dev: false,
+          });
           dependencyEntriesAdded.push(...added);
         }
       } catch (error) {
@@ -640,7 +680,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
         dependencyEntriesAdded.push(...missingDependencies);
         if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
       } else {
-        const added = addDependencyEntries(root, missingDependencies, { dev: false });
+        const added = addDependencyEntries(root, missingDependencies, {
+          dev: false,
+        });
         dependencyEntriesAdded.push(...added);
       }
     } catch (error) {
@@ -659,7 +701,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
         devDependencyEntriesAdded.push(...missingDevDependencies);
         if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
       } else {
-        const added = addDependencyEntries(root, missingDevDependencies, { dev: true });
+        const added = addDependencyEntries(root, missingDevDependencies, {
+          dev: true,
+        });
         devDependencyEntriesAdded.push(...added);
       }
     } catch (error) {

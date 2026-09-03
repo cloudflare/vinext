@@ -14,6 +14,7 @@ export type CloudflareProjectInfo = {
   isAppRouter: boolean;
   hasISR: boolean;
   hasMDX: boolean;
+  hasTailwind: boolean;
   nativeModulesToStub: string[];
 };
 
@@ -56,7 +57,9 @@ export function validateCloudflarePlatformSetup(
     .find((candidate) => fs.existsSync(candidate));
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
   const updatedWranglerCode = wranglerCode
-    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, { root: context.root })
+    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, {
+        root: context.root,
+      })
     : undefined;
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
@@ -91,7 +94,9 @@ export function setupCloudflarePlatform(
     .find((candidate) => fs.existsSync(candidate));
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
   const updatedWranglerCode = wranglerCode
-    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, { root: context.root })
+    ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, {
+        root: context.root,
+      })
     : undefined;
   const imagesBinding = updatedWranglerCode
     ? getWranglerImagesBinding(updatedWranglerCode)
@@ -484,7 +489,9 @@ export function updateWranglerConfigForCloudflare(
       );
     } else {
       const rawValue = output.slice(kvProperty.valueStart, kvProperty.valueEnd);
-      const namespaces = JSON.parse(stripJsonComments(rawValue)) as Array<{ binding?: string }>;
+      const namespaces = JSON.parse(stripJsonComments(rawValue)) as Array<{
+        binding?: string;
+      }>;
       if (!namespaces.some((namespace) => namespace.binding === "VINEXT_KV_CACHE")) {
         const closing = kvProperty.valueEnd - 1;
         const content = output.slice(kvProperty.valueStart + 1, closing);
@@ -589,10 +596,18 @@ export function generateAppRouterViteConfig(
     imports.push(`import path from "node:path";`);
   }
 
+  if (info?.hasTailwind) {
+    imports.push(`import tailwindcss from "@tailwindcss/vite";`);
+  }
+
   const plugins: string[] = [];
 
   if (info?.hasMDX) {
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
+  }
+
+  if (info?.hasTailwind) {
+    plugins.push(`    tailwindcss(),`);
   }
   plugins.push(
     `    ${vinextExpression(
@@ -656,6 +671,10 @@ export function generatePagesRouterViteConfig(
     imports.push(`import path from "node:path";`);
   }
 
+  if (info?.hasTailwind) {
+    imports.push(`import tailwindcss from "@tailwindcss/vite";`);
+  }
+
   // Build resolve.alias for native module stubs (tsconfig paths are handled
   // by the vinext plugin's native Vite support).
   let resolveBlock = "";
@@ -675,14 +694,14 @@ export function generatePagesRouterViteConfig(
 
 export default defineConfig({
   plugins: [
-    ${vinextExpression(
-      options,
-      "vinext",
-      "imagesOptimizer",
-      imagesBinding,
-      prerender,
-      versionMetadataBinding,
-    ).replace(/\n/g, "\n    ")},
+${info?.hasTailwind ? "    tailwindcss(),\n" : ""}    ${vinextExpression(
+    options,
+    "vinext",
+    "imagesOptimizer",
+    imagesBinding,
+    prerender,
+    versionMetadataBinding,
+  ).replace(/\n/g, "\n    ")},
     cloudflare(),
   ],${resolveBlock}
 });

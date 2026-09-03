@@ -176,7 +176,9 @@ function detectPackageManagerFromPackageJson(root: string): PackageManagerName |
   if (!fs.existsSync(pkgPath)) return null;
 
   try {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { packageManager?: string };
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as {
+      packageManager?: string;
+    };
     return parsePackageManagerName(pkg.packageManager);
   } catch {
     return null;
@@ -316,6 +318,8 @@ export type ProjectInfo = {
   hasMDX: boolean;
   /** CodeHike is a dependency */
   hasCodeHike: boolean;
+  /** tailwindcss is a dependency (Tailwind v4 needs @tailwindcss/vite) */
+  hasTailwind: boolean;
   /** Native Node modules that need stubbing for Workers */
   nativeModulesToStub: string[];
 };
@@ -397,7 +401,10 @@ export function detectProject(root: string): ProjectInfo {
   if (hasPages) {
     const pagesDir = resolveProjectDir(root, "pages");
     if (pagesDir) {
-      const found = scanTreeForDetection(pagesDir, { isr: !hasISR, mdx: !hasMDX });
+      const found = scanTreeForDetection(pagesDir, {
+        isr: !hasISR,
+        mdx: !hasMDX,
+      });
       hasISR = hasISR || found.isr;
       hasMDX = hasMDX || found.mdx;
     }
@@ -410,6 +417,7 @@ export function detectProject(root: string): ProjectInfo {
     ...(pkg?.devDependencies as Record<string, unknown> | undefined),
   };
   const hasCodeHike = "codehike" in allDeps;
+  const hasTailwind = "tailwindcss" in allDeps;
   const nativeModulesToStub = detectNativeModules(allDeps);
 
   return {
@@ -427,6 +435,7 @@ export function detectProject(root: string): ProjectInfo {
     hasTypeModule,
     hasMDX,
     hasCodeHike,
+    hasTailwind,
     nativeModulesToStub,
   };
 }

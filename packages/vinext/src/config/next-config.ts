@@ -1863,7 +1863,9 @@ export async function resolveNextConfig(
       );
     } else {
       console.warn(
-        '[vinext] next.config option "webpack" is not yet supported and will be ignored',
+        '[vinext] next.config option "webpack" is not yet supported and will be ignored. ' +
+          "Vite resolves .ts/.tsx natively, so common tweaks like resolve.extensionAlias are unnecessary; " +
+          "custom loaders or rules must move to vite.config.ts.",
       );
     }
   }
@@ -2114,7 +2116,10 @@ async function probeWebpackConfig(
   }
 
   try {
-    const clientProbe = await runWebpackConfigProbe(config, root, { dev, isServer: false });
+    const clientProbe = await runWebpackConfigProbe(config, root, {
+      dev,
+      isServer: false,
+    });
     const serverProbe = await runWebpackConfigProbe(config, root, {
       dev,
       isServer: true,
