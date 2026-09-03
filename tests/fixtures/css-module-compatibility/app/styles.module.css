@@ -1,0 +1,8 @@
+.shared {
+  position: absolute;
+}
+
+.wrap {
+  @extend .shared;
+  color: red;
+}
