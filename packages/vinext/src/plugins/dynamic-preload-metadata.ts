@@ -1,4 +1,4 @@
-import type { Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
@@ -10,6 +10,7 @@ import { getAstName, stringLiteralValue, walkAst } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type AstRecord = Record<string, unknown>;
+type AstCallExpression = ESTree.CallExpression & AstRecord;
 
 type TransformResult = {
   code: string;
@@ -72,7 +73,7 @@ function isIdentifierNameInSet(node: unknown, names: Set<string>): boolean {
   return getString(node, "type") === "Identifier" && names.has(getString(node, "name") ?? "");
 }
 
-function isDynamicCall(node: AstRecord, dynamicLocals: Set<string>): boolean {
+function isDynamicCall(node: AstRecord, dynamicLocals: Set<string>): node is AstCallExpression {
   if (getString(node, "type") !== "CallExpression") return false;
   return isIdentifierNameInSet(node.callee, dynamicLocals);
 }
@@ -227,7 +228,7 @@ function withoutBindings(activeNames: Set<string>, localNames: Set<string>): Set
 function visitChildren(
   node: AstRecord,
   dynamicLocals: Set<string>,
-  visitor: (node: AstRecord) => void,
+  visitor: (node: AstCallExpression) => void,
 ): void {
   for (const [key, child] of Object.entries(node)) {
     if (key === "parent") continue;
@@ -244,7 +245,7 @@ function visitChildren(
 function visitDynamicCalls(
   value: unknown,
   dynamicLocals: Set<string>,
-  visitor: (node: AstRecord) => void,
+  visitor: (node: AstCallExpression) => void,
 ): void {
   if (!isRecord(value) || dynamicLocals.size === 0) return;
 
@@ -379,6 +380,84 @@ function dynamicLoaderNode(firstArg: unknown): unknown {
   const loaderProperty =
     findObjectProperty(firstArg, "loader") ?? findObjectProperty(firstArg, "modules");
   return loaderProperty?.value;
+}
+
+function dynamicLoaderArgument(firstArg: ESTree.Argument | undefined): ESTree.Argument | undefined {
+  if (firstArg?.type !== "ObjectExpression") return firstArg;
+
+  const loaderProperty = firstArg.properties.find(
+    (property): property is ESTree.ObjectProperty =>
+      property.type === "Property" && propertyKeyName(property) === "loader",
+  );
+  const modulesProperty = firstArg.properties.find(
+    (property): property is ESTree.ObjectProperty =>
+      property.type === "Property" && propertyKeyName(property) === "modules",
+  );
+  return (loaderProperty ?? modulesProperty)?.value;
+}
+
+function hasUncertainObjectProperties(node: ESTree.Argument | undefined): boolean {
+  if (node?.type !== "ObjectExpression") return false;
+
+  let loaderProperties = 0;
+  let modulesProperties = 0;
+  for (const property of node.properties) {
+    if (property.type === "SpreadElement" || property.computed) return true;
+    const name = propertyKeyName(property);
+    if (name === "loader") loaderProperties += 1;
+    if (name === "modules") modulesProperties += 1;
+  }
+
+  return loaderProperties > 1 || modulesProperties > 1;
+}
+
+function isFunctionOrImportLoader(node: ESTree.Argument | undefined): boolean {
+  return (
+    node?.type === "ArrowFunctionExpression" ||
+    node?.type === "FunctionExpression" ||
+    node?.type === "ImportExpression"
+  );
+}
+
+function hasObjectAccessor(node: ESTree.Argument | undefined): boolean {
+  return (
+    node?.type === "ObjectExpression" &&
+    node.properties.some((property) => property.type === "Property" && property.kind !== "init")
+  );
+}
+
+/**
+ * A pure annotation suppresses effects from inside `dynamic()`, while argument
+ * evaluation remains observable. Limit the hint to loader shapes that
+ * `dynamic()` does not execute eagerly and plain options whose property reads
+ * cannot invoke accessors.
+ */
+function canAnnotateDynamicCallAsPure(callNode: AstCallExpression): boolean {
+  const [firstArg, secondArg] = callNode.arguments;
+  if (!isFunctionOrImportLoader(dynamicLoaderArgument(firstArg))) return false;
+  if (hasObjectAccessor(firstArg) || hasUncertainObjectProperties(firstArg)) return false;
+  if (secondArg === undefined) return true;
+
+  // normalizeDynamicOptions() spreads the second argument over the first, so an
+  // unknown options object or a `loader` property can replace the loader proved
+  // safe above. In particular, replacing it with a loader map makes dynamic()
+  // throw; marking that call pure would let the bundler erase the validation.
+  if (secondArg.type !== "ObjectExpression") return false;
+  if (hasObjectAccessor(secondArg) || hasUncertainObjectProperties(secondArg)) return false;
+  return !hasObjectProperty(secondArg, "loader");
+}
+
+function annotateCallAsPure(
+  output: MagicString,
+  code: string,
+  callNode: AstCallExpression,
+): boolean {
+  // Avoid stacking our hint on top of a user/compiler-provided annotation.
+  const prefix = code.slice(Math.max(0, callNode.start - 80), callNode.start);
+  if (/\/\*\s*[#@]__PURE__\s*\*\/\s*$/.test(prefix)) return false;
+
+  output.prependLeft(callNode.start, "/* @__PURE__ */ ");
+  return true;
 }
 
 function findLastEndedProperty(node: AstRecord): AstRecord | null {
@@ -622,6 +701,9 @@ export async function transformNextDynamicPreloadMetadata(
       resolveManifestModuleIds(specifiers, id, root, resolveDynamicImport).then((moduleIds) => {
         if (moduleIds.length === 0) return;
         if (applyLoadableGenerated(output, code, node, moduleIds)) {
+          if (canAnnotateDynamicCallAsPure(node)) {
+            annotateCallAsPure(output, code, node);
+          }
           changed = true;
         }
       }),

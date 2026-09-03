@@ -24,6 +24,7 @@ export function withScriptNonce(element: React.ReactElement, nonce?: string): Re
   return React.createElement(ScriptNonceProvider, { nonce }, element);
 }
 
+/* @__NO_SIDE_EFFECTS__ */
 function createScriptNonceHook(context: typeof ScriptNonceContext): () => string | undefined {
   if (!context || typeof React.useContext !== "function") {
     return function useScriptNonceFromContext(): string | undefined {
