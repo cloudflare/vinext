@@ -423,6 +423,7 @@ export default createAdapter;
       [
         'import handler from "vinext/server/fetch-handler";',
         'export class VinextCachedResponse { marker = "CUSTOM_RESERVED_EXPORT_MARKER"; }',
+        'export class VinextUncachedResponse { marker = "CUSTOM_UNCACHED_EXPORT_MARKER"; }',
         "export default handler;",
         "",
       ].join("\n"),
@@ -446,6 +447,7 @@ export default createAdapter;
     const buildOutput = readTextFilesRecursive(path.join(root, "dist/server"));
     expect(buildOutput).toContain("Invalid vinext response-stage invocation");
     expect(buildOutput).not.toContain("CUSTOM_RESERVED_EXPORT_MARKER");
+    expect(buildOutput).not.toContain("CUSTOM_UNCACHED_EXPORT_MARKER");
   }, 60_000);
 
   it("keeps the data adapter out of the emitted request-stage graph", async () => {
