@@ -1,5 +1,9 @@
+import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
+
 const frameworkLinkHeaders = new WeakSet<Headers>();
 const edgeRouteHandlerLinkHeaders = new WeakSet<Headers>();
+
+const APP_RESPONSE_STAGE_LINK_PROVENANCE_HEADER = "x-vinext-app-stage-post-config-link";
 
 /** Mark response headers whose Link value was emitted by the App page renderer. */
 export function markFrameworkLinkHeaders(
@@ -35,4 +39,45 @@ export function hasPostConfigLinkHeaders(headers: Headers): boolean {
 export function copyLinkHeaderProvenance(source: Headers, target: Headers): void {
   if (frameworkLinkHeaders.has(source)) frameworkLinkHeaders.add(target);
   if (edgeRouteHandlerLinkHeaders.has(source)) edgeRouteHandlerLinkHeaders.add(target);
+}
+
+/** Serialize otherwise process-local Link provenance across a response-stage transport. */
+export function serializeResponseStageLinkProvenance(response: Response): Response {
+  if (!hasPostConfigLinkHeaders(response.headers)) return response;
+  const headers = new Headers(response.headers);
+  headers.set(APP_RESPONSE_STAGE_LINK_PROVENANCE_HEADER, "1");
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
+}
+
+/** Consume transported Link provenance before applying outer config and middleware. */
+export function consumeResponseStageLinkProvenance(response: Response): {
+  appendToPostConfigLink: boolean;
+  response: Response;
+} {
+  if (response.headers.get(APP_RESPONSE_STAGE_LINK_PROVENANCE_HEADER) !== "1") {
+    return { appendToPostConfigLink: false, response };
+  }
+
+  const headers = new Headers(response.headers);
+  headers.delete(APP_RESPONSE_STAGE_LINK_PROVENANCE_HEADER);
+  const transported = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
+  markFrameworkLinkHeaders(transported.headers, transported.headers.get("link"));
+  return {
+    appendToPostConfigLink: true,
+    response: transported,
+  };
 }

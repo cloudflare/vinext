@@ -83,6 +83,15 @@ describe("Cloudflare CDN adapter build output", () => {
     expect(generated.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
   });
 
+  it("emits the pregenerated-paths sidecar imported by the Worker entry", async () => {
+    const sidecarName = "__vinext_pregenerated_concrete_paths.js";
+    const workerEntry = await fs.readFile(path.join(root, "dist/server/index.js"), "utf8");
+    expect(workerEntry).toMatch(/import\s*["']\.\/__vinext_pregenerated_concrete_paths\.js["']/);
+    expect(await fs.readFile(path.join(root, "dist/server", sidecarName), "utf8")).toBe(
+      "delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n",
+    );
+  });
+
   it("is the effective config selected by Wrangler's deploy redirect", async () => {
     const wranglerPath = createRequire(path.join(root, "package.json")).resolve("wrangler");
     const wrangler = (await import(pathToFileURL(wranglerPath).href)) as {
@@ -156,6 +165,9 @@ describe("Cloudflare CDN adapter build output", () => {
       const generatedPath = path.resolve(pagesRoot, ".wrangler/deploy", redirect.configPath);
       const generated = JSON.parse(await fs.readFile(generatedPath, "utf8"));
       expect(generated.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+      await expect(
+        fs.readFile(path.join(pagesRoot, "dist/server/__vinext_pregenerated_concrete_paths.js")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       await fs.rm(pagesRoot, { recursive: true, force: true });
     }
