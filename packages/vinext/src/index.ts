@@ -2387,6 +2387,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         // Expose basePath to client-side code
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
+        // Next.js enables Strict Mode by default for the App Router while
+        // preserving an explicit `reactStrictMode: false`.
+        // See: packages/next/src/build/define-env.ts
+        defines["process.env.__NEXT_STRICT_MODE_APP"] = JSON.stringify(
+          nextConfig.reactStrictMode === null ? true : nextConfig.reactStrictMode,
+        );
         // Let shared client shims compile out Pages-only behavior in pure App
         // Router builds while retaining it for Pages and hybrid applications.
         defines["process.env.__VINEXT_HAS_PAGES_ROUTER"] = JSON.stringify(String(hasPagesDir));
