@@ -313,7 +313,7 @@ describe("staged Worker cacheability probes", () => {
     ]);
   });
 
-  it("probes App representations independently when the request stage may terminate", async () => {
+  it("defers alternate App representations to final admission when routing may terminate", async () => {
     const root = createProbeRoot();
     const route = {
       cacheabilityProbe: { canPrunePattern: true, requestStageMayTerminate: true },
@@ -351,18 +351,18 @@ describe("staged Worker cacheability probes", () => {
       targets: [rsc, html],
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 2, skipped: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 1, skipped: 0 });
     expect(result.failures).toEqual([]);
     expect(result.cacheableTargets).toEqual([rsc]);
-    expect(result.speculativeTargets).toEqual([]);
+    expect(result.speculativeTargets).toEqual([rsc]);
     const manifestRoute = Object.values(result.manifest.routes)[0];
     expect(cacheabilityManifestRouteState(manifestRoute, "/conditional", "rsc-full")).toBe(
-      "static-candidate",
+      "runtime-check",
     );
   });
 
-  it("probes Pages HTML and data independently when the request stage may terminate", async () => {
+  it("defers Pages data to final admission when routing may terminate", async () => {
     const root = createProbeRoot();
     const route = {
       cacheabilityProbe: { canPrunePattern: true, requestStageMayTerminate: true },
@@ -410,9 +410,9 @@ describe("staged Worker cacheability probes", () => {
       targets: [data, html],
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(result.cacheableTargets).toEqual([data]);
-    expect(result.speculativeTargets).toEqual([]);
+    expect(result.speculativeTargets).toEqual([data]);
   });
 
   it("does not prune a terminal-capable pattern from one representation", async () => {

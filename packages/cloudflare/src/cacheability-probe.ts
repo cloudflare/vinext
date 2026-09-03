@@ -382,7 +382,7 @@ export async function probeStagedWorkerCacheability(options: {
     pruned: boolean;
     results: Map<string, ConcretePathResult>;
     route: NonNullable<CdnWarmTarget["route"]>;
-    splitRepresentations: boolean;
+    requestStageMayTerminate: boolean;
   };
   type ConcretePathGroup = {
     pattern: PatternClassification;
@@ -413,9 +413,9 @@ export async function probeStagedWorkerCacheability(options: {
       pruned: false,
       results: new Map(),
       route: target.route,
-      splitRepresentations: false,
+      requestStageMayTerminate: false,
     };
-    pattern.splitRepresentations ||=
+    pattern.requestStageMayTerminate ||=
       target.route.cacheabilityProbe?.requestStageMayTerminate === true;
     pattern.canPrune &&=
       target.route.cacheabilityProbe?.canPrunePattern === true &&
@@ -445,9 +445,7 @@ export async function probeStagedWorkerCacheability(options: {
     const routePathname =
       route.cacheabilityProbe?.concretePathname ??
       cacheabilityRoutePathname(target.pathname, target.kind);
-    const resultKey = pattern.splitRepresentations
-      ? `${target.kind}\0${routePathname}`
-      : routePathname;
+    const resultKey = routePathname;
     pattern.resultKeys.add(resultKey);
     const concreteKey = `${key}\0${resultKey}`;
     const group = targetGroups.get(concreteKey) ?? {
@@ -519,12 +517,12 @@ export async function probeStagedWorkerCacheability(options: {
         pruned: false,
         results: new Map(),
         route,
-        splitRepresentations: previousPattern.splitRepresentations,
+        requestStageMayTerminate: previousPattern.requestStageMayTerminate,
       };
       patterns.set(key, pattern);
     }
     pattern.canPrune = false;
-    pattern.splitRepresentations ||= previousPattern.splitRepresentations;
+    pattern.requestStageMayTerminate ||= previousPattern.requestStageMayTerminate;
     // A direct destination probe may have provisionally pruned this pattern
     // before the routed source completed. Its retained concrete observation is
     // authoritative once another public path joins the resolved route.
@@ -548,9 +546,7 @@ export async function probeStagedWorkerCacheability(options: {
     const pattern = group.pattern;
     const previousResultKey = group.resultKey;
     group.routePathname = normalized;
-    group.resultKey = pattern.splitRepresentations
-      ? `${group.primary.kind}\0${normalized}`
-      : normalized;
+    group.resultKey = normalized;
     if (!pattern.groups.some((candidate) => candidate.resultKey === previousResultKey)) {
       pattern.resultKeys.delete(previousResultKey);
     }
@@ -613,7 +609,7 @@ export async function probeStagedWorkerCacheability(options: {
       (result.terminal === true &&
         (result.state !== "dynamic" ||
           result.scope !== "identity" ||
-          !group.pattern.splitRepresentations)) ||
+          !group.pattern.requestStageMayTerminate)) ||
       (result.rendererStatic !== undefined && typeof result.rendererStatic !== "boolean") ||
       !Number.isInteger(result.status) ||
       result.status! < 100 ||
