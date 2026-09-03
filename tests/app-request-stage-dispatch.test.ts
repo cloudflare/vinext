@@ -56,12 +56,6 @@ describe("App request-stage dispatch", () => {
       }),
     },
     {
-      name: "request cache bypass",
-      request: new Request("https://example.test/docs/page", {
-        headers: { "Cache-Control": "max-age=0, NO-STORE" },
-      }),
-    },
-    {
       name: "CSP nonce",
       request: new Request("https://example.test/docs/page", {
         headers: { "Content-Security-Policy": "script-src 'nonce-request-stage'" },
@@ -121,6 +115,20 @@ describe("App request-stage dispatch", () => {
       ),
     ).toBe(false);
   });
+
+  it.each(["no-cache", "NO-STORE", "max-age=0, no-cache"])(
+    "keeps production request Cache-Control %s in the request-only graph",
+    (cacheControl) => {
+      expect(
+        appRequestUsesFullResponseGraph(
+          new Request("https://example.test/docs/page", {
+            headers: { "Cache-Control": cacheControl },
+          }),
+          createOptions(),
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("allows an authenticated cacheability probe to classify a no-cache request", () => {
     const request = new Request("https://example.test/docs/page", {

@@ -79,8 +79,8 @@ describe("Pages response-stage dispatch", () => {
     "max-age=0, no-cache",
     "public, no-store, max-age=60",
     'no-cache="set-cookie"',
-  ])("keeps Cache-Control %s local", (cacheControl) => {
-    expect(shouldDispatch({ headers: { "Cache-Control": cacheControl } })).toBe(false);
+  ])("lets the host cache decide request Cache-Control %s", (cacheControl) => {
+    expect(shouldDispatch({ headers: { "Cache-Control": cacheControl } })).toBe(true);
   });
 
   it.each(["max-age=0", "public, max-age=0, must-revalidate", "no-cacheable=true"])(
