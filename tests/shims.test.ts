@@ -3767,6 +3767,118 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
+  it("headers() stays a live view while hiding internal headers from every read", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/proxy-headers-live-view/
+    // packages/next/src/server/web/spec-extension/adapters/headers.test.ts
+    // https://github.com/vercel/next.js/blob/3c97df56ead9d1df81b36f891ba5ac0724c4eec0/test/e2e/app-dir/proxy-headers-live-view/proxy.ts
+    // https://github.com/vercel/next.js/blob/3c97df56ead9d1df81b36f891ba5ac0724c4eec0/packages/next/src/server/web/spec-extension/adapters/headers.test.ts
+    const { setHeadersContext, headers } = await import("../packages/vinext/src/shims/headers.js");
+    const reqHeaders = new Headers({
+      "content-type": "application/json",
+      rsc: "before",
+      "x-custom": "original",
+      "x-nextjs-request-id": "before",
+    });
+    setHeadersContext({
+      headers: reqHeaders,
+      cookies: new Map(),
+    });
+
+    try {
+      const firstPromise = headers();
+      const firstView = await firstPromise;
+      expect(firstView.get("x-added-after-first-read")).toBeNull();
+
+      reqHeaders.set("x-added-after-first-read", "live");
+      reqHeaders.delete("x-custom");
+      reqHeaders.set("rsc", "after");
+      reqHeaders.set("x-nextjs-request-id", "after");
+      reqHeaders.set("x-nextjs-html-request-id", "after");
+
+      const secondPromise = headers();
+      const secondView = await secondPromise;
+
+      expect(secondPromise).toBe(firstPromise);
+      expect(secondView).toBe(firstView);
+      expect(firstView.get("x-added-after-first-read")).toBe("live");
+      expect(firstView.get("x-custom")).toBeNull();
+
+      expect(reqHeaders.get("rsc")).toBe("after");
+      expect(reqHeaders.get("x-nextjs-request-id")).toBe("after");
+      expect(reqHeaders.get("x-nextjs-html-request-id")).toBe("after");
+      expect(firstView.get("rsc")).toBeNull();
+      expect(firstView.get("RSC")).toBeNull();
+      expect(firstView.get("x-nextjs-request-id")).toBeNull();
+      expect(firstView.get("x-nextjs-html-request-id")).toBeNull();
+      expect(firstView.has("rsc")).toBe(false);
+      expect(firstView.has("x-nextjs-request-id")).toBe(false);
+      expect(firstView.has("x-nextjs-html-request-id")).toBe(false);
+
+      const visibleEntries = [
+        ["content-type", "application/json"],
+        ["x-added-after-first-read", "live"],
+      ];
+      expect([...firstView.entries()]).toEqual(visibleEntries);
+      expect([...firstView]).toEqual(visibleEntries);
+      expect([...firstView.keys()]).toEqual(visibleEntries.map(([name]) => name));
+      expect([...firstView.values()]).toEqual(visibleEntries.map(([, value]) => value));
+
+      const seen: string[] = [];
+      firstView.forEach((value, name) => {
+        seen.push(`${name}=${value}`);
+      });
+      expect(seen).toEqual(visibleEntries.map(([name, value]) => `${name}=${value}`));
+      expect(Object.fromEntries(firstView)).toEqual({
+        "content-type": "application/json",
+        "x-added-after-first-read": "live",
+      });
+      expect([...new Headers(firstView).keys()]).toEqual(visibleEntries.map(([name]) => name));
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
+  it("headers() exposes stable methods and passes the sealed view to forEach", async () => {
+    // Ported from Next.js:
+    // packages/next/src/server/web/spec-extension/adapters/headers.test.ts
+    // https://github.com/vercel/next.js/blob/3c97df56ead9d1df81b36f891ba5ac0724c4eec0/packages/next/src/server/web/spec-extension/adapters/headers.test.ts
+    const { setHeadersContext, headers } = await import("../packages/vinext/src/shims/headers.js");
+    const reqHeaders = new Headers({ "content-type": "application/json" });
+    setHeadersContext({
+      headers: reqHeaders,
+      cookies: new Map(),
+    });
+
+    try {
+      const sealed = await headers();
+      for (const method of [
+        "get",
+        "has",
+        "getSetCookie",
+        "keys",
+        "values",
+        "entries",
+        "forEach",
+        Symbol.iterator,
+      ]) {
+        expect(Reflect.get(sealed, method)).toBe(Reflect.get(sealed, method));
+      }
+
+      const parents: Headers[] = [];
+      sealed.forEach((_value, _name, parent) => {
+        parents.push(parent);
+      });
+
+      expect(parents).toHaveLength(1);
+      expect(parents[0]).toBe(sealed);
+      expect(() => parents[0].set("x-escaped", "yes")).toThrow(/Headers cannot be modified/);
+      expect(reqHeaders.get("x-escaped")).toBeNull();
+    } finally {
+      setHeadersContext(null);
+    }
+  });
+
   it("headers() supports the legacy sync access pattern", async () => {
     // Next.js docs: headers() temporarily supports sync property access in v15.
     const { setHeadersContext, headers } = await import("../packages/vinext/src/shims/headers.js");
@@ -12308,14 +12420,11 @@ describe("middleware request header overrides", () => {
     });
   });
 
-  it("next/headers applyMiddlewareRequestHeaders invalidates headers() snapshot taken before the override", async () => {
-    // Regression: a middleware that reads `headers()` (or `cookies()`) before
-    // applying a request-header override would prime a sealed read-only
-    // snapshot built from the *pre*-override request. Discovered with
-    // @clerk/nextjs whose `clerkClient()` reads `headers()` via
-    // `buildRequestLike()` during middleware execution; before the fix, the
-    // Server Component subsequently received the stale snapshot and saw the
-    // pre-override credentials and missing middleware-injected headers.
+  it("next/headers applyMiddlewareRequestHeaders updates the existing live headers() view", async () => {
+    // Next.js keeps headers() live across Proxy/middleware writes while
+    // cookies() remains a parsed snapshot.
+    // Ported from Next.js: test/e2e/app-dir/proxy-headers-live-view/
+    // https://github.com/vercel/next.js/blob/3c97df56ead9d1df81b36f891ba5ac0724c4eec0/test/e2e/app-dir/proxy-headers-live-view/proxy.ts
     const {
       applyMiddlewareRequestHeaders,
       cookies,
@@ -12333,8 +12442,7 @@ describe("middleware request header overrides", () => {
     });
 
     await runWithHeadersContext(headersContextFromRequest(request), async () => {
-      // 1. Prime the sealed snapshot — this is exactly what
-      //    `clerkMiddleware()` does internally via `buildRequestLike()`.
+      // 1. Obtain the request views before middleware applies its override.
       const preHeadersPromise = headers();
       const preCookiesPromise = cookies();
       const preHeaders = await preHeadersPromise;
@@ -12356,20 +12464,29 @@ describe("middleware request header overrides", () => {
         }),
       );
 
-      // 3. A subsequent `headers()` call — for example from the Server
-      //    Component's render — must observe the override, not the snapshot
-      //    captured in step 1.
+      // 3. Both the existing and subsequent headers() reads must observe the
+      //    override through the same live view. cookies() intentionally keeps
+      //    its snapshot behavior.
       const postHeadersPromise = headers();
       const postCookiesPromise = cookies();
       const postHeaders = await postHeadersPromise;
       const postCookies = await postCookiesPromise;
 
-      expect(postHeadersPromise).not.toBe(preHeadersPromise);
+      expect(postHeadersPromise).toBe(preHeadersPromise);
+      expect(postHeaders).toBe(preHeaders);
       expect(postCookiesPromise).not.toBe(preCookiesPromise);
+      expect(preHeaders.get("authorization")).toBeNull();
+      expect(preHeaders.get("cookie")).toBeNull();
+      expect(preHeaders.get("x-keep")).toBe("updated");
+      expect(preHeaders.get("x-added")).toBe("1");
       expect(postHeaders.get("authorization")).toBeNull();
       expect(postHeaders.get("cookie")).toBeNull();
       expect(postHeaders.get("x-keep")).toBe("updated");
       expect(postHeaders.get("x-added")).toBe("1");
+      expect(preCookies.getAll()).toEqual([
+        { name: "a", value: "1" },
+        { name: "b", value: "2" },
+      ]);
       expect(postCookies.getAll()).toEqual([]);
     });
   });

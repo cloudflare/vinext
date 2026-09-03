@@ -1327,15 +1327,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       options.clearRequestContext();
       return notFoundResponse();
     }
-    let addedSourceHeader = false;
     for (const [name, value] of sourceHeadersContext.headers) {
       if (!targetRequestHeaders.has(name)) {
         targetHeadersContext.headers.set(name, value);
-        addedSourceHeader = true;
       }
-    }
-    if (addedSourceHeader) {
-      targetHeadersContext.readonlyHeaders = undefined;
     }
     if (sourceMiddlewareResult.rewritten) {
       // Rewrites such as locale insertion are valid only when they resolve to

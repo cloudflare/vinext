@@ -157,27 +157,23 @@ function setCookieNameValue(setCookie: string): { name: string; value: string } 
 }
 
 function rebuildCookiesFromHeader(ctx: HeadersContext, cookieHeader: string | null): void {
-  ctx.cookies.clear();
-  if (cookieHeader === null) return;
-
-  const nextCookies = parseEdgeRequestCookieHeader(cookieHeader);
-  for (const [name, value] of nextCookies) {
-    ctx.cookies.set(name, value);
-  }
+  ctx.cookies = cookieHeader === null ? new Map() : parseEdgeRequestCookieHeader(cookieHeader);
 }
 
 function mergeMiddlewareSetCookies(ctx: HeadersContext, rawHeader: string | null): boolean {
   if (rawHeader === null) return false;
 
-  let merged = false;
+  let nextCookies: Map<string, string> | null = null;
   for (const setCookie of splitMiddlewareSetCookieHeader(rawHeader)) {
     const entry = setCookieNameValue(setCookie);
     if (!entry) continue;
-    ctx.cookies.set(entry.name, entry.value);
-    merged = true;
+    nextCookies ??= new Map(ctx.cookies);
+    nextCookies.set(entry.name, entry.value);
   }
 
-  return merged;
+  if (!nextCookies) return false;
+  ctx.cookies = nextCookies;
+  return true;
 }
 
 function _getState(): VinextHeadersShimState {
@@ -625,15 +621,10 @@ export function runWithHeadersContext<T>(
  * resulting request header set to the live `HeadersContext`. When an override
  * list is present, omitted headers are deleted as part of the rebuild.
  *
- * Cached `readonlyHeaders` and `readonlyCookies` snapshots on the
- * HeadersContext must be invalidated whenever this function rebuilds the
- * underlying `headers`/`cookies`. Otherwise a middleware that reads
- * `headers()` (or `cookies()`) before returning a request-header override —
- * for example `@clerk/nextjs`, whose `clerkClient()` reads `headers()` via
- * `buildRequestLike()` during middleware execution — primes a sealed snapshot
- * built from the *pre*-override request, and any subsequent `headers()` call
- * from a Server Component would return that stale snapshot instead of the
- * middleware-modified view.
+ * The request header set is updated in place so an existing `headers()` view
+ * remains live across the override. `cookies()` intentionally stays a parsed
+ * snapshot, so its cached wrappers are invalidated when the Cookie header
+ * changes.
  */
 export function applyMiddlewareRequestHeaders(middlewareResponseHeaders: Headers): void {
   const state = _getState();
@@ -650,12 +641,8 @@ export function applyMiddlewareRequestHeaders(middlewareResponseHeaders: Headers
   if (!nextHeaders && middlewareSetCookieHeader === null) return;
 
   if (nextHeaders) {
-    ctx.headers = nextHeaders;
-    // Invalidate any sealed snapshot of the pre-override headers. A middleware
-    // that read `headers()` before returning the override (e.g. clerkMiddleware)
-    // would otherwise leak the pre-override view into the Server Component.
-    ctx.readonlyHeaders = undefined;
     const nextCookieHeader = nextHeaders.get("cookie");
+    replaceHeadersContents(ctx.headers, nextHeaders);
     if (previousCookieHeader !== nextCookieHeader) {
       rebuildCookiesFromHeader(ctx, nextCookieHeader);
       ctx.readonlyCookies = undefined;
@@ -669,8 +656,31 @@ export function applyMiddlewareRequestHeaders(middlewareResponseHeaders: Headers
   }
 }
 
+function replaceHeadersContents(target: Headers, source: Headers): void {
+  for (const name of Array.from(target.keys())) {
+    target.delete(name);
+  }
+
+  for (const [name, value] of source.entries()) {
+    if (name !== "set-cookie") {
+      target.set(name, value);
+    }
+  }
+
+  for (const setCookie of source.getSetCookie()) {
+    target.append("set-cookie", setCookie);
+  }
+}
+
 /** Methods on `Headers` that mutate state. Hoisted to module scope — static. */
 const _HEADERS_MUTATING_METHODS = new Set(["set", "delete", "append"]);
+
+/** Internal request headers that stay available to framework plumbing. */
+const _HIDDEN_REQUEST_HEADERS: ReadonlySet<string> = new Set(
+  [...FLIGHT_HEADERS, NEXT_REQUEST_ID_HEADER, NEXT_HTML_REQUEST_ID_HEADER].map((header) =>
+    header.toLowerCase(),
+  ),
+);
 
 class ReadonlyHeadersError extends Error {
   constructor() {
@@ -791,17 +801,87 @@ function _decorateSuspendingRequestApiPromise<T extends object>(
   });
 }
 
-function _sealHeaders(headers: Headers): Headers {
-  return new Proxy(headers, {
-    get(target, prop) {
+type SealedHeaderMethods = Pick<
+  Headers,
+  | "get"
+  | "has"
+  | "getSetCookie"
+  | "keys"
+  | "values"
+  | "entries"
+  | "forEach"
+  | typeof Symbol.iterator
+>;
+
+function _createHidingHeaderMethods(
+  target: Headers,
+  sealed: Headers,
+  isHidden: (name: string) => boolean,
+): SealedHeaderMethods {
+  function* entries(): HeadersIterator<[string, string]> {
+    for (const entry of target.entries()) {
+      if (!isHidden(entry[0])) {
+        yield entry;
+      }
+    }
+  }
+
+  return {
+    entries,
+    [Symbol.iterator]: entries,
+    get: (name) => (isHidden(name) ? null : target.get(name)),
+    has: (name) => (isHidden(name) ? false : target.has(name)),
+    getSetCookie: () => (isHidden("set-cookie") ? [] : target.getSetCookie()),
+    *keys(): HeadersIterator<string> {
+      for (const name of target.keys()) {
+        if (!isHidden(name)) {
+          yield name;
+        }
+      }
+    },
+    *values(): HeadersIterator<string> {
+      for (const [, value] of entries()) {
+        yield value;
+      }
+    },
+    forEach(callbackfn, thisArg) {
+      for (const [name, value] of entries()) {
+        callbackfn.call(thisArg, value, name, sealed);
+      }
+    },
+  };
+}
+
+function _sealHeaders(headers: Headers, hidden: ReadonlySet<string>): Headers {
+  const isHidden = (name: string): boolean => hidden.has(name.toLowerCase());
+  let methods: SealedHeaderMethods;
+
+  const sealed = new Proxy(headers, {
+    get(target, prop, receiver) {
       if (typeof prop === "string" && _HEADERS_MUTATING_METHODS.has(prop)) {
         throw new ReadonlyHeadersError();
       }
 
-      const value = Reflect.get(target, prop, target);
+      switch (prop) {
+        case Symbol.iterator:
+          return methods[Symbol.iterator];
+        case "get":
+        case "has":
+        case "getSetCookie":
+        case "keys":
+        case "values":
+        case "entries":
+        case "forEach":
+          return methods[prop];
+      }
+
+      const value = Reflect.get(target, prop, receiver);
       return typeof value === "function" ? value.bind(target) : value;
     },
   }) as Headers;
+
+  methods = _createHidingHeaderMethods(headers, sealed, isHidden);
+  return sealed;
 }
 
 function _wrapMutableCookies(cookies: RequestCookies): RequestCookies {
@@ -849,8 +929,10 @@ function _getMutableCookies(ctx: HeadersContext): RequestCookies {
 
 function _getReadonlyCookies(ctx: HeadersContext): RequestCookies {
   if (!ctx.readonlyCookies) {
-    // Keep a separate readonly wrapper so render-path reads avoid the
-    // mutable phase-checking proxy while still reflecting the shared cookie map.
+    // Middleware replaces the parsed cookie map rather than mutating it, so an
+    // existing RequestCookies keeps its snapshot while a subsequent call sees
+    // the new map. Server Action synchronization still updates this map in
+    // place, matching Next.js's phase-aware mutable-cookie behavior.
     ctx.readonlyCookies = _sealCookies(new RequestCookies(ctx.cookies));
   }
 
@@ -859,13 +941,7 @@ function _getReadonlyCookies(ctx: HeadersContext): RequestCookies {
 
 function _getReadonlyHeaders(ctx: HeadersContext): Headers {
   if (!ctx.readonlyHeaders) {
-    const cleaned = new Headers(ctx.headers);
-    for (const header of FLIGHT_HEADERS) {
-      cleaned.delete(header);
-    }
-    cleaned.delete(NEXT_REQUEST_ID_HEADER);
-    cleaned.delete(NEXT_HTML_REQUEST_ID_HEADER);
-    ctx.readonlyHeaders = _sealHeaders(cleaned);
+    ctx.readonlyHeaders = _sealHeaders(ctx.headers, _HIDDEN_REQUEST_HEADERS);
   }
 
   return ctx.readonlyHeaders;
@@ -945,6 +1021,9 @@ export function headersContextFromRequest(
     headers: headersProxy,
     get cookies(): Map<string, string> {
       return getCookies();
+    },
+    set cookies(value: Map<string, string>) {
+      _cookies = value;
     },
     draftModeSecret: options?.draftModeSecret,
   } satisfies HeadersContext;
