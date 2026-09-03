@@ -48,6 +48,14 @@ type RestoredResponseStageRequest = {
   request: Request;
 };
 
+type CloudflareResponse = Response & {
+  readonly webSocket?: WebSocket | null;
+};
+
+type CloudflareResponseInit = ResponseInit & {
+  webSocket?: WebSocket | null;
+};
+
 const CACHED_RESPONSE_STAGE_EXPORT = "VinextCachedResponse";
 const UNCACHED_RESPONSE_STAGE_EXPORT = "VinextUncachedResponse";
 const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
@@ -91,11 +99,22 @@ function stampResponseStageBuildIdentity(response: Response): Response {
   } catch {
     const headers = new Headers(response.headers);
     headers.set(VINEXT_CDN_BUILD_ID_HEADER, buildIdentity);
-    return new Response(response.body, {
+    const webSocket = (response as CloudflareResponse).webSocket;
+    // A Workers WebSocket upgrade is the one non-standard status that can be
+    // reconstructed. Convert other non-HTTP responses before they cross the
+    // entrypoint boundary, where a network-error response would reject fetch.
+    if (!webSocket && (response.status < 200 || response.status > 599)) {
+      const unavailable = responseStageUnavailable();
+      unavailable.headers.set(VINEXT_CDN_BUILD_ID_HEADER, buildIdentity);
+      return unavailable;
+    }
+    const init: CloudflareResponseInit = {
       headers,
       status: response.status,
       statusText: response.statusText,
-    });
+    };
+    if (webSocket) init.webSocket = webSocket;
+    return new Response(response.body, init);
   }
 }
 

@@ -168,6 +168,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
   it("exports the cached stage as a named WorkerEntrypoint class", () => {
@@ -226,6 +227,79 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       expect(response.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
     },
   );
+
+  it("preserves immutable WebSocket upgrades while stamping bypass identity", async () => {
+    // No Next.js test port applies: preserving a Workers 101 response across
+    // configurable entrypoints is specific to the Cloudflare adapter.
+    const OriginalResponse = Response;
+    const webSocket = {} as WebSocket;
+    class WorkersResponse extends OriginalResponse {
+      readonly webSocket: WebSocket | null;
+      readonly #workersStatus: number;
+
+      constructor(body?: BodyInit | null, init?: ResponseInit & { webSocket?: WebSocket | null }) {
+        const status = init?.status ?? 200;
+        super(body, { ...init, status: status === 101 ? 200 : status });
+        this.#workersStatus = status;
+        this.webSocket = init?.webSocket ?? null;
+      }
+
+      override get status(): number {
+        return this.#workersStatus;
+      }
+    }
+    vi.stubGlobal("Response", WorkersResponse);
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
+    const upgrade = new WorkersResponse(null, { status: 101, webSocket });
+    vi.spyOn(upgrade.headers, "set").mockImplementation(() => {
+      throw new TypeError("Cannot modify immutable headers");
+    });
+    stages.response.mockResolvedValue(upgrade);
+
+    const response = (await createUncachedEntrypoint({
+      ...responseStageInvocation({ kind: "app-route" }),
+      expectedResponseStageBuildIdentity: "current-stage",
+      options: { cache: "vinext-cloudflare-v1:bypass" },
+    }).fetch(
+      new Request("https://example.com/socket", {
+        headers: { Upgrade: "websocket" },
+      }),
+    )) as WorkersResponse;
+
+    expect(response).not.toBe(upgrade);
+    expect(response.status).toBe(101);
+    expect(response.webSocket).toBe(webSocket);
+    expect(response.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
+  });
+
+  it("fails closed when an immutable non-HTTP response cannot be stamped", async () => {
+    vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route" }, { cache: "bypass" }),
+    );
+    stages.response.mockResolvedValue(Response.error());
+    const stageResponses: Response[] = [];
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      async fetch(request: Request) {
+        const response = await createUncachedEntrypoint(props).fetch(request);
+        stageResponses.push(response);
+        return response;
+      },
+    }));
+
+    const response = await worker.fetch(
+      new Request("https://example.com/error"),
+      {},
+      { exports: { VinextUncachedResponse: binding } },
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(stageResponses).toHaveLength(1);
+    expect(stageResponses[0]!.status).toBe(503);
+    expect(stageResponses[0]!.headers.get(VINEXT_CDN_BUILD_ID_HEADER)).toBe("current-stage");
+    expect(stages.response).toHaveBeenCalledOnce();
+  });
 
   it.each([
     ["missing", null, 503],
