@@ -554,7 +554,7 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
 /** Uncached response entrypoint. Bypass and probe renders execute only here. */
 export class VinextUncachedResponse extends WorkerEntrypoint<unknown, unknown> {
   async fetch(request: Request): Promise<Response> {
-    const context = withWorkerHostRuntime(this.ctx, this.env);
+    const context = withResponseStagePurge(withWorkerHostRuntime(this.ctx, this.env));
     const invocation = getResponseStageInvocation(context.props, "bypass");
     if (!invocation) {
       return stampResponseStageBuildIdentity(

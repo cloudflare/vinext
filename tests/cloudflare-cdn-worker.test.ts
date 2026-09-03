@@ -463,6 +463,35 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response).not.toHaveBeenCalled();
   });
 
+  it("routes invalidation from uncached renders through the cache-bearing entrypoint", async () => {
+    const purge = vi.fn().mockResolvedValue({ success: true });
+    const cachedBinding = vi.fn(() => ({ fetch: vi.fn(), purge }));
+    stages.response.mockImplementation((_request, _env, context) => {
+      const cache = Reflect.get(context, "cache") as {
+        purge(options: { tags: string[] }): unknown;
+      };
+      return Promise.resolve(cache.purge({ tags: ["updated-tag"] })).then(
+        () => new Response("rendered"),
+      );
+    });
+    const entrypoint = Object.assign(Object.create(VinextUncachedResponse.prototype), {
+      ctx: {
+        exports: { VinextCachedResponse: cachedBinding },
+        props: {
+          ...responseStageInvocation({ kind: "app-route" }),
+          options: { cache: "bypass" },
+        },
+      },
+      env: {},
+    }) as VinextUncachedResponse;
+
+    const response = await entrypoint.fetch(new Request("https://example.com/action"));
+
+    await expect(response.text()).resolves.toBe("rendered");
+    expect(cachedBinding).toHaveBeenCalledWith({ props: {} });
+    expect(purge).toHaveBeenCalledWith({ tags: ["updated-tag"] });
+  });
+
   it("rejects unversioned cache intent when an expected identity is present", async () => {
     vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
     const response = await createEntrypoint({
