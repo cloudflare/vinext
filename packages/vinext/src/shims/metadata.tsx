@@ -831,12 +831,21 @@ function resolveSocialImageUrl(
   metadataBase: URL | null | undefined,
 ): string {
   const imageUrl = isSocialImageDescriptor(image) ? image.url : image;
+
+  // Next.js resolves social image URLs through resolveUrl(), which parses
+  // absolute strings before considering metadataBase. Returning the serialized
+  // URL also percent-encodes characters such as spaces in image paths.
+  if (imageUrl instanceof URL) {
+    return imageUrl.href;
+  }
+  try {
+    return new URL(imageUrl).href;
+  } catch {
+    // Relative social image URLs are composed with metadataBase below.
+  }
+
   const metadataRoute = isSocialImageDescriptor(image) && isMetadataRouteSocialImage(image);
-  if (
-    typeof imageUrl === "string" &&
-    !isAbsoluteOrProtocolRelativeUrl(imageUrl) &&
-    (!metadataBase || metadataRoute)
-  ) {
+  if (!isAbsoluteOrProtocolRelativeUrl(imageUrl) && (!metadataBase || metadataRoute)) {
     return resolveMetadataUrl(imageUrl, getSocialImageMetadataBaseFallback(metadataBase));
   }
   return resolveMetadataUrl(imageUrl, metadataBase);

@@ -3024,6 +3024,29 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('content="https://acme.com/og.png"');
   });
 
+  // Ported from Next.js: packages/next/src/lib/metadata/resolvers/resolve-opengraph.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-opengraph.test.ts
+  it.each([
+    ["without metadataBase", undefined],
+    ["with a cross-origin metadataBase", new URL("https://site.example")],
+  ])("percent-encodes absolute social image URLs %s", (_scenario, metadataBase) => {
+    const imageUrl = "https://cdn.example/path/my image.webp";
+    const encodedImageUrl = "https://cdn.example/path/my%20image.webp";
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          metadataBase,
+          openGraph: { images: [imageUrl] },
+          twitter: { images: [{ url: imageUrl }] },
+        },
+      }),
+    );
+
+    expect(html).toContain(`property="og:image" content="${encodedImageUrl}"`);
+    expect(html).toContain(`name="twitter:image" content="${encodedImageUrl}"`);
+    expect(html).not.toContain(imageUrl);
+  });
+
   it("normalizes root canonical metadataBase URLs without a trailing slash", () => {
     // Ported from Next.js: test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
