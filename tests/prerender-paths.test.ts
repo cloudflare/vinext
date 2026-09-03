@@ -1072,11 +1072,20 @@ describe("prerender path manifest", () => {
     writeFile(
       "middleware.ts",
       [
-        'export const config = { matcher: "/middleware-source" };',
+        "export const config = { matcher: [",
+        '  "/middleware-source",',
+        '  { source: "/en/default-locale-source", locale: false },',
+        '  { source: "/fr/domain-locale-source", locale: false },',
+        "] };",
         "export default function middleware() {}",
       ].join("\n"),
     );
-    for (const pathname of ["middleware-source", "outside"]) {
+    for (const pathname of [
+      "middleware-source",
+      "default-locale-source",
+      "domain-locale-source",
+      "outside",
+    ]) {
       writeFile(
         `app/${pathname}/page.tsx`,
         "export const revalidate = 60; export default function Page() {}\n",
@@ -1088,7 +1097,16 @@ describe("prerender path manifest", () => {
       import("../packages/vinext/src/config/next-config.js"),
     ]);
     const manifest = await emitPrerenderPathManifest({
-      nextConfig: await resolveNextConfig({}, tmpDir),
+      nextConfig: await resolveNextConfig(
+        {
+          i18n: {
+            defaultLocale: "en",
+            domains: [{ defaultLocale: "fr", domain: "fr.example.com" }],
+            locales: ["en", "fr"],
+          },
+        },
+        tmpDir,
+      ),
       requestRouting: "uncached-stage",
       responseVary: "verbatim",
       root: tmpDir,
@@ -1098,6 +1116,12 @@ describe("prerender path manifest", () => {
       requestStageMayTerminate: true,
       routeMayResolve: true,
     });
+    for (const pathname of ["/default-locale-source", "/domain-locale-source"]) {
+      expect(manifest?.routePatterns?.[pathname]?.cacheabilityProbe).toMatchObject({
+        requestStageMayTerminate: true,
+        routeMayResolve: true,
+      });
+    }
     expect(
       manifest?.routePatterns?.["/outside"]?.cacheabilityProbe?.requestStageMayTerminate,
     ).toBeUndefined();
