@@ -43,8 +43,9 @@ export type CdnCacheAdapterCapabilities = {
   responseVary?: "verbatim";
   /**
    * Cacheable App Page responses require a build-bound probe manifest before
-   * the adapter may emit public CDN cache policy. Cloudflare deploy tooling
-   * carries that manifest as a module in a second Worker version.
+   * the adapter may emit public shared-cache policy. The adapter's deployment
+   * integration is responsible for carrying that manifest into the runtime
+   * that serves the corresponding application build.
    */
   routeCacheability?: "probe-manifest";
 };
