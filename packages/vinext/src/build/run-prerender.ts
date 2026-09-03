@@ -37,6 +37,8 @@ import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js"
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
+import { resolveBuiltRscEntryPath } from "./server-entry.js";
+import type { VinextRouteRootConfig } from "../config/prerender.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -101,10 +103,13 @@ type RunPrerenderOptions = {
   pagesBundlePath?: string;
   /**
    * Override the path to the App Router RSC bundle.
-   * Defaults to `<root>/dist/server/index.js`.
+   * Defaults to the App handler recorded in the server build manifest, or
+   * `<root>/dist/server/index.js` for builds without a manifest.
    * Intended for tests that build to a custom outDir.
    */
   rscBundlePath?: string;
+  /** Build output roots captured from the vinext Vite plugin. */
+  routeRootConfig?: VinextRouteRootConfig | null;
   /**
    * Maximum number of routes rendered in parallel.
    * Defaults to prerenderApp/prerenderPages internal defaults when omitted.
@@ -121,9 +126,8 @@ type RunPrerenderOptions = {
  * to stderr/stdout. Returns the full PrerenderResult so callers can pass it to
  * printBuildReport.
  *
- * Works for both plain Node and Cloudflare Workers builds — the CF Workers
- * bundle outputs `dist/server/index.js` which is a standard Node server entry,
- * so no wrangler/miniflare is needed.
+ * Works for both plain Node and hosted builds by resolving the generated App
+ * handler independently of any deployment facade that owns `index.js`.
  *
  * Hybrid projects (both `app/` and `pages/` present) run both prerender
  * phases sharing a single prod server instance. The merged results are written
@@ -163,12 +167,25 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
   if (!appDir && !pagesDir) return null;
 
-  // The manifest lands in dist/server/ alongside the server bundle so it's
-  // cleaned with the rest of vinext's build output on rebuild and co-located
-  // with server artifacts.
-  const manifestDir = path.join(root, "dist", "server");
-  const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
-  const serverDir = path.dirname(rscBundlePath);
+  // Framework manifests and prerendered routes have one canonical location,
+  // independent of where an adapter asks Vite to emit the executable RSC
+  // graph. Consumers such as cache prewarming always resolve these artifacts
+  // from dist/server.
+  const manifestDir = path.resolve(root, "dist", "server");
+  const buildOutDir = path.resolve(root, "dist");
+  const configuredRscServerDir = path.resolve(
+    root,
+    options.routeRootConfig?.rscOutDir ?? path.join("dist", "server"),
+  );
+  const rscBundlePath = options.rscBundlePath ?? resolveBuiltRscEntryPath(configuredRscServerDir);
+  // The emitted entry may live below its server root (for example
+  // entries/app.js). Keep adjacent build metadata rooted at the configured
+  // RSC output while resolving an explicit external entry from its own folder.
+  const relativeEntryPath = path.relative(configuredRscServerDir, rscBundlePath);
+  const serverDir =
+    !relativeEntryPath.startsWith("../") && !path.isAbsolute(relativeEntryPath)
+      ? configuredRscServerDir
+      : path.dirname(rscBundlePath);
 
   const config = options.nextConfig
     ? { ...options.nextConfig }
@@ -183,7 +200,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // output aligned with the bundle it was generated from. (Spreading
   // `loadedConfig` above is required so this assignment does not mutate the
   // shared loaded config.)
-  const builtBuildId = readBuiltBuildId(serverDir);
+  const builtBuildId = readBuiltBuildId(manifestDir) ?? readBuiltBuildId(serverDir);
   if (builtBuildId) {
     config.buildId = builtBuildId;
   }
@@ -214,7 +231,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const outDir =
     mode === "export"
       ? path.join(root, "dist", "client")
-      : path.join(root, "dist", "server", "prerendered-routes");
+      : path.join(manifestDir, "prerendered-routes");
 
   // For hybrid builds (both app/ and pages/ present), start a single shared
   // prod server and pass it to both phases. This avoids spinning up two servers
@@ -234,7 +251,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       sharedProdServer = await startProdServer({
         port: 0,
         host: "127.0.0.1",
-        outDir: path.dirname(serverDir),
+        outDir: buildOutDir,
+        rscEntryPath: rscBundlePath,
+        serverDir,
         noCompression: true,
         purpose: "prerender",
       });
@@ -262,6 +281,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         config,
         concurrency: options.concurrency,
         rscBundlePath,
+        serverDir,
+        buildOutDir,
         // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.
         ...(sharedProdServer ? { _prodServer: sharedProdServer } : {}),
@@ -301,8 +322,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         ...(sharedProdServer
           ? { _prodServer: sharedProdServer, _prerenderSecret: sharedPrerenderSecret }
           : {
-              pagesBundlePath:
-                options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js"),
+              pagesBundlePath: options.pagesBundlePath ?? path.join(manifestDir, "entry.js"),
             }),
         onProgress: ({ total, route }) => {
           if (pagesTotal === 0) {
@@ -373,7 +393,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     );
   }
 
-  injectPregeneratedConcretePaths(root);
+  injectPregeneratedConcretePaths(root, rscBundlePath, manifestDir, [configuredRscServerDir]);
   if (fs.existsSync(rscBundlePath)) {
     rememberCurrentServerEntryImportMtime(rscBundlePath);
   }

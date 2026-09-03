@@ -264,6 +264,29 @@ describe("deploy prerender config wiring", () => {
     );
   });
 
+  it("passes configured build output roots to deploy prerendering", async () => {
+    writeProject("true");
+    const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+    fs.writeFileSync(
+      viteConfigPath,
+      fs
+        .readFileSync(viteConfigPath, "utf-8")
+        .replace(
+          "vinext({ prerender: true",
+          'vinext({ rscOutDir: "build/application", prerender: true',
+        ),
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routeRootConfig: expect.objectContaining({ rscOutDir: "build/application" }),
+      }),
+    );
+  });
+
   it("loads Vite config even when the prerender-all flag already decides prerendering", async () => {
     writeProject("true");
     fs.appendFileSync(

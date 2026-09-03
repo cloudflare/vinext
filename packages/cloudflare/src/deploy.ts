@@ -1993,6 +1993,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       root: info.root,
       concurrency: options.prerenderConcurrency,
       nextConfig,
+      routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
     ranPrerender = true;
   }
