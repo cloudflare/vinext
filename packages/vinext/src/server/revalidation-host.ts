@@ -1,7 +1,10 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import { normalizeDomainHostname } from "../utils/domain-locale.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
-import { isOnDemandRevalidateRequest, PRERENDER_REVALIDATE_HEADER } from "./isr-cache.js";
+import {
+  isOnDemandRevalidateRequest,
+  PRERENDER_REVALIDATE_HEADER,
+} from "./revalidation-request.js";
 
 /**
  * Read the logical request hostname carried by a server-pinned revalidation

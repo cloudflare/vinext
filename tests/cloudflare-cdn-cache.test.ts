@@ -23,7 +23,10 @@ import {
   finalizeAppPageRscCacheResponse,
 } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
-import { applyCdnResponseIdentityHeaders } from "../packages/vinext/src/server/cache-control.js";
+import {
+  applyCdnResponseIdentityHeaders,
+  getCdnResponsePolicyHeaderNames,
+} from "../packages/vinext/src/server/cache-control.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
@@ -85,6 +88,16 @@ describe("CloudflareCdnCacheAdapter", () => {
 
   it("does not own background revalidation (the edge re-requests origin)", () => {
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
+  });
+
+  it("declares every provider policy header to the generic admission layer", () => {
+    setCdnCacheAdapter(adapter);
+
+    expect([...getCdnResponsePolicyHeaderNames()]).toEqual([
+      "cache-control",
+      "cdn-cache-control",
+      "cloudflare-cdn-cache-control",
+    ]);
   });
 
   it("accepts a staged warmup only in its expected Worker version", async () => {
