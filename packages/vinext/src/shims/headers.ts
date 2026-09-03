@@ -21,6 +21,7 @@ import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
+  isolateDynamicUsage,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
@@ -248,7 +249,7 @@ export async function runWithIsolatedDynamicUsage<T>(
     let childState: VinextHeadersShimState | null = null;
     return await runWithUnifiedStateMutation(
       (context) => {
-        context.dynamicUsageDetected = false;
+        isolateDynamicUsage(context);
         childState = context;
       },
       () => {
@@ -593,7 +594,7 @@ export function runWithHeadersContext<T>(
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.headersContext = ctx;
-      uCtx.dynamicUsageDetected = false;
+      isolateDynamicUsage(uCtx);
       uCtx.renderRequestApiUsage = new Set();
       uCtx.connectionProbe = null;
       uCtx.pendingSetCookies = [];

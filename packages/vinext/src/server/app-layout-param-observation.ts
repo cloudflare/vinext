@@ -12,6 +12,7 @@ import {
 import { peekDynamicUsage, peekRenderRequestApiUsage } from "vinext/shims/headers";
 import {
   isInsideUnifiedScope,
+  isolateDynamicUsage,
   runWithUnifiedStateMutation,
 } from "vinext/shims/unified-request-context";
 import type { RenderRequestApiKind } from "./cache-proof.js";
@@ -187,7 +188,7 @@ export function createAppLayoutParamAccessTracker(): AppLayoutParamAccessTracker
       ctx.currentRequestTags = [];
       ctx.currentFetchSoftTags = [];
       ctx.dynamicFetchUrls = new Set();
-      ctx.dynamicUsageDetected = false;
+      isolateDynamicUsage(ctx);
       ctx.renderRequestApiUsage = new Set();
       ctx.requestScopedCacheLife = null;
       ctx.unstableCacheObservations = new Map();

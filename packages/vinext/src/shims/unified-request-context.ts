@@ -352,6 +352,40 @@ export function runWithRequestContext<T>(
 }
 
 /**
+ * `dynamicUsageDetected` is request-scoped, not scope-scoped: a nested scope's
+ * lazily consumed stream can call cookies()/headers()/noStore() long after its
+ * callback settles, so the child aliases the parent's flag instead of copying
+ * it. Scopes that measure a subtree opt out with `isolateDynamicUsage()`.
+ */
+function aliasDynamicUsageToParent(
+  childCtx: UnifiedRequestContext,
+  parentCtx: UnifiedRequestContext,
+): void {
+  Object.defineProperty(childCtx, "dynamicUsageDetected", {
+    configurable: true,
+    enumerable: true,
+    get: () => parentCtx.dynamicUsageDetected,
+    set: (value: boolean) => {
+      parentCtx.dynamicUsageDetected = value;
+    },
+  });
+}
+
+/**
+ * Give a nested scope its own `dynamicUsageDetected` flag, hidden from the
+ * request. Only for scopes that measure a subtree and report the result
+ * themselves; every other scope must let dynamic usage reach the request.
+ */
+export function isolateDynamicUsage(ctx: UnifiedRequestContext): void {
+  Object.defineProperty(ctx, "dynamicUsageDetected", {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: false,
+  });
+}
+
+/**
  * Run `fn` in a nested unified scope derived from the current request context.
  * Used by legacy runWith* wrappers to reset or override one sub-state while
  * preserving proper async isolation for continuations created inside `fn`.
@@ -393,6 +427,10 @@ export function runWithUnifiedStateMutation<T>(
   // observe those changes too. Keep this enumeration in sync with
   // UnifiedRequestContext: when adding a new reference-typed field, add it
   // here too and verify callers still follow the replace-not-mutate rule.
+  //
+  // `dynamicUsageDetected` is the deliberate exception to copy-by-value: it is
+  // aliased to the parent so cacheability stays a property of the request.
+  aliasDynamicUsageToParent(childCtx, parentCtx);
   mutate(childCtx);
   return _als.run(childCtx, fn);
 }
