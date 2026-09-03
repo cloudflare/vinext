@@ -359,7 +359,9 @@ describe("cdnAdapter builder + factory", () => {
         code: 'import handler from "vinext/server/fetch-handler";\nexport default handler;',
         id: "\0virtual:cloudflare/worker-entry",
       }),
-    ).toContain(`export { VinextCachedResponse } from ${JSON.stringify(descriptor.output.entry)};`);
+    ).toContain(
+      `export { VinextCachedResponse, VinextUncachedResponse } from ${JSON.stringify(descriptor.output.entry)};`,
+    );
     expect(
       descriptor.output.transformHostEntry({
         code: "export default { fetch() {} };",

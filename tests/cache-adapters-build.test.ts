@@ -313,6 +313,9 @@ export default createAdapter;
     const workerPath = path.join(root, "dist/server/index.js");
     const worker = fs.readFileSync(workerPath, "utf8");
     expect(worker).toMatch(/export\s*\{[^}]*\b(?:[A-Za-z_$][\w$]*\s+as\s+)?VinextCachedResponse\b/);
+    expect(worker).toMatch(
+      /export\s*\{[^}]*\b(?:[A-Za-z_$][\w$]*\s+as\s+)?VinextUncachedResponse\b/,
+    );
     expect(worker).not.toMatch(/import\s*["']\.\/__vinext_cacheability_manifest\.js["']/);
     expect(readTextFilesRecursive(path.join(root, "dist/server"))).toContain(RESPONSE_STAGE_MARKER);
     expect(readStaticJavaScriptClosure(workerPath)).not.toContain(RESPONSE_STAGE_MARKER);
@@ -338,6 +341,7 @@ export default createAdapter;
     expect(wrangler.exports).toMatchObject({
       default: { type: "worker", cache: { enabled: false } },
       VinextCachedResponse: { type: "worker", cache: { enabled: true } },
+      VinextUncachedResponse: { type: "worker", cache: { enabled: false } },
     });
     expect(wrangler.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
     expect(wrangler.cache).toBeUndefined();
@@ -389,11 +393,15 @@ export default createAdapter;
     expect(fs.readFileSync(workerPath, "utf8")).toMatch(
       /export\s*\{[^}]*\b(?:[A-Za-z_$][\w$]*\s+as\s+)?VinextCachedResponse\b/,
     );
+    expect(fs.readFileSync(workerPath, "utf8")).toMatch(
+      /export\s*\{[^}]*\b(?:[A-Za-z_$][\w$]*\s+as\s+)?VinextUncachedResponse\b/,
+    );
     expect(readTextFilesRecursive(serverDir)).toContain(RESPONSE_STAGE_MARKER);
     expect(readStaticJavaScriptClosure(workerPath)).not.toContain(RESPONSE_STAGE_MARKER);
     expect(wrangler.exports).toMatchObject({
       default: { type: "worker", cache: { enabled: false } },
       VinextCachedResponse: { type: "worker", cache: { enabled: true } },
+      VinextUncachedResponse: { type: "worker", cache: { enabled: false } },
     });
     expect(wrangler.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
     expect(wrangler.cache).toBeUndefined();

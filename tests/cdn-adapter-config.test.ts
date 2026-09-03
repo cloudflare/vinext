@@ -70,6 +70,7 @@ describe("Cloudflare CDN adapter generated config", () => {
     expect(generatedConfig.exports).toMatchObject({
       default: { type: "worker", cache: { enabled: false } },
       VinextCachedResponse: { type: "worker", cache: { enabled: true } },
+      VinextUncachedResponse: { type: "worker", cache: { enabled: false } },
     });
     const auxiliaryConfig = JSON.parse(fs.readFileSync(auxiliaryPath, "utf8"));
     expect(auxiliaryConfig.version_metadata).toBeUndefined();

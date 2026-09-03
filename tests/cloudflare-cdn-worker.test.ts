@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { configureWorkersCacheEntrypoints } from "../packages/cloudflare/src/cache/cdn-adapter-config.js";
 import worker, {
   VinextCachedResponse,
+  VinextUncachedResponse,
 } from "../packages/cloudflare/src/cache/cdn-adapter.worker.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import {
@@ -44,6 +45,13 @@ function createEntrypoint(props: unknown, env: unknown = { binding: "value" }) {
     ctx: { props },
     env,
   }) as VinextCachedResponse;
+}
+
+function createUncachedEntrypoint(props: unknown, env: unknown = { binding: "value" }) {
+  return Object.assign(Object.create(VinextUncachedResponse.prototype), {
+    ctx: { props },
+    env,
+  }) as VinextUncachedResponse;
 }
 
 function responseStageInvocation(
@@ -165,6 +173,11 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
   it("exports the cached stage as a named WorkerEntrypoint class", () => {
     expect(typeof VinextCachedResponse).toBe("function");
     expect(typeof VinextCachedResponse.prototype.fetch).toBe("function");
+  });
+
+  it("exports bypass rendering as a separate named WorkerEntrypoint class", () => {
+    expect(typeof VinextUncachedResponse).toBe("function");
+    expect(typeof VinextUncachedResponse.prototype.fetch).toBe("function");
   });
 
   it("lazily invokes the response stage from named-entrypoint props", async () => {
@@ -432,6 +445,21 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     }).fetch(new Request("https://example.com/page"));
     expect(response.status).toBe(400);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  it("rejects cache intent sent to the wrong response entrypoint", async () => {
+    const request = new Request("https://example.com/page");
+    const [cachedResponse, uncachedResponse] = await Promise.all([
+      createEntrypoint({
+        ...responseStageInvocation({ kind: "app-page" }),
+        options: { cache: "bypass" },
+      }).fetch(request),
+      createUncachedEntrypoint(responseStageInvocation({ kind: "app-page" })).fetch(request),
+    ]);
+
+    expect(cachedResponse.status).toBe(400);
+    expect(uncachedResponse.status).toBe(400);
     expect(stages.response).not.toHaveBeenCalled();
   });
 
@@ -1095,9 +1123,14 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response.mock.calls.map(([request]) => request.method)).toEqual(["GET", "HEAD"]);
   });
 
-  it("renders bypass work without consulting the cached entrypoint", async () => {
+  it("renders bypass work through the uncached entrypoint", async () => {
     const rendered = new Response("private");
-    const binding = vi.fn();
+    const cachedBinding = vi.fn();
+    const uncachedBinding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        return createUncachedEntrypoint(props).fetch(request);
+      },
+    }));
     stages.response.mockResolvedValue(rendered);
     stages.request.mockImplementation((_request, _env, _ctx, dispatch) =>
       dispatch(
@@ -1111,12 +1144,16 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       new Request("https://example.com/private"),
       {},
       {
-        exports: { VinextCachedResponse: binding },
+        exports: {
+          VinextCachedResponse: cachedBinding,
+          VinextUncachedResponse: uncachedBinding,
+        },
       },
     );
 
     expect(result).toBe(rendered);
-    expect(binding).not.toHaveBeenCalled();
+    expect(cachedBinding).not.toHaveBeenCalled();
+    expect(uncachedBinding).toHaveBeenCalledOnce();
     expect(stages.response).toHaveBeenCalledOnce();
   });
 
@@ -1126,7 +1163,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     vi.stubEnv("__VINEXT_RSC_BUILD_IDENTITY", "current-stage");
     const binding = vi.fn(({ props }: { props: unknown }) => ({
       fetch(request: Request) {
-        return createEntrypoint(props).fetch(request);
+        return createUncachedEntrypoint(props).fetch(request);
       },
     }));
     stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
@@ -1145,7 +1182,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     const response = await worker.fetch(
       request,
       {},
-      { exports: { VinextCachedResponse: binding } },
+      { exports: { VinextUncachedResponse: binding } },
     );
 
     expect(response.status).toBe(204);
@@ -1181,6 +1218,13 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
   it("strips forged transport metadata from bypass and fallback renders", async () => {
     for (const cache of ["bypass", "shared"] as const) {
+      const binding = vi.fn(({ props }: { props: unknown }) => ({
+        fetch(request: Request) {
+          return cache === "shared"
+            ? createEntrypoint(props).fetch(request)
+            : createUncachedEntrypoint(props).fetch(request);
+        },
+      }));
       stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
         dispatch(request, { route: "/private" }, { cache }),
       );
@@ -1199,7 +1243,12 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
           },
         }),
         {},
-        {},
+        {
+          exports:
+            cache === "shared"
+              ? { VinextCachedResponse: binding }
+              : { VinextUncachedResponse: binding },
+        },
       );
 
       await expect(response.json()).resolves.toEqual({
@@ -1211,7 +1260,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     }
   });
 
-  it("falls back to an uncached render when loopback exports are unavailable", async () => {
+  it("fails closed when the required response entrypoint is unavailable", async () => {
     stages.response.mockResolvedValue(
       new Response("rendered", {
         headers: {
@@ -1228,14 +1277,15 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     );
 
     const response = await worker.fetch(new Request("https://example.com/page"), {}, {});
-    expect(await response.text()).toBe("rendered");
-    expect(response.headers.get("Cache-Control")).toBe("private, max-age=0, must-revalidate");
+    expect(response.status).toBe(503);
+    expect(await response.text()).toBe("");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
     expect(response.headers.get("Cache-Tag")).toBeNull();
     expect(response.headers.get("X-Vinext-Cache")).toBeNull();
     expect(response.headers.get("X-Nextjs-Cache")).toBeNull();
-    expect(stages.response).toHaveBeenCalledOnce();
+    expect(stages.response).not.toHaveBeenCalled();
   });
 
   it("routes gateway purges through the cache-bearing entrypoint", async () => {
@@ -1270,6 +1320,7 @@ describe("Workers Cache deployment configuration", () => {
       exports: {
         default: { type: "worker", cache: { enabled: false } },
         VinextCachedResponse: { type: "worker", cache: { enabled: true } },
+        VinextUncachedResponse: { type: "worker", cache: { enabled: false } },
       },
     });
   });
@@ -1278,11 +1329,13 @@ describe("Workers Cache deployment configuration", () => {
     expect(
       configureWorkersCacheEntrypoints({ exports: { Counter: { type: "durable_object" } } }),
     ).toMatchObject({ exports: { Counter: { type: "durable_object" } } });
-    expect(() =>
-      configureWorkersCacheEntrypoints({
-        exports: { VinextCachedResponse: { type: "durable_object" } },
-      }),
-    ).toThrow(/reserved Worker export/);
+    for (const name of ["VinextCachedResponse", "VinextUncachedResponse"]) {
+      expect(() =>
+        configureWorkersCacheEntrypoints({
+          exports: { [name]: { type: "durable_object" } },
+        }),
+      ).toThrow(/reserved Worker export/);
+    }
   });
 
   it("preserves compatibility flags and rejects an explicit ctx.exports opt-out", () => {

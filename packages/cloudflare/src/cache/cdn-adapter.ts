@@ -18,12 +18,15 @@ export type CdnAdapterOptions = {
  * Unlike the data adapter (which stores cache entries in a durable store and
  * serves HIT/STALE itself), this adapter delegates serving to Workers Cache on
  * a named Worker entrypoint. The default entrypoint always runs middleware and
- * request-time routing before dispatching the cacheable response stage.
+ * request-time routing before dispatching to cached or uncached response-stage
+ * entrypoints.
  *
  * The emitted Wrangler configuration enables Workers Cache only for that
  * response-stage export, so cache hits do not start the application stage.
  * The generated deployment config automatically enables Workers Cache for the
- * response entrypoint and adds the version metadata binding used by warmup.
+ * cached response entrypoint and adds the version metadata binding used by
+ * warmup. The uncached response entrypoint keeps bypass and probe renders out
+ * of the gateway without enabling Workers Cache for them.
  *
  * The adapter adds a transport-only URL digest so distinct response-stage
  * identities cannot collide. Workers Cache owns this key independently of
@@ -57,7 +60,7 @@ export function cdnAdapter(options?: CdnAdapterOptions) {
       transformHostEntry({ code, id }: { code: string; id: string }) {
         const cleanId = id.charCodeAt(0) === 0 ? id.slice(1) : id;
         if (cleanId !== CLOUDFLARE_WORKER_ENTRY_ID) return null;
-        return `${code}\nexport { VinextCachedResponse } from ${JSON.stringify(workerEntry)};\n`;
+        return `${code}\nexport { VinextCachedResponse, VinextUncachedResponse } from ${JSON.stringify(workerEntry)};\n`;
       },
       finalizeBuildOutput({
         outDir,
