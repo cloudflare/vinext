@@ -945,6 +945,56 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     }
   });
 
+  it("keeps browser cache directives off Workers Cache while restoring cold renders", async () => {
+    const cacheFacingRequests: Request[] = [];
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch(request: Request) {
+        cacheFacingRequests.push(request);
+        return createEntrypoint(props).fetch(request);
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page" }, { cache: "shared" }),
+    );
+    stages.response.mockImplementation((request) =>
+      Response.json({
+        cacheControl: request.headers.get("Cache-Control"),
+        pragma: request.headers.get("Pragma"),
+        cacheControlTransport: request.headers.get("x-vinext-internal-request-cache-control"),
+        pragmaTransport: request.headers.get("x-vinext-internal-request-pragma"),
+      }),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://example.com/reload", {
+        headers: {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+          "x-vinext-internal-request-cache-control": "forged-cache-control",
+          "x-vinext-internal-request-pragma": "forged-pragma",
+        },
+      }),
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    expect(cacheFacingRequests).toHaveLength(1);
+    expect(cacheFacingRequests[0]?.headers.get("Cache-Control")).toBeNull();
+    expect(cacheFacingRequests[0]?.headers.get("Pragma")).toBeNull();
+    expect(cacheFacingRequests[0]?.headers.get("x-vinext-internal-request-cache-control")).not.toBe(
+      "forged-cache-control",
+    );
+    expect(cacheFacingRequests[0]?.headers.get("x-vinext-internal-request-pragma")).not.toBe(
+      "forged-pragma",
+    );
+    await expect(response.json()).resolves.toEqual({
+      cacheControl: "no-cache",
+      pragma: "no-cache",
+      cacheControlTransport: null,
+      pragmaTransport: null,
+    });
+  });
+
   it("keys cached dispatches by route metadata and restores the user-facing URL", async () => {
     const cachedEntrypoint = createEntrypoint(
       responseStageInvocation(
