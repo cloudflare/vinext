@@ -12,7 +12,10 @@
  * for the current project at build time.
  */
 
+// Re-export the adapter-selected Worker facade. A single-stage output exposes
+// only `default`; a multi-stage output may additionally expose named
+// entrypoints which must remain top-level exports in the final Worker module.
 // @ts-expect-error -- virtual module resolved by vinext at build time
-import handler from "virtual:vinext-worker-entry";
-
-export default handler;
+export { default } from "virtual:vinext-worker-entry";
+// @ts-expect-error -- virtual module resolved by vinext at build time
+export * from "virtual:vinext-worker-entry";

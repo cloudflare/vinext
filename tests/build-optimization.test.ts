@@ -21,7 +21,10 @@ import {
   createClientManualChunks,
   getClientTreeshakeConfig,
   createRscFrameworkChunkOutputConfig,
+  createMultiStageCodeSplittingConfig,
+  createMultiStageChunkFileNames,
   RSC_FRAMEWORK_CHUNK_TEST,
+  sanitizeRscChunkFileName,
   isRscFrameworkModule,
 } from "../packages/vinext/src/build/client-build-config.js";
 import {
@@ -3903,6 +3906,7 @@ describe("createRscFrameworkChunkOutputConfig", () => {
     expect(config).not.toHaveProperty("advancedChunks");
     expect(config).not.toHaveProperty("manualChunks");
     expect(config).toEqual({
+      sanitizeFileName: sanitizeRscChunkFileName,
       codeSplitting: {
         groups: [
           {
@@ -3913,6 +3917,167 @@ describe("createRscFrameworkChunkOutputConfig", () => {
         ],
       },
     });
+  });
+
+  it("removes virtual-id markers without changing ordinary chunk names", () => {
+    expect(
+      sanitizeRscChunkFileName(
+        "framework~\\0virtual_vinext-response-stage~\0virtual_vinext-request-stage.js",
+      ),
+    ).toBe("framework~virtual_vinext-response-stage~_virtual_vinext-request-stage.js");
+    expect(sanitizeRscChunkFileName("bad:name\\chunk/part?.js")).toBe("bad_name_chunk_part_.js");
+    expect(sanitizeRscChunkFileName("framework-a1b2c3.js")).toBe("framework-a1b2c3.js");
+  });
+});
+
+describe("createMultiStageChunkFileNames", () => {
+  it("keeps router stage chunks beside the server entry", () => {
+    const fileName = createMultiStageChunkFileNames("_next/static", undefined);
+    expect(fileName({ name: "app-router-entry" } as never)).toBe("app-router-entry-[hash].js");
+    expect(fileName({ name: "pages-router-entry" } as never)).toBe("pages-router-entry-[hash].js");
+    expect(fileName({ name: "app-response-stage-entry" } as never)).toBe(
+      "app-response-stage-entry-[hash].js",
+    );
+    expect(fileName({ name: "pages-request-stage-entry" } as never)).toBe(
+      "pages-request-stage-entry-[hash].js",
+    );
+    expect(fileName({ name: "pages-response-stage-entry" } as never)).toBe(
+      "pages-response-stage-entry-[hash].js",
+    );
+    expect(fileName({ name: "_virtual_vinext-rsc-entry" } as never)).toBe(
+      "_virtual_vinext-rsc-entry-[hash].js",
+    );
+    expect(fileName({ name: "_virtual_vinext-response-stage" } as never)).toBe(
+      "_virtual_vinext-response-stage-[hash].js",
+    );
+    expect(fileName({ name: "vinext-stage-runtime~virtual_vinext-response-stage" } as never)).toBe(
+      "vinext-stage-runtime~virtual_vinext-response-stage-[hash].js",
+    );
+    expect(fileName({ name: "request-runtime" } as never)).toBe(
+      "_next/static/request-runtime-[hash].js",
+    );
+    expect(fileName({ name: "runtime~\\0virtual_stage" } as never)).toBe(
+      "_next/static/runtime~virtual_stage-[hash].js",
+    );
+    expect(
+      fileName({
+        moduleIds: ["/repo/packages/vinext/src/server/app-ssr-entry.ts"],
+        name: "vinext-stage-runtime~index",
+      } as never),
+    ).toBe("vinext-stage-runtime~index-[hash].js");
+  });
+
+  it("preserves a host-provided chunk filename function", () => {
+    let calls = 0;
+    const existing = (chunk: { name: string }) => {
+      calls += 1;
+      return `host/${chunk.name}.js`;
+    };
+    const fileName = createMultiStageChunkFileNames("_next/static", existing as never);
+    expect(fileName({ name: "ordinary" } as never)).toBe("host/ordinary.js");
+    expect(fileName({ name: "runtime~\\0virtual_stage" } as never)).toBe(
+      "host/runtime~virtual_stage.js",
+    );
+    expect(calls).toBe(2);
+  });
+
+  it("applies stage isolation to every server output but not the App SSR renderer", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-hooks-"));
+    try {
+      await fsp.mkdir(path.join(root, "app"), { recursive: true });
+      await fsp.writeFile(
+        path.join(root, "app/page.tsx"),
+        "export default function Page() { return <main>page</main>; }\n",
+      );
+      const plugins = vinext({
+        appDir: root,
+        cache: {
+          cdn: {
+            adapter: "/adapter/cache.js",
+            output: { entry: path.join(root, "adapter-entry.ts"), type: "multi-stage" },
+          },
+        },
+      });
+      const configPlugin = plugins.find(
+        (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      );
+      const outputPlugin = plugins.find(
+        (plugin: any) => plugin.name === "vinext:multi-stage-server-output",
+      );
+      expect(configPlugin).toBeDefined();
+      expect(outputPlugin).toBeDefined();
+      await (configPlugin as any).config(
+        { build: {}, plugins: [], root },
+        { command: "build", mode: "production" },
+      );
+
+      const ssrContext = {
+        environment: { config: { build: { ssr: true } }, name: "ssr" },
+      };
+      expect(
+        await (outputPlugin as any).outputOptions.call(ssrContext, {
+          chunkFileNames: "ssr/[name].js",
+        }),
+      ).toBeUndefined();
+
+      const customClientContext = {
+        environment: {
+          config: { build: { ssr: true }, consumer: "client" },
+          name: "browser-extension",
+        },
+      };
+      expect(
+        await (outputPlugin as any).outputOptions.call(customClientContext, {
+          chunkFileNames: "browser/[name].js",
+        }),
+      ).toBeUndefined();
+
+      const rscContext = {
+        environment: { config: { build: { ssr: true } }, name: "rsc" },
+      };
+      for (const directory of ["esm", "cjs"]) {
+        const hostGroup = { name: `${directory}-host`, test: /host/ };
+        const output = await (outputPlugin as any).outputOptions.call(rscContext, {
+          chunkFileNames: `${directory}/[name].js`,
+          codeSplitting: { groups: [hostGroup] },
+          entryFileNames: `${directory}/entry-[name].js`,
+        });
+        expect(output.entryFileNames).toBe(`${directory}/entry-[name].js`);
+        expect(output.codeSplitting.groups).toContain(hostGroup);
+        expect(output.chunkFileNames({ name: "ordinary" })).toBe(`${directory}/ordinary.js`);
+        expect(output.chunkFileNames({ name: "app-router-entry" })).toBe(
+          "app-router-entry-[hash].js",
+        );
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("createMultiStageCodeSplittingConfig", () => {
+  it("keeps vinext stage chunks entry-aware without dropping host groups", () => {
+    const existing = { groups: [{ name: "host", test: /host/ }] };
+    const config = createMultiStageCodeSplittingConfig(existing);
+
+    const stageGroup = config.groups[0];
+    expect(stageGroup).toMatchObject({
+      entriesAware: true,
+      name: "vinext-stage-runtime",
+    });
+    expect(stageGroup?.test).toBeInstanceOf(RegExp);
+    const test = stageGroup!.test as RegExp;
+    for (const id of [
+      "/repo/packages/vinext/src/server/app-elements.ts",
+      "/repo/packages/vinext/dist/server/app-elements.js",
+      "/app/node_modules/vinext/dist/server/app-elements.js",
+      "/app/node_modules/.pnpm/vinext@1.0.0/node_modules/vinext/dist/server/app-elements.js",
+    ]) {
+      expect(test.test(id), id).toBe(true);
+    }
+    expect(test.test("/app/node_modules/not-vinext/dist/server/app-elements.js")).toBe(false);
+    expect(config.groups[1]).toBe(existing.groups[0]);
   });
 });
 
