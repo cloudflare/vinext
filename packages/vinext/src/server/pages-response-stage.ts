@@ -7,7 +7,7 @@ import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 const PREVIEW_COOKIE_NAMES = new Set(["__prerender_bypass", "__next_preview_data"]);
 const BYPASS_CACHE_CONTROL_DIRECTIVES = new Set(["no-cache", "no-store"]);
 
-function hasPagesPreviewCookie(cookieHeader: string | null): boolean {
+export function hasPagesPreviewCookie(cookieHeader: string | null): boolean {
   if (!cookieHeader) return false;
   for (const pair of cookieHeader.split(";")) {
     const separator = pair.indexOf("=");

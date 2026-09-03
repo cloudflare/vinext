@@ -328,6 +328,30 @@ describe("app route handler runtime helpers", () => {
     expect(() => Reflect.get(dynamicError.request, "cf")).toThrow("dynamic access: request.cf");
   });
 
+  it("does not read a lazy request.cf accessor until userland accesses it", () => {
+    const request = new Request("https://example.com/demo");
+    let reads = 0;
+    Object.defineProperty(request, "cf", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return { country: "AU" };
+      },
+    });
+    const accesses: string[] = [];
+    const tracked = createTrackedAppRouteRequest(request, {
+      onDynamicAccess(access) {
+        accesses.push(access);
+      },
+    });
+
+    expect(reads).toBe(0);
+    expect(Reflect.get(tracked.request, "cf")).toEqual({ country: "AU" });
+    expect(reads).toBe(1);
+    expect(accesses).toEqual(["request.cf"]);
+  });
+
   it("preserves Workers cf metadata when cloning tracked requests", () => {
     const request = new Request("https://example.com/demo");
     const cf = { country: "AU" };

@@ -556,6 +556,57 @@ export function getHeadersContext(): HeadersContext | null {
   return _getState().headersContext;
 }
 
+/** Serialize the effective request-cookie view, including middleware Set-Cookie overlays. */
+export function getEffectiveRequestCookieHeader(): string | null {
+  const context = getHeadersContext();
+  if (!context || context.cookies.size === 0) return null;
+  return [...context.cookies]
+    .map(([name, value]) => `${name}=${encodeURIComponent(value)}`)
+    .join("; ");
+}
+
+export function hasEffectiveRequestCookieChanges(cookieHeader: string | null): boolean {
+  const effective = getHeadersContext()?.cookies;
+  if (!effective) return false;
+  const original = parseEdgeRequestCookieHeader(cookieHeader ?? "");
+  if (effective.size !== original.size) return true;
+  for (const [name, value] of effective) {
+    if (original.get(name) !== value) return true;
+  }
+  return false;
+}
+
+/**
+ * Replace only the request-cookie view for the active request scope.
+ *
+ * Middleware Set-Cookie mutations are visible through `cookies()` during the
+ * same request in Next.js, but they do not rewrite the raw `Cookie` value
+ * returned by `headers()`. The staged App renderer uses this seam to restore
+ * that split view without changing the request Headers object.
+ */
+export function applyEffectiveRequestCookieHeader(cookieHeader: string): void {
+  const state = _getState();
+  const context = state.headersContext;
+  if (!context) return;
+  rebuildCookiesFromHeader(context, cookieHeader);
+  context.readonlyCookies = undefined;
+  context.mutableCookies = undefined;
+}
+
+/** Restore a middleware draft-mode transition inside a staged render scope. */
+export function restoreDraftModeTransition(cookieHeader: string): void {
+  const state = _getState();
+  const context = state.headersContext;
+  if (!context) return;
+  const entry = setCookieNameValue(cookieHeader);
+  if (!entry || entry.name !== DRAFT_MODE_COOKIE) return;
+  context.cookies.set(entry.name, entry.value);
+  context.readonlyCookies = undefined;
+  context.mutableCookies = undefined;
+  context.draftModeEnabled = entry.value === validateDraftModeSecret(context.draftModeSecret ?? "");
+  state.draftModeCookieHeader = cookieHeader;
+}
+
 export function setHeadersContext(ctx: HeadersContext | null): void {
   const state = _getState();
   if (ctx !== null) {

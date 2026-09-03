@@ -343,7 +343,7 @@ ${
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
     : ""
 }
-import { createAppRscHandler } from "vinext/server/app-rsc-handler";
+import { createAppRscHandler } from "vinext/server/app-rsc-combined-handler";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 ${
