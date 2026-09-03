@@ -1,5 +1,19 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.8
+
+### Features
+
+- **Cloudflare:** summarize CDN warmup by route (#3163)
+
+### Bug Fixes
+
+- **Cloudflare:** wait for per-route version propagation (#3164)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.7
 
 ### Features

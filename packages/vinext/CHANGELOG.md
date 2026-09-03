@@ -1,5 +1,15 @@
 # vinext
 
+## 1.0.0-beta.10
+
+### Bug Fixes
+
+- **Cache:** resolve CDN admission from matched route kind (#3160)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.9
 
 ### Features
