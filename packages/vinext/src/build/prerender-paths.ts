@@ -43,7 +43,11 @@ import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
 import { CACHEABILITY_POLICY_HEADERS } from "vinext/shims/cacheability-classification";
 import { resolveBuiltRscEntryPath } from "./server-entry.js";
-import { matchesMiddlewarePathname, type MatcherConfig } from "../server/middleware-matcher.js";
+import {
+  matchesMiddlewarePathname,
+  type MatcherConfig,
+  type MiddlewareLocaleMatchContext,
+} from "../server/middleware-matcher.js";
 
 export type PrerenderRoutePattern = {
   kind: "app-page" | "app-route" | "pages-page";
@@ -1406,13 +1410,29 @@ export async function emitPrerenderPathManifest(
   const middlewareMatcher = middlewarePath
     ? extractMiddlewareMatcherConfig(middlewarePath)
     : undefined;
-  const middlewareMayRouteWarmPath = (pathname: string): boolean =>
-    middlewarePath !== null &&
-    matchesMiddlewarePathname(
-      pathname,
-      middlewareMatcher as MatcherConfig | undefined,
-      config.i18n,
+  const configuredMatcher = middlewareMatcher as MatcherConfig | undefined;
+  const defaultLocaleContexts: MiddlewareLocaleMatchContext[] = config.i18n
+    ? Array.from(
+        new Set([
+          config.i18n.defaultLocale,
+          ...(config.i18n.domains?.map((domain) => domain.defaultLocale) ?? []),
+        ]),
+        (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
+      )
+    : [];
+  const middlewareMayRouteWarmPath = (pathname: string): boolean => {
+    if (middlewarePath === null) return false;
+    if (!config.i18n) return matchesMiddlewarePathname(pathname, configuredMatcher);
+    const firstSegment = pathname.split("/", 3)[1]?.toLowerCase();
+    const localeContexts: MiddlewareLocaleMatchContext[] = config.i18n.locales.some(
+      (locale) => locale.toLowerCase() === firstSegment,
+    )
+      ? [{ kind: "literal" }]
+      : defaultLocaleContexts;
+    return localeContexts.some((localeContext) =>
+      matchesMiddlewarePathname(pathname, configuredMatcher, config.i18n, localeContext),
     );
+  };
   const routedWarmPaths = [...paths, ...discoveredRouteHandlerPaths];
   const routeMayResolveWarmPathSet = new Set(
     hasStagedRequestRouting
