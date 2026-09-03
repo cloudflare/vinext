@@ -46,6 +46,26 @@ describe("staged Worker cacheability probes", () => {
     pattern,
   });
 
+  const pairedRouteTargets = () => {
+    const route = {
+      cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true },
+      kind: "app-page" as const,
+      pattern: "/source",
+    };
+    return {
+      html: { ...target("/source"), route },
+      route,
+      rsc: {
+        headers: { Accept: "text/x-component", RSC: "1" },
+        kind: "rsc-full" as const,
+        label: "/source (RSC full)",
+        pathname: "/source?_rsc",
+        route,
+        sourcePathname: "/source",
+      },
+    };
+  };
+
   const createStaticProbeFetch = () =>
     vi.fn<typeof fetch>(async (input) => {
       const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
@@ -862,6 +882,157 @@ describe("staged Worker cacheability probes", () => {
       staticPaths: { html: ["/safe"] },
       unknownState: "static-candidate",
     });
+  });
+
+  it("retains deferred representation ownership when the primary resolves elsewhere", async () => {
+    const root = createProbeRoot();
+    const { html, rsc } = pairedRouteTargets();
+    const resolveRequest = (headers: HeadersInit) => {
+      const isRsc = new Headers(headers).get("RSC") === "1";
+      return {
+        kind: "app-page",
+        pattern: isRsc ? "/source" : "/html-target",
+        rendererStatic: true,
+        routePathname: isRsc ? "/source" : "/html-target",
+        state: "static-candidate",
+        status: 200,
+        version: 1,
+      };
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) =>
+      Response.json(resolveRequest(init?.headers ?? {})),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [rsc, html],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(new Headers(fetchImpl.mock.calls[0]![1]?.headers).get("RSC")).toBeNull();
+    expect(resolveRequest(rsc.headers)).toMatchObject({
+      pattern: "/source",
+      routePathname: "/source",
+    });
+    expect(result.failures).toEqual([]);
+    expect(result.cacheableTargets).toEqual([html, rsc]);
+    expect(result.speculativeTargets).toEqual([rsc]);
+    expect(Object.keys(result.manifest.routes)).toHaveLength(2);
+    const sourceManifestRoute =
+      result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/source")];
+    const targetManifestRoute =
+      result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/html-target")];
+    expect(sourceManifestRoute).toEqual({
+      kind: "app-page",
+      pattern: "/source",
+      state: "runtime-check",
+    });
+    expect(targetManifestRoute).toEqual({
+      kind: "app-page",
+      pattern: "/html-target",
+      state: "runtime-check",
+      staticRepresentation: "html",
+    });
+    expect(cacheabilityManifestRouteState(sourceManifestRoute, "/source", "rsc-full")).toBe(
+      "runtime-check",
+    );
+    expect(cacheabilityManifestRouteState(targetManifestRoute, "/html-target", "html")).toBe(
+      "static-candidate",
+    );
+  });
+
+  it.each([
+    {
+      change: "route pathname",
+      expectedPattern: "/source",
+      expectedRoutePathname: "/resolved",
+      pattern: "/source",
+      routePathname: "/resolved",
+    },
+    {
+      change: "route pattern",
+      expectedPattern: "/destination/:slug",
+      expectedRoutePathname: "/source",
+      pattern: "/destination/:slug",
+      routePathname: "/source",
+    },
+  ])(
+    "retains deferred representation ownership when only the $change changes",
+    async ({ expectedPattern, expectedRoutePathname, pattern, routePathname }) => {
+      const root = createProbeRoot();
+      const { html, route, rsc } = pairedRouteTargets();
+      const result = await probeStagedWorkerCacheability({
+        buildId: "application-build",
+        fetchImpl: async () =>
+          Response.json({
+            kind: route.kind,
+            pattern,
+            rendererStatic: true,
+            routePathname,
+            state: "static-candidate",
+            status: 200,
+            version: 1,
+          }),
+        retries: 0,
+        root,
+        targetUrl: "https://example.com",
+        targets: [rsc, html],
+      });
+
+      expect(result).toMatchObject({
+        cacheableTargets: [html, rsc],
+        failures: [],
+        probed: 1,
+        speculativeTargets: [rsc],
+      });
+      const manifestRoute =
+        result.manifest.routes[cacheabilityManifestRouteKey(route.kind, route.pattern)];
+      expect(cacheabilityManifestRouteState(manifestRoute, "/source", "rsc-full")).toBe(
+        "runtime-check",
+      );
+      const resolvedManifestRoute =
+        result.manifest.routes[cacheabilityManifestRouteKey(route.kind, expectedPattern)];
+      expect(
+        cacheabilityManifestRouteState(resolvedManifestRoute, expectedRoutePathname, "html"),
+      ).toBe("static-candidate");
+    },
+  );
+
+  it("enforces the manifest byte boundary when one probe resolves into two routes", async () => {
+    const { html, route, rsc } = pairedRouteTargets();
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        kind: route.kind,
+        pattern: "/destination/:slug",
+        rendererStatic: true,
+        routePathname: "/destination/value",
+        state: "static-candidate",
+        status: 200,
+        version: 1,
+      }),
+    );
+    const runProbe = (root: string, maxBytes?: number) =>
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        fetchImpl,
+        ...(maxBytes === undefined ? {} : { manifestLimits: { maxBytes } }),
+        retries: 0,
+        root,
+        targetUrl: "https://example.com",
+        targets: [rsc, html],
+      });
+
+    const baseline = await runProbe(createProbeRoot());
+    const exactBytes = Buffer.byteLength(JSON.stringify(baseline.manifest));
+    await expect(runProbe(createProbeRoot(), exactBytes)).resolves.toMatchObject({ probed: 1 });
+    await expect(runProbe(createProbeRoot(), exactBytes - 1)).rejects.toThrow(
+      `the limit is ${exactBytes - 1} bytes`,
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
   it("records a rewritten App runtime path without a direct destination target", async () => {

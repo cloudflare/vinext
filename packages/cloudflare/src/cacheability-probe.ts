@@ -385,6 +385,7 @@ export async function probeStagedWorkerCacheability(options: {
     requestStageMayTerminate: boolean;
   };
   type ConcretePathGroup = {
+    deferred: boolean;
     pattern: PatternClassification;
     primary: CdnWarmTarget;
     result?: ConcretePathResult;
@@ -462,7 +463,7 @@ export async function probeStagedWorkerCacheability(options: {
       const preference = targetPreference(first) - targetPreference(second);
       return preference || first.sourcePathname.localeCompare(second.sourcePathname);
     });
-    const group = { ...targetGroup, primary: targetGroup.targets[0] };
+    const group = { ...targetGroup, deferred: false, primary: targetGroup.targets[0] };
     targetGroup.pattern.groups.push(group);
     return group;
   });
@@ -553,6 +554,27 @@ export async function probeStagedWorkerCacheability(options: {
     pattern.resultKeys.add(group.resultKey);
   };
 
+  const deferPairedRepresentationsAtOriginalRoute = (group: ConcretePathGroup): void => {
+    const pairedTargets = group.targets.filter((target) => target !== group.primary);
+    if (pairedTargets.length === 0) return;
+    group.targets = [group.primary];
+    for (const target of pairedTargets) {
+      const routePathname =
+        target.route?.cacheabilityProbe?.concretePathname ??
+        cacheabilityRoutePathname(target.pathname, target.kind);
+      const deferredGroup: ConcretePathGroup = {
+        deferred: true,
+        pattern: group.pattern,
+        primary: target,
+        resultKey: routePathname,
+        routePathname,
+        targets: [target],
+      };
+      group.pattern.groups.push(deferredGroup);
+      group.pattern.resultKeys.add(routePathname);
+    }
+  };
+
   const classifyConcretePath = async (group: ConcretePathGroup): Promise<void> => {
     if (group.pattern.pruned) {
       skippedPathCount += 1;
@@ -632,7 +654,12 @@ export async function probeStagedWorkerCacheability(options: {
       reportProgress();
       return;
     }
-    if (result.kind !== target.route.kind || result.pattern !== target.route.pattern) {
+    const resolvedRouteChanged =
+      result.kind !== target.route.kind || result.pattern !== target.route.pattern;
+    const resolvedPathnameChanged =
+      result.routePathname !== undefined &&
+      normalizeCacheabilityRoutePathname(result.routePathname) !== group.routePathname;
+    if (resolvedRouteChanged) {
       if (target.route.cacheabilityProbe?.routeMayResolve !== true) {
         failures.push(
           `${target.label}: probe resolved to unexpected route ${result.pattern ?? ""}`,
@@ -647,6 +674,17 @@ export async function probeStagedWorkerCacheability(options: {
         reportProgress();
         return;
       }
+    }
+    if (
+      target.route.cacheabilityProbe?.routeMayResolve === true &&
+      (resolvedRouteChanged || resolvedPathnameChanged)
+    ) {
+      // The representative request proves only its own routed destination.
+      // Keep alternate representations attached to the original route so
+      // their final completed renders can still pass manifest admission.
+      deferPairedRepresentationsAtOriginalRoute(group);
+    }
+    if (resolvedRouteChanged) {
       moveGroupToResolvedRoute(group, { kind: result.kind, pattern: result.pattern });
     }
     if (result.routePathname !== undefined) {
@@ -794,7 +832,7 @@ export async function probeStagedWorkerCacheability(options: {
       }
       continue;
     }
-    if (pattern.results.size === 0) continue;
+    if (pattern.results.size === 0 && !pattern.groups.some((group) => group.deferred)) continue;
     classified += 1;
     if (Array.from(pattern.results.values()).some((result) => result.state === "dynamic")) {
       dynamic += 1;
@@ -803,6 +841,12 @@ export async function probeStagedWorkerCacheability(options: {
     const rendererStaticTargets = new Map<string, CdnWarmTarget>();
     const runtimePathSet = new Set<string>();
     for (const group of pattern.groups) {
+      if (group.deferred) {
+        runtimePathSet.add(group.routePathname);
+        cacheableTargets.push(...group.targets);
+        speculativeTargets.push(...group.targets);
+        continue;
+      }
       const result = group.result;
       if (result?.state === "static-candidate") {
         if (result.rendererStatic) {
