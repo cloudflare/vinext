@@ -1105,6 +1105,7 @@ export function createPagesPageHandler(
           isrCachePathname,
           expireSeconds: isrExpireSeconds,
           isrRevalidateSeconds,
+          isrFillStartedAt: pageDataResult.isrFillStartedAt,
           isOnDemandRevalidate,
           isStaticPropsRoute,
           isrSet: routeIsrSet,

@@ -17,6 +17,9 @@ import {
   ACTION_REVALIDATED_HEADER,
   FLIGHT_HEADERS,
   NEXT_ACTION_HEADER,
+  NEXT_CACHE_REVALIDATED_TAGS_HEADER,
+  NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER,
+  VINEXT_CACHE_REVALIDATED_TAGS_HEADER,
   RSC_ACTION_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
@@ -31,6 +34,7 @@ import {
   VINEXT_INTERCEPTION_ID_HEADER,
 } from "./headers.js";
 import { ensureFetchPatch, setCurrentFetchSoftTags } from "vinext/shims/fetch-cache";
+import { getCacheTimestamp } from "vinext/shims/cache-handler";
 import type { ReactFormState } from "react-dom/client";
 import {
   getRequestExecutionContext,
@@ -81,6 +85,7 @@ import {
 } from "./image-optimization.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
+import { readPreviouslyRevalidatedTags } from "./revalidated-tags.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
@@ -1881,6 +1886,7 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): (request: Request, ctx: unknown) => Promise<Response> {
   return async function appRscHandler(rawRequest, ctx, allowInternalRscDocumentFallback = false) {
+    const requestStartTime = getCacheTimestamp();
     // Register config-driven cache adapters before anything touches the cache.
     // On the Cloudflare worker the entry already registered them with `env` (this
     // guarded call is a no-op); on Node/dev this is where they get wired, with no
@@ -1901,6 +1907,10 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     // visible to .get() but lost when filterInternalHeaders iterates. Read it
     // BEFORE iterating so applyForwardedMiddlewareContext can skip middleware.
     const mwCtx = rawRequest.headers.get(VINEXT_MW_CTX_HEADER);
+    const previouslyRevalidatedTags = readPreviouslyRevalidatedTags(
+      rawRequest.headers,
+      options.draftModeSecret,
+    );
     const pagesDataUrl = new URL(rawRequest.url);
     const pagesDataInScope =
       !options.basePath || hasBasePath(pagesDataUrl.pathname, options.basePath);
@@ -1942,6 +1952,11 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     const filteredHeaders = executionContext?.isInternalPagesRevalidation
       ? new Headers(rawRequest.headers)
       : filterInternalHeaders(rawRequest.headers);
+    // The authenticated forwarding protocol is consumed into request state;
+    // neither the invalidated tags nor its secret token is application data.
+    filteredHeaders.delete(NEXT_CACHE_REVALIDATED_TAGS_HEADER);
+    filteredHeaders.delete(NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER);
+    filteredHeaders.delete(VINEXT_CACHE_REVALIDATED_TAGS_HEADER);
     filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
     if (isForwardedActionContext(ctx)) {
       filteredHeaders.set("x-action-forwarded", "1");
@@ -1975,6 +1990,8 @@ export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
     const requestContext = createRequestContext({
       headersContext,
       executionContext,
+      previouslyRevalidatedTags: new Set(previouslyRevalidatedTags),
+      requestStartTime,
       unstableCacheRevalidation: "background",
     });
     let interceptionResponseUncacheable = false;

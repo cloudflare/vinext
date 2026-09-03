@@ -31,14 +31,14 @@ import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
-import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
+import { getCacheTimestamp, getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
-  _hasPendingRevalidatedTag,
+  _wasTagRevalidatedAfter,
   _markPendingRevalidatedTag,
   _queuePendingRevalidation,
   _setRequestScopedCacheLife,
@@ -575,6 +575,9 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   tags: string[],
   revalidateSeconds: number | false | undefined,
 ): Promise<Result> {
+  // This becomes the persisted entry timestamp, so a fill that overlaps tag
+  // invalidation cannot appear newer merely because storage completed later.
+  const fillStartedAt = getCacheTimestamp();
   const result = await _unstableCacheAls.run(true, () => fn(...args));
 
   const cacheValue: CachedFetchValue = {
@@ -592,10 +595,15 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
     revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
   };
 
+  if (_wasTagRevalidatedAfter([...tags, ...getCurrentFetchSoftTags()], fillStartedAt)) {
+    return result;
+  }
+
   await getDataCacheHandler().set(cacheKey, cacheValue, {
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
+    timestamp: fillStartedAt,
   });
 
   return result;
@@ -645,13 +653,14 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       // requests, but foreground-refresh inside revalidation scopes so the
       // regenerated page/route stores fresh data.
       const softTags = getCurrentFetchSoftTags();
-      const existing = _hasPendingRevalidatedTag([...tags, ...softTags])
-        ? null
-        : await getDataCacheHandler().get(cacheKey, {
-            kind: "FETCH",
-            tags,
-            softTags,
-          });
+      let existing = await getDataCacheHandler().get(cacheKey, {
+        kind: "FETCH",
+        tags,
+        softTags,
+      });
+      if (existing && _wasTagRevalidatedAfter([...tags, ...softTags], existing.lastModified)) {
+        existing = null;
+      }
       if (existing?.value && existing.value.kind === "FETCH") {
         const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
         if (cached.ok) {

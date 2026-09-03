@@ -12,6 +12,37 @@ export type CacheHandlerValue = {
   value: IncrementalCacheValue | null;
 };
 
+/**
+ * Epoch timestamp with sub-millisecond ordering when the runtime exposes the
+ * High Resolution Time API. Cache fills and tag invalidations must share this
+ * clock so two operations in the same `Date.now()` millisecond remain ordered.
+ * @internal
+ */
+export function getCacheTimestamp(): number {
+  const wallTime = Date.now();
+  if (
+    typeof performance !== "undefined" &&
+    Number.isFinite(performance.timeOrigin) &&
+    performance.timeOrigin > 0
+  ) {
+    const highResolutionTime = performance.timeOrigin + performance.now();
+    // Fake timers and wall-clock corrections can move Date.now() onto a
+    // different epoch while the monotonic clock keeps its original origin.
+    // Persist the wall clock in that case rather than comparing unrelated
+    // timestamp domains across cache handlers or Worker isolates.
+    if (Math.abs(highResolutionTime - wallTime) < 60_000) {
+      return highResolutionTime;
+    }
+  }
+  return wallTime;
+}
+
+/** Resolve a producer timestamp while retaining compatibility with legacy callers. */
+export function getCacheTimestampFromContext(ctx: Record<string, unknown> | undefined): number {
+  const value = ctx?.timestamp;
+  return typeof value === "number" && Number.isFinite(value) ? value : getCacheTimestamp();
+}
+
 export type CacheControlMetadata = {
   revalidate: number | false;
   expire?: number;
@@ -86,29 +117,30 @@ export type CacheHandlerContext = {
   dev?: boolean;
   maxMemoryCacheSize?: number;
   revalidatedTags?: string[];
+  /**
+   * Causal timestamp captured by the producer before cache filling starts.
+   * Handlers must persist it as `lastModified` and return it unchanged.
+   */
+  timestamp?: number;
   [key: string]: unknown;
 };
 
 export type CacheHandler = {
-  get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
-  set(
-    key: string,
-    data: IncrementalCacheValue | null,
-    ctx?: Record<string, unknown>,
-  ): Promise<void>;
+  get(key: string, ctx?: CacheHandlerContext): Promise<CacheHandlerValue | null>;
+  set(key: string, data: IncrementalCacheValue | null, ctx?: CacheHandlerContext): Promise<void>;
   revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
   resetRequestCache?(): void;
 };
 
 export class NoOpCacheHandler implements CacheHandler {
-  async get(_key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+  async get(_key: string, _ctx?: CacheHandlerContext): Promise<CacheHandlerValue | null> {
     return null;
   }
 
   async set(
     _key: string,
     _data: IncrementalCacheValue | null,
-    _ctx?: Record<string, unknown>,
+    _ctx?: CacheHandlerContext,
   ): Promise<void> {}
 
   async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {}
@@ -118,6 +150,8 @@ type MemoryEntry = {
   value: IncrementalCacheValue | null;
   tags: string[];
   lastModified: number;
+  /** Wall-clock write time used for duration-based cache policy. */
+  writtenAt: number;
   revalidateAt: number | null;
   expireAt: number | null;
   cacheControl?: CacheControlMetadata;
@@ -233,13 +267,13 @@ export class MemoryCacheHandler implements CacheHandler {
     }
   }
 
-  async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+  async get(key: string, ctx?: CacheHandlerContext): Promise<CacheHandlerValue | null> {
     const entry = this.store.get(key);
     if (!entry) return null;
 
     for (const tag of entry.tags) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
-      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
+      if (revalidatedAt && revalidatedAt > entry.lastModified) {
         this.deleteEntry(key);
         return null;
       }
@@ -247,7 +281,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
     for (const tag of readStringArrayField(ctx, "softTags")) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
-      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
+      if (revalidatedAt && revalidatedAt > entry.lastModified) {
         return null;
       }
     }
@@ -266,7 +300,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
     const requestedRevalidate = readPositiveNumberField(ctx, "revalidate");
     const requestedRevalidateAt =
-      requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
+      requestedRevalidate === undefined ? null : entry.writtenAt + requestedRevalidate * 1000;
     const isStale =
       (entry.revalidateAt !== null && now > entry.revalidateAt) ||
       (requestedRevalidateAt !== null && now > requestedRevalidateAt);
@@ -290,7 +324,7 @@ export class MemoryCacheHandler implements CacheHandler {
   async set(
     key: string,
     data: IncrementalCacheValue | null,
-    ctx?: Record<string, unknown>,
+    ctx?: CacheHandlerContext,
   ): Promise<void> {
     const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
@@ -313,14 +347,18 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return;
 
-    const now = Date.now();
+    // Framework producers capture this before running user work, matching
+    // Next.js CacheEntry.timestamp. The fallback keeps direct and legacy calls
+    // backward compatible without letting adapters replace a supplied value.
+    const lastModified = getCacheTimestampFromContext(ctx);
+    const writtenAt = Date.now();
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
-        ? now + effectiveRevalidate * 1000
+        ? writtenAt + effectiveRevalidate * 1000
         : null;
     const expireAt =
       typeof effectiveExpire === "number" && effectiveExpire > 0
-        ? now + effectiveExpire * 1000
+        ? writtenAt + effectiveExpire * 1000
         : null;
     // Absent fields stay absent rather than becoming explicit `undefined`, so a
     // round trip through a serializing cache adapter cannot turn "no claim"
@@ -339,7 +377,8 @@ export class MemoryCacheHandler implements CacheHandler {
     const entry = {
       value: data,
       tags,
-      lastModified: now,
+      lastModified,
+      writtenAt,
       revalidateAt,
       expireAt,
       cacheControl,
@@ -358,7 +397,7 @@ export class MemoryCacheHandler implements CacheHandler {
 
   async revalidateTag(tags: string | string[]): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
-    const now = Date.now();
+    const now = getCacheTimestamp();
     for (const tag of tagList) {
       this.tagRevalidatedAt.set(tag, now);
       while (this.tagRevalidatedAt.size > MAX_REVALIDATED_TAG_ENTRIES) {

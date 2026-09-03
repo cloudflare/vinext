@@ -1,4 +1,5 @@
 import type { NextI18nConfig } from "../config/next-config.js";
+import { getCacheTimestamp } from "vinext/shims/cache-handler";
 import type { HeadersAccessPhase } from "vinext/shims/headers";
 import { isrCacheControl, type ISRCacheEntry } from "./isr-cache.js";
 import type { RouteHandlerMiddlewareContext } from "./app-route-handler-response.js";
@@ -108,6 +109,7 @@ export async function readAppRouteHandlerCacheResponse(
 
       options.scheduleBackgroundRegeneration(routeKey, async () => {
         await options.runInRevalidationContext(async () => {
+          const fillStartedAt = getCacheTimestamp();
           options.setNavigationContext({
             pathname: options.cleanPathname,
             searchParams: revalidateSearchParams,
@@ -147,6 +149,7 @@ export async function readAppRouteHandlerCacheResponse(
               expireSeconds: options.expireSeconds,
             }),
             tags: routeTags,
+            timestamp: fillStartedAt,
           });
           options.isrDebug?.("route regen complete", routeKey);
         });

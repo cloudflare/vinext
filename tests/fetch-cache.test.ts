@@ -55,8 +55,14 @@ const {
   consumeDynamicFetchObservations,
   peekDynamicFetchObservations,
 } = await import("../packages/vinext/src/shims/fetch-cache.js");
-const { getCacheHandler, revalidatePath, revalidateTag, MemoryCacheHandler, setCacheHandler } =
-  await import("../packages/vinext/src/shims/cache.js");
+const {
+  getCacheHandler,
+  getCacheTimestamp,
+  revalidatePath,
+  revalidateTag,
+  MemoryCacheHandler,
+  setCacheHandler,
+} = await import("../packages/vinext/src/shims/cache.js");
 const { consumeDynamicUsage, setHeadersContext } =
   await import("../packages/vinext/src/shims/headers.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
@@ -107,6 +113,72 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(1); // Same count = cached
     expect(fetchMock).toHaveBeenCalledTimes(1); // Only one real fetch
+  });
+
+  it("passes the fetch-start timestamp to the cache handler", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-17T00:00:00.000Z"));
+      let persistedTimestamp: unknown;
+      let observedDuringFetch = 0;
+      setCacheHandler({
+        async get() {
+          return null;
+        },
+        async set(_key, _value, ctx) {
+          persistedTimestamp = ctx?.timestamp;
+        },
+        async revalidateTag() {},
+      });
+      fetchMock.mockImplementationOnce(async (input: string | URL | Request) => {
+        vi.advanceTimersByTime(10);
+        observedDuringFetch = getCacheTimestamp();
+        return defaultFetchMockImplementation(input);
+      });
+
+      await fetch("https://api.example.com/producer-timestamp", {
+        next: { revalidate: 60, tags: ["producer-timestamp"] },
+      });
+
+      expect(typeof persistedTimestamp).toBe("number");
+      expect(persistedTimestamp as number).toBeLessThan(observedDuringFetch);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves an entry timestamp when lowering its revalidate policy", async () => {
+    const existingTimestamp = 0;
+    let persistedTimestamp: unknown;
+    setCacheHandler({
+      async get() {
+        return {
+          lastModified: existingTimestamp,
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: { "content-type": "application/json" },
+              body: Buffer.from(JSON.stringify({ cached: true })).toString("base64"),
+              url: "https://api.example.com/lower-policy-timestamp",
+            },
+            tags: ["existing"],
+            revalidate: 60,
+          },
+        };
+      },
+      async set(_key, _value, ctx) {
+        persistedTimestamp = ctx?.timestamp;
+      },
+      async revalidateTag() {},
+    });
+
+    const response = await fetch("https://api.example.com/lower-policy-timestamp", {
+      next: { revalidate: 30, tags: ["additional"] },
+    });
+
+    expect(await response.json()).toEqual({ cached: true });
+    expect(persistedTimestamp).toBe(existingTimestamp);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("cache: 'force-cache' caches indefinitely", async () => {
@@ -1037,6 +1109,7 @@ describe("fetch cache shim", () => {
 
   it("bypasses a stored tagged fetch while its request-local invalidation is pending", async () => {
     const previousHandler = getCacheHandler();
+    const storedAt = Date.now();
     let markInvalidationStarted!: () => void;
     const invalidationStarted = new Promise<void>((resolve) => {
       markInvalidationStarted = resolve;
@@ -1052,7 +1125,7 @@ describe("fetch cache shim", () => {
         getCalls++;
         if (getCalls === 1) return null;
         return {
-          lastModified: Date.now(),
+          lastModified: storedAt,
           value: {
             kind: "FETCH",
             data: {
@@ -1099,6 +1172,93 @@ describe("fetch cache shim", () => {
   });
 
   // ── TTL expiry (stale-while-revalidate) ─────────────────────────────
+
+  it("reuses a tagged fetch cached after request-local revalidation", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+
+      await runWithRequestContext(createRequestContext(), () =>
+        runWithFetchDedupe(async () => {
+          const initial = await fetch("https://api.example.com/post-revalidation-reuse", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await initial.json()).count).toBe(1);
+          const initialReuse = await fetch("https://api.example.com/post-revalidation-reuse", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await initialReuse.json()).count).toBe(1);
+
+          vi.advanceTimersByTime(10);
+          expect(revalidateTag("posts", { expire: 0 })).toBeUndefined();
+
+          vi.advanceTimersByTime(10);
+          const regenerated = await fetch("https://api.example.com/post-revalidation-reuse", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await regenerated.json()).count).toBe(2);
+
+          const reused = await fetch("https://api.example.com/post-revalidation-reuse", {
+            next: { revalidate: 60, tags: ["posts"] },
+          });
+          expect((await reused.json()).count).toBe(2);
+          expect(fetchMock).toHaveBeenCalledTimes(2);
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not persist a tagged fetch fill that straddles request-local revalidation", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      let releaseFill!: () => void;
+      const fillGate = new Promise<void>((resolve) => {
+        releaseFill = resolve;
+      });
+      let markFillStarted!: () => void;
+      const fillStarted = new Promise<void>((resolve) => {
+        markFillStarted = resolve;
+      });
+      fetchMock.mockImplementationOnce(async (input: string | URL | Request) => {
+        requestCount++;
+        markFillStarted();
+        await fillGate;
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        return new Response(JSON.stringify({ url, count: requestCount }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      });
+
+      await runWithRequestContext(createRequestContext(), async () => {
+        const straddled = fetch("https://api.example.com/straddled-tagged-fill", {
+          next: { revalidate: 60, tags: ["posts"] },
+        });
+        await fillStarted;
+        vi.advanceTimersByTime(10);
+        expect(revalidateTag("posts", { expire: 0 })).toBeUndefined();
+        vi.advanceTimersByTime(10);
+        releaseFill();
+
+        expect((await (await straddled).json()).count).toBe(1);
+        const regenerated = await fetch("https://api.example.com/straddled-tagged-fill", {
+          next: { revalidate: 60, tags: ["posts"] },
+        });
+        expect((await regenerated.json()).count).toBe(2);
+        const reused = await fetch("https://api.example.com/straddled-tagged-fill", {
+          next: { revalidate: 60, tags: ["posts"] },
+        });
+        expect((await reused.json()).count).toBe(2);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("returns stale data after TTL expires and triggers background refetch", async () => {
     const res1 = await fetch("https://api.example.com/stale-test", {
@@ -1160,7 +1320,7 @@ describe("fetch cache shim", () => {
     const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
     const store = (handler as any).store as Map<string, any>;
     for (const [, entry] of store) {
-      entry.lastModified = Date.now() - 2_000;
+      entry.writtenAt = Date.now() - 2_000;
       entry.revalidateAt = Date.now() + 58_000;
     }
     startNewFetchCacheScope();
@@ -1185,7 +1345,7 @@ describe("fetch cache shim", () => {
     const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
     const store = (handler as any).store as Map<string, any>;
     for (const [, entry] of store) {
-      entry.lastModified = Date.now() - 2_000;
+      entry.writtenAt = Date.now() - 2_000;
       entry.revalidateAt = Date.now() + 58_000;
     }
     startNewFetchCacheScope();

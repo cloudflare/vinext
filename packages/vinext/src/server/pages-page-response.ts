@@ -1,6 +1,6 @@
 import React, { type ComponentType, type ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
-import type { CachedPagesValue } from "vinext/shims/cache-handler";
+import { getCacheTimestamp, type CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
@@ -159,6 +159,8 @@ type RenderPagesPageResponseOptions = {
   isrCachePathname?: string;
   expireSeconds?: number;
   isrRevalidateSeconds: number | false | null;
+  /** Timestamp captured before getStaticProps began, when applicable. */
+  isrFillStartedAt?: number;
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
   isStaticPropsRoute?: boolean;
@@ -443,6 +445,7 @@ async function writePagesIsrCache(options: {
   shellSuffix: string;
   status: number;
   stream: ReadableStream<Uint8Array>;
+  timestamp: number;
   setCache: RenderPagesPageResponseOptions["isrSet"];
 }): Promise<void> {
   const bodyHtml = await readStreamAsText(options.stream);
@@ -459,6 +462,7 @@ async function writePagesIsrCache(options: {
       cacheControl: isrCacheControl(options.revalidateSeconds, {
         expireSeconds: options.expireSeconds,
       }),
+      timestamp: options.timestamp,
     },
   );
 }
@@ -506,6 +510,7 @@ function applyGsspHeaders(
 export async function renderPagesPageResponse(
   options: RenderPagesPageResponseOptions,
 ): Promise<Response> {
+  const fillStartedAt = options.isrFillStartedAt ?? getCacheTimestamp();
   const renderProps = options.props ?? { pageProps: options.pageProps };
   options.resetSSRHead?.();
   await options.flushPreloads?.();
@@ -671,6 +676,7 @@ export async function renderPagesPageResponse(
       shellSuffix,
       status: finalStatus,
       stream: cacheBodyStream,
+      timestamp: fillStartedAt,
     };
     if (options.isOnDemandRevalidate) {
       // Next.js's internal revalidate path waits for `mocked.res.hasStreamed`.

@@ -176,6 +176,15 @@ export const NEXTJS_DEPLOYMENT_ID_HEADER = "x-nextjs-deployment-id";
 /** Forwarded action marker — set when a request has already been forwarded between workers. */
 export const ACTION_FORWARDED_HEADER = "x-action-forwarded";
 
+/** Tags invalidated by a redirecting/forwarded Server Action. */
+export const NEXT_CACHE_REVALIDATED_TAGS_HEADER = "x-next-revalidated-tags";
+
+/** Lossless JSON form of forwarded cache tags used by vinext peers. */
+export const VINEXT_CACHE_REVALIDATED_TAGS_HEADER = "x-vinext-revalidated-tags-json";
+
+/** Secret token authenticating `x-next-revalidated-tags`. */
+export const NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER = "x-next-revalidate-tag-token";
+
 // ---------------------------------------------------------------------------
 // Server Action response headers (`x-action-*`)
 // ---------------------------------------------------------------------------

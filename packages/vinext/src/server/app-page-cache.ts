@@ -1,4 +1,5 @@
 import type { CachedAppPageValue, CacheControlMetadata } from "vinext/shims/cache-handler";
+import { getCacheTimestamp } from "vinext/shims/cache-handler";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
@@ -464,6 +465,7 @@ export async function readAppPageCacheResponse(
       // above (the RSC variant when `isRscRequest`, the HTML key otherwise), so
       // reuse it instead of recomputing the hash.
       options.scheduleBackgroundRegeneration(isrKey, async () => {
+        const fillStartedAt = getCacheTimestamp();
         const revalidatedPage = await options.renderFreshPageForCache();
         const cacheControl = resolveRegeneratedAppPageCacheControl({
           expireSeconds: options.expireSeconds,
@@ -490,7 +492,7 @@ export async function readAppPageCacheResponse(
               200,
               revalidatedPage.rscRenderObservation,
             ),
-            { cacheControl, tags: revalidatedPage.tags },
+            { cacheControl, tags: revalidatedPage.tags, timestamp: fillStartedAt },
           ),
         ];
 
@@ -509,7 +511,7 @@ export async function readAppPageCacheResponse(
                 revalidatedPage.htmlRenderObservation,
                 revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
               ),
-              { cacheControl, tags: revalidatedPage.tags },
+              { cacheControl, tags: revalidatedPage.tags, timestamp: fillStartedAt },
             ),
           );
         }

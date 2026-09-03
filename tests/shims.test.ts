@@ -6024,6 +6024,136 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
+  it("reuses an unstable_cache entry created after updateTag in the same request", async () => {
+    const { _runWithCacheState, MemoryCacheHandler, setCacheHandler, unstable_cache, updateTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      setCacheHandler(new MemoryCacheHandler());
+
+      let callCount = 0;
+      const cached = unstable_cache(async () => ++callCount, ["action-dedupe-unstable"], {
+        tags: ["action-dedupe-unstable"],
+      });
+
+      await _runWithCacheState(async () => {
+        expect(await cached()).toBe(1);
+        expect(await cached()).toBe(1);
+
+        vi.advanceTimersByTime(10);
+        const previousPhase = setHeadersAccessPhase("action");
+        try {
+          updateTag("action-dedupe-unstable");
+        } finally {
+          setHeadersAccessPhase(previousPhase);
+        }
+
+        vi.advanceTimersByTime(10);
+        expect(await cached()).toBe(2);
+        expect(await cached()).toBe(2);
+      });
+
+      expect(callCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("passes the unstable_cache fill-start timestamp to the cache handler", async () => {
+    const { getCacheTimestamp, MemoryCacheHandler, setCacheHandler, unstable_cache } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-17T00:00:00.000Z"));
+      let persistedTimestamp: unknown;
+      let observedDuringFill = 0;
+      setCacheHandler({
+        async get() {
+          return null;
+        },
+        async set(_key, _value, ctx) {
+          persistedTimestamp = ctx?.timestamp;
+        },
+        async revalidateTag() {},
+      });
+
+      const cached = unstable_cache(async () => {
+        vi.advanceTimersByTime(10);
+        observedDuringFill = getCacheTimestamp();
+        return "value";
+      }, ["producer-timestamp-unstable"]);
+
+      await cached();
+      expect(typeof persistedTimestamp).toBe("number");
+      expect(persistedTimestamp as number).toBeLessThan(observedDuringFill);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("does not persist an unstable_cache fill that straddles updateTag", async () => {
+    const { _runWithCacheState, MemoryCacheHandler, setCacheHandler, unstable_cache, updateTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      setCacheHandler(new MemoryCacheHandler());
+
+      let releaseFill!: () => void;
+      const fillGate = new Promise<void>((resolve) => {
+        releaseFill = resolve;
+      });
+      let markFillStarted!: () => void;
+      const fillStarted = new Promise<void>((resolve) => {
+        markFillStarted = resolve;
+      });
+      let callCount = 0;
+      const cached = unstable_cache(
+        async () => {
+          callCount++;
+          if (callCount === 1) {
+            markFillStarted();
+            await fillGate;
+          }
+          return callCount;
+        },
+        ["straddled-unstable-fill"],
+        { tags: ["straddled-unstable-fill"] },
+      );
+
+      await _runWithCacheState(async () => {
+        const straddled = cached();
+        await fillStarted;
+        vi.advanceTimersByTime(10);
+        const previousPhase = setHeadersAccessPhase("action");
+        try {
+          updateTag("straddled-unstable-fill");
+        } finally {
+          setHeadersAccessPhase(previousPhase);
+        }
+        vi.advanceTimersByTime(10);
+        releaseFill();
+
+        expect(await straddled).toBe(1);
+        expect(await cached()).toBe(2);
+        expect(await cached()).toBe(2);
+      });
+
+      expect(callCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("updateTag throws when called outside a Server Action (e.g. route handler)", async () => {
     const { updateTag } = await import("../packages/vinext/src/shims/cache.js");
     const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
@@ -6279,6 +6409,25 @@ describe("next/cache shim", () => {
     }
   });
 
+  it("MemoryCacheHandler persists a zero producer timestamp", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    const timestamp = 0;
+
+    await handler.set(
+      "producer-timestamp",
+      {
+        kind: "FETCH",
+        data: { headers: {}, body: '"cached"', url: "test" },
+        tags: [],
+        revalidate: 3600,
+      },
+      { timestamp },
+    );
+
+    expect((await handler.get("producer-timestamp"))?.lastModified).toBe(timestamp);
+  });
+
   it("MemoryCacheHandler evicts least-recently-used entries when max size is exceeded", async () => {
     const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
 
@@ -6360,6 +6509,31 @@ describe("next/cache shim", () => {
     // Should now return null (invalidated)
     result = await handler.get("tagged-entry");
     expect(result).toBeNull();
+  });
+
+  it("MemoryCacheHandler keeps an entry written after invalidation in the same wall-clock millisecond", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      await handler.revalidateTag("same-timestamp-tag");
+      await handler.set(
+        "same-timestamp-entry",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: '"fresh"', url: "test" },
+          tags: ["same-timestamp-tag"],
+          revalidate: 3600,
+        },
+        { tags: ["same-timestamp-tag"] },
+      );
+
+      expect(await handler.get("same-timestamp-entry")).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("exports unstable_noStore and noStore as no-ops", async () => {
@@ -7184,6 +7358,231 @@ describe('"use cache" runtime', () => {
     const r3 = await cached();
     expect(r3).toEqual({ count: 2 });
     expect(callCount).toBe(2);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
+  it("reuses a use cache entry created after updateTag in the same request", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { _runWithCacheState, cacheTag, MemoryCacheHandler, setCacheHandler, updateTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      setCacheHandler(new MemoryCacheHandler());
+
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheTag("action-dedupe");
+        return ++callCount;
+      }, "test:action-dedupe");
+
+      await _runWithCacheState(async () => {
+        expect(await cached()).toBe(1);
+        expect(await cached()).toBe(1);
+
+        vi.advanceTimersByTime(10);
+        const previousPhase = setHeadersAccessPhase("action");
+        try {
+          updateTag("action-dedupe");
+        } finally {
+          setHeadersAccessPhase(previousPhase);
+        }
+
+        vi.advanceTimersByTime(10);
+        expect(await cached()).toBe(2);
+        expect(await cached()).toBe(2);
+      });
+
+      expect(callCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("passes the use cache fill-start timestamp to the cache handler", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { getCacheTimestamp, MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-17T00:00:00.000Z"));
+      let persistedTimestamp: unknown;
+      let observedDuringFill = 0;
+      setCacheHandler({
+        async get() {
+          return null;
+        },
+        async set(_key, _value, ctx) {
+          persistedTimestamp = ctx?.timestamp;
+        },
+        async revalidateTag() {},
+      });
+
+      const cached = registerCachedFunction(async () => {
+        vi.advanceTimersByTime(10);
+        observedDuringFill = getCacheTimestamp();
+        return "value";
+      }, "test:producer-timestamp-use-cache");
+
+      await cached();
+      expect(typeof persistedTimestamp).toBe("number");
+      expect(persistedTimestamp as number).toBeLessThan(observedDuringFill);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("uses custom handler timestamps when tag invalidation is not enforced by the handler", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { _runWithCacheState, cacheTag, MemoryCacheHandler, setCacheHandler, updateTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      let stored: Awaited<ReturnType<InstanceType<typeof MemoryCacheHandler>["get"]>> = null;
+      setCacheHandler({
+        async get() {
+          return stored;
+        },
+        async set(_key, value, ctx) {
+          expect(typeof ctx?.timestamp).toBe("number");
+          stored = { lastModified: ctx!.timestamp as number, value };
+        },
+        async revalidateTag() {},
+      });
+
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheTag("custom-handler-action-dedupe");
+        return ++callCount;
+      }, "test:custom-handler-action-dedupe");
+
+      await _runWithCacheState(async () => {
+        expect(await cached()).toBe(1);
+        vi.advanceTimersByTime(10);
+        const previousPhase = setHeadersAccessPhase("action");
+        try {
+          updateTag("custom-handler-action-dedupe");
+        } finally {
+          setHeadersAccessPhase(previousPhase);
+        }
+        vi.advanceTimersByTime(10);
+        expect(await cached()).toBe(2);
+        expect(await cached()).toBe(2);
+      });
+
+      expect(callCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("does not persist a use cache fill that straddles updateTag", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { _runWithCacheState, cacheTag, MemoryCacheHandler, setCacheHandler, updateTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      setCacheHandler(new MemoryCacheHandler());
+
+      let releaseFill!: () => void;
+      const fillGate = new Promise<void>((resolve) => {
+        releaseFill = resolve;
+      });
+      let markFillStarted!: () => void;
+      const fillStarted = new Promise<void>((resolve) => {
+        markFillStarted = resolve;
+      });
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheTag("straddled-use-cache-fill");
+        callCount++;
+        if (callCount === 1) {
+          markFillStarted();
+          await fillGate;
+        }
+        return callCount;
+      }, "test:straddled-use-cache-fill");
+
+      await _runWithCacheState(async () => {
+        const straddled = cached();
+        await fillStarted;
+        vi.advanceTimersByTime(10);
+        const previousPhase = setHeadersAccessPhase("action");
+        try {
+          updateTag("straddled-use-cache-fill");
+        } finally {
+          setHeadersAccessPhase(previousPhase);
+        }
+        vi.advanceTimersByTime(10);
+        releaseFill();
+
+        expect(await straddled).toBe(1);
+        expect(await cached()).toBe(2);
+        expect(await cached()).toBe(2);
+      });
+
+      expect(callCount).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("advances a repeated tag revalidation past entries created after the first one", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { _runWithCacheState, cacheTag, MemoryCacheHandler, setCacheHandler, updateTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersAccessPhase } = await import("../packages/vinext/src/shims/headers.js");
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-15T00:00:00.000Z"));
+      setCacheHandler(new MemoryCacheHandler());
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        cacheTag("repeated-action-dedupe");
+        return ++callCount;
+      }, "test:repeated-action-dedupe");
+
+      await _runWithCacheState(async () => {
+        expect(await cached()).toBe(1);
+        for (const expected of [2, 3]) {
+          vi.advanceTimersByTime(10);
+          const previousPhase = setHeadersAccessPhase("action");
+          try {
+            updateTag("repeated-action-dedupe");
+          } finally {
+            setHeadersAccessPhase(previousPhase);
+          }
+          vi.advanceTimersByTime(10);
+          expect(await cached()).toBe(expected);
+          expect(await cached()).toBe(expected);
+        }
+      });
+
+      expect(callCount).toBe(3);
+    } finally {
+      vi.useRealTimers();
+      setCacheHandler(new MemoryCacheHandler());
+    }
   });
 
   it("nested cacheTag bubbles to the outer cache entry even when the inner HITs", async () => {
