@@ -1295,6 +1295,28 @@ describe("prerenderApp — default mode (app-basic)", () => {
     expect(r).toMatchObject({ route: "/revalidate-test", status: "rendered", revalidate: 60 });
   });
 
+  it("does not persist a speculative prerender that captured a post-shell RSC error", () => {
+    const r = findRoute(results, "/react19-dev-rsc-error");
+    expect(r).toMatchObject({
+      route: "/react19-dev-rsc-error",
+      status: "skipped",
+      reason: "dynamic",
+    });
+    expect(fs.existsSync(path.join(outDir, "react19-dev-rsc-error.html"))).toBe(false);
+    expect(fs.existsSync(path.join(outDir, "react19-dev-rsc-error.rsc"))).toBe(false);
+  });
+
+  it("does not persist a local error-boundary response from speculative prerender", () => {
+    const r = findRoute(results, "/error-server-test");
+    expect(r).toMatchObject({
+      route: "/error-server-test",
+      status: "skipped",
+      reason: "dynamic",
+    });
+    expect(fs.existsSync(path.join(outDir, "error-server-test.html"))).toBe(false);
+    expect(fs.existsSync(path.join(outDir, "error-server-test.rsc"))).toBe(false);
+  });
+
   it("records App Router preload Link headers for cache seeding", () => {
     const r = findRoute(results, "/nextjs-compat/react-max-headers-length");
     expect(r).toMatchObject({

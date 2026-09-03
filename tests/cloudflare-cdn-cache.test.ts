@@ -64,6 +64,9 @@ function finalizePendingDynamicRscResponse(): Response {
       getPageTags() {
         return ["/dashboard"];
       },
+      hasCapturedRenderError() {
+        return false;
+      },
       isrRscKey: vi.fn(),
       isrSet: vi.fn(),
       preserveClientResponseHeaders: false,
@@ -357,6 +360,9 @@ describe("CloudflareCdnCacheAdapter", () => {
         getPageTags() {
           return ["/dynamic-html"];
         },
+        hasCapturedRenderError() {
+          return false;
+        },
         isrHtmlKey(pathname) {
           return "html:" + pathname;
         },
@@ -409,6 +415,9 @@ describe("CloudflareCdnCacheAdapter", () => {
           getPageTags() {
             return ["/dashboard"];
           },
+          hasCapturedRenderError() {
+            return false;
+          },
           isrRscKey: vi.fn(),
           isrSet,
           mountedSlotsHeader: "slot:auth:/",
@@ -451,6 +460,9 @@ describe("CloudflareCdnCacheAdapter", () => {
         getPageTags() {
           return ["/dashboard"];
         },
+        hasCapturedRenderError() {
+          return false;
+        },
         isrRscKey: vi.fn(),
         isrSet: vi.fn(),
         mountedSlotsHeader: "slot:auth:/",
@@ -488,6 +500,9 @@ describe("CloudflareCdnCacheAdapter", () => {
         dynamicUsedDuringBuild: true,
         getPageTags() {
           return ["/dashboard"];
+        },
+        hasCapturedRenderError() {
+          return false;
         },
         isrRscKey: vi.fn(),
         isrSet: vi.fn(),

@@ -3078,6 +3078,71 @@ describe("app page dispatch", () => {
     expect(isrSet).not.toHaveBeenCalled();
   });
 
+  it("preserves stale HTML when an RSC error boundary handles a regeneration failure", async () => {
+    const route = createRoute({ pattern: "/posts/[slug]", routeSegments: ["posts", "[slug]"] });
+    let scheduledRender: unknown = null;
+    const scheduleBackgroundRegeneration: DispatchOptions["scheduleBackgroundRegeneration"] = (
+      _key,
+      renderFn,
+    ) => {
+      scheduledRender = renderFn;
+    };
+    const isrSet = vi.fn(async () => {});
+    const renderError = new Error("RSC regeneration failed");
+    const encoder = new TextEncoder();
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => React.createElement("main", null, "fresh"),
+      cleanPathname: "/posts/hello",
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const flight = await new Response(rscStream).text();
+          return createStream([`<html>${flight}</html>`]);
+        },
+      }),
+      renderToReadableStream(_element, { onError }) {
+        let shellSent = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (!shellSent) {
+              shellSent = true;
+              controller.enqueue(encoder.encode("flight-shell"));
+              return;
+            }
+
+            onError(renderError, {}, {});
+            controller.enqueue(encoder.encode("error-boundary-flight"));
+            controller.close();
+          },
+        });
+      },
+      revalidateSeconds: 60,
+      route,
+      scheduleBackgroundRegeneration,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await expect(response.text()).resolves.toBe("<html>stale</html>");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await expect(scheduledRender()).resolves.toBeUndefined();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   it("resolves the revalidation target route's dynamic config for force-dynamic fetch defaults", async () => {
     // When regenerating a stale cache entry for a target route that is force-dynamic,
     // the dispatch must resolve the target route's dynamic config so that fetch
