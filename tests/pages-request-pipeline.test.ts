@@ -694,6 +694,46 @@ describe("middleware", () => {
     );
   });
 
+  // Next.js stages matching headers() rules before middleware and retains them
+  // on terminal middleware responses.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  it("preserves matching config headers on terminal middleware redirects", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/foo"),
+      baseDeps({
+        configHeaders: [{ source: "/foo", headers: [{ key: "x-config", value: "config" }] }],
+        runMiddleware: makeMiddleware({
+          continue: false,
+          redirectUrl: "http://localhost/bar",
+          responseHeaders: new Headers({ "x-middleware": "middleware" }),
+        }),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("x-config")).toBe("config");
+    expect(result.response.headers.get("x-middleware")).toBe("middleware");
+  });
+
+  it("preserves matching config headers on terminal middleware bodies", async () => {
+    const result = await runPagesRequest(
+      makeRequest("/foo"),
+      baseDeps({
+        configHeaders: [{ source: "/foo", headers: [{ key: "x-config", value: "config" }] }],
+        runMiddleware: makeMiddleware({
+          continue: false,
+          response: new Response("blocked", { headers: { "x-config": "middleware" } }),
+        }),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(await result.response.text()).toBe("blocked");
+    expect(result.response.headers.get("x-config")).toBe("middleware");
+  });
+
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
   it("does not classify a normal request as data from x-nextjs-data alone", async () => {
@@ -1319,9 +1359,47 @@ describe("API routes", () => {
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
     expect(result.response.status).toBe(200);
-    expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/users", null);
+    expect(handleApi).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/api/users",
+      null,
+      expect.any(Headers),
+    );
     // API responses default a missing content-type to octet-stream, not text/html.
     expect(result.defaultContentType).toBe("application/octet-stream");
+  });
+
+  it("passes staged middleware and config response headers to API dispatch", async () => {
+    const handleApi = vi.fn(
+      async (_request: Request, _apiUrl: string, _ctx: unknown, stagedHeaders: Headers) => {
+        expect(stagedHeaders.get("cache-control")).toBe("private, no-store");
+        expect(stagedHeaders.get("x-visitor-id")).toBe("visitor-a");
+        return new Response("api", { headers: { "x-inner": "kept" } });
+      },
+    );
+
+    const result = await runPagesRequest(
+      makeRequest("/api/users"),
+      baseDeps({
+        configHeaders: [
+          {
+            source: "/api/users",
+            headers: [{ key: "Cache-Control", value: "private, no-store" }],
+          },
+        ],
+        handleApi,
+        hasMiddleware: true,
+        runMiddleware: makeMiddleware({
+          responseHeaders: [["x-visitor-id", "visitor-a"]],
+        }),
+      }),
+    );
+
+    expect(result.type).toBe("response");
+    if (result.type !== "response") return;
+    expect(result.response.headers.get("cache-control")).toBe("private, no-store");
+    expect(result.response.headers.get("x-visitor-id")).toBe("visitor-a");
+    expect(result.response.headers.get("x-inner")).toBe("kept");
   });
 
   it("continues to fallback rewrites when an API path has no route match", async () => {
@@ -1586,7 +1664,12 @@ describe("serveFilesystemRoute", () => {
       "beforeFiles",
       "/api/rewritten",
     );
-    expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/rewritten", null);
+    expect(handleApi).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/api/rewritten",
+      null,
+      expect.any(Headers),
+    );
   });
 
   it("lets a middleware rewrite move a mutation away from an existing public file", async () => {
@@ -1620,7 +1703,12 @@ describe("serveFilesystemRoute", () => {
       "beforeFiles",
       "/api/from-middleware",
     );
-    expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/from-middleware", null);
+    expect(handleApi).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/api/from-middleware",
+      null,
+      expect.any(Headers),
+    );
   });
 
   it("re-enters filesystem matching after a middleware rewrite", async () => {
@@ -1704,7 +1792,12 @@ describe("serveFilesystemRoute", () => {
     );
 
     expect(apiResult.type).toBe("response");
-    expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/hello", null);
+    expect(handleApi).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/api/hello",
+      null,
+      expect.any(Headers),
+    );
     expect(pageResult.type).toBe("response");
     expect(renderPage).toHaveBeenCalledWith(
       expect.any(Request),
@@ -1813,7 +1906,12 @@ describe("afterFiles rewrites", () => {
     );
 
     expect(result.type).toBe("response");
-    expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/hello", null);
+    expect(handleApi).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/api/hello",
+      null,
+      expect.any(Headers),
+    );
   });
 
   it("applies afterFiles rewrite when page match is dynamic", async () => {
@@ -2097,7 +2195,12 @@ describe("fallback rewrites on 404", () => {
     );
 
     expect(result.type).toBe("response");
-    expect(handleApi).toHaveBeenCalledWith(expect.any(Request), "/api/hello", null);
+    expect(handleApi).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/api/hello",
+      null,
+      expect.any(Headers),
+    );
   });
 
   it("uses fallback rewrite when page misses and renders 404", async () => {
