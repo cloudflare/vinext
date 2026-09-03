@@ -19,7 +19,7 @@
 // deliberately uses emitted identity for bundled dependencies instead: source
 // paths do not exist in Workers and must not leak from the build host, while an
 // emitted URL remains meaningful after relocating Node and Nitro output.
-import { parseAst, type Plugin, type ResolvedConfig } from "vite";
+import { parseAst, type ESTree, type Plugin, type ResolvedConfig } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { randomUUID } from "node:crypto";
@@ -30,14 +30,9 @@ import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js
 import {
   collectBindingNames,
   forEachAstChild,
-  hasRange,
-  isAstRecord,
   isIdentifierNamed,
-  nodeArray,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
-  type AstRange,
-  type AstRecord,
 } from "./ast-utils.js";
 import { magicStringTransformResult, type MagicStringTransformResult } from "./transform-result.js";
 
@@ -522,7 +517,7 @@ function rewriteModuleIdentity(
     cjsGlobalInitializers?: CjsGlobalInitializers;
   },
 ): MagicStringTransformResult | null {
-  let ast: unknown;
+  let ast: ReturnType<typeof parseAst>;
   try {
     ast = parseAst(code, {
       lang: scriptParserLanguage(options.id) ?? "jsx",
@@ -721,12 +716,10 @@ function importMetaUrlValue(
   return pathToFileURL(canonicalId).href;
 }
 
-function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: number }> {
+function collectImportMetaUrlRanges(ast: ESTree.Program): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = [];
 
-  function visit(value: unknown): void {
-    if (!isAstRecord(value)) return;
-
+  function visit(value: ESTree.Node): void {
     if (isImportMetaUrlNode(value)) {
       ranges.push({ start: value.start, end: value.end });
       return;
@@ -738,7 +731,7 @@ function collectImportMetaUrlRanges(ast: unknown): Array<{ start: number; end: n
     }
 
     if (isNewUrlExpression(value)) {
-      const args = nodeArray(value.arguments);
+      const args = value.arguments;
       for (let index = 0; index < args.length; index += 1) {
         if (index === 1 && isImportMetaUrlBaseNode(args[index])) continue;
         visit(args[index]);
@@ -777,7 +770,10 @@ function sourcePathCjsGlobalInitializers(canonicalId: string): CjsGlobalInitiali
   };
 }
 
-function injectServerCjsGlobals(ast: unknown, initializers: CjsGlobalInitializers): string | null {
+function injectServerCjsGlobals(
+  ast: ESTree.Program,
+  initializers: CjsGlobalInitializers,
+): string | null {
   const analysis = analyzeServerCjsGlobals(ast);
   const parts = CJS_GLOBALS.filter(
     (name) => analysis.reads.has(name) && !analysis.moduleBindings.has(name),
@@ -794,12 +790,12 @@ type ServerCjsAnalysis = {
 //   - reads: names used as values
 //   - moduleBindings: names bound anywhere in module scope, including `var`
 //     declarations hidden inside top-level blocks and control flow
-function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
+function analyzeServerCjsGlobals(ast: ESTree.Program): ServerCjsAnalysis {
   const reads = new Set<CjsGlobalName>();
   const moduleBindings = new Set<CjsGlobalName>();
 
   // Recursively walks a binding pattern. Each name found is a module binding.
-  function recordBinding(pattern: unknown): void {
+  function recordBinding(pattern: ESTree.Node | null): void {
     const names = new Set<string>();
     collectBindingNames(pattern, names);
     for (const name of names) {
@@ -810,30 +806,32 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   // Records bindings declared directly by a top-level statement. `var` is
   // handled by the recursive walk below so nested blocks and loops use the
   // same rule.
-  function recordDirectTopLevelBindings(statement: AstRecord): void {
-    if (statement.declare === true) return;
+  function recordDirectTopLevelBindings(statement: ESTree.Node): void {
     const t = statement.type;
+    // This visitor intentionally handles only declarations that introduce module bindings.
+    // oxlint-disable-next-line typescript/switch-exhaustiveness-check
     switch (t) {
       case "ImportDeclaration":
-        for (const specifier of nodeArray(statement.specifiers)) {
-          if (!isAstRecord(specifier)) continue;
+        if (statement.importKind === "type") return;
+        for (const specifier of statement.specifiers) {
+          if (specifier.type === "ImportSpecifier" && specifier.importKind === "type") continue;
           recordBinding(specifier.local);
         }
         return;
       case "VariableDeclaration":
-        if (statement.kind === "var") return;
-        for (const declarator of nodeArray(statement.declarations)) {
-          if (!isAstRecord(declarator) || declarator.type !== "VariableDeclarator") continue;
+        if (statement.kind === "var" || statement.declare === true) return;
+        for (const declarator of statement.declarations) {
           recordBinding(declarator.id);
         }
         return;
       case "FunctionDeclaration":
       case "ClassDeclaration":
+        if (statement.declare === true) return;
         recordBinding(statement.id);
         return;
       case "ExportNamedDeclaration":
       case "ExportDefaultDeclaration":
-        if (isAstRecord(statement.declaration)) {
+        if (statement.declaration) {
           recordDirectTopLevelBindings(statement.declaration);
         }
         return;
@@ -842,21 +840,21 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
 
   // Walk only syntax whose `var` declarations remain module-scoped. Function
   // and class bodies are scope boundaries.
-  function recordModuleScopedVarBindings(node: unknown): void {
-    if (!isAstRecord(node)) return;
+  function recordModuleScopedVarBindings(node: ESTree.Node | null): void {
+    if (!node) return;
     const t = node.type;
+    // This walk follows only syntax in which `var` remains module-scoped.
+    // oxlint-disable-next-line typescript/switch-exhaustiveness-check
     switch (t) {
       case "Program":
-        for (const statement of nodeArray(node.body)) {
-          if (!isAstRecord(statement)) continue;
+        for (const statement of node.body) {
           recordDirectTopLevelBindings(statement);
           recordModuleScopedVarBindings(statement);
         }
         return;
       case "VariableDeclaration":
         if (node.kind !== "var" || node.declare === true) return;
-        for (const declarator of nodeArray(node.declarations)) {
-          if (!isAstRecord(declarator) || declarator.type !== "VariableDeclarator") continue;
+        for (const declarator of node.declarations) {
           recordBinding(declarator.id);
         }
         return;
@@ -873,17 +871,19 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
     }
   }
 
-  function moduleScopeChildren(node: AstRecord): unknown[] {
+  function moduleScopeChildren(node: ESTree.Node): Array<ESTree.Node | null> {
     const t = node.type;
+    // This walk follows only statement containers that may contain module-scoped `var`.
+    // oxlint-disable-next-line typescript/switch-exhaustiveness-check
     switch (t) {
       case "BlockStatement":
-        return nodeArray(node.body);
+        return node.body;
       case "IfStatement":
         return [node.consequent, node.alternate];
       case "SwitchStatement":
-        return nodeArray(node.cases);
+        return node.cases;
       case "SwitchCase":
-        return nodeArray(node.consequent);
+        return node.consequent;
       case "TryStatement":
         return [node.block, node.handler, node.finalizer];
       case "CatchClause":
@@ -912,9 +912,11 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
   // The read walker is intentionally broader than the binding walk: it can
   // over-report names that are already bound locally, and the module binding
   // set decides whether injection is safe.
-  function recordReads(value: unknown): void {
-    if (!isAstRecord(value)) return;
+  function recordReads(value: ESTree.Node | null): void {
+    if (!value) return;
     const t = value.type;
+    // Special cases distinguish references from syntactic identifiers; the default walks children.
+    // oxlint-disable-next-line typescript/switch-exhaustiveness-check
     switch (t) {
       case "Identifier":
         if (isCjsGlobalName(value.name)) reads.add(value.name);
@@ -946,12 +948,10 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
         // `export { local as exported }` — only `local` references a binding,
         // and only when there is no `source` (a re-export points at the source
         // module, not a local). `exported` is always just a name.
-        if (isAstRecord(value.declaration)) {
+        if (value.declaration) {
           recordReads(value.declaration);
         } else if (!value.source) {
-          for (const specifier of nodeArray(value.specifiers)) {
-            if (isAstRecord(specifier)) recordReads(specifier.local);
-          }
+          for (const specifier of value.specifiers) recordReads(specifier.local);
         }
         return;
       default:
@@ -959,28 +959,23 @@ function analyzeServerCjsGlobals(ast: unknown): ServerCjsAnalysis {
     }
   }
 
-  if (isAstRecord(ast) && ast.type === "Program") {
-    recordModuleScopedVarBindings(ast);
-  }
+  recordModuleScopedVarBindings(ast);
   recordReads(ast);
 
   return { reads, moduleBindings };
 }
 
-function isImportMetaNode(value: unknown): boolean {
+function isImportMetaNode(value: ESTree.Node): boolean {
   return (
-    isAstRecord(value) &&
     value.type === "MetaProperty" &&
     isIdentifierNamed(value.meta, "import") &&
     isIdentifierNamed(value.property, "meta")
   );
 }
 
-function isImportMetaUrlNode(value: unknown): value is AstRange {
+function isImportMetaUrlNode(value: ESTree.Node): value is ESTree.MemberExpression {
   return (
-    isAstRecord(value) &&
     value.type === "MemberExpression" &&
-    hasRange(value) &&
     isImportMetaNode(value.object) &&
     isIdentifierNamed(value.property, "url")
   );
@@ -989,14 +984,14 @@ function isImportMetaUrlNode(value: unknown): value is AstRange {
 // Accepts both import.meta.url (MemberExpression) and import.meta?.url
 // (ChainExpression wrapping a MemberExpression) so that the new URL() skip
 // correctly handles optional-chained base arguments.
-function isImportMetaUrlOrChainedNode(value: unknown): value is AstRange {
+function isImportMetaUrlOrChainedNode(
+  value: ESTree.Node,
+): value is ESTree.MemberExpression | ESTree.ChainExpression {
   if (isImportMetaUrlNode(value)) return true;
-  return (
-    isAstRecord(value) && value.type === "ChainExpression" && isImportMetaUrlNode(value.expression)
-  );
+  return value.type === "ChainExpression" && isImportMetaUrlNode(value.expression);
 }
 
-function isImportMetaUrlBaseNode(value: unknown): boolean {
+function isImportMetaUrlBaseNode(value: ESTree.Node): boolean {
   if (isImportMetaUrlOrChainedNode(value)) return true;
 
   // Vite rewrites worker constructors to:
@@ -1005,10 +1000,8 @@ function isImportMetaUrlBaseNode(value: unknown): boolean {
   // Replacing it with our source-identity file URL would make the browser
   // resolve the emitted worker against file:// instead of the deployment origin.
   return (
-    isAstRecord(value) &&
     value.type === "BinaryExpression" &&
     value.operator === "+" &&
-    isAstRecord(value.left) &&
     value.left.type === "Literal" &&
     value.left.value === "" &&
     isImportMetaUrlOrChainedNode(value.right)
@@ -1018,43 +1011,29 @@ function isImportMetaUrlBaseNode(value: unknown): boolean {
 // Catches the ChainExpression wrapper so we record the outer node range
 // and avoid descending into the inner MemberExpression (which happens
 // to share the same start/end, but this is more explicit).
-function isChainExpressionWrappingImportMetaUrl(value: unknown): value is AstRange {
-  return (
-    isAstRecord(value) &&
-    value.type === "ChainExpression" &&
-    hasRange(value) &&
-    isImportMetaUrlNode(value.expression)
-  );
+function isChainExpressionWrappingImportMetaUrl(
+  value: ESTree.Node,
+): value is ESTree.ChainExpression {
+  return value.type === "ChainExpression" && isImportMetaUrlNode(value.expression);
 }
 
 // Only matches bare `new URL(...)`, not `new globalThis.URL(...)` or
 // `new window.URL(...)`. Matches Vite's own asset-detection scope.
-function isNewUrlExpression(value: AstRecord): boolean {
+function isNewUrlExpression(value: ESTree.Node): value is ESTree.NewExpression {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
 }
 
-function findDirectivePrologueEnd(ast: unknown): number {
-  if (!isAstRecord(ast) || ast.type !== "Program") return 0;
-
+function findDirectivePrologueEnd(ast: ESTree.Program): number {
   // A shebang (`#!...`) lives outside ast.body but must stay the first bytes of
   // the file, so the injection floor starts after it. Inserting at offset 0
   // would move the shebang off line 1 and produce invalid output.
-  let end = 0;
-  const hashbang = ast.hashbang;
-  const hashbangEnd =
-    typeof hashbang === "object" && hashbang !== null ? Reflect.get(hashbang, "end") : null;
-  if (typeof hashbangEnd === "number") {
-    end = hashbangEnd;
-  }
+  let end = ast.hashbang?.end ?? 0;
 
-  for (const statement of nodeArray(ast.body)) {
+  for (const statement of ast.body) {
     if (
-      !isAstRecord(statement) ||
       statement.type !== "ExpressionStatement" ||
-      !isAstRecord(statement.expression) ||
       statement.expression.type !== "Literal" ||
-      typeof statement.expression.value !== "string" ||
-      typeof statement.end !== "number"
+      typeof statement.expression.value !== "string"
     ) {
       break;
     }

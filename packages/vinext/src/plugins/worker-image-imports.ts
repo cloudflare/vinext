@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
-import { parseAst, type Plugin } from "vite";
+import { parseAst, type ESTree, type Plugin } from "vite";
 import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
 import { staticStringValue, walkAst } from "./ast-utils.js";
@@ -14,16 +14,6 @@ const WORKER_SCRIPT_RE = /\.(?:[cm]?[jt]sx?)$/;
 const WORKER_IMAGE_DYNAMIC_IMPORT_RE =
   /import\(\s*["'][^"']+\.(?:png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?)["']\s*\)/;
 const WORKER_IMAGE_EXTENSION_RE = /\.(?:png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?)$/;
-
-type AstNode = {
-  type?: string;
-  start?: number;
-  end?: number;
-  expressions?: unknown[];
-  quasis?: Array<{ value?: { cooked?: unknown } }>;
-  source?: AstNode;
-  value?: unknown;
-};
 
 function workerChunkSpecifier(hostFileName: string, targetFileName: string): string {
   const relative = path.relative(path.dirname(hostFileName), targetFileName);
@@ -96,13 +86,10 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
           start: number;
         }> = [];
 
-        walkAst(ast, (value) => {
-          const node = value as AstNode;
+        walkAst(ast, (node) => {
           if (
             node.type === "ImportExpression" &&
-            typeof node.start === "number" &&
-            typeof node.end === "number" &&
-            node.source?.type === "Literal" &&
+            node.source.type === "Literal" &&
             typeof node.source.value === "string" &&
             WORKER_IMAGE_EXTENSION_RE.test(node.source.value)
           ) {
@@ -159,9 +146,8 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
 
         const output = new MagicString(code);
         let changed = false;
-        walkAst(ast, (value) => {
-          const node = value as AstNode;
-          const source =
+        walkAst(ast, (node) => {
+          const source: ESTree.Node | null =
             node.type === "ImportExpression" ||
             node.type === "ImportDeclaration" ||
             node.type === "ExportNamedDeclaration" ||
@@ -169,12 +155,7 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
               ? node.source
               : null;
           const specifier = staticStringValue(source);
-          if (
-            specifier !== null &&
-            chunkSpecifiers.has(specifier) &&
-            typeof source?.start === "number" &&
-            typeof source.end === "number"
-          ) {
+          if (specifier !== null && chunkSpecifiers.has(specifier) && source) {
             output.overwrite(
               source.start,
               source.end,

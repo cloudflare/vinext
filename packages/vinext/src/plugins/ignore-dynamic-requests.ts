@@ -1,21 +1,17 @@
 import path, { toSlash } from "pathslash";
 import { fileURLToPath } from "node:url";
 import MagicString from "magic-string";
-import { parseAst, type Plugin } from "vite";
+import { parseAst, type ESTree, type Plugin } from "vite";
 import {
   collectBindingNames,
   DYNAMIC_IMPORT_PRESCAN,
   forEachAstChild,
-  hasRange,
-  isAstRecord,
   isIdentifierNamed,
   mayContainDynamicImport,
-  nodeArray,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   stringLiteralValue,
   unwrapExpression,
-  type AstRecord,
 } from "./ast-utils.js";
 import { createTransformCache } from "./transform-cache.js";
 import { magicStringTransformResult } from "./transform-result.js";
@@ -48,7 +44,7 @@ type Scope = {
 };
 
 type ConstantBinding = {
-  initializer: AstRecord;
+  initializer: ESTree.Node;
   scope: Scope;
 };
 
@@ -63,11 +59,7 @@ type EnvironmentLike = {
   };
 };
 
-function astNode(value: unknown): AstRecord | null {
-  return isAstRecord(value) ? value : null;
-}
-
-function stringFromCharCodeValue(value: unknown, scope: Scope): string | null {
+function stringFromCharCodeValue(value: ESTree.Node, scope: Scope): string | null {
   const node = unwrapExpression(value);
   if (node?.type !== "CallExpression") return null;
   const callee = unwrapExpression(node.callee);
@@ -84,7 +76,7 @@ function stringFromCharCodeValue(value: unknown, scope: Scope): string | null {
   }
 
   let resolved = "";
-  for (const argument of nodeArray(node.arguments)) {
+  for (const argument of node.arguments) {
     const argumentNode = unwrapExpression(argument);
     if (
       argumentNode?.type !== "Literal" ||
@@ -100,17 +92,16 @@ function stringFromCharCodeValue(value: unknown, scope: Scope): string | null {
   return resolved;
 }
 
-function isUnboundNumericGlobal(node: AstRecord, scope: Scope): boolean {
+function isUnboundNumericGlobal(node: ESTree.Node, scope: Scope): boolean {
   return (
     node.type === "Identifier" &&
-    typeof node.name === "string" &&
     !hasAstBinding(scope, node.name) &&
     (isIdentifierNamed(node, "NaN") || isIdentifierNamed(node, "Infinity"))
   );
 }
 
 function evaluateStaticString(
-  value: unknown,
+  value: ESTree.Node | null | undefined,
   scope: Scope,
   resolution: ConstantResolution,
 ): string | null {
@@ -118,15 +109,8 @@ function evaluateStaticString(
   if (!node) return null;
   const valueString = stringLiteralValue(node);
   if (valueString !== null) return valueString;
-  if (node.type === "TemplateLiteral" && nodeArray(node.expressions).length === 0) {
-    const quasi = astNode(nodeArray(node.quasis)[0]);
-    const quasiValue = quasi?.value;
-    const cooked =
-      typeof quasiValue === "object" && quasiValue !== null
-        ? Reflect.get(quasiValue, "cooked")
-        : null;
-    const raw =
-      typeof quasiValue === "object" && quasiValue !== null ? Reflect.get(quasiValue, "raw") : null;
+  if (node.type === "TemplateLiteral" && node.expressions.length === 0) {
+    const { cooked, raw } = node.quasis[0]?.value ?? {};
     return typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : null;
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
@@ -144,9 +128,9 @@ function evaluateStaticString(
     return consequent !== null && consequent === alternate ? consequent : null;
   }
   if (node.type === "SequenceExpression") {
-    return evaluateStaticString(nodeArray(node.expressions).at(-1), scope, resolution);
+    return evaluateStaticString(node.expressions.at(-1), scope, resolution);
   }
-  if (node.type === "Identifier" && typeof node.name === "string") {
+  if (node.type === "Identifier") {
     return resolveConstantBinding(scope, node.name, resolution, null, evaluateStaticString);
   }
   return null;
@@ -157,14 +141,14 @@ function hasSignificantPathPart(value: string): boolean {
   return normalized !== "" && normalized !== "/";
 }
 
-function templateElementValue(quasi: AstRecord | undefined, raw: boolean): string {
+function templateElementValue(quasi: ESTree.TemplateElement | undefined, raw: boolean): string {
   const value = quasi?.value;
   if (typeof value !== "object" || value === null) return "";
   const elementValue = Reflect.get(value, raw ? "raw" : "cooked");
   return typeof elementValue === "string" ? elementValue : "";
 }
 
-function isUnboundStringRawTag(value: unknown, scope: Scope): boolean {
+function isUnboundStringRawTag(value: ESTree.Node, scope: Scope): boolean {
   const tag = unwrapExpression(value);
   const object = tag?.type === "MemberExpression" ? unwrapExpression(tag.object) : null;
   const property = tag?.type === "MemberExpression" ? unwrapExpression(tag.property) : null;
@@ -179,18 +163,16 @@ function isUnboundStringRawTag(value: unknown, scope: Scope): boolean {
 
 function hasDynamicRequestIgnoreDirective(
   code: string,
-  requestNode: AstRecord,
-  argumentNode: AstRecord,
+  requestNode: ESTree.CallExpression | ESTree.ImportExpression,
+  argumentNode: ESTree.Node,
 ): boolean {
-  if (!hasRange(requestNode) || !hasRange(argumentNode)) return false;
   const comments: string[] = [];
-  const callee = astNode(requestNode.callee);
-  let index =
-    callee && hasRange(callee)
-      ? callee.end
-      : requestNode.type === "ImportExpression"
-        ? requestNode.start + "import".length
-        : requestNode.start;
+  const callee = requestNode.type === "CallExpression" ? requestNode.callee : null;
+  let index = callee
+    ? callee.end
+    : requestNode.type === "ImportExpression"
+      ? requestNode.start + "import".length
+      : requestNode.start;
 
   while (index < argumentNode.start) {
     if (/\s/.test(code[index])) {
@@ -253,20 +235,20 @@ function hasDynamicRequestIgnoreDirective(
 }
 
 function templateHasStaticPart(
-  node: AstRecord,
+  node: ESTree.TemplateLiteral,
   scope: Scope,
   resolution: ConstantResolution,
   useRaw = false,
 ): boolean {
-  const quasis = nodeArray(node.quasis).filter(isAstRecord);
-  if (nodeArray(node.expressions).length === 0) {
+  const quasis = node.quasis;
+  if (node.expressions.length === 0) {
     return templateElementValue(quasis[0], useRaw).replaceAll("\\", "/") !== "/";
   }
   if (quasis.some((quasi) => hasSignificantPathPart(templateElementValue(quasi, useRaw)))) {
     return true;
   }
 
-  return nodeArray(node.expressions).some((expression) => {
+  return node.expressions.some((expression) => {
     const expressionNode = unwrapExpression(expression);
     if (!expressionNode) return false;
     return requestHasStaticPart(expressionNode, scope, resolution);
@@ -274,24 +256,21 @@ function templateHasStaticPart(
 }
 
 function stringRawTemplateHasStaticPart(
-  node: AstRecord,
+  node: ESTree.TaggedTemplateExpression,
   scope: Scope,
   resolution: ConstantResolution,
 ): boolean | null {
   if (node.type !== "TaggedTemplateExpression") return null;
   if (!isUnboundStringRawTag(node.tag, scope)) return null;
-  const quasi = astNode(node.quasi);
-  return quasi?.type === "TemplateLiteral"
-    ? templateHasStaticPart(quasi, scope, resolution, true)
-    : null;
+  return templateHasStaticPart(node.quasi, scope, resolution, true);
 }
 
-function isLiteralExpression(value: unknown): boolean {
+function isLiteralExpression(value: ESTree.Node | null | undefined): boolean {
   const node = unwrapExpression(value);
-  return node?.type === "Literal" || node?.type === "StringLiteral";
+  return node?.type === "Literal";
 }
 
-function isNegativeNumericLiteral(value: unknown): boolean {
+function isNegativeNumericLiteral(value: ESTree.Node | null | undefined): boolean {
   const node = unwrapExpression(value);
   if (node?.type !== "UnaryExpression" || node.operator !== "-") return false;
   const argument = unwrapExpression(node.argument);
@@ -299,16 +278,16 @@ function isNegativeNumericLiteral(value: unknown): boolean {
 }
 
 function templateTruthiness(
-  node: AstRecord,
+  node: ESTree.TemplateLiteral,
   scope: Scope,
   resolution: ConstantResolution,
   useRaw = false,
 ): boolean | null {
-  const quasis = nodeArray(node.quasis).filter(isAstRecord);
+  const quasis = node.quasis;
   if (quasis.some((quasi) => templateElementValue(quasi, useRaw) !== "")) return true;
 
   let hasUnknownExpression = false;
-  for (const expression of nodeArray(node.expressions)) {
+  for (const expression of node.expressions) {
     const string = evaluateStaticString(expression, scope, resolution);
     if (string !== null) {
       if (string !== "") return true;
@@ -327,29 +306,26 @@ function templateTruthiness(
 }
 
 function staticTruthiness(
-  value: unknown,
+  value: ESTree.Node | null | undefined,
   scope: Scope,
   resolution = createConstantResolution(),
 ): boolean | null {
   const node = unwrapExpression(value);
   if (!node) return null;
-  if (node.type === "Literal" || node.type === "StringLiteral") return Boolean(node.value);
+  if (node.type === "Literal") return Boolean(node.value);
   if (isUnboundNumericGlobal(node, scope)) return true;
   if (node.type === "TemplateLiteral") {
     return templateTruthiness(node, scope, resolution);
   }
   if (node.type === "TaggedTemplateExpression" && isUnboundStringRawTag(node.tag, scope)) {
-    const quasi = astNode(node.quasi);
-    return quasi?.type === "TemplateLiteral"
-      ? templateTruthiness(quasi, scope, resolution, true)
-      : null;
+    return templateTruthiness(node.quasi, scope, resolution, true);
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
     const string = evaluateStaticString(node, scope, resolution);
     return string === null ? null : Boolean(string);
   }
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return false;
-  if (node.type === "Identifier" && typeof node.name === "string") {
+  if (node.type === "Identifier") {
     return resolveConstantBinding(scope, node.name, resolution, null, staticTruthiness);
   }
   if (node.type === "UnaryExpression") {
@@ -374,16 +350,16 @@ function staticTruthiness(
 }
 
 function staticNullishness(
-  value: unknown,
+  value: ESTree.Node | null | undefined,
   scope: Scope,
   resolution = createConstantResolution(),
 ): boolean | null {
   const node = unwrapExpression(value);
   if (!node) return null;
-  if (node.type === "Literal" || node.type === "StringLiteral") return node.value === null;
+  if (node.type === "Literal") return node.value === null;
   if (isUnboundNumericGlobal(node, scope)) return false;
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
-  if (node.type === "Identifier" && typeof node.name === "string") {
+  if (node.type === "Identifier") {
     return resolveConstantBinding(scope, node.name, resolution, null, staticNullishness);
   }
   if (node.type === "UnaryExpression") {
@@ -419,7 +395,7 @@ function resolveConstantBinding<T>(
   name: string,
   resolution: ConstantResolution,
   fallback: T,
-  evaluate: (value: unknown, scope: Scope, resolution: ConstantResolution) => T,
+  evaluate: (value: ESTree.Node, scope: Scope, resolution: ConstantResolution) => T,
 ): T {
   const binding = findConstantBinding(scope, name);
   if (
@@ -439,7 +415,7 @@ function resolveConstantBinding<T>(
 }
 
 function stringConcatHasStaticPart(
-  node: AstRecord,
+  node: ESTree.Node,
   scope: Scope,
   resolution: ConstantResolution,
 ): boolean | null {
@@ -459,21 +435,21 @@ function stringConcatHasStaticPart(
   if (!receiver || !isStaticStringExpression(receiver, scope, resolution)) return null;
   if (requestHasStaticPart(receiver, scope, resolution)) return true;
 
-  return nodeArray(node.arguments).some((argument) => {
+  return node.arguments.some((argument) => {
     const argumentNode = unwrapExpression(argument);
     return argumentNode ? requestHasStaticPart(argumentNode, scope, resolution) : false;
   });
 }
 
 function isStaticStringExpression(
-  value: unknown,
+  value: ESTree.Node | null | undefined,
   scope: Scope,
   resolution: ConstantResolution,
 ): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
   if (stringLiteralValue(node) !== null || node.type === "TemplateLiteral") return true;
-  if (node.type === "Identifier" && typeof node.name === "string") {
+  if (node.type === "Identifier") {
     return resolveConstantBinding(scope, node.name, resolution, false, isStaticStringExpression);
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
@@ -486,7 +462,7 @@ function isStaticStringExpression(
     );
   }
   if (node.type === "SequenceExpression") {
-    return isStaticStringExpression(nodeArray(node.expressions).at(-1), scope, resolution);
+    return isStaticStringExpression(node.expressions.at(-1), scope, resolution);
   }
   if (node.type === "CallExpression") {
     return stringConcatHasStaticPart(node, scope, resolution) !== null;
@@ -495,14 +471,14 @@ function isStaticStringExpression(
 }
 
 function additionContainsString(
-  value: unknown,
+  value: ESTree.Node | null | undefined,
   scope: Scope,
   resolution: ConstantResolution,
 ): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
   if (stringLiteralValue(node) !== null || node.type === "TemplateLiteral") return true;
-  if (node.type === "Identifier" && typeof node.name === "string") {
+  if (node.type === "Identifier") {
     return resolveConstantBinding(scope, node.name, resolution, false, additionContainsString);
   }
   if (node.type === "BinaryExpression" && node.operator === "+") {
@@ -518,13 +494,13 @@ function additionContainsString(
     );
   }
   if (node.type === "SequenceExpression") {
-    return additionContainsString(nodeArray(node.expressions).at(-1), scope, resolution);
+    return additionContainsString(node.expressions.at(-1), scope, resolution);
   }
   return stringConcatHasStaticPart(node, scope, resolution) !== null;
 }
 
 function requestHasStaticPart(
-  value: unknown,
+  value: ESTree.Node | null | undefined,
   scope: Scope,
   resolution = createConstantResolution(),
 ): boolean {
@@ -538,12 +514,15 @@ function requestHasStaticPart(
   if (node.type === "TemplateLiteral") {
     return templateHasStaticPart(node, scope, resolution);
   }
-  const stringRawHasStaticPart = stringRawTemplateHasStaticPart(node, scope, resolution);
+  const stringRawHasStaticPart =
+    node.type === "TaggedTemplateExpression"
+      ? stringRawTemplateHasStaticPart(node, scope, resolution)
+      : null;
   if (stringRawHasStaticPart !== null) return stringRawHasStaticPart;
   const concatHasStaticPart = stringConcatHasStaticPart(node, scope, resolution);
   if (concatHasStaticPart !== null) return concatHasStaticPart;
   if (isIdentifierNamed(node, "undefined") && !hasAstBinding(scope, "undefined")) return true;
-  if (node.type === "Identifier" && typeof node.name === "string") {
+  if (node.type === "Identifier") {
     return resolveConstantBinding(scope, node.name, resolution, false, requestHasStaticPart);
   }
   if (node.type === "UnaryExpression") {
@@ -595,7 +574,7 @@ function requestHasStaticPart(
     );
   }
   if (node.type === "SequenceExpression") {
-    const expressions = nodeArray(node.expressions);
+    const expressions = node.expressions;
     if (expressions.length === 0) return false;
     return (
       expressions
@@ -608,12 +587,14 @@ function requestHasStaticPart(
   return false;
 }
 
-function expressionMayHaveSideEffects(value: unknown, scope: Scope): boolean {
+function expressionMayHaveSideEffects(
+  value: ESTree.Node | null | undefined,
+  scope: Scope,
+): boolean {
   const node = unwrapExpression(value);
   if (!node) return false;
   if (
     node.type === "Literal" ||
-    node.type === "StringLiteral" ||
     node.type === "Identifier" ||
     node.type === "FunctionExpression" ||
     node.type === "ArrowFunctionExpression"
@@ -621,9 +602,7 @@ function expressionMayHaveSideEffects(value: unknown, scope: Scope): boolean {
     return false;
   }
   if (node.type === "TemplateLiteral") {
-    return nodeArray(node.expressions).some((expression) =>
-      expressionMayHaveSideEffects(expression, scope),
-    );
+    return node.expressions.some((expression) => expressionMayHaveSideEffects(expression, scope));
   }
   if (node.type === "UnaryExpression") {
     return node.operator === "delete" || expressionMayHaveSideEffects(node.argument, scope);
@@ -645,34 +624,25 @@ function expressionMayHaveSideEffects(value: unknown, scope: Scope): boolean {
     );
   }
   if (node.type === "SequenceExpression") {
-    return nodeArray(node.expressions).some((expression) =>
-      expressionMayHaveSideEffects(expression, scope),
-    );
+    return node.expressions.some((expression) => expressionMayHaveSideEffects(expression, scope));
   }
   if (node.type === "ArrayExpression") {
-    return nodeArray(node.elements).some((element) => {
-      const elementNode = astNode(element);
-      return (
-        elementNode?.type === "SpreadElement" || expressionMayHaveSideEffects(elementNode, scope)
-      );
-    });
+    return node.elements.some(
+      (element) =>
+        element?.type === "SpreadElement" || expressionMayHaveSideEffects(element, scope),
+    );
   }
   if (node.type === "ObjectExpression") {
-    return nodeArray(node.properties).some((property) => {
-      const propertyNode = astNode(property);
-      if (propertyNode?.type === "SpreadElement") {
-        return expressionMayHaveSideEffects(propertyNode.argument, scope);
+    return node.properties.some((property) => {
+      if (property.type === "SpreadElement") {
+        return expressionMayHaveSideEffects(property.argument, scope);
       }
-      if (
-        propertyNode?.type !== "Property" ||
-        propertyNode.kind !== "init" ||
-        propertyNode.method === true
-      ) {
+      if (property.type !== "Property" || property.kind !== "init" || property.method === true) {
         return true;
       }
       return (
-        expressionMayHaveSideEffects(propertyNode.computed ? propertyNode.key : null, scope) ||
-        expressionMayHaveSideEffects(propertyNode.value, scope)
+        expressionMayHaveSideEffects(property.computed ? property.key : null, scope) ||
+        expressionMayHaveSideEffects(property.value, scope)
       );
     });
   }
@@ -684,12 +654,8 @@ function expressionMayHaveSideEffects(value: unknown, scope: Scope): boolean {
   }
   if (node.type === "TaggedTemplateExpression") {
     if (isUnboundStringRawTag(node.tag, scope)) {
-      const quasi = astNode(node.quasi);
-      return (
-        quasi?.type !== "TemplateLiteral" ||
-        nodeArray(quasi.expressions).some((expression) =>
-          expressionMayHaveSideEffects(expression, scope),
-        )
+      return node.quasi.expressions.some((expression) =>
+        expressionMayHaveSideEffects(expression, scope),
       );
     }
     return true;
@@ -698,20 +664,19 @@ function expressionMayHaveSideEffects(value: unknown, scope: Scope): boolean {
   return true;
 }
 
-function collectConstantBinding(declaration: AstRecord, declarator: AstRecord, scope: Scope): void {
-  const identifier = astNode(declarator.id);
-  const initializer = astNode(declarator.init);
-  if (
-    declaration.kind === "const" &&
-    identifier?.type === "Identifier" &&
-    typeof identifier.name === "string" &&
-    initializer
-  ) {
+function collectConstantBinding(
+  declaration: ESTree.VariableDeclaration,
+  declarator: ESTree.VariableDeclarator,
+  scope: Scope,
+): void {
+  const identifier = declarator.id;
+  const initializer = declarator.init;
+  if (declaration.kind === "const" && identifier?.type === "Identifier" && initializer) {
     scope.constants.set(identifier.name, { initializer, scope });
   }
 }
 
-function collectDirectBindings(node: AstRecord, scope: Scope): void {
+function collectDirectBindings(node: ESTree.Node, scope: Scope): void {
   collectDirectScopeBindings(node, scope, (declaration, declarator) =>
     collectConstantBinding(declaration, declarator, scope),
   );
@@ -749,13 +714,12 @@ function transformVeryDynamicRequests(code: string, id: string) {
 
   const output = new MagicString(code);
   let changed = false;
-  const root = astNode(ast);
-  if (!root) return null;
+  const root = ast;
   const rootScope: Scope = { parent: null, bindings: new Set(), constants: new Map() };
   collectDirectBindings(root, rootScope);
   collectVarScopeBindings(root, rootScope);
 
-  function visit(node: AstRecord, parentScope: Scope): void {
+  function visit(node: ESTree.Node, parentScope: Scope): void {
     let scope = parentScope;
     if (isFunctionNode(node)) {
       const parameterScope: Scope = {
@@ -764,15 +728,11 @@ function transformVeryDynamicRequests(code: string, id: string) {
         constants: new Map(),
       };
       collectBindingNames(node.id, parameterScope.bindings);
-      for (const parameter of nodeArray(node.params))
-        collectBindingNames(parameter, parameterScope.bindings);
+      for (const parameter of node.params) collectBindingNames(parameter, parameterScope.bindings);
 
-      for (const parameter of nodeArray(node.params)) {
-        const parameterNode = astNode(parameter);
-        if (parameterNode) visit(parameterNode, parameterScope);
-      }
+      for (const parameter of node.params) visit(parameter, parameterScope);
 
-      const body = astNode(node.body);
+      const body = node.body;
       if (body) {
         const bodyScope: Scope = {
           parent: parameterScope,
@@ -782,31 +742,24 @@ function transformVeryDynamicRequests(code: string, id: string) {
         collectDirectBindings(body, bodyScope);
         collectVarScopeBindings(body, bodyScope);
         if (body.type === "BlockStatement") {
-          for (const statement of nodeArray(body.body)) {
-            const statementNode = astNode(statement);
-            if (statementNode) visit(statementNode, bodyScope);
-          }
+          for (const statement of body.body) visit(statement, bodyScope);
         } else {
           visit(body, bodyScope);
         }
       }
       return;
     } else if (node.type === "SwitchStatement") {
-      const discriminant = astNode(node.discriminant);
-      if (discriminant) visit(discriminant, parentScope);
+      visit(node.discriminant, parentScope);
       const switchScope: Scope = {
         parent: parentScope,
         bindings: new Set(),
         constants: new Map(),
       };
       collectDirectBindings(node, switchScope);
-      for (const switchCase of nodeArray(node.cases)) {
-        const switchCaseNode = astNode(switchCase);
-        if (switchCaseNode) visit(switchCaseNode, switchScope);
-      }
+      for (const switchCase of node.cases) visit(switchCase, switchScope);
       return;
     } else if (
-      (node.type === "BlockStatement" && node !== root) ||
+      node.type === "BlockStatement" ||
       node.type === "StaticBlock" ||
       node.type === "TSModuleBlock"
     ) {
@@ -832,29 +785,25 @@ function transformVeryDynamicRequests(code: string, id: string) {
       collectBindingNames(node.id, scope.bindings);
     }
 
-    if (node.type === "CallExpression" && hasRange(node)) {
+    if (node.type === "CallExpression") {
       const callee = unwrapExpression(node.callee);
-      const argumentsList = nodeArray(node.arguments);
+      const argumentsList = node.arguments;
+      const argument = argumentsList[0];
       if (
         isIdentifierNamed(callee, "require") &&
         !hasAstBinding(scope, "require") &&
         argumentsList.length === 1 &&
-        astNode(argumentsList[0])?.type !== "SpreadElement" &&
-        !hasDynamicRequestIgnoreDirective(code, node, argumentsList[0] as AstRecord)
+        argument &&
+        argument.type !== "SpreadElement" &&
+        !hasDynamicRequestIgnoreDirective(code, node, argument)
       ) {
-        const resolvedRequest = stringFromCharCodeValue(argumentsList[0], scope);
-        const argument = astNode(argumentsList[0]);
-        if (
-          resolvedRequest !== null &&
-          resolvedRequest.replaceAll("\\", "/") !== "/" &&
-          argument &&
-          hasRange(argument)
-        ) {
+        const resolvedRequest = stringFromCharCodeValue(argument, scope);
+        if (resolvedRequest !== null && resolvedRequest.replaceAll("\\", "/") !== "/") {
           output.overwrite(argument.start, argument.end, JSON.stringify(resolvedRequest));
           changed = true;
           return;
         }
-        if (!requestHasStaticPart(argumentsList[0], scope)) {
+        if (!requestHasStaticPart(argument, scope)) {
           output.overwrite(node.start, node.end, dynamicRequireReplacement());
           changed = true;
           return;
@@ -864,8 +813,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
 
     if (
       node.type === "ImportExpression" &&
-      hasRange(node) &&
-      !hasDynamicRequestIgnoreDirective(code, node, node.source as AstRecord) &&
+      !hasDynamicRequestIgnoreDirective(code, node, node.source) &&
       !requestHasStaticPart(node.source, scope)
     ) {
       output.overwrite(node.start, node.end, dynamicImportReplacement());
@@ -876,9 +824,7 @@ function transformVeryDynamicRequests(code: string, id: string) {
     forEachAstChild(node, (child) => visit(child, scope));
   }
 
-  for (const statement of nodeArray(root.body)) {
-    if (isAstRecord(statement)) visit(statement, rootScope);
-  }
+  for (const statement of root.body) visit(statement, rootScope);
 
   if (!changed) return null;
   return magicStringTransformResult(output, { hires: "boundary", source: id });

@@ -2,25 +2,6 @@ import { parseAst } from "vite";
 import { createMiddlewareMissingExportError } from "../server/middleware-runtime.js";
 import { getAstName, scriptParserLanguage } from "./ast-utils.js";
 
-type AstName = { name?: unknown; value?: unknown } | null | undefined;
-
-type ExportSpecifier = {
-  exported?: AstName;
-  local?: AstName;
-};
-
-type Declaration = {
-  type?: string;
-  id?: AstName;
-  declarations?: Array<{ id?: AstName }>;
-};
-
-type Statement = {
-  type?: string;
-  declaration?: Declaration | null;
-  specifiers?: ExportSpecifier[];
-};
-
 export function hasValidMiddlewareModuleExport(
   source: string,
   id: string,
@@ -33,7 +14,7 @@ export function hasValidMiddlewareModuleExport(
   const ast = parseAst(source, { lang: scriptParserLanguage(id) ?? "jsx" });
   const expectedExport = isProxy ? "proxy" : "middleware";
 
-  for (const statement of ast.body as Statement[]) {
+  for (const statement of ast.body) {
     if (statement.type === "ExportDefaultDeclaration") return true;
     if (statement.type !== "ExportNamedDeclaration") continue;
 
@@ -45,12 +26,12 @@ export function hasValidMiddlewareModuleExport(
       return true;
     }
     if (declaration?.type === "VariableDeclaration") {
-      for (const declarator of declaration.declarations ?? []) {
+      for (const declarator of declaration.declarations) {
         if (getAstName(declarator.id) === expectedExport) return true;
       }
     }
-    for (const specifier of statement.specifiers ?? []) {
-      if (getAstName(specifier.exported ?? specifier.local) === expectedExport) return true;
+    for (const specifier of statement.specifiers) {
+      if (getAstName(specifier.exported) === expectedExport) return true;
     }
   }
 

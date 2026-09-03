@@ -11,14 +11,14 @@
  * React.createContext() in RSC environments where createContext doesn't exist.
  */
 
-import type { Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
 import { parseAst } from "vite";
 import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import path, { toSlash } from "pathslash";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
-import { getAstName } from "./ast-utils.js";
+import { collectBindingNames, getAstName } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
@@ -54,12 +54,6 @@ type BarrelExportEntry = {
 
 type BarrelExportMap = Map<string, BarrelExportEntry>;
 
-type DeclarationNode = {
-  type: string;
-  id?: { name: string } | null;
-  declarations?: Array<{ id: { name: string } }>;
-};
-
 /** Caches used by the optimize-imports plugin, scoped to a plugin instance. */
 type BarrelCaches = {
   /** Barrel export maps keyed by resolved entry file path. */
@@ -72,30 +66,6 @@ type BarrelCaches = {
    * already environment-keyed via the "rsc:"/"ssr:" prefix on its cache keys.
    */
   subpkgOrigin: Map<string, Map<string, string>>;
-};
-
-// Shared with Vite's internal AST node types (not publicly exported)
-type AstBodyNode = {
-  type: string;
-  start: number;
-  end: number;
-  source?: { value: unknown };
-  specifiers?: Array<{
-    type: string;
-    local: { name: string };
-    imported?: { name?: string; value?: string | boolean | number | null };
-    exported?: { name?: string; value?: string | boolean | number | null };
-  }>;
-  exported?: { name?: string; value?: string | boolean | number | null };
-  /**
-   * Present on `ExportNamedDeclaration` when the export is an inline declaration:
-   *   export function foo() {}         → FunctionDeclaration  { id: { name } }
-   *   export class Foo {}              → ClassDeclaration     { id: { name } }
-   *   export const x = 1, y = 2       → VariableDeclaration  { declarations: [{ id: { name } }] }
-   */
-  declaration?: DeclarationNode | null;
-  id?: { name: string } | null;
-  declarations?: Array<{ id: { name: string } }>;
 };
 
 // Vite doesn't publicly type `this.environment` on plugin hooks yet.
@@ -389,42 +359,49 @@ async function buildExportMapFromFile(
     return source.startsWith(".") ? path.join(fileDir, source) : source;
   }
 
-  function recordLocalDeclaration(node: DeclarationNode | null | undefined): void {
-    if (!node) return;
-    if (node.id?.name) {
-      localDeclarations.add(node.id.name);
-      return;
-    }
-    for (const declaration of node.declarations ?? []) {
-      if (declaration.id?.name) {
-        localDeclarations.add(declaration.id.name);
+  function declarationNames(node: ESTree.Node | null): Set<string> {
+    const names = new Set<string>();
+    if (!node) return names;
+    if (node.type === "FunctionDeclaration" || node.type === "ClassDeclaration") {
+      collectBindingNames(node.id, names);
+    } else if (node.type === "VariableDeclaration") {
+      for (const declaration of node.declarations) {
+        collectBindingNames(declaration.id, names);
       }
+    }
+    return names;
+  }
+
+  function recordLocalDeclaration(node: ESTree.Node | null): void {
+    for (const name of declarationNames(node)) {
+      localDeclarations.add(name);
     }
   }
 
   // Pre-scan imports and local declarations so export lists can resolve both
   // imported bindings and same-file aliases like `const Foo = ...; export { Foo as Bar }`.
-  for (const node of ast.body as AstBodyNode[]) {
+  for (const node of ast.body) {
+    // Only declarations can contribute names to this pre-scan.
+    // oxlint-disable-next-line typescript/switch-exhaustiveness-check
     switch (node.type) {
       case "ImportDeclaration": {
         const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
         if (!rawSource) break;
         const source = normalizeSource(rawSource);
-        for (const spec of node.specifiers ?? []) {
+        for (const spec of node.specifiers) {
           switch (spec.type) {
             case "ImportNamespaceSpecifier":
               importBindings.set(spec.local.name, { source, isNamespace: true });
               break;
             case "ImportSpecifier":
-              if (spec.imported) {
+              {
                 const name = getAstName(spec.imported);
-                if (name !== null) {
-                  importBindings.set(spec.local.name, {
-                    source,
-                    isNamespace: false,
-                    originalName: name,
-                  });
-                }
+                if (name === null) break;
+                importBindings.set(spec.local.name, {
+                  source,
+                  isNamespace: false,
+                  originalName: name,
+                });
               }
               break;
             case "ImportDefaultSpecifier":
@@ -446,10 +423,14 @@ async function buildExportMapFromFile(
       case "ExportNamedDeclaration":
         recordLocalDeclaration(node.declaration);
         break;
+      default:
+        break;
     }
   }
 
-  for (const node of ast.body as AstBodyNode[]) {
+  for (const node of ast.body) {
+    // Only re-export declarations contribute entries to a barrel export map.
+    // oxlint-disable-next-line typescript/switch-exhaustiveness-check
     switch (node.type) {
       case "ExportAllDeclaration": {
         const rawSource = typeof node.source?.value === "string" ? node.source.value : null;
@@ -521,23 +502,20 @@ async function buildExportMapFromFile(
         if (rawSource) {
           const source = normalizeSource(rawSource);
           // export { A, B } from "sub-pkg"
-          for (const spec of node.specifiers ?? []) {
-            if (spec.exported) {
-              const exported = getAstName(spec.exported);
-              const local = getAstName(spec.local);
-              if (exported !== null) {
-                exportMap.set(exported, {
-                  source,
-                  isNamespace: false,
-                  originalName: local ?? undefined,
-                });
-              }
+          for (const spec of node.specifiers) {
+            const exported = getAstName(spec.exported);
+            const local = getAstName(spec.local);
+            if (exported !== null) {
+              exportMap.set(exported, {
+                source,
+                isNamespace: false,
+                originalName: local ?? undefined,
+              });
             }
           }
-        } else if (node.specifiers && node.specifiers.length > 0) {
+        } else if (node.specifiers.length > 0) {
           // export { X } — look up X in importBindings
           for (const spec of node.specifiers) {
-            if (!spec.exported) continue;
             const exported = getAstName(spec.exported);
             const local = getAstName(spec.local);
             if (exported === null || local === null) continue;
@@ -562,28 +540,18 @@ async function buildExportMapFromFile(
           // Record the file itself as the source so the transform can rewrite
           // `import { foo } from "barrel"` → `import { foo } from "/abs/path/to/foo.js"`.
           const decl = node.declaration;
-          if (decl.id?.name) {
-            // FunctionDeclaration or ClassDeclaration — single named export
-            exportMap.set(decl.id.name, {
+          for (const name of declarationNames(decl)) {
+            exportMap.set(name, {
               source: filePath,
               isNamespace: false,
-              originalName: decl.id.name,
+              originalName: name,
             });
-          } else if (decl.declarations) {
-            // VariableDeclaration — may declare multiple bindings: export const x = 1, y = 2
-            for (const d of decl.declarations) {
-              if (d.id?.name) {
-                exportMap.set(d.id.name, {
-                  source: filePath,
-                  isNamespace: false,
-                  originalName: d.id.name,
-                });
-              }
-            }
           }
         }
         break;
       }
+      default:
+        break;
     }
   }
 
@@ -752,7 +720,7 @@ export function createOptimizeImportsPlugin(
         let hasChanges = false;
         const root = getRoot();
 
-        for (const node of ast.body as AstBodyNode[]) {
+        for (const node of ast.body) {
           if (node.type !== "ImportDeclaration") continue;
 
           const importSource = typeof node.source?.value === "string" ? node.source.value : null;
@@ -815,13 +783,9 @@ export function createOptimizeImportsPlugin(
           // Check if ALL specifiers can be resolved. If any can't, leave the import unchanged.
           const specifiers: Array<{ local: string; imported: string }> = [];
           let allResolved = true;
-          for (const spec of node.specifiers ?? []) {
+          for (const spec of node.specifiers) {
             switch (spec.type) {
               case "ImportSpecifier": {
-                if (!spec.imported) {
-                  allResolved = false;
-                  break;
-                }
                 const imported = getAstName(spec.imported);
                 if (imported === null) {
                   // Malformed AST node — degrade gracefully by skipping the import
@@ -851,8 +815,8 @@ export function createOptimizeImportsPlugin(
           // If any specifier couldn't be resolved, leave the entire import unchanged.
           if (!allResolved || specifiers.length === 0) {
             if (allResolved === false) {
-              for (const spec of node.specifiers ?? []) {
-                if (spec.type === "ImportSpecifier" && spec.imported) {
+              for (const spec of node.specifiers) {
+                if (spec.type === "ImportSpecifier") {
                   const imported = getAstName(spec.imported);
                   if (imported !== null && !exportMap.has(imported)) {
                     console.debug(

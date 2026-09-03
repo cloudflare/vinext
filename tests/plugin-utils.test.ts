@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { toSlash } from "pathslash";
+import { parseAst, type ESTree } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import {
   booleanLiteralValue,
@@ -27,6 +28,12 @@ import {
 } from "../packages/vinext/src/utils/path.js";
 
 describe("plugin AST utilities", () => {
+  function parseExpression(source: string, lang: "js" | "ts" = "js"): ESTree.Expression {
+    const statement = parseAst(source, { lang }).body[0];
+    if (statement?.type !== "ExpressionStatement") throw new Error("Expected an expression");
+    return statement.expression;
+  }
+
   it.each([
     ["/app/page.js", "jsx"],
     ["/app/page.jsx?direct", "jsx"],
@@ -42,28 +49,24 @@ describe("plugin AST utilities", () => {
   });
 
   it("reads literal values and syntax-only expression wrappers", () => {
-    const literal = { type: "Literal", value: "value" };
-    const template = {
-      type: "TemplateLiteral",
-      expressions: [],
-      quasis: [{ type: "TemplateElement", value: { cooked: "cooked", raw: "raw" } }],
-    };
-    const wrapped = { type: "TSAsExpression", expression: literal };
+    const literal = parseExpression('"value"');
+    const template = parseExpression("`cooked`");
+    const wrapped = parseExpression('"value" as string', "ts");
 
-    expect(getAstName({ type: "Identifier", name: "binding" })).toBe("binding");
+    expect(getAstName(parseExpression("binding"))).toBe("binding");
     expect(stringLiteralValue(literal)).toBe("value");
     expect(staticStringValue(template)).toBe("cooked");
-    expect(booleanLiteralValue({ type: "Literal", value: false })).toBe(false);
-    expect(unwrapExpression(wrapped)).toBe(literal);
-    expect(staticStringValue({ ...template, expressions: [literal] })).toBeNull();
+    expect(booleanLiteralValue(parseExpression("false"))).toBe(false);
+    expect(stringLiteralValue(unwrapExpression(wrapped))).toBe("value");
+    expect(staticStringValue(parseExpression('`${"value"}`'))).toBeNull();
   });
 
   it("walks children without following parent cycles and supports pruning", () => {
-    const prunedChild = { type: "Literal", value: "hidden" };
-    const pruned = { type: "CallExpression", arguments: [prunedChild] };
-    const visible = { type: "Identifier", name: "visible" };
-    const root = { type: "Program", body: [pruned, visible] } as Record<string, unknown>;
-    root.parent = root;
+    const root = parseAst('pruned("hidden"); visible;');
+    const firstStatement = root.body[0];
+    if (firstStatement?.type !== "ExpressionStatement") throw new Error("Expected a call");
+    const pruned = firstStatement.expression;
+    pruned.parent = root;
 
     const visited: string[] = [];
     walkAst(root, (node) => {
@@ -71,7 +74,13 @@ describe("plugin AST utilities", () => {
       return node === pruned ? false : undefined;
     });
 
-    expect(visited).toEqual(["Program", "CallExpression", "Identifier"]);
+    expect(visited).toEqual([
+      "Program",
+      "ExpressionStatement",
+      "CallExpression",
+      "ExpressionStatement",
+      "Identifier",
+    ]);
   });
 });
 

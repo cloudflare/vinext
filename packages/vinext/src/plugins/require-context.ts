@@ -21,25 +21,20 @@
 import type { Dirent } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import path, { toSlash } from "pathslash";
-import { parseAst, type Plugin } from "vite";
+import { parseAst, type ESTree, type Plugin } from "vite";
 import MagicString from "magic-string";
 import {
   booleanLiteralValue,
-  hasRange,
-  isAstRecord,
-  nodeArray,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   stringLiteralValue,
   walkAst,
-  type AstRange,
-  type AstRecord,
 } from "./ast-utils.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type ParsedCall = {
-  range: AstRange;
+  range: ESTree.CallExpression;
   dir: string;
   recursive: boolean;
   pattern: string;
@@ -137,7 +132,7 @@ type TransformResult = {
 async function transformRequireContext(code: string, id: string): Promise<TransformResult | null> {
   const lang = scriptParserLanguage(id)!;
 
-  let ast: unknown;
+  let ast: ReturnType<typeof parseAst>;
   try {
     ast = parseAst(code, { lang });
   } catch {
@@ -174,7 +169,7 @@ async function transformRequireContext(code: string, id: string): Promise<Transf
   };
 }
 
-function collectRequireContextCalls(ast: unknown): ParsedCall[] {
+function collectRequireContextCalls(ast: ESTree.Program): ParsedCall[] {
   const calls: ParsedCall[] = [];
 
   walkAst(ast, (node) => {
@@ -189,20 +184,10 @@ function collectRequireContextCalls(ast: unknown): ParsedCall[] {
   return calls;
 }
 
-function findImportInsertionOffset(ast: unknown): number {
-  if (!isAstRecord(ast) || ast.type !== "Program") return 0;
-
-  let offset = 0;
-  if (isAstRecord(ast.hashbang) && hasRange(ast.hashbang)) {
-    offset = ast.hashbang.end;
-  }
-  for (const statement of nodeArray(ast.body)) {
-    if (
-      !isAstRecord(statement) ||
-      statement.type !== "ExpressionStatement" ||
-      typeof statement.directive !== "string" ||
-      !hasRange(statement)
-    ) {
+function findImportInsertionOffset(ast: ESTree.Program): number {
+  let offset = ast.hashbang?.end ?? 0;
+  for (const statement of ast.body) {
+    if (statement.type !== "ExpressionStatement" || typeof statement.directive !== "string") {
       break;
     }
     offset = statement.end;
@@ -214,22 +199,17 @@ function findImportInsertionOffset(ast: unknown): number {
 // is the `require` identifier, optionally wrapped in a `(require as any)`
 // TypeScript assertion or parentheses. Returns null for anything that does not
 // match exactly, so unrelated `.context(...)` calls are never rewritten.
-function parseRequireContextCall(node: AstRecord): ParsedCall | null {
-  if (node.type !== "CallExpression" || !hasRange(node)) return null;
+function parseRequireContextCall(node: ESTree.Node): ParsedCall | null {
+  if (node.type !== "CallExpression") return null;
 
   const callee = node.callee;
-  if (
-    !isAstRecord(callee) ||
-    callee.type !== "MemberExpression" ||
-    callee.computed === true ||
-    callee.optional === true
-  ) {
+  if (callee.type !== "MemberExpression" || callee.computed === true || callee.optional === true) {
     return null;
   }
   if (!isPropertyNamed(callee.property, "context")) return null;
   if (!isRequireExpression(callee.object)) return null;
 
-  const args = nodeArray(node.arguments);
+  const args = node.arguments;
   // First arg: the directory string. Required and must be a static, relative
   // path so each matched file can become a relative static import. A
   // bare/aliased specifier is left untouched.
@@ -274,10 +254,10 @@ function parseRequireContextCall(node: AstRecord): ParsedCall | null {
 }
 
 // `require`, `(require)`, `(require as any)`, `(require as unknown as Foo)`, …
-function isRequireExpression(value: unknown): boolean {
-  let node = value;
+function isRequireExpression(value: ESTree.Node): boolean {
+  let node: ESTree.Node = value;
   // Unwrap TS assertion / non-null / parenthesized wrappers around `require`.
-  while (isAstRecord(node)) {
+  while (true) {
     if (node.type === "Identifier") {
       return node.name === "require";
     }
@@ -295,30 +275,17 @@ function isRequireExpression(value: unknown): boolean {
     }
     return false;
   }
-  return false;
 }
 
-function isPropertyNamed(value: unknown, name: string): boolean {
-  return isAstRecord(value) && value.type === "Identifier" && value.name === name;
+function isPropertyNamed(value: ESTree.Node, name: string): boolean {
+  return value.type === "Identifier" && value.name === name;
 }
 
-function regexLiteralValue(value: unknown): { pattern: string; flags: string } | null {
-  if (!isAstRecord(value) || value.type !== "Literal") return null;
+function regexLiteralValue(value: ESTree.Node): { pattern: string; flags: string } | null {
+  if (value.type !== "Literal" || !("regex" in value)) return null;
   // OXC attaches the regex source as a plain `{ pattern, flags }` object on the
-  // Literal node — it has no `type` field, so it is NOT an AstRecord.
-  const regex = value.regex;
-  if (
-    typeof regex === "object" &&
-    regex !== null &&
-    typeof (regex as { pattern?: unknown }).pattern === "string" &&
-    typeof (regex as { flags?: unknown }).flags === "string"
-  ) {
-    return {
-      pattern: (regex as { pattern: string }).pattern,
-      flags: (regex as { flags: string }).flags,
-    };
-  }
-  return null;
+  // RegExp value — unlike the containing Literal, this object is not an AST node.
+  return value.regex;
 }
 
 // Builds an IIFE that produces a Webpack-compatible require.context function.
