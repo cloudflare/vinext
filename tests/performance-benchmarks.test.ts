@@ -656,6 +656,113 @@ describe("paired performance benchmarks", () => {
     expect(comment).not.toContain("Next.js |");
   });
 
+  it("writes a skipped upload response when the dashboard secret is unavailable", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-upload-skip-"));
+    const resultsPath = join(directory, "results.json");
+    const responsePath = join(directory, "response.json");
+    writeFileSync(resultsPath, JSON.stringify({ benchmarks: [] }));
+
+    execFileSync(process.execPath, ["benchmarks/perf/upload-results.mjs", resultsPath], {
+      cwd: join(import.meta.dirname, ".."),
+      env: {
+        ...process.env,
+        COMPAT_INGEST_SECRET: "",
+        VINEXT_PERF_UPLOAD_RESPONSE_PATH: responsePath,
+      },
+    });
+
+    expect(JSON.parse(readFileSync(responsePath, "utf8"))).toEqual({
+      uploaded: false,
+      reason: "missing_secret",
+    });
+  });
+
+  it("renders paired PR comments when the dashboard upload response is missing", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-local-comment-"));
+    const resultsPath = join(directory, "results.json");
+    const responsePath = join(directory, "response.json");
+    const outputPath = join(directory, "comment.md");
+    writeFileSync(
+      resultsPath,
+      JSON.stringify({
+        run: {
+          kind: "pull_request",
+          pullRequest: 42,
+          commitSha: "a".repeat(40),
+          baseSha: "b".repeat(40),
+          measuredAt: "2026-01-01T00:00:00.000Z",
+        },
+        benchmarks: [
+          {
+            benchmarkId: "vinext-production-build",
+            label: "Production build time",
+            implementationLabel: "vinext",
+            unit: "ms",
+            lowerIsBetter: true,
+            samples: { median: 90 },
+            baselineSamples: { median: 100 },
+          },
+        ],
+      }),
+    );
+
+    execFileSync(
+      process.execPath,
+      ["benchmarks/perf/format-pr-comment.mjs", resultsPath, responsePath, outputPath],
+      { cwd: join(import.meta.dirname, "..") },
+    );
+
+    const comment = readFileSync(outputPath, "utf8");
+    expect(comment).toContain("Compared `aaaaaaa` against base `bbbbbbb`");
+    expect(comment).toContain("1 improved · 0 regressed · 0 within ±1.5%");
+    expect(comment).toContain("| Production build time | vinext | 100 ms | 90 ms |");
+    expect(comment).toContain("Dashboard upload was unavailable for this run.");
+    expect(comment).not.toContain("View detailed results and traces");
+  });
+
+  it("does not summarize unpaired local PR comments as baseline comparisons", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-unpaired-local-comment-"));
+    const resultsPath = join(directory, "results.json");
+    const responsePath = join(directory, "response.json");
+    const outputPath = join(directory, "comment.md");
+    writeFileSync(
+      resultsPath,
+      JSON.stringify({
+        run: {
+          kind: "pull_request",
+          pullRequest: 42,
+          commitSha: "a".repeat(40),
+          baseSha: "b".repeat(40),
+          measuredAt: "2026-01-01T00:00:00.000Z",
+        },
+        benchmarks: [
+          {
+            benchmarkId: "vinext-production-build",
+            label: "Production build time",
+            implementationLabel: "vinext",
+            unit: "ms",
+            lowerIsBetter: true,
+            samples: { median: 90 },
+          },
+        ],
+      }),
+    );
+
+    execFileSync(
+      process.execPath,
+      ["benchmarks/perf/format-pr-comment.mjs", resultsPath, responsePath, outputPath],
+      { cwd: join(import.meta.dirname, "..") },
+    );
+
+    const comment = readFileSync(outputPath, "utf8");
+    expect(comment).toContain(
+      "Measured `aaaaaaa`. No benchmark run is available for base `bbbbbbb`.",
+    );
+    expect(comment).toContain("1 measurements recorded · baseline unavailable");
+    expect(comment).toContain("| Production build time | vinext | — | 90 ms | New |");
+    expect(comment).not.toContain("0 improved · 0 regressed · 0 within ±1.5%");
+  });
+
   it("labels mixed paired and historical PR comment baselines", () => {
     const directory = mkdtempSync(join(tmpdir(), "vinext-perf-mixed-comment-"));
     const resultsPath = join(directory, "results.json");

@@ -11,8 +11,17 @@ const secret = process.env.COMPAT_INGEST_SECRET;
 const artifactRoot = process.env.VINEXT_PERF_ARTIFACT_ROOT
   ? resolve(process.env.VINEXT_PERF_ARTIFACT_ROOT)
   : null;
+const uploadResponsePath = process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH
+  ? resolve(process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH)
+  : null;
 
 if (!secret) {
+  if (uploadResponsePath) {
+    await writeFile(
+      uploadResponsePath,
+      `${JSON.stringify({ uploaded: false, reason: "missing_secret" })}\n`,
+    );
+  }
   console.log("COMPAT_INGEST_SECRET is not configured; skipping performance upload.");
   process.exit(0);
 }
@@ -116,8 +125,8 @@ try {
   const responseBody = await uploadMetadata();
   metadataCommitted = true;
 
-  if (process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH) {
-    await writeFile(resolve(process.env.VINEXT_PERF_UPLOAD_RESPONSE_PATH), `${responseBody}\n`);
+  if (uploadResponsePath) {
+    await writeFile(uploadResponsePath, `${responseBody}\n`);
   }
   console.log(responseBody);
 } catch (error) {
