@@ -478,14 +478,14 @@ describe("staged Worker cacheability probes", () => {
     );
   });
 
-  it("unlocks sibling paths without waiting for every pattern representative", async () => {
+  it("completes pattern representatives before scheduling sibling paths", async () => {
     const root = createProbeRoot();
     const slow = target("/slow");
     const fastRoute = optimizableRoute("/fast/:slug");
     const fastFirst = { ...target("/fast/one"), route: fastRoute };
     const fastSecond = { ...target("/fast/two"), route: fastRoute };
     let slowCompleted = false;
-    let siblingStartedBeforeSlowCompleted = false;
+    let siblingStartedAfterSlowCompleted = false;
     const result = await probeStagedWorkerCacheability({
       buildId: "application-build",
       concurrency: 2,
@@ -495,7 +495,7 @@ describe("staged Worker cacheability probes", () => {
           await new Promise((resolve) => setTimeout(resolve, 20));
           slowCompleted = true;
         } else if (pathname === "/fast/two") {
-          siblingStartedBeforeSlowCompleted = !slowCompleted;
+          siblingStartedAfterSlowCompleted = slowCompleted;
         }
         return Response.json({
           kind: "app-page",
@@ -512,7 +512,7 @@ describe("staged Worker cacheability probes", () => {
     });
 
     expect(result).toMatchObject({ failures: [], probed: 3 });
-    expect(siblingStartedBeforeSlowCompleted).toBe(true);
+    expect(siblingStartedAfterSlowCompleted).toBe(true);
   });
 
   it("does not prune destination siblings before route-moving probes settle", async () => {

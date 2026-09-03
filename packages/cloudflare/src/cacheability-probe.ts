@@ -726,58 +726,37 @@ export async function probeStagedWorkerCacheability(options: {
     reportProgress();
   };
 
+  const runGroups = async (scheduledGroups: readonly ConcretePathGroup[]): Promise<void> => {
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (!limitFailure && !phaseTimedOut && nextIndex < scheduledGroups.length) {
+        await classifyConcretePath(scheduledGroups[nextIndex++]);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, scheduledGroups.length) }, () => worker()),
+    );
+  };
+
   reportProgress();
-  let activeProbes = 0;
-  const slotWaiters: Array<() => void> = [];
-  const acquireProbeSlot = async (): Promise<void> => {
-    if (activeProbes < concurrency) {
-      activeProbes++;
-      return;
-    }
-    await new Promise<void>((resolve) => slotWaiters.push(resolve));
-  };
-  const releaseProbeSlot = (): void => {
-    const next = slotWaiters.shift();
-    if (next) next();
-    else activeProbes--;
-  };
-  let pendingRouteMovers = groups.filter(
+  const routeMovingGroups = groups.filter(
     (group) => group.primary.route?.cacheabilityProbe?.routeMayResolve === true,
-  ).length;
-  let settleRouteMovers: (() => void) | undefined;
-  const routeMoversSettled =
-    pendingRouteMovers === 0
-      ? Promise.resolve()
-      : new Promise<void>((resolve) => {
-          settleRouteMovers = resolve;
-        });
-  const runGroup = async (group: ConcretePathGroup): Promise<void> => {
-    const mayResolveRoute = group.primary.route?.cacheabilityProbe?.routeMayResolve === true;
-    while (true) {
-      if (!mayResolveRoute && group.pattern.pruned && pendingRouteMovers > 0) {
-        await routeMoversSettled;
-      }
-      await acquireProbeSlot();
-      if (!mayResolveRoute && group.pattern.pruned && pendingRouteMovers > 0) {
-        releaseProbeSlot();
-        continue;
-      }
-      break;
-    }
-    try {
-      if (!limitFailure && !phaseTimedOut) await classifyConcretePath(group);
-    } finally {
-      releaseProbeSlot();
-      if (mayResolveRoute && --pendingRouteMovers === 0) settleRouteMovers?.();
-    }
-  };
-  const initialPatternGroups = Array.from(patterns.values(), (pattern) => [...pattern.groups]);
-  await Promise.all(
-    initialPatternGroups.map(async ([representative, ...siblings]) => {
-      await runGroup(representative);
-      await Promise.all(siblings.map(runGroup));
-    }),
   );
+  const routeMovingGroupSet = new Set(routeMovingGroups);
+  const representativeGroups: ConcretePathGroup[] = [];
+  const siblingGroups: ConcretePathGroup[] = [];
+  for (const pattern of patterns.values()) {
+    const [representative, ...siblings] = pattern.groups;
+    if (representative && !routeMovingGroupSet.has(representative)) {
+      representativeGroups.push(representative);
+    }
+    siblingGroups.push(...siblings.filter((group) => !routeMovingGroupSet.has(group)));
+  }
+  // Resolve every route-moving public path before a destination pattern may
+  // be pruned, then use the same bounded worker loops as ordinary CDN warming.
+  await runGroups(routeMovingGroups);
+  if (!limitFailure && !phaseTimedOut) await runGroups(representativeGroups);
+  if (!limitFailure && !phaseTimedOut) await runGroups(siblingGroups);
   if (limitFailure) throw limitFailure;
   if (phaseTimedOut || Date.now() >= getDeadlineAt()) {
     throw new Error(`cacheability probing made no progress for ${phaseTimeoutMs}ms`);
