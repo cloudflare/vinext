@@ -175,6 +175,141 @@ void [metadata, config, image, link, font];
   return result.status === 0 ? "" : `${result.stdout ?? ""}${result.stderr ?? ""}`;
 }
 
+async function typecheckTypedRoutesConsumer(
+  root: string,
+  withNext: boolean,
+  router: "app" | "pages" = "app",
+): Promise<string> {
+  await writeProjectFile(
+    root,
+    "package.json",
+    JSON.stringify({
+      private: true,
+      dependencies: withNext ? { vinext: "*", next: "*" } : { vinext: "*" },
+    }),
+  );
+  for (const packageName of [
+    "vinext",
+    "@vinext/types",
+    "react",
+    "vite",
+    "@types/node",
+    "@types/react",
+  ]) {
+    await linkPackage(root, packageName);
+  }
+  if (withNext) await linkPackage(root, "next");
+
+  let consumerPath: string;
+  if (router === "app") {
+    await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+    await writeProjectFile(root, "app/dashboard/page.tsx", EMPTY_PAGE);
+    await writeProjectFile(root, "app/blog/[slug]/page.tsx", EMPTY_PAGE);
+    await writeProjectFile(root, "app/docs/[...slug]/page.tsx", EMPTY_PAGE);
+    consumerPath = "app/page.ts";
+    await writeProjectFile(
+      root,
+      consumerPath,
+      `import type { Route } from "next";
+// These are dependencies of generated link.d.ts. Import them from source so
+// skipLibCheck cannot hide a missing @vinext/types compatibility alias.
+import type {} from "next/types.js";
+import type { LinkProps } from "next/link";
+import type { LinkProps as InternalLinkProps } from "next/dist/client/link.js";
+import type { FormProps as InternalFormProps } from "next/dist/client/form.js";
+import type * as InternalNavigation from "next/dist/client/components/navigation.js";
+import type { RedirectType } from "next/dist/client/components/redirect-error.js";
+import type { NavigateOptions } from "next/dist/shared/lib/app-router-context.shared-runtime.js";
+import { redirect, useRouter } from "next/navigation";
+
+const route: Route = "/dashboard";
+// @ts-expect-error not an existing route
+const badRoute: Route = "/nope";
+const dashboardHref: LinkProps<"/dashboard">["href"] = "/dashboard";
+const dynamicHref: LinkProps<"/blog/hello">["href"] = "/blog/hello";
+const catchAllHref: LinkProps<"/docs/a/b">["href"] = "/docs/a/b";
+declare const router: ReturnType<typeof useRouter>;
+router.push("/dashboard");
+declare const query: string;
+router.push(query ? \`/dashboard?\${query}\` : "/dashboard");
+// @ts-expect-error invalid push target
+router.push("/nope");
+redirect("/dashboard");
+// @ts-expect-error invalid redirect target
+redirect("/nope");
+const cast = "/anything" as Route;
+type GeneratedLinkTypeDependencies = [
+  InternalLinkProps,
+  InternalFormProps,
+  typeof InternalNavigation,
+  RedirectType,
+  NavigateOptions,
+];
+void [
+  route,
+  badRoute,
+  dashboardHref,
+  dynamicHref,
+  catchAllHref,
+  cast,
+  null as GeneratedLinkTypeDependencies | null,
+];
+`,
+    );
+  } else {
+    await writeProjectFile(root, "pages/index.tsx", EMPTY_PAGE);
+    await writeProjectFile(root, "pages/about.tsx", EMPTY_PAGE);
+    await writeProjectFile(root, "pages/posts/[id].tsx", EMPTY_PAGE);
+    await writeProjectFile(root, "pages/api/hello.ts", "export default function handler() {}\n");
+    // Lives outside pages/ so the consumer does not become a route itself.
+    consumerPath = "typed-routes-consumer.ts";
+    await writeProjectFile(
+      root,
+      consumerPath,
+      `import type { Route } from "next";
+import type { LinkProps } from "next/link";
+
+const route: Route = "/about";
+// @ts-expect-error not an existing route
+const badRoute: Route = "/nope";
+const aboutHref: LinkProps<"/about">["href"] = "/about";
+const postHref: LinkProps<"/posts/hello">["href"] = "/posts/hello";
+const apiHref: LinkProps<"/api/hello">["href"] = "/api/hello";
+// @ts-expect-error raw file paths are not routes
+const fileHref: Route = "pages/api/hello.ts";
+void [route, badRoute, aboutHref, postHref, apiHref, fileHref];
+`,
+    );
+  }
+  await generateRouteTypes({ root, typedRoutes: true });
+
+  const tscPath = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
+  const result = spawnSync(
+    process.execPath,
+    [
+      tscPath,
+      "--ignoreConfig",
+      "--strict",
+      "--noEmit",
+      "--skipLibCheck",
+      "true",
+      "--module",
+      "esnext",
+      "--moduleResolution",
+      "bundler",
+      "--target",
+      "es2022",
+      path.join(root, "next-env.d.ts"),
+      path.join(root, consumerPath),
+    ],
+    { cwd: root, encoding: "utf-8" },
+  );
+  if (result.error) {
+    throw result.error;
+  }
+  return result.status === 0 ? "" : `${result.stdout ?? ""}${result.stderr ?? ""}`;
+}
+
 async function eventually(run: () => Promise<void>, timeoutMs = 3_000): Promise<void> {
   const start = Date.now();
   let lastError: unknown;
@@ -231,6 +366,238 @@ describe("generateRouteTypes", () => {
       expect(generated).toContain(
         "type RouteContext<Route extends VinextRouteTypes.RouteHandlerRoute = VinextRouteTypes.RouteHandlerRoute>",
       );
+    });
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/typed-routes/typed-links.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/typed-routes/typed-links.test.ts
+  it("emits typed-link declarations when typedRoutes is enabled", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/dashboard/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/(marketing)/about/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/blog/[slug]/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/docs/[...slug]/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/shop/[[...slug]]/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/api/items/[id]/route.ts", EMPTY_ROUTE);
+
+      const result = await generateRouteTypes({ root, typedRoutes: true });
+      expect(result.linkTypesPath).toBe(toSlash(path.join(root, ".next/types/link.d.ts")));
+      const generated = await readFile(result.linkTypesPath!, "utf-8");
+
+      expect(generated).toContain("declare namespace __next_route_internal_types__");
+      expect(generated).toContain("| `/` // app/page.tsx");
+      expect(generated).toContain("| `/about` // app/(marketing)/about/page.tsx");
+      expect(generated).toContain("| `/dashboard` // app/dashboard/page.tsx");
+      expect(generated).toContain("| `/blog/${SafeSlug<T>}` // app/blog/[slug]/page.tsx");
+      expect(generated).toContain("| `/docs/${CatchAllSlug<T>}` // app/docs/[...slug]/page.tsx");
+      expect(generated).toContain(
+        "| `/shop/${OptionalCatchAllSlug<T>}` // app/shop/[[...slug]]/page.tsx",
+      );
+      expect(generated).toContain("| `/api/items/${SafeSlug<T>}` // app/api/items/[id]/route.ts");
+      expect(generated).toContain("declare module 'next'");
+      expect(generated).toContain("declare module 'next/link'");
+      expect(generated).toContain("declare module 'next/navigation'");
+      expect(generated).toContain("declare module 'next/form'");
+      expect(await readFile(result.nextEnvPath, "utf-8")).toContain(
+        'import "./.next/types/link.d.ts";',
+      );
+    });
+  });
+
+  it("omits typed-link declarations when typedRoutes is disabled and removes stale output", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+      const linkPath = path.join(root, ".next/types/link.d.ts");
+
+      const disabled = await generateRouteTypes({ root });
+      expect(disabled.linkTypesPath).toBeNull();
+      await expect(readFile(linkPath, "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(disabled.nextEnvPath, "utf-8")).not.toContain(
+        'import "./.next/types/link.d.ts";',
+      );
+
+      const enabled = await generateRouteTypes({ root, typedRoutes: true });
+      expect(enabled.linkTypesPath).toBe(toSlash(linkPath));
+      expect(await readFile(linkPath, "utf-8")).toContain(
+        "declare namespace __next_route_internal_types__",
+      );
+
+      const disabledAgain = await generateRouteTypes({ root });
+      expect(disabledAgain.linkTypesPath).toBeNull();
+      await expect(readFile(linkPath, "utf-8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(disabledAgain.nextEnvPath, "utf-8")).not.toContain(
+        'import "./.next/types/link.d.ts";',
+      );
+    });
+  });
+
+  it("emits the zero-routes typed-link fallback", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+
+      const result = await generateRouteTypes({ root, typedRoutes: true });
+      expect(result.linkTypesPath).not.toBeNull();
+      expect(await readFile(result.linkTypesPath!, "utf-8")).toContain(
+        "type RouteImpl<T> = string & {}",
+      );
+    });
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/typed-routes/typed-links.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/typed-routes/typed-links.test.ts
+  it.each([
+    ["vinext fallback types", false, "app"],
+    ["Next.js types", true, "app"],
+    ["vinext fallback types for the Pages Router", false, "pages"],
+    ["Next.js types for the Pages Router", true, "pages"],
+  ] as const)("enforces typed links with %s", async (_label, withNext, router) => {
+    await withTempProject(async (root) => {
+      expect(await typecheckTypedRoutesConsumer(root, withNext, router)).toBe("");
+    });
+  });
+
+  it("folds Pages Router routes into the typed-link unions", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "pages/legacy.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "pages/posts/[id].tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "pages/api/hello.ts", "export default function handler() {}\n");
+
+      const result = await generateRouteTypes({ root, typedRoutes: true });
+      const generated = await readFile(result.linkTypesPath!, "utf-8");
+
+      expect(generated).toContain("| `/` // app/page.tsx");
+      expect(generated).toContain("| `/legacy` // pages/legacy.tsx");
+      expect(generated).toContain("| `/posts/${SafeSlug<T>}` // pages/posts/[id].tsx");
+      // Deliberate divergence: Next.js emits raw `pages/api/*` file paths into
+      // the unions; vinext emits the API routes' URLs instead.
+      expect(generated).toContain("| `/api/hello` // pages/api/hello.ts");
+      expect(generated).not.toContain("| `pages/api/hello.ts`");
+    });
+  });
+
+  it("keeps percent-encoded literal bracket segments static in typed links", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/%5Bsites%5D/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "app/blog/[slug]/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "pages/%5Bid%5D.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "pages/[id].tsx", EMPTY_PAGE);
+
+      const result = await generateRouteTypes({ root, typedRoutes: true });
+      const generated = await readFile(result.linkTypesPath!, "utf-8");
+
+      expect(generated).toContain("| `/[sites]` // app/%5Bsites%5D/page.tsx");
+      expect(generated).toContain("| `/[id]` // pages/%5Bid%5D.tsx");
+      expect(generated).toContain("| `/${SafeSlug<T>}` // pages/[id].tsx");
+      expect(generated).toContain("| `/blog/${SafeSlug<T>}` // app/blog/[slug]/page.tsx");
+    });
+  });
+
+  it("builds typed-link unions for Pages Router-only projects", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "pages/index.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "pages/about.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "pages/docs/[...slug].tsx", EMPTY_PAGE);
+
+      const result = await generateRouteTypes({ root, typedRoutes: true });
+      const generated = await readFile(result.linkTypesPath!, "utf-8");
+
+      expect(generated).toContain("| `/` // pages/index.tsx");
+      expect(generated).toContain("| `/about` // pages/about.tsx");
+      expect(generated).toContain("| `/docs/${CatchAllSlug<T>}` // pages/docs/[...slug].tsx");
+      expect(generated).not.toContain("type RouteImpl<T> = string & {}");
+    });
+  });
+
+  it("regenerates typed-link declarations in dev with inline nextConfig", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+
+      let server: ViteDevServer | null = null;
+      try {
+        server = await createServer({
+          root,
+          logLevel: "silent",
+          plugins: [vinext({ appDir: root, nextConfig: { typedRoutes: true } })],
+        });
+
+        const linkPath = path.join(root, ".next", "types", "link.d.ts");
+        await eventually(async () => {
+          expect(await readFile(linkPath, "utf-8")).toContain("| `/` // app/page.tsx");
+        });
+
+        const aboutPage = path.join(root, "app/about/page.tsx");
+        await writeProjectFile(root, "app/about/page.tsx", EMPTY_PAGE);
+        server.watcher.emit("add", aboutPage);
+
+        await eventually(async () => {
+          expect(await readFile(linkPath, "utf-8")).toContain("| `/about` // app/about/page.tsx");
+        });
+      } finally {
+        await server?.close();
+      }
+    });
+  });
+
+  it("regenerates typed-link declarations when Pages Router files change in dev", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "pages/index.tsx", EMPTY_PAGE);
+
+      let server: ViteDevServer | null = null;
+      try {
+        server = await createServer({
+          root,
+          logLevel: "silent",
+          plugins: [vinext({ appDir: root, nextConfig: { typedRoutes: true } })],
+        });
+
+        const linkPath = path.join(root, ".next", "types", "link.d.ts");
+        await eventually(async () => {
+          expect(await readFile(linkPath, "utf-8")).toContain("| `/` // pages/index.tsx");
+        });
+
+        const aboutPage = path.join(root, "pages/about.tsx");
+        await writeProjectFile(root, "pages/about.tsx", EMPTY_PAGE);
+        server.watcher.emit("add", aboutPage);
+
+        await eventually(async () => {
+          expect(await readFile(linkPath, "utf-8")).toContain("| `/about` // pages/about.tsx");
+        });
+      } finally {
+        await server?.close();
+      }
+    });
+  });
+
+  it("includes Pages Router typed links under a configured route root", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "routes/app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "routes/app/page.tsx", EMPTY_PAGE);
+      await writeProjectFile(root, "routes/pages/legacy.tsx", EMPTY_PAGE);
+
+      let server: ViteDevServer | null = null;
+      try {
+        server = await createServer({
+          root,
+          logLevel: "silent",
+          plugins: [vinext({ appDir: "routes", nextConfig: { typedRoutes: true } })],
+        });
+
+        const linkPath = path.join(root, ".next", "types", "link.d.ts");
+        await eventually(async () => {
+          const generated = await readFile(linkPath, "utf-8");
+          expect(generated).toContain("| `/` // routes/app/page.tsx");
+          expect(generated).toContain("| `/legacy` // routes/pages/legacy.tsx");
+        });
+      } finally {
+        await server?.close();
+      }
     });
   });
 
