@@ -29,6 +29,7 @@ export type CloudflarePlatformSetupContext = {
   isAppRouter: boolean;
   existingViteConfigPath?: string;
   prerender?: boolean;
+  hasCssModules?: boolean;
   today?: string;
 };
 
@@ -37,6 +38,7 @@ export type CloudflarePlatformSetupResult = {
   skippedViteConfig: boolean;
   generatedPlatformFiles: string[];
   nextSteps: string[];
+  preservedExistingGenerateScopedName: boolean;
 };
 
 export function validateCloudflarePlatformSetup(
@@ -66,7 +68,7 @@ export function validateCloudflarePlatformSetup(
     : DEFAULT_VERSION_METADATA_BINDING;
 
   if (context.existingViteConfigPath) {
-    updateViteConfigForCloudflare(
+    const cloudflareConfig = updateViteConfigForCloudflare(
       context.existingViteConfigPath,
       fs.readFileSync(context.existingViteConfigPath, "utf-8"),
       {
@@ -78,6 +80,9 @@ export function validateCloudflarePlatformSetup(
         prerender: context.prerender,
       },
     );
+    if (context.hasCssModules) {
+      updateViteConfigForCssModules(context.existingViteConfigPath, cloudflareConfig);
+    }
   }
 }
 
@@ -102,9 +107,10 @@ export function setupCloudflarePlatform(
 
   let generatedViteConfig = false;
   let skippedViteConfig = false;
+  let preservedExistingGenerateScopedName = false;
   if (context.existingViteConfigPath) {
     const currentConfig = fs.readFileSync(context.existingViteConfigPath, "utf-8");
-    const updatedConfig = updateViteConfigForCloudflare(
+    let updatedConfig = updateViteConfigForCloudflare(
       context.existingViteConfigPath,
       currentConfig,
       {
@@ -116,6 +122,14 @@ export function setupCloudflarePlatform(
         prerender: context.prerender,
       },
     );
+    if (context.hasCssModules) {
+      const cssUpdate = updateViteConfigForCssModules(
+        context.existingViteConfigPath,
+        updatedConfig,
+      );
+      updatedConfig = cssUpdate.code;
+      preservedExistingGenerateScopedName = cssUpdate.preservedExistingGenerateScopedName;
+    }
     if (updatedConfig !== currentConfig) {
       fs.writeFileSync(context.existingViteConfigPath, updatedConfig, "utf-8");
       generatedViteConfig = true;
@@ -129,6 +143,7 @@ export function setupCloudflarePlatform(
           cloudflare,
           imagesBinding,
           context.prerender,
+          context.hasCssModules,
           versionMetadataBinding,
         )
       : generatePagesRouterViteConfig(
@@ -136,6 +151,7 @@ export function setupCloudflarePlatform(
           cloudflare,
           imagesBinding,
           context.prerender,
+          context.hasCssModules,
           versionMetadataBinding,
         );
     fs.writeFileSync(path.join(context.root, "vite.config.ts"), configContent, "utf-8");
@@ -185,6 +201,7 @@ export function setupCloudflarePlatform(
           '   Set its "id" value, replacing "<your-kv-namespace-id>" if present.',
         ]
       : [],
+    preservedExistingGenerateScopedName,
   };
 }
 
@@ -570,27 +587,69 @@ function vinextExpression(
     : `${binding}({\n  ${optionEntries.join(",\n  ")},\n})`;
 }
 
+function generateScopedNameMethodSource(
+  indent: string,
+  pathBinding: string,
+  createHashBinding: string,
+  rootExpression = "import.meta.dirname",
+): string {
+  return `${indent}generateScopedName(name, filename) {
+${indent}  const relativePath = ${pathBinding}
+${indent}    .relative(${rootExpression}, filename.replace(/\\?.*$/, ""))
+${indent}    .replaceAll("\\\\", "/");
+${indent}  const hash = ${createHashBinding}("sha256")
+${indent}    .update(relativePath)
+${indent}    .digest("hex")
+${indent}    .slice(0, 7);
+${indent}  return \`_\${name}_\${hash}\`;
+${indent}}`;
+}
+
+function cssModulesConfigSource(
+  indent: string,
+  pathBinding: string,
+  createHashBinding: string,
+  rootExpression = "import.meta.dirname",
+): string {
+  return `\n${indent}css: {
+${indent}  modules: {
+${generateScopedNameMethodSource(`${indent}    `, pathBinding, createHashBinding, rootExpression)},
+${indent}  },
+${indent}},`;
+}
+
 /** Generate vite.config.ts for App Router */
 export function generateAppRouterViteConfig(
   info?: CloudflareProjectInfo,
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
   prerender = false,
+  hasCssModules = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
 ): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
+    ...(hasCssModules
+      ? [
+          `import { createHash } from "node:crypto";`,
+          `import path from "node:path";`,
+          `import { patchCssModules } from "vite-css-modules";`,
+        ]
+      : []),
     ...cacheImports(options),
   ];
 
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
+  if (!hasCssModules && info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
     imports.push(`import path from "node:path";`);
   }
 
   const plugins: string[] = [];
 
+  if (hasCssModules) {
+    plugins.push(`    patchCssModules({ exportMode: "default" }),`);
+  }
   if (info?.hasMDX) {
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
   }
@@ -627,12 +686,14 @@ export function generateAppRouterViteConfig(
     resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
   }
 
+  const cssModulesConfig = hasCssModules ? cssModulesConfigSource("  ", "path", "createHash") : "";
+
   return `${imports.join("\n")}
 
 export default defineConfig({
   plugins: [
 ${plugins.join("\n")}
-  ],${resolveBlock}
+  ],${resolveBlock}${cssModulesConfig}
 });
 `;
 }
@@ -643,16 +704,24 @@ export function generatePagesRouterViteConfig(
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
   prerender = false,
+  hasCssModules = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
 ): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
+    ...(hasCssModules
+      ? [
+          `import { createHash } from "node:crypto";`,
+          `import path from "node:path";`,
+          `import { patchCssModules } from "vite-css-modules";`,
+        ]
+      : []),
     ...cacheImports(options),
   ];
 
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
+  if (!hasCssModules && info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
     imports.push(`import path from "node:path";`);
   }
 
@@ -671,20 +740,23 @@ export function generatePagesRouterViteConfig(
     resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
   }
 
+  const cssModulesPlugin = hasCssModules ? '    patchCssModules({ exportMode: "default" }),\n' : "";
+  const cssModulesConfig = hasCssModules ? cssModulesConfigSource("  ", "path", "createHash") : "";
+
   return `${imports.join("\n")}
 
 export default defineConfig({
   plugins: [
-    ${vinextExpression(
-      options,
-      "vinext",
-      "imagesOptimizer",
-      imagesBinding,
-      prerender,
-      versionMetadataBinding,
-    ).replace(/\n/g, "\n    ")},
+${cssModulesPlugin}    ${vinextExpression(
+    options,
+    "vinext",
+    "imagesOptimizer",
+    imagesBinding,
+    prerender,
+    versionMetadataBinding,
+  ).replace(/\n/g, "\n    ")},
     cloudflare(),
-  ],${resolveBlock}
+  ],${resolveBlock}${cssModulesConfig}
 });
 `;
 }
@@ -732,6 +804,25 @@ function findProperty(object: AstObject, name: string): AstProperty | undefined 
     (property): property is AstProperty =>
       property.type === "Property" && propertyName(property) === name,
   );
+}
+
+function findLastProperty(object: AstObject, name: string): AstProperty | undefined {
+  for (let index = object.properties.length - 1; index >= 0; index--) {
+    const property = object.properties[index];
+    if (property.type === "Property" && propertyName(property) === name) return property;
+  }
+  return undefined;
+}
+
+/**
+ * A missing property may be supplied by any spread, while an existing property
+ * may be overridden by a later spread because object composition is last-write-wins.
+ */
+function hasPotentialSpreadOverride(object: AstObject, property: AstProperty | undefined): boolean {
+  const propertyIndex = property ? object.properties.lastIndexOf(property) : -1;
+  return object.properties
+    .slice(propertyIndex + 1)
+    .some((candidate) => candidate.type === "SpreadElement");
 }
 
 function unwrapObject(expression: ESTree.Expression): AstObject | undefined {
@@ -910,6 +1001,18 @@ function findImportedBinding(
   return undefined;
 }
 
+function findNamespaceImportedBinding(program: ESTree.Program, source: string): string | undefined {
+  for (const statement of program.body) {
+    if (statement.type !== "ImportDeclaration" || statement.source.value !== source) continue;
+    const namespace = statement.specifiers.find(
+      (specifier): specifier is ESTree.ImportNamespaceSpecifier =>
+        specifier.type === "ImportNamespaceSpecifier",
+    );
+    if (namespace) return namespace.local.name;
+  }
+  return undefined;
+}
+
 function ensureNamedImport(
   program: ESTree.Program,
   output: MagicString,
@@ -1045,11 +1148,38 @@ function insertObjectProperty(
   object: AstObject,
   source: string,
   code: string,
+  normalizeEmptyObject = false,
 ): void {
   const offset = object.end - 1;
-  const hasProperties = object.properties.length > 0;
-  const hasTrailingComma = /,\s*$/.test(code.slice(object.start + 1, offset));
-  output.appendLeft(offset, `${hasProperties && !hasTrailingComma ? "," : ""}\n${source}\n`);
+  if (normalizeEmptyObject && object.properties.length === 0) {
+    let triviaStart = offset;
+    while (triviaStart > object.start + 1 && /\s/.test(code[triviaStart - 1])) {
+      triviaStart--;
+    }
+    const lineStart = code.lastIndexOf("\n", object.start - 1) + 1;
+    const closingIndent = code.slice(lineStart, object.start).match(/^\s*/)?.[0] ?? "";
+    const replacement = `\n${source}\n${closingIndent}`;
+    if (triviaStart === offset) output.appendLeft(offset, replacement);
+    else output.overwrite(triviaStart, offset, replacement);
+    return;
+  }
+  let insertionOffset = offset;
+  while (insertionOffset > object.start && /[\t ]/.test(code[insertionOffset - 1])) {
+    insertionOffset--;
+  }
+  if (insertionOffset > object.start && code[insertionOffset - 1] !== "\n") {
+    insertionOffset = offset;
+  }
+  const lastProperty = object.properties.at(-1) as AstNode | undefined;
+  if (lastProperty) {
+    const suffix = code.slice(lastProperty.end, insertionOffset);
+    if (!endsWithCommaIgnoringWhitespaceAndComments(suffix)) {
+      output.appendLeft(lastProperty.end, ",");
+    }
+    output.appendLeft(insertionOffset, `${suffix.includes("\n") ? "" : "\n"}${source}\n`);
+    return;
+  }
+  output.appendLeft(insertionOffset, `\n${source}\n`);
 }
 
 function endsWithCommaIgnoringWhitespaceAndComments(code: string): boolean {
@@ -1183,6 +1313,26 @@ function findPluginCall(
       element?.type === "CallExpression" &&
       element.callee.type === "Identifier" &&
       element.callee.name === binding,
+  );
+}
+
+function findPluginMemberCall(
+  config: AstObject,
+  objectBinding: string | undefined,
+  member: string,
+): (ESTree.CallExpression & AstNode) | undefined {
+  if (!objectBinding) return undefined;
+  const plugins = findProperty(config, "plugins");
+  if (!plugins || plugins.value.type !== "ArrayExpression") return undefined;
+  return plugins.value.elements.find(
+    (element): element is ESTree.CallExpression & AstNode =>
+      element?.type === "CallExpression" &&
+      element.callee.type === "MemberExpression" &&
+      !element.callee.computed &&
+      element.callee.object.type === "Identifier" &&
+      element.callee.object.name === objectBinding &&
+      element.callee.property.type === "Identifier" &&
+      element.callee.property.name === member,
   );
 }
 
@@ -1464,6 +1614,268 @@ function ensurePlugins(
       .map((expression) => indentBlock(expression, elementIndent))
       .join(",\n")},\n${propertyIndent}`,
   );
+}
+
+function objectPropertyIndent(object: AstObject, code: string): string {
+  const existing = object.properties.find((property) => property.type === "Property");
+  if (existing) {
+    return (
+      code
+        .slice(0, (existing as AstNode).start)
+        .split("\n")
+        .at(-1)
+        ?.match(/^\s*/)?.[0] ?? ""
+    );
+  }
+  const objectIndent = code.slice(0, object.start).split("\n").at(-1)?.match(/^\s*/)?.[0] ?? "";
+  return `${objectIndent}  `;
+}
+
+function ensurePluginFirst(
+  output: MagicString,
+  config: AstObject,
+  expression: string,
+  binding: string,
+  code: string,
+): void {
+  const plugins = findProperty(config, "plugins");
+  if (!plugins) {
+    const indent = objectPropertyIndent(config, code);
+    insertObjectProperty(output, config, `${indent}plugins: [${expression}],`, code, true);
+    return;
+  }
+  if (plugins.value.type !== "ArrayExpression") {
+    throw new Error(
+      "The Vite config's plugins option must be an array for vinext init to configure CSS Modules.",
+    );
+  }
+  const array = plugins.value as ESTree.ArrayExpression & AstNode;
+  const alreadyConfigured = array.elements.some(
+    (element) =>
+      element?.type === "CallExpression" &&
+      element.callee.type === "Identifier" &&
+      element.callee.name === binding,
+  );
+  if (alreadyConfigured) return;
+
+  const firstElement = array.elements.find((element) => element !== null);
+  if (!firstElement) {
+    const interior = code.slice(array.start + 1, array.end - 1);
+    if (interior.trim() === "") {
+      if (array.start + 1 === array.end - 1) output.appendLeft(array.end - 1, expression);
+      else output.overwrite(array.start + 1, array.end - 1, expression);
+    } else {
+      const propertyIndent =
+        code
+          .slice(0, (plugins as AstNode).start)
+          .split("\n")
+          .at(-1)
+          ?.match(/^\s*/)?.[0] ?? "";
+      let triviaEnd = array.end - 1;
+      while (triviaEnd > array.start + 1 && /\s/.test(code[triviaEnd - 1])) triviaEnd--;
+      output.overwrite(
+        triviaEnd,
+        array.end - 1,
+        `\n${propertyIndent}  ${expression}\n${propertyIndent}`,
+      );
+    }
+    return;
+  }
+  const inline = !code.slice(array.start, array.end).includes("\n");
+  if (inline) {
+    output.appendLeft((firstElement as AstNode).start, `${expression}, `);
+    return;
+  }
+  const indent =
+    code
+      .slice(0, (firstElement as AstNode).start)
+      .split("\n")
+      .at(-1)
+      ?.match(/^\s*/)?.[0] ?? "";
+  output.appendLeft((firstElement as AstNode).start, `${expression},\n${indent}`);
+}
+
+function ensureCssModulesScopedName(
+  output: MagicString,
+  config: AstObject,
+  code: string,
+  pathBinding: string,
+  createHashBinding: string,
+  rootExpression: string,
+): boolean {
+  const css = findLastProperty(config, "css");
+  if (hasPotentialSpreadOverride(config, css)) {
+    throw new Error(
+      "The Vite config's css option must be explicitly defined after any spread properties so vinext init can configure CSS Modules without replacing existing options.",
+    );
+  }
+  if (!css) {
+    const indent = objectPropertyIndent(config, code);
+    insertObjectProperty(
+      output,
+      config,
+      `${indent}css: {\n${indent}  modules: {\n${generateScopedNameMethodSource(
+        `${indent}    `,
+        pathBinding,
+        createHashBinding,
+        rootExpression,
+      )},\n${indent}  },\n${indent}},`,
+      code,
+      true,
+    );
+    return false;
+  }
+  if (css.value.type !== "ObjectExpression") {
+    throw new Error(
+      "The Vite config's css option must be a static object for vinext init to configure CSS Modules.",
+    );
+  }
+  const cssObject = css.value as AstObject;
+  const modules = findLastProperty(cssObject, "modules");
+  if (hasPotentialSpreadOverride(cssObject, modules)) {
+    throw new Error(
+      "The Vite config's css.modules option must be explicitly defined after any spread properties so vinext init can configure CSS Modules without replacing existing options.",
+    );
+  }
+  if (!modules) {
+    const indent = objectPropertyIndent(cssObject, code);
+    insertObjectProperty(
+      output,
+      cssObject,
+      `${indent}modules: {\n${generateScopedNameMethodSource(
+        `${indent}  `,
+        pathBinding,
+        createHashBinding,
+        rootExpression,
+      )},\n${indent}},`,
+      code,
+      true,
+    );
+    return false;
+  }
+  if (modules.value.type !== "ObjectExpression") {
+    throw new Error(
+      "The Vite config's css.modules option must be a static object for vinext init to configure CSS Modules.",
+    );
+  }
+  const modulesObject = modules.value as AstObject;
+  const generateScopedName = findLastProperty(modulesObject, "generateScopedName");
+  if (generateScopedName) {
+    if (hasPotentialSpreadOverride(modulesObject, generateScopedName)) {
+      throw new Error(
+        "The Vite config's css.modules.generateScopedName option must appear after any spread properties so vinext init can verify it.",
+      );
+    }
+    return true;
+  }
+  const indent = objectPropertyIndent(modulesObject, code);
+  insertObjectProperty(
+    output,
+    modulesObject,
+    `${generateScopedNameMethodSource(indent, pathBinding, createHashBinding, rootExpression)},`,
+    code,
+    true,
+  );
+  return false;
+}
+
+export type CssModulesConfigUpdate = {
+  code: string;
+  changed: boolean;
+  preservedExistingGenerateScopedName: boolean;
+};
+
+/** Add the issue #2992 CSS Modules workaround without replacing user config. */
+export function updateViteConfigForCssModules(
+  filePath: string,
+  code: string,
+): CssModulesConfigUpdate {
+  const firstProgram = parseViteConfig(filePath, code);
+  const firstConfig = findConfigObject(firstProgram);
+  if (!firstConfig) {
+    throw new Error(
+      `Could not find a static Vite config object in ${path.basename(filePath)}. Use an object export or defineConfig({...}) so vinext init can configure CSS Modules.`,
+    );
+  }
+  const commonJs = usesCommonJsViteConfig(filePath, code);
+  const bindings = collectTopLevelBindings(firstProgram);
+  const firstOutput = new MagicString(code);
+
+  const patchNamespace = commonJs
+    ? findRequiredBinding(firstProgram, "vite-css-modules", "default")
+    : findNamespaceImportedBinding(firstProgram, "vite-css-modules");
+  const existingMemberCall = findPluginMemberCall(firstConfig, patchNamespace, "patchCssModules");
+  const existingPatch = commonJs
+    ? findRequiredBinding(firstProgram, "vite-css-modules", "patchCssModules")
+    : findImportedBinding(firstProgram, "vite-css-modules", "patchCssModules");
+  if (!existingMemberCall) {
+    const patchLocal = existingPatch ?? allocateBinding(bindings, "patchCssModules");
+    const patchBinding = commonJs
+      ? ensureNamedRequire(
+          firstProgram,
+          firstOutput,
+          "vite-css-modules",
+          "patchCssModules",
+          patchLocal,
+        )
+      : ensureNamedImport(
+          firstProgram,
+          firstOutput,
+          "vite-css-modules",
+          "patchCssModules",
+          patchLocal,
+        );
+    ensurePluginFirst(
+      firstOutput,
+      firstConfig,
+      `${patchBinding}({ exportMode: "default" })`,
+      patchBinding,
+      code,
+    );
+  }
+
+  const withPlugin = firstOutput.toString();
+  const secondProgram = parseViteConfig(filePath, withPlugin);
+  const secondConfig = findConfigObject(secondProgram)!;
+  const secondBindings = collectTopLevelBindings(secondProgram);
+  const secondOutput = new MagicString(withPlugin);
+  const existingCreateHash = commonJs
+    ? findRequiredBinding(secondProgram, "node:crypto", "createHash")
+    : findImportedBinding(secondProgram, "node:crypto", "createHash");
+  const createHashLocal = existingCreateHash ?? allocateBinding(secondBindings, "createHash");
+  const createHashBinding = commonJs
+    ? ensureNamedRequire(secondProgram, secondOutput, "node:crypto", "createHash", createHashLocal)
+    : ensureNamedImport(secondProgram, secondOutput, "node:crypto", "createHash", createHashLocal);
+  const existingPath = commonJs
+    ? findRequiredBinding(secondProgram, "node:path", "default")
+    : secondProgram.body
+        .filter(
+          (statement): statement is ESTree.ImportDeclaration =>
+            statement.type === "ImportDeclaration",
+        )
+        .find((statement) => statement.source.value === "node:path")
+        ?.specifiers.find(
+          (specifier): specifier is ESTree.ImportDefaultSpecifier =>
+            specifier.type === "ImportDefaultSpecifier",
+        )?.local.name;
+  const pathLocal = existingPath ?? allocateBinding(secondBindings, "path");
+  const pathBinding = commonJs
+    ? ensureDefaultRequire(secondProgram, secondOutput, "node:path", pathLocal)
+    : ensureDefaultImport(secondProgram, secondOutput, "node:path", pathLocal);
+  const preservedExistingGenerateScopedName = ensureCssModulesScopedName(
+    secondOutput,
+    secondConfig,
+    withPlugin,
+    pathBinding,
+    createHashBinding,
+    commonJs ? "__dirname" : "import.meta.dirname",
+  );
+  const updated = secondOutput.toString();
+  return {
+    code: updated,
+    changed: updated !== code,
+    preservedExistingGenerateScopedName,
+  };
 }
 
 function ensureNativeAliases(
