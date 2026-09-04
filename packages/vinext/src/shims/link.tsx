@@ -16,6 +16,7 @@ import React, {
   useRef,
   useState,
   type AnchorHTMLAttributes,
+  type KeyboardEvent,
   type MouseEvent,
   type TouchEvent,
 } from "react";
@@ -1051,6 +1052,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     shallow = false,
     children: childrenProp,
     onClick,
+    onKeyDown,
     onMouseEnter,
     onTouchStart,
     onNavigate,
@@ -1349,6 +1351,29 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     [onTouchStart, schedulePrefetchOnIntent],
   );
 
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLAnchorElement>) => {
+      onKeyDown?.(event);
+
+      // Activating a focused link with Enter must work even in browser hosts
+      // that do not synthesize the usual click from the keyboard event.
+      // Dispatching a click keeps the existing Link navigation, onClick and
+      // onNavigate behavior in one place.
+      if (
+        !event.defaultPrevented &&
+        event.key === "Enter" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        event.currentTarget.click();
+      }
+    },
+    [onKeyDown],
+  );
+
   const handleClick = async (
     e: MouseEvent<HTMLAnchorElement>,
     options: { skipLinkOnClick?: boolean } = {},
@@ -1583,6 +1608,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         <a
           ref={setRefs}
           onClick={handleDangerousClick}
+          onKeyDown={handleKeyDown}
           onMouseEnter={handleMouseEnter}
           onTouchStart={handleTouchStart}
           {...anchorProps}
@@ -1679,6 +1705,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         ref={setRefs}
         href={fullHref}
         onClick={handleClick as React.MouseEventHandler<HTMLAnchorElement>}
+        onKeyDown={handleKeyDown}
         onMouseEnter={handleMouseEnter}
         onTouchStart={handleTouchStart}
         {...anchorProps}
