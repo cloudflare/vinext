@@ -29,6 +29,25 @@ test.describe("App Router Client-side Navigation", () => {
     expect(page.url()).toBe(`${BASE}/about`);
   });
 
+  test("Link activates with the Enter key without a full page reload", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+    await expect(page.locator("h1")).toHaveText("Welcome to App Router");
+    await waitForAppRouterHydration(page);
+
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+    });
+
+    const aboutLink = page.locator('a[href="/about"]');
+    await aboutLink.focus();
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("h1")).toHaveText("About");
+    await expect(page.locator("main > p")).toContainText("This is the about page.");
+    await expect(page).toHaveURL(`${BASE}/about`);
+    expect(await page.evaluate(() => (window as any).__NAV_MARKER__)).toBe(true);
+  });
+
   test("Link navigates back from about to home", async ({ page }) => {
     await page.goto(`${BASE}/about`);
     await expect(page.locator("h1")).toHaveText("About");
