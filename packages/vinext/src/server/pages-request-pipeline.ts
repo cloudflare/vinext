@@ -899,14 +899,6 @@ export async function runPagesRequest(
       );
     }
     const merged = mergeHeaders(response, matchedPathHeaders, middlewareStatus);
-    // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
-    // mergeHeaders may create a new Response object (losing non-standard properties),
-    // so we copy the marker from the original render response to the merged one.
-    if (merged !== response) {
-      (merged as { __vinextStreamedHtmlResponse?: boolean }).__vinextStreamedHtmlResponse = (
-        response as { __vinextStreamedHtmlResponse?: boolean }
-      ).__vinextStreamedHtmlResponse;
-    }
     // Page renders default a missing content-type to text/html.
     return { type: "response", response: merged, defaultContentType: "text/html; charset=utf-8" };
   }

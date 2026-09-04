@@ -181,7 +181,7 @@ describe("pages page data", () => {
       pageProps: { title: "fresh" },
       params: { slug: "post" },
       renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
+        await onHeadReady?.("");
         return "<div>fresh-body</div>";
       }),
       routePattern: "/posts/[slug]",
@@ -199,11 +199,60 @@ describe("pages page data", () => {
     expect(html).toContain("<div>fresh-body</div>");
   });
 
+  it("replaces stale styled-jsx rules when regenerating an ISR shell", async () => {
+    const freshStyle = '<style id="__jsx-fresh">p{z-index:2}</style>';
+    const scriptLiteral =
+      "<script>window.template = '<style id=\"__jsx-script\">keep me</style>';</script>";
+    const legacyRawTextLiterals = ["iframe", "xmp", "noembed", "noframes"]
+      .map((tag) => `<${tag}><style id="__jsx-${tag}">keep me</style></${tag}>`)
+      .join("");
+    const plaintextLiteral = '<plaintext><style id="__jsx-plaintext">keep me</style>';
+    const html = await renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        '<!DOCTYPE html><html><head><meta charSet="utf-8" data-next-head="" />' +
+        scriptLiteral +
+        legacyRawTextLiterals +
+        '<style id="__jsx-stale-head">p{z-index:1}</style></head>' +
+        '<body><div id="__next"><p>stale-body</p></div>' +
+        '<link rel="stylesheet" href="/global.css" data-precedence="next" />' +
+        '<style id="__jsx-stale-late">span{color:red}</style>' +
+        '<script>window.__NEXT_DATA__ = {"old":1}</script></body></html>' +
+        plaintextLiteral,
+      collectIsrHeadHTML: vi.fn(() => ""),
+      createPageElement() {
+        return "page";
+      },
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
+        await onHeadReady?.(freshStyle);
+        return "<p>fresh-body</p>";
+      }),
+      routePattern: "/isr",
+      safeJsonStringify(value: unknown) {
+        return JSON.stringify(value);
+      },
+    });
+
+    expect(html).toContain(freshStyle);
+    expect(html).toContain('<meta charSet="utf-8" data-next-head="" />');
+    expect(html).not.toContain("__jsx-stale-head");
+    expect(html).not.toContain("__jsx-stale-late");
+    expect(html).toContain(scriptLiteral);
+    expect(html).toContain(legacyRawTextLiterals);
+    expect(html).toContain(plaintextLiteral);
+    expect(html).toContain("<p>fresh-body</p>");
+    expect(html.indexOf("global.css")).toBeLessThan(html.indexOf("__jsx-fresh"));
+    expect(html.indexOf("__jsx-fresh")).toBeLessThan(html.indexOf("</body>"));
+  });
+
   it("leaves the cached head alone when the regeneration collects no head", async () => {
     const cachedHead = '<title data-next-head="">cached</title>';
     const html = await renderPagesIsrHtml({
       buildId: "build-123",
-      cachedHtml: `<!DOCTYPE html><html><head>${cachedHead}</head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
+      cachedHtml: `<!DOCTYPE html><html><head>${cachedHead}<style id="__jsx-stale">p{color:red}</style></head><body><div id="__next"><div>stale-body</div></div><script>window.__NEXT_DATA__ = {"old":1}</script></body></html>`,
       collectIsrHeadHTML: vi.fn(() => ""),
       createPageElement(_pageProps: Record<string, unknown>) {
         return "page";
@@ -217,7 +266,7 @@ describe("pages page data", () => {
       pageProps: {},
       params: {},
       renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
+        await onHeadReady?.("");
         return "<div>fresh-body</div>";
       }),
       routePattern: "/posts/[slug]",
@@ -227,6 +276,7 @@ describe("pages page data", () => {
     });
 
     expect(html).toContain(cachedHead);
+    expect(html).not.toContain("__jsx-stale");
     expect(html).toContain("<div>fresh-body</div>");
   });
 
@@ -249,7 +299,7 @@ describe("pages page data", () => {
       pageProps: {},
       params: {},
       renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
+        await onHeadReady?.("");
         return "<div>fresh-body</div>";
       }),
       routePattern: "/posts/[slug]",
@@ -285,7 +335,7 @@ describe("pages page data", () => {
       pageProps: {},
       params: {},
       renderIsrPassToStringAsync: vi.fn(async (_element, onHeadReady) => {
-        await onHeadReady?.();
+        await onHeadReady?.("");
         return "<div>fresh-body</div>";
       }),
       routePattern: "/posts/[slug]",

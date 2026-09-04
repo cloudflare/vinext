@@ -16,14 +16,6 @@ import { readStaticFileSignal } from "./static-file-signal.js";
  */
 const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
-type ResponseWithVinextStreamingMetadata = Response & {
-  __vinextStreamedHtmlResponse?: boolean;
-};
-
-function isVinextStreamedHtmlResponse(response: Response): boolean {
-  return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedHtmlResponse === true;
-}
-
 function isContentLengthHeader(name: string): boolean {
   return name.toLowerCase() === "content-length";
 }
@@ -85,14 +77,11 @@ export function mergeHeaders(
   for (const cookie of responseCookies) merged.append("set-cookie", cookie);
 
   const shouldDropBody = NO_BODY_RESPONSE_STATUSES.has(status);
-  const shouldStripStreamLength =
-    isVinextStreamedHtmlResponse(response) && merged.has("content-length");
 
   if (
     !Object.keys(extraHeaders).some((key) => !isContentLengthHeader(key)) &&
     statusOverride === undefined &&
-    !shouldDropBody &&
-    !shouldStripStreamLength
+    !shouldDropBody
   ) {
     return response;
   }
@@ -108,10 +97,6 @@ export function mergeHeaders(
       statusText: status === response.status ? response.statusText : undefined,
       headers: merged,
     });
-  }
-
-  if (shouldStripStreamLength) {
-    merged.delete("content-length");
   }
 
   return new Response(response.body, {

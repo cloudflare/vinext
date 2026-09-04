@@ -25,11 +25,27 @@ function createPnpmStyleFixture(): { root: string; styledJsxRoot: string } {
     "styled-jsx",
   );
   fs.mkdirSync(path.join(nextRoot, "node_modules"), { recursive: true });
-  fs.mkdirSync(styledJsxRoot, { recursive: true });
+  fs.mkdirSync(path.join(styledJsxRoot, "dist", "index"), { recursive: true });
   fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
   fs.writeFileSync(path.join(nextRoot, "package.json"), '{"name":"next"}');
   fs.writeFileSync(path.join(styledJsxRoot, "package.json"), '{"name":"styled-jsx"}');
+  fs.writeFileSync(path.join(styledJsxRoot, "index.js"), "module.exports = {};");
+  fs.writeFileSync(path.join(styledJsxRoot, "style.js"), "module.exports = () => null;");
   fs.writeFileSync(path.join(styledJsxRoot, "css.js"), "module.exports = {};");
+  fs.writeFileSync(
+    path.join(styledJsxRoot, "dist", "index", "index.js"),
+    `require('client-only');
+var React = require('react');
+function StyleRegistry() {}
+function createStyleRegistry() {}
+function JSXStyle() {}
+function useStyleRegistry() {}
+exports.StyleRegistry = StyleRegistry;
+exports.createStyleRegistry = createStyleRegistry;
+exports.style = JSXStyle;
+exports.useStyleRegistry = useStyleRegistry;
+`,
+  );
   fs.symlinkSync(nextRoot, path.join(root, "node_modules", "next"), "dir");
   fs.symlinkSync(styledJsxRoot, path.join(nextRoot, "node_modules", "styled-jsx"), "dir");
   return { root, styledJsxRoot };
@@ -75,6 +91,37 @@ describe("styled-jsx compatibility plugin", () => {
     );
   });
 
+  it("resolves relative Vite roots before loading the portable runtime", () => {
+    const { root } = createPnpmStyleFixture();
+    const plugin = createStyledJsxPlugin(process.cwd());
+    const configResolved = plugin.configResolved as (config: {
+      root: string;
+      command: "build";
+    }) => void;
+    configResolved({ root: path.relative(process.cwd(), root), command: "build" });
+
+    const resolveId = plugin.resolveId as { handler(source: string): string | null };
+    const runtimeId = resolveId.handler("styled-jsx");
+    expect(runtimeId).toBe("\0vinext-styled-jsx-runtime");
+
+    const watched: string[] = [];
+    const load = plugin.load as {
+      filter: { id: RegExp };
+      handler(this: { addWatchFile(path: string): void }, id: string): string;
+    };
+    expect(load.filter.id.test(runtimeId!)).toBe(true);
+    expect(load.filter.id.test("\0vinext-styled-jsx-style")).toBe(true);
+    expect(load.filter.id.test("/app/page.tsx")).toBe(false);
+    const runtime = load.handler.call(
+      { addWatchFile: (filePath) => watched.push(filePath) },
+      runtimeId!,
+    );
+    expect(runtime).toContain('import * as React from "react"');
+    expect(runtime).toContain("export { StyleRegistry, createStyleRegistry, JSXStyle as style");
+    expect(runtime).not.toContain("module.exports");
+    expect(watched).toHaveLength(1);
+  });
+
   it("leaves ordinary style tags untouched when Next is not installed", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
     temporaryDirectories.push(root);
@@ -92,6 +139,24 @@ describe("styled-jsx compatibility plugin", () => {
       ),
     ).resolves.toBeNull();
     expect(importModule).not.toHaveBeenCalled();
+  });
+
+  it("loads a no-op registry runtime when Next is not installed", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
+    temporaryDirectories.push(root);
+    fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}');
+    const plugin = createStyledJsxPlugin(root);
+    const resolveId = plugin.resolveId as { handler(source: string): string | null };
+    const load = plugin.load as {
+      handler(this: { addWatchFile(path: string): void }, id: string): string;
+    };
+
+    const runtimeId = resolveId.handler("styled-jsx");
+    expect(runtimeId).toBe("\0vinext-styled-jsx-runtime");
+    expect(load.handler.call({ addWatchFile: vi.fn() }, runtimeId!)).toContain(
+      "styles() { return []; }",
+    );
+    expect(resolveId.handler("styled-jsx/style")).toBeNull();
   });
 
   it("rejects styled-jsx tags when Next is not installed", async () => {
@@ -133,11 +198,33 @@ describe("styled-jsx compatibility plugin", () => {
       expect.any(String),
       expect.objectContaining({
         filename: "/app/component.js",
+        disableNextSsg: true,
         styledJsx: { useLightningcss: false },
         jsc: expect.objectContaining({ parser: { syntax: "ecmascript", jsx: true } }),
       }),
     );
     expect(result.code).toContain("styled-jsx/style");
+  });
+
+  it("preserves Pages data exports while transforming styled-jsx", async () => {
+    const plugin = createStyledJsxPlugin(process.cwd());
+    const transformHook = plugin.transform as {
+      handler(source: string, id: string): Promise<{ code: string }>;
+    };
+
+    const gssp = await transformHook.handler(
+      "export function getServerSideProps() { return { props: { source: 'gssp' } }; } export default function Page() { return <p>GSSP<style jsx>{`p { color: red; }`}</style></p>; }",
+      "/app/pages/gssp.tsx",
+    );
+    const gsp = await transformHook.handler(
+      "export function getStaticProps() { return { props: { source: 'gsp' } }; } export default function Page() { return <p>GSP<style jsx>{`p { color: blue; }`}</style></p>; }",
+      "/app/pages/gsp.tsx",
+    );
+
+    expect(gssp.code).toContain("getServerSideProps");
+    expect(gssp.code).not.toContain("__N_SSP");
+    expect(gsp.code).toContain("getStaticProps");
+    expect(gsp.code).not.toContain("__N_SSG");
   });
 
   it("skips styled-jsx transforms for dependency files", async () => {

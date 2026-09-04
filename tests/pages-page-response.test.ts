@@ -6,6 +6,7 @@ import {
   generatePagesETag,
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
+import { mergeHeaders } from "../packages/vinext/src/server/worker-utils.js";
 
 function getStartTags(html: string, tagName: string): string[] {
   const tags: string[] = [];
@@ -89,7 +90,9 @@ function createCommonOptions() {
       '<!DOCTYPE html><html><head></head><body><div id="__next">__NEXT_MAIN__</div><!-- __NEXT_SCRIPTS__ --></body></html>',
   );
   const renderIsrPassToStringAsync = vi.fn(async () => "<div>cached-body</div>");
-  const renderToReadableStream = vi.fn(async () => createStream(["<div>live-body</div>"]));
+  const renderToReadableStream = vi.fn(async (_element: React.ReactNode) =>
+    createStream(["<div>live-body</div>"]),
+  );
 
   return {
     clearSsrContext,
@@ -195,7 +198,7 @@ describe("isPagesStreamingBot", () => {
 });
 
 describe("pages page response", () => {
-  it("renders the document shell, merges gSSP headers, and marks streamed HTML responses", async () => {
+  it("renders the buffered document shell and merges gSSP headers", async () => {
     const common = createCommonOptions();
 
     const response = await renderPagesPageResponse({
@@ -217,11 +220,6 @@ describe("pages page response", () => {
     expect(response.headers.get("link")).toBe(
       "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
-    expect(
-      (response as Response & { __vinextStreamedHtmlResponse?: boolean })
-        .__vinextStreamedHtmlResponse,
-    ).toBe(true);
-
     const html = await response.text();
     expect(html).toContain("<div>live-body</div>");
     expect(html).toContain('<meta name="test-head" content="1" />');
@@ -239,6 +237,25 @@ describe("pages page response", () => {
 
     expect(common.clearSsrContext).toHaveBeenCalledTimes(1);
     expect(common.renderDocumentToString).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops stale gSSP Content-Length through the Worker header merge path", async () => {
+    const common = createCommonOptions();
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      gsspRes: {
+        statusCode: 200,
+        getHeaders() {
+          return { "Content-Length": "1" };
+        },
+      },
+    });
+
+    expect(response.headers.get("content-length")).toBeNull();
+    const merged = mergeHeaders(response, { "x-custom-middleware": "active" });
+    expect(merged.headers.get("content-length")).toBeNull();
+    expect(merged.headers.get("x-custom-middleware")).toBe("active");
+    expect((await merged.text()).length).toBeGreaterThan(1);
   });
 
   it("preserves array-valued non-set-cookie headers from gSSP responses", async () => {
@@ -263,7 +280,7 @@ describe("pages page response", () => {
     expect(response.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
   });
 
-  it("records the streamed body into the ISR HTML cache without a second page render", async () => {
+  it("records the rendered body into the ISR HTML cache without a second page render", async () => {
     const common = createCommonOptions();
 
     const response = await renderPagesPageResponse({
@@ -345,7 +362,7 @@ describe("pages page response", () => {
     );
   });
 
-  it("does not write a Pages ISR cache entry when the streamed render fails", async () => {
+  it("does not write a Pages ISR cache entry when the render stream fails", async () => {
     const common = createCommonOptions();
     common.renderToReadableStream.mockResolvedValue(
       createFailingStream(new Error("stream failed")),
@@ -353,12 +370,12 @@ describe("pages page response", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      const response = await renderPagesPageResponse({
-        ...common.options,
-        isrRevalidateSeconds: 60,
-      });
-
-      await expect(response.text()).rejects.toThrow("stream failed");
+      await expect(
+        renderPagesPageResponse({
+          ...common.options,
+          isrRevalidateSeconds: 60,
+        }),
+      ).rejects.toThrow("stream failed");
       await settleMicrotasks();
 
       expect(common.renderIsrPassToStringAsync).not.toHaveBeenCalled();
@@ -565,6 +582,160 @@ describe("pages page response", () => {
     await renderPagesPageResponse(common.options);
 
     expect(callOrder).toEqual(["render", "head"]);
+  });
+
+  it("collects request-local styled-jsx styles after rendering and flushes the registry", async () => {
+    // Ported from Next.js: test/e2e/streaming-ssr/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
+    const common = createCommonOptions();
+    const wrap = vi.fn((element: React.ReactNode) =>
+      React.createElement("style-registry", null, element),
+    );
+    const styles = vi.fn(() => React.createElement("style", { id: "__jsx-123" }, "p{color:blue}"));
+    const flush = vi.fn();
+    const createStyleRegistry = vi.fn(() => ({ wrap, styles, flush }));
+    common.renderToReadableStream.mockImplementation(async (element: React.ReactNode) => {
+      if (React.isValidElement(element) && element.type === "style") {
+        return createStream(['<style id="__jsx-123">p{color:blue}</style>']);
+      }
+      expect(React.isValidElement(element) && element.type).toBe("style-registry");
+      return createStream(["<div>live-body</div>"]);
+    });
+
+    const response = await renderPagesPageResponse({
+      ...common.options,
+      createStyleRegistry,
+      scriptNonce: "style-nonce",
+    });
+    const html = await response.text();
+
+    expect(wrap).toHaveBeenCalledTimes(1);
+    expect(styles).toHaveBeenCalledTimes(1);
+    expect(styles).toHaveBeenCalledWith({ nonce: "style-nonce" });
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(html).toContain('<style id="__jsx-123">p{color:blue}</style>');
+    expect(html.indexOf("live-body")).toBeLessThan(html.indexOf("p{color:blue}"));
+  });
+
+  it("buffers initial styled-jsx pages until allReady before exposing body bytes", async () => {
+    const common = createCommonOptions();
+    let resolveAllReady!: () => void;
+    const allReady = new Promise<void>((resolve) => {
+      resolveAllReady = resolve;
+    });
+    const bodyStream = Object.assign(createStream(["<div>shell-body</div>"]), { allReady });
+    const styles = vi.fn(() =>
+      React.createElement("style", { id: "__jsx-initial" }, ".initial{color:blue}"),
+    );
+    common.renderToReadableStream.mockImplementation(async (element: React.ReactNode) => {
+      if (React.isValidElement(element) && element.type === "style") {
+        return createStream(['<style id="__jsx-initial">.initial{color:blue}</style>']);
+      }
+      return bodyStream;
+    });
+
+    let responseResolved = false;
+    const responsePromise = renderPagesPageResponse({
+      ...common.options,
+      createStyleRegistry: () => ({ wrap: (element) => element, styles, flush: vi.fn() }),
+    }).then((response) => {
+      responseResolved = true;
+      return response;
+    });
+    await settleMicrotasks();
+    expect(responseResolved).toBe(false);
+
+    resolveAllReady();
+    const response = await responsePromise;
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    const second = await reader.read();
+    const html = new TextDecoder().decode(first.value);
+
+    expect(first.done).toBe(false);
+    expect(second.done).toBe(true);
+    expect(html).toContain("shell-body");
+    expect(html).toContain('<style id="__jsx-initial">.initial{color:blue}</style>');
+    expect(html.match(/id="__jsx-initial"/g)).toHaveLength(1);
+    expect(html.indexOf("shell-body")).toBeLessThan(html.indexOf("__jsx-initial"));
+    expect(styles).toHaveBeenCalledTimes(1);
+  });
+
+  it("deduplicates a styled-jsx rule registered before and after allReady", async () => {
+    const common = createCommonOptions();
+    let resolveAllReady!: () => void;
+    const allReady = new Promise<void>((resolve) => {
+      resolveAllReady = resolve;
+    });
+    let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+    let renderFinished = false;
+    const bodyStream = Object.assign(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController = controller;
+          controller.enqueue(new TextEncoder().encode("<div>fallback</div>"));
+        },
+      }),
+      {
+        allReady: allReady.then(() => {
+          renderFinished = true;
+        }),
+      },
+    );
+    const wrap = vi.fn((element: React.ReactNode) =>
+      React.createElement("style-registry", null, element),
+    );
+    const pendingStyleIds = new Set(["shared"]);
+    const styles = vi.fn(() =>
+      pendingStyleIds.has("shared")
+        ? React.createElement("style", { id: "__jsx-shared" }, ".shared{color:purple}")
+        : [],
+    );
+    const flush = vi.fn(() => pendingStyleIds.clear());
+    const createStyleRegistry = vi.fn(() => ({ wrap, styles, flush }));
+    common.renderToReadableStream.mockImplementation(async (element: React.ReactNode) => {
+      if (React.isValidElement(element) && element.type === "style") {
+        return createStream(['<style id="__jsx-shared">.shared{color:purple}</style>']);
+      }
+      return bodyStream;
+    });
+
+    let responseResolved = false;
+    const responsePromise = renderPagesPageResponse({
+      ...common.options,
+      createStyleRegistry,
+    }).then((response) => {
+      responseResolved = true;
+      return response;
+    });
+    await settleMicrotasks();
+    expect(responseResolved).toBe(false);
+    expect(renderFinished).toBe(false);
+    expect(styles).not.toHaveBeenCalled();
+    expect(flush).not.toHaveBeenCalled();
+
+    // Model the same styled component rendering again inside the suspended
+    // subtree. A shell-time flush would clear this Set and emit the ID twice.
+    pendingStyleIds.add("shared");
+    bodyController.enqueue(new TextEncoder().encode("<div>late styled-jsx content</div>"));
+    bodyController.close();
+    resolveAllReady();
+    const response = await responsePromise;
+    const reader = response.body!.getReader();
+    const bodyChunk = await reader.read();
+    const doneChunk = await reader.read();
+    const html = new TextDecoder().decode(bodyChunk.value);
+
+    expect(renderFinished).toBe(true);
+    expect(bodyChunk.done).toBe(false);
+    expect(doneChunk.done).toBe(true);
+    expect(html).toContain("fallback");
+    expect(html).toContain("late styled-jsx content");
+    expect(html).toContain('<style id="__jsx-shared">.shared{color:purple}</style>');
+    expect(html.match(/id="__jsx-shared"/g)).toHaveLength(1);
+    expect(html.indexOf("late styled-jsx content")).toBeLessThan(html.indexOf("__jsx-shared"));
+    expect(styles).toHaveBeenCalledTimes(1);
+    expect(flush).toHaveBeenCalledTimes(1);
   });
 
   it("clears SSR context only after rendering, not before", async () => {
@@ -1018,8 +1189,7 @@ describe("pages page response", () => {
 
   // Mirrors the Next.js test: "should not stream to crawlers or google pagerender bot"
   // from test/e2e/streaming-ssr-edge/streaming-ssr-edge.test.ts.
-  // When the UA is Googlebot the response must be fully buffered (single chunk)
-  // and carry an ETag header.
+  // When the UA is Googlebot the buffered response must also carry an ETag.
   it("buffers the response for Googlebot and attaches an ETag", async () => {
     const common = createCommonOptions();
 
@@ -1027,13 +1197,6 @@ describe("pages page response", () => {
       ...common.options,
       userAgent: "Googlebot",
     });
-
-    // Bot responses are NOT streamed — they are plain Responses, not the
-    // marked PagesStreamedHtmlResponse shape.
-    expect(
-      (response as Response & { __vinextStreamedHtmlResponse?: boolean })
-        .__vinextStreamedHtmlResponse,
-    ).toBeUndefined();
 
     const etag = response.headers.get("etag");
     expect(etag).toBeDefined();
@@ -1062,7 +1225,7 @@ describe("pages page response", () => {
     expect(html).toContain("live-body");
   });
 
-  it("does not buffer the response for a normal browser UA", async () => {
+  it("buffers the response for a normal browser UA without attaching an ETag", async () => {
     const common = createCommonOptions();
 
     const response = await renderPagesPageResponse({
@@ -1071,16 +1234,11 @@ describe("pages page response", () => {
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
     });
 
-    // Normal browsers still get the streaming response marker.
-    expect(
-      (response as Response & { __vinextStreamedHtmlResponse?: boolean })
-        .__vinextStreamedHtmlResponse,
-    ).toBe(true);
-    // No ETag on streaming responses.
     expect(response.headers.get("etag")).toBeNull();
+    expect((await response.text()).length).toBeGreaterThan(0);
   });
 
-  it("does not buffer when userAgent is omitted", async () => {
+  it("buffers without attaching an ETag when userAgent is omitted", async () => {
     const common = createCommonOptions();
 
     const response = await renderPagesPageResponse({
@@ -1088,11 +1246,8 @@ describe("pages page response", () => {
       // userAgent intentionally not provided
     });
 
-    expect(
-      (response as Response & { __vinextStreamedHtmlResponse?: boolean })
-        .__vinextStreamedHtmlResponse,
-    ).toBe(true);
     expect(response.headers.get("etag")).toBeNull();
+    expect((await response.text()).length).toBeGreaterThan(0);
   });
 
   // ---------------------------------------------------------------------------

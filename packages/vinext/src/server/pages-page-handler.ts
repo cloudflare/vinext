@@ -29,7 +29,7 @@ import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
-import type { PagesI18nRenderContext } from "./pages-page-response.js";
+import type { PagesI18nRenderContext, PagesStyleRegistry } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
 import {
   BROWSER_REVALIDATE_CACHE_CONTROL,
@@ -284,7 +284,7 @@ export type CreatePagesPageHandlerOptions = {
    */
   renderIsrPassToStringAsync: (
     element: ReactNode,
-    onHeadReady?: () => Promise<void>,
+    onHeadReady?: (styledJsxHTML: string) => Promise<void>,
   ) => Promise<string>;
   /** `safeJsonStringify` from `vinext/html`. */
   safeJsonStringify: (value: unknown) => string;
@@ -296,6 +296,8 @@ export type CreatePagesPageHandlerOptions = {
     AppComponent: ComponentType | null,
     props: Record<string, unknown>,
   ) => ReactNode;
+  /** Create the request-local styled-jsx registry used during SSR. */
+  createStyleRegistry?: (() => PagesStyleRegistry) | undefined;
   /** Build the element with optional App/Component enhancers (for _document). */
   enhancePageElement: (
     PageComponent: ComponentType,
@@ -395,6 +397,7 @@ export function createPagesPageHandler(
     safeJsonStringify,
     sanitizeDestination,
     createPageElement,
+    createStyleRegistry,
     enhancePageElement,
     AppComponent,
     DocumentComponent,
@@ -1084,6 +1087,7 @@ export function createPagesPageHandler(
             const el = createPageElement(PageComponent, AppComponent, currentProps);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;
           },
+          createStyleRegistry,
           enhancePageElement(renderPageOpts) {
             const el = enhancePageElement(PageComponent, AppComponent, renderProps, renderPageOpts);
             return typeof wrapWithRouterContext === "function" ? wrapWithRouterContext(el) : el;

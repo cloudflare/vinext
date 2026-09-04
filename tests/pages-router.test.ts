@@ -265,7 +265,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     errorPagePath,
     'import errorStyles from "@/styles/error.module.css";\n' +
       "export default function Custom404() {\n" +
-      "  return <div className={errorStyles.errorText}>Global CSS Error Test</div>;\n" +
+      "  return <div className={errorStyles.errorText}>Global CSS Error Test<style jsx>{`div { color: rgb(91, 92, 93); }`}</style></div>;\n" +
       "}\n",
   );
 
@@ -780,6 +780,33 @@ describe("Pages Router integration", () => {
     const html = await res.text();
     expect(html).toContain("About");
     expect(html).toContain("This is the about page.");
+  });
+
+  it("renders styled-jsx styles during streaming SSR", async () => {
+    // Ported from Next.js: test/e2e/streaming-ssr/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
+    const res = await fetch(`${baseUrl}/styled-jsx-streaming`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const html = await res.text();
+    expect(html).toContain("styled-jsx streaming");
+    expect(html).toMatch(/data-testid="styled-jsx-data-source"[^>]*>getServerSideProps<\/p>/);
+    expect(html).toMatch(/color:\s*(?:blue|#00f)/);
+    expect(html).toContain("late styled-jsx content");
+    expect(html).toMatch(/background-color:\s*rgb\(1,\s*2,\s*3\)/);
+  });
+
+  it("preserves getStaticProps exports on styled-jsx pages in dev", async () => {
+    const res = await fetch(`${baseUrl}/styled-jsx-static-props`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+
+    const html = await res.text();
+    expect(html).toMatch(/data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps<\/p>/);
+    expect(html).toMatch(/color:\s*rgb\(4,\s*5,\s*6\)/);
   });
 
   // Next.js supports bundling Pages Router dependencies. The upstream test
@@ -1538,17 +1565,17 @@ export default function Page({ marker }: { marker: string }) {
     expect(firstRes.status).toBe(200);
     expect(firstRes.headers.get("x-vinext-cache")).toBeNull();
     const firstHtml = await firstRes.text();
-    expect(firstHtml).toContain('data-testid="head-before">0<');
-    expect(firstHtml).toContain('data-testid="private-cache-before">0<');
-    expect(firstHtml).toContain('data-testid="inserted-html-before">0<');
+    expect(firstHtml).toMatch(/data-testid="head-before"[^>]*>0</);
+    expect(firstHtml).toMatch(/data-testid="private-cache-before"[^>]*>0</);
+    expect(firstHtml).toMatch(/data-testid="inserted-html-before"[^>]*>0</);
 
     const secondRes = await fetch(`${baseUrl}/isr-second-render-state`);
     expect(secondRes.status).toBe(200);
     expect(secondRes.headers.get("x-vinext-cache")).toBeNull();
     const secondHtml = await secondRes.text();
-    expect(secondHtml).toContain('data-testid="head-before">0<');
-    expect(secondHtml).toContain('data-testid="private-cache-before">0<');
-    expect(secondHtml).toContain('data-testid="inserted-html-before">0<');
+    expect(secondHtml).toMatch(/data-testid="head-before"[^>]*>0</);
+    expect(secondHtml).toMatch(/data-testid="private-cache-before"[^>]*>0</);
+    expect(secondHtml).toMatch(/data-testid="inserted-html-before"[^>]*>0</);
   });
 
   it("includes __NEXT_DATA__ script tag", async () => {
@@ -2698,12 +2725,9 @@ export default class CustomDocument extends Document {
     expect(scriptContent).toContain("__NEXT_DATA__");
   });
 
-  it("renders Suspense + React.lazy content via streaming SSR", async () => {
-    // With progressive streaming SSR (onShellReady), if the Suspense
-    // content resolves before the shell finishes, React inlines it
-    // directly (no fallback in the wire HTML). If it resolves after,
-    // the fallback appears with streaming replacement scripts.
-    // Our lazy component resolves synchronously in tests.
+  it("renders Suspense + React.lazy content in buffered Pages SSR", async () => {
+    // Pages responses wait for allReady, so the resolved lazy content is
+    // present before any body bytes are exposed.
     const res = await fetch(`${baseUrl}/suspense-test`);
     expect(res.status).toBe(200);
     const html = await res.text();
@@ -4071,6 +4095,7 @@ describe("Virtual server entry generation", () => {
       const html = await res.text();
       expect(res.status).toBe(404);
       expect(html).toContain("Global CSS Error Test");
+      expect(html).toMatch(/color:\s*rgb\(91,\s*92,\s*93\)/);
       const stylesheetHrefs = getStylesheetHrefs(html);
       for (const href of fixture.errorDevStylesheetHrefs) {
         expect(stylesheetHrefs).toContain(href);
@@ -5472,12 +5497,13 @@ export const config = { matcher: ["/protected"] };
 
     // The entry chunk should stay small: it contains the hydration bootstrap
     // and this fixture's generated route table, but not the React framework.
-    // Before code-splitting this was ~200KB+. This shared fixture grows with
-    // parity routes, so allow their generated route-table entries while
-    // retaining a tight guard against framework code entering the bootstrap.
+    // Before code-splitting this was ~200KB+. This shared fixture now includes
+    // the styled-jsx and bundled-CommonJS parity routes, so allow their generated
+    // route-table entries while retaining a tight guard against framework code
+    // entering the bootstrap.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(28 * 1024); // < 28 KB
+      expect(entrySize).toBeLessThan(29 * 1024); // < 29 KB
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -6555,22 +6581,25 @@ export default function CounterPage() {
       expect(isrFirstRes.status).toBe(200);
       expect(isrFirstRes.headers.get("x-vinext-cache")).toBe("MISS");
       const isrFirstHtml = await isrFirstRes.text();
-      expect(isrFirstHtml).toContain('data-testid="head-before">0<');
-      expect(isrFirstHtml).toContain('data-testid="private-cache-before">0<');
-      expect(isrFirstHtml).toContain('data-testid="inserted-html-before">0<');
-      const firstTimestamp = isrFirstHtml.match(/data-testid="timestamp">(\d+)</)?.[1];
+      expect(isrFirstHtml).toMatch(/data-testid="head-before"[^>]*>0</);
+      expect(isrFirstHtml).toMatch(/data-testid="private-cache-before"[^>]*>0</);
+      expect(isrFirstHtml).toMatch(/data-testid="inserted-html-before"[^>]*>0</);
+      const firstTimestamp = isrFirstHtml.match(/data-testid="timestamp"[^>]*>(\d+)</)?.[1];
       expect(firstTimestamp).toBeDefined();
-      expect(isrFirstHtml).toContain(
-        `<title data-next-head="">ISR Second Render State ${firstTimestamp}</title>`,
+      expect(isrFirstHtml).toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
+      expect(isrFirstHtml).toMatch(
+        new RegExp(
+          `<title\\b(?=[^>]*data-next-head="")[^>]*>ISR Second Render State ${firstTimestamp}</title>`,
+        ),
       );
 
       const isrSecondRes = await fetch(`${prodUrl}/isr-second-render-state`);
       expect(isrSecondRes.status).toBe(200);
       expect(isrSecondRes.headers.get("x-vinext-cache")).toBe("HIT");
       const isrSecondHtml = await isrSecondRes.text();
-      expect(isrSecondHtml).toContain('data-testid="head-before">0<');
-      expect(isrSecondHtml).toContain('data-testid="private-cache-before">0<');
-      expect(isrSecondHtml).toContain('data-testid="inserted-html-before">0<');
+      expect(isrSecondHtml).toMatch(/data-testid="head-before"[^>]*>0</);
+      expect(isrSecondHtml).toMatch(/data-testid="private-cache-before"[^>]*>0</);
+      expect(isrSecondHtml).toMatch(/data-testid="inserted-html-before"[^>]*>0</);
 
       // Next.js regenerates stale Pages entries with a full render, so
       // metadata derived from getStaticProps must advance with the body rather
@@ -6581,14 +6610,16 @@ export default function CounterPage() {
       const staleRes = await fetch(`${prodUrl}/isr-second-render-state`);
       expect(staleRes.status).toBe(200);
       expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
-      expect(await staleRes.text()).toContain(`data-testid="timestamp">${firstTimestamp}<`);
+      expect(await staleRes.text()).toMatch(
+        new RegExp(`data-testid="timestamp"[^>]*>${firstTimestamp}<`),
+      );
 
       let regeneratedTimestamp: string | undefined;
       let isrRegeneratedHtml = "";
       for (let attempt = 0; attempt < 40; attempt++) {
         const regeneratedRes = await fetch(`${prodUrl}/isr-second-render-state`);
         isrRegeneratedHtml = await regeneratedRes.text();
-        regeneratedTimestamp = isrRegeneratedHtml.match(/data-testid="timestamp">(\d+)</)?.[1];
+        regeneratedTimestamp = isrRegeneratedHtml.match(/data-testid="timestamp"[^>]*>(\d+)</)?.[1];
         if (
           regeneratedRes.headers.get("x-vinext-cache") === "HIT" &&
           regeneratedTimestamp !== firstTimestamp
@@ -6599,9 +6630,13 @@ export default function CounterPage() {
       }
       expect(regeneratedTimestamp).toBeDefined();
       expect(regeneratedTimestamp).not.toBe(firstTimestamp);
-      expect(isrRegeneratedHtml).toContain(
-        `<title data-next-head="">ISR Second Render State ${regeneratedTimestamp}</title>`,
+      expect(isrRegeneratedHtml).toMatch(
+        new RegExp(
+          `<title\\b(?=[^>]*data-next-head="")[^>]*>ISR Second Render State ${regeneratedTimestamp}</title>`,
+        ),
       );
+      expect(isrRegeneratedHtml).toMatch(new RegExp(`z-index:\\s*${regeneratedTimestamp}`));
+      expect(isrRegeneratedHtml).not.toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
 
       // Test: SSR page with getServerSideProps
       const ssrRes = await fetch(`${prodUrl}/ssr`);
@@ -8060,6 +8095,17 @@ export default function StaticGspPage() {
 `,
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "document-isr-styled.tsx"),
+      `import Head from "next/head";
+export function getStaticProps() {
+  return { props: { timestamp: Date.now() }, revalidate: 1 };
+}
+export default function DocumentIsrStyled({ timestamp }: { timestamp: number }) {
+  return <><Head><title>Document ISR Styled</title></Head><p id="document-isr-timestamp">{timestamp}</p><style jsx>{\`p { z-index: \${timestamp}; }\`}</style></>;
+}
+`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_error.tsx"),
       `import { renderCounts } from "../render-counts";
 function ErrorPage({ message }: { message: string }) {
@@ -8365,6 +8411,45 @@ export default class CustomDocument extends Document {
     },
   );
 
+  it("refreshes styled-jsx without replacing next/head metadata during custom-document ISR", async () => {
+    const firstResponse = await fetch(`${prodUrl}/document-isr-styled`);
+    expect(firstResponse.status).toBe(200);
+    expect(firstResponse.headers.get("x-vinext-cache")).toBe("MISS");
+    const firstHtml = await firstResponse.text();
+    const firstTimestamp = firstHtml.match(/id="document-isr-timestamp"[^>]*>(\d+)</)?.[1];
+    expect(firstTimestamp).toBeDefined();
+    expect(firstHtml).toMatch(/<title[^>]*data-next-head=""[^>]*>Document ISR Styled<\/title>/);
+    expect(firstHtml).toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const staleResponse = await fetch(`${prodUrl}/document-isr-styled`);
+    expect(staleResponse.headers.get("x-vinext-cache")).toBe("STALE");
+    await staleResponse.text();
+
+    let regeneratedHtml = "";
+    let regeneratedTimestamp: string | undefined;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const response = await fetch(`${prodUrl}/document-isr-styled`);
+      regeneratedHtml = await response.text();
+      regeneratedTimestamp = regeneratedHtml.match(/id="document-isr-timestamp"[^>]*>(\d+)</)?.[1];
+      if (
+        response.headers.get("x-vinext-cache") === "HIT" &&
+        regeneratedTimestamp !== firstTimestamp
+      ) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    expect(regeneratedTimestamp).toBeDefined();
+    expect(regeneratedTimestamp).not.toBe(firstTimestamp);
+    expect(regeneratedHtml).toMatch(
+      /<title[^>]*data-next-head=""[^>]*>Document ISR Styled<\/title>/,
+    );
+    expect(regeneratedHtml).toMatch(new RegExp(`z-index:\\s*${regeneratedTimestamp}`));
+    expect(regeneratedHtml).not.toMatch(new RegExp(`z-index:\\s*${firstTimestamp}`));
+  });
+
   it.each(["dev", "prod"] as const)(
     "honors _document.getInitialProps responses that end early in %s",
     async (mode) => {
@@ -8445,7 +8530,7 @@ export default class CustomDocument extends Document {
   );
 });
 
-describe("Production Pages Router SSR streaming", () => {
+describe("Production Pages Router SSR responses", () => {
   let outDir: string;
   let prodServer: import("node:http").Server;
   let prodUrl: string;
@@ -8513,12 +8598,36 @@ describe("Production Pages Router SSR streaming", () => {
     }
   });
 
-  it("streams Pages SSR responses incrementally in production with br compression", async () => {
-    // Parity target: Next.js streams Node responses via sendResponse() ->
-    // pipeToNodeResponse() instead of buffering the full HTML first, while
-    // still leaving compression enabled under next start.
-    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/send-response.ts
-    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/pipe-readable.ts
+  it("renders styled-jsx styles during SSR in production", async () => {
+    // Ported from Next.js: test/e2e/streaming-ssr/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
+    const res = await fetch(`${prodUrl}/styled-jsx-streaming`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const html = await res.text();
+    expect(html).toContain("styled-jsx streaming");
+    expect(html).toMatch(/data-testid="styled-jsx-data-source"[^>]*>getServerSideProps<\/p>/);
+    expect(html).toMatch(/color:\s*(?:blue|#00f)/);
+    expect(html).toContain("late styled-jsx content");
+    expect(html).toMatch(/background-color:\s*rgb\(1,\s*2,\s*3\)/);
+  });
+
+  it("preserves getStaticProps exports on styled-jsx pages in production", async () => {
+    const res = await fetch(`${prodUrl}/styled-jsx-static-props`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-vinext-cache")).toBe("MISS");
+
+    const html = await res.text();
+    expect(html).toMatch(/data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps<\/p>/);
+    expect(html).toMatch(/color:\s*rgb\(4,\s*5,\s*6\)/);
+  });
+
+  it("buffers Pages SSR responses to allReady in production with br compression", async () => {
+    // Next.js Pages rendering awaits renderStream.allReady before exposing
+    // the HTML response. Compression remains enabled after buffering.
     const response = await captureStreamedResponse(`${prodUrl}/streaming-ssr`, {
       headers: { "accept-encoding": "br" },
     });
@@ -8535,22 +8644,20 @@ describe("Production Pages Router SSR streaming", () => {
     expect(String(middlewareHeader)).toBe("active");
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(transferEncoding)).toBe("chunked");
-    expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.firstChunkMs).toBeGreaterThanOrEqual(400);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
     expect(response.rawBody.byteLength).toBeGreaterThan(0);
     expect(response.rawSnapshot.byteLength).toBeGreaterThan(0);
 
     expect(partialHtml).toContain("Streaming SSR Test");
-    expect(partialHtml).toContain("Loading delayed chunk...");
-    expect(partialHtml).not.toContain("Delayed stream content loaded");
+    expect(partialHtml).toContain("Delayed stream content loaded");
 
     expect(finalHtml).toContain("Streaming SSR Test");
     expect(finalHtml).toContain("Delayed stream content loaded");
     expect(finalHtml).toContain("__NEXT_DATA__");
   });
 
-  it("streams Pages SSR responses incrementally in production with gzip compression", async () => {
+  it("buffers Pages SSR responses to allReady in production with gzip compression", async () => {
     const response = await withFreshStreamingProdServer((freshProdUrl) =>
       captureStreamedResponse(`${freshProdUrl}/streaming-ssr`, {
         headers: { "accept-encoding": "gzip" },
@@ -8563,15 +8670,13 @@ describe("Production Pages Router SSR streaming", () => {
     expect(String(response.headers["content-encoding"])).toBe("gzip");
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
-    expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.firstChunkMs).toBeGreaterThanOrEqual(400);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
-    expect(partialHtml).toContain("Loading delayed chunk...");
-    expect(partialHtml).not.toContain("Delayed stream content loaded");
+    expect(partialHtml).toContain("Delayed stream content loaded");
     expect(finalHtml).toContain("Delayed stream content loaded");
   });
 
-  it("preserves streamed SSR bodies when middleware rewrites are merged into the response", async () => {
+  it("preserves buffered SSR bodies when middleware rewrites are merged into the response", async () => {
     const res = await fetch(`${prodUrl}/streaming-ssr`);
     expect(res.status).toBe(200);
     expect(res.headers.get("x-custom-middleware")).toBe("active");
@@ -8580,7 +8685,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(html).toContain("Delayed stream content loaded");
   });
 
-  it("serves streamed Pages SSR HEAD requests as headers-only responses in production", async () => {
+  it("serves Pages SSR HEAD requests through the headers-only fast path in production", async () => {
     const startedAt = Date.now();
     const res = await fetch(`${prodUrl}/streaming-ssr`, {
       method: "HEAD",
@@ -8595,15 +8700,12 @@ describe("Production Pages Router SSR streaming", () => {
   });
 
   it("serves bot-buffered Pages SSR HEAD requests as headers-only responses in production", async () => {
-    // Crawlers get the *buffered* (non-streamed) HTML path, which routes through
-    // sendCompressed rather than sendWebResponse. Regression for #1980: HEAD must
-    // return the status + headers with an empty body (RFC 9110), like the
-    // streamed path already does.
+    // Crawlers additionally receive an ETag. Regression for #1980: HEAD must
+    // return the status + headers with an empty body (RFC 9110).
     const userAgent = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)";
 
     // Sanity anchor: a bot GET buffers the full HTML and returns a body. The
-    // ETag is set only on the buffered bot path, so its presence confirms we
-    // exercised sendCompressed and not the streamed sender.
+    // ETag is set only on the bot path.
     const getRes = await fetch(`${prodUrl}/streaming-ssr`, {
       method: "GET",
       headers: { "user-agent": userAgent },
@@ -8633,10 +8735,9 @@ describe("Production Pages Router SSR streaming", () => {
     expect(await res.text()).toBe("");
   });
 
-  it("strips stale content-length from streamed Pages SSR responses when gSSP sets one", async () => {
-    // Parity target: Next.js only sets Content-Length for unchunked render
-    // payloads; streamed HTML is sent without one.
-    // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/send-payload.ts
+  it("strips stale content-length from buffered Pages SSR responses when gSSP sets one", async () => {
+    // The compressed payload length is not known up front, so a stale
+    // application-provided Content-Length must not be forwarded.
     const response = await captureStreamedResponse(`${prodUrl}/streaming-gssp-content-length`, {
       headers: { "accept-encoding": "br" },
     });
@@ -8647,15 +8748,13 @@ describe("Production Pages Router SSR streaming", () => {
     expect(String(response.headers["content-encoding"])).toBe("br");
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
-    expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
-    expect(partialHtml).toContain("Loading delayed gSSP chunk...");
-    expect(partialHtml).not.toContain("Delayed gSSP stream content loaded");
+    expect(response.firstChunkMs).toBeGreaterThanOrEqual(400);
+    expect(partialHtml).toContain("Delayed gSSP stream content loaded");
     expect(finalHtml).toContain("Streaming gSSP Content-Length Test");
     expect(finalHtml).toContain("Delayed gSSP stream content loaded");
   });
 
-  it("strips middleware-provided content-length when rewriting to a streamed Pages SSR response", async () => {
+  it("strips middleware-provided content-length when rewriting to a buffered Pages SSR response", async () => {
     // Parity target: Next.js route resolution explicitly skips forwarding
     // middleware content-length headers.
     // https://raw.githubusercontent.com/vercel/next.js/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
@@ -8671,8 +8770,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(String(response.headers["content-encoding"])).toBe("br");
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
-    expect(partialHtml).toContain("Loading delayed chunk...");
-    expect(partialHtml).not.toContain("Delayed stream content loaded");
+    expect(partialHtml).toContain("Delayed stream content loaded");
     expect(finalHtml).toContain("Streaming SSR Test");
     expect(finalHtml).toContain("Delayed stream content loaded");
   });
@@ -8937,6 +9035,19 @@ describe("Static export (Pages Router)", () => {
     expect(result.files).toContain("about.html");
     const aboutHtml = fs.readFileSync(path.join(exportDir, "about.html"), "utf-8");
     expect(aboutHtml).toContain("About");
+
+    // styled-jsx pages must remain renderable after the standalone server
+    // bundle is relocated into the static export's temporary directory.
+    expect(result.files).toContain("styled-jsx-static-props.html");
+    const styledJsxHtml = fs.readFileSync(
+      path.join(exportDir, "styled-jsx-static-props.html"),
+      "utf-8",
+    );
+    expect(styledJsxHtml).toMatch(
+      /data-testid="styled-jsx-static-data-source"[^>]*>getStaticProps</,
+    );
+    expect(styledJsxHtml).toMatch(/<style id="__jsx-[^"]+">/);
+    expect(styledJsxHtml).toContain("color:rgb(4,5,6)");
   });
 
   it("pre-renders dynamic routes from getStaticPaths", async () => {

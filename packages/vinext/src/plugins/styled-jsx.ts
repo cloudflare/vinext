@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { parseAst, type Plugin } from "vite";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
@@ -17,7 +18,32 @@ type StyledJsxPluginOptions = {
   importModule?: (url: string) => Promise<NextSwcModule>;
 };
 
-const STYLED_JSX_IMPORT_RE = /^styled-jsx(?:\/.*)?$/;
+const STYLED_JSX_RUNTIME_ID = "styled-jsx";
+const STYLED_JSX_STYLE_ID = "styled-jsx/style";
+const STYLED_JSX_RUNTIME_PUBLIC_ID = "virtual:vinext-styled-jsx-runtime";
+const STYLED_JSX_RUNTIME_RESOLVED_ID = "\0vinext-styled-jsx-runtime";
+const STYLED_JSX_STYLE_FACADE_ID = "\0vinext-styled-jsx-style";
+const STYLED_JSX_FALLBACK_RUNTIME = `
+function StyleRegistry({ children }) {
+  return children;
+}
+function createStyleRegistry() {
+  return {
+    add() {},
+    remove() {},
+    update() {},
+    styles() { return []; },
+    flush() {},
+  };
+}
+function style() {
+  return null;
+}
+function useStyleRegistry() {
+  return createStyleRegistry();
+}
+export { StyleRegistry, createStyleRegistry, style, useStyleRegistry };
+`;
 const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
 const STYLED_JSX_CSS_RE =
@@ -61,6 +87,13 @@ function createProjectRequire(projectRoot: string) {
   return createRequire(path.join(projectRoot, "package.json"));
 }
 
+function resolveProjectRoot(projectRoot: string): string {
+  const normalizedRoot = toSlash(projectRoot);
+  return path.isAbsolute(normalizedRoot)
+    ? normalizedRoot
+    : path.resolve(toSlash(process.cwd()), normalizedRoot);
+}
+
 function resolveNextRequire(projectRoot: string): NodeJS.Require | null {
   try {
     const projectRequire = createProjectRequire(projectRoot);
@@ -78,11 +111,37 @@ function parserOptions(id: string): Record<string, unknown> {
   return { syntax: "ecmascript", jsx: true };
 }
 
+function convertStyledJsxRuntimeToEsm(source: string): string {
+  const withoutClientOnlyRequire = source.replace(
+    /^require\(["']client-only["']\);/m,
+    'import "client-only";',
+  );
+  const withReactImport = withoutClientOnlyRequire.replace(
+    /^var React = require\(["']react["']\);/m,
+    'import * as React from "react";',
+  );
+  const withEsmExports = withReactImport.replace(
+    /exports\.StyleRegistry = StyleRegistry;\s*exports\.createStyleRegistry = createStyleRegistry;\s*exports\.style = JSXStyle;\s*exports\.useStyleRegistry = useStyleRegistry;\s*$/,
+    "export { StyleRegistry, createStyleRegistry, JSXStyle as style, useStyleRegistry };\n",
+  );
+
+  if (
+    withoutClientOnlyRequire === source ||
+    withReactImport === withoutClientOnlyRequire ||
+    withEsmExports === withReactImport
+  ) {
+    throw new Error(
+      "[vinext] The installed styled-jsx runtime has an unsupported module wrapper shape.",
+    );
+  }
+  return withEsmExports;
+}
+
 export function createStyledJsxPlugin(
   initialProjectRoot: string,
   options: StyledJsxPluginOptions = {},
 ): Plugin {
-  let projectRoot = initialProjectRoot;
+  let projectRoot = resolveProjectRoot(initialProjectRoot);
   let development = false;
   let nextRequire: NodeJS.Require | null | undefined;
   let compilerPromise: Promise<NextSwcModule> | null = null;
@@ -91,6 +150,17 @@ export function createStyledJsxPlugin(
   function getNextRequire(): NodeJS.Require | null {
     nextRequire ??= resolveNextRequire(projectRoot);
     return nextRequire;
+  }
+
+  function getRuntimeDistPath(): string | null {
+    const requireFromNext = getNextRequire();
+    if (!requireFromNext) return null;
+    try {
+      const runtimePath = toSlash(requireFromNext.resolve(STYLED_JSX_RUNTIME_ID));
+      return path.join(path.dirname(runtimePath), "dist/index/index.js");
+    } catch {
+      return null;
+    }
   }
 
   async function getCompiler(): Promise<NextSwcModule> {
@@ -115,24 +185,43 @@ export function createStyledJsxPlugin(
     enforce: "pre",
     configResolved(config) {
       development = config.command === "serve";
-      if (config.root !== projectRoot) {
-        projectRoot = config.root;
+      const configRoot = resolveProjectRoot(config.root);
+      if (configRoot !== projectRoot) {
+        projectRoot = configRoot;
         nextRequire = undefined;
         compilerPromise = null;
       }
     },
     resolveId: {
-      filter: { id: STYLED_JSX_IMPORT_RE },
+      filter: { id: /^(?:styled-jsx(?:\/.*)?|virtual:vinext-styled-jsx-runtime)$/ },
       handler(source) {
+        if (source === STYLED_JSX_RUNTIME_ID || source === STYLED_JSX_RUNTIME_PUBLIC_ID) {
+          return STYLED_JSX_RUNTIME_RESOLVED_ID;
+        }
+        if (source === STYLED_JSX_STYLE_ID) {
+          return getRuntimeDistPath() ? STYLED_JSX_STYLE_FACADE_ID : null;
+        }
         try {
           return getNextRequire()?.resolve(source) ?? null;
-        } catch {}
-
-        try {
-          return createProjectRequire(projectRoot).resolve(source);
         } catch {
           return null;
         }
+      },
+    },
+    load: {
+      // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
+      filter: { id: /^\u0000vinext-styled-jsx-(?:runtime|style)$/ },
+      handler(id) {
+        if (id === STYLED_JSX_RUNTIME_RESOLVED_ID) {
+          const runtimeDistPath = getRuntimeDistPath();
+          if (!runtimeDistPath) return STYLED_JSX_FALLBACK_RUNTIME;
+          this.addWatchFile(runtimeDistPath);
+          return convertStyledJsxRuntimeToEsm(readFileSync(runtimeDistPath, "utf8"));
+        }
+        if (id === STYLED_JSX_STYLE_FACADE_ID) {
+          return `export { style as default } from ${JSON.stringify(STYLED_JSX_RUNTIME_PUBLIC_ID)};`;
+        }
+        return null;
       },
     },
     transform: {
@@ -158,6 +247,11 @@ export function createStyledJsxPlugin(
           filename: stripViteModuleQuery(id),
           sourceMaps: true,
           module: { type: "es6" },
+          // Vinext's server and client entries inspect these exports directly.
+          // Next's client-page compilation replaces them with __N_SSG/__N_SSP,
+          // but running that tree-shaker here would also affect vinext's server
+          // module graph and make the data functions disappear at runtime.
+          disableNextSsg: true,
           styledJsx: { useLightningcss: false },
           jsc: {
             parser: parserOptions(id),

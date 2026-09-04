@@ -243,8 +243,34 @@ function writeGsspRedirect(
   res.end(location);
 }
 
-/** Body placeholder used to split the document shell for streaming. */
+/** Body placeholder used to assemble the document shell around the rendered page. */
 const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
+
+type DevPagesStyleRegistry = {
+  styles(options?: { nonce?: string }): React.ReactNode;
+  flush(): void;
+};
+
+type DevPagesRenderStream = ReadableStream<Uint8Array> & {
+  allReady?: Promise<void>;
+};
+
+async function collectDevPagesStyleRegistryHtml(
+  registry: DevPagesStyleRegistry,
+  scriptNonce?: string,
+): Promise<string> {
+  const styles = registry.styles({ nonce: scriptNonce });
+  registry.flush();
+  if (styles == null || (Array.isArray(styles) && styles.length === 0)) return "";
+  return renderToStringAsync(React.createElement(React.Fragment, null, styles));
+}
+
+function injectDevPagesLateStyles(shellSuffix: string, stylesHTML: string): string {
+  if (!stylesHTML) return shellSuffix;
+  const closingBody = shellSuffix.toLowerCase().lastIndexOf("</body>");
+  if (closingBody === -1) return shellSuffix + stylesHTML;
+  return `${shellSuffix.slice(0, closingBody)}  ${stylesHTML}\n${shellSuffix.slice(closingBody)}`;
+}
 
 function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
   res.removeHeader("Content-Length");
@@ -252,17 +278,10 @@ function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
 }
 
 /**
- * Stream a Pages Router page response using progressive SSR.
+ * Render a Pages Router response and buffer it until React's `allReady`.
  *
- * Sends the HTML shell (head, layout, Suspense fallbacks) immediately
- * when the React shell is ready, then streams Suspense content as it
- * resolves. This gives the browser content to render while slow data
- * loads are still in flight.
- *
- * `__NEXT_DATA__` and the hydration script are appended after the body
- * stream completes (the data is known before rendering starts, but
- * deferring them reduces TTFB and lets the browser start parsing the
- * shell sooner).
+ * `__NEXT_DATA__` and the hydration script are appended after the complete
+ * body together with any styled-jsx rules collected from Suspense content.
  */
 async function streamPageToResponse(
   res: ServerResponse,
@@ -270,6 +289,7 @@ async function streamPageToResponse(
   options: {
     url: string;
     server: ViteDevServer;
+    moduleImporter: ModuleImporter;
     fontHeadHTML: string;
     assetHeadHTML?: string;
     scripts: string;
@@ -306,8 +326,6 @@ async function streamPageToResponse(
      */
     setDocumentInitialHead?: (head: React.ReactNode[]) => void;
     crossOrigin?: string;
-    /** Buffer the body before writing headers so error-page fallback remains safe. */
-    bufferBodyBeforeHeaders?: boolean;
     /** Keep a response Content-Type set before rendering a notFound page. */
     preserveExistingContentType?: boolean;
   },
@@ -315,6 +333,7 @@ async function streamPageToResponse(
   const {
     url,
     server,
+    moduleImporter,
     fontHeadHTML,
     assetHeadHTML = "",
     scripts,
@@ -328,20 +347,41 @@ async function streamPageToResponse(
     documentContext,
     setDocumentInitialHead,
     crossOrigin,
-    bufferBodyBeforeHeaders = false,
     preserveExistingContentType = false,
   } = options;
+
+  let jsxStyleRegistry: DevPagesStyleRegistry | undefined;
+  let wrapWithStyleRegistry = (pageElement: React.ReactElement): React.ReactElement => pageElement;
+  try {
+    const styledJsxModule = await importModule(moduleImporter, "styled-jsx");
+    const styledJsxRuntime = styledJsxModule.default ?? styledJsxModule;
+    if (
+      typeof styledJsxRuntime.createStyleRegistry === "function" &&
+      typeof styledJsxRuntime.StyleRegistry === "function"
+    ) {
+      jsxStyleRegistry = styledJsxRuntime.createStyleRegistry();
+      wrapWithStyleRegistry = (pageElement) =>
+        React.createElement(
+          styledJsxRuntime.StyleRegistry,
+          { registry: jsxStyleRegistry },
+          pageElement,
+        );
+    }
+  } catch {
+    // styled-jsx is optional. Pages without the dependency render normally.
+  }
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
   // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. styled-
   // components / emotion style collection). When that contract is in use the
   // body must be a single complete string before `_document` renders. The
-  // streaming path stays as the default for the common case. The contract
-  // (including `withScriptNonce` and `styles` rendering) lives in the shared
-  // helper so dev and prod stay in lockstep.
+  // contract (including `withScriptNonce` and `styles` rendering) lives in the
+  // shared helper so dev and prod stay in lockstep.
   const documentRenderPage = await runDocumentRenderPage({
     DocumentComponent,
-    enhancePageElement,
+    enhancePageElement: enhancePageElement
+      ? (renderPageOptions) => wrapWithStyleRegistry(enhancePageElement(renderPageOptions))
+      : undefined,
     renderToReadableStream,
     renderStylesToString: renderToStringAsync,
     scriptNonce,
@@ -362,8 +402,20 @@ async function streamPageToResponse(
     // Start the React body stream FIRST — the promise resolves when the
     // shell is ready (synchronous content outside Suspense boundaries).
     // This triggers the render which populates <Head> tags.
-    bodyStream = await renderToReadableStream(element);
+    bodyStream = await renderToReadableStream(wrapWithStyleRegistry(element));
   }
+
+  const bodyAllReady = (bodyStream as DevPagesRenderStream).allReady ?? Promise.resolve();
+  const activeStyleRegistry = jsxStyleRegistry;
+  try {
+    await bodyAllReady;
+  } catch (error) {
+    activeStyleRegistry?.flush();
+    throw error;
+  }
+  const styledJsxHTML = activeStyleRegistry
+    ? await collectDevPagesStyleRegistryHtml(activeStyleRegistry, scriptNonce)
+    : "";
 
   // Fold any head tags returned by `_document.getInitialProps()` into the same
   // dedupe pipeline as user `next/head` tags. Matches Next.js's `_document`
@@ -509,9 +561,13 @@ async function streamPageToResponse(
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
-  const bufferedBody = bufferBodyBeforeHeaders ? await new Response(bodyStream).text() : null;
+  const finalSuffix = injectDevPagesLateStyles(suffix, styledJsxHTML);
+  // Next.js Pages rendering awaits renderStream.allReady before exposing HTML.
+  // Buffer the complete body so CSS-in-JS registry output and Suspense content
+  // are present before the response is emitted.
+  const bufferedBody = await new Response(bodyStream).text();
 
-  // Send headers and start streaming.
+  // Send headers and the completed document.
   // Set array-valued headers (e.g. Set-Cookie from gSSP) via setHeader()
   // before writeHead(), since writeHead()'s headers object doesn't handle
   // arrays portably. Then writeHead() merges with any setHeader() calls.
@@ -533,25 +589,7 @@ async function streamPageToResponse(
   // Write the document prefix (head, opening body)
   res.write(prefix);
 
-  if (bufferedBody !== null) {
-    res.end(bufferedBody + suffix);
-    return;
-  }
-
-  // Pipe the React body stream through (Suspense content streams progressively)
-  const reader = bodyStream.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-
-  // Write the document suffix (closing tags, scripts)
-  res.end(suffix);
+  res.end(bufferedBody + finalSuffix);
 }
 
 /**
@@ -1610,12 +1648,11 @@ export function createSSRHandler(
             .join(", ");
         }
 
-        // Stream the page using progressive SSR.
-        // The shell (layouts, non-suspended content) arrives immediately.
-        // Suspense content streams in as it resolves.
+        // Buffer the complete Pages response through React's allReady boundary.
         await streamPageToResponse(res, withScriptNonce(element, scriptNonce), {
           url,
           server,
+          moduleImporter: runner,
           fontHeadHTML,
           assetHeadHTML,
           scripts: allScripts,
@@ -1634,7 +1671,7 @@ export function createSSRHandler(
           },
           // Used by `_document.getInitialProps` -> `ctx.renderPage` to wrap
           // App/Component with user enhancers (e.g. styled-components,
-          // emotion). The streaming path otherwise renders `element` as-is.
+          // emotion). The normal path otherwise renders `element` as-is.
           // Returns the bare enhanced tree — nonce is applied by the helper.
           // `pageProps` is captured from the closure (mirrors the prod entry's
           // `enhancePageElement`) — this closure is only ever invoked for this
@@ -1681,7 +1718,6 @@ export function createSSRHandler(
               ? headShim.setDocumentInitialHead
               : undefined,
           crossOrigin,
-          bufferBodyBeforeHeaders: true,
         });
         _renderEnd = now();
 
@@ -1987,91 +2023,60 @@ async function renderErrorPage(
       });
       const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
       if (statusCode === 404) stripDevPagesNotFoundFramingHeaders(res);
-      if (DocumentComponent) {
-        await streamPageToResponse(res, element, {
-          url,
-          server,
-          fontHeadHTML: "",
-          assetHeadHTML,
-          scripts: errorScripts,
-          DocumentComponent,
-          statusCode,
-          documentContext: {
-            err,
-            pathname: errorPage,
-            query: parseQuery(url),
-            asPath: url,
-            req,
-            res,
-          },
-          enhancePageElement: (renderPageOpts) => {
-            let FinalApp = AppComponent;
-            let FinalComponent = ErrorComponent;
-            if (renderPageOpts.enhanceApp && FinalApp) {
-              FinalApp = renderPageOpts.enhanceApp(FinalApp);
-            }
-            if (renderPageOpts.enhanceComponent) {
-              FinalComponent = renderPageOpts.enhanceComponent(FinalComponent);
-            }
-            return createErrorElement(FinalApp, FinalComponent);
-          },
-          getHeadHTML: () =>
-            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "",
-          getTailHeadHTML: () => getClientTraceMetadataHTML(context.clientTraceMetadata),
-          setDocumentInitialHead:
-            typeof headShim.setDocumentInitialHead === "function"
-              ? headShim.setDocumentInitialHead
-              : undefined,
-          crossOrigin: context.crossOrigin,
-          preserveExistingContentType: statusCode === 404,
-        });
-      } else {
-        const bodyHtml = await renderToStringAsync(element);
-        const traceMetaHTML = getClientTraceMetadataHTML(context.clientTraceMetadata);
-        const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
-        const protectAssetTags = (assetHtml: string): string =>
-          markDocumentAssetPropsProtectedTags(assetHtml, protectedAssetMarker);
-        const protectedErrorScripts = protectAssetTags(
-          applyDocumentAssetProps(
-            errorScripts,
-            {},
-            {
-              configuredCrossOrigin: context.crossOrigin,
-            },
-          ),
-        );
-        const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  ${assetHeadHTML}
-  ${traceMetaHTML}
-</head>
-<body>
-  <div id="__next">${protectAssetTags(bodyHtml)}</div>
-  ${protectedErrorScripts}
-</body>
-</html>`;
-        const transformedHtml = stripDocumentAssetPropsProtectionMarkers(
-          applyDocumentAssetProps(
-            await server.transformIndexHtml(url, html),
-            {},
-            {
-              configuredCrossOrigin: context.crossOrigin,
-              protectedAssetMarker,
-            },
-          ),
-          protectedAssetMarker,
-        );
-        res.writeHead(
-          statusCode,
-          statusCode === 404 && res.hasHeader("Content-Type")
-            ? undefined
-            : { "Content-Type": "text/html; charset=utf-8" },
-        );
-        res.end(transformedHtml);
-      }
+      await streamPageToResponse(res, element, {
+        url,
+        server,
+        moduleImporter: runner,
+        fontHeadHTML: "",
+        assetHeadHTML,
+        scripts: errorScripts,
+        DocumentComponent,
+        statusCode,
+        documentContext: {
+          err,
+          pathname: errorPage,
+          query: parseQuery(url),
+          asPath: url,
+          req,
+          res,
+        },
+        enhancePageElement: (renderPageOpts) => {
+          let FinalApp = AppComponent;
+          let FinalComponent = ErrorComponent;
+          if (renderPageOpts.enhanceApp && FinalApp) {
+            FinalApp = renderPageOpts.enhanceApp(FinalApp);
+          }
+          if (renderPageOpts.enhanceComponent) {
+            FinalComponent = renderPageOpts.enhanceComponent(FinalComponent);
+          }
+          return createErrorElement(FinalApp, FinalComponent);
+        },
+        getHeadHTML: () => {
+          const headHTML =
+            typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "";
+          if (DocumentComponent) return headHTML;
+
+          // A missing framework Document still needs the canonical default
+          // head, while the shared buffered renderer must remain in charge of
+          // collecting request-local styled-jsx output.
+          let defaultHeadHTML = "";
+          if (!/<meta\b[^>]*\bcharset\s*=/i.test(headHTML)) {
+            defaultHeadHTML += '<meta charset="utf-8" />';
+          }
+          if (!/<meta\b[^>]*\bname=["']viewport["']/i.test(headHTML)) {
+            defaultHeadHTML +=
+              '<meta name="viewport" content="width=device-width, initial-scale=1" />';
+          }
+          return defaultHeadHTML + headHTML;
+        },
+        getTailHeadHTML: () => getClientTraceMetadataHTML(context.clientTraceMetadata),
+        setDocumentInitialHead:
+          typeof headShim.setDocumentInitialHead === "function"
+            ? headShim.setDocumentInitialHead
+            : undefined,
+        crossOrigin: context.crossOrigin,
+        preserveExistingContentType: statusCode === 404,
+      });
       return;
     } catch (error) {
       if (res.headersSent || res.writableEnded) return;
