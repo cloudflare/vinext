@@ -554,7 +554,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `next/document`     | ✅  | `Html`, `Head`, `Main`, `NextScript`                                                                                                   |
 | `next/constants`    | ✅  | All phase constants                                                                                                                    |
 | `next/amp`          | ⬜  | No-op (AMP is deprecated)                                                                                                              |
-| `next/web-vitals`   | ⬜  | No-op (use the `web-vitals` library directly)                                                                                          |
+| `next/web-vitals`   | ✅  | `useReportWebVitals` reports CLS, FCP, FID, INP, LCP, TTFB via the `web-vitals` library                                                |
 
 ### Routing
 
