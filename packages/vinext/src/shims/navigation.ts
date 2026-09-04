@@ -3280,6 +3280,13 @@ if (!isServer) {
         );
         return;
       }
+      if (getNavigationRuntime()?.functions.commitShallowHistory?.(data, url, "push")) {
+        if (state.suppressUrlNotifyCount === 0) {
+          resetStaleLinkStatus();
+          commitClientNavigationState();
+        }
+        return;
+      }
       const previousHistoryState = window.history.state;
       state.originalPushState.call(
         window.history,
@@ -3312,6 +3319,13 @@ if (!isServer) {
           "replace",
           previousHistoryState,
         );
+        return;
+      }
+      if (getNavigationRuntime()?.functions.commitShallowHistory?.(data, url, "replace")) {
+        if (state.suppressUrlNotifyCount === 0) {
+          resetStaleLinkStatus();
+          commitClientNavigationState();
+        }
         return;
       }
       const previousHistoryState = window.history.state;

@@ -141,7 +141,6 @@ test.describe("Parallel Routes", () => {
     );
   });
 });
-
 test.describe("Intercepting Routes", () => {
   // Ported and strengthened from Next.js intercepted route coverage:
   // - test/e2e/app-dir/parallel-routes-revalidation/parallel-routes-revalidation.test.ts

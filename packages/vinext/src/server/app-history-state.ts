@@ -6,6 +6,7 @@ const VINEXT_PREVIOUS_NEXT_URL_HISTORY_STATE_KEY = "__vinext_previousNextUrl";
 const VINEXT_HISTORY_INDEX_HISTORY_STATE_KEY = "__vinext_historyIndex";
 const VINEXT_BFCACHE_IDS_HISTORY_STATE_KEY = "__vinext_bfcacheIds";
 const VINEXT_BFCACHE_VERSION_HISTORY_STATE_KEY = "__vinext_bfcacheVersion";
+const VINEXT_SHALLOW_URL_HISTORY_STATE_KEY = "__vinext_shallowUrl";
 const VINEXT_EXTERNAL_HISTORY_STATE_KEY = "__vinext_externalHistoryState";
 const VINEXT_TREE_SNAPSHOT_ID_HISTORY_STATE_KEY = "__vinext_treeSnapshotId";
 const VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY = "__vinext_treeSnapshotClaimed";
@@ -43,6 +44,11 @@ type HistoryStateSnapshotRestoreDecision<TState> =
 export class HistoryStateSnapshotCache<TState> {
   readonly #maxEntries: number;
   readonly #snapshots = new Map<number, HistoryStateSnapshot<TState>>();
+  // External shallow entries can point at a pathname that has no matching app
+  // route. Their rendered tree is therefore the only in-memory restoration
+  // source and must survive both general cache invalidation and eviction from
+  // the bounded navigation snapshot cache.
+  readonly #durableSnapshots = new Map<number, TState>();
 
   constructor(options: { maxEntries: number }) {
     this.#maxEntries = options.maxEntries;
@@ -52,8 +58,61 @@ export class HistoryStateSnapshotCache<TState> {
     this.#snapshots.clear();
   }
 
-  remember(options: { bfcacheVersion: number; historyIndex: number | null; state: TState }): void {
+  pruneAfter(historyIndex: number | null): void {
+    if (historyIndex === null) {
+      // An indexed snapshot belongs to the app-owned branch created after the
+      // document's metadata-less entries. Pushing from one of those older
+      // entries discards that whole branch, so none of its snapshots remain
+      // reachable even though there is no numeric cutoff to compare against.
+      this.#snapshots.clear();
+      this.#durableSnapshots.clear();
+      return;
+    }
+    for (const snapshotIndex of this.#snapshots.keys()) {
+      if (snapshotIndex > historyIndex) this.#snapshots.delete(snapshotIndex);
+    }
+    for (const snapshotIndex of this.#durableSnapshots.keys()) {
+      if (snapshotIndex > historyIndex) this.#durableSnapshots.delete(snapshotIndex);
+    }
+  }
+
+  supersedeDurable(historyIndex: number | null): void {
+    if (historyIndex === null) return;
+    this.#durableSnapshots.delete(historyIndex);
+  }
+
+  copyDurable(fromHistoryIndex: number | null, toHistoryIndex: number | null): void {
+    if (fromHistoryIndex === null || toHistoryIndex === null) return;
+    const state = this.#durableSnapshots.get(fromHistoryIndex);
+    if (state === undefined) return;
+    this.#snapshots.delete(toHistoryIndex);
+    this.#durableSnapshots.set(toHistoryIndex, state);
+  }
+
+  remember(options: {
+    bfcacheVersion: number;
+    durable?: boolean;
+    historyIndex: number | null;
+    state: TState;
+  }): void {
     if (options.historyIndex === null) return;
+
+    if (options.durable === true) {
+      this.#snapshots.delete(options.historyIndex);
+      this.#durableSnapshots.set(options.historyIndex, options.state);
+      return;
+    }
+
+    // Rendering a restored shallow entry observes the same traversal index.
+    // Refresh its stored tree without changing its durable ownership.
+    if (options.durable === undefined && this.#durableSnapshots.has(options.historyIndex)) {
+      this.#durableSnapshots.set(options.historyIndex, options.state);
+      return;
+    }
+
+    // A normal navigation replacing the same traversal entry supersedes any
+    // shallow restoration state previously associated with that index.
+    this.#durableSnapshots.delete(options.historyIndex);
 
     this.#snapshots.delete(options.historyIndex);
     this.#snapshots.set(options.historyIndex, {
@@ -79,12 +138,21 @@ export class HistoryStateSnapshotCache<TState> {
       return { kind: "skip", reason: "missing-history-index", targetHistoryIndex };
     }
 
+    if (options.guarded) {
+      return { kind: "skip", reason: "guarded", targetHistoryIndex };
+    }
+
+    if (this.#durableSnapshots.has(targetHistoryIndex)) {
+      return {
+        kind: "restore",
+        state: this.#durableSnapshots.get(targetHistoryIndex)!,
+        targetHistoryIndex,
+      };
+    }
+
     const snapshot = this.#snapshots.get(targetHistoryIndex);
     if (!snapshot) {
       return { kind: "skip", reason: "missing-snapshot", targetHistoryIndex };
-    }
-    if (options.guarded) {
-      return { kind: "skip", reason: "guarded", targetHistoryIndex };
     }
     if (snapshot.bfcacheVersion !== options.currentBfcacheVersion) {
       this.#snapshots.delete(targetHistoryIndex);
@@ -152,9 +220,29 @@ export class RestorableClientStateController<TState> {
     this.#invalidateBfcacheIds();
   }
 
-  rememberHistoryStateSnapshot(options: { historyIndex: number | null; state: TState }): void {
+  pruneHistoryStateSnapshotsAfter(historyIndex: number | null): void {
+    this.#snapshots.pruneAfter(historyIndex);
+  }
+
+  supersedeDurableHistoryStateSnapshot(historyIndex: number | null): void {
+    this.#snapshots.supersedeDurable(historyIndex);
+  }
+
+  copyDurableHistoryStateSnapshot(
+    fromHistoryIndex: number | null,
+    toHistoryIndex: number | null,
+  ): void {
+    this.#snapshots.copyDurable(fromHistoryIndex, toHistoryIndex);
+  }
+
+  rememberHistoryStateSnapshot(options: {
+    durable?: boolean;
+    historyIndex: number | null;
+    state: TState;
+  }): void {
     this.#snapshots.remember({
       bfcacheVersion: this.#currentBfcacheVersion,
+      durable: options.durable,
       historyIndex: options.historyIndex,
       state: options.state,
     });
@@ -261,9 +349,14 @@ export function createHistoryStateWithNavigationMetadata(
 export function createExternalHistoryStatePreservingMetadata(
   callerState: unknown,
   currentHistoryState: unknown,
+  shallowUrl?: string,
+  traversalIndexOverride?: number | null,
 ): unknown {
   const previousNextUrl = readHistoryStatePreviousNextUrl(currentHistoryState);
-  const traversalIndex = readHistoryStateTraversalIndex(currentHistoryState);
+  const traversalIndex =
+    traversalIndexOverride === undefined
+      ? readHistoryStateTraversalIndex(currentHistoryState)
+      : traversalIndexOverride;
   const bfcacheIds = readHistoryStateBfcacheIds(currentHistoryState);
   const bfcacheVersion = readHistoryStateBfcacheVersion(currentHistoryState);
   const treeSnapshotId = readHistoryStateTreeSnapshotId(currentHistoryState);
@@ -281,6 +374,7 @@ export function createExternalHistoryStatePreservingMetadata(
   return {
     ...state,
     ...createExternalHistoryStateMarker(),
+    ...(shallowUrl === undefined ? {} : { [VINEXT_SHALLOW_URL_HISTORY_STATE_KEY]: shallowUrl }),
     ...(treeSnapshotId === null
       ? {}
       : {
@@ -331,6 +425,11 @@ export function createHistoryStateWithTreeSnapshotId(
     delete nextState[VINEXT_TREE_SNAPSHOT_CLAIMED_HISTORY_STATE_KEY];
   }
   return Object.keys(nextState).length > 0 ? nextState : null;
+}
+
+export function readHistoryStateShallowUrl(state: unknown): string | null {
+  const value = readHistoryStateRecord(state)?.[VINEXT_SHALLOW_URL_HISTORY_STATE_KEY];
+  return typeof value === "string" ? value : null;
 }
 
 export function createHistoryStateWithTreeSnapshotClaim(state: unknown, claimed: boolean): unknown {

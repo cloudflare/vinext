@@ -39,9 +39,9 @@ type AppBrowserHistoryControllerDeps = {
   /** Reads `window.location.href`. Injected so the controller stays unit-testable. */
   readCurrentHref: () => string;
   /** Wraps `pushHistoryStateWithoutNotify(state, "", href)`. */
-  pushHistoryState: (state: unknown, href: string) => void;
+  pushHistoryState: (state: unknown, href?: string | URL | null) => void;
   /** Wraps `replaceHistoryStateWithoutNotify(state, "", href)`. */
-  replaceHistoryState: (state: unknown, href?: string) => void;
+  replaceHistoryState: (state: unknown, href?: string | URL | null) => void;
   readVisibleNavigationMetadata: () => VisibleNavigationMetadata | null;
 };
 
@@ -72,6 +72,14 @@ type CommitNavigationHistoryOptions = {
   previousNextUrl: string | null;
   targetHistoryIndex?: number | null;
   stageClientParams: () => void;
+};
+
+type CommitExternalShallowNavigationOptions = {
+  callerState: unknown;
+  href: string;
+  historyUpdateMode: HistoryUpdateMode;
+  nativeHistoryUrl: string | URL | null | undefined;
+  snapshotState: AppRouterState;
 };
 
 export function createCanonicalBrowserHistoryHref(href: string): string {
@@ -119,8 +127,8 @@ export class AppBrowserHistoryController {
   readonly #treeSnapshotClaimByHistoryIndex = new Map<number, number>();
   readonly #readHistoryState: () => unknown;
   readonly #readCurrentHref: () => string;
-  readonly #pushHistoryState: (state: unknown, href: string) => void;
-  readonly #replaceHistoryState: (state: unknown, href?: string) => void;
+  readonly #pushHistoryState: (state: unknown, href?: string | URL | null) => void;
+  readonly #replaceHistoryState: (state: unknown, href?: string | URL | null) => void;
   readonly #readVisibleNavigationMetadata: () => VisibleNavigationMetadata | null;
 
   // Highest app-owned traversal index we know about (`#next`) versus the index
@@ -360,11 +368,38 @@ export class AppBrowserHistoryController {
 
   // --- History metadata writes ---
 
+  commitExternalShallowNavigation(options: CommitExternalShallowNavigationOptions): void {
+    const previousHistoryIndex = this.#currentHistoryTraversalIndex;
+    const navigationHistoryIndex = this.allocateNavigationHistoryTraversalIndex(
+      options.historyUpdateMode,
+    );
+    const historyState = createExternalHistoryStatePreservingMetadata(
+      options.callerState,
+      this.#readHistoryState(),
+      options.href,
+      navigationHistoryIndex,
+    );
+
+    if (options.historyUpdateMode === "replace") {
+      this.#replaceHistoryState(historyState, options.nativeHistoryUrl);
+    } else {
+      this.#pushHistoryState(historyState, options.nativeHistoryUrl);
+      this.#restorableClientState.pruneHistoryStateSnapshotsAfter(previousHistoryIndex);
+    }
+    this.commitHistoryTraversalIndex(navigationHistoryIndex);
+    this.#restorableClientState.rememberHistoryStateSnapshot({
+      durable: true,
+      historyIndex: this.#currentHistoryTraversalIndex,
+      state: options.snapshotState,
+    });
+  }
+
   commitHashOnlyNavigation(
     href: string,
     historyUpdateMode: HistoryUpdateMode,
     scroll: boolean,
   ): void {
+    const previousHistoryIndex = this.#currentHistoryTraversalIndex;
     if (historyUpdateMode === "push") {
       this.#releaseForwardTreeSnapshotClaims();
     }
@@ -399,6 +434,11 @@ export class AppBrowserHistoryController {
       this.#replaceHistoryState(nextHistoryState, href);
     } else {
       this.#pushHistoryState(nextHistoryState, href);
+      this.#restorableClientState.pruneHistoryStateSnapshotsAfter(previousHistoryIndex);
+      this.#restorableClientState.copyDurableHistoryStateSnapshot(
+        previousHistoryIndex,
+        navigationHistoryIndex,
+      );
     }
     const treeSnapshotId = readHistoryStateTreeSnapshotId(nextHistoryState);
     if (navigationHistoryIndex !== null && treeSnapshotId !== null) {
@@ -432,6 +472,7 @@ export class AppBrowserHistoryController {
    * into the history entry during the navigation commit.
    */
   commitNavigationHistory(options: CommitNavigationHistoryOptions): void {
+    const previousHistoryIndex = this.#currentHistoryTraversalIndex;
     const currentHref = this.#readCurrentHref();
     const currentHistoryState = this.#readHistoryState();
     const origin = new URL(currentHref).origin;
@@ -478,6 +519,7 @@ export class AppBrowserHistoryController {
       options.stageClientParams();
       this.#releaseForwardTreeSnapshotClaims();
       this.#pushHistoryState(historyState, options.href);
+      this.#restorableClientState.pruneHistoryStateSnapshotsAfter(previousHistoryIndex);
       wroteHistoryState = true;
       this.commitHistoryTraversalIndex(navigationHistoryIndex);
     }
@@ -494,6 +536,9 @@ export class AppBrowserHistoryController {
       if (options.targetHistoryIndex !== undefined) {
         this.commitHistoryTraversalIndex(options.targetHistoryIndex);
       }
+    }
+    if (navigationHistoryIndex !== null) {
+      this.#restorableClientState.supersedeDurableHistoryStateSnapshot(navigationHistoryIndex);
     }
   }
 

@@ -24,7 +24,7 @@ import {
 import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
 import type { AppRouterState } from "../packages/vinext/src/server/app-browser-state.js";
 
-type HistoryWrite = { state: unknown; href?: string };
+type HistoryWrite = { state: unknown; href?: string | URL | null };
 
 function readWrittenState(write: HistoryWrite | undefined): Record<string, unknown> {
   const state = write?.state;
@@ -69,15 +69,17 @@ function createHistoryStore(initialState: unknown = null, initialHref = "https:/
     setState: (next: unknown) => {
       state = next;
     },
-    pushHistoryState: (next: unknown, nextHref: string) => {
+    pushHistoryState: (next: unknown, nextHref?: string | URL | null) => {
       pushed.push({ state: next, href: nextHref });
       state = next;
-      href = new URL(nextHref, href).href;
+      if (nextHref != null) {
+        href = new URL(nextHref, href).href;
+      }
     },
-    replaceHistoryState: (next: unknown, nextHref?: string) => {
+    replaceHistoryState: (next: unknown, nextHref?: string | URL | null) => {
       replaced.push({ state: next, href: nextHref });
       state = next;
-      if (nextHref !== undefined) {
+      if (nextHref != null) {
         href = new URL(nextHref, href).href;
       }
     },
@@ -242,6 +244,43 @@ describe("AppBrowserHistoryController hash-only navigation", () => {
     expect(controller.currentHistoryTraversalIndex).toBe(1);
   });
 
+  it("carries a durable shallow snapshot into a hash-only push", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/shallow-test",
+    });
+    const shallowState = createRouterState({ routeId: "route:/shallow-test" });
+
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/shallow-test/sub",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/shallow-test/sub",
+      snapshotState: shallowState,
+    });
+    controller.commitHashOnlyNavigation("/shallow-test/sub#content", "push", false);
+    const hashHistoryState = store.pushed[1]?.state;
+
+    controller.commitHistoryTraversalIndex(3);
+    controller.invalidateRestorableClientState();
+
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: hashHistoryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(shallowState);
+  });
+
   it("retains copied tree identity when pushing a hash from an external entry", () => {
     const bfcacheIds = { "page:/shallow-test": "shallow-page" };
     const { controller, store } = createController({
@@ -386,6 +425,232 @@ describe("AppBrowserHistoryController snapshot restore", () => {
     controller.commitHistoryTraversalIndex(historyIndex);
     controller.rememberHistoryStateSnapshot(snapshotState);
   }
+
+  it("assigns a pushed shallow entry its own restorable snapshot", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/initial",
+    });
+    const snapshotState = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/initial/shallow",
+        {},
+      ),
+    });
+
+    controller.commitExternalShallowNavigation({
+      callerState: { caller: true },
+      href: "https://example.com/initial/shallow",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "initial/shallow",
+      snapshotState,
+    });
+
+    expect(controller.currentHistoryTraversalIndex).toBe(1);
+    expect(readWrittenState(store.pushed[0])).toMatchObject({
+      __vinext_historyIndex: 1,
+      __vinext_shallowUrl: "https://example.com/initial/shallow",
+      caller: true,
+    });
+    expect(store.pushed[0]?.href).toBe("initial/shallow");
+
+    controller.commitHistoryTraversalIndex(2);
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: store.pushed[0]?.state,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(snapshotState);
+  });
+
+  it("keeps a shallow snapshot restorable across cache invalidation and bounded-cache eviction", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/shallow-test",
+      maxHistoryStateSnapshots: 1,
+    });
+    const shallowState = createRouterState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/shallow-test/sub",
+        {},
+      ),
+      routeId: "route:/shallow-test",
+    });
+
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/shallow-test/sub",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/shallow-test/sub",
+      snapshotState: shallowState,
+    });
+    const shallowHistoryState = store.pushed[0]?.state;
+
+    controller.commitHistoryTraversalIndex(2);
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/about" }));
+    controller.commitHistoryTraversalIndex(3);
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/contact" }));
+    controller.invalidateRestorableClientState();
+    controller.commitHistoryTraversalIndex(3);
+
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: shallowHistoryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(shallowState);
+  });
+
+  it("keeps a restored shallow snapshot durable when the render effect remembers it again", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/shallow-test",
+    });
+    const shallowState = createRouterState({ routeId: "route:/shallow-test" });
+
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/shallow-test/sub",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/shallow-test/sub",
+      snapshotState: shallowState,
+    });
+    const shallowHistoryState = store.pushed[0]?.state;
+    store.setState(shallowHistoryState);
+    controller.commitHistoryTraversalIndex(2);
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: shallowHistoryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+    controller.rememberHistoryStateSnapshot(shallowState);
+    controller.commitHistoryTraversalIndex(2);
+    controller.invalidateRestorableClientState();
+
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: shallowHistoryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(true);
+  });
+
+  it("prunes durable shallow snapshots from an unreachable forward branch", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/shallow-test",
+    });
+    const firstState = createRouterState({ routeId: "route:/first" });
+    const abandonedState = createRouterState({ routeId: "route:/abandoned" });
+
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/first",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/first",
+      snapshotState: firstState,
+    });
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/abandoned",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/abandoned",
+      snapshotState: abandonedState,
+    });
+    const abandonedHistoryState = store.pushed[1]?.state;
+
+    controller.commitHistoryTraversalIndex(1);
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/replacement",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/replacement",
+      snapshotState: createRouterState({ routeId: "route:/replacement" }),
+    });
+
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: abandonedHistoryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore: vi.fn(() => true),
+      }),
+    ).toBe(false);
+  });
+
+  it("prunes the owned snapshot branch when pushing from a metadata-less entry", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+      initialHref: "https://example.com/shallow-test",
+    });
+
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/first",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/first",
+      snapshotState: createRouterState({ routeId: "route:/first" }),
+    });
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/abandoned",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/abandoned",
+      snapshotState: createRouterState({ routeId: "route:/abandoned" }),
+    });
+    const abandonedHistoryState = store.pushed[1]?.state;
+
+    controller.commitTraversalIndexFromHistoryState(null);
+    controller.commitExternalShallowNavigation({
+      callerState: null,
+      href: "https://example.com/replacement",
+      historyUpdateMode: "push",
+      nativeHistoryUrl: "/replacement",
+      snapshotState: createRouterState({ routeId: "route:/replacement" }),
+    });
+
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: abandonedHistoryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore: vi.fn(() => true),
+      }),
+    ).toBe(false);
+  });
 
   it("resolves the restorable candidate and delegates visible restoration to the injected callback", () => {
     const { controller } = createController();

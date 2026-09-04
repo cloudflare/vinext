@@ -2799,6 +2799,27 @@ function bootstrapHydration(
   // the browser entry share a single App Router capability contract.
   registerNavigationRuntimeFunctions({
     clearNavigationCaches: clearClientNavigationCaches,
+    commitShallowHistory: (callerState, url, historyUpdateMode) => {
+      if (!browserNavigationController.hasBrowserRouterState()) {
+        return false;
+      }
+      const href = new URL(url ?? window.location.href, window.location.href).href;
+      const currentState = browserNavigationController.getBrowserRouterState();
+      historyController.commitExternalShallowNavigation({
+        callerState,
+        historyUpdateMode,
+        href,
+        nativeHistoryUrl: url,
+        snapshotState: {
+          ...currentState,
+          navigationSnapshot: createClientNavigationRenderSnapshot(
+            href,
+            currentState.navigationSnapshot.params,
+          ),
+        },
+      });
+      return true;
+    },
     commitHashNavigation: (href, historyUpdateMode, scroll) =>
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
     getPrefetchRouterState: () => {
@@ -2862,12 +2883,6 @@ function bootstrapHydration(
   });
 
   window.addEventListener("popstate", (event) => {
-    // The browser has already applied the history entry by the time popstate
-    // fires. App Router state does not include hashes, so matching the
-    // committed pathname/search proves this traversal does not need a new RSC
-    // payload. This covers both /page#target -> /page and /page -> /page#target.
-    // Notify the transition start so observers still see the URL change, then
-    // restore scroll directly and skip the RSC dispatch.
     const href = window.location.href;
     const isExternalHistoryEntry = isExternalHistoryState(event.state);
     if (
@@ -2907,6 +2922,22 @@ function bootstrapHydration(
         },
         event.state,
       );
+      browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
+      return;
+    }
+
+    // The browser has already applied the history entry by the time popstate
+    // fires. App Router state does not include hashes, so matching the
+    // committed pathname/search means this traversal does not need a new RSC
+    // payload once any entry-specific snapshot has had the first opportunity
+    // to restore its saved tree. This covers both /page#target -> /page and
+    // /page -> /page#target. Notify the transition start so observers still see
+    // the URL change, then restore scroll directly and skip the RSC dispatch.
+    if (isSameAppRoutePopstateTarget(href)) {
+      notifyAppRouterTransitionStart(href, "traverse");
+      historyController.commitTraversalIndexFromHistoryState(event.state);
+      commitClientNavigationState();
+      restorePopstateScrollPosition(event.state);
       browserNavigationController.finalizeNavigation(snapshotNavigationId, null);
       return;
     }

@@ -1,6 +1,6 @@
 "use client";
 
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 /**
  * Test page for shallow routing via history.pushState/replaceState.
@@ -11,6 +11,7 @@ import { usePathname, useSearchParams } from "next/navigation";
  */
 export default function ShallowTestPage() {
   const pathname = usePathname();
+  const router = useRouter();
   const searchParams = useSearchParams();
 
   return (
@@ -26,6 +27,25 @@ export default function ShallowTestPage() {
         }}
       >
         Push filter=active
+      </button>
+
+      <button data-testid="shallow-to-about" onClick={() => router.push("/about")}>
+        Go to About
+      </button>
+
+      <button data-testid="shallow-to-home" onClick={() => router.push("/")}>
+        Go to Home
+      </button>
+
+      <button data-testid="push-hash" onClick={() => router.push("#content")}>
+        Push #content
+      </button>
+
+      <button
+        data-testid="push-about-path"
+        onClick={() => window.history.pushState(null, "", "/about")}
+      >
+        Push /about
       </button>
 
       <button
@@ -54,6 +74,8 @@ export default function ShallowTestPage() {
       >
         Push combined params
       </button>
+
+      <h2 id="content">Content</h2>
     </main>
   );
 }
