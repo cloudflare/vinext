@@ -1,0 +1,6 @@
+# Demo deploy on a *.vinext.workers.dev host. Kept out of search so it does not
+# compete with vinext.dev for the project's own brand term. These are Pages
+# Router examples with no _document, so a static robots.txt is used instead of a
+# meta robots tag to avoid changing the rendered HTML these examples demonstrate.
+User-agent: *
+Disallow: /

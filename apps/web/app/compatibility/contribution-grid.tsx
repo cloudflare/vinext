@@ -23,9 +23,21 @@ import { Input } from "@cloudflare/kumo/components/input";
 import { Select } from "@cloudflare/kumo/components/select";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Table as TableIcon, X } from "@phosphor-icons/react";
-import type { FileStatus, RouterKind } from "@/app/lib/db/schema";
+import type { FileStatus } from "@/app/lib/db/schema";
 import { cellMatchesFilter, type RouterFilter } from "./router-buckets";
 import { VITE_EQUIVALENT_LABEL, type SuiteSupportStatus } from "./suite-support";
+import {
+  deriveSuiteGroup,
+  getDisplayStatus,
+  summarize,
+  LABELS,
+  ROUTER_LABELS,
+  SUPPORT_LABELS,
+  type DisplayStatus,
+  type GridCell,
+} from "./compat-labels";
+
+export type { GridCell };
 
 // (Tabs / filter UI now lives in compatibility-views.tsx; the grid receives
 // the active filter as a prop. Filter semantics — what each value means and
@@ -35,21 +47,6 @@ import { VITE_EQUIVALENT_LABEL, type SuiteSupportStatus } from "./suite-support"
 // on the server (where there is nothing to measure anyway).
 const useIsoLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
-export type GridCell = {
-  suite: string;
-  status: FileStatus;
-  router: RouterKind;
-  supportStatus: SuiteSupportStatus;
-  feature: string | null;
-  reason: string | null;
-  total: number;
-  passed: number;
-  failed: number;
-  skipped: number;
-};
-
-type DisplayStatus = FileStatus | Exclude<SuiteSupportStatus, "supported">;
-
 const COLORS: Record<DisplayStatus, string> = {
   pass: "#2da44e", // green
   partial: "#e08600", // orange
@@ -58,23 +55,6 @@ const COLORS: Record<DisplayStatus, string> = {
   deferred: "#0969da", // blue
   "needs-vite-equivalent": "#8250df", // purple
   unsupported: "#6e7781", // dark gray
-};
-
-const LABELS: Record<DisplayStatus, string> = {
-  pass: "Pass",
-  partial: "Partial",
-  fail: "Fail",
-  skip: "Skipped by Next.js",
-  deferred: "Deferred",
-  "needs-vite-equivalent": VITE_EQUIVALENT_LABEL,
-  unsupported: "Unsupported by vinext",
-};
-
-const SUPPORT_LABELS: Record<SuiteSupportStatus, string> = {
-  supported: "Supported",
-  deferred: "Deferred",
-  "needs-vite-equivalent": VITE_EQUIVALENT_LABEL,
-  unsupported: "Unsupported by vinext",
 };
 
 const SUPPORT_COLORS: Record<SuiteSupportStatus, string> = {
@@ -94,13 +74,6 @@ const LEGEND_ORDER: DisplayStatus[] = [
   "skip",
 ];
 
-const ROUTER_LABELS: Record<RouterKind, string> = {
-  app: "App Router",
-  pages: "Pages Router",
-  both: "Mixed (App + Pages)",
-  unknown: "No router fixture",
-};
-
 const CELL_SIZE = 12;
 const GAP = 3;
 const STRIDE = CELL_SIZE + GAP;
@@ -109,22 +82,6 @@ const STRIDE = CELL_SIZE + GAP;
 // the initial paint is close to the final layout; useLayoutEffect snaps to
 // the real width on the first frame.
 const SSR_COLS = 60;
-
-function summarize(cell: GridCell): string {
-  const parts = [`${cell.passed}/${cell.total} passed`];
-  if (cell.failed > 0) parts.push(`${cell.failed} failed`);
-  if (cell.skipped > 0) parts.push(`${cell.skipped} skipped`);
-  const group = deriveSuiteGroup(cell.suite);
-  const prefix = group ? `[${group}] ${cell.suite}` : cell.suite;
-  const routerTag = ROUTER_LABELS[cell.router];
-  const displayStatus = getDisplayStatus(cell);
-  const rawStatus = displayStatus === cell.status ? "" : ` · raw result: ${LABELS[cell.status]}`;
-  return `${prefix} — ${LABELS[displayStatus]}${rawStatus} · ${routerTag} (${parts.join(", ")})`;
-}
-
-function getDisplayStatus(cell: GridCell): DisplayStatus {
-  return cell.supportStatus === "supported" ? cell.status : cell.supportStatus;
-}
 
 type SupportFilter = "all" | SuiteSupportStatus;
 type ResultFilter = "all" | FileStatus;
@@ -290,35 +247,6 @@ export function CompatibilityTableDialog({ cells }: { cells: GridCell[] }) {
       </Dialog>
     </Dialog.Root>
   );
-}
-
-/**
- * Derive a display "suite" (group) label from the test file path.
- *
- * Next.js's deploy tests live under predictable directories; the first
- * meaningful path segment is a reliable bucket:
- *
- *   test/e2e/app-dir/foo.test.ts        → "app-dir"
- *   test/e2e/middleware/foo.test.ts     → "middleware"
- *   test/e2e/foo.test.ts                → "e2e"
- *   test/integration/foo.test.ts        → "integration"
- *   test/unit/foo.test.ts               → "unit"
- *
- * Returns null when the path has been collapsed to a basename (older
- * reports that don't preserve path info) — the caller hides the row.
- */
-function deriveSuiteGroup(suite: string): string | null {
-  if (!suite.includes("/")) return null;
-  const parts = suite.split("/").filter(Boolean);
-  // Strip a leading "test/" if present.
-  const start = parts[0] === "test" ? 1 : 0;
-  const first = parts[start];
-  if (!first) return null;
-  // For test/e2e/<group>/file or test/integration/<group>/file, use the
-  // sub-group when there is one beyond the leaf file. Otherwise fall back
-  // to the top-level directory (e.g. "e2e", "integration").
-  if (parts.length - start >= 3) return parts[start + 1];
-  return first;
 }
 
 export function ContributionGrid({

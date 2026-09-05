@@ -15,6 +15,8 @@ import { ArrowSquareOutIcon } from "@phosphor-icons/react/dist/ssr";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Metadata } from "next";
 import { getDb } from "@/app/lib/db/client";
+import { StructuredData } from "@/app/_components/structured-data";
+import { breadcrumbGraph } from "@/app/_lib/structured-data";
 import {
   compatRuns,
   compatFileResults,
@@ -22,7 +24,14 @@ import {
   type RouterKind,
 } from "@/app/lib/db/schema";
 import { CompatibilityViews } from "./compatibility-views";
-import type { GridCell } from "./contribution-grid";
+import {
+  getDisplayStatus,
+  groupKey,
+  LABELS,
+  ROUTER_LABELS,
+  SUPPORT_LABELS,
+  type GridCell,
+} from "./compat-labels";
 import type { TrendPoint } from "./compatibility-line-chart";
 import { bucketByRouter, bucketPassRate, bucketSupportedPassRate } from "./router-buckets";
 import { getSuiteSupport, NON_SUPPORTED_SUITES } from "./suite-support";
@@ -32,7 +41,9 @@ import { getSuiteSupport, NON_SUPPORTED_SUITES } from "./suite-support";
 // and keeps the page snappy without re-querying D1 on every request.
 export const revalidate = 300;
 
-const title = "Next.js compatibility — vinext";
+// Bare title: the root layout's `%s — vinext` template supplies the suffix.
+const title = "Next.js compatibility";
+const brandedTitle = `${title} — vinext`;
 const description =
   "Track vinext compatibility with the Next.js API surface using results from the Next.js deploy test suite.";
 
@@ -46,7 +57,7 @@ export const metadata: Metadata = {
     type: "website",
     locale: "en_US",
     siteName: "vinext",
-    title,
+    title: brandedTitle,
     description,
     url: "/compatibility",
   },
@@ -327,6 +338,18 @@ async function runQueries(
   return { latestRun, latestFiles, trend };
 }
 
+/** Buckets cells by feature label, falling back to the path-derived suite group. */
+function groupCells(cells: GridCell[]): Map<string, GridCell[]> {
+  const groups = new Map<string, GridCell[]>();
+  for (const cell of cells) {
+    const key = groupKey(cell);
+    const existing = groups.get(key);
+    if (existing) existing.push(cell);
+    else groups.set(key, [cell]);
+  }
+  return groups;
+}
+
 export default async function CompatibilityPage() {
   const { latestRun, latestFiles, trend, error } = await loadData(KIND);
   const byRouter = bucketByRouter(latestFiles);
@@ -339,11 +362,24 @@ export default async function CompatibilityPage() {
     (file) => file.supportStatus === "supported" && file.failed > 0,
   ).length;
 
+  // Grouped copy of the same cells for the server-rendered results table below.
+  // Classified features come first (they carry the prose a reader is looking
+  // for); path-derived buckets follow, alphabetically.
+  const resultGroups = [...groupCells(latestFiles).entries()]
+    .map(([name, cells]) => ({ name, cells }))
+    .sort((a, b) => {
+      const aClassified = a.cells[0].feature !== null;
+      const bClassified = b.cells[0].feature !== null;
+      if (aClassified !== bClassified) return aClassified ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
   return (
     <>
+      <StructuredData graph={breadcrumbGraph(title, "/compatibility")} />
       <section className="mx-auto w-full max-w-6xl px-6 pt-16 pb-10">
         <h1 className="text-4xl font-semibold tracking-tight text-kumo-default sm:text-5xl">
-          Next.js compatibility
+          vinext Next.js compatibility
         </h1>
         <p className="mt-4 max-w-2xl text-kumo-subtle">
           Results from the Next.js deploy test suite, run against vinext. Each dot below is one test
@@ -457,6 +493,75 @@ export default async function CompatibilityPage() {
           <CompatibilityViews cells={latestFiles} trend={trend} />
         </div>
       </section>
+
+      {latestFiles.length > 0 ? (
+        <section className="mx-auto w-full max-w-6xl px-6 pb-20">
+          <div className="mb-4">
+            <Text variant="heading2" as="h2">
+              Full results by feature
+            </Text>
+            <p className="mt-2 max-w-3xl text-sm leading-relaxed text-kumo-subtle">
+              Every test file in the latest run, grouped by the Next.js feature it covers. The grid
+              above renders the same data as an SVG, where the file names are tooltips rather than
+              text — this table is the readable version, and the one search engines can index.
+            </p>
+          </div>
+
+          <details className="rounded-lg bg-kumo-base ring ring-kumo-hairline">
+            <summary className="cursor-pointer px-6 py-4 text-sm font-medium text-kumo-default">
+              Show all {latestFiles.length} test files
+            </summary>
+            <div className="flex flex-col gap-8 px-6 pb-6">
+              {resultGroups.map(({ name, cells }) => (
+                <div key={name}>
+                  <Text variant="heading3" as="h3">
+                    {name}
+                  </Text>
+                  <p className="mt-1 mb-3 text-sm text-kumo-subtle">
+                    {cells.length} test file{cells.length === 1 ? "" : "s"}
+                    {cells[0].reason ? ` — ${cells[0].reason}` : ""}
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[44rem] border-collapse text-left text-sm">
+                      <thead>
+                        <tr className="border-b border-kumo-hairline text-kumo-subtle">
+                          <th className="py-2 pr-4 font-medium">Test file</th>
+                          <th className="py-2 pr-4 font-medium">Result</th>
+                          <th className="py-2 pr-4 font-medium">Router</th>
+                          <th className="py-2 pr-4 font-medium">Scope</th>
+                          <th className="py-2 pr-4 text-right font-medium">Passed</th>
+                          <th className="py-2 pr-4 text-right font-medium">Failed</th>
+                          <th className="py-2 text-right font-medium">Skipped</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cells.map((cell) => (
+                          <tr
+                            key={cell.suite}
+                            className="border-b border-kumo-hairline last:border-0"
+                          >
+                            <td className="py-2 pr-4 font-mono text-xs text-kumo-default">
+                              {cell.suite}
+                            </td>
+                            <td className="py-2 pr-4">{LABELS[getDisplayStatus(cell)]}</td>
+                            <td className="py-2 pr-4">{ROUTER_LABELS[cell.router]}</td>
+                            <td className="py-2 pr-4">{SUPPORT_LABELS[cell.supportStatus]}</td>
+                            <td className="py-2 pr-4 text-right tabular-nums">
+                              {cell.passed}/{cell.total}
+                            </td>
+                            <td className="py-2 pr-4 text-right tabular-nums">{cell.failed}</td>
+                            <td className="py-2 text-right tabular-nums">{cell.skipped}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+        </section>
+      ) : null}
 
       <section className="mx-auto w-full max-w-4xl px-6 pb-24">
         <div className="flex flex-col items-start gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-hairline">

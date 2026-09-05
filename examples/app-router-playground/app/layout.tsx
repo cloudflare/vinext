@@ -25,6 +25,9 @@ export const metadata: Metadata = {
     images: [`/api/og?title=Next.js Playground`],
   },
   twitter: { card: 'summary_large_image' },
+  // Demo deploy on a *.vinext.workers.dev host: keep it out of the index so it
+  // does not compete with vinext.dev for the project's own brand term.
+  robots: { index: false, follow: false },
 };
 
 export default function RootLayout({

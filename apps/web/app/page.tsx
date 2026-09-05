@@ -21,6 +21,7 @@ import typescript from "shiki/langs/typescript.mjs";
 import githubDarkDefault from "shiki/themes/github-dark-default.mjs";
 import { createHighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
+import Link from "next/link";
 import type { Metadata } from "next";
 
 const title = "vinext — The Next.js API surface, reimplemented on Vite";
@@ -44,60 +45,35 @@ export const metadata: Metadata = {
     description,
   },
 };
-
-const structuredData = {
-  "@context": "https://schema.org",
-  "@graph": [
-    {
-      "@type": "WebSite",
-      name: "vinext",
-      description,
-      url: "https://vinext.dev",
-      publisher: {
-        "@type": "Organization",
-        name: "Cloudflare",
-        url: "https://www.cloudflare.com",
-      },
-    },
-    {
-      "@type": "SoftwareSourceCode",
-      name: "vinext",
-      description,
-      url: "https://vinext.dev",
-      codeRepository: "https://github.com/cloudflare/vinext",
-      programmingLanguage: "TypeScript",
-      author: {
-        "@type": "Organization",
-        name: "Cloudflare",
-        url: "https://www.cloudflare.com",
-      },
-    },
-  ],
-};
-
 // ISR: 5-minute revalidate. The home page is fully static so the cached
 // output is effectively reused indefinitely between deploys; the revalidate
 // window just bounds how long any change takes to roll out to viewers after
 // a redeploy.
 export const revalidate = 300;
 
+// Each stat links to the page that substantiates it. These are the only
+// internal links in the page body, and they carry the anchor text ("Next.js 16
+// API surface", "production builds") that /compatibility and /benchmarks rank for.
 const STATS = [
   {
     value: "Up to 2×",
     label: "faster production builds",
     detail: "Measured against Next.js 16 with Turbopack on a 33-route App Router benchmark app.",
+    href: "/benchmarks",
   },
   {
     value: "~33%",
     label: "smaller client bundles",
     detail:
       "185 KB → 125 KB gzipped on the same benchmark. Tree-shaking and a lighter client runtime do the work.",
+    href: "/benchmarks",
   },
   {
     value: "94%",
     label: "of the Next.js 16 API surface",
     detail:
       "App Router, Pages Router, RSC, server actions, ISR, middleware, route handlers. Coverage and gaps tracked openly.",
+    href: "/compatibility",
   },
 ] as const;
 
@@ -256,16 +232,12 @@ async function CodeExample({ code }: { code: string }) {
 export default function Home() {
   return (
     <>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
-      />
       <section className="mx-auto flex w-full max-w-6xl flex-col items-center px-6 pb-20 pt-24 text-center">
         <Badge variant="outline" className="mb-6">
           The Next.js API surface, re-implemented on Vite
         </Badge>
         <h1 className="max-w-3xl text-5xl font-semibold leading-[1.05] tracking-tight text-kumo-default sm:text-6xl">
-          Run your Next.js app on Vite. Deploy anywhere.
+          vinext runs your Next.js app on Vite. Deploy anywhere.
         </h1>
         <p className="mt-6 max-w-2xl text-lg leading-relaxed text-kumo-subtle">
           Vinext is an open-source Vite plugin from Cloudflare that re-implements the Next.js API
@@ -299,12 +271,16 @@ export default function Home() {
 
       <section className="mx-auto w-full max-w-6xl px-6 pb-24">
         <Grid variant="1-3up" gap="base">
-          {STATS.map(({ value, label, detail }) => (
-            <div key={label} className={CARD}>
+          {STATS.map(({ value, label, detail, href }) => (
+            <Link
+              key={label}
+              href={href}
+              className={`${CARD} transition-colors hover:bg-kumo-elevated`}
+            >
               <div className="text-5xl font-semibold tracking-tight text-kumo-default">{value}</div>
               <div className="text-base font-medium text-kumo-default">{label}</div>
               <p className="text-sm leading-relaxed text-kumo-subtle">{detail}</p>
-            </div>
+            </Link>
           ))}
         </Grid>
         <p className="mt-4 text-center text-sm text-kumo-subtle">
@@ -402,7 +378,7 @@ export default function Home() {
               key={name}
               href={href}
               target="_blank"
-              rel="noopener noreferrer"
+              rel="noopener noreferrer nofollow"
               className={`${CARD} group transition-colors hover:bg-kumo-elevated`}
             >
               <div className="flex items-center justify-between">

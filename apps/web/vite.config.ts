@@ -4,9 +4,11 @@ import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
 import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";
 import { cloudflare } from "@cloudflare/vite-plugin";
+import { readmeHtmlPlugin } from "./vite-plugins/readme-html";
 
 export default defineConfig({
   plugins: [
+    readmeHtmlPlugin(),
     vinext({
       cache: {
         cdn: cdnAdapter(),
