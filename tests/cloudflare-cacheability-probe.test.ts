@@ -307,6 +307,44 @@ describe("staged Worker cacheability probes", () => {
     expect(result).toMatchObject({ classified: 1, probed: 1 });
   });
 
+  it("requeues transient failures after the initial probe pass", async () => {
+    const root = createProbeRoot();
+    const attempts = new Map<string, number>();
+    const requestOrder: string[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      requestOrder.push(pathname);
+      const attempt = attempts.get(pathname) ?? 0;
+      attempts.set(pathname, attempt + 1);
+      if (pathname === "/slow" && attempt === 0) {
+        return Response.json({
+          kind: "app-page",
+          pattern: pathname,
+          reason: "response body did not complete before the probe deadline",
+          retryable: true,
+          state: "probe-failed",
+          status: 200,
+          version: 1,
+        });
+      }
+      return staticProbeResponse(pathname);
+    });
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      concurrency: 1,
+      fetchImpl,
+      retries: 1,
+      retryDelayMs: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/slow"), target("/fast")],
+    });
+
+    expect(requestOrder).toEqual(["/slow", "/fast", "/slow"]);
+    expect(result.failures).toEqual([]);
+  });
+
   it("does not retry a deterministic Worker-side probe failure", async () => {
     const root = createProbeRoot();
     const fetchImpl = vi.fn<typeof fetch>(async () =>
@@ -613,28 +651,27 @@ describe("staged Worker cacheability probes", () => {
     );
   });
 
-  it("completes pattern representatives before scheduling sibling paths", async () => {
+  it("fills idle probe slots without waiting for a pattern representative", async () => {
     const root = createProbeRoot();
-    const slow = target("/slow");
-    const fastRoute = optimizableRoute("/fast/:slug");
-    const fastFirst = { ...target("/fast/one"), route: fastRoute };
-    const fastSecond = { ...target("/fast/two"), route: fastRoute };
+    const route = optimizableRoute("/items/:slug");
+    const slow = { ...target("/items/slow"), route };
+    const sibling = { ...target("/items/sibling"), route };
     let slowCompleted = false;
-    let siblingStartedAfterSlowCompleted = false;
+    let siblingStartedBeforeSlowCompleted = false;
     const result = await probeStagedWorkerCacheability({
       buildId: "application-build",
       concurrency: 2,
       fetchImpl: async (input) => {
         const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
-        if (pathname === "/slow") {
+        if (pathname === "/items/slow") {
           await new Promise((resolve) => setTimeout(resolve, 20));
           slowCompleted = true;
-        } else if (pathname === "/fast/two") {
-          siblingStartedAfterSlowCompleted = slowCompleted;
+        } else if (pathname === "/items/sibling") {
+          siblingStartedBeforeSlowCompleted = !slowCompleted;
         }
         return Response.json({
           kind: "app-page",
-          pattern: pathname === "/slow" ? "/slow" : fastRoute.pattern,
+          pattern: route.pattern,
           rendererStatic: true,
           state: "static-candidate",
           status: 200,
@@ -643,11 +680,11 @@ describe("staged Worker cacheability probes", () => {
       },
       root,
       targetUrl: "https://example.com",
-      targets: [slow, fastFirst, fastSecond],
+      targets: [slow, sibling],
     });
 
-    expect(result).toMatchObject({ failures: [], probed: 3 });
-    expect(siblingStartedAfterSlowCompleted).toBe(true);
+    expect(result).toMatchObject({ failures: [], probed: 2 });
+    expect(siblingStartedBeforeSlowCompleted).toBe(true);
   });
 
   it("does not prune destination siblings before route-moving probes settle", async () => {
@@ -847,7 +884,7 @@ describe("staged Worker cacheability probes", () => {
     expect(result.failures).toEqual(["1 warm target is missing route-pattern metadata"]);
   });
 
-  it("uses pattern-wide dynamic proof to skip sibling HTML and RSC renders", async () => {
+  it("uses pattern-wide dynamic proof after bounded sibling renders have started", async () => {
     const root = createProbeRoot();
     const route = optimizableRoute("/posts/:slug");
     const htmlOne = { ...target("/posts/one"), route };
@@ -873,6 +910,7 @@ describe("staged Worker cacheability probes", () => {
 
     const result = await probeStagedWorkerCacheability({
       buildId: "application-build",
+      concurrency: 2,
       fetchImpl,
       retries: 0,
       root,
@@ -880,8 +918,8 @@ describe("staged Worker cacheability probes", () => {
       targets: [rsc("one"), rsc("two"), htmlOne, htmlTwo],
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 1, skipped: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 2, skipped: 1 });
     expect(result.cacheableTargets).toEqual([]);
     expect(result.manifest.routes).toEqual({});
   });
@@ -913,6 +951,7 @@ describe("staged Worker cacheability probes", () => {
     const loadingTwo = loading("two");
     const result = await probeStagedWorkerCacheability({
       buildId: "application-build",
+      concurrency: 2,
       fetchImpl,
       retries: 0,
       root,
@@ -920,8 +959,8 @@ describe("staged Worker cacheability probes", () => {
       targets: [loadingOne, loadingTwo, html("one"), html("two")],
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 1, skipped: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 2, skipped: 1 });
     expect(result.cacheableTargets).toEqual([loadingOne, loadingTwo]);
     expect(result.speculativeTargets).toEqual([loadingOne, loadingTwo]);
     expect(Object.values(result.manifest.routes)).toEqual([
