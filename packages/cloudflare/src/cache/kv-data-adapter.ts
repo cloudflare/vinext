@@ -12,6 +12,21 @@ export type KvDataAdapterOptions = {
   ttlSeconds?: number;
   /** TTL in milliseconds for the in-memory tag-invalidation cache. @default 5000 */
   tagCacheTtlMs?: number;
+  /**
+   * KV `cacheTtl` in seconds for entry reads, letting a colo answer a repeat
+   * read from its own cache instead of the central store. The runtime rejects
+   * a value below 30, so lower values are raised to 30.
+   *
+   * Trade-off: after a `set()`, a colo that already cached the key can serve
+   * the superseded value for up to this long.
+   *
+   * It applies to entry reads only. Tag markers, which `revalidateTag()` and
+   * `revalidatePath()` write, always come from the central store, so a publish
+   * still reaches every colo within `tagCacheTtlMs`.
+   *
+   * @default undefined (every entry read goes to the central store)
+   */
+  entryCacheTtlSeconds?: number;
 };
 
 /**
