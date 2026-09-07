@@ -750,26 +750,6 @@ export async function probeStagedWorkerCacheability(options: {
     return "done";
   };
 
-  const runGroupPass = async (
-    scheduledGroups: readonly ConcretePathGroup[],
-    deferRetry: boolean,
-  ): Promise<ConcretePathGroup[]> => {
-    let nextIndex = 0;
-    const retryGroups = new Set<ConcretePathGroup>();
-    const worker = async (): Promise<void> => {
-      while (!limitFailure && !phaseTimedOut && nextIndex < scheduledGroups.length) {
-        const group = scheduledGroups[nextIndex++];
-        if ((await classifyConcretePath(group, { deferRetry, inlineRetries: 0 })) === "retry") {
-          retryGroups.add(group);
-        }
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, scheduledGroups.length) }, () => worker()),
-    );
-    return scheduledGroups.filter((group) => retryGroups.has(group));
-  };
-
   reportProgress();
   const routeMovingGroups = groups.filter(
     (group) => group.primary.route?.cacheabilityProbe?.routeMayResolve === true,
@@ -777,19 +757,25 @@ export async function probeStagedWorkerCacheability(options: {
   const routeMovingGroupSet = new Set(routeMovingGroups);
   const readyGroups = [...routeMovingGroups];
   const readyGroupSet = new Set(routeMovingGroups);
+  const siblingsByRepresentative = new Map<ConcretePathGroup, ConcretePathGroup[]>();
   for (const pattern of patterns.values()) {
-    const representative = pattern.groups[0];
-    if (!representative || readyGroupSet.has(representative)) continue;
-    readyGroups.push(representative);
-    readyGroupSet.add(representative);
-  }
-  for (const group of groups) {
-    if (readyGroupSet.has(group)) continue;
-    readyGroups.push(group);
-    readyGroupSet.add(group);
+    const [representative, ...siblings] = pattern.groups;
+    if (!representative) continue;
+    if (!readyGroupSet.has(representative)) {
+      readyGroups.push(representative);
+      readyGroupSet.add(representative);
+    }
+    const unscheduledSiblings = siblings.filter((group) => !readyGroupSet.has(group));
+    if (pattern.canPrune) {
+      siblingsByRepresentative.set(representative, unscheduledSiblings);
+      continue;
+    }
+    readyGroups.push(...unscheduledSiblings);
+    for (const sibling of unscheduledSiblings) readyGroupSet.add(sibling);
   }
 
   const deferredUntilRouteMoversSettle: ConcretePathGroup[] = [];
+  const retriesUsedByGroup = new Map<ConcretePathGroup, number>();
   const retryGroupSet = new Set<ConcretePathGroup>();
   const active = new Set<Promise<void>>();
   let nextReadyIndex = 0;
@@ -804,13 +790,25 @@ export async function probeStagedWorkerCacheability(options: {
         deferredUntilRouteMoversSettle.push(group);
         return;
       }
+      const retriesUsed = retriesUsedByGroup.get(group) ?? 0;
       const result = await classifyConcretePath(group, {
-        deferRetry: !isRouteMover && retries > 0,
-        inlineRetries: isRouteMover ? retries : 0,
+        deferRetry: retriesUsed < retries,
+        inlineRetries: 0,
       });
-      if (result === "retry") retryGroupSet.add(group);
+      if (result === "retry") {
+        retriesUsedByGroup.set(group, retriesUsed + 1);
+        retryGroupSet.add(group);
+        return;
+      }
       if (isRouteMover && --pendingRouteMovers === 0) {
         enqueue(deferredUntilRouteMoversSettle.splice(0));
+      }
+      const siblings = siblingsByRepresentative.get(group) ?? [];
+      siblingsByRepresentative.delete(group);
+      if (group.pattern.pruned && pendingRouteMovers > 0) {
+        deferredUntilRouteMoversSettle.push(...siblings);
+      } else {
+        enqueue(siblings);
       }
     })();
     active.add(task);
@@ -820,20 +818,24 @@ export async function probeStagedWorkerCacheability(options: {
     );
   };
 
-  while (
-    !limitFailure &&
-    !phaseTimedOut &&
-    (nextReadyIndex < readyGroups.length || active.size > 0)
-  ) {
-    while (active.size < concurrency && nextReadyIndex < readyGroups.length) {
-      startGroup(readyGroups[nextReadyIndex++]);
+  const runReadyGroups = async (): Promise<void> => {
+    while (
+      !limitFailure &&
+      !phaseTimedOut &&
+      (nextReadyIndex < readyGroups.length || active.size > 0)
+    ) {
+      while (active.size < concurrency && nextReadyIndex < readyGroups.length) {
+        startGroup(readyGroups[nextReadyIndex++]);
+      }
+      if (active.size > 0) await Promise.race(active);
     }
-    if (active.size > 0) await Promise.race(active);
-  }
-  await Promise.all(active);
+    await Promise.all(active);
+  };
+
+  await runReadyGroups();
 
   let retryGroups = groups.filter((group) => retryGroupSet.has(group));
-  for (let retryAttempt = 0; retryGroups.length > 0 && retryAttempt < retries; retryAttempt++) {
+  while (retryGroups.length > 0) {
     if (retryDelayMs > 0) {
       const delayMs = Math.min(retryDelayMs, Math.max(0, getDeadlineAt() - Date.now()));
       if (delayMs <= 0) {
@@ -842,7 +844,11 @@ export async function probeStagedWorkerCacheability(options: {
       }
       await delay(delayMs);
     }
-    retryGroups = await runGroupPass(retryGroups, retryAttempt + 1 < retries);
+    retryGroupSet.clear();
+    readyGroups.splice(0, readyGroups.length, ...retryGroups);
+    nextReadyIndex = 0;
+    await runReadyGroups();
+    retryGroups = groups.filter((group) => retryGroupSet.has(group));
   }
   if (limitFailure) throw limitFailure;
   if (phaseTimedOut || Date.now() >= getDeadlineAt()) {
