@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 
 describe("NextResponse", () => {
   // Next.js delegates JSON serialization to Response.json(), including its
