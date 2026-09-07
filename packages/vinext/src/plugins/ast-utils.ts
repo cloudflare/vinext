@@ -159,18 +159,22 @@ export function staticStringValue(value: unknown): string | null {
 }
 
 export function forEachAstChild(node: AstRecord, callback: (child: AstRecord) => void): void {
-  for (const [key, value] of Object.entries(node)) {
+  for (const key of Object.keys(node)) {
     if (SKIP_CHILD_KEYS.has(key)) continue;
-    const child = toAstRecord(value);
-    if (child) {
-      callback(child);
-      continue;
-    }
+    const value = node[key];
+    if (typeof value !== "object" || value === null) continue;
     if (Array.isArray(value)) {
       for (const item of value) {
-        const itemNode = toAstRecord(item);
-        if (itemNode) callback(itemNode);
+        if (
+          typeof item === "object" &&
+          item !== null &&
+          typeof (item as AstRecord).type === "string"
+        ) {
+          callback(item as AstRecord);
+        }
       }
+    } else if (typeof (value as AstRecord).type === "string") {
+      callback(value as AstRecord);
     }
   }
 }

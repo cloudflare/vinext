@@ -62,8 +62,13 @@ describe("plugin AST utilities", () => {
     const prunedChild = { type: "Literal", value: "hidden" };
     const pruned = { type: "CallExpression", arguments: [prunedChild] };
     const visible = { type: "Identifier", name: "visible" };
+    const direct = {
+      type: "ExpressionStatement",
+      expression: { type: "Identifier", name: "direct" },
+    };
     const root = { type: "Program", body: [pruned, visible] } as Record<string, unknown>;
     root.parent = root;
+    root.direct = direct;
 
     const visited: string[] = [];
     walkAst(root, (node) => {
@@ -71,7 +76,13 @@ describe("plugin AST utilities", () => {
       return node === pruned ? false : undefined;
     });
 
-    expect(visited).toEqual(["Program", "CallExpression", "Identifier"]);
+    expect(visited).toEqual([
+      "Program",
+      "CallExpression",
+      "Identifier",
+      "ExpressionStatement",
+      "Identifier",
+    ]);
   });
 });
 

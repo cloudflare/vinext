@@ -88,6 +88,14 @@ describe("CJS interop (Pages Router)", () => {
     // expressions (e.g. "Random: <!-- -->4"), so use a regex.
     expect(html).toMatch(/Random:.*4/);
   });
+
+  it("renders a page with a patterned dynamic require", async () => {
+    // Ported from Next.js: test/integration/dynamic-require/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/integration/dynamic-require/test/index.test.ts
+    const { res, html } = await fetchHtml(baseUrl, "/cjs/dynamic-require");
+    expect(res.status).toBe(200);
+    expect(html).toContain("loaded");
+  });
 });
 
 // Ported from Next.js: test/e2e/app-dir/client-module-with-package-type/index.test.ts
