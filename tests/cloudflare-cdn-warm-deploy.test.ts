@@ -2302,7 +2302,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
     expect(events).not.toContain("promote");
     expect(events).not.toContain("fetch:promoted:loading");
-    expect(events.filter((event) => event === "fetch:staged:loading")).toHaveLength(1);
+    expect(events.filter((event) => event === "fetch:staged:loading")).toHaveLength(2);
   });
 
   it("promotes after failed staged readiness only with the dangerous override", async () => {

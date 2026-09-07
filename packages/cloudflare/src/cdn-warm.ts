@@ -71,8 +71,6 @@ export const DEFAULT_CDN_WARM_TIMEOUT_MS = 10_000;
 export const DEFAULT_STAGED_READINESS_RETRIES = 60;
 export const DEFAULT_STAGED_READINESS_INTERVAL_MS = 1_000;
 export const DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS = 120_000;
-const DEFAULT_CDN_WARM_PROPAGATION_RETRIES =
-  DEFAULT_STAGED_READINESS_PHASE_TIMEOUT_MS / DEFAULT_STAGED_READINESS_INTERVAL_MS;
 const DEFAULT_STAGED_READINESS_SUCCESSES = 6;
 const STAGED_READINESS_QUERY_PARAM = "__vinext_cdn_warm_readiness";
 
@@ -1179,13 +1177,13 @@ function shouldRetryValidationFailure(
       : response.headers.get(VINEXT_RSC_BUILD_ID_HEADER) === options.expectedRscBuildId,
   ].filter((matches): matches is boolean => matches !== null);
 
-  // A matching identity proves routing reached the uploaded Worker. From that
-  // point, retry only transient HTTP failures; response-shape and admission
-  // failures are deterministic for that build.
+  // Every configured identity must match before independently routed stages
+  // are known to have converged. From that point, retry only transient HTTP
+  // failures; response-shape and admission failures are deterministic.
+  if (expectedIdentities.some((matches) => !matches)) return true;
   if (expectedIdentities.some((matches) => matches)) {
     return isRetryableStatus(response.status, false);
   }
-  if (expectedIdentities.some((matches) => !matches)) return true;
   return isRetryableStatus(response.status, options.retryNotFound);
 }
 
@@ -1398,7 +1396,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
   // prevents an old Worker response from being mistaken for a successful fill.
   const concurrency = Math.max(1, options.concurrency ?? DEFAULT_CDN_WARM_CONCURRENCY);
   const normalRetries = Math.max(0, options.retries ?? 1);
-  const propagationRetries = Math.max(0, options.retries ?? DEFAULT_CDN_WARM_PROPAGATION_RETRIES);
+  const propagationRetries = Math.max(0, options.retries ?? 60);
   const normalRetryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
   const propagationRetryDelayMs = Math.max(0, options.retryDelayMs ?? 1_000);
   const fetchImpl = options.fetchImpl ?? fetch;
