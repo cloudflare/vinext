@@ -388,7 +388,7 @@ describe("staged Worker cacheability probes", () => {
     expect(result).toMatchObject({ failures: [], probed: 2 });
   });
 
-  it("retries a prunable representative before releasing or skipping its siblings", async () => {
+  it("lets sibling pattern proof supersede a prunable representative retry", async () => {
     const root = createProbeRoot();
     const route = optimizableRoute("/posts/:slug");
     const targets = ["one", "two", "three"].map((slug) => ({
@@ -433,12 +433,12 @@ describe("staged Worker cacheability probes", () => {
       targets,
     });
 
-    expect(requestOrder).toEqual(["/posts/one", "/posts/one"]);
+    expect(requestOrder).toEqual(["/posts/one", "/posts/two"]);
     expect(result).toMatchObject({ failures: [], probed: 1 });
     expect(progress.at(-1)).toEqual({ completed: 3, skipped: 2, total: 3 });
   });
 
-  it("gives late-released siblings their own retry budget", async () => {
+  it("gives every concrete group its own retry budget", async () => {
     const root = createProbeRoot();
     const route = optimizableRoute("/posts/:slug");
     const attempts = new Map<string, number>();
@@ -476,9 +476,9 @@ describe("staged Worker cacheability probes", () => {
 
     expect(requestOrder).toEqual([
       "/posts/one",
-      "/posts/one",
       "/posts/two",
       "/posts/three",
+      "/posts/one",
       "/posts/two",
     ]);
     expect(result).toMatchObject({ failures: [], probed: 3 });
@@ -554,7 +554,7 @@ describe("staged Worker cacheability probes", () => {
   it("honors configured probe concurrency above the former worker-pool cap", async () => {
     const root = createProbeRoot();
     const route = {
-      cacheabilityProbe: { canPrunePattern: false },
+      cacheabilityProbe: { canPrunePattern: true },
       kind: "app-page" as const,
       pattern: "/items/:slug",
     };
@@ -938,13 +938,9 @@ describe("staged Worker cacheability probes", () => {
     expect(siblingStartedBeforeSlowCompleted).toBe(true);
   });
 
-  it("fills idle slots immediately for patterns without pattern-wide pruning", async () => {
+  it("fills idle slots immediately for patterns with pattern-wide pruning", async () => {
     const root = createProbeRoot();
-    const route = {
-      cacheabilityProbe: { canPrunePattern: false },
-      kind: "app-page" as const,
-      pattern: "/items/:slug",
-    };
+    const route = optimizableRoute("/items/:slug");
     const slow = { ...target("/items/slow"), route };
     const sibling = { ...target("/items/sibling"), route };
     let slowCompleted = false;
@@ -1168,11 +1164,12 @@ describe("staged Worker cacheability probes", () => {
     expect(result.failures).toEqual(["1 warm target is missing route-pattern metadata"]);
   });
 
-  it("uses pattern-wide dynamic proof before starting sibling renders", async () => {
+  it("uses the first completed pattern-wide dynamic proof to stop queued siblings", async () => {
     const root = createProbeRoot();
     const route = optimizableRoute("/posts/:slug");
     const htmlOne = { ...target("/posts/one"), route };
     const htmlTwo = { ...target("/posts/two"), route };
+    const htmlThree = { ...target("/posts/three"), route };
     const rsc = (slug: string) => ({
       headers: { Accept: "text/x-component", RSC: "1" },
       kind: "rsc-full" as const,
@@ -1181,16 +1178,20 @@ describe("staged Worker cacheability probes", () => {
       route,
       sourcePathname: `/posts/${slug}`,
     });
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
-      Response.json({
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+      if (pathname === "/posts/one") {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      return Response.json({
         kind: "app-page",
         pattern: route.pattern,
         scope: "pattern",
         state: "dynamic",
         status: 204,
         version: 1,
-      }),
-    );
+      });
+    });
 
     const result = await probeStagedWorkerCacheability({
       buildId: "application-build",
@@ -1199,11 +1200,11 @@ describe("staged Worker cacheability probes", () => {
       retries: 0,
       root,
       targetUrl: "https://example.com",
-      targets: [rsc("one"), rsc("two"), htmlOne, htmlTwo],
+      targets: [rsc("one"), rsc("two"), rsc("three"), htmlOne, htmlTwo, htmlThree],
     });
 
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 1, skipped: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 2, skipped: 1 });
     expect(result.cacheableTargets).toEqual([]);
     expect(result.manifest.routes).toEqual({});
   });
@@ -1243,8 +1244,8 @@ describe("staged Worker cacheability probes", () => {
       targets: [loadingOne, loadingTwo, html("one"), html("two")],
     });
 
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 1, skipped: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 1, dynamic: 1, probed: 2, skipped: 1 });
     expect(result.cacheableTargets).toEqual([loadingOne, loadingTwo]);
     expect(result.speculativeTargets).toEqual([loadingOne, loadingTwo]);
     expect(Object.values(result.manifest.routes)).toEqual([

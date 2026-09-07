@@ -757,21 +757,20 @@ export async function probeStagedWorkerCacheability(options: {
   const routeMovingGroupSet = new Set(routeMovingGroups);
   const readyGroups = [...routeMovingGroups];
   const readyGroupSet = new Set(routeMovingGroups);
-  const siblingsByRepresentative = new Map<ConcretePathGroup, ConcretePathGroup[]>();
+  // Give route movers and one path per pattern first access to the pool, but
+  // do not leave spare configured slots idle. Any completed concrete path can
+  // provide pattern-wide dynamic proof; later groups observe `pruned` before
+  // starting their render.
   for (const pattern of patterns.values()) {
-    const [representative, ...siblings] = pattern.groups;
-    if (!representative) continue;
-    if (!readyGroupSet.has(representative)) {
-      readyGroups.push(representative);
-      readyGroupSet.add(representative);
-    }
-    const unscheduledSiblings = siblings.filter((group) => !readyGroupSet.has(group));
-    if (pattern.canPrune) {
-      siblingsByRepresentative.set(representative, unscheduledSiblings);
-      continue;
-    }
-    readyGroups.push(...unscheduledSiblings);
-    for (const sibling of unscheduledSiblings) readyGroupSet.add(sibling);
+    const representative = pattern.groups[0];
+    if (!representative || readyGroupSet.has(representative)) continue;
+    readyGroups.push(representative);
+    readyGroupSet.add(representative);
+  }
+  for (const group of groups) {
+    if (readyGroupSet.has(group)) continue;
+    readyGroups.push(group);
+    readyGroupSet.add(group);
   }
 
   const deferredUntilRouteMoversSettle: ConcretePathGroup[] = [];
@@ -802,13 +801,6 @@ export async function probeStagedWorkerCacheability(options: {
       }
       if (isRouteMover && --pendingRouteMovers === 0) {
         enqueue(deferredUntilRouteMoversSettle.splice(0));
-      }
-      const siblings = siblingsByRepresentative.get(group) ?? [];
-      siblingsByRepresentative.delete(group);
-      if (group.pattern.pruned && pendingRouteMovers > 0) {
-        deferredUntilRouteMoversSettle.push(...siblings);
-      } else {
-        enqueue(siblings);
       }
     })();
     active.add(task);
