@@ -2802,6 +2802,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         );
         const configuredMultiStageOutput = options.cache?.cdn?.output;
         selectedMultiStageOutput =
+          !isServeCommand &&
           configuredMultiStageOutput?.type === "multi-stage" &&
           (configuredMultiStageOutput.matchesBuild?.({
             plugins: pluginsFlat as { name?: string }[],

@@ -79,7 +79,7 @@ describe("unified Worker fetch handler", () => {
     }
   });
 
-  it("lets a compatible adapter select a transport-neutral multi-stage facade", async () => {
+  it("keeps adapter-owned multi-stage output out of the dev server", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-fetch-handler-stages-"));
     try {
       fs.mkdirSync(path.join(root, "app"), { recursive: true });
@@ -102,13 +102,7 @@ describe("unified Worker fetch handler", () => {
 
       await expect(
         loadUnifiedFetchHandler(root, { cache, hostPluginName: "independent-stage-host" }),
-      ).resolves.toBe(
-        [
-          `export { default } from ${JSON.stringify(entry)};`,
-          `export * from ${JSON.stringify(entry)};`,
-          "",
-        ].join("\n"),
-      );
+      ).resolves.toBe('export { default } from "vinext/server/app-router-entry";');
       await expect(loadUnifiedFetchHandler(root, { cache })).resolves.toBe(
         'export { default } from "vinext/server/app-router-entry";',
       );
@@ -118,7 +112,7 @@ describe("unified Worker fetch handler", () => {
   });
 
   it.each(["app-router-entry", "pages-router-entry"])(
-    "routes a direct %s main through the selected facade",
+    "keeps a direct %s main on its ordinary dev entry",
     async (entryName) => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-direct-router-stages-"));
       let server: ViteDevServer | undefined;
@@ -147,7 +141,7 @@ describe("unified Worker fetch handler", () => {
 
         await expect(
           server.pluginContainer.resolveId(`vinext/server/${entryName}`),
-        ).resolves.toMatchObject({ id: "\0virtual:vinext-worker-entry" });
+        ).resolves.not.toMatchObject({ id: "\0virtual:vinext-worker-entry" });
       } finally {
         await server?.close();
         fs.rmSync(root, { recursive: true, force: true });
