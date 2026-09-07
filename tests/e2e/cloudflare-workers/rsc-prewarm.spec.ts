@@ -440,6 +440,23 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   expect(secondAppHtmlResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
   expect(await secondAppHtmlResponse.text()).toBe(appHtmlBody);
 
+  // Next.js limits browser no-cache cache bypass to development. A production
+  // hard reload must continue reusing the admitted App response.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx
+  const reloadedAppHtmlResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    { ...htmlHeaders, "cache-control": "no-cache", pragma: "no-cache" },
+  );
+  const reloadedAppHtmlHeaders = reloadedAppHtmlResponse.headers();
+  expect(
+    reloadedAppHtmlHeaders["cf-cache-status"],
+    `Reloaded App HTML response headers: ${JSON.stringify(reloadedAppHtmlHeaders)}`,
+  ).toBe("HIT");
+  expect(reloadedAppHtmlHeaders["x-vinext-cache"]).toBe("HIT");
+  expect(reloadedAppHtmlHeaders["x-nextjs-cache"]).toBe("HIT");
+  expect(await reloadedAppHtmlResponse.text()).toBe(appHtmlBody);
+
   // Next.js skips its shared response cache in draft mode. This must be
   // decided in the uncached request entrypoint because a named-entrypoint HIT
   // cannot inspect the draft cookie before replaying anonymous bytes.

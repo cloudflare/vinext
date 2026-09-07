@@ -256,6 +256,31 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("response-stage");
   });
 
+  it.each(["no-cache", "no-store", "max-age=0, no-cache"])(
+    "keeps production App responses shareable with request Cache-Control %s",
+    async (cacheControl) => {
+      // Next.js only uses a browser no-cache request to bypass server caches in dev.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(new Response("response-stage")),
+      );
+      const handler = createHandler();
+
+      const response = await handler(
+        new Request("https://example.test/docs/about", {
+          headers: { "Cache-Control": cacheControl },
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(response.status).toBe(200);
+      expect(dispatchResponseStage).toHaveBeenCalledOnce();
+      expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    },
+  );
+
   it("preserves staged config Link ordering before framework preloads", async () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () => {
       const response = new Response("response-stage", {

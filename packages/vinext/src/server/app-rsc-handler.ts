@@ -232,9 +232,7 @@ function requestOptsOutOfWorkerResponseStage(
   if (isDraftModeRequest(request, options.draftModeSecret) || isDraftModeEnabled()) return true;
   if (isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER))) return true;
   if (request.headers.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)) return true;
-
-  const requestCacheControl = request.headers.get("cache-control")?.toLowerCase() ?? "";
-  return /(?:^|,)\s*(?:no-cache|no-store)(?:\s*(?:,|$)|\s*=)/.test(requestCacheControl);
+  return false;
 }
 
 function hasUrlParserDotSegment(pathname: string): boolean {
