@@ -66,17 +66,20 @@ describe("staged Worker cacheability probes", () => {
     };
   };
 
+  const staticProbeResponse = (pattern: string) =>
+    Response.json({
+      kind: "app-page",
+      pattern,
+      rendererStatic: true,
+      state: "static-candidate",
+      status: 200,
+      version: 1,
+    });
+
   const createStaticProbeFetch = () =>
     vi.fn<typeof fetch>(async (input) => {
       const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
-      return Response.json({
-        kind: "app-page",
-        pattern: pathname,
-        rendererStatic: true,
-        state: "static-candidate",
-        status: 200,
-        version: 1,
-      });
+      return staticProbeResponse(pathname);
     });
 
   afterEach(() => {
@@ -199,6 +202,48 @@ describe("staged Worker cacheability probes", () => {
     expect(result.failures).toEqual(["/unavailable: probe returned HTTP 503"]);
   });
 
+  it.each([408, 429, 502, 503, 504, 520])(
+    "retries transient probe HTTP status %i",
+    async (status) => {
+      const root = createProbeRoot();
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response("unavailable", { status }))
+        .mockResolvedValueOnce(staticProbeResponse("/recovered"));
+
+      const result = await probeStagedWorkerCacheability({
+        buildId: "application-build",
+        fetchImpl,
+        retries: 1,
+        retryDelayMs: 0,
+        root,
+        targetUrl: "https://example.com",
+        targets: [target("/recovered")],
+      });
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(result.failures).toEqual([]);
+    },
+  );
+
+  it("does not retry an HTTP 500 probe response", async () => {
+    const root = createProbeRoot();
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response("broken", { status: 500 }));
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 2,
+      retryDelayMs: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/broken")],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(result.failures).toEqual(["/broken: probe returned HTTP 500"]);
+  });
+
   it("retries a malformed successful probe envelope", async () => {
     const root = createProbeRoot();
     const fetchImpl = vi
@@ -228,6 +273,65 @@ describe("staged Worker cacheability probes", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(result.failures).toEqual([]);
     expect(result).toMatchObject({ classified: 1, probed: 1 });
+  });
+
+  it("retries a transient Worker-side render classification failure", async () => {
+    const root = createProbeRoot();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        Response.json({
+          kind: "app-page",
+          pattern: "/recovered",
+          reason: "response body did not complete before the probe deadline",
+          retryable: true,
+          state: "probe-failed",
+          status: 200,
+          version: 1,
+        }),
+      )
+      .mockResolvedValueOnce(staticProbeResponse("/recovered"));
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 1,
+      retryDelayMs: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/recovered")],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result.failures).toEqual([]);
+    expect(result).toMatchObject({ classified: 1, probed: 1 });
+  });
+
+  it("does not retry a deterministic Worker-side probe failure", async () => {
+    const root = createProbeRoot();
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        kind: "app-page",
+        pattern: "/broken",
+        reason: "route returned HTTP 500",
+        state: "probe-failed",
+        status: 500,
+        version: 1,
+      }),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 2,
+      retryDelayMs: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/broken")],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(result.failures).toEqual(["/broken: route returned HTTP 500"]);
   });
 
   it("aborts when cacheability probing makes no progress", async () => {

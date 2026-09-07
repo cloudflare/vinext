@@ -51,6 +51,8 @@ type CacheabilityProbeResult = {
   reason?: string;
   /** The renderer itself completed with a reusable static policy. */
   rendererStatic?: boolean;
+  /** The render could not be classified because of a transient execution failure. */
+  retryable?: true;
   /** Concrete pathname resolved by request-stage routing before rendering. */
   routePathname?: string;
   scope?: "identity" | "pattern";
@@ -303,6 +305,7 @@ function probeResponse(
     pattern: state.route?.pattern,
     reason: outcome.reason,
     ...(rendererStatic !== undefined ? { rendererStatic } : {}),
+    ...(outcome.retryable ? { retryable: true as const } : {}),
     ...(state.resolvedRoutePathname ? { routePathname: state.resolvedRoutePathname } : {}),
     ...(routeState === "dynamic"
       ? { scope: state.patternDynamicReason ? ("pattern" as const) : ("identity" as const) }
@@ -960,7 +963,7 @@ export async function finalizeWorkerCacheabilityResponse(
     return probeResponse(
       state,
       "probe-failed",
-      { cacheable: false, classificationFailure: true, reason: drainFailure },
+      { cacheable: false, classificationFailure: true, reason: drainFailure, retryable: true },
       response.status,
     );
   }

@@ -11,6 +11,8 @@ export type RouteCacheabilityOutcome = {
   classificationFailure?: boolean;
   dynamicUsage?: boolean;
   reason?: string;
+  /** A transient classification failure that may succeed on another bounded attempt. */
+  retryable?: true;
   tags?: readonly string[];
 };
 

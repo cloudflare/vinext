@@ -36,6 +36,7 @@ type ProbePayload = {
   pattern?: string;
   reason?: string;
   rendererStatic?: boolean;
+  retryable?: true;
   routePathname?: string;
   state?: string;
   status?: number;
@@ -126,6 +127,10 @@ function compactManifestRoutePaths(route: CacheabilityManifestRoute): Cacheabili
 
 function isProbeRouteState(value: unknown): value is ProbeRouteState {
   return value === "static-candidate" || value === "dynamic" || value === "probe-failed";
+}
+
+function isRetryableProbeHttpStatus(status: number): boolean {
+  return status === 404 || status === 408 || status === 429 || status >= 502;
 }
 
 export function readPrerenderSecret(root: string): string {
@@ -245,11 +250,20 @@ async function probeTarget(options: {
           return {
             kind: "retry" as const,
             reason: `probe returned HTTP ${response.status}`,
-            retryable: response.status === 404 || response.status === 503,
+            retryable: isRetryableProbeHttpStatus(response.status),
             retryUntilDeadline: false,
           };
         }
-        return { kind: "complete" as const, payload: await readProbeEnvelope(response) };
+        const payload = await readProbeEnvelope(response);
+        if (payload.state === "probe-failed" && payload.retryable === true) {
+          return {
+            kind: "retry" as const,
+            reason: payload.reason ?? "probe failed",
+            retryable: true,
+            retryUntilDeadline: false,
+          };
+        }
+        return { kind: "complete" as const, payload };
       })();
       const timedOut = new Promise<never>((_resolve, reject) => {
         const checkDeadline = (): void => {
@@ -627,6 +641,8 @@ export async function probeStagedWorkerCacheability(options: {
           result.scope !== "identity" ||
           !group.pattern.requestStageMayTerminate)) ||
       (result.rendererStatic !== undefined && typeof result.rendererStatic !== "boolean") ||
+      (result.retryable !== undefined && result.retryable !== true) ||
+      (result.retryable === true && result.state !== "probe-failed") ||
       !Number.isInteger(result.status) ||
       result.status! < 100 ||
       result.status! > 599

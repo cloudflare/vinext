@@ -422,6 +422,7 @@ describe("single-request cacheability admission", () => {
 
     await expect(response.json()).resolves.toMatchObject({
       reason: "response body did not complete before the probe deadline",
+      retryable: true,
       state: "probe-failed",
       status: 200,
     });
