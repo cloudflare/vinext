@@ -1643,6 +1643,33 @@ describe("Cloudflare CDN warmup", () => {
     expect(seenHeaders[1].get("pragma")).toBeNull();
   });
 
+  it("uses the full default propagation window for staged routes", async () => {
+    let attempts = 0;
+    const fetchImpl = vi.fn(async () => {
+      const response = cacheableRsc();
+      if (++attempts <= 61) {
+        response.headers.set(VINEXT_CDN_BUILD_ID_HEADER, "old-build");
+        response.headers.set(VINEXT_RSC_BUILD_ID_HEADER, "old-rsc-build");
+      }
+      return response;
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        expectedRscBuildId: "rsc-build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: [],
+        propagatingTarget: true,
+        retryDelayMs: 0,
+        rscPaths: ["/slow-propagation"],
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ warmed: 1, failed: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(62);
+  });
+
   it("warms directly from the discovery manifest", async () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
