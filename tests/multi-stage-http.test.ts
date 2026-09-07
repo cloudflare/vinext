@@ -626,7 +626,10 @@ describe("generic HTTP multi-stage transport", () => {
   it("resolves full-graph public file signals after an HTTP stage round trip", async () => {
     const url = `${requestServer.origin}/stage-asset.txt`;
     const get = await fetch(url, {
-      headers: { "cache-control": "no-cache", "x-test-visitor": "asset-get" },
+      headers: {
+        "content-security-policy": "script-src 'nonce-http-stage'",
+        "x-test-visitor": "asset-get",
+      },
     });
     expect(get.status).toBe(200);
     expect(get.headers.get("x-http-stage-cache")).toBe("BYPASS");
@@ -643,7 +646,10 @@ describe("generic HTTP multi-stage transport", () => {
     await expect(get.text()).resolves.toBe("HTTP_STAGE_PUBLIC_ASSET\n");
 
     const head = await fetch(url, {
-      headers: { "cache-control": "no-cache", "x-test-visitor": "asset-head" },
+      headers: {
+        "content-security-policy": "script-src 'nonce-http-stage'",
+        "x-test-visitor": "asset-head",
+      },
       method: "HEAD",
     });
     expect(head.status).toBe(200);
@@ -664,7 +670,7 @@ describe("generic HTTP multi-stage transport", () => {
 
   it("does not trust a user response carrying the stage signal header", async () => {
     const response = await fetch(`${requestServer.origin}/api/forged-stage-signal`, {
-      headers: { "cache-control": "no-cache" },
+      headers: { "content-security-policy": "script-src 'nonce-http-stage'" },
     });
 
     expect(response.status).toBe(200);
