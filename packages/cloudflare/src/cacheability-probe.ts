@@ -145,7 +145,7 @@ export function readPrerenderSecret(root: string): string {
 
 async function readProbeEnvelope(response: Response): Promise<ProbePayload> {
   if (!response.body) {
-    return { reason: "probe returned invalid JSON", state: "probe-failed", version: 1 };
+    throw new Error("probe returned invalid JSON");
   }
 
   const reader = response.body.getReader();
@@ -166,12 +166,6 @@ async function readProbeEnvelope(response: Response): Promise<ProbePayload> {
       }
       chunks.push(result.value);
     }
-  } catch (error) {
-    return {
-      reason: error instanceof Error ? error.message : String(error),
-      state: "probe-failed",
-      version: 1,
-    };
   } finally {
     reader.releaseLock();
   }
@@ -179,7 +173,7 @@ async function readProbeEnvelope(response: Response): Promise<ProbePayload> {
   try {
     return JSON.parse(Buffer.concat(chunks, bytes).toString("utf8")) as ProbePayload;
   } catch {
-    return { reason: "probe returned invalid JSON", state: "probe-failed", version: 1 };
+    throw new Error("probe returned invalid JSON");
   }
 }
 

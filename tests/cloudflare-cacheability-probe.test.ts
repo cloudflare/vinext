@@ -199,6 +199,37 @@ describe("staged Worker cacheability probes", () => {
     expect(result.failures).toEqual(["/unavailable: probe returned HTTP 503"]);
   });
 
+  it("retries a malformed successful probe envelope", async () => {
+    const root = createProbeRoot();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("{truncated", { status: 200 }))
+      .mockResolvedValueOnce(
+        Response.json({
+          kind: "app-page",
+          pattern: "/recovered",
+          rendererStatic: true,
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+        }),
+      );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 1,
+      retryDelayMs: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [target("/recovered")],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result.failures).toEqual([]);
+    expect(result).toMatchObject({ classified: 1, probed: 1 });
+  });
+
   it("aborts when cacheability probing makes no progress", async () => {
     const root = createProbeRoot();
     const fetchImpl = vi
