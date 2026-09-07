@@ -5,6 +5,7 @@ import type {
   VinextResponseStageTransport,
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
+import { isResponseStageCacheability, isSerializedHeaders } from "./response-stage-contract.js";
 
 export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 7;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
@@ -223,45 +224,5 @@ export function isAppWorkerResponseStageProps(
       props.renderMode === "prefetch-empty" ||
       props.renderMode === "prefetch-dynamic-shell" ||
       props.renderMode === "prefetch-loading-shell")
-  );
-}
-
-function isSerializedHeaders(value: unknown): value is Array<[string, string]> {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (entry) =>
-        Array.isArray(entry) &&
-        entry.length === 2 &&
-        typeof entry[0] === "string" &&
-        typeof entry[1] === "string",
-    )
-  );
-}
-
-function isResponseStageCacheability(value: unknown): value is VinextResponseStageCacheability {
-  if (!value || typeof value !== "object") return false;
-  const cacheability = value as Partial<VinextResponseStageCacheability>;
-  return (
-    (cacheability.probeMode === null ||
-      cacheability.probeMode === "probe" ||
-      cacheability.probeMode === "identity") &&
-    (cacheability.policyHeaders === null ||
-      (Array.isArray(cacheability.policyHeaders) &&
-        cacheability.policyHeaders.every(
-          (entry) =>
-            Array.isArray(entry) &&
-            entry.length === 2 &&
-            typeof entry[0] === "string" &&
-            typeof entry[1] === "string",
-        ))) &&
-    (cacheability.representation === undefined ||
-      cacheability.representation === "app-route" ||
-      cacheability.representation === "html" ||
-      cacheability.representation === "pages-data" ||
-      cacheability.representation === "rsc-full" ||
-      cacheability.representation === "rsc-loading-shell") &&
-    typeof cacheability.resolvedRoutePathname === "string" &&
-    cacheability.resolvedRoutePathname.startsWith("/")
   );
 }
