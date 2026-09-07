@@ -60,3 +60,15 @@ export function readPagesResponseStageEntrySource(): string {
     "utf-8",
   );
 }
+
+export function readWorkerRequestStageSource(): string {
+  const sourceUrl = new URL(
+    "../packages/vinext/src/server/worker-request-stage.ts",
+    import.meta.url,
+  );
+  if (fs.existsSync(sourceUrl)) return fs.readFileSync(sourceUrl, "utf-8");
+  return fs.readFileSync(
+    new URL("../packages/vinext/src/server/worker-request-stage.js", import.meta.url),
+    "utf-8",
+  );
+}

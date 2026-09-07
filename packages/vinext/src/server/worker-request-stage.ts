@@ -17,7 +17,7 @@ import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
 import { cloneRequestWithHeaders, filterInternalHeaders } from "./request-pipeline.js";
 import {
   createWorkerPrerenderDiscoveryContext,
-  createWorkerPrerenderReadinessResponse,
+  validateWorkerPrerenderReadiness,
 } from "./worker-prerender-discovery.js";
 
 export function registerWorkerRequestStageAdapters(env: Record<string, unknown> | undefined): void {
@@ -45,19 +45,16 @@ export async function prepareWorkerRequestStage(
   response: Response | null;
 }> {
   context = createWorkerPrerenderDiscoveryContext(context, request, prerenderSecret);
-  const readinessResponse = createWorkerPrerenderReadinessResponse(context, request);
-  if (readinessResponse) {
-    const response = await validateCdnRequest(request);
-    if (response || readinessResponse.status !== 204) {
-      return {
-        context,
-        probeMode: null,
-        probeRoute: null,
-        readinessResponse,
-        request,
-        response: response ?? readinessResponse,
-      };
-    }
+  const readinessResponse = await validateWorkerPrerenderReadiness(context, request);
+  if (readinessResponse && readinessResponse.status !== 204) {
+    return {
+      context,
+      probeMode: null,
+      probeRoute: null,
+      readinessResponse,
+      request,
+      response: readinessResponse,
+    };
   }
 
   let probeMode: VinextCacheabilityProbeMode | null = null;
