@@ -83,6 +83,7 @@ function createTracingKV(store: Map<string, string> = new Map()) {
   const calls: Array<{ keys: string[]; options?: unknown; inFlightAtStart: string[] }> = [];
   const pending = new Map<number, string[]>();
   const gates = new Map<string, Promise<void>>();
+  const failing = new Set<string>();
   let nextId = 0;
 
   const get = vi.fn(async (key: string | string[], options?: unknown) => {
@@ -92,6 +93,8 @@ function createTracingKV(store: Map<string, string> = new Map()) {
     pending.set(id, keys);
     try {
       await gates.get(keys[0]);
+      const failed = keys.find((k) => failing.has(k));
+      if (failed) throw new Error(`KV read failed: ${failed}`);
       return Array.isArray(key)
         ? new Map(keys.map((k) => [k, store.get(k) ?? null]))
         : (store.get(key) ?? null);
@@ -104,6 +107,10 @@ function createTracingKV(store: Map<string, string> = new Map()) {
     ...base,
     get,
     calls,
+    /** Make any read that includes `key` reject. */
+    fail(key: string) {
+      failing.add(key);
+    },
     /** Block reads of `key` until the returned function runs. */
     hold(key: string) {
       let release!: () => void;
@@ -1298,6 +1305,63 @@ describe("KVCacheHandler", () => {
 
       expect(await handler.get("own-hit", { softTags: ["soft1"] })).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:own-hit");
+    });
+
+    it("a failing soft-tag read leaves an entry miss as an ordinary miss", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      kv.fail("__tag:soft1");
+
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("absent", { softTags: ["soft1"] })).toBeNull();
+    });
+
+    it("a failing soft-tag read still rejects a hit that must validate it", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      seedEntry(store, "hit", ["own"]);
+      kv.fail("__tag:soft1");
+
+      const handler = new KVCacheHandler(kv as never);
+      await expect(handler.get("hit", { softTags: ["soft1"] })).rejects.toThrow(
+        "KV read failed: __tag:soft1",
+      );
+    });
+
+    it("a cached invalidated entry tag skips the second hop for the remaining tags", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      seedEntry(store, "known-bad", ["known", "unrelated"]);
+      store.set("__tag:known", String(Date.now() + 1000));
+      // Prime "known" alone, so the entry read below finds it already invalid.
+      const handler = new KVCacheHandler(kv as never);
+      seedEntry(store, "primer", ["known"]);
+      expect(await handler.get("primer")).toBeNull();
+
+      // An unrelated tag that would break the second hop if it were read.
+      kv.fail("__tag:unrelated");
+      kv.calls.length = 0;
+
+      expect(await handler.get("known-bad")).toBeNull();
+      expect(kv.calls.map((call) => call.keys)).toEqual([["cache:known-bad"]]);
+      expect(kv.delete).toHaveBeenCalledWith("cache:known-bad");
+    });
+
+    it("a miss resolves without waiting for the soft-tag batch", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      const release = kv.hold("__tag:soft1");
+      const handler = new KVCacheHandler(kv as never);
+
+      let settled = false;
+      const pending = handler.get("absent", { softTags: ["soft1"] }).then((v) => {
+        settled = true;
+        return v;
+      });
+      await flushTasks();
+      expect(settled).toBe(true);
+      expect(await pending).toBeNull();
+      release();
     });
 
     it("chunks tag marker reads at 100 keys per call", async () => {

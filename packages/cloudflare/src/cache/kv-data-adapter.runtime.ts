@@ -199,7 +199,7 @@ export class KVCacheHandler implements CacheHandler {
   /** TTL (ms) for local tag cache entries. After this, re-fetch from KV. */
   private _tagCacheTtl: number;
 
-  /** Read options for entry keys only. `undefined` means no colo cache. */
+  /** Read options for entry keys only. `undefined` keeps the KV default cacheTtl. */
   private _entryReadOptions: { cacheTtl: number } | undefined;
 
   constructor(
@@ -242,7 +242,12 @@ export class KVCacheHandler implements CacheHandler {
     const entryRead = this._entryReadOptions
       ? this.kv.get(kvKey, this._entryReadOptions)
       : this.kv.get(kvKey);
-    const [raw] = await Promise.all([entryRead, this._primeTagCache(softTags)]);
+    const softTagPrime = this._primeTagCache(softTags);
+    // A miss read no marker before this change, so a marker failure must not
+    // reject it. A hit awaits the same promise below and still propagates.
+    softTagPrime.catch(() => {});
+
+    const raw = await entryRead;
     if (!raw) return null;
 
     let parsed: unknown;
@@ -274,12 +279,17 @@ export class KVCacheHandler implements CacheHandler {
       }
     }
 
-    // Second hop: only the entry's own tags that the soft-tag batch and the
-    // in-memory cache did not already cover.
     const entryTags = validUniqueTags(entry.tags);
-    await this._primeTagCache(entryTags);
+    await softTagPrime;
 
-    if (this._hasRevalidatedTag(entryTags, entry.lastModified)) {
+    // A marker the local cache already holds settles the entry without the
+    // second hop, so check before fetching the tags the first batch missed.
+    let invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified);
+    if (!invalidated) {
+      await this._primeTagCache(entryTags);
+      invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified);
+    }
+    if (invalidated) {
       this._deleteInBackground(kvKey);
       return null;
     }
@@ -347,7 +357,8 @@ export class KVCacheHandler implements CacheHandler {
    * Read every marker key, one round trip per 100-key chunk.
    *
    * Markers never take the entry `cacheTtl`: `revalidateTag()` writes them, so
-   * a colo cache on a marker would hide a publish from that colo for its span.
+   * a longer colo cache would hide a publish from that colo for its span. They
+   * keep KV's own default cacheTtl of 60 s.
    */
   private async _readTagMarkers(keys: string[]): Promise<Map<string, string | null>> {
     if (keys.length === 1) {

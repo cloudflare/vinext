@@ -21,10 +21,12 @@ export type KvDataAdapterOptions = {
    * the superseded value for up to this long.
    *
    * It applies to entry reads only. Tag markers, which `revalidateTag()` and
-   * `revalidatePath()` write, always come from the central store, so a publish
-   * still reaches every colo within `tagCacheTtlMs`.
+   * `revalidatePath()` write, keep KV's own default cacheTtl of 60 s rather
+   * than this longer one, so this option never widens the window in which a
+   * colo can miss a publish. That window stays `tagCacheTtlMs` plus whatever
+   * the KV default cache holds, with or without this option.
    *
-   * @default undefined (every entry read goes to the central store)
+   * @default undefined (entry reads keep KV's default cacheTtl of 60 s)
    */
   entryCacheTtlSeconds?: number;
 };
