@@ -625,7 +625,6 @@ export async function probeStagedWorkerCacheability(options: {
       targetUrl: options.targetUrl,
       timeoutMs,
     });
-    lastProgressAt = Date.now();
     if (limitFailure) return "done";
     if (result.phaseTimedOut) {
       phaseTimedOut = true;
@@ -634,6 +633,7 @@ export async function probeStagedWorkerCacheability(options: {
     if (result.state === "probe-failed" && result.retryable === true && attemptOptions.deferRetry) {
       return "retry";
     }
+    lastProgressAt = Date.now();
     probed += 1;
     if (
       result.version !== 1 ||

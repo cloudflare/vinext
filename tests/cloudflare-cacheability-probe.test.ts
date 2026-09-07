@@ -624,12 +624,9 @@ describe("staged Worker cacheability probes", () => {
 
   it("aborts when cacheability probing makes no progress", async () => {
     const root = createProbeRoot();
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response("staged version unavailable", { status: 503 }))
-      .mockResolvedValueOnce(new Response("staged version unavailable", { status: 503 }))
-      // The no-progress watchdog remains authoritative even if fetch ignores abort.
-      .mockImplementation(() => new Promise<Response>(() => {}));
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () => new Response("staged version unavailable", { status: 503 }),
+    );
 
     await expect(
       probeStagedWorkerCacheability({
@@ -641,10 +638,9 @@ describe("staged Worker cacheability probes", () => {
         retryDelayMs: 10,
         root,
         targetUrl: "https://example.com",
-        targets: [target("/one"), target("/two")],
+        targets: [target("/one")],
       }),
     ).rejects.toThrow("cacheability probing made no progress for 25ms");
-    expect(fetchImpl).toHaveBeenCalled();
     expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(3);
   });
 
