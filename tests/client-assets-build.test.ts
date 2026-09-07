@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { build, createBuilder } from "vite";
 import { describe, expect, it } from "vite-plus/test";
@@ -18,7 +17,7 @@ async function writeFile(file: string, source: string): Promise<void> {
 }
 
 async function createFixture(): Promise<string> {
-  const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-client-assets-build-"));
+  const fixtureRoot = await fs.mkdtemp(path.join(import.meta.dirname, ".tmp-client-assets-build-"));
   await fs.symlink(ROOT_NODE_MODULES, path.join(fixtureRoot, "node_modules"), "junction");
   await writeFile(
     path.join(fixtureRoot, "package.json"),
@@ -54,7 +53,7 @@ describe("client asset sidecar builds", () => {
 
   it("keeps App Router metadata at the stable root of nested custom server outputs", async () => {
     const fixtureRoot = await createFixture();
-    const outRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-client-assets-out-"));
+    const outRoot = await fs.mkdtemp(path.join(import.meta.dirname, ".tmp-client-assets-out-"));
     try {
       const serverRoot = path.join(outRoot, "custom", "server");
       const rscOutDir = path.join(serverRoot, "rsc");
@@ -84,7 +83,9 @@ describe("client asset sidecar builds", () => {
 
   it("keeps disjoint App Router outputs self-contained", async () => {
     const fixtureRoot = await createFixture();
-    const outRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-client-assets-disjoint-"));
+    const outRoot = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".tmp-client-assets-disjoint-"),
+    );
     try {
       const rscOutDir = path.join(outRoot, "rsc-output");
       const ssrOutDir = path.join(outRoot, "ssr-output");
