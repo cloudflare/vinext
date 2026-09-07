@@ -1696,7 +1696,7 @@ describe("formatReport", () => {
     expect(report).toContain('"type": "module"');
     expect(report).toContain("@vitejs/plugin-react");
     expect(report).toContain("@vitejs/plugin-rsc");
-    expect(report).toContain("react-server-dom-webpack");
+    expect(report).not.toContain("react-server-dom-webpack");
     expect(report).toContain("vite.config.ts");
     expect(report).toContain("npx vite dev");
   });

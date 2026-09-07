@@ -17,7 +17,6 @@
     "vite": "catalog:",
     "vinext": "workspace:*",
     "@vitejs/plugin-rsc": "catalog:",
-    "react-server-dom-webpack": "catalog:",
     "@cloudflare/vite-plugin": "catalog:",
     "wrangler": "catalog:"
   },

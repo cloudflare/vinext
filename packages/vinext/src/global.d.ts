@@ -224,7 +224,7 @@ declare global {
    * inlined Flight payload kind.
    * Each `<script>` calls `self.__VINEXT_RSC_CHUNKS__.push(chunk)`.
    * The browser RSC entry monkey-patches this array's `push` method to feed a
-   * `ReadableStream` that is consumed by `react-server-dom-webpack`.
+   * `ReadableStream` that is consumed by the plugin-rsc Flight runtime.
    */
   // oxlint-disable-next-line no-var
   var __VINEXT_RSC_CHUNKS__: (string | [3, string])[] | undefined;

@@ -64,7 +64,7 @@ export type RedirectFlightStreamRenderer = (
  * Builds an RSC flight payload that encodes a `redirect()` as a React error
  * carrying the canonical `NEXT_REDIRECT;<type>;<url>;<status>;` digest. We
  * render a tiny element that throws immediately; `renderToReadableStream`'s
- * `onError` returns the digest, react-server-dom-webpack serializes the error
+ * `onError` returns the digest, the plugin-rsc Flight runtime serializes the error
  * into the stream, and the client's `RedirectErrorBoundary` decodes it via
  * `getURLFromRedirectError` / `getRedirectTypeFromError`. The HTTP response
  * stays 200 because the redirect rides in the flight body, not the status line.

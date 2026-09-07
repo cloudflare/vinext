@@ -254,7 +254,9 @@ export default function Page() {
     const builder = await createBuilder({
       root: fixtureRoot,
       configFile: false,
-      plugins: [vinext({ appDir: fixtureRoot, rsc: false }), rsc({ entries: RSC_ENTRIES })],
+      // Keep appDir implicit so this also verifies manual RSC helper plugins
+      // follow a programmatic Vite root outside process.cwd().
+      plugins: [vinext({ rsc: false }), rsc({ entries: RSC_ENTRIES })],
       logLevel: "silent",
     });
     await builder.buildApp();

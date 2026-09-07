@@ -76,9 +76,9 @@ catalog:
   pathslash: ^0.1.0
   playwright: ^1.60.0
   postcss: 8.5.10
-  react: ^19.2.7
-  react-dom: ^19.2.7
-  react-server-dom-webpack: ^19.2.7
+  react: ^19.2.8
+  react-dom: ^19.2.8
+  react-server-dom-webpack: ^19.2.8
   sass: 1.100.0
   server-only: ^0.0.1
   shiki: 4.0.2

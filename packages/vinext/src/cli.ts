@@ -24,6 +24,7 @@ import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   detectPackageManager,
+  detectPackageManagerProductionCommand,
   ensureViteConfigCompatibility,
   hasAppDir,
   hasViteConfig,
@@ -585,15 +586,14 @@ async function buildApp() {
     ? vite.createLogger("info", { allowClearScreen: false })
     : createBuildLogger(vite);
 
-  // For App Router: upgrade React if needed for react-server-dom-webpack compatibility.
-  // Without this, builds with older React versions can produce a Worker that crashes at
-  // runtime with "Cannot read properties of undefined (reading 'moduleMap')".
+  // Keep App Router's React pair compatible with its Flight runtime. Stable
+  // React uses plugin-rsc's vendor; prereleases need a matching RSDW override.
   if (isApp) {
     const reactUpgrade = getReactUpgradeDeps(process.cwd());
     if (reactUpgrade.length > 0) {
-      const installCmd = detectPackageManager(process.cwd()).replace(/ -D$/, "");
+      const installCmd = detectPackageManagerProductionCommand(process.cwd());
       const [pm, ...pmArgs] = installCmd.split(" ");
-      console.log("  Upgrading React for RSC compatibility...");
+      console.log("  Installing dependencies for RSC compatibility...");
       execFileSync(pm, [...pmArgs, ...reactUpgrade], {
         cwd: process.cwd(),
         stdio: "inherit",

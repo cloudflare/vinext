@@ -2102,13 +2102,16 @@ describe("App Router integration", () => {
     }
   });
 
-  it("includes the static RSC renderer in startup dependency optimization", async () => {
+  it("uses plugin-rsc's vendored static renderer when no RSDW override is installed", async () => {
     const rscEnvironment = server.environments.rsc;
     await rscEnvironment.waitForRequestsIdle();
 
-    const optimizedDependencies =
-      rscEnvironment.depsOptimizer?.metadata.depInfoList.map((dep) => dep.id) ?? [];
-    expect(optimizedDependencies).toContain("react-server-dom-webpack/static.edge");
+    const optimizedDependencies = rscEnvironment.depsOptimizer?.metadata.depInfoList ?? [];
+    const staticRenderer = optimizedDependencies.find((dep) => dep.id.endsWith("/static.edge"));
+    expect(staticRenderer?.id).toBe("@vitejs/plugin-rsc/vendor/react-server-dom/static.edge");
+    expect(staticRenderer?.src).toContain(
+      "@vitejs/plugin-rsc/dist/vendor/react-server-dom/static.edge.js",
+    );
   });
 
   // ── CSRF protection for server actions ───────────────────────────────

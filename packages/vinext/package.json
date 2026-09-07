@@ -200,7 +200,6 @@
     "am-i-vibing": "catalog:",
     "image-size": "catalog:",
     "pathslash": "catalog:",
-    "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },
@@ -208,9 +207,8 @@
     "@mdx-js/rollup": "^3.0.0",
     "@vitejs/plugin-react": "^5.1.4 || ^6.0.0",
     "@vitejs/plugin-rsc": "^0.5.34",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "react-server-dom-webpack": "^19.2.6",
+    "react": "^19.2.6 || >=19.3.0-0 <19.4.0 || >=0.0.0-0 <0.0.1",
+    "react-dom": "^19.2.6 || >=19.3.0-0 <19.4.0 || >=0.0.0-0 <0.0.1",
     "vite": "^8.0.0"
   },
   "peerDependenciesMeta": {
@@ -218,9 +216,6 @@
       "optional": true
     },
     "@vitejs/plugin-rsc": {
-      "optional": true
-    },
-    "react-server-dom-webpack": {
       "optional": true
     }
   },

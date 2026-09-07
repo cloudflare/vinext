@@ -1,6 +1,9 @@
 import { defineConfig } from "@playwright/test";
 
 const appRouterBrowserSpecificTests = "**/app-router/**/*.browser.spec.ts";
+const appWithSrcPort = Number(process.env.VINEXT_APP_WITH_SRC_PORT ?? 4181);
+const appRouterIsrPort = Number(process.env.VINEXT_APP_ROUTER_ISR_PORT ?? 4198);
+const isolatedRscStandalonePort = Number(process.env.VINEXT_ISOLATED_RSC_STANDALONE_PORT ?? 4205);
 const appRouterServer = {
   command: "npx vp dev --port 4174",
   cwd: "./tests/fixtures/app-basic",
@@ -62,12 +65,11 @@ const projectServers = {
       "app-router-prod/static-hydration.spec.ts",
       "app-router-prod/use-cache.spec.ts",
     ],
-    use: { baseURL: "http://localhost:4198" },
+    use: { baseURL: `http://localhost:${appRouterIsrPort}` },
     server: {
-      command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4198",
+      command: `npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port ${appRouterIsrPort}`,
       cwd: "./tests/fixtures/app-basic",
-      port: 4198,
+      port: appRouterIsrPort,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
     },
@@ -270,13 +272,37 @@ const projectServers = {
   },
   "app-with-src": {
     testDir: "./tests/e2e/app-with-src",
-    use: { baseURL: "http://localhost:4181" },
+    use: { baseURL: `http://localhost:${appWithSrcPort}` },
     server: {
-      command: "npx vp dev --port 4181",
+      command: `npx vp dev --port ${appWithSrcPort}`,
       cwd: "./tests/fixtures/app-with-src",
-      port: 4181,
+      port: appWithSrcPort,
       reuseExistingServer: !process.env.CI,
       timeout: 30_000,
+    },
+  },
+  "app-rsdw-override-prod": {
+    testDir: "./tests/e2e/app-rsdw-override",
+    use: { baseURL: "http://localhost:4204" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4204",
+      cwd: "./tests/fixtures/app-with-src",
+      port: 4204,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
+  "app-rsc-isolated-standalone": {
+    testDir: "./tests/e2e/app-rsc-isolated-standalone",
+    use: { baseURL: `http://localhost:${isolatedRscStandalonePort}` },
+    server: {
+      command: `node tests/e2e/app-rsc-isolated-standalone/setup-and-start.mjs ${isolatedRscStandalonePort}`,
+      cwd: ".",
+      port: isolatedRscStandalonePort,
+      reuseExistingServer: !process.env.CI,
+      timeout: 180_000,
+      gracefulShutdown: { signal: "SIGTERM" as const, timeout: 10_000 },
     },
   },
   "standalone-output": {

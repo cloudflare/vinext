@@ -14,7 +14,6 @@
     "@vitejs/plugin-rsc": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
     "vinext": "workspace:*"
   },

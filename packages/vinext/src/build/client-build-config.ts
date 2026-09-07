@@ -213,13 +213,14 @@ export function createClientCodeSplittingConfig(
  * Splitting React into its own (CSS-free) chunk means global-not-found imports
  * the framework chunk instead of the layout-bearing entry chunk, so it no
  * longer inherits the root layout's CSS. The match list mirrors the client
- * build's `framework` chunk, plus `react-server-dom-webpack` for the RSC flight
- * runtime that the server environment bundles.
+ * build's `framework` chunk, plus both plugin-rsc's vendored Flight runtime and
+ * its explicit `react-server-dom-webpack` override path.
  *
  * Uses `[\\/]` rather than `/` for the path separator so it matches on Windows
  * too, per the rolldown `codeSplitting` docs.
  */
 const FRAMEWORK_PACKAGES = ["react", "react-dom", "scheduler", "react-server-dom-webpack"] as const;
+const VENDORED_RSC_RUNTIME_PATH = "@vitejs/plugin-rsc/dist/vendor/react-server-dom/";
 
 /**
  * Regex matching any {@link FRAMEWORK_PACKAGES} package inside `node_modules`.
@@ -227,11 +228,14 @@ const FRAMEWORK_PACKAGES = ["react", "react-dom", "scheduler", "react-server-dom
  * predicate can't drift.
  */
 export const RSC_FRAMEWORK_CHUNK_TEST = new RegExp(
-  `[\\\\/]node_modules[\\\\/](${FRAMEWORK_PACKAGES.join("|")})[\\\\/]`,
+  `[\\\\/]node_modules[\\\\/](?:${FRAMEWORK_PACKAGES.join("|")})[\\\\/]|` +
+    `[\\\\/]node_modules[\\\\/]@vitejs[\\\\/]plugin-rsc[\\\\/]dist[\\\\/]vendor[\\\\/]react-server-dom[\\\\/]`,
 );
 
 export function isRscFrameworkModule(id: string): boolean {
   if (!id.includes("node_modules")) return false;
+  const normalizedId = toSlash(id);
+  if (normalizedId.includes(`/node_modules/${VENDORED_RSC_RUNTIME_PATH}`)) return true;
   const pkg = getPackageName(id);
   return pkg !== null && (FRAMEWORK_PACKAGES as readonly string[]).includes(pkg);
 }

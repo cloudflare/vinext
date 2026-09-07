@@ -237,6 +237,14 @@ export function detectPackageManager(root: string): string {
   return `${pm} add -D`;
 }
 
+/** Return a command that moves named packages into regular dependencies. */
+export function detectPackageManagerProductionCommand(root: string): string {
+  const pm = detectPackageManagerName(root);
+  if (pm === "npm") return "npm install --save-prod";
+  if (pm === "pnpm") return "pnpm add --save-prod";
+  return `${pm} add`;
+}
+
 // ─── Node Modules Resolution ─────────────────────────────────────────────────
 
 /**
@@ -586,9 +594,6 @@ export function getMissingDeps(
   }
   if (info.isAppRouter && !info.hasRscPlugin) {
     missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
-  }
-  if (info.isAppRouter && !_isResolvable(info.root, "react-server-dom-webpack")) {
-    missing.push({ name: "react-server-dom-webpack", version: "latest" });
   }
   if (info.hasMDX && !_isResolvable(info.root, "@mdx-js/rollup")) {
     missing.push({ name: "@mdx-js/rollup", version: "latest" });

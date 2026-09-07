@@ -74,9 +74,12 @@ npm install -D vite @vitejs/plugin-react
 If you're using the App Router, also install:
 
 ```bash
-npm install react-server-dom-webpack
 npm install -D @vitejs/plugin-rsc
 ```
+
+`@vitejs/plugin-rsc` includes the React Flight runtime used by default. Projects
+that intentionally use a different React release channel can install the
+matching `react-server-dom-webpack` version as an explicit runtime override.
 
 Replace `next` with `vinext` in your scripts:
 
@@ -783,7 +786,7 @@ Analysis of the build output shows two main factors:
 1. **Tree-shaking**: Vite/Rolldown produces a smaller React+ReactDOM bundle than Next.js/Turbopack. Rolldown's more aggressive dead-code elimination accounts for roughly half the overall difference.
 2. **Framework overhead**: Next.js ships more client-side infrastructure (router, Turbopack runtime loader, prefetching, error handling) than vinext's lighter client runtime.
 
-Both frameworks ship the same app code and the same RSC client runtime (`react-server-dom-webpack`). The difference is in how much of React's internals survive tree-shaking and how much framework plumbing each tool adds.
+Both frameworks ship the same app code and the React Flight client runtime. Vinext receives that runtime from `@vitejs/plugin-rsc`; Next.js carries its own compiled copy. The difference is in how much of React's internals survive tree-shaking and how much framework plumbing each tool adds.
 
 </details>
 
@@ -907,7 +910,7 @@ Or add it to your `package.json` as a file dependency:
 }
 ```
 
-vinext has peer dependencies on `react ^19.2.6`, `react-dom ^19.2.6`, `react-server-dom-webpack ^19.2.6`, and `vite ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
+vinext has peer dependencies on `react ^19.2.6`, `react-dom ^19.2.6`, and `vite ^8.0.0`. App Router projects also use the optional `@vitejs/plugin-rsc` peer, which provides the default Flight runtime. Its vendored runtime requires React 19.2.8 or newer; `vinext init` upgrades older stable React versions unless the project declares a matching `react-server-dom-webpack` override. Then replace `next` with `vinext` in your scripts and run as normal.
 
 ## Contributing
 

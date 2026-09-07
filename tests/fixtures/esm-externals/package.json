@@ -18,7 +18,6 @@
     "optimized-esm-package": "file:./__test_packages__/optimized-esm-package",
     "react": "catalog:",
     "react-dom": "catalog:",
-    "react-server-dom-webpack": "catalog:",
     "shared-condition-package": "file:./__test_packages__/shared-condition-package",
     "vinext": "workspace:*",
     "vite": "catalog:"

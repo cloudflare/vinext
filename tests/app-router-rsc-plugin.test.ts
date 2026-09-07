@@ -186,20 +186,19 @@ describe("RSC plugin auto-registration", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-app-"));
     try {
       // Empty directory — no app/ or src/app/.
-      const plugins = vinext({ appDir: tmpDir, react: false });
-
-      const resolvedPlugins = (
-        await Promise.all(
-          plugins.map(async (plugin) => {
-            if (plugin && typeof (plugin as any).then === "function") {
-              return await (plugin as Promise<any>);
-            }
-            return plugin;
-          }),
-        )
-      ).flat();
-
-      const hasRscPlugin = resolvedPlugins.some((p) => p && (p as any).name === "rsc");
+      // RSC plugins are prepared eagerly so they can honor a programmatic Vite
+      // root, then filtered by `apply` once that root is known.
+      const { resolveConfig } = await import("vite");
+      const config = await resolveConfig(
+        {
+          root: tmpDir,
+          configFile: false,
+          plugins: vinext({ appDir: tmpDir, react: false }),
+        },
+        "serve",
+        "development",
+      );
+      const hasRscPlugin = config.plugins.some((plugin) => plugin.name === "rsc");
       expect(hasRscPlugin).toBe(false);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -3924,6 +3924,7 @@ describe("RSC framework package matching", () => {
     "/app/node_modules/react-dom/server.js",
     "/app/node_modules/scheduler/index.js",
     "/app/node_modules/react-server-dom-webpack/client.js",
+    "/app/node_modules/@vitejs/plugin-rsc/dist/vendor/react-server-dom/client.edge.js",
     // pnpm-style nested path.
     "/app/node_modules/.pnpm/react@19.0.0/node_modules/react/index.js",
   ];
