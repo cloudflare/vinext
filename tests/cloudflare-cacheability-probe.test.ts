@@ -644,6 +644,24 @@ describe("staged Worker cacheability probes", () => {
     expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(3);
   });
 
+  it("aborts a probe whose fetch never settles", async () => {
+    const root = createProbeRoot();
+    const fetchImpl = vi.fn<typeof fetch>(() => new Promise<Response>(() => {}));
+
+    await expect(
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        fetchImpl,
+        phaseTimeoutMs: 25,
+        root,
+        targetUrl: "https://example.com",
+        targets: [target("/one")],
+        timeoutMs: 1_000,
+      }),
+    ).rejects.toThrow("cacheability probing made no progress for 25ms");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("allows a large serial workload to exceed the watchdog while requests keep completing", async () => {
     const root = createProbeRoot();
     const progress: number[] = [];
