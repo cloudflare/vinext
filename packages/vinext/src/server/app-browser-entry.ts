@@ -215,7 +215,10 @@ import {
   VINEXT_RSC_REDIRECT_TYPE_HEADER,
 } from "./headers.js";
 import { stripRscCompletionMetadataResponse } from "./rsc-completion-metadata.js";
-import { removeStylesheetLinksCoveredByInlineCss } from "./app-inline-css-client.js";
+import {
+  installGlobalCssOwnerStylesheetDedupe,
+  removeStylesheetLinksCoveredByInlineCss,
+} from "./app-inline-css-client.js";
 import {
   navigationPlanner,
   type NavigationReuseFacts,
@@ -224,6 +227,8 @@ import {
 import { hasServerActions, loadServerActionClient } from "virtual:vinext-app-capabilities";
 
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
+
+installGlobalCssOwnerStylesheetDedupe();
 
 type SearchParamInput = ConstructorParameters<typeof URLSearchParams>[0];
 type DevErrorOverlayModule = typeof import("../client/dev-error-overlay.js");

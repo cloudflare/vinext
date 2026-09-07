@@ -1,0 +1,5 @@
+.class {
+  --next-dynamic-css-server: server-module;
+  background: green;
+  color: black;
+}

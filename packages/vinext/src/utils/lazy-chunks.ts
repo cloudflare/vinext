@@ -109,15 +109,19 @@ function collectStaticChunkFiles(
   const chunk = buildManifest[key];
   if (!chunk) return;
 
+  // Keep the boundary's JS first, matching react-loadable/Vite preload
+  // metadata. Stylesheets follow dependency order below so a shared base CSS
+  // module precedes the next/dynamic component CSS that overrides it.
   if (chunk.file.endsWith(".js")) {
     addFile(files, seenFiles, chunk.file);
-  }
-  for (const cssFile of chunk.css ?? []) {
-    addFile(files, seenFiles, cssFile);
   }
 
   for (const importedKey of chunk.imports ?? []) {
     collectStaticChunkFiles(buildManifest, importedKey, files, seenFiles, visitedChunks);
+  }
+
+  for (const cssFile of chunk.css ?? []) {
+    addFile(files, seenFiles, cssFile);
   }
 }
 

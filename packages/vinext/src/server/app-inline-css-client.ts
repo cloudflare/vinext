@@ -2,7 +2,10 @@ import { htmlTokenListContains } from "./html.js";
 
 type InlineCssStylesheetLinkElement = Pick<HTMLLinkElement, "getAttribute" | "hasAttribute">;
 
-function inlineStyleCoversStylesheetHref(styleHref: string, linkHref: string): boolean {
+const GLOBAL_CSS_OWNER_ASSET = "/app-global-css-";
+const GLOBAL_CSS_OWNER_DEDUPE = Symbol.for("vinext.globalCssOwnerDedupe");
+
+export function inlineStyleCoversStylesheetHref(styleHref: string, linkHref: string): boolean {
   for (const candidate of styleHref.split(/\s+/)) {
     if (candidate === linkHref) return true;
     try {
@@ -47,4 +50,45 @@ export function removeStylesheetLinksCoveredByInlineCss(): void {
       }
     }
   }
+}
+
+export function dedupeGlobalCssOwnerStylesheetLinks(): void {
+  const owners = new Map<string, HTMLLinkElement>();
+  const links = document.head.querySelectorAll<HTMLLinkElement>("link[rel~='stylesheet'][href]");
+
+  for (const link of links) {
+    let href: string;
+    try {
+      href = new URL(link.getAttribute("href") ?? "", window.location.href).href;
+    } catch {
+      continue;
+    }
+    if (!href.includes(GLOBAL_CSS_OWNER_ASSET)) continue;
+
+    const previous = owners.get(href);
+    if (!previous) {
+      owners.set(href, link);
+      continue;
+    }
+
+    const previousIsManaged = previous.hasAttribute("data-precedence");
+    const currentIsManaged = link.hasAttribute("data-precedence");
+    if (currentIsManaged && !previousIsManaged) {
+      previous.remove();
+      owners.set(href, link);
+    } else {
+      link.remove();
+    }
+  }
+}
+
+/** Keep Vite's late dynamic CSS loader from duplicating an RSC global owner. */
+export function installGlobalCssOwnerStylesheetDedupe(): void {
+  if (typeof document === "undefined" || typeof MutationObserver === "undefined") return;
+  if (Reflect.get(globalThis, GLOBAL_CSS_OWNER_DEDUPE)) return;
+
+  dedupeGlobalCssOwnerStylesheetLinks();
+  const observer = new MutationObserver(dedupeGlobalCssOwnerStylesheetLinks);
+  observer.observe(document.head, { childList: true });
+  Reflect.set(globalThis, GLOBAL_CSS_OWNER_DEDUPE, observer);
 }
