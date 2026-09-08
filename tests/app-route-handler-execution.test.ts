@@ -321,9 +321,11 @@ describe("app route handler execution helpers", () => {
         hasExplicitNonCacheableResponsePolicy(headers) {
           return headers.get(policyHeader)?.includes("no-store") === true;
         },
+        isResponsePolicyHeader(name) {
+          return name.toLowerCase() === policyHeader.toLowerCase();
+        },
         ownsBackgroundRevalidation: false,
         async revalidateTag() {},
-        responsePolicyHeaderNames: [policyHeader],
         async set() {},
       };
       setCdnCacheAdapter(adapter);

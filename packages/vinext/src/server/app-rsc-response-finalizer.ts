@@ -3,8 +3,9 @@ import type { RequestContext } from "../config/request-context.js";
 import { isStaticFileSignal } from "./static-file-signal.js";
 import {
   applyCdnResponseHeaders,
-  getCdnResponsePolicyHeaderNames,
+  captureCdnResponsePolicyHeaders,
   hasExplicitNonCacheableResponsePolicy,
+  isCdnResponsePolicyHeader,
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
 } from "./cache-control.js";
@@ -34,7 +35,7 @@ type FinalizeAppRscResponseOptions = {
    */
   requestContext: RequestContext;
   /** Existing response headers that matching next.config rules may replace. */
-  overwriteExisting?: ReadonlySet<string>;
+  overwriteExisting?: ReadonlySet<string> | ((name: string) => boolean);
   /** Response headers emitted by middleware after config matching. */
   middlewareHeaders?: Headers | null;
   /** Whether config matching should update the active cacheability classification. */
@@ -90,7 +91,7 @@ export async function applyAppRscConfigHeaders(
     // including for force-dynamic App Pages. Other response headers retain
     // the existing merge precedence.
     // test/e2e/app-dir/custom-cache-control/custom-cache-control.test.ts
-    overwriteExisting: options.overwriteExisting ?? getCdnResponsePolicyHeaderNames(),
+    overwriteExisting: options.overwriteExisting ?? isCdnResponsePolicyHeader,
   });
 }
 
@@ -139,7 +140,7 @@ export async function finalizeAppRscResponse(
     // application opt-out. Admission may replace it only after the body has
     // completed and the render has proved reusable. Capture before config
     // headers run so any later private/no-store override still vetoes.
-    captureRouteCacheabilityResponsePolicy(response.headers);
+    captureRouteCacheabilityResponsePolicy(captureCdnResponsePolicyHeaders(response.headers));
   }
 
   if (configHeadersAlreadyApplied.has(response)) {

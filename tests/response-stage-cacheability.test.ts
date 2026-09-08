@@ -26,7 +26,9 @@ function admissionAdapter(): CdnCacheAdapter {
     buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
     ownsBackgroundRevalidation: false,
     requiresCompletedResponseAdmission: true,
-    responsePolicyHeaderNames: ["CDN-Cache-Control"],
+    isResponsePolicyHeader: (name) => name.toLowerCase() === "cdn-cache-control",
+    readResponseCacheControl: (headers) =>
+      headers.get("CDN-Cache-Control") ?? headers.get("Cache-Control"),
     responseVary: "verbatim",
     async get() {
       return null;
@@ -277,7 +279,9 @@ describe("response-stage cacheability", () => {
         "Cache-Control": "max-age=0, must-revalidate",
         "X-Example-Edge-Policy": cacheControl,
       }),
-      responsePolicyHeaderNames: ["X-Example-Edge-Policy"],
+      isResponsePolicyHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+      readResponseCacheControl: (headers) =>
+        headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
     });
 
     const response = await withResponseStageCacheability(
@@ -295,7 +299,6 @@ describe("response-stage cacheability", () => {
       },
       async (context) => {
         const state = contextState(context)!;
-        expect(state.responsePolicyHeaderNames).toEqual(["cache-control", "x-example-edge-policy"]);
         state.route = { kind: "app-page", pattern: "/dynamic" };
         state.outcome = { cacheable: false };
         return new Response("dynamic");

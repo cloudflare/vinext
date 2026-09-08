@@ -103,7 +103,7 @@ import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js"
 import {
   applyCdnResponseHeaders,
   captureCdnResponsePolicyOverrides,
-  getCdnResponsePolicyHeaderNames,
+  isCdnResponsePolicyHeader,
   NEVER_CACHE_CONTROL,
   reconcileCdnResponseHeadersAfterOuterPolicy,
 } from "./cache-control.js";
@@ -1199,9 +1199,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       configHeaders: options.configHeaders,
       i18nConfig: options.i18nConfig,
       middlewareHeaders: middlewareContext.headers,
-      overwriteExisting: preserveExistingPolicy
-        ? new Set<string>()
-        : getCdnResponsePolicyHeaderNames(),
+      overwriteExisting: preserveExistingPolicy ? new Set<string>() : isCdnResponsePolicyHeader,
       recordCacheability: dispatchResponseStage === undefined,
       requestContext: preMiddlewareRequestContext,
     });
@@ -1222,7 +1220,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePath: options.basePath,
         configHeaders: options.configHeaders,
         i18nConfig: options.i18nConfig,
-        overwriteExisting: getCdnResponsePolicyHeaderNames(),
+        overwriteExisting: isCdnResponsePolicyHeader,
         recordCacheability: false,
         requestContext: preMiddlewareRequestContext,
       });

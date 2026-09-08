@@ -81,7 +81,7 @@ describe("applyCdnResponseHeaders", () => {
     process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = "1";
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
-      responsePolicyHeaderNames: ["CDN-Cache-Control"],
+      isResponsePolicyHeader: (name) => name.toLowerCase() === "cdn-cache-control",
       async get() {
         return null;
       },
@@ -137,7 +137,7 @@ describe("applyCdnResponseHeaders", () => {
   it("captures only request-stage policy values that differ from the inner response", () => {
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
-      responsePolicyHeaderNames: ["CDN-Cache-Control"],
+      isResponsePolicyHeader: (name) => name.toLowerCase() === "cdn-cache-control",
       async get() {
         return null;
       },
@@ -194,7 +194,11 @@ describe("applyCdnResponseHeaders", () => {
   it("clears an inner artifact's provider policy when outer composition turns private", () => {
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
-      responsePolicyHeaderNames: ["X-Example-Edge-Policy"],
+      isResponsePolicyHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+      readResponseCacheControl: (headers) =>
+        headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+      hasExplicitNonCacheableResponsePolicy: (headers) =>
+        [...headers.values()].some((value) => value.includes("no-store")),
       async get() {
         return null;
       },
@@ -230,7 +234,7 @@ describe("applyCdnResponseHeaders", () => {
   it("clears an inner artifact's provider policy when outer composition sets a cookie", () => {
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
-      responsePolicyHeaderNames: ["X-Example-Edge-Policy"],
+      isResponsePolicyHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
       async get() {
         return null;
       },

@@ -283,7 +283,7 @@ describe("prerender path manifest", () => {
     const manifest = await emitPrerenderPathManifest({
       root: tmpDir,
       buildIdentity: "response-header",
-      responsePolicyHeaderNames: ["CDN-Cache-Control"],
+      isResponsePolicyHeader: (name) => name.toLowerCase() === "cdn-cache-control",
       responseVary: "verbatim",
     });
 

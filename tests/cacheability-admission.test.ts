@@ -240,7 +240,7 @@ describe("single-request cacheability admission", () => {
       cacheable: true,
       cacheControl: "s-maxage=60, stale-while-revalidate=540",
     };
-    state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
+    state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
 
     const response = await finalizeWorkerCacheabilityResponse(
       new Response("static", { headers: { "Cache-Control": "no-store" } }),
@@ -289,7 +289,7 @@ describe("single-request cacheability admission", () => {
       cacheable: true,
       cacheControl: "s-maxage=120, stale-while-revalidate=31535880",
     };
-    state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
+    state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
 
     const response = await finalizeWorkerCacheabilityResponse(
       new Response("static", { headers: { "Cache-Control": "s-maxage=30" } }),
@@ -329,7 +329,7 @@ describe("single-request cacheability admission", () => {
     );
     const state = cacheabilityState(context);
     state.route = { kind: "app-page", pattern: "/page" };
-    state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
+    state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
     state.completion = Promise.resolve({ cacheable: false, dynamicUsage: true });
 
     const response = await finalizeWorkerCacheabilityResponse(
@@ -353,7 +353,7 @@ describe("single-request cacheability admission", () => {
     );
     const state = cacheabilityState(context);
     state.route = { kind: "app-page", pattern: "/page" };
-    state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
+    state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
     state.completion = Promise.resolve({ cacheable: false, dynamicUsage: true });
 
     const response = await finalizeWorkerCacheabilityResponse(
@@ -470,7 +470,7 @@ describe("single-request cacheability admission", () => {
         cacheable: true,
         cacheControl: "s-maxage=60, stale-while-revalidate=540",
       };
-      state.frameworkResponseCachePolicy = { "cache-control": "no-store" };
+      state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
 
       const response = await finalizeWorkerCacheabilityResponse(
         new Response("static", { headers: { "Cache-Control": "no-store" } }),
@@ -623,11 +623,7 @@ describe("single-request cacheability admission", () => {
       );
 
       expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
-      expect(
-        adapter.responsePolicyHeaderNames
-          .map((name) => response.headers.get(name))
-          .find((value) => value !== null),
-      ).toBe("public, max-age=60");
+      expect(adapter.readResponseCacheControl(response.headers)).toBe("public, max-age=60");
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
       if (previousNextDeployPolicy === undefined) {
@@ -1126,23 +1122,23 @@ describe("single-request cacheability admission", () => {
     finalHeaders: Record<string, string>;
     initialPolicy: NonNullable<RouteCacheabilityState["frameworkResponseCachePolicy"]>;
     name: string;
-    responsePolicyHeaderNames?: readonly string[];
+    adapterPolicy?: true;
   }> = [
     {
       finalHeaders: { "Set-Cookie": "session=private; Path=/; HttpOnly" },
-      initialPolicy: {},
+      initialPolicy: new Headers(),
       name: "Set-Cookie",
     },
     {
       finalHeaders: { "Cache-Control": "private, no-store" },
-      initialPolicy: { "cache-control": "public, s-maxage=60" },
+      initialPolicy: new Headers({ "Cache-Control": "public, s-maxage=60" }),
       name: "Cache-Control",
     },
     {
       finalHeaders: { "X-Example-Edge-Policy": "private, no-store" },
-      initialPolicy: { "x-example-edge-policy": "public, s-maxage=60" },
+      initialPolicy: new Headers({ "X-Example-Edge-Policy": "public, s-maxage=60" }),
       name: "adapter-declared policy",
-      responsePolicyHeaderNames: ["cache-control", "x-example-edge-policy"],
+      adapterPolicy: true,
     },
   ];
 
@@ -1159,8 +1155,25 @@ describe("single-request cacheability admission", () => {
       const state = cacheabilityState(context);
       state.route = { kind: "app-page", pattern: "/page" };
       state.frameworkResponseCachePolicy = testCase.initialPolicy;
-      if (testCase.responsePolicyHeaderNames) {
-        state.responsePolicyHeaderNames = testCase.responsePolicyHeaderNames;
+      if (testCase.adapterPolicy) {
+        setCdnCacheAdapter({
+          buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+          hasExplicitNonCacheableResponsePolicy: (headers, baseline) => {
+            const value = headers.get("X-Example-Edge-Policy");
+            return (
+              value !== baseline?.get("X-Example-Edge-Policy") && value === "private, no-store"
+            );
+          },
+          isResponsePolicyHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+          ownsBackgroundRevalidation: false,
+          readResponseCacheControl: (headers) =>
+            headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+          async get() {
+            return null;
+          },
+          async revalidateTag() {},
+          async set() {},
+        });
       }
       state.outcome = {
         cacheable: true,
@@ -1413,7 +1426,7 @@ describe("cacheability probe finalization", () => {
     const configuredState: RouteCacheabilityState = {
       captureDeadlineAt: Date.now() + 1_000,
       explicitConfigCachePolicy: true,
-      frameworkResponseCachePolicy: { "cache-control": "no-store" },
+      frameworkResponseCachePolicy: new Headers({ "Cache-Control": "no-store" }),
       mode: "probe",
       outcome: { cacheable: false, dynamicUsage: true },
       route: { kind: "app-page", pattern: "/posts/:slug" },

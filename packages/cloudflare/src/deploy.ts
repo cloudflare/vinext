@@ -35,7 +35,7 @@ import {
   findVinextPrerenderConfigInPlugins,
   findVinextRouteRootConfigInPlugins,
   formatVinextPrerenderLabel,
-  getConfiguredCdnResponsePolicyHeaderNames,
+  isConfiguredCdnResponsePolicyHeader,
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
@@ -1999,9 +1999,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
       buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
       requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
       responseVary: hasStrictResponseVary ? "verbatim" : undefined,
-      responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
-        viteConfigMetadata.cacheConfig,
-      ),
+      isResponsePolicyHeader: (name) =>
+        isConfiguredCdnResponsePolicyHeader(viteConfigMetadata.cacheConfig, name),
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
   }
@@ -2076,9 +2075,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
           buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
           requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
           responseVary: hasStrictResponseVary ? "verbatim" : undefined,
-          responsePolicyHeaderNames: getConfiguredCdnResponsePolicyHeaderNames(
-            viteConfigMetadata.cacheConfig,
-          ),
+          isResponsePolicyHeader: (name) =>
+            isConfiguredCdnResponsePolicyHeader(viteConfigMetadata.cacheConfig, name),
           routeRootConfig: viteConfigMetadata.routeRootConfig,
           pathDiscoveryTarget: {
             baseUrl: targetUrl,

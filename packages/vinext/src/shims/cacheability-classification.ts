@@ -2,9 +2,6 @@ import { getRequestExecutionContext } from "./request-context.js";
 
 export const CACHEABILITY_REQUEST_STATE = Symbol.for("vinext.cacheabilityRequestState");
 
-/** Cache-policy response headers owned by core itself. */
-export const CACHEABILITY_POLICY_HEADERS = ["cache-control"] as const;
-
 export type RouteCacheabilityOutcome = {
   cacheControl?: string;
   cacheable: boolean;
@@ -40,7 +37,7 @@ export type RouteCacheabilityState = {
   forcedDynamicReason?: string;
   /** A route-config decision that applies to every concrete identity for this pattern. */
   patternDynamicReason?: string;
-  frameworkResponseCachePolicy?: Partial<Record<string, string>>;
+  frameworkResponseCachePolicy?: Headers;
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   preserveResponseCachePolicy?: boolean;
@@ -48,8 +45,6 @@ export type RouteCacheabilityState = {
   responseVary?: "verbatim";
   /** Concrete pathname resolved by the trusted request stage before rendering. */
   resolvedRoutePathname?: string;
-  /** Lowercase cache-policy names owned by core and the active CDN adapter. */
-  responsePolicyHeaderNames?: readonly string[];
   probeBailout?: {
     kind: "private-cache";
     outcome: RouteCacheabilityOutcome;
@@ -162,19 +157,13 @@ export function markRouteCacheabilityResponseBodyComplete(): void {
 export function captureRouteCacheabilityResponsePolicy(headers: Headers): void {
   const state = readRouteCacheabilityState();
   if (!state || state.mode !== "admit") return;
-
-  const policy: Partial<Record<string, string>> = {};
-  for (const name of state.responsePolicyHeaderNames ?? CACHEABILITY_POLICY_HEADERS) {
-    const value = headers.get(name);
-    if (value !== null) policy[name] = value;
-  }
   // Framework response shaping has more than one trusted phase. In
   // particular, the App Page renderer can leave Cache-Control absent before
   // the outer response finalizer applies the adapter's provisional no-store
   // default. Keep the latest trusted snapshot; configurable response headers
   // run after the final capture and remain visible to the strict admission
   // comparison below.
-  state.frameworkResponseCachePolicy = policy;
+  state.frameworkResponseCachePolicy = new Headers(headers);
 }
 
 /** True only for an authenticated probe that must render the matched App Page. */

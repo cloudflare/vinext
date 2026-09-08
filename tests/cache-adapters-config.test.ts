@@ -17,7 +17,7 @@ import {
   generateCdnCacheAdapterModule,
   loadVinextCacheConfigFromViteConfig,
   generateCacheAdaptersModule,
-  getConfiguredCdnResponsePolicyHeaderNames,
+  isConfiguredCdnResponsePolicyHeader,
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
@@ -382,7 +382,7 @@ describe("cdnAdapter builder + factory", () => {
     ).toBeNull();
     expect(descriptor.capabilities).toEqual({
       buildIdentity: "response-header",
-      responsePolicyHeaderNames: ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"],
+      isResponsePolicyHeader: expect.any(Function),
       requestRouting: "uncached-stage",
       responseVary: "verbatim",
       routeCacheability: "probe-manifest",
@@ -393,16 +393,18 @@ describe("cdnAdapter builder + factory", () => {
     expect(hasBuildIdentityResponseHeader({ cdn: { adapter: "custom-cache" } })).toBe(false);
     expect(hasUncachedRequestRouting({ cdn: { adapter: "url-only-cache" } })).toBe(false);
     expect(hasVerbatimResponseVary({ cdn: { adapter: "url-only-cache" } })).toBe(false);
-    expect(
-      getConfiguredCdnResponsePolicyHeaderNames({
-        cdn: {
-          adapter: "custom-cache",
-          capabilities: {
-            responsePolicyHeaderNames: [" X-Example-Policy ", "CACHE-CONTROL", ""],
-          },
+    const custom = {
+      cdn: {
+        adapter: "custom-cache",
+        capabilities: {
+          isResponsePolicyHeader: (name: string) =>
+            name.trim().toLowerCase() === "x-example-policy",
         },
-      }),
-    ).toEqual(["cache-control", "x-example-policy"]);
+      },
+    };
+    expect(isConfiguredCdnResponsePolicyHeader(custom, "Cache-Control")).toBe(true);
+    expect(isConfiguredCdnResponsePolicyHeader(custom, " X-Example-Policy ")).toBe(true);
+    expect(isConfiguredCdnResponsePolicyHeader(custom, "X-Unrelated")).toBe(false);
   });
 
   it("factory returns a CloudflareCdnCacheAdapter", () => {

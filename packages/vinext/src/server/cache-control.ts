@@ -31,29 +31,55 @@ function isSharedCacheControl(cacheControl: string): boolean {
  * inspect the provider-specific policy headers they own; the generic fallback
  * only understands the framework-owned `Cache-Control` header.
  */
-export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean {
+export function hasExplicitNonCacheableResponsePolicy(
+  headers: Headers,
+  baseline?: Headers,
+): boolean {
   const adapter = getCdnCacheAdapter();
   if (adapter.hasExplicitNonCacheableResponsePolicy) {
-    return adapter.hasExplicitNonCacheableResponsePolicy(headers);
+    return adapter.hasExplicitNonCacheableResponsePolicy(headers, baseline);
   }
   const cacheControl = headers.get("Cache-Control");
-  return Boolean(cacheControl && isNonCacheableCacheControl(cacheControl));
+  return Boolean(
+    cacheControl &&
+    cacheControl !== baseline?.get("Cache-Control") &&
+    isNonCacheableCacheControl(cacheControl),
+  );
 }
 
-/** Lowercase response-policy names owned by core and the active adapter. */
-export function getCdnResponsePolicyHeaderNames(): ReadonlySet<string> {
-  return new Set([
-    "cache-control",
-    ...(getCdnCacheAdapter().responsePolicyHeaderNames ?? []).map((name) => name.toLowerCase()),
-  ]);
+/** Whether a response header controls core or the active CDN adapter. */
+export function isCdnResponsePolicyHeader(name: string): boolean {
+  return (
+    name.toLowerCase() === "cache-control" ||
+    getCdnCacheAdapter().isResponsePolicyHeader?.(name) === true
+  );
+}
+
+/** Whether a response declares any core- or adapter-owned cache policy. */
+export function hasCdnResponsePolicy(headers: Headers): boolean {
+  return [...headers.keys()].some(isCdnResponsePolicyHeader);
+}
+
+/** Read the effective shared-cache policy without interpreting provider headers in core. */
+export function readCdnResponseCacheControl(headers: Headers | undefined): string | null {
+  if (!headers) return null;
+  const adapter = getCdnCacheAdapter();
+  return adapter.readResponseCacheControl
+    ? adapter.readResponseCacheControl(headers)
+    : headers.get("Cache-Control");
+}
+
+/** Ask the active adapter whether one policy header explicitly disables storage. */
+export function isNonCacheableCdnResponsePolicy(name: string, value: string): boolean {
+  if (name.toLowerCase() === "cache-control") return isNonCacheableCacheControl(value);
+  return hasExplicitNonCacheableResponsePolicy(new Headers({ [name]: value }));
 }
 
 /** Capture only cache-policy provenance from an outer composition stage. */
-function captureCdnResponsePolicyHeaders(headers: Headers): Headers {
+export function captureCdnResponsePolicyHeaders(headers: Headers): Headers {
   const policy = new Headers();
-  for (const name of getCdnResponsePolicyHeaderNames()) {
-    const value = headers.get(name);
-    if (value !== null) policy.set(name, value);
+  for (const [name, value] of headers) {
+    if (isCdnResponsePolicyHeader(name)) policy.set(name, value);
   }
   return policy;
 }
@@ -133,16 +159,14 @@ export function reconcileCdnResponseHeadersAfterOuterPolicy(
     applyCdnResponseHeaders(headers, { cacheControl });
     // Preserve any explicit provider-specific policy authored alongside the
     // generic middleware policy after the adapter has derived its defaults.
-    for (const name of getCdnResponsePolicyHeaderNames()) {
+    for (const [name, value] of outerPolicyHeaders) {
       if (name === "cache-control") continue;
-      const value = outerPolicyHeaders.get(name);
-      if (value !== null) headers.set(name, value);
+      if (isCdnResponsePolicyHeader(name)) headers.set(name, value);
     }
     return;
   }
-  for (const name of getCdnResponsePolicyHeaderNames()) {
-    const value = outerPolicyHeaders.get(name);
-    if (value !== null && isNonCacheableCacheControl(value)) {
+  for (const [name, value] of outerPolicyHeaders) {
+    if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, value)) {
       headers.set(name, value);
       applyCdnResponseHeaders(headers, { cacheControl: value });
       return;

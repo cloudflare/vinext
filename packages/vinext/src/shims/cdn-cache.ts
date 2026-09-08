@@ -104,8 +104,15 @@ export type CdnCacheAdapter = {
    */
   readonly responseVary?: "verbatim";
 
-  /** Provider-specific response headers whose values control shared caching. */
-  readonly responsePolicyHeaderNames?: readonly string[];
+  /** Whether a provider-specific response header controls shared caching. */
+  isResponsePolicyHeader?(name: string): boolean;
+
+  /**
+   * Read the effective shared-cache policy from a response. The returned value
+   * uses Cache-Control syntax so core can apply the framework's cacheability
+   * rules without knowing which provider header carried it.
+   */
+  readResponseCacheControl?(headers: Headers): string | null;
 
   /**
    * Fresh App Page responses must reach clean EOF before this adapter may emit
@@ -169,7 +176,7 @@ export type CdnCacheAdapter = {
    *
    * When omitted, core inspects only the generic `Cache-Control` header.
    */
-  hasExplicitNonCacheableResponsePolicy?(headers: Headers): boolean;
+  hasExplicitNonCacheableResponsePolicy?(headers: Headers, baseline?: Headers): boolean;
 
   /**
    * Whether the **origin** runs in-process background regeneration when a stale

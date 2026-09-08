@@ -10,8 +10,7 @@ import {
   markRouteCacheabilityExplicitConfigPolicy,
   markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
-import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
-import { getCdnResponsePolicyHeaderNames } from "./cache-control.js";
+import { isCdnResponsePolicyHeader, isNonCacheableCdnResponsePolicy } from "./cache-control.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 
 const ADDITIVE_CONFIG_HEADER_NAMES = new Set(["set-cookie", "vary"]);
@@ -43,7 +42,7 @@ export function resolveResponseStageCachePolicy({
       const name = header.key.toLowerCase();
       return (
         name === "vary" ||
-        (getCdnResponsePolicyHeaderNames().has(name) && !isNonCacheableCacheControl(header.value))
+        (isCdnResponsePolicyHeader(name) && !isNonCacheableCdnResponsePolicy(name, header.value))
       );
     })
     .map((header) => [header.key, header.value] as [string, string]);
@@ -76,10 +75,10 @@ function markExplicitConfigResponseVeto(
       markRouteCacheabilityFinalResponseUncacheable("next.config headers set a cookie");
       continue;
     }
-    if (getCdnResponsePolicyHeaderNames().has(name)) {
+    if (isCdnResponsePolicyHeader(name)) {
       markRouteCacheabilityExplicitConfigPolicy();
     }
-    if (getCdnResponsePolicyHeaderNames().has(name) && isNonCacheableCacheControl(header.value)) {
+    if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, header.value)) {
       markRouteCacheabilityFinalResponseUncacheable(
         `next.config headers set a non-cacheable ${header.key} policy`,
       );
@@ -98,7 +97,7 @@ type ApplyConfigHeadersOptions = {
    */
   basePathState?: BasePathMatchState;
   /** Existing framework-generated headers that matching config rules may replace. */
-  overwriteExisting?: ReadonlySet<string>;
+  overwriteExisting?: ReadonlySet<string> | ((name: string) => boolean);
   /** Renderer and Edge-handler Link values are emitted after config headers in Next.js. */
   appendToPostConfigLink?: boolean;
   /** Middleware response headers run after config and therefore suppress config values. */
@@ -196,7 +195,12 @@ export function applyConfigHeadersToResponse(
       mergeVaryHeader(responseHeaders, header.value);
     } else if (ADDITIVE_CONFIG_HEADER_NAMES.has(lowerName)) {
       responseHeaders.append(header.key, header.value);
-    } else if (options.overwriteExisting?.has(lowerName) || !responseHeaders.has(lowerName)) {
+    } else if (
+      (typeof options.overwriteExisting === "function"
+        ? options.overwriteExisting(lowerName)
+        : options.overwriteExisting?.has(lowerName)) ||
+      !responseHeaders.has(lowerName)
+    ) {
       responseHeaders.set(header.key, header.value);
     }
   }

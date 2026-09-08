@@ -1,17 +1,16 @@
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import {
   CACHEABILITY_REQUEST_STATE,
-  CACHEABILITY_POLICY_HEADERS,
   type RouteCacheabilityOutcome,
   type RouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
 import {
   applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
-  getCdnResponsePolicyHeaderNames,
   hasExplicitNonCacheableResponsePolicy,
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
+  readCdnResponseCacheControl,
 } from "./cache-control.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
@@ -143,7 +142,6 @@ export function createWorkerCacheabilityProbeContext(
   const state: RouteCacheabilityState = {
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode,
-    responsePolicyHeaderNames: [...getCdnResponsePolicyHeaderNames()],
     responseVary,
     resolvedRoutePathname,
   };
@@ -206,7 +204,6 @@ export function createWorkerCacheabilityAdmissionContext(
       captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
       mode: "admit",
       applyCompletedResponsePolicy: options?.applyCompletedResponsePolicy,
-      responsePolicyHeaderNames: [...getCdnResponsePolicyHeaderNames()],
       responseVary,
     };
     return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
@@ -229,7 +226,6 @@ export function createWorkerCacheabilityAdmissionContext(
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
     mode: "admit",
     applyCompletedResponsePolicy: options?.applyCompletedResponsePolicy,
-    responsePolicyHeaderNames: [...getCdnResponsePolicyHeaderNames()],
     responseVary,
   };
   return Object.assign(Object.create(Object.getPrototypeOf(base)), base, {
@@ -613,18 +609,14 @@ function inferFinalAppPageCacheability(
   // Config headers run after the framework snapshots its provisional policy.
   // Match Next.js by honoring a later explicit public policy instead of
   // replacing it with the renderer-derived default during admission.
-  const changedPolicy = [...(state.responsePolicyHeaderNames ?? CACHEABILITY_POLICY_HEADERS)]
-    .reverse()
-    .find((name) => {
-      const value = response.headers.get(name);
-      return (
-        value !== null &&
-        (state.explicitConfigCachePolicy || value !== state.frameworkResponseCachePolicy?.[name])
-      );
-    });
-  if (!changedPolicy) return null;
-
-  const cacheControl = response.headers.get(changedPolicy)!;
+  const cacheControl = readCdnResponseCacheControl(response.headers);
+  if (
+    cacheControl === null ||
+    (!state.explicitConfigCachePolicy &&
+      cacheControl === readCdnResponseCacheControl(state.frameworkResponseCachePolicy))
+  ) {
+    return null;
+  }
   if (isNonCacheableCacheControl(cacheControl)) return { cacheable: false };
   return {
     cacheable: true,
@@ -637,10 +629,7 @@ function inferPagesPageCacheability(
   response: Response,
   state: RouteCacheabilityState,
 ): RouteCacheabilityOutcome {
-  const cacheControl = [...(state.responsePolicyHeaderNames ?? CACHEABILITY_POLICY_HEADERS)]
-    .reverse()
-    .map((name) => response.headers.get(name))
-    .find((value) => value !== null);
+  const cacheControl = readCdnResponseCacheControl(response.headers);
   if (!cacheControl || isNonCacheableCacheControl(cacheControl)) {
     return { cacheable: false };
   }
@@ -708,17 +697,10 @@ function cacheabilityEvaluationFailureResponse(pattern: string): Response {
 function hasStrictFinalResponseVeto(response: Response, state: RouteCacheabilityState): boolean {
   if (state.finalResponseVetoReason || response.headers.has("set-cookie")) return true;
 
-  for (const name of state.responsePolicyHeaderNames ?? CACHEABILITY_POLICY_HEADERS) {
-    const value = response.headers.get(name);
-    if (
-      value !== null &&
-      value !== state.frameworkResponseCachePolicy?.[name] &&
-      isNonCacheableCacheControl(value)
-    ) {
-      return true;
-    }
-  }
-  return false;
+  return hasExplicitNonCacheableResponsePolicy(
+    response.headers,
+    state.frameworkResponseCachePolicy,
+  );
 }
 
 async function finalizeWorkerCacheabilityAdmission(

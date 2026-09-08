@@ -115,6 +115,14 @@ function hasExplicitCloudflareNonCacheableResponsePolicy(headers: Headers): bool
   );
 }
 
+function readCloudflareResponseCacheControl(headers: Headers): string | null {
+  return (
+    headers.get("Cloudflare-CDN-Cache-Control") ??
+    headers.get("CDN-Cache-Control") ??
+    headers.get("Cache-Control")
+  );
+}
+
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
 type WorkersCacheLike = {
   // Miniflare currently resolves undefined; production Workers returns the
@@ -194,8 +202,16 @@ function formatCacheTag(tags: readonly string[]): string | null {
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   readonly requiresCompletedResponseAdmission = true;
-  readonly responsePolicyHeaderNames = EDGE_POLICY_HEADERS;
   readonly responseVary = "verbatim" as const;
+
+  isResponsePolicyHeader(name: string): boolean {
+    const normalized = name.toLowerCase();
+    return EDGE_POLICY_HEADERS.some((header) => header.toLowerCase() === normalized);
+  }
+
+  readResponseCacheControl(headers: Headers): string | null {
+    return readCloudflareResponseCacheControl(headers);
+  }
 
   constructor(
     private readonly versionMetadata?: WorkerVersionMetadata,
@@ -294,7 +310,21 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     };
   }
 
-  hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean {
+  hasExplicitNonCacheableResponsePolicy(headers: Headers, baseline?: Headers): boolean {
+    if (baseline) {
+      for (const name of EDGE_POLICY_HEADERS) {
+        const value = headers.get(name);
+        if (value !== baseline.get(name) && value !== null && isNonCacheableCacheControl(value)) {
+          return true;
+        }
+      }
+      const browserPolicy = headers.get("Cache-Control");
+      return Boolean(
+        browserPolicy !== baseline.get("Cache-Control") &&
+        browserPolicy &&
+        isNonCacheableCacheControl(browserPolicy),
+      );
+    }
     return hasExplicitCloudflareNonCacheableResponsePolicy(headers);
   }
 

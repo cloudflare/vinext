@@ -41,7 +41,6 @@ import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
-import { CACHEABILITY_POLICY_HEADERS } from "vinext/shims/cacheability-classification";
 import { resolveBuiltRscEntryPath } from "./server-entry.js";
 import {
   matchesMiddlewarePathname,
@@ -137,7 +136,7 @@ type EmitPrerenderPathManifestOptions = {
   buildIdentity?: CdnCacheAdapterCapabilities["buildIdentity"];
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
   requestRouting?: CdnCacheAdapterCapabilities["requestRouting"];
-  responsePolicyHeaderNames?: CdnCacheAdapterCapabilities["responsePolicyHeaderNames"];
+  isResponsePolicyHeader?: CdnCacheAdapterCapabilities["isResponsePolicyHeader"];
   /** Execute dynamic path hooks against an already-uploaded Worker. */
   pathDiscoveryTarget?: {
     baseUrl: string;
@@ -1106,14 +1105,10 @@ function annotateCacheabilityProbeSafety(
   config: Pick<ResolvedNextConfig, "basePath" | "headers" | "i18n" | "trailingSlash">,
   routeMayResolve: ReadonlySet<string>,
   requestStageMayTerminate: ReadonlySet<string>,
-  responsePolicyHeaderNames: readonly string[],
+  isResponsePolicyHeader: (name: string) => boolean,
 ): Record<string, PrerenderRoutePattern> {
-  const cacheabilityPolicyHeaderNames = new Set([
-    ...CACHEABILITY_POLICY_HEADERS,
-    ...responsePolicyHeaderNames.map((name) => name.trim().toLowerCase()).filter(Boolean),
-  ]);
   const cachePolicyRules = config.headers.filter((rule) =>
-    rule.headers.some((header) => cacheabilityPolicyHeaderNames.has(header.key.toLowerCase())),
+    rule.headers.some((header) => isResponsePolicyHeader(header.key)),
   );
   const matchingPolicyRules = new Map(
     Object.keys(routePatterns).map((pathname) => [
@@ -1552,7 +1547,9 @@ export async function emitPrerenderPathManifest(
     config,
     routeMayResolveWarmPathSet,
     requestStageMayTerminateWarmPathSet,
-    options.responsePolicyHeaderNames ?? [],
+    (name) =>
+      name.trim().toLowerCase() === "cache-control" ||
+      options.isResponsePolicyHeader?.(name) === true,
   );
   for (let index = 0; index < resolvedPagesDataWarmPaths.length; index++) {
     const route = routePatterns[resolvedPagesDataWarmPaths[index]];
