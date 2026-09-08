@@ -310,6 +310,12 @@ export class KVCacheHandler implements CacheHandler {
     let invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified, true);
     if (!invalidated) {
       await this._primeTagCache(entryTags);
+      // The entry-tag hop can race a reset too. Re-prime the complete
+      // validation set until one cache generation survives the whole read.
+      while (softTagCache !== this._tagCache) {
+        softTagCache = this._tagCache;
+        await this._primeTagCache([...new Set([...softTags, ...entryTags])]);
+      }
       invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified);
     }
     if (invalidated) {

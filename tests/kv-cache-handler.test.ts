@@ -1518,6 +1518,27 @@ describe("KVCacheHandler", () => {
       expect(kv.calls.filter((call) => call.keys[0] === "__tag:soft1")).toHaveLength(2);
     });
 
+    it("re-primes soft tags when reset races the entry-tag hop", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      store.set("__tag:soft1", "2000");
+      seedEntry(store, "reset-entry-tags", ["own"]);
+      const raw = JSON.parse(store.get("cache:reset-entry-tags")!);
+      raw.lastModified = 1000;
+      store.set("cache:reset-entry-tags", JSON.stringify(raw));
+
+      const release = kv.hold("__tag:own");
+      const handler = new KVCacheHandler(kv as never);
+      const pending = handler.get("reset-entry-tags", { softTags: ["soft1"] });
+      await flushTasks();
+
+      handler.resetRequestCache();
+      release();
+
+      expect(await pending).toBeNull();
+      expect(kv.calls.filter((call) => call.keys[0] === "__tag:soft1")).toHaveLength(2);
+    });
+
     it("chunks tag marker reads at 100 keys per call", async () => {
       const store = new Map<string, string>();
       const kv = createTracingKV(store);
