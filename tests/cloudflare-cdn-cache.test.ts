@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import createCloudflareCdnCacheAdapter, {
+  encodeCloudflareCacheTag,
   CloudflareCdnCacheAdapter,
 } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
@@ -23,7 +24,16 @@ import {
   finalizeAppPageRscCacheResponse,
 } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
-import { applyCdnResponseIdentityHeaders } from "../packages/vinext/src/server/cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  applyCdnResponseIdentityHeaders,
+  isCdnResponsePolicyHeader,
+} from "../packages/vinext/src/server/cache-control.js";
+import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 import type { RequestContext } from "../packages/vinext/src/config/request-context.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/src/version-headers.js";
@@ -85,6 +95,15 @@ describe("CloudflareCdnCacheAdapter", () => {
 
   it("does not own background revalidation (the edge re-requests origin)", () => {
     expect(adapter.ownsBackgroundRevalidation).toBe(false);
+  });
+
+  it("declares every provider policy header to the generic admission layer", () => {
+    setCdnCacheAdapter(adapter);
+
+    expect(isCdnResponsePolicyHeader("Cache-Control")).toBe(true);
+    expect(isCdnResponsePolicyHeader("CDN-Cache-Control")).toBe(true);
+    expect(isCdnResponsePolicyHeader("Cloudflare-CDN-Cache-Control")).toBe(true);
+    expect(isCdnResponsePolicyHeader("X-Unrelated")).toBe(false);
   });
 
   it("accepts a staged warmup only in its expected Worker version", async () => {
@@ -212,15 +231,15 @@ describe("CloudflareCdnCacheAdapter", () => {
     await expect(adapter.set("k", null)).resolves.toBeUndefined();
   });
 
-  it("carries SWR on CDN-Cache-Control (public + max-age) and revalidates the browser", () => {
+  it("carries SWR on Cloudflare's consumed edge policy and revalidates the browser", () => {
     // A value-less `stale-while-revalidate` is normalized to an explicit window
     // (Cloudflare ignores the bare directive — RFC 5861 requires a value).
     expect(
       adapter.buildResponseHeaders({ cacheControl: "s-maxage=60, stale-while-revalidate" }),
     ).toEqual({
       "Cache-Control": "public, max-age=0, must-revalidate",
-      "CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
-      "Cloudflare-CDN-Cache-Control": null,
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": "public, max-age=60, stale-while-revalidate=31536000",
       "Cache-Tag": null,
     });
   });
@@ -243,17 +262,103 @@ describe("CloudflareCdnCacheAdapter", () => {
       cacheControl: "s-maxage=60",
       tags: ["/blog", "_N_T_/blog", "posts"],
     });
-    expect(headers["Cache-Tag"]).toBe("/blog,_N_T_/blog,posts");
+    expect(headers["Cache-Tag"]).toBe(
+      ["/blog", "_N_T_/blog", "posts"].map(encodeCloudflareCacheTag).join(","),
+    );
     expect(headers["Cache-Control"]).toBe("public, max-age=0, must-revalidate");
-    expect(headers["CDN-Cache-Control"]).toBe("public, max-age=60");
+    expect(headers["CDN-Cache-Control"]).toBeNull();
+    expect(headers["Cloudflare-CDN-Cache-Control"]).toBe("public, max-age=60");
   });
 
-  it("skips tags containing the comma separator or that are too long", () => {
+  it("preserves an empty Next.js tag in response invalidation metadata", () => {
+    const tags = ["", "posts"];
+    const headers = adapter.buildResponseHeaders({ cacheControl: "s-maxage=60", tags });
+    expect(headers["Cache-Tag"]).toBe(tags.map(encodeCloudflareCacheTag).join(","));
+  });
+
+  it("encodes the complete Next-valid set of long Unicode and case-sensitive tags", () => {
+    const tags = [
+      "é".repeat(128),
+      "Product List",
+      "product list",
+      ...Array.from({ length: 125 }, (_, index) => `tag-${index}-${"x".repeat(240)}`),
+    ];
     const headers = adapter.buildResponseHeaders({
       cacheControl: "s-maxage=60",
-      tags: ["a,b", "x".repeat(2000), "ok"],
+      tags,
     });
-    expect(headers["Cache-Tag"]).toBe("ok");
+    expect(headers["Cache-Tag"]).toBe(tags.map(encodeCloudflareCacheTag).join(","));
+    expect(headers["Cache-Tag"]?.split(",")).toHaveLength(128);
+  });
+
+  it("does not alias a raw tag that resembles an encoded platform tag", () => {
+    const encoded = encodeCloudflareCacheTag("posts");
+    expect(encodeCloudflareCacheTag(encoded)).not.toBe(encoded);
+  });
+
+  it("purges digest-shaped raw tags independently from their source tags", async () => {
+    const encoded = encodeCloudflareCacheTag("posts");
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag(["posts", encoded]);
+    });
+    expect(purge).toHaveBeenCalledWith({
+      tags: [encoded, encodeCloudflareCacheTag(encoded)],
+    });
+  });
+
+  it("keeps admitted response tags aligned with later purge tags", async () => {
+    setCdnCacheAdapter(adapter);
+    const encoded = encodeCloudflareCacheTag("posts");
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: { waitUntil() {} },
+        rawManifest: null,
+        registerCacheAdapters() {},
+        request: new Request("https://example.com/posts", {
+          headers: { Accept: "text/html" },
+        }),
+        resolvedRoutePathname: "/posts",
+      },
+      async (context) => {
+        const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+        state.route = { kind: "pages-page", pattern: "/posts" };
+        const headers = new Headers();
+        await runWithExecutionContext(context, () =>
+          applyCdnResponseHeaders(headers, {
+            cacheControl: "s-maxage=60",
+            tags: ["posts"],
+          }),
+        );
+        return new Response("posts", {
+          headers,
+        });
+      },
+    );
+
+    expect(response.headers.get("Cache-Tag")).toBe(encoded);
+
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, () =>
+      adapter.revalidateTag("posts"),
+    );
+    expect(purge).toHaveBeenCalledWith({ tags: [encoded] });
+  });
+
+  it("makes a response uncacheable rather than emitting incomplete tag metadata", () => {
+    expect(
+      adapter.buildResponseHeaders({
+        cacheControl: "s-maxage=60",
+        tags: Array.from({ length: 500 }, (_, index) => `tag-${index}`),
+      }),
+    ).toEqual({
+      "Cache-Control": "no-store",
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": null,
+      "Cache-Tag": null,
+    });
   });
 
   it("returns no-store and clears owned headers when there is no cacheable policy", () => {
@@ -284,7 +389,7 @@ describe("CloudflareCdnCacheAdapter", () => {
 
   it("interprets its own edge policy when checking whether a response opted out", () => {
     expect(
-      adapter.hasExplicitNonCacheableResponsePolicy(
+      adapter.responsePolicy.hasExplicitNonCacheablePolicy(
         new Headers({
           "Cache-Control": "no-store",
           "CDN-Cache-Control": "public, max-age=60",
@@ -292,8 +397,17 @@ describe("CloudflareCdnCacheAdapter", () => {
       ),
     ).toBe(false);
     expect(
-      adapter.hasExplicitNonCacheableResponsePolicy(
+      adapter.responsePolicy.hasExplicitNonCacheablePolicy(
         new Headers({ "Cloudflare-CDN-Cache-Control": "private, no-store" }),
+      ),
+    ).toBe(true);
+    expect(
+      adapter.responsePolicy.hasExplicitNonCacheablePolicy(
+        new Headers({
+          "Cache-Control": "private, no-store",
+          "Cloudflare-CDN-Cache-Control": "public, max-age=60",
+        }),
+        new Headers({ "Cache-Control": "no-store" }),
       ),
     ).toBe(true);
   });
@@ -519,19 +633,29 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("revalidateTag purges the Workers Cache by tag via ctx.cache.purge", async () => {
-    const purge = vi.fn(async () => {});
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
       await adapter.revalidateTag(["posts", "_N_T_/blog"]);
     });
-    expect(purge).toHaveBeenCalledWith({ tags: ["posts", "_N_T_/blog"] });
+    expect(purge).toHaveBeenCalledWith({
+      tags: ["posts", "_N_T_/blog"].map(encodeCloudflareCacheTag),
+    });
   });
 
   it("revalidateTag normalizes a single tag to an array", async () => {
-    const purge = vi.fn(async () => {});
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
       await adapter.revalidateTag("posts");
     });
-    expect(purge).toHaveBeenCalledWith({ tags: ["posts"] });
+    expect(purge).toHaveBeenCalledWith({ tags: [encodeCloudflareCacheTag("posts")] });
+  });
+
+  it("revalidateTag purges an empty Next.js tag", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag("");
+    });
+    expect(purge).toHaveBeenCalledWith({ tags: [encodeCloudflareCacheTag("")] });
   });
 
   it("revalidateTag is a no-op when the Workers Cache is absent (e.g. Node dev)", async () => {
@@ -540,11 +664,23 @@ describe("CloudflareCdnCacheAdapter", () => {
   });
 
   it("revalidateTag does not purge for an empty tag set", async () => {
-    const purge = vi.fn(async () => {});
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
     await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
       await adapter.revalidateTag([]);
     });
     expect(purge).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a resolved Workers Cache purge failure", async () => {
+    const purge = vi.fn(async () => ({
+      errors: [{ code: 10000, message: "rate limited" }],
+      success: false,
+    }));
+    await expect(
+      runWithExecutionContext({ waitUntil() {}, cache: { purge } }, () =>
+        adapter.revalidateTag("posts"),
+      ),
+    ).rejects.toThrow("Workers Cache purge failed: 10000: rate limited");
   });
 });
 

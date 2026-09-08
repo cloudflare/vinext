@@ -1,6 +1,7 @@
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   applyCdnResponseHeaders,
+  captureCdnResponsePolicyHeaders,
   buildRevalidateCacheControl,
   hasExplicitNonCacheableResponsePolicy,
   NO_STORE_CACHE_CONTROL,
@@ -193,7 +194,7 @@ function finalizeEvaluatedAppPageResponse(
   if (!isRouteCacheabilityEvaluation()) return null;
   const complete = deferRouteCacheability();
   if (!complete) return response;
-  captureRouteCacheabilityResponsePolicy(response.headers);
+  captureRouteCacheabilityResponsePolicy(captureCdnResponsePolicyHeaders(response.headers));
 
   let completed = false;
   const finish = (): void => {

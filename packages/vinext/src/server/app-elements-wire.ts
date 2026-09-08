@@ -16,6 +16,12 @@ import { releaseAppElementRenderDependency } from "./app-render-dependency.js";
 import type { BfcacheSegmentIdentity } from "./bfcache-identity.js";
 import { compareStrings } from "../utils/compare.js";
 import { isUnknownRecord } from "../utils/record.js";
+import {
+  createAppElementsWireSlotId,
+  isAppElementsWireSlotId,
+  parseAppElementsWireElementKey,
+  type AppElementsWireElementKey,
+} from "./app-elements-wire-key.js";
 
 const APP_INTERCEPTION_SEPARATOR = "\0";
 const LEGACY_APP_SOURCE_PAGE_KEY = "__sourcePage";
@@ -214,13 +220,6 @@ type AppElementsMetadata = {
   sourcePage: string | null;
 };
 
-type AppElementsWireElementKey =
-  | { kind: "layout"; treePath: string }
-  | { interceptionContext: string | null; kind: "page"; path: string }
-  | { interceptionContext: string | null; kind: "route"; path: string }
-  | { kind: "slot"; name: string; treePath: string }
-  | { kind: "template"; treePath: string };
-
 type AppElementsWireMetadataInput = {
   dynamicStaleTimeSeconds?: number;
   interception?: AppElementsInterception | null;
@@ -332,81 +331,13 @@ function createAppPayloadTemplateId(treePath: string): string {
   return `template:${treePath}`;
 }
 
-function createAppPayloadSlotId(slotName: string, treePath: string): string {
-  return `slot:${slotName}:${treePath}`;
-}
-
 function createAppPayloadCacheKey(rscUrl: string, interceptionContext: string | null): string {
   return appendInterceptionContext(rscUrl, interceptionContext);
-}
-
-function parsePathWithInterception(input: string): {
-  interceptionContext: string | null;
-  path: string;
-} | null {
-  const separatorIndex = input.indexOf(APP_INTERCEPTION_SEPARATOR);
-  const path = separatorIndex === -1 ? input : input.slice(0, separatorIndex);
-  if (!path.startsWith("/")) return null;
-
-  return {
-    interceptionContext: separatorIndex === -1 ? null : input.slice(separatorIndex + 1),
-    path,
-  };
-}
-
-/**
- * AppElements tree paths are absolute route-tree paths on the wire.
- * Bare segment names are not valid layout/template/slot tree identities.
- */
-function parseTreePath(input: string): string | null {
-  return input.startsWith("/") ? input : null;
-}
-
-function parseAppElementsWireElementKey(key: string): AppElementsWireElementKey | null {
-  if (key.startsWith("route:")) {
-    const parsed = parsePathWithInterception(key.slice("route:".length));
-    if (!parsed) return null;
-    return { interceptionContext: parsed.interceptionContext, kind: "route", path: parsed.path };
-  }
-
-  if (key.startsWith("page:")) {
-    const parsed = parsePathWithInterception(key.slice("page:".length));
-    if (!parsed) return null;
-    return { interceptionContext: parsed.interceptionContext, kind: "page", path: parsed.path };
-  }
-
-  if (key.startsWith("layout:")) {
-    const treePath = parseTreePath(key.slice("layout:".length));
-    return treePath ? { kind: "layout", treePath } : null;
-  }
-
-  if (key.startsWith("template:")) {
-    const treePath = parseTreePath(key.slice("template:".length));
-    return treePath ? { kind: "template", treePath } : null;
-  }
-
-  if (key.startsWith("slot:")) {
-    const body = key.slice("slot:".length);
-    const separatorIndex = body.indexOf(":");
-    if (separatorIndex <= 0) return null;
-    const name = body.slice(0, separatorIndex);
-    const treePath = parseTreePath(body.slice(separatorIndex + 1));
-    return treePath ? { kind: "slot", name, treePath } : null;
-  }
-
-  return null;
 }
 
 function isAppElementsWireBfcacheIdentityId(key: string): boolean {
   const kind = parseAppElementsWireElementKey(key)?.kind;
   return kind === "page" || kind === "layout" || kind === "template" || kind === "slot";
-}
-
-function isAppElementsWireSlotId(key: string): boolean {
-  if (!key.startsWith("slot:")) return false;
-  const body = key.slice("slot:".length);
-  const separatorIndex = body.indexOf(":");
-  return separatorIndex > 0 && body.charCodeAt(separatorIndex + 1) === 0x2f;
 }
 
 function isSourcePageSegments(value: unknown): value is readonly string[] {
@@ -975,7 +906,7 @@ export const AppElementsWire: AppElementsWireCodec = {
   encodeOutgoingPayload: buildOutgoingAppPayload,
   encodePageId: createAppPayloadPageId,
   encodeRouteId: createAppPayloadRouteId,
-  encodeSlotId: createAppPayloadSlotId,
+  encodeSlotId: createAppElementsWireSlotId,
   encodeTemplateId: createAppPayloadTemplateId,
   isSlotId: isAppElementsWireSlotId,
   parseElementKey: parseAppElementsWireElementKey,

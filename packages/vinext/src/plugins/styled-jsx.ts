@@ -38,14 +38,12 @@ function hasStyledJsxTag(source: string, id: string): boolean {
   walkAst(ast, (node) => {
     if (found) return false;
     if (node.type === "JSXOpeningElement") {
-      const name = node.name as { type?: string; name?: string } | undefined;
-      if (name?.type === "JSXIdentifier" && name.name === "style") {
-        const attributes = node.attributes as Array<Record<string, unknown>> | undefined;
+      const name = node.name;
+      if (name.type === "JSXIdentifier" && name.name === "style") {
         if (
-          attributes?.some((attribute) => {
+          node.attributes.some((attribute) => {
             if (attribute.type !== "JSXAttribute") return false;
-            const attributeName = attribute.name as { type?: string; name?: string } | undefined;
-            return attributeName?.type === "JSXIdentifier" && attributeName.name === "jsx";
+            return attribute.name.type === "JSXIdentifier" && attribute.name.name === "jsx";
           })
         ) {
           found = true;

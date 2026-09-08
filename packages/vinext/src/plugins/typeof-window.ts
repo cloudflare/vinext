@@ -1,14 +1,11 @@
 import path from "pathslash";
-import { parseAst } from "vite";
+import { parseAst, type ESTree } from "vite";
 import MagicString from "magic-string";
 import {
   booleanLiteralValue,
   collectBindingNames,
   forEachAstChild,
-  hasRange,
-  isAstRecord,
   isIdentifierNamed,
-  nodeArray,
   stringLiteralValue,
 } from "./ast-utils.js";
 import {
@@ -43,15 +40,13 @@ export type ConsumerEnvironmentReplacements = {
   pruneUnreachableImports?: boolean;
 };
 
-type AstNode = Parameters<typeof forEachAstChild>[0];
-
 type EnvironmentLike = {
   config: {
     consumer: "client" | "server";
   };
 };
 
-function createChildScope(node: AstNode, parent: AstScope): AstScope | null {
+function createChildScope(node: ESTree.Node, parent: AstScope): AstScope | null {
   if (
     node.type !== "Program" &&
     node.type !== "BlockStatement" &&
@@ -92,15 +87,14 @@ export function getTypeofWindowReplacement(environment: EnvironmentLike): Window
 }
 
 function evaluateTypeofWindowComparison(
-  node: unknown,
+  node: ESTree.Node,
   replacement: WindowType,
   scope: AstScope,
 ): boolean | null {
-  if (!isAstRecord(node) || node.type !== "BinaryExpression") return null;
+  if (node.type !== "BinaryExpression") return null;
   if (!["==", "===", "!=", "!=="].includes(String(node.operator))) return null;
 
-  const left = isAstRecord(node.left) ? node.left : null;
-  const right = isAstRecord(node.right) ? node.right : null;
+  const { left, right } = node;
   const leftIsTypeofWindow =
     left?.type === "UnaryExpression" &&
     left.operator === "typeof" &&
@@ -123,12 +117,9 @@ function evaluateTypeofWindowComparison(
   return node.operator === "==" || node.operator === "===" ? equal : !equal;
 }
 
-function isProcessBrowserMember(node: unknown, scope: AstScope): boolean {
-  const candidate =
-    isAstRecord(node) && node.type === "ChainExpression" && isAstRecord(node.expression)
-      ? node.expression
-      : node;
-  if (!isAstRecord(candidate) || candidate.type !== "MemberExpression") {
+function isProcessBrowserMember(node: ESTree.Node, scope: AstScope): boolean {
+  const candidate = node.type === "ChainExpression" ? node.expression : node;
+  if (candidate.type !== "MemberExpression") {
     return false;
   }
   return (
@@ -141,16 +132,16 @@ function isProcessBrowserMember(node: unknown, scope: AstScope): boolean {
 }
 
 function evaluateProcessBrowserCondition(
-  node: unknown,
+  node: ESTree.Node,
   replacement: boolean,
   scope: AstScope,
 ): boolean | null {
   if (isProcessBrowserMember(node, scope)) return replacement;
-  if (isAstRecord(node) && node.type === "UnaryExpression" && node.operator === "!") {
+  if (node.type === "UnaryExpression" && node.operator === "!") {
     const value = evaluateProcessBrowserCondition(node.argument, replacement, scope);
     return value === null ? null : !value;
   }
-  if (!isAstRecord(node) || node.type !== "BinaryExpression") return null;
+  if (node.type !== "BinaryExpression") return null;
   if (!["==", "===", "!=", "!=="].includes(String(node.operator))) return null;
 
   const leftIsProcessBrowser = isProcessBrowserMember(node.left, scope);
@@ -168,15 +159,15 @@ function evaluateProcessBrowserCondition(
 
 type EvaluatedCondition = {
   value: boolean;
-  effects: AstNode[];
+  effects: ESTree.Node[];
 };
 
 function evaluateConsumerCondition(
-  node: unknown,
+  node: ESTree.Node,
   replacements: ConsumerEnvironmentReplacements,
   scope: AstScope,
 ): EvaluatedCondition | null {
-  if (isAstRecord(node) && node.type === "LogicalExpression") {
+  if (node.type === "LogicalExpression") {
     const left = evaluateConsumerCondition(node.left, replacements, scope);
     if (node.operator === "&&") {
       if (left?.value === false) return left;
@@ -188,8 +179,7 @@ function evaluateConsumerCondition(
       if (
         replacements.pruneUnreachableImports &&
         right?.value === false &&
-        right.effects.length === 0 &&
-        isAstRecord(node.left)
+        right.effects.length === 0
       ) {
         return { value: false, effects: [node.left] };
       }
@@ -203,8 +193,7 @@ function evaluateConsumerCondition(
       if (
         replacements.pruneUnreachableImports &&
         right?.value === true &&
-        right.effects.length === 0 &&
-        isAstRecord(node.left)
+        right.effects.length === 0
       ) {
         return { value: true, effects: [node.left] };
       }
@@ -256,7 +245,6 @@ export function replaceConsumerEnvironmentConditions(
 
   const output = new MagicString(code);
   let changed = false;
-  if (!isAstRecord(ast)) return null;
 
   function overwriteGap(start: number, end: number, content: string): void {
     if (start === end) {
@@ -270,60 +258,57 @@ export function replaceConsumerEnvironmentConditions(
   collectDirectScopeBindings(ast, rootScope);
   collectVarScopeBindings(ast, rootScope);
 
-  function visit(node: AstNode, parentScope: AstScope): void {
+  function visit(node: ESTree.Node, parentScope: AstScope): void {
     if (isFunctionNode(node)) {
       const parameterScope = createAstScope(parentScope);
       collectBindingNames(node.id, parameterScope.bindings);
-      for (const parameter of nodeArray(node.params)) {
+      for (const parameter of node.params) {
         collectBindingNames(parameter, parameterScope.bindings);
-        if (isAstRecord(parameter)) visit(parameter, parameterScope);
+        visit(parameter, parameterScope);
       }
 
-      if (isAstRecord(node.body)) {
-        if (node.body.type === "BlockStatement") {
-          const bodyScope = createAstScope(parameterScope);
-          collectDirectScopeBindings(node.body, bodyScope);
-          collectVarScopeBindings(node.body, bodyScope);
-          visit(node.body, bodyScope);
-        } else {
-          visit(node.body, parameterScope);
-        }
+      if (!node.body) return;
+      if (node.body.type === "BlockStatement") {
+        const bodyScope = createAstScope(parameterScope);
+        collectDirectScopeBindings(node.body, bodyScope);
+        collectVarScopeBindings(node.body, bodyScope);
+        visit(node.body, bodyScope);
+      } else {
+        visit(node.body, parameterScope);
       }
       return;
     }
 
     if (node.type === "SwitchStatement") {
-      if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
+      visit(node.discriminant, parentScope);
       const switchScope = createAstScope(parentScope);
       collectSwitchScopeBindings(node, switchScope);
-      for (const switchCase of nodeArray(node.cases)) {
-        if (isAstRecord(switchCase)) visit(switchCase, switchScope);
-      }
+      for (const switchCase of node.cases) visit(switchCase, switchScope);
       return;
     }
 
     const scope = createChildScope(node, parentScope) ?? parentScope;
 
-    if (node.type === "IfStatement" && hasRange(node)) {
+    if (node.type === "IfStatement") {
       const result = evaluateConsumerCondition(node.test, replacements, scope);
       if (result !== null) {
         const selected = result.value ? node.consequent : node.alternate;
         if (result.effects.length > 0) {
-          const effects = result.effects.filter(hasRange);
+          const effects = result.effects;
           for (const effect of effects) visit(effect, scope);
-          if (isAstRecord(selected) && hasRange(selected)) visit(selected, scope);
+          if (selected) visit(selected, scope);
           overwriteGap(node.start, effects[0].start, "{ (");
           for (let index = 1; index < effects.length; index++) {
             overwriteGap(effects[index - 1].end, effects[index].start, "); (");
           }
           const lastEffect = effects.at(-1)!;
-          if (isAstRecord(selected) && hasRange(selected)) {
+          if (selected) {
             overwriteGap(lastEffect.end, selected.start, "); ");
             overwriteGap(selected.end, node.end, " }");
           } else {
             overwriteGap(lastEffect.end, node.end, "); }");
           }
-        } else if (isAstRecord(selected) && hasRange(selected)) {
+        } else if (selected) {
           output.remove(node.start, selected.start);
           output.remove(selected.end, node.end);
           visit(selected, scope);
@@ -335,12 +320,12 @@ export function replaceConsumerEnvironmentConditions(
       }
     }
 
-    if (node.type === "ConditionalExpression" && hasRange(node)) {
+    if (node.type === "ConditionalExpression") {
       const result = evaluateConsumerCondition(node.test, replacements, scope);
       const selected = result?.value ? node.consequent : node.alternate;
-      if (result !== null && isAstRecord(selected) && hasRange(selected)) {
+      if (result !== null) {
         if (result.effects.length > 0) {
-          const effects = result.effects.filter(hasRange);
+          const effects = result.effects;
           for (const effect of effects) visit(effect, scope);
           visit(selected, scope);
           overwriteGap(node.start, effects[0].start, "((");
@@ -363,10 +348,10 @@ export function replaceConsumerEnvironmentConditions(
       }
     }
 
-    if (node.type === "LogicalExpression" && hasRange(node)) {
+    if (node.type === "LogicalExpression") {
       const result = evaluateConsumerCondition(node, replacements, scope);
       if (result !== null) {
-        const effects = result.effects.filter(hasRange);
+        const effects = result.effects;
         if (effects.length > 0) {
           for (const effect of effects) visit(effect, scope);
           overwriteGap(node.start, effects[0].start, "((");
@@ -387,19 +372,14 @@ export function replaceConsumerEnvironmentConditions(
       node.operator === "typeof" &&
       isIdentifierNamed(node.argument, "window") &&
       replacements.typeofWindow !== undefined &&
-      !hasAstBinding(scope, "window") &&
-      hasRange(node)
+      !hasAstBinding(scope, "window")
     ) {
       output.overwrite(node.start, node.end, JSON.stringify(replacements.typeofWindow));
       changed = true;
       return;
     }
 
-    if (
-      replacements.processBrowser !== undefined &&
-      isProcessBrowserMember(node, scope) &&
-      hasRange(node)
-    ) {
+    if (replacements.processBrowser !== undefined && isProcessBrowserMember(node, scope)) {
       output.overwrite(node.start, node.end, String(replacements.processBrowser));
       changed = true;
       return;
@@ -408,9 +388,7 @@ export function replaceConsumerEnvironmentConditions(
     forEachAstChild(node, (child) => visit(child, scope));
   }
 
-  for (const node of ast.body) {
-    if (isAstRecord(node)) visit(node, rootScope);
-  }
+  for (const node of ast.body) visit(node, rootScope);
   if (!changed) return null;
 
   return magicStringTransformResult(output);

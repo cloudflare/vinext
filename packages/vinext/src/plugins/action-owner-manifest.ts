@@ -36,6 +36,7 @@ export function createActionOwnerManifestPlugin(options: {
   let config: ResolvedConfig;
   let routeReachability: ActionOwnerRouteReachability = new Map();
   let manifest: Record<string, string[]> = {};
+  const rscOutputDirs = new Set<string>();
 
   return {
     name: "vinext:action-owner-manifest",
@@ -50,6 +51,11 @@ export function createActionOwnerManifestPlugin(options: {
     },
     load(id) {
       if (id === RESOLVED_ACTION_OWNER_MANIFEST_ID) return "export default null";
+    },
+    outputOptions(output) {
+      if (this.environment.name === "rsc" && output.dir) {
+        rscOutputDirs.add(output.dir);
+      }
     },
     async generateBundle() {
       const manager = await options.getManager(config);
@@ -95,14 +101,21 @@ export function createActionOwnerManifestPlugin(options: {
     buildApp: {
       order: "post",
       async handler(builder) {
-        const outDir = builder.config.environments.rsc.build.outDir;
-        await fs.promises.mkdir(outDir, { recursive: true });
-        await fs.promises.writeFile(
-          path.join(outDir, ACTION_OWNER_MANIFEST_FILE),
-          `export default ${safeJsonStringify(manifest)};\n`,
+        if (rscOutputDirs.size === 0) {
+          rscOutputDirs.add(builder.config.environments.rsc.build.outDir);
+        }
+        await Promise.all(
+          [...rscOutputDirs].map(async (outDir) => {
+            await fs.promises.mkdir(outDir, { recursive: true });
+            await fs.promises.writeFile(
+              path.join(outDir, ACTION_OWNER_MANIFEST_FILE),
+              `export default ${safeJsonStringify(manifest)};\n`,
+            );
+          }),
         );
         routeReachability = new Map();
         manifest = {};
+        rscOutputDirs.clear();
         options.onComplete?.();
       },
     },

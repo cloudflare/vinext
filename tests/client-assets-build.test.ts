@@ -76,6 +76,14 @@ describe("client asset sidecar builds", () => {
 
       const rscEntry = await fs.readFile(path.join(rscOutDir, "index.js"), "utf8");
       expect(rscEntry).toContain("./vinext-client-assets.js");
+
+      const adjacentServerManifest = await fs.readFile(
+        path.join(rscOutDir, "vinext-server.json"),
+        "utf8",
+      );
+      expect(
+        await fs.readFile(path.join(fixtureRoot, "dist/server/vinext-server.json"), "utf8"),
+      ).toBe(adjacentServerManifest);
     } finally {
       await fs.rm(fixtureRoot, { recursive: true, force: true });
       await fs.rm(outRoot, { recursive: true, force: true });

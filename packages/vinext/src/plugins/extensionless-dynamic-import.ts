@@ -2,16 +2,12 @@ import MagicString from "magic-string";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path, { toSlash } from "pathslash";
-import { parseAst, type Alias, type Plugin } from "vite";
+import { parseAst, type Alias, type ESTree, type Plugin } from "vite";
 import {
   DYNAMIC_IMPORT_PRESCAN,
-  hasRange,
-  isAstRecord,
-  nodeArray,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   walkAst,
-  type AstRecord,
 } from "./ast-utils.js";
 import { createTransformCache } from "./transform-cache.js";
 import { magicStringTransformResult } from "./transform-result.js";
@@ -122,7 +118,7 @@ function transformExtensionlessImports(
 ): TransformResult {
   const lang = scriptParserLanguage(id)!;
 
-  let ast: unknown;
+  let ast: ReturnType<typeof parseAst>;
   try {
     ast = parseAst(code, { lang });
   } catch {
@@ -148,7 +144,7 @@ function transformExtensionlessImports(
 }
 
 function collectExtensionlessImports(
-  ast: unknown,
+  ast: ESTree.Program,
   code: string,
   config: TransformConfig,
   id: string,
@@ -166,19 +162,17 @@ function collectExtensionlessImports(
 }
 
 function parseExtensionlessImport(
-  node: AstRecord,
+  node: ESTree.Node,
   code: string,
   config: TransformConfig,
   id: string,
 ): ExtensionlessImport | null {
-  if (node.type !== "ImportExpression" || !hasRange(node)) return null;
+  if (node.type !== "ImportExpression") return null;
   if (node.options != null) return null;
   const source = node.source;
-  if (!isAstRecord(source) || source.type !== "TemplateLiteral" || !hasRange(source)) return null;
-  if (nodeArray(source.expressions).length === 0) return null;
+  if (source.type !== "TemplateLiteral" || source.expressions.length === 0) return null;
 
-  const quasis = nodeArray(source.quasis);
-  const quasiTexts = quasis.map(templateElementText);
+  const quasiTexts = source.quasis.map(templateElementText);
   if (quasiTexts.some((text) => text == null)) return null;
   const texts = quasiTexts as string[];
   const first = texts[0];
@@ -666,11 +660,8 @@ function isImportPrefix(value: string): boolean {
   return true;
 }
 
-function templateElementText(value: unknown): string | null {
-  if (!isAstRecord(value) || value.type !== "TemplateElement") return null;
-  const templateValue = value.value;
-  if (typeof templateValue !== "object" || templateValue === null) return null;
-  const cooked = Reflect.get(templateValue, "cooked");
+function templateElementText(value: ESTree.TemplateElement): string | null {
+  const { cooked } = value.value;
   return typeof cooked === "string" ? cooked : null;
 }
 

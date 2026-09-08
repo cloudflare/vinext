@@ -33,7 +33,7 @@ import {
   extractDocumentAssetProps,
 } from "./pages-document-asset-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
-import { NEXTJS_CACHE_HEADER } from "./headers.js";
+import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
 import { matchesIfNoneMatch } from "./http-conditional.js";
 
 // ---------------------------------------------------------------------------
@@ -710,6 +710,10 @@ export async function renderPagesPageResponse(
     });
     if (options.isOnDemandRevalidate) {
       responseHeaders.set(NEXTJS_CACHE_HEADER, "REVALIDATED");
+      responseHeaders.set(
+        VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+        encodeCacheTag(`_N_T_${stem || "/"}`),
+      );
     } else {
       setCacheStateHeaders(responseHeaders, "MISS");
     }

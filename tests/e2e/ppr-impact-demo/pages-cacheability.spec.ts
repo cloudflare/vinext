@@ -1,9 +1,20 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIResponse } from "@playwright/test";
 import fs from "node:fs";
 
 const probeHeader = "X-Vinext-Cacheability-Probe";
 const secretHeader = "X-Vinext-Prerender-Secret";
 const buildId = "ppr-impact-demo-cacheability";
+
+function expectGatewayRevalidation(response: APIResponse, label: string): void {
+  expect(response.headers()["cache-control"], label).toContain("max-age=0");
+  expect(response.headers()["cache-control"], label).toContain("must-revalidate");
+  expect(response.headers()["cdn-cache-control"], label).toBeUndefined();
+}
+
+function expectPrivateGateway(response: APIResponse, label: string): void {
+  expect(response.headers()["cache-control"], label).toMatch(/(?:private|no-store)/);
+  expect(response.headers()["cdn-cache-control"], label).toBeUndefined();
+}
 
 function prerenderSecret(): string {
   const manifest = JSON.parse(
@@ -89,20 +100,13 @@ test("classifies Pages Router data contracts inside the staged Worker", async ({
     version: 1,
   });
 
-  for (const [pathname, reason] of [
-    ["/cacheability-pages/middleware", "middleware is eligible for this pathname"],
-    [
-      "/cacheability-pages/config-header",
-      "next.config headers depend on request headers, cookies, or hostnames",
-    ],
-    [
-      "/cacheability-pages/conditional-redirect",
-      "next.config redirect depends on request headers, cookies, or hostnames",
-    ],
-    [
-      "/cacheability-pages/conditional-rewrite",
-      "next.config rewrite depends on request headers, cookies, or hostnames",
-    ],
+  // Middleware and request-conditioned config rules execute in the uncached
+  // request stage. Probe the reusable Pages render beneath those rules.
+  for (const pathname of [
+    "/cacheability-pages/middleware",
+    "/cacheability-pages/config-header",
+    "/cacheability-pages/conditional-redirect",
+    "/cacheability-pages/conditional-rewrite",
   ] as const) {
     const response = await request.get(pathname, {
       headers: { ...headers, Accept: "text/html" },
@@ -111,8 +115,7 @@ test("classifies Pages Router data contracts inside the staged Worker", async ({
     await expect(response.json(), pathname).resolves.toMatchObject({
       kind: "pages-page",
       pattern: pathname,
-      reason,
-      state: "dynamic",
+      state: "static-candidate",
       status: 200,
       version: 1,
     });
@@ -130,7 +133,7 @@ test("admits pattern-backed Pages Router responses after each completed render",
   ]) {
     const response = await request.get(pathname, { headers: { Accept: "text/html" } });
     expect(response.status(), pathname).toBe(200);
-    expect(response.headers()["cdn-cache-control"], pathname).toContain("max-age=60");
+    expectGatewayRevalidation(response, pathname);
   }
 
   for (const pathname of [
@@ -142,7 +145,7 @@ test("admits pattern-backed Pages Router responses after each completed render",
     const response = await request.get(pathname, { headers: { Accept: "application/json" } });
     expect(response.status(), pathname).toBe(200);
     expect(response.headers()["content-type"], pathname).toContain("application/json");
-    expect(response.headers()["cdn-cache-control"], pathname).toContain("max-age=60");
+    expectGatewayRevalidation(response, pathname);
   }
 
   for (const pathname of [
@@ -153,7 +156,7 @@ test("admits pattern-backed Pages Router responses after each completed render",
       headers: { Accept: pathname.includes("/_next/data/") ? "application/json" : "text/html" },
     });
     expect(response.status(), pathname).toBe(200);
-    expect(response.headers()["cdn-cache-control"], pathname).toContain("max-age=36");
+    expectGatewayRevalidation(response, pathname);
   }
 
   for (const pathname of [
@@ -178,16 +181,14 @@ test("keeps middleware cookie variants private", async ({ request }) => {
   });
   expect(middlewarePublic.status()).toBe(200);
   expect(middlewarePublic.headers()["x-cacheability-middleware"]).toBeUndefined();
-  expect(middlewarePublic.headers()["cache-control"]).toContain("no-store");
-  expect(middlewarePublic.headers()["cdn-cache-control"]).toBeUndefined();
+  expectPrivateGateway(middlewarePublic, "public middleware variant");
 
   const middlewarePrivate = await request.get("/cacheability-pages/middleware", {
     headers: { Accept: "text/html", Cookie: "variant=private" },
   });
   expect(middlewarePrivate.status()).toBe(200);
   expect(middlewarePrivate.headers()["x-cacheability-middleware"]).toBe("matched");
-  expect(middlewarePrivate.headers()["cache-control"]).toContain("no-store");
-  expect(middlewarePrivate.headers()["cdn-cache-control"]).toBeUndefined();
+  expectPrivateGateway(middlewarePrivate, "private middleware variant");
 
   const dataPath = `/_next/data/${buildId}/cacheability-pages/middleware.json`;
   for (const cookie of [undefined, "variant=private"]) {
@@ -198,8 +199,7 @@ test("keeps middleware cookie variants private", async ({ request }) => {
       },
     });
     expect(response.status(), cookie ?? "public").toBe(200);
-    expect(response.headers()["cache-control"], cookie ?? "public").toContain("no-store");
-    expect(response.headers()["cdn-cache-control"], cookie ?? "public").toBeUndefined();
+    expectPrivateGateway(response, cookie ?? "public");
   }
 });
 
@@ -209,16 +209,14 @@ test("keeps config-header cookie variants private", async ({ request }) => {
   });
   expect(configPublic.status()).toBe(200);
   expect(configPublic.headers()["x-cacheability-config"]).toBeUndefined();
-  expect(configPublic.headers()["cache-control"]).toContain("no-store");
-  expect(configPublic.headers()["cdn-cache-control"]).toBeUndefined();
+  expectPrivateGateway(configPublic, "public config variant");
 
   const configPrivate = await request.get("/cacheability-pages/config-header", {
     headers: { Accept: "text/html", Cookie: "variant=private" },
   });
   expect(configPrivate.status()).toBe(200);
   expect(configPrivate.headers()["x-cacheability-config"]).toBe("private");
-  expect(configPrivate.headers()["cache-control"]).toContain("no-store");
-  expect(configPrivate.headers()["cdn-cache-control"]).toBeUndefined();
+  expectPrivateGateway(configPrivate, "private config variant");
 
   const dataPath = `/_next/data/${buildId}/cacheability-pages/config-header.json`;
   for (const cookie of [undefined, "variant=private"]) {
@@ -229,8 +227,7 @@ test("keeps config-header cookie variants private", async ({ request }) => {
       },
     });
     expect(response.status(), cookie ?? "public").toBe(200);
-    expect(response.headers()["cache-control"], cookie ?? "public").toContain("no-store");
-    expect(response.headers()["cdn-cache-control"], cookie ?? "public").toBeUndefined();
+    expectPrivateGateway(response, cookie ?? "public");
   }
 });
 
