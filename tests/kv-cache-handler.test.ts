@@ -1448,6 +1448,35 @@ describe("KVCacheHandler", () => {
       expect(await handler.get("after", { softTags: ["soft1"] })).toBeNull();
     });
 
+    it("a newer same-millisecond prime wins over an older detached prime", async () => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      const releaseOld = kv.hold("__tag:soft1");
+      const handler = new KVCacheHandler(kv as never);
+
+      try {
+        // The detached miss snapshots no marker and remains in flight.
+        expect(await handler.get("absent", { softTags: ["soft1"] })).toBeNull();
+
+        // A newer hit snapshots the marker in the same millisecond.
+        store.set("__tag:soft1", "2000");
+        seedEntry(store, "same-millisecond", []);
+        const releaseNew = kv.hold("__tag:soft1");
+        const pending = handler.get("same-millisecond", { softTags: ["soft1"] });
+
+        // Let the older null result populate first, then the newer marker.
+        releaseOld();
+        await flushTasks();
+        releaseNew();
+
+        expect(await pending).toBeNull();
+      } finally {
+        releaseOld();
+        now.mockRestore();
+      }
+    });
+
     it("a detached prime does not repopulate the tag cache after reset", async () => {
       const store = new Map<string, string>();
       const kv = createTracingKV(store);

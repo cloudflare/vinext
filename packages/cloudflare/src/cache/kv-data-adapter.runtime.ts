@@ -195,7 +195,9 @@ export class KVCacheHandler implements CacheHandler {
   private ttlSeconds: number;
 
   /** Local in-memory cache for tag invalidation timestamps. Avoids redundant KV reads. */
-  private _tagCache = new Map<string, { timestamp: number; fetchedAt: number }>();
+  private _tagCache = new Map<string, { timestamp: number; fetchedAt: number; order: number }>();
+  /** Monotonic ordering for concurrent tag-cache fills and local invalidations. */
+  private _tagCacheOrder = 0;
   /** TTL (ms) for local tag cache entries. After this, re-fetch from KV. */
   private _tagCacheTtl: number;
 
@@ -363,14 +365,16 @@ export class KVCacheHandler implements CacheHandler {
     });
     if (missing.length === 0) return;
 
+    const order = ++this._tagCacheOrder;
     const markers = await this._readTagMarkers(missing.map((tag) => this._tagKey(tag)));
     for (const tag of missing) {
       // A revalidateTag() landed while this read was in flight. Its marker is
-      // newer than anything this read can report, so leave it in place.
+      // newer than anything this read can report, so leave it in place. The
+      // order also distinguishes concurrent reads started in the same millisecond.
       const current = tagCache.get(tag);
-      if (current && current.fetchedAt >= now) continue;
+      if (current && current.order >= order) continue;
       const marker = markers.get(this._tagKey(tag));
-      tagCache.set(tag, { timestamp: marker ? Number(marker) : 0, fetchedAt: now });
+      tagCache.set(tag, { timestamp: marker ? Number(marker) : 0, fetchedAt: now, order });
     }
   }
 
@@ -527,10 +531,11 @@ export class KVCacheHandler implements CacheHandler {
         }),
       ),
     );
+    const order = ++this._tagCacheOrder;
     // Update local tag cache immediately so invalidations are reflected
     // without waiting for the TTL to expire
     for (const tag of validTags) {
-      this._tagCache.set(tag, { timestamp: now, fetchedAt: now });
+      this._tagCache.set(tag, { timestamp: now, fetchedAt: now, order });
     }
   }
 
