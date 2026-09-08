@@ -389,7 +389,7 @@ describe("CloudflareCdnCacheAdapter", () => {
 
   it("interprets its own edge policy when checking whether a response opted out", () => {
     expect(
-      adapter.hasExplicitNonCacheableResponsePolicy(
+      adapter.responsePolicy.hasExplicitNonCacheablePolicy(
         new Headers({
           "Cache-Control": "no-store",
           "CDN-Cache-Control": "public, max-age=60",
@@ -397,12 +397,12 @@ describe("CloudflareCdnCacheAdapter", () => {
       ),
     ).toBe(false);
     expect(
-      adapter.hasExplicitNonCacheableResponsePolicy(
+      adapter.responsePolicy.hasExplicitNonCacheablePolicy(
         new Headers({ "Cloudflare-CDN-Cache-Control": "private, no-store" }),
       ),
     ).toBe(true);
     expect(
-      adapter.hasExplicitNonCacheableResponsePolicy(
+      adapter.responsePolicy.hasExplicitNonCacheablePolicy(
         new Headers({
           "Cache-Control": "private, no-store",
           "Cloudflare-CDN-Cache-Control": "public, max-age=60",

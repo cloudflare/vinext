@@ -59,6 +59,19 @@ export type CdnCacheableHeaderInput = {
   tags?: readonly string[];
 };
 
+export type CdnResponsePolicy = {
+  /** Whether a provider-specific response header controls shared caching. */
+  isHeader(name: string): boolean;
+  /**
+   * Read the effective shared-cache policy from a response. The returned value
+   * uses Cache-Control syntax so core can apply the framework's cacheability
+   * rules without knowing which provider header carried it.
+   */
+  readCacheControl(headers: Headers): string | null;
+  /** Whether provider policy explicitly opts out of storage. */
+  hasExplicitNonCacheablePolicy(headers: Headers, baseline?: Headers): boolean;
+};
+
 /** Whether a Cache-Control value contains an exact non-cacheable directive. */
 export function isNonCacheableCacheControl(cacheControl: string): boolean {
   let start = 0;
@@ -104,15 +117,8 @@ export type CdnCacheAdapter = {
    */
   readonly responseVary?: "verbatim";
 
-  /** Whether a provider-specific response header controls shared caching. */
-  isResponsePolicyHeader?(name: string): boolean;
-
-  /**
-   * Read the effective shared-cache policy from a response. The returned value
-   * uses Cache-Control syntax so core can apply the framework's cacheability
-   * rules without knowing which provider header carried it.
-   */
-  readResponseCacheControl?(headers: Headers): string | null;
+  /** Provider-specific response-policy interpretation, when the adapter has one. */
+  readonly responsePolicy?: CdnResponsePolicy;
 
   /**
    * Fresh App Page responses must reach clean EOF before this adapter may emit
@@ -168,15 +174,6 @@ export type CdnCacheAdapter = {
    * paths that do not pass through cache-policy finalization.
    */
   buildResponseIdentityHeaders?(): CdnResponseHeaders;
-
-  /**
-   * Whether existing response headers explicitly opt out of storage. Adapters
-   * that split browser and provider cache policy should implement this so they
-   * can interpret the provider-specific headers they own.
-   *
-   * When omitted, core inspects only the generic `Cache-Control` header.
-   */
-  hasExplicitNonCacheableResponsePolicy?(headers: Headers, baseline?: Headers): boolean;
 
   /**
    * Whether the **origin** runs in-process background regeneration when a stale

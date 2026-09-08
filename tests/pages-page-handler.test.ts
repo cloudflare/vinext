@@ -293,12 +293,18 @@ describe("createPagesPageHandler — route miss", () => {
           "X-Example-Cache-Tag": input.tags?.join(",") ?? null,
         };
       },
-      hasExplicitNonCacheableResponsePolicy(headers) {
-        const edgePolicy = headers.get("X-Example-Edge-Policy");
-        if (edgePolicy && /(?:private|no-store|no-cache)/i.test(edgePolicy)) return true;
-        return Boolean(
-          !edgePolicy && /(?:private|no-store|no-cache)/i.test(headers.get("Cache-Control") ?? ""),
-        );
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+        readCacheControl: (headers) =>
+          headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy(headers) {
+          const edgePolicy = headers.get("X-Example-Edge-Policy");
+          if (edgePolicy && /(?:private|no-store|no-cache)/i.test(edgePolicy)) return true;
+          return Boolean(
+            !edgePolicy &&
+            /(?:private|no-store|no-cache)/i.test(headers.get("Cache-Control") ?? ""),
+          );
+        },
       },
     };
     setCdnCacheAdapter(edgeAdapter);

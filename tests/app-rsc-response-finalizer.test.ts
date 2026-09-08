@@ -79,8 +79,13 @@ describe("finalizeAppRscResponse — config header application", () => {
       buildResponseHeaders({ cacheControl }): CdnResponseHeaders {
         return cacheControl ? { "Cache-Control": cacheControl, "X-Example-Edge-Policy": null } : {};
       },
-      hasExplicitNonCacheableResponsePolicy(headers) {
-        return headers.get("X-Example-Edge-Policy") === "no-store";
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+        readCacheControl: (headers) =>
+          headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy(headers) {
+          return headers.get("X-Example-Edge-Policy") === "no-store";
+        },
       },
       async revalidateTag() {},
     };
@@ -109,9 +114,6 @@ describe("finalizeAppRscResponse — config header application", () => {
       async set() {},
       buildResponseHeaders({ cacheControl }): CdnResponseHeaders {
         return { "Cache-Control": cacheControl || "no-store" };
-      },
-      hasExplicitNonCacheableResponsePolicy(headers) {
-        return headers.get("Cache-Control")?.includes("no-store") === true;
       },
       async revalidateTag() {},
     };

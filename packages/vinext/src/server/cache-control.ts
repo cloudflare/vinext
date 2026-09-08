@@ -35,9 +35,9 @@ export function hasExplicitNonCacheableResponsePolicy(
   headers: Headers,
   baseline?: Headers,
 ): boolean {
-  const adapter = getCdnCacheAdapter();
-  if (adapter.hasExplicitNonCacheableResponsePolicy) {
-    return adapter.hasExplicitNonCacheableResponsePolicy(headers, baseline);
+  const policy = getCdnCacheAdapter().responsePolicy;
+  if (policy) {
+    return policy.hasExplicitNonCacheablePolicy(headers, baseline);
   }
   const cacheControl = headers.get("Cache-Control");
   return Boolean(
@@ -51,7 +51,7 @@ export function hasExplicitNonCacheableResponsePolicy(
 export function isCdnResponsePolicyHeader(name: string): boolean {
   return (
     name.toLowerCase() === "cache-control" ||
-    getCdnCacheAdapter().isResponsePolicyHeader?.(name) === true
+    getCdnCacheAdapter().responsePolicy?.isHeader(name) === true
   );
 }
 
@@ -63,10 +63,8 @@ export function hasCdnResponsePolicy(headers: Headers): boolean {
 /** Read the effective shared-cache policy without interpreting provider headers in core. */
 export function readCdnResponseCacheControl(headers: Headers | undefined): string | null {
   if (!headers) return null;
-  const adapter = getCdnCacheAdapter();
-  return adapter.readResponseCacheControl
-    ? adapter.readResponseCacheControl(headers)
-    : headers.get("Cache-Control");
+  const policy = getCdnCacheAdapter().responsePolicy;
+  return policy ? policy.readCacheControl(headers) : headers.get("Cache-Control");
 }
 
 /** Ask the active adapter whether one policy header explicitly disables storage. */
@@ -167,8 +165,7 @@ export function reconcileCdnResponseHeadersAfterOuterPolicy(
   }
   for (const [name, value] of outerPolicyHeaders) {
     if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, value)) {
-      headers.set(name, value);
-      applyCdnResponseHeaders(headers, { cacheControl: value });
+      applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
       return;
     }
   }

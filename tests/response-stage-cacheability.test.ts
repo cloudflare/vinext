@@ -26,9 +26,13 @@ function admissionAdapter(): CdnCacheAdapter {
     buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
     ownsBackgroundRevalidation: false,
     requiresCompletedResponseAdmission: true,
-    isResponsePolicyHeader: (name) => name.toLowerCase() === "cdn-cache-control",
-    readResponseCacheControl: (headers) =>
-      headers.get("CDN-Cache-Control") ?? headers.get("Cache-Control"),
+    responsePolicy: {
+      isHeader: (name) => name.toLowerCase() === "cdn-cache-control",
+      readCacheControl: (headers) =>
+        headers.get("CDN-Cache-Control") ?? headers.get("Cache-Control"),
+      hasExplicitNonCacheablePolicy: (headers) =>
+        headers.get("CDN-Cache-Control")?.includes("no-store") === true,
+    },
     responseVary: "verbatim",
     async get() {
       return null;
@@ -279,9 +283,12 @@ describe("response-stage cacheability", () => {
         "Cache-Control": "max-age=0, must-revalidate",
         "X-Example-Edge-Policy": cacheControl,
       }),
-      isResponsePolicyHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
-      readResponseCacheControl: (headers) =>
-        headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+        readCacheControl: (headers) =>
+          headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy: () => false,
+      },
     });
 
     const response = await withResponseStageCacheability(

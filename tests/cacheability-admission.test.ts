@@ -623,7 +623,7 @@ describe("single-request cacheability admission", () => {
       );
 
       expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
-      expect(adapter.readResponseCacheControl(response.headers)).toBe("public, max-age=60");
+      expect(adapter.responsePolicy.readCacheControl(response.headers)).toBe("public, max-age=60");
     } finally {
       setCdnCacheAdapter(new DefaultCdnCacheAdapter());
       if (previousNextDeployPolicy === undefined) {
@@ -1158,16 +1158,18 @@ describe("single-request cacheability admission", () => {
       if (testCase.adapterPolicy) {
         setCdnCacheAdapter({
           buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
-          hasExplicitNonCacheableResponsePolicy: (headers, baseline) => {
-            const value = headers.get("X-Example-Edge-Policy");
-            return (
-              value !== baseline?.get("X-Example-Edge-Policy") && value === "private, no-store"
-            );
+          responsePolicy: {
+            hasExplicitNonCacheablePolicy: (headers, baseline) => {
+              const value = headers.get("X-Example-Edge-Policy");
+              return (
+                value !== baseline?.get("X-Example-Edge-Policy") && value === "private, no-store"
+              );
+            },
+            isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+            readCacheControl: (headers) =>
+              headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
           },
-          isResponsePolicyHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
           ownsBackgroundRevalidation: false,
-          readResponseCacheControl: (headers) =>
-            headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
           async get() {
             return null;
           },

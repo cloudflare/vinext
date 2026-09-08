@@ -318,11 +318,16 @@ describe("app route handler execution helpers", () => {
         async get() {
           return null;
         },
-        hasExplicitNonCacheableResponsePolicy(headers) {
-          return headers.get(policyHeader)?.includes("no-store") === true;
-        },
-        isResponsePolicyHeader(name) {
-          return name.toLowerCase() === policyHeader.toLowerCase();
+        responsePolicy: {
+          hasExplicitNonCacheablePolicy(headers) {
+            return headers.get(policyHeader)?.includes("no-store") === true;
+          },
+          isHeader(name) {
+            return name.toLowerCase() === policyHeader.toLowerCase();
+          },
+          readCacheControl(headers) {
+            return headers.get(policyHeader) ?? headers.get("Cache-Control");
+          },
         },
         ownsBackgroundRevalidation: false,
         async revalidateTag() {},

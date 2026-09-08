@@ -213,9 +213,12 @@ function useSplitPolicyAdapter(): void {
   setCdnCacheAdapter({
     buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
     ownsBackgroundRevalidation: false,
-    isResponsePolicyHeader: (name) => name.toLowerCase() === "cdn-cache-control",
-    readResponseCacheControl: (headers) =>
-      headers.get("CDN-Cache-Control") ?? headers.get("Cache-Control"),
+    responsePolicy: {
+      isHeader: (name) => name.toLowerCase() === "cdn-cache-control",
+      readCacheControl: (headers) =>
+        headers.get("CDN-Cache-Control") ?? headers.get("Cache-Control"),
+      hasExplicitNonCacheablePolicy: () => false,
+    },
     async get() {
       return null;
     },
@@ -785,9 +788,12 @@ describe("createAppRscHandler", () => {
   it("clears shared Pages stage metadata when outer config makes the response private", async () => {
     const adapter: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
-      isResponsePolicyHeader: (name) => name.toLowerCase() === "cdn-cache-control",
-      readResponseCacheControl: (headers) =>
-        headers.get("CDN-Cache-Control") ?? headers.get("Cache-Control"),
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "cdn-cache-control",
+        readCacheControl: (headers) =>
+          headers.get("CDN-Cache-Control") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy: () => false,
+      },
       async get() {
         return null;
       },
