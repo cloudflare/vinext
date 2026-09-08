@@ -91,13 +91,13 @@ function createTracingKV(store: Map<string, string> = new Map()) {
     const id = nextId++;
     calls.push({ keys, options, inFlightAtStart: [...pending.values()].flat() });
     pending.set(id, keys);
+    // Snapshot at call time: a real read cannot see a write that lands later.
+    const snapshot = new Map(keys.map((k) => [k, store.get(k) ?? null]));
     try {
       await gates.get(keys[0]);
       const failed = keys.find((k) => failing.has(k));
       if (failed) throw new Error(`KV read failed: ${failed}`);
-      return Array.isArray(key)
-        ? new Map(keys.map((k) => [k, store.get(k) ?? null]))
-        : (store.get(key) ?? null);
+      return Array.isArray(key) ? snapshot : (snapshot.get(key) ?? null);
     } finally {
       pending.delete(id);
     }
@@ -1362,6 +1362,80 @@ describe("KVCacheHandler", () => {
       expect(settled).toBe(true);
       expect(await pending).toBeNull();
       release();
+    });
+
+    it("a cached invalid entry tag wins over a failing soft-tag read", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      // Cache the "known" marker with a first read, then break the soft batch.
+      seedEntry(store, "primer", ["known"]);
+      store.set("__tag:known", String(Date.now() + 1000));
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("primer")).toBeNull();
+
+      seedEntry(store, "known-bad", ["known"]);
+      kv.fail("__tag:soft1");
+
+      expect(await handler.get("known-bad", { softTags: ["soft1"] })).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:known-bad");
+    });
+
+    it("re-reads an expired NaN marker instead of trusting it forever", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      store.set("__tag:bad", "not-a-number");
+      seedEntry(store, "nan", ["bad"]);
+
+      const handler = new KVCacheHandler(kv as never, { tagCacheTtlMs: 0 });
+      expect(await handler.get("nan")).toBeNull();
+
+      // The marker is gone and the cached NaN has expired, so the entry is valid.
+      store.delete("__tag:bad");
+      seedEntry(store, "nan", ["bad"]);
+      kv.calls.length = 0;
+
+      expect(await handler.get("nan")).not.toBeNull();
+      expect(kv.calls.map((call) => call.keys)).toEqual([["cache:nan"], ["__tag:bad"]]);
+    });
+
+    it("re-reads an expired positive marker instead of trusting it forever", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      store.set("__tag:gone", String(Date.now() + 1000));
+      seedEntry(store, "expired", ["gone"]);
+
+      const handler = new KVCacheHandler(kv as never, { tagCacheTtlMs: 0 });
+      expect(await handler.get("expired")).toBeNull();
+
+      store.delete("__tag:gone");
+      seedEntry(store, "expired", ["gone"]);
+      expect(await handler.get("expired")).not.toBeNull();
+    });
+
+    it("a detached prime does not overwrite a revalidateTag it raced", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      const release = kv.hold("__tag:soft1");
+      const handler = new KVCacheHandler(kv as never);
+
+      // A miss detaches the soft-tag prime while its read is still held.
+      expect(await handler.get("absent", { softTags: ["soft1"] })).toBeNull();
+      await handler.revalidateTag("soft1");
+      release();
+      await flushTasks();
+
+      // The stale read must not have erased the newer marker, so an entry
+      // older than the invalidation still reads as invalid.
+      store.set(
+        "cache:after",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: [],
+          lastModified: 1000,
+          revalidateAt: null,
+        }),
+      );
+      expect(await handler.get("after", { softTags: ["soft1"] })).toBeNull();
     });
 
     it("chunks tag marker reads at 100 keys per call", async () => {

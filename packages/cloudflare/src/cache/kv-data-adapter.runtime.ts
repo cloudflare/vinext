@@ -280,11 +280,19 @@ export class KVCacheHandler implements CacheHandler {
     }
 
     const entryTags = validUniqueTags(entry.tags);
+
+    // A marker an earlier read already cached settles the entry on its own, so
+    // check before awaiting reads whose failure would otherwise mask it.
+    if (this._hasRevalidatedTag(entryTags, entry.lastModified, true)) {
+      this._deleteInBackground(kvKey);
+      return null;
+    }
+
     await softTagPrime;
 
-    // A marker the local cache already holds settles the entry without the
-    // second hop, so check before fetching the tags the first batch missed.
-    let invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified);
+    // The soft-tag batch may have covered an entry tag too, which spares the
+    // second hop. Only the post-prime check trusts an entry past its TTL.
+    let invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified, true);
     if (!invalidated) {
       await this._primeTagCache(entryTags);
       invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified);
@@ -348,6 +356,10 @@ export class KVCacheHandler implements CacheHandler {
 
     const markers = await this._readTagMarkers(missing.map((tag) => this._tagKey(tag)));
     for (const tag of missing) {
+      // A revalidateTag() landed while this read was in flight. Its marker is
+      // newer than anything this read can report, so leave it in place.
+      const current = this._tagCache.get(tag);
+      if (current && current.fetchedAt >= now) continue;
       const marker = markers.get(this._tagKey(tag));
       this._tagCache.set(tag, { timestamp: marker ? Number(marker) : 0, fetchedAt: now });
     }
@@ -383,12 +395,15 @@ export class KVCacheHandler implements CacheHandler {
   /**
    * Report whether any tag has an invalidation marker at or after `lastModified`.
    * Call `_primeTagCache` for the same tags first — a tag with no cache entry
-   * counts as never invalidated.
+   * counts as never invalidated. Pass `requireFresh` to call it before a prime,
+   * so an entry past `tagCacheTtlMs` does not answer for a tag it never re-read.
    */
-  private _hasRevalidatedTag(tags: string[], lastModified: number): boolean {
+  private _hasRevalidatedTag(tags: string[], lastModified: number, requireFresh = false): boolean {
+    const now = requireFresh ? Date.now() : 0;
     for (const tag of tags) {
       const cached = this._tagCache.get(tag);
       if (!cached || cached.timestamp === 0) continue;
+      if (requireFresh && now - cached.fetchedAt >= this._tagCacheTtl) continue;
       if (Number.isNaN(cached.timestamp) || cached.timestamp >= lastModified) {
         return true;
       }
