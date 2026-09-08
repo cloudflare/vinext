@@ -826,6 +826,16 @@ describe("KVCacheHandler", () => {
   // -------------------------------------------------------------------------
 
   describe("ctx.waitUntil registration", () => {
+    it("registers a speculative soft-tag read with waitUntil", async () => {
+      const ctx = createMockCtx();
+      const handlerWithCtx = new KVCacheHandler(kv as any, { ctx });
+
+      await handlerWithCtx.get("absent", { softTags: ["soft"] });
+
+      expect(ctx.waitUntil).toHaveBeenCalledOnce();
+      await Promise.all(ctx.registered);
+    });
+
     it("registers corrupt-JSON delete with waitUntil when ctx is provided", async () => {
       const ctx = createMockCtx();
       const handlerWithCtx = new KVCacheHandler(kv as any, { ctx });
@@ -1436,6 +1446,26 @@ describe("KVCacheHandler", () => {
         }),
       );
       expect(await handler.get("after", { softTags: ["soft1"] })).toBeNull();
+    });
+
+    it("a detached prime does not repopulate the tag cache after reset", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      const release = kv.hold("__tag:soft1");
+      const handler = new KVCacheHandler(kv as never);
+
+      expect(await handler.get("absent", { softTags: ["soft1"] })).toBeNull();
+      handler.resetRequestCache();
+      store.set("__tag:soft1", "2000");
+      release();
+      await flushTasks();
+
+      seedEntry(store, "after-reset", []);
+      const raw = JSON.parse(store.get("cache:after-reset")!);
+      raw.lastModified = 1000;
+      store.set("cache:after-reset", JSON.stringify(raw));
+
+      expect(await handler.get("after-reset", { softTags: ["soft1"] })).toBeNull();
     });
 
     it("chunks tag marker reads at 100 keys per call", async () => {

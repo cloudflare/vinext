@@ -243,9 +243,15 @@ export class KVCacheHandler implements CacheHandler {
       ? this.kv.get(kvKey, this._entryReadOptions)
       : this.kv.get(kvKey);
     const softTagPrime = this._primeTagCache(softTags);
-    // A miss read no marker before this change, so a marker failure must not
-    // reject it. A hit awaits the same promise below and still propagates.
-    softTagPrime.catch(() => {});
+    if (softTags.length > 0) {
+      // A miss read no marker before this change, so a marker failure must not
+      // reject it. Keep the speculative work alive, while a hit still awaits
+      // the original promise below and propagates its failure.
+      const backgroundPrime = softTagPrime.catch(() => {});
+      const ctx = getRequestExecutionContext() ?? this.ctx;
+      if (ctx) ctx.waitUntil(backgroundPrime);
+      else void backgroundPrime;
+    }
 
     const raw = await entryRead;
     if (!raw) return null;
@@ -344,12 +350,15 @@ export class KVCacheHandler implements CacheHandler {
   private async _primeTagCache(tags: string[]): Promise<void> {
     if (tags.length === 0) return;
 
+    // Keep fills on the cache generation they started against. resetRequestCache()
+    // swaps the Map so an older detached fill cannot repopulate the cleared cache.
+    const tagCache = this._tagCache;
     const now = Date.now();
     // Drop expired entries to prevent unbounded Map growth in long-lived isolates.
     const missing = tags.filter((tag) => {
-      const cached = this._tagCache.get(tag);
+      const cached = tagCache.get(tag);
       if (cached && now - cached.fetchedAt < this._tagCacheTtl) return false;
-      if (cached) this._tagCache.delete(tag);
+      if (cached) tagCache.delete(tag);
       return true;
     });
     if (missing.length === 0) return;
@@ -358,10 +367,10 @@ export class KVCacheHandler implements CacheHandler {
     for (const tag of missing) {
       // A revalidateTag() landed while this read was in flight. Its marker is
       // newer than anything this read can report, so leave it in place.
-      const current = this._tagCache.get(tag);
+      const current = tagCache.get(tag);
       if (current && current.fetchedAt >= now) continue;
       const marker = markers.get(this._tagKey(tag));
-      this._tagCache.set(tag, { timestamp: marker ? Number(marker) : 0, fetchedAt: now });
+      tagCache.set(tag, { timestamp: marker ? Number(marker) : 0, fetchedAt: now });
     }
   }
 
@@ -585,7 +594,7 @@ export class KVCacheHandler implements CacheHandler {
    * fresh KVCacheHandler per request or invoke this method explicitly.
    */
   resetRequestCache(): void {
-    this._tagCache.clear();
+    this._tagCache = new Map();
   }
 
   /**

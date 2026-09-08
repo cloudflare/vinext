@@ -703,7 +703,7 @@ The KV data adapter reads `env[binding]` at runtime, so add the matching KV name
 }
 ```
 
-`binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), and `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s).
+`binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s), and `entryCacheTtlSeconds` (optional KV edge-cache TTL for entry reads; tag markers keep KV's default).
 
 When `cdnAdapter()` is used in a Cloudflare build, vinext emits two Worker
 entrypoints and configures Workers Cache only on the response entrypoint. The
