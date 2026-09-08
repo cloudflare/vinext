@@ -5,8 +5,10 @@ import type {
   WorkersResponseStore,
 } from "@vinext/workers-response-store";
 import {
+  captureResponseStoreRscData,
   runWithResponseStoreInvocation,
   WorkersResponseStoreCacheHandler,
+  type ResponseStoreInvocationCapture,
 } from "../src/cache/response-store-data.runtime";
 
 class TestStore implements WorkersResponseStore {
@@ -92,6 +94,20 @@ test("prefers a cache function invocation over route replay", async () => {
     id: "vinext:cache-function",
     args: ["key", JSON.stringify(invocation)],
   });
+});
+
+test("captures App page RSC data for one-request warmup", async () => {
+  const capture: ResponseStoreInvocationCapture = {};
+  const rscData = new TextEncoder().encode("flight").buffer;
+
+  runWithResponseStoreInvocation(
+    "route",
+    true,
+    () => captureResponseStoreRscData(Promise.resolve(rscData)),
+    capture,
+  );
+
+  await expect(capture.rscData?.then((body) => new Response(body).text())).resolves.toBe("flight");
 });
 
 test("treats a superseded write as a successful no-op", async () => {

@@ -27,8 +27,13 @@ type RegenerationScope = {
 };
 
 type ResponseStoreInvocation = {
+  capture?: ResponseStoreInvocationCapture;
   replayable: boolean;
   serialized: string;
+};
+
+export type ResponseStoreInvocationCapture = {
+  rscData?: Promise<ArrayBuffer>;
 };
 
 const ARRAY_BUFFER_MARKER = "$vinextArrayBuffer";
@@ -55,8 +60,19 @@ export function runWithResponseStoreInvocation<T>(
   serialized: string,
   replayable: boolean,
   callback: () => T,
+  capture?: ResponseStoreInvocationCapture,
 ): T {
-  return invocationStorage.run({ replayable, serialized }, callback);
+  return invocationStorage.run({ capture, replayable, serialized }, callback);
+}
+
+/** Retain the RSC side stream only when the outer response-store invocation requested it. */
+export function captureResponseStoreRscData(rscData: Promise<ArrayBuffer>): void {
+  const capture = invocationStorage.getStore()?.capture;
+  if (capture) {
+    capture.rscData = rscData;
+  } else {
+    void rscData.catch(() => {});
+  }
 }
 
 /** Re-render an invocation and return the exact rewritten data-cache entry. */
