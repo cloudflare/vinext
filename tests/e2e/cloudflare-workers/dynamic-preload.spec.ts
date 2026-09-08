@@ -55,6 +55,7 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
       0,
     );
     for (const preload of await dynamicScriptPreloads.all()) {
+      expect(await preload.getAttribute("crossorigin")).toBe("");
       expect(await preload.evaluate((element) => (element as HTMLLinkElement).nonce)).toBe(
         "vinext-test-nonce",
       );
