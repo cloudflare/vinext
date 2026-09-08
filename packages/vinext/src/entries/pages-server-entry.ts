@@ -142,32 +142,6 @@ function generatePagesMiddlewareCode(
   };
 }
 
-const normalizePagesDataRequestCode = `export function normalizeDataRequest(request) {
-  return __normalizePagesDataRequest(
-    request,
-    buildId,
-    vinextConfig.basePath,
-    __shouldAddTrailingSlashToPagesDataPath(
-      hasMiddleware,
-      vinextConfig.trailingSlash,
-      vinextConfig.skipProxyUrlNormalize,
-    ),
-  );
-}`;
-
-const resolvePagesI18nRouteCode = `function resolveI18nRouteUrl(url, request) {
-  return i18nConfig && request
-    ? resolvePagesI18nRequest(
-        url,
-        i18nConfig,
-        request.headers,
-        new URL(request.url).hostname,
-        vinextConfig.basePath,
-        vinextConfig.trailingSlash,
-      ).url
-    : url;
-}`;
-
 /**
  * Generate the request-only Pages Worker entry used by a multi-stage output.
  * It intentionally contains no page/API module imports or render runtime.
@@ -211,8 +185,8 @@ export async function generatePagesRequestEntry(
 import ${JSON.stringify(_serverGlobalsPath)};
 ${middlewareRuntimeImportCode}
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
-import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
-import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath } from ${JSON.stringify(_pagesDataRoutePath)};
+import { resolvePagesI18nRouteUrl as __resolvePagesI18nRouteUrl } from ${JSON.stringify(_pagesI18nPath)};
+import { normalizePagesEntryDataRequest as __normalizePagesEntryDataRequest } from ${JSON.stringify(_pagesDataRoutePath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_revalidationRequestPath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
@@ -228,7 +202,7 @@ export const hasRequestAwareDocument = ${JSON.stringify(hasRequestAwareDocument)
 export const vinextConfig = ${vinextConfigJson};
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
 
-${normalizePagesDataRequestCode}
+export function normalizeDataRequest(request) { return __normalizePagesEntryDataRequest(request, buildId, vinextConfig, hasMiddleware); }
 
 const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
@@ -245,14 +219,12 @@ function matchRoute(url, trie) {
   return _trieMatch(trie, normalizedUrl.split("/").filter(Boolean));
 }
 
-${resolvePagesI18nRouteCode}
-
 export function matchPageRoute(url, request) {
-  return matchRoute(resolveI18nRouteUrl(url, request), pageRouteTrie);
+  return matchRoute(__resolvePagesI18nRouteUrl(url, request, i18nConfig, vinextConfig), pageRouteTrie);
 }
 
 export function matchApiRoute(url, request) {
-  return matchRoute(resolveI18nRouteUrl(url, request), apiRouteTrie);
+  return matchRoute(__resolvePagesI18nRouteUrl(url, request, i18nConfig, vinextConfig), apiRouteTrie);
 }
 
 ${middlewareExportCode}
@@ -401,9 +373,9 @@ import { runWithExecutionContext as _runWithExecutionContext } from ${JSON.strin
 ${middlewareRuntimeImportCode}
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
-import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
+import { resolvePagesI18nRouteUrl as __resolvePagesI18nRouteUrl } from ${JSON.stringify(_pagesI18nPath)};
 import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
-import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
+import { normalizePagesEntryDataRequest as __normalizePagesEntryDataRequest, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
 import { getRuntimePagesDataKind as __getRuntimePagesDataKind } from ${JSON.stringify(_pagesRouteDataKindPath)};
@@ -428,7 +400,7 @@ export const buildId = ${buildIdJson};
 // Per-build capability used by Worker entries to authorize remote path
 // discovery. It is never included in responses or exposed to user modules.
 export const prerenderSecret = ${JSON.stringify(prerenderSecret ?? null)};
-${normalizePagesDataRequestCode}
+export function normalizeDataRequest(request) { return __normalizePagesEntryDataRequest(request, buildId, vinextConfig, hasMiddleware); }
 export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 
 // Full resolved config for production server (embedded at build time)
@@ -512,10 +484,8 @@ function matchRoute(url, routes) {
   return _trieMatch(trie, urlParts);
 }
 
-${resolvePagesI18nRouteCode}
-
 export function matchPageRoute(url, request) {
-  return matchRoute(resolveI18nRouteUrl(url, request), pageRoutes);
+  return matchRoute(__resolvePagesI18nRouteUrl(url, request, i18nConfig, vinextConfig), pageRoutes);
 }
 
 export function getRuntimePageDataKind(url, request) {
@@ -525,7 +495,7 @@ export function getRuntimePageDataKind(url, request) {
 }
 
 export function matchApiRoute(url, request) {
-  return matchRoute(resolveI18nRouteUrl(url, request), apiRoutes);
+  return matchRoute(__resolvePagesI18nRouteUrl(url, request, i18nConfig, vinextConfig), apiRoutes);
 }
 
 // ── Pages render orchestrator — delegates to server/pages-page-handler.ts ──

@@ -291,26 +291,6 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   }));
 }
 
-function generateAppMatchInterceptRoute(findIntercept: string, routes: string): string {
-  return `matchInterceptRoute(pathname, sourcePathname, interceptionId) {
-    const intercept = ${findIntercept}(pathname, sourcePathname, interceptionId);
-    if (!intercept) return null;
-    const route = ${routes}[intercept.sourceRouteIndex];
-    if (!route) return null;
-    const params = Object.create(null);
-    for (const name of route.params) {
-      if (Object.prototype.hasOwnProperty.call(intercept.sourceMatchedParams, name)) {
-        params[name] = intercept.sourceMatchedParams[name];
-      }
-    }
-    return {
-      interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
-      route,
-      params,
-    };
-  },`;
-}
-
 function generateAppMiddlewareMethod(middlewarePath: string, i18nConfig: string): string {
   return `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
     return __applyAppMiddleware({
@@ -378,7 +358,7 @@ export function generateAppRequestRscEntry(
   return `
 import ${JSON.stringify(serverGlobalsPath)};
 import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler";
-import { createAppRscRouteMatcher as __createAppRscRouteMatcher } from ${JSON.stringify(appRscRouteMatchingPath)};
+import { createAppRscRouteMatcher as __createAppRscRouteMatcher, resolveAppRscInterceptRoute as __resolveAppRscInterceptRoute } from ${JSON.stringify(appRscRouteMatchingPath)};
 import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stringify(appRequestStageDispatchPath)};
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 import { clearAppRequestStageContext as __clearRequestContext, setAppRequestStageNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestStageContextPath)};
@@ -483,7 +463,7 @@ const __requestHandler = createAppRscRequestHandler({
   hasInterceptionId,
   matchRoute,
   matchRequestRoute,
-  ${generateAppMatchInterceptRoute("__routeMatcher.findIntercept", "__routes")}
+  matchInterceptRoute: (pathname, sourcePathname, interceptionId) => __resolveAppRscInterceptRoute(__routeMatcher.findIntercept(pathname, sourcePathname, interceptionId), __routes),
   ${middlewarePath ? generateAppMiddlewareMethod(middlewarePath, JSON.stringify(config?.i18n ?? null)) : ""}
   publicFiles: new Set(${JSON.stringify(config?.publicFiles ?? [])}),
   registerCacheAdapters: __registerConfiguredCacheAdapters,
@@ -753,6 +733,7 @@ import {
 import { makeThenableParams } from ${JSON.stringify(thenableParamsShimPath)};
 import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
+  resolveAppRscInterceptRoute as __resolveAppRscInterceptRoute,
   SIBLING_PAGE_INTERCEPT_SLOT_KEY as __SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from ${JSON.stringify(appRscRouteMatchingPath)};
 import {
@@ -1729,7 +1710,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   matchRoute,
   matchRequestRoute,
   hasInterceptionId,
-  ${generateAppMatchInterceptRoute("findIntercept", "routes")}
+  matchInterceptRoute: (pathname, sourcePathname, interceptionId) => __resolveAppRscInterceptRoute(findIntercept(pathname, sourcePathname, interceptionId), routes),
   ${middlewarePath ? generateAppMiddlewareMethod(middlewarePath, "__i18nConfig") : ""}
   publicFiles: __publicFiles,
   renderNotFound({ isRscRequest, matchedParams, middlewareContext, request, route, scriptNonce }) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   createAppRscRouteMatcher,
+  resolveAppRscInterceptRoute,
   SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 
@@ -184,12 +185,22 @@ describe("App RSC route matching", () => {
       }),
     ]);
 
-    expect(matcher.findIntercept("/photos/target-id", "/feed/source-id")).toMatchObject({
+    const intercept = matcher.findIntercept("/photos/target-id", "/feed/source-id");
+    expect(intercept).toMatchObject({
       sourceRouteIndex: 0,
       slotKey: "modal",
       targetPattern: "/photos/:id",
       page: "photo-page",
       matchedParams: { id: "target-id" },
+    });
+    expect(
+      resolveAppRscInterceptRoute(intercept, [
+        { ...route("/feed/:id", ["feed", ":id"]), params: ["id"] },
+      ]),
+    ).toMatchObject({
+      interceptionSourceIsConcrete: false,
+      params: { id: "source-id" },
+      route: { pattern: "/feed/:id" },
     });
   });
 
