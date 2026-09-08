@@ -14,7 +14,7 @@ on:
       next-ref:
         description: Next.js ref to test against
         required: false
-        default: v16.2.6
+        default: v16.3.0-preview.5
         type: string
       suite-filter:
         description: Which suites to run (pages, app, or all)
@@ -40,7 +40,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.6' }}-${{ inputs.suite-filter || 'all' }}-${{ inputs.test-path || 'all' }}
+  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.3.0-preview.5' }}-${{ inputs.suite-filter || 'all' }}-${{ inputs.test-path || 'all' }}
   cancel-in-progress: false
 
 jobs:
@@ -67,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
           repository: vercel/next.js
-          ref: ${{ inputs.next-ref || 'v16.2.6' }}
+          ref: ${{ inputs.next-ref || 'v16.3.0-preview.5' }}
           path: next.js
 
       # Share the playwright-chromium cache with ci.yml, which keeps it hot
@@ -343,7 +343,7 @@ jobs:
           # break the generated JS — and not exploitable in practice but
           # cleaner this way.
           VINEXT_REF: ${{ inputs.vinext-ref || github.ref }}
-          NEXT_REF: ${{ inputs.next-ref || 'v16.2.6' }}
+          NEXT_REF: ${{ inputs.next-ref || 'v16.3.0-preview.5' }}
           SUITE_FILTER: ${{ inputs.suite-filter || 'all' }}
         with:
           script: |
