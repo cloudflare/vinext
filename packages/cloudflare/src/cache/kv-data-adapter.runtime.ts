@@ -263,9 +263,9 @@ export class KVCacheHandler implements CacheHandler {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      // Corrupted JSON — fire cleanup delete in the background and treat as miss.
+      // Corrupted JSON — clean up when safe and treat as a miss.
       // Using waitUntil ensures the delete isn't killed when the Response is returned.
-      this._deleteInBackground(kvKey);
+      this._deleteEntryReadInBackground(kvKey);
       return null;
     }
 
@@ -273,7 +273,7 @@ export class KVCacheHandler implements CacheHandler {
     const entry = validateCacheEntry(parsed);
     if (!entry) {
       console.error("[vinext] Invalid cache entry shape for key:", key);
-      this._deleteInBackground(kvKey);
+      this._deleteEntryReadInBackground(kvKey);
       return null;
     }
 
@@ -283,7 +283,7 @@ export class KVCacheHandler implements CacheHandler {
       restoredValue = restoreArrayBuffers(entry.value);
       if (!restoredValue) {
         // base64 decode failed — corrupted entry, treat as miss
-        this._deleteInBackground(kvKey);
+        this._deleteEntryReadInBackground(kvKey);
         return null;
       }
     }
@@ -293,7 +293,7 @@ export class KVCacheHandler implements CacheHandler {
     // A marker an earlier read already cached settles the entry on its own, so
     // check before awaiting reads whose failure would otherwise mask it.
     if (this._hasRevalidatedTag(entryTags, entry.lastModified, true)) {
-      this._deleteInBackground(kvKey);
+      this._deleteEntryReadInBackground(kvKey);
       return null;
     }
 
@@ -319,7 +319,7 @@ export class KVCacheHandler implements CacheHandler {
       invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified);
     }
     if (invalidated) {
-      this._deleteInBackground(kvKey);
+      this._deleteEntryReadInBackground(kvKey);
       return null;
     }
 
@@ -328,7 +328,7 @@ export class KVCacheHandler implements CacheHandler {
     }
 
     if (entry.expireAt !== undefined && entry.expireAt !== null && Date.now() > entry.expireAt) {
-      this._deleteInBackground(kvKey);
+      this._deleteEntryReadInBackground(kvKey);
       return null;
     }
 
@@ -613,6 +613,15 @@ export class KVCacheHandler implements CacheHandler {
    */
   resetRequestCache(): void {
     this._tagCache = new Map();
+  }
+
+  /**
+   * Clean up a bad entry only when this read cannot be an explicitly cached
+   * older version of the shared KV value. KV has no conditional delete, so a
+   * cached read must remain a non-destructive miss.
+   */
+  private _deleteEntryReadInBackground(kvKey: string): void {
+    if (!this._entryReadOptions) this._deleteInBackground(kvKey);
   }
 
   /**

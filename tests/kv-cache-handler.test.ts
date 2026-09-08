@@ -1317,6 +1317,29 @@ describe("KVCacheHandler", () => {
       expect(kv.delete).toHaveBeenCalledWith("cache:own-hit");
     });
 
+    it("does not delete a newer stored entry when the configured entry cache is stale", async () => {
+      const store = new Map<string, string>();
+      const kv = createMockKV(store);
+      const value = { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 };
+      const stale = validEntry(value, { tags: ["own"], lastModified: 1000 });
+      const replacement = validEntry(value, { tags: ["own"], lastModified: 3000 });
+      store.set("cache:edge-cached", replacement);
+      store.set("__tag:own", "2000");
+      kv.get.mockImplementation(async (key: string | string[]) => {
+        if (key === "cache:edge-cached") return stale;
+        if (Array.isArray(key)) {
+          return new Map(key.map((item) => [item, store.get(item) ?? null]));
+        }
+        return store.get(key) ?? null;
+      });
+
+      const handler = new KVCacheHandler(kv as never, { entryCacheTtlSeconds: 300 });
+      expect(await handler.get("edge-cached")).toBeNull();
+
+      expect(kv.delete).not.toHaveBeenCalled();
+      expect(store.get("cache:edge-cached")).toBe(replacement);
+    });
+
     it("a failing soft-tag read leaves an entry miss as an ordinary miss", async () => {
       const store = new Map<string, string>();
       const kv = createTracingKV(store);
