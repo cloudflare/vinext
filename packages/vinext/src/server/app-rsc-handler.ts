@@ -61,6 +61,10 @@ import type {
   AppPrerenderStaticParamsMap,
 } from "./app-prerender-endpoints.js";
 import {
+  canonicalizeLoadingShellRscRequestHeaders,
+  canonicalizePrewarmableRscRequestHeaders,
+  createCanonicalRscRequestUrl,
+  createRscRequestUrl,
   createRscRedirectLocation,
   hasRscCacheBustingSearchParam,
   resolveInvalidRscCacheBustingRequest,
@@ -256,6 +260,7 @@ type RunAppMiddlewareOptions = {
 export type AppRscHandlerRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
+  canUseCanonicalLoadingShell?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -1097,10 +1102,39 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               : canUseSharedWorkerResponseStage
                 ? "shared"
                 : "bypass";
-          let response = await dispatchResponseStage(
+          let dispatchRequest =
             props.kind === "app-page"
               ? prepareSharedAppPageDispatch(stageRequest, cache)
-              : stageRequest,
+              : stageRequest;
+          if (
+            cache === "shared" &&
+            props.kind === "app-page" &&
+            props.isRscRequest &&
+            props.matchKind === "request" &&
+            props.interceptionContext === null &&
+            props.interceptionId === null &&
+            props.mountedSlotsHeader === null
+          ) {
+            const headers = new Headers(dispatchRequest.headers);
+            const canonicalized =
+              props.renderMode === "navigation"
+                ? canonicalizePrewarmableRscRequestHeaders(headers)
+                : props.renderMode === "prefetch-loading-shell" && props.canUseCanonicalLoadingShell
+                  ? canonicalizeLoadingShellRscRequestHeaders(headers)
+                  : false;
+            if (canonicalized) {
+              const rscPath =
+                props.renderMode === "navigation"
+                  ? createCanonicalRscRequestUrl(dispatchRequest.url)
+                  : await createRscRequestUrl(dispatchRequest.url, headers);
+              dispatchRequest = cloneRequestWithUrl(
+                cloneRequestWithHeaders(dispatchRequest, headers),
+                new URL(rscPath, dispatchRequest.url).toString(),
+              );
+            }
+          }
+          let response = await dispatchResponseStage(
+            dispatchRequest,
             {
               ...props,
               cacheability: {
@@ -2186,6 +2220,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         buildId: options.buildId,
         cacheability: responseStageCacheability(resolvedUrl),
         bypassInterceptionContextCache,
+        canUseCanonicalLoadingShell: route.canUseCanonicalLoadingShell === true,
         canonicalPathname,
         cleanPathname,
         draftModeCookie,
@@ -2230,6 +2265,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         buildId: options.buildId,
         cacheability: responseStageCacheability(resolvedUrl),
         bypassInterceptionContextCache,
+        canUseCanonicalLoadingShell: route.canUseCanonicalLoadingShell === true,
         canonicalPathname,
         cleanPathname,
         draftModeCookie,

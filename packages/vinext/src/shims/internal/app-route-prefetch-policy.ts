@@ -35,8 +35,6 @@ const ENCODED_PATH_DELIMITER_RE = /%(?:2f|5c)/i;
  */
 export type AppRoutePrefetchPolicy = {
   cacheForNavigation: boolean;
-  /** The selected loading shell has the canonical deploy-warmed identity. */
-  canUseCanonicalLoadingShell?: true;
   /**
    * How the dynamic stale-time signal affects this prefetch. Navigation data
    * takes it verbatim, explicit full prefetches fall back to the static window
@@ -134,9 +132,6 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     // fallbacks can be cached for navigation unless their active parallel
     // branches must be derived from the click-time target tree.
     cacheForNavigation,
-    ...(route.canUseCanonicalLoadingShell === true
-      ? { canUseCanonicalLoadingShell: true as const }
-      : {}),
     dynamicStaleTime: cacheForNavigation ? "verbatim" : "ignore",
     fallbackTtl: "static",
     prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,

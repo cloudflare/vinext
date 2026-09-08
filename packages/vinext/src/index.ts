@@ -64,7 +64,6 @@ import {
   VIRTUAL_CACHE_ADAPTERS,
   generateCdnCacheAdapterModule,
   generateCacheAdaptersModule,
-  hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
@@ -2575,12 +2574,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Also used to namespace ISR cache keys so old cached entries from a
         // previous deploy are never served by the new one.
         defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
-        // Strict-Vary shared caches can use one stable public URL for the
-        // definitive RSC and loading-shell representations. Other adapters
-        // retain Next-compatible contextual `_rsc` digests.
-        defines["process.env.__VINEXT_CANONICAL_RSC_REQUESTS"] = JSON.stringify(
-          env?.command === "build" && hasVerbatimResponseVary(options.cache) ? "1" : "",
-        );
         // Public browser-facing identity for App Router RSC compatibility
         // checks. Prefer Next.js-style deploymentId when configured; otherwise
         // generate a separate token so RSC headers do not expose

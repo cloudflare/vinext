@@ -1,5 +1,6 @@
 import { toSlash } from "pathslash";
 import {
+  appRouteHasMainTreeLoadingBoundary,
   computeAppRouteStaticSiblings,
   convertSegmentsToRouteParts,
   type AppRoute,
@@ -346,6 +347,7 @@ ${interceptEntries.join(",\n")}
     return `  {
     __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
     __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
+    canUseCanonicalLoadingShell: ${appRouteHasMainTreeLoadingBoundary(route)},
     ids: ${JSON.stringify(route.ids ?? null)},
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},

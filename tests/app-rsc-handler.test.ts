@@ -75,6 +75,7 @@ import {
 type TestRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
+  canUseCanonicalLoadingShell?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -230,6 +231,118 @@ function useSplitPolicyAdapter(): void {
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 describe("createAppRscHandler", () => {
+  it("normalizes a direct contextual RSC request before shared response-stage dispatch", async () => {
+    const route = createPageRoute();
+    const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("rsc")),
+    );
+    const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });
+    const headers = createRscRequestHeaders({
+      nextUrl: "/source",
+      routerState: { pathAndSearch: "/source", routeId: "route:/source" },
+    });
+    const contextualUrl = await createRscRequestUrl("/docs/about?tab=latest", headers);
+
+    await handler(
+      new Request(new URL(contextualUrl, "https://example.test"), { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+    const url = new URL(request.url);
+    expect(`${url.pathname}${url.search}`).toBe("/docs/about?tab=latest&_rsc");
+    expect(request.headers.get("next-router-state-tree")).toBeNull();
+    expect(request.headers.get("next-url")).toBeNull();
+    expect(props).toMatchObject({
+      canUseCanonicalLoadingShell: false,
+      kind: "app-page",
+      matchKind: "request",
+    });
+    expect(options).toEqual({ cache: "shared" });
+  });
+
+  it("normalizes only eligible main-tree loading-shell RSC requests", async () => {
+    const route = createPageRoute({ canUseCanonicalLoadingShell: true });
+    const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("loading")),
+    );
+    const handler = createHandler({ matchRequestRoute: matchRoute, matchRoute });
+    const headers = createRscRequestHeaders({
+      nextUrl: "/source",
+      prefetchRouterState: { pathAndSearch: "/source", routeId: "route:/source" },
+      renderMode: "prefetch-loading-shell",
+    });
+    headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "/__PAGE__");
+    const contextualUrl = await createRscRequestUrl("/docs/about", headers);
+
+    await handler(
+      new Request(new URL(contextualUrl, "https://example.test"), { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [request, props] = dispatchResponseStage.mock.calls[0]!;
+    expect(request.headers.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
+    expect(request.headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("1");
+    expect(request.headers.get("next-router-state-tree")).toBeNull();
+    expect(request.headers.get("next-url")).toBeNull();
+    expect(new URL(request.url).searchParams.get("_rsc")).not.toBe("");
+    expect(props).toMatchObject({ canUseCanonicalLoadingShell: true, matchKind: "request" });
+  });
+
+  it("keeps rewritten and mounted-slot RSC requests contextual", async () => {
+    const route = createPageRoute();
+    const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("rsc")),
+    );
+    const handler = createHandler({
+      configRewrites: {
+        afterFiles: [],
+        beforeFiles: [{ source: "/source", destination: "/about" }],
+        fallback: [],
+      },
+      matchRequestRoute: matchRoute,
+      matchRoute,
+    });
+    const rewrittenHeaders = createRscRequestHeaders({ nextUrl: "/source" });
+    const rewrittenUrl = await createRscRequestUrl("/docs/source", rewrittenHeaders);
+
+    await handler(
+      new Request(new URL(rewrittenUrl, "https://example.test"), { headers: rewrittenHeaders }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [rewrittenRequest, rewrittenProps] = dispatchResponseStage.mock.calls[0]!;
+    expect(rewrittenRequest.headers.get("next-url")).toBe("/source");
+    expect(new URL(rewrittenRequest.url).searchParams.get("_rsc")).not.toBe("");
+    expect(rewrittenProps).toMatchObject({ matchKind: "resolved" });
+
+    dispatchResponseStage.mockClear();
+    const mountedHeaders = createRscRequestHeaders({
+      mountedSlotsHeader: "slot:modal:/",
+      nextUrl: "/source",
+    });
+    const mountedUrl = await createRscRequestUrl("/docs/about", mountedHeaders);
+    await handler(
+      new Request(new URL(mountedUrl, "https://example.test"), { headers: mountedHeaders }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [mountedRequest] = dispatchResponseStage.mock.calls[0]!;
+    expect(mountedRequest.headers.get("next-url")).toBe("/source");
+    expect(new URL(mountedRequest.url).searchParams.get("_rsc")).not.toBe("");
+  });
+
   it("dispatches a matched GET through the App response stage and composes request-stage headers", async () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async (_request, props) => {
       expect(props).toMatchObject({
@@ -1417,6 +1530,7 @@ describe("createAppRscHandler", () => {
       buildId: "stale-build",
       cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
       bypassInterceptionContextCache: false,
+      canUseCanonicalLoadingShell: false,
       canonicalPathname: "/about",
       cleanPathname: "/about",
       draftModeCookie: null,
@@ -1463,6 +1577,7 @@ describe("createAppRscHandler", () => {
         buildId: "build-id",
         cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
         bypassInterceptionContextCache: false,
+        canUseCanonicalLoadingShell: false,
         canonicalPathname: "/about",
         cleanPathname: "/about",
         draftModeCookie: null,

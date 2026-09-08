@@ -177,6 +177,7 @@ describe("App Worker response stage", () => {
     const matchedStage = {
       ...notFoundStage,
       bypassInterceptionContextCache: false,
+      canUseCanonicalLoadingShell: false,
       interceptionContext: null,
       interceptionId: null,
       kind: "app-page" as const,
@@ -186,10 +187,12 @@ describe("App Worker response stage", () => {
       routePathname: "/missing",
     } satisfies AppWorkerResponseStageProps;
     const { bypassInterceptionContextCache: _bypass, ...withoutBypassProof } = matchedStage;
+    const { canUseCanonicalLoadingShell: _loading, ...withoutLoadingCapability } = matchedStage;
     const { interceptionId: _interceptionId, ...withoutInterceptionId } = matchedStage;
 
     expect(isAppWorkerResponseStageProps(matchedStage)).toBe(true);
     expect(isAppWorkerResponseStageProps(withoutBypassProof)).toBe(false);
+    expect(isAppWorkerResponseStageProps(withoutLoadingCapability)).toBe(false);
     expect(isAppWorkerResponseStageProps(withoutInterceptionId)).toBe(false);
   });
 

@@ -2933,17 +2933,11 @@ const _appRouter: AppRouterInstance = {
             : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
         );
       }
-      const { additionalRscUrls, rscUrl, usesCanonicalPrewarmedRequest } =
-        await resolveAppPrefetchRscRequest({
-          canUseCanonicalLoadingShell: policy.canUseCanonicalLoadingShell === true,
-          fullHref,
-          headers,
-          interceptionContext,
-          mountedSlotsHeader,
-          prefetchInlining: __prefetchInlining,
-          requiresRouteTreePrefetch,
-          rewrittenPrefetchHref,
-        });
+      const { additionalRscUrls, rscUrl } = await resolveAppPrefetchRscRequest({
+        fullHref,
+        headers,
+        rewrittenPrefetchHref,
+      });
       // A navigation to this same href can start in the same task as this call
       // and win the race above (hybrid-route module load, policy import, RSC
       // URL generation). Nothing was registered in the cache during that
@@ -2985,7 +2979,7 @@ const _appRouter: AppRouterInstance = {
           "low",
         );
       const fetchPromise =
-        !usesCanonicalPrewarmedRequest && reusable && kind === "auto" && requiresRouteTreePrefetch
+        reusable && kind === "auto" && requiresRouteTreePrefetch
           ? fetchRouteTreeGatedPrefetch({
               fetchFullRscPayload,
               fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>

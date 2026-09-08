@@ -38,8 +38,8 @@ export type CdnCacheAdapterCapabilities = {
    * The shared cache selects response variants using every request header
    * named by `Vary`, comparing the header values verbatim.
    *
-   * Vinext only uses the canonical deploy-warmed RSC request shape when this
-   * guarantee is present. URL-only caches retain the contextual `_rsc` digest.
+   * Deploy warmup can address the canonical full-route and loading-shell RSC
+   * variants when this guarantee is present.
    */
   responseVary?: "verbatim";
   /** Warm by observing after-render `X-Vinext-Cache` admission from Response Store. */

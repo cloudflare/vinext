@@ -19,7 +19,7 @@ import type {
   PrefetchInliningConfig,
 } from "../config/next-config.js";
 import type { ImageConfig } from "../server/image-optimization.js";
-import type { AppRoute } from "../routing/app-router.js";
+import { appRouteHasMainTreeLoadingBoundary, type AppRoute } from "../routing/app-router.js";
 import { routePatternParts } from "../routing/route-pattern.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
 import { safeJsonStringify } from "../server/html.js";
@@ -233,6 +233,7 @@ type AppRouterConfig = {
 
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   return routes.map((route) => ({
+    canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,
