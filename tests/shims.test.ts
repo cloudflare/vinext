@@ -11269,6 +11269,26 @@ describe("cookie name validation", () => {
 // NextRequest API tests
 
 describe("NextRequest API", () => {
+  it("preserves a lazy request.cf accessor without reading it", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const source = new Request("https://example.com/");
+    let reads = 0;
+    Object.defineProperty(source, "cf", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return { country: "AU" };
+      },
+    });
+
+    const request = new NextRequest(source);
+
+    expect(reads).toBe(0);
+    expect(Reflect.get(request, "cf")).toEqual({ country: "AU" });
+    expect(reads).toBe(1);
+  });
+
   it("throws canonical 'Please use only absolute URLs' error for relative URL input", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
     // Matches Next.js's documented behaviour — middleware tests assert on this

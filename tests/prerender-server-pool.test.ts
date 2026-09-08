@@ -59,7 +59,7 @@ describe("prerender server pool sizing", () => {
     `);
 
     try {
-      const pool = await startPrerenderServerPool(dir, 2, entry);
+      const pool = await startPrerenderServerPool(dir, 2, { entry });
       try {
         expect(pool.ports).toHaveLength(2);
         expect(pool.ports.every((port) => typeof port === "number")).toBe(true);
@@ -76,11 +76,15 @@ describe("prerender server pool sizing", () => {
     const { dir, entry } = writeWorkerEntry(`
       if (
         process.env.VINEXT_PRERENDER !== "1" ||
-        process.env.NEXT_PHASE !== "phase-production-build"
+        process.env.NEXT_PHASE !== "phase-production-build" ||
+        process.env.VINEXT_PRERENDER_RSC_ENTRY_PATH !== "application-entry.js" ||
+        process.env.VINEXT_PRERENDER_SERVER_DIR !== "server-artifacts"
       ) {
         process.send({ type: "error", error: JSON.stringify({
           VINEXT_PRERENDER: process.env.VINEXT_PRERENDER,
           NEXT_PHASE: process.env.NEXT_PHASE,
+          VINEXT_PRERENDER_RSC_ENTRY_PATH: process.env.VINEXT_PRERENDER_RSC_ENTRY_PATH,
+          VINEXT_PRERENDER_SERVER_DIR: process.env.VINEXT_PRERENDER_SERVER_DIR,
         }) });
       } else {
         process.send({ type: "ready", port: 4125 });
@@ -89,7 +93,11 @@ describe("prerender server pool sizing", () => {
     `);
 
     try {
-      const pool = await startPrerenderServerPool(dir, 1, entry);
+      const pool = await startPrerenderServerPool(dir, 1, {
+        entry,
+        rscEntryPath: "application-entry.js",
+        serverDir: "server-artifacts",
+      });
       await pool.close();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -103,7 +111,7 @@ describe("prerender server pool sizing", () => {
     `);
 
     try {
-      const pool = await startPrerenderServerPool(dir, 1, entry);
+      const pool = await startPrerenderServerPool(dir, 1, { entry });
       try {
         pool.recordRenderError(new Error("renderPage returned 500"));
         expect(() => pool.assertHealthy()).not.toThrow();
@@ -128,7 +136,7 @@ describe("prerender server pool sizing", () => {
     `);
 
     try {
-      const pool = await startPrerenderServerPool(dir, 1, entry);
+      const pool = await startPrerenderServerPool(dir, 1, { entry });
       try {
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(() => pool.assertHealthy()).toThrow(/exited unexpectedly .*code 42/);
@@ -144,7 +152,7 @@ describe("prerender server pool sizing", () => {
     const { dir, entry } = writeWorkerEntry("process.exit(0);");
 
     try {
-      await expect(startPrerenderServerPool(dir, 1, entry)).rejects.toThrow(
+      await expect(startPrerenderServerPool(dir, 1, { entry })).rejects.toThrow(
         "exited during startup (code 0, signal null)",
       );
     } finally {

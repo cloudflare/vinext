@@ -1,19 +1,15 @@
 import MagicString from "magic-string";
 import { readFile } from "node:fs/promises";
 import path from "pathslash";
-import { createIdResolver, parseAst, type Plugin } from "vite";
+import { createIdResolver, parseAst, type ESTree, type Plugin } from "vite";
 import {
   collectBindingNames,
   forEachAstChild,
-  hasRange,
-  isAstRecord,
   isIdentifierNamed,
-  nodeArray,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   staticStringValue,
   unwrapExpression,
-  type AstRecord,
 } from "./ast-utils.js";
 import {
   collectDirectScopeBindings,
@@ -31,7 +27,7 @@ import { stripViteModuleQuery } from "../utils/path.js";
 const LITERAL_REQUIRE_RE = /\brequire\s*\(/;
 const CONDITIONAL_REQUIRE_SCRIPT_ID_RE = /\.vinext-require\.(?:js|jsx|ts|tsx)$/i;
 type LiteralRequire = {
-  argument: AstRecord & { start: number; end: number };
+  argument: ESTree.Node;
   specifier: string;
 };
 
@@ -50,7 +46,7 @@ function syntheticModuleType(id: string): SyntheticModuleType {
   return "js";
 }
 
-function literalString(value: unknown): string | null {
+function literalString(value: ESTree.Node | null | undefined): string | null {
   const node = unwrapExpression(value);
   return staticStringValue(node);
 }
@@ -73,32 +69,29 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
     return [];
   }
 
-  const root = isAstRecord(ast) ? ast : null;
-  if (!root) return [];
+  const root = ast;
   const requires: LiteralRequire[] = [];
   const rootScope = createAstScope(null);
   collectDirectScopeBindings(root, rootScope);
   collectVarScopeBindings(root, rootScope);
 
-  function visit(node: AstRecord, parentScope: AstScope): void {
+  function visit(node: ESTree.Node, parentScope: AstScope): void {
     let scope = parentScope;
     if (isFunctionNode(node)) {
       const parameterScope = createAstScope(parentScope);
       collectBindingNames(node.id, parameterScope.bindings);
-      for (const parameter of nodeArray(node.params)) {
+      for (const parameter of node.params) {
         collectBindingNames(parameter, parameterScope.bindings);
-        if (isAstRecord(parameter)) visit(parameter, parameterScope);
+        visit(parameter, parameterScope);
       }
 
-      const body = isAstRecord(node.body) ? node.body : null;
+      const body = node.body;
       if (body) {
         const bodyScope = createAstScope(parameterScope);
         collectDirectScopeBindings(body, bodyScope);
         collectVarScopeBindings(body, bodyScope);
         if (body.type === "BlockStatement") {
-          for (const statement of nodeArray(body.body)) {
-            if (isAstRecord(statement)) visit(statement, bodyScope);
-          }
+          for (const statement of body.body) visit(statement, bodyScope);
         } else {
           visit(body, bodyScope);
         }
@@ -107,17 +100,15 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
     }
 
     if (node.type === "SwitchStatement") {
-      if (isAstRecord(node.discriminant)) visit(node.discriminant, parentScope);
+      visit(node.discriminant, parentScope);
       const switchScope = createAstScope(parentScope);
       collectSwitchScopeBindings(node, switchScope);
-      for (const switchCase of nodeArray(node.cases)) {
-        if (isAstRecord(switchCase)) visit(switchCase, switchScope);
-      }
+      for (const switchCase of node.cases) visit(switchCase, switchScope);
       return;
     }
 
     if (
-      (node.type === "BlockStatement" && node !== root) ||
+      node.type === "BlockStatement" ||
       node.type === "StaticBlock" ||
       node.type === "TSModuleBlock"
     ) {
@@ -143,7 +134,7 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
 
     if (node.type === "CallExpression") {
       const callee = unwrapExpression(node.callee);
-      const args = nodeArray(node.arguments);
+      const args = node.arguments;
       const argument = unwrapExpression(args[0]);
       const specifier = literalString(argument);
       if (
@@ -151,7 +142,6 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
         !hasAstBinding(scope, "require") &&
         args.length === 1 &&
         argument &&
-        hasRange(argument) &&
         specifier !== null &&
         isPackageSpecifier(specifier)
       ) {
@@ -163,9 +153,7 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
     forEachAstChild(node, (child) => visit(child, scope));
   }
 
-  for (const statement of nodeArray(root.body)) {
-    if (isAstRecord(statement)) visit(statement, rootScope);
-  }
+  for (const statement of root.body) visit(statement, rootScope);
   return requires;
 }
 

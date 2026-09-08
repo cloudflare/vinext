@@ -237,6 +237,23 @@ export function isRscFrameworkModule(id: string): boolean {
 }
 
 /**
+ * Keep virtual entry ids out of emitted RSC chunk filenames.
+ *
+ * Rolldown's entries-aware chunk names can contain the `\\0` virtual-id marker,
+ * which is not a portable module-specifier or filesystem name. Preserve every
+ * other character and remove both the printable and actual-NUL forms.
+ */
+export function sanitizeRscChunkFileName(name: string): string {
+  const withoutVirtualMarkers = name.replaceAll("\\0", "");
+  const invalid = new Set(["<", ">", ":", '"', "/", "\\", "|", "?", "*"]);
+  let sanitized = "";
+  for (const character of withoutVirtualMarkers) {
+    sanitized += character.charCodeAt(0) <= 31 || invalid.has(character) ? "_" : character;
+  }
+  return sanitized;
+}
+
+/**
  * Output config that isolates React (and the RSC flight runtime) into a
  * dedicated "framework" chunk in the RSC server build. See
  * {@link RSC_FRAMEWORK_CHUNK_TEST} for the motivation (issue #1549). Framework
@@ -245,6 +262,7 @@ export function isRscFrameworkModule(id: string): boolean {
  */
 export function createRscFrameworkChunkOutputConfig() {
   return {
+    sanitizeFileName: sanitizeRscChunkFileName,
     codeSplitting: {
       groups: [
         {
@@ -286,4 +304,68 @@ export function withBuildBundlerOptions(
   bundlerOptions: VinextBuildBundlerOptions,
 ): Partial<VinextBuildConfig> {
   return { rolldownOptions: bundlerOptions };
+}
+
+type VinextBuildOutput = Exclude<
+  NonNullable<VinextBuildBundlerOptions["output"]>,
+  readonly unknown[]
+>;
+type VinextCodeSplittingConfig = Exclude<NonNullable<VinextBuildOutput["codeSplitting"]>, boolean>;
+type ChunkFileNames = NonNullable<VinextBuildOutput["chunkFileNames"]>;
+type ChunkFileNameFunction = Exclude<ChunkFileNames, string>;
+
+/**
+ * Keep vinext modules partitioned by the stage entries that actually use them.
+ * Without an entry-aware catch-all, Rolldown may merge a small helper shared by
+ * request/response entries into a response-heavy chunk; importing that helper
+ * then evaluates React and renderer code on a request-stage cache hit.
+ */
+export function createMultiStageCodeSplittingConfig(
+  existing: VinextBuildOutput["codeSplitting"],
+): VinextCodeSplittingConfig & { groups: NonNullable<VinextCodeSplittingConfig["groups"]> } {
+  const base = existing && typeof existing === "object" ? existing : {};
+  return {
+    ...base,
+    groups: [
+      {
+        name: "vinext-stage-runtime",
+        test: /(?:^|[/\\])(?:packages[/\\]vinext[/\\]src|(?:packages[/\\]vinext|node_modules[/\\](?:\.pnpm[/\\][^/\\]+[/\\]node_modules[/\\])?vinext)[/\\]dist)[/\\]/,
+        entriesAware: true,
+      },
+      ...(base.groups ?? []),
+    ],
+  };
+}
+
+/**
+ * Keep router stage chunks beside the server entry so their generated
+ * `./vinext-client-assets.js` external continues to resolve. Other chunks keep
+ * the host's existing output pattern (or vinext's server-assets default).
+ */
+export function createMultiStageChunkFileNames(
+  assetsDir: string,
+  existing: VinextBuildOutput["chunkFileNames"],
+): ChunkFileNameFunction {
+  return (chunk) => {
+    const name = sanitizeRscChunkFileName(chunk.name);
+    if (
+      chunk.moduleIds?.some((id) =>
+        /\/server\/app-ssr-entry\.[cm]?[jt]sx?$/.test(toSlash(id.split("?", 1)[0] ?? "")),
+      ) ||
+      [
+        "app-router-entry",
+        "pages-router-entry",
+        "app-response-stage-entry",
+        "pages-request-stage-entry",
+        "pages-response-stage-entry",
+        "virtual_vinext-rsc-entry",
+        "virtual_vinext-response-stage",
+      ].some((entryName) => name.includes(entryName))
+    ) {
+      return `${name}-[hash].js`;
+    }
+    if (typeof existing === "function") return existing({ ...chunk, name });
+    const pattern = existing ?? joinAssetFileNamePattern(assetsDir, "[name]-[hash].js");
+    return pattern.replaceAll("[name]", name);
+  };
 }

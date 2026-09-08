@@ -1,15 +1,12 @@
-import type { Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
 import { parseAst } from "vite";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
-import { isUnknownRecord as isRecord } from "../utils/record.js";
 import { hasTrailingComma } from "../utils/has-trailing-comma.js";
 import { relativeWithinRoot, tryRealpathSync } from "../build/ssr-manifest.js";
 import { stripViteModuleQuery } from "../utils/path.js";
-import { getAstName, stringLiteralValue, walkAst } from "./ast-utils.js";
+import { collectBindingNames, forEachAstChild, stringLiteralValue, walkAst } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
-
-type AstRecord = Record<string, unknown>;
 
 type TransformResult = {
   code: string;
@@ -18,139 +15,73 @@ type TransformResult = {
 
 type ResolveDynamicImport = (specifier: string, importer: string) => Promise<string | null>;
 
-function getString(node: AstRecord, key: string): string | null {
-  const value = node[key];
-  return typeof value === "string" ? value : null;
-}
-
-function getNumber(node: AstRecord, key: string): number | null {
-  const value = node[key];
-  return typeof value === "number" ? value : null;
-}
-
-function getArray(node: AstRecord, key: string): unknown[] {
-  const value = node[key];
-  return Array.isArray(value) ? value : [];
-}
-
-function getBoolean(node: AstRecord, key: string): boolean {
-  return node[key] === true;
-}
-
-function importSource(node: AstRecord): string | null {
-  const source = node.source;
-  if (!isRecord(source)) return null;
-  return stringLiteralValue(source);
-}
-
 function isNextDynamicSource(source: string | null): boolean {
   return source === "next/dynamic" || source === "next/dynamic.js";
 }
 
-function collectDynamicImportLocals(ast: unknown): Set<string> {
+function collectDynamicImportLocals(ast: ESTree.Program): Set<string> {
   const locals = new Set<string>();
-  if (!isRecord(ast)) return locals;
+  for (const node of ast.body) {
+    if (node.type !== "ImportDeclaration") continue;
+    if (!isNextDynamicSource(stringLiteralValue(node.source))) continue;
 
-  for (const node of getArray(ast, "body")) {
-    if (!isRecord(node)) continue;
-    if (getString(node, "type") !== "ImportDeclaration") continue;
-    if (!isNextDynamicSource(importSource(node))) continue;
-
-    for (const specifier of getArray(node, "specifiers")) {
-      if (!isRecord(specifier)) continue;
-      if (getString(specifier, "type") !== "ImportDefaultSpecifier") continue;
-      const local = getAstName(specifier.local);
-      if (local) locals.add(local);
+    for (const specifier of node.specifiers) {
+      if (specifier.type === "ImportDefaultSpecifier") locals.add(specifier.local.name);
     }
   }
 
   return locals;
 }
 
-function isIdentifierNameInSet(node: unknown, names: Set<string>): boolean {
-  if (!isRecord(node)) return false;
-  return getString(node, "type") === "Identifier" && names.has(getString(node, "name") ?? "");
+function isIdentifierNameInSet(node: ESTree.Node, names: Set<string>): boolean {
+  return node.type === "Identifier" && names.has(node.name);
 }
 
-function isDynamicCall(node: AstRecord, dynamicLocals: Set<string>): boolean {
-  if (getString(node, "type") !== "CallExpression") return false;
-  return isIdentifierNameInSet(node.callee, dynamicLocals);
+function isDynamicCall(
+  node: ESTree.Node,
+  dynamicLocals: Set<string>,
+): node is ESTree.CallExpression {
+  return node.type === "CallExpression" && isIdentifierNameInSet(node.callee, dynamicLocals);
 }
 
-function addBindingName(pattern: unknown, names: Set<string>): void {
-  if (!isRecord(pattern)) return;
+function addBindingName(pattern: ESTree.Node | null, names: Set<string>): void {
+  collectBindingNames(pattern, names);
+}
 
-  const type = getString(pattern, "type");
-  if (type === null) return;
-
-  switch (type) {
-    case "Identifier": {
-      const name = getString(pattern, "name");
-      if (name) names.add(name);
-      return;
-    }
-    case "AssignmentPattern":
-      addBindingName(pattern.left, names);
-      return;
-    case "RestElement":
-      addBindingName(pattern.argument, names);
-      return;
-    case "ArrayPattern":
-      for (const element of getArray(pattern, "elements")) {
-        addBindingName(element, names);
-      }
-      return;
-    case "ObjectPattern":
-      for (const property of getArray(pattern, "properties")) {
-        if (!isRecord(property)) continue;
-        if (getString(property, "type") === "RestElement") {
-          addBindingName(property.argument, names);
-          continue;
-        }
-        addBindingName(property.value, names);
-      }
-      return;
-    default:
-      return;
+function addVariableDeclarationBindingNames(node: ESTree.Node | null, names: Set<string>): void {
+  if (node?.type !== "VariableDeclaration") return;
+  for (const declaration of node.declarations) {
+    addBindingName(declaration.id, names);
   }
 }
 
-function addVariableDeclarationBindingNames(node: unknown, names: Set<string>): void {
-  if (!isRecord(node) || getString(node, "type") !== "VariableDeclaration") return;
-  for (const declaration of getArray(node, "declarations")) {
-    if (isRecord(declaration)) addBindingName(declaration.id, names);
-  }
-}
-
-function collectBlockScopedBindingNames(body: readonly unknown[]): Set<string> {
+function collectBlockScopedBindingNames(body: readonly ESTree.Node[]): Set<string> {
   const names = new Set<string>();
 
   for (const statement of body) {
-    if (!isRecord(statement)) continue;
-
-    const type = getString(statement, "type");
-    if (type === "VariableDeclaration") {
-      if (getString(statement, "kind") !== "var") {
+    if (statement.type === "VariableDeclaration") {
+      if (statement.kind !== "var") {
         addVariableDeclarationBindingNames(statement, names);
       }
       continue;
     }
 
-    if (type === "FunctionDeclaration" || type === "ClassDeclaration") {
-      const name = getAstName(statement.id);
-      if (name) names.add(name);
+    if (
+      (statement.type === "FunctionDeclaration" || statement.type === "ClassDeclaration") &&
+      statement.id
+    ) {
+      names.add(statement.id.name);
     }
   }
 
   return names;
 }
 
-function collectSwitchScopedBindingNames(node: AstRecord): Set<string> {
+function collectSwitchScopedBindingNames(node: ESTree.SwitchStatement): Set<string> {
   const names = new Set<string>();
 
-  for (const switchCase of getArray(node, "cases")) {
-    if (!isRecord(switchCase)) continue;
-    for (const statement of getArray(switchCase, "consequent")) {
+  for (const switchCase of node.cases) {
+    for (const statement of switchCase.consequent) {
       for (const name of collectBlockScopedBindingNames([statement])) {
         names.add(name);
       }
@@ -160,10 +91,10 @@ function collectSwitchScopedBindingNames(node: AstRecord): Set<string> {
   return names;
 }
 
-function collectVarBindingNames(value: unknown, names: Set<string>): void {
-  if (!isRecord(value)) return;
+function collectVarBindingNames(value: ESTree.Node | null, names: Set<string>): void {
+  if (!value) return;
 
-  const type = getString(value, "type");
+  const type = value.type;
   if (
     type === "FunctionDeclaration" ||
     type === "FunctionExpression" ||
@@ -172,31 +103,23 @@ function collectVarBindingNames(value: unknown, names: Set<string>): void {
     return;
   }
 
-  if (type === "VariableDeclaration" && getString(value, "kind") === "var") {
+  if (type === "VariableDeclaration" && value.kind === "var") {
     addVariableDeclarationBindingNames(value, names);
   }
 
-  for (const [key, child] of Object.entries(value)) {
-    if (key === "parent") continue;
-    if (Array.isArray(child)) {
-      for (const item of child) {
-        collectVarBindingNames(item, names);
-      }
-    } else if (isRecord(child)) {
-      collectVarBindingNames(child, names);
-    }
-  }
+  forEachAstChild(value, (child) => collectVarBindingNames(child, names));
 }
 
-function collectFunctionScopeBindingNames(node: AstRecord): Set<string> {
+function collectFunctionScopeBindingNames(
+  node: ESTree.Function | ESTree.ArrowFunctionExpression,
+): Set<string> {
   const names = new Set<string>();
 
-  if (getString(node, "type") === "FunctionExpression") {
-    const name = getAstName(node.id);
-    if (name) names.add(name);
+  if (node.type === "FunctionExpression" && node.id) {
+    names.add(node.id.name);
   }
 
-  for (const param of getArray(node, "params")) {
+  for (const param of node.params) {
     addBindingName(param, names);
   }
 
@@ -204,10 +127,11 @@ function collectFunctionScopeBindingNames(node: AstRecord): Set<string> {
   return names;
 }
 
-function collectForBindingNames(node: AstRecord): Set<string> {
+function collectForBindingNames(
+  node: ESTree.ForStatement | ESTree.ForInStatement | ESTree.ForOfStatement,
+): Set<string> {
   const names = new Set<string>();
-  addVariableDeclarationBindingNames(node.init, names);
-  addVariableDeclarationBindingNames(node.left, names);
+  addVariableDeclarationBindingNames(node.type === "ForStatement" ? node.init : node.left, names);
   return names;
 }
 
@@ -225,47 +149,32 @@ function withoutBindings(activeNames: Set<string>, localNames: Set<string>): Set
 }
 
 function visitChildren(
-  node: AstRecord,
+  node: ESTree.Node,
   dynamicLocals: Set<string>,
-  visitor: (node: AstRecord) => void,
+  visitor: (node: ESTree.CallExpression) => void,
 ): void {
-  for (const [key, child] of Object.entries(node)) {
-    if (key === "parent") continue;
-    if (Array.isArray(child)) {
-      for (const item of child) {
-        visitDynamicCalls(item, dynamicLocals, visitor);
-      }
-    } else if (isRecord(child)) {
-      visitDynamicCalls(child, dynamicLocals, visitor);
-    }
-  }
+  forEachAstChild(node, (child) => visitDynamicCalls(child, dynamicLocals, visitor));
 }
 
 function visitDynamicCalls(
-  value: unknown,
+  value: ESTree.Node,
   dynamicLocals: Set<string>,
-  visitor: (node: AstRecord) => void,
+  visitor: (node: ESTree.CallExpression) => void,
 ): void {
-  if (!isRecord(value) || dynamicLocals.size === 0) return;
+  if (dynamicLocals.size === 0) return;
 
-  const type = getString(value, "type");
+  const type = value.type;
   if (type === "Program") {
-    const scoped = withoutBindings(
-      dynamicLocals,
-      collectBlockScopedBindingNames(getArray(value, "body")),
-    );
-    for (const statement of getArray(value, "body")) {
+    const scoped = withoutBindings(dynamicLocals, collectBlockScopedBindingNames(value.body));
+    for (const statement of value.body) {
       visitDynamicCalls(statement, scoped, visitor);
     }
     return;
   }
 
   if (type === "BlockStatement") {
-    const scoped = withoutBindings(
-      dynamicLocals,
-      collectBlockScopedBindingNames(getArray(value, "body")),
-    );
-    for (const statement of getArray(value, "body")) {
+    const scoped = withoutBindings(dynamicLocals, collectBlockScopedBindingNames(value.body));
+    for (const statement of value.body) {
       visitDynamicCalls(statement, scoped, visitor);
     }
     return;
@@ -275,7 +184,7 @@ function visitDynamicCalls(
     visitDynamicCalls(value.discriminant, dynamicLocals, visitor);
 
     const scoped = withoutBindings(dynamicLocals, collectSwitchScopedBindingNames(value));
-    for (const switchCase of getArray(value, "cases")) {
+    for (const switchCase of value.cases) {
       visitDynamicCalls(switchCase, scoped, visitor);
     }
     return;
@@ -296,8 +205,7 @@ function visitDynamicCalls(
 
   if (type === "ClassDeclaration" || type === "ClassExpression") {
     const names = new Set<string>();
-    const name = getAstName(value.id);
-    if (name) names.add(name);
+    if (value.id) names.add(value.id.name);
     visitChildren(value, withoutBindings(dynamicLocals, names), visitor);
     return;
   }
@@ -320,12 +228,13 @@ function visitDynamicCalls(
   visitChildren(value, dynamicLocals, visitor);
 }
 
-function collectImportSpecifiers(node: unknown): string[] {
+function collectImportSpecifiers(node: ESTree.Node | undefined): string[] {
   const specifiers: string[] = [];
   const seen = new Set<string>();
 
+  if (!node) return specifiers;
   walkAst(node, (item) => {
-    if (getString(item, "type") === "ImportExpression") {
+    if (item.type === "ImportExpression") {
       const specifier = stringLiteralValue(item.source);
       if (specifier && !seen.has(specifier)) {
         seen.add(specifier);
@@ -333,42 +242,35 @@ function collectImportSpecifiers(node: unknown): string[] {
       }
       return;
     }
-
-    if (getString(item, "type") !== "CallExpression") return;
-    const callee = item.callee;
-    if (!isRecord(callee) || getString(callee, "type") !== "Import") return;
-    const firstArg = getArray(item, "arguments")[0];
-    const specifier = stringLiteralValue(firstArg);
-    if (specifier && !seen.has(specifier)) {
-      seen.add(specifier);
-      specifiers.push(specifier);
-    }
   });
 
   return specifiers;
 }
 
-function propertyKeyName(property: unknown): string | null {
-  if (!isRecord(property)) return null;
-  if (getBoolean(property, "computed")) return null;
-  return getAstName(property.key);
+function propertyKeyName(property: ESTree.ObjectProperty): string | null {
+  if (property.computed) return null;
+  const key = property.key;
+  if (key.type === "Identifier") return key.name;
+  return stringLiteralValue(key);
 }
 
-function objectProperties(node: unknown): AstRecord[] {
-  if (!isRecord(node) || getString(node, "type") !== "ObjectExpression") return [];
-  return getArray(node, "properties").filter(isRecord);
+function objectProperties(node: ESTree.Node | undefined): ESTree.ObjectProperty[] {
+  if (node?.type !== "ObjectExpression") return [];
+  return node.properties.filter(
+    (property): property is ESTree.ObjectProperty => property.type === "Property",
+  );
 }
 
-function hasObjectProperty(node: unknown, name: string): boolean {
+function hasObjectProperty(node: ESTree.Node | undefined, name: string): boolean {
   return objectProperties(node).some((property) => propertyKeyName(property) === name);
 }
 
-function findObjectProperty(node: unknown, name: string): AstRecord | null {
+function findObjectProperty(node: ESTree.Node, name: string): ESTree.ObjectProperty | null {
   return objectProperties(node).find((property) => propertyKeyName(property) === name) ?? null;
 }
 
-function dynamicLoaderNode(firstArg: unknown): unknown {
-  if (!isRecord(firstArg) || getString(firstArg, "type") !== "ObjectExpression") return firstArg;
+function dynamicLoaderNode(firstArg: ESTree.Node | undefined): ESTree.Node | undefined {
+  if (firstArg?.type !== "ObjectExpression") return firstArg;
   // For the object form `dynamic({ loader })`, scan the `loader` value. The
   // `modules` fallback mirrors Next.js's react-loadable babel plugin, which
   // treats `modules` as an alternate loader source (`propertiesMap.modules` →
@@ -381,55 +283,39 @@ function dynamicLoaderNode(firstArg: unknown): unknown {
   return loaderProperty?.value;
 }
 
-function findLastEndedProperty(node: AstRecord): AstRecord | null {
-  const properties = objectProperties(node);
-  for (let index = properties.length - 1; index >= 0; index -= 1) {
-    if (getNumber(properties[index], "end") !== null) {
-      return properties[index];
-    }
-  }
-  return null;
+function findLastObjectMember(node: ESTree.ObjectExpression): ESTree.ObjectPropertyKind | null {
+  return node.properties.at(-1) ?? null;
 }
 
 function appendObjectProperty(
   output: MagicString,
-  objectNode: AstRecord,
+  objectNode: ESTree.ObjectExpression,
   property: string,
 ): boolean {
-  const start = getNumber(objectNode, "start");
-  const end = getNumber(objectNode, "end");
-  if (start === null || end === null) return false;
-
-  const lastProperty = findLastEndedProperty(objectNode);
-  if (!lastProperty) {
-    output.appendLeft(start + 1, property);
+  const lastMember = findLastObjectMember(objectNode);
+  if (!lastMember) {
+    output.appendLeft(objectNode.start + 1, property);
     return true;
   }
 
-  const propertyEnd = getNumber(lastProperty, "end");
-  if (propertyEnd === null) return false;
-  output.appendLeft(propertyEnd, `, ${property}`);
+  output.appendLeft(lastMember.end, `, ${property}`);
   return true;
 }
 
 function insertSecondOptionsArgument(
   output: MagicString,
   code: string,
-  callNode: AstRecord,
-  firstArg: AstRecord,
+  callNode: ESTree.CallExpression,
+  firstArg: ESTree.Argument,
   optionsLiteral: string,
 ): boolean {
-  const callEnd = getNumber(callNode, "end");
-  const firstArgEnd = getNumber(firstArg, "end");
-  if (callEnd === null || firstArgEnd === null) return false;
-
   // Insert just before the call's closing paren (AST `end` is exclusive, so
   // `callEnd - 1` is the `)`). This is PAREN-SAFE: a parenthesized first
   // argument such as `dynamic((() => import("./x")))` reports its `end` BEFORE
   // the wrapping paren, so inserting at the first arg's end would land inside
   // those parens and turn the loader into a sequence expression — silently
   // dropping it. The call's close paren is always past the whole argument list.
-  const closeParen = callEnd - 1;
+  const closeParen = callNode.end - 1;
 
   // Decide the separator with a COMMENT-AWARE trailing-comma check:
   // `hasTrailingComma` inspects only the gap between the first argument and the
@@ -438,7 +324,7 @@ function insertSecondOptionsArgument(
   // comma (`dynamic(loader,)`) must NOT get a second one (`,,` is a syntax
   // error), and a comma living inside a comment must NOT be mistaken for a real
   // one (the old substring scan overwrote — and thus ate — such comments).
-  const separator = hasTrailingComma(code.slice(firstArgEnd, closeParen)) ? " " : ", ";
+  const separator = hasTrailingComma(code.slice(firstArg.end, closeParen)) ? " " : ", ";
   output.appendLeft(closeParen, `${separator}${optionsLiteral}`);
   return true;
 }
@@ -467,12 +353,10 @@ function cachedRootRealpath(root: string): string | null {
 }
 
 /** `code` offset -> human `:line:column` (1-based), for build error messages. */
-function formatNodeLocation(code: string, node: AstRecord): string {
-  const start = getNumber(node, "start");
-  if (start === null) return "";
-  const before = code.slice(0, start);
+function formatNodeLocation(code: string, node: ESTree.Node): string {
+  const before = code.slice(0, node.start);
   const line = before.split("\n").length;
-  const column = start - before.lastIndexOf("\n");
+  const column = node.start - before.lastIndexOf("\n");
   return `:${line}:${column}`;
 }
 
@@ -530,7 +414,7 @@ async function resolveManifestModuleIds(
   return resolvedIds;
 }
 
-function shouldSkipCall(firstArg: unknown, secondArg: unknown): boolean {
+function shouldSkipCall(firstArg: ESTree.Node, secondArg: ESTree.Node | undefined): boolean {
   if (hasObjectProperty(firstArg, "loadableGenerated")) return true;
   return hasObjectProperty(secondArg, "loadableGenerated");
 }
@@ -538,17 +422,17 @@ function shouldSkipCall(firstArg: unknown, secondArg: unknown): boolean {
 function applyLoadableGenerated(
   output: MagicString,
   code: string,
-  callNode: AstRecord,
+  callNode: ESTree.CallExpression,
   moduleIds: readonly string[],
 ): boolean {
-  const args = getArray(callNode, "arguments");
+  const args = callNode.arguments;
   const firstArg = args[0];
   const secondArg = args[1];
-  if (!isRecord(firstArg)) return false;
+  if (!firstArg) return false;
   if (shouldSkipCall(firstArg, secondArg)) return false;
 
   const property = `loadableGenerated: { modules: ${JSON.stringify(moduleIds)} }`;
-  const firstArgIsObject = getString(firstArg, "type") === "ObjectExpression";
+  const firstArgIsObject = firstArg.type === "ObjectExpression";
   if (firstArgIsObject) {
     return appendObjectProperty(output, firstArg, property);
   }
@@ -557,7 +441,7 @@ function applyLoadableGenerated(
     return insertSecondOptionsArgument(output, code, callNode, firstArg, `{ ${property} }`);
   }
 
-  if (isRecord(secondArg) && getString(secondArg, "type") === "ObjectExpression") {
+  if (secondArg?.type === "ObjectExpression") {
     return appendObjectProperty(output, secondArg, property);
   }
 
@@ -572,7 +456,7 @@ export async function transformNextDynamicPreloadMetadata(
 ): Promise<TransformResult | null> {
   if (!code.includes("next/dynamic")) return null;
 
-  let ast: unknown;
+  let ast: ReturnType<typeof parseAst>;
   try {
     // `parseAst` is Vite's bundled oxc parser in plain-JS mode — it does NOT
     // accept JSX or TS syntax. This is correct ONLY because the plugin runs as a
@@ -607,7 +491,7 @@ export async function transformNextDynamicPreloadMetadata(
   // append after an argument / inside an options object), so insertion order is
   // irrelevant. Promise ordering is NOT what makes this correct.
   visitDynamicCalls(ast, dynamicLocals, (node) => {
-    const args = getArray(node, "arguments");
+    const args = node.arguments;
     // Match Next.js's react-loadable plugin, which throws on >2 arguments.
     if (args.length > 2) {
       throw new Error(

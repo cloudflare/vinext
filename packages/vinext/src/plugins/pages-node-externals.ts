@@ -1,14 +1,12 @@
 import fs from "node:fs";
 import path from "pathslash";
-import { parseAst, type Plugin } from "vite";
+import { parseAst, type ESTree, type Plugin } from "vite";
 import {
-  isAstRecord,
   mayContainDynamicImport,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   staticStringValue,
   walkAst,
-  type AstRecord,
 } from "./ast-utils.js";
 import { canonicalizeFilePath, isPathInsideOrEqual, stripViteModuleQuery } from "../utils/path.js";
 import { packageNameFromSpecifier } from "../utils/package-name.js";
@@ -79,33 +77,28 @@ function moduleDependencySpecifiers(code: string, id: string): string[] {
 
   const specifiers: string[] = [];
   const seen = new Set<string>();
-  const sourceSpecifier = (source: unknown): string | null => {
-    if (!isAstRecord(source)) return null;
-    return staticStringValue(source);
-  };
-  const addStaticSource = (source: unknown): void => {
-    const specifier = sourceSpecifier(source);
+  const addStaticSource = (source: ESTree.Node | null): void => {
+    const specifier = staticStringValue(source);
     if (specifier === null || seen.has(specifier)) return;
     seen.add(specifier);
     specifiers.push(specifier);
   };
 
   for (const statement of ast.body) {
-    if (!isAstRecord(statement)) continue;
     if (
       statement.type === "ImportDeclaration" ||
       statement.type === "ExportNamedDeclaration" ||
       statement.type === "ExportAllDeclaration"
     ) {
-      if (statement.importKind !== "type" && statement.exportKind !== "type") {
-        addStaticSource(statement.source);
-      }
+      if (statement.type === "ImportDeclaration" && statement.importKind === "type") continue;
+      if (statement.type !== "ImportDeclaration" && statement.exportKind === "type") continue;
+      addStaticSource(statement.source);
     }
   }
 
   if (!mayContainDynamicImport(code)) return specifiers;
 
-  const visitDynamicImports = (node: AstRecord): void => {
+  const visitDynamicImports = (node: ESTree.Node): void => {
     if (node.type === "ImportExpression") {
       // Only statically known requests participate in the build graph. Never
       // guess at variable or interpolated dynamic imports.

@@ -27,6 +27,7 @@ import {
   PRERENDER_REVALIDATE_HEADER,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
 
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
@@ -187,6 +188,51 @@ describe("createPagesPageHandler — after() lifecycle", () => {
   });
 });
 
+describe("createPagesPageHandler — pre-render response headers", () => {
+  it("lets getServerSideProps override config cache policy", async () => {
+    // Ported from Next.js:
+    // test/e2e/middleware-custom-matchers/app/pages/index.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/app/pages/index.js
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/",
+            makePageModule({
+              getServerSideProps: async ({
+                res,
+              }: {
+                res: {
+                  getHeader(name: string): string | string[] | number | undefined;
+                  setHeader(name: string, value: string): void;
+                };
+              }) => {
+                expect(res.getHeader("x-config-variant")).toBe("preview");
+                expect(res.getHeader("x-from-middleware")).toBe("present");
+                res.setHeader("Cache-Control", "private, no-store");
+                return { props: {} };
+              },
+            }),
+          ),
+        ],
+      }),
+    );
+
+    const initialHeaders = new Headers({
+      "Cache-Control": "public, s-maxage=60",
+      Vary: "x-visitor",
+      "x-config-variant": "preview",
+      "x-from-middleware": "present",
+    });
+    const response = await handler(makeRequest(), "/", null, null, null, initialHeaders);
+
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Vary")).toBe("x-visitor");
+    expect(response.headers.get("x-config-variant")).toBe("preview");
+    expect(response.headers.get("x-from-middleware")).toBe("present");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Route miss → 404 fallback
 // ---------------------------------------------------------------------------
@@ -247,12 +293,18 @@ describe("createPagesPageHandler — route miss", () => {
           "X-Example-Cache-Tag": input.tags?.join(",") ?? null,
         };
       },
-      hasExplicitNonCacheableResponsePolicy(headers) {
-        const edgePolicy = headers.get("X-Example-Edge-Policy");
-        if (edgePolicy && /(?:private|no-store|no-cache)/i.test(edgePolicy)) return true;
-        return Boolean(
-          !edgePolicy && /(?:private|no-store|no-cache)/i.test(headers.get("Cache-Control") ?? ""),
-        );
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+        readCacheControl: (headers) =>
+          headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy(headers) {
+          const edgePolicy = headers.get("X-Example-Edge-Policy");
+          if (edgePolicy && /(?:private|no-store|no-cache)/i.test(edgePolicy)) return true;
+          return Boolean(
+            !edgePolicy &&
+            /(?:private|no-store|no-cache)/i.test(headers.get("Cache-Control") ?? ""),
+          );
+        },
       },
     };
     setCdnCacheAdapter(edgeAdapter);
@@ -356,7 +408,7 @@ describe("createPagesPageHandler — on-demand terminal responses", () => {
       }),
     );
     const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
-    const request = new Request("http://localhost/redirect", {
+    const request = new Request("http://localhost/alias", {
       headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
     });
 
@@ -364,6 +416,7 @@ describe("createPagesPageHandler — on-demand terminal responses", () => {
 
     expect(response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
     expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe("_N_T_/redirect");
   });
 });
 
@@ -405,6 +458,34 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(body).toHaveProperty("pageProps");
   });
 
+  it("preserves staged Set-Cookie values separately on Pages data responses", async () => {
+    const stagedHeaders = new Headers();
+    stagedHeaders.append("Set-Cookie", "middleware=one; Path=/");
+    stagedHeaders.append("Set-Cookie", "config=two; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/");
+    const route = makeRoute(
+      "/about",
+      makePageModule({
+        getServerSideProps: async ({ res }: { res: { getHeader(name: string): unknown } }) => {
+          expect(res.getHeader("Set-Cookie")).toEqual(stagedHeaders.getSetCookie());
+          return { props: {} };
+        },
+      }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const dataUrl = "/_next/data/test-build-id/about.json";
+
+    const response = await handler(
+      makeRequest(dataUrl),
+      dataUrl,
+      null,
+      stagedHeaders,
+      null,
+      stagedHeaders,
+    );
+
+    expect(response.headers.getSetCookie()).toEqual(stagedHeaders.getSetCookie());
+  });
+
   it("returns 404 JSON for _next/data with wrong buildId", async () => {
     const handler = createPagesPageHandler(makeOpts());
     const badUrl = "/_next/data/wrong-build-id/about.json";
@@ -412,6 +493,49 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(res.status).toBe(404);
     const ct = res.headers.get("content-type");
     expect(ct).toContain("application/json");
+  });
+
+  it("uses the HTML path tag for cacheable static-props data responses", async () => {
+    const cacheInputs: Array<{ cacheControl: string; tags?: readonly string[] }> = [];
+    setCdnCacheAdapter({
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      async revalidateTag() {},
+      buildResponseHeaders(input) {
+        cacheInputs.push(input);
+        return {
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "X-Example-Cache-Tag": input.tags?.join(",") ?? null,
+          "X-Example-Edge-Policy": input.cacheControl,
+        };
+      },
+    });
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [
+          makeRoute(
+            "/about",
+            makePageModule({
+              getStaticProps: async () => ({ props: {}, revalidate: 60 }),
+            }),
+          ),
+        ],
+      }),
+    );
+    const dataUrl = "/_next/data/test-build-id/about.json";
+
+    const response = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+
+    expect(response.status).toBe(200);
+    expect(cacheInputs).toEqual([
+      expect.objectContaining({
+        tags: ["_N_T_/about"],
+      }),
+    ]);
+    expect(response.headers.get("X-Example-Cache-Tag")).toBe("_N_T_/about");
   });
 
   it("preserves no-middleware trailingSlash data request resolvedUrl and asPath", async () => {
@@ -726,6 +850,23 @@ describe("createPagesPageHandler — preview responses", () => {
     expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
     expect(response.headers.get("x-example-edge-policy")).toBe("s-maxage=6000");
     expect(response.headers.get("x-example-cache-tag")).toBe("draft-404");
+  });
+
+  it("keeps invalid preview-cookie cleanup private", () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const response = finalizePagesPreviewResponse(
+      new Response("stale preview", {
+        headers: {
+          "Cache-Control": "public, max-age=0, must-revalidate",
+          "CDN-Cache-Control": "public, s-maxage=60",
+        },
+      }),
+      { data: false, shouldClear: true },
+    );
+
+    expect(response.headers.get("cache-control")).toBe(PAGES_PREVIEW_CACHE_CONTROL);
+    expect(response.headers.get("cdn-cache-control")).toBeNull();
+    expect(response.headers.getSetCookie()).toHaveLength(2);
   });
 
   it("does not expose preview notFound responses to shared Cloudflare caching", async () => {

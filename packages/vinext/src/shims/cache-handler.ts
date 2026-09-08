@@ -373,7 +373,54 @@ export class MemoryCacheHandler implements CacheHandler {
 }
 
 const HANDLER_KEY = Symbol.for("vinext.cacheHandler");
+const CONFIGURED_HANDLER_KEY = Symbol.for("vinext.configuredCacheHandler");
+const EXPLICIT_HANDLER_KEY = Symbol.for("vinext.explicitCacheHandler");
+const LAZY_HANDLER_KEY = Symbol.for("vinext.lazyCacheHandler");
 const globalHandlers = globalThis as unknown as Record<PropertyKey, CacheHandler>;
+
+class LazyDataCacheHandler implements CacheHandler {
+  private resolved: Promise<CacheHandler> | undefined;
+  private loadedHandler: CacheHandler | undefined;
+
+  constructor(private readonly load: () => Promise<void>) {}
+
+  private resolve(): Promise<CacheHandler> {
+    return (this.resolved ??= this.load().then(() => {
+      const registered = globalHandlers[HANDLER_KEY];
+      if (registered && registered !== this) {
+        this.loadedHandler = registered;
+        return registered;
+      }
+
+      const fallback = new MemoryCacheHandler();
+      globalHandlers[HANDLER_KEY] = fallback;
+      globalHandlers[CONFIGURED_HANDLER_KEY] = fallback;
+      delete globalHandlers[LAZY_HANDLER_KEY];
+      this.loadedHandler = fallback;
+      return fallback;
+    }));
+  }
+
+  async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    return (await this.resolve()).get(key, ctx);
+  }
+
+  async set(
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx?: Record<string, unknown>,
+  ): Promise<void> {
+    await (await this.resolve()).set(key, data, ctx);
+  }
+
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
+    await (await this.resolve()).revalidateTag(tags, durations);
+  }
+
+  resetRequestCache(): void {
+    this.loadedHandler?.resetRequestCache?.();
+  }
+}
 
 function getActiveHandler(): CacheHandler {
   return globalHandlers[HANDLER_KEY] ?? (globalHandlers[HANDLER_KEY] = new MemoryCacheHandler());
@@ -387,6 +434,45 @@ export function configureMemoryCacheHandler(options?: MemoryCacheHandlerOptions)
 
 export function setDataCacheHandler(handler: CacheHandler): void {
   globalHandlers[HANDLER_KEY] = handler;
+  globalHandlers[EXPLICIT_HANDLER_KEY] = handler;
+  delete globalHandlers[LAZY_HANDLER_KEY];
+}
+
+/**
+ * Lazily keep the first declaratively configured handler shared across
+ * duplicated stage modules. Imperative setters remain able to replace it.
+ */
+export function registerDataCacheHandler(factory: () => CacheHandler): void {
+  if (
+    globalHandlers[EXPLICIT_HANDLER_KEY] !== undefined ||
+    globalHandlers[CONFIGURED_HANDLER_KEY] !== undefined
+  ) {
+    return;
+  }
+  const handler = factory();
+  if (
+    globalHandlers[EXPLICIT_HANDLER_KEY] !== undefined ||
+    globalHandlers[CONFIGURED_HANDLER_KEY] !== undefined
+  ) {
+    return;
+  }
+  globalHandlers[HANDLER_KEY] = handler;
+  globalHandlers[CONFIGURED_HANDLER_KEY] = handler;
+  delete globalHandlers[LAZY_HANDLER_KEY];
+}
+
+/** Register a lightweight proxy that imports the configured handler on first use. */
+export function registerLazyDataCacheHandler(load: () => Promise<void>): void {
+  if (
+    globalHandlers[EXPLICIT_HANDLER_KEY] !== undefined ||
+    globalHandlers[CONFIGURED_HANDLER_KEY] !== undefined ||
+    globalHandlers[LAZY_HANDLER_KEY] !== undefined
+  ) {
+    return;
+  }
+  const handler = new LazyDataCacheHandler(load);
+  globalHandlers[HANDLER_KEY] = handler;
+  globalHandlers[LAZY_HANDLER_KEY] = handler;
 }
 
 export function getDataCacheHandler(): CacheHandler {

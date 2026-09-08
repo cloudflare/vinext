@@ -179,14 +179,51 @@ function assertManifestModuleReachable(configPath: string): void {
   if (!fs.existsSync(mainPath) || !fs.lstatSync(mainPath).isFile()) {
     throw new Error("Two-stage CDN warming could not find the generated Wrangler main module.");
   }
-  if (
-    !hasStaticModuleSpecifier(
-      fs.readFileSync(mainPath, "utf8"),
-      `./${CACHEABILITY_MANIFEST_MODULE}`,
-    )
-  ) {
+  const viteManifestPath = path.join(serverDirectory, ".vite", "manifest.json");
+  let viteManifest: Record<string, { dynamicImports?: unknown; file?: unknown; imports?: unknown }>;
+  try {
+    viteManifest = JSON.parse(fs.readFileSync(viteManifestPath, "utf8"));
+  } catch (cause) {
+    throw new Error("Two-stage CDN warming could not read the generated Vite manifest.", {
+      cause,
+    });
+  }
+  const normalizedMain = main.replace(/^\.\//, "");
+  const entryKey = Object.entries(viteManifest).find(
+    ([, entry]) => entry?.file === normalizedMain,
+  )?.[0];
+  const queue = entryKey ? [entryKey] : [];
+  const visited = new Set<string>();
+  let reachable = false;
+  while (queue.length > 0 && !reachable) {
+    const key = queue.shift()!;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const entry = viteManifest[key];
+    if (!entry || typeof entry.file !== "string") continue;
+    const modulePath = path.resolve(serverDirectory, entry.file);
+    if (fs.existsSync(modulePath) && fs.lstatSync(modulePath).isFile()) {
+      const relativeManifest = path
+        .relative(
+          path.dirname(modulePath),
+          path.join(serverDirectory, CACHEABILITY_MANIFEST_MODULE),
+        )
+        .split(path.sep)
+        .join("/");
+      const specifier = relativeManifest.startsWith(".")
+        ? relativeManifest
+        : `./${relativeManifest}`;
+      reachable = hasStaticModuleSpecifier(fs.readFileSync(modulePath, "utf8"), specifier);
+    }
+    for (const references of [entry.imports, entry.dynamicImports]) {
+      if (Array.isArray(references)) {
+        queue.push(...references.filter((value): value is string => typeof value === "string"));
+      }
+    }
+  }
+  if (!reachable) {
     throw new Error(
-      `Two-stage CDN warming requires the generated Worker main module to import ${CACHEABILITY_MANIFEST_MODULE}.`,
+      `Two-stage CDN warming requires the generated Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}.`,
     );
   }
 }

@@ -1,4 +1,8 @@
-import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, VINEXT_PRERENDER_SECRET_HEADER } from "./headers.js";
+import {
+  VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "./headers.js";
 import { isUnknownRecord } from "../utils/record.js";
 
 export type PrerenderRouteParams = Record<string, string | string[]>;
@@ -7,6 +11,12 @@ export type PrerenderRouteParamsPayload = {
   fallbackParamNames?: readonly string[];
   params: PrerenderRouteParams;
   routePattern: string;
+};
+
+/** Prerender-only request state authenticated at the public request boundary. */
+export type TrustedPrerenderState = {
+  routeParams: PrerenderRouteParamsPayload | null;
+  speculative: boolean;
 };
 
 type PrerenderRouteParamsRouteMatch =
@@ -55,6 +65,17 @@ function isPrerenderRouteParamsPayload(value: unknown): value is PrerenderRouteP
   );
 }
 
+export function isTrustedPrerenderState(value: unknown): value is TrustedPrerenderState {
+  if (!isUnknownRecord(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length === 2 &&
+    keys.every((key) => key === "routeParams" || key === "speculative") &&
+    (value.routeParams === null || isPrerenderRouteParamsPayload(value.routeParams)) &&
+    typeof value.speculative === "boolean"
+  );
+}
+
 // A payload with no dynamic params serializes to `null`, which is
 // indistinguishable from an absent header on the read side. This is intentional:
 // the only producer, `encodePrerenderRouteParams`, already returns `null` for
@@ -93,6 +114,20 @@ export function readTrustedPrerenderRouteParamsFromHeaders(
     throw new Error("[vinext] Invalid internal prerender route params header.");
   }
   return params;
+}
+
+/** Authenticate prerender params and mode once before crossing a stage transport. */
+export function readTrustedPrerenderStateFromHeaders(
+  headers: Headers,
+  expectedSecret: string,
+): TrustedPrerenderState | null {
+  if (process.env.VINEXT_PRERENDER !== "1") return null;
+  const secret = headers.get(VINEXT_PRERENDER_SECRET_HEADER);
+  if (!expectedSecret || secret === null || secret !== expectedSecret) return null;
+  return {
+    routeParams: readTrustedPrerenderRouteParamsFromHeaders(headers, expectedSecret),
+    speculative: headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1",
+  };
 }
 
 // Convenience wrapper for reads that happen AFTER the prerender secret has

@@ -278,6 +278,8 @@ export type ProdServerOptions = {
   outDir?: string;
   /** Explicit App Router RSC entry path. Defaults to `<outDir>/server/index.js`. */
   rscEntryPath?: string;
+  /** Directory containing server manifests, sidecars, and prerender artifacts. */
+  serverDir?: string;
   /** Explicit Pages Router server entry path. Defaults to `<outDir>/server/entry.js`. */
   serverEntryPath?: string;
   /** Disable compression (default: false) */
@@ -1266,6 +1268,7 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     host = "0.0.0.0",
     outDir = path.resolve("dist"),
     rscEntryPath: explicitRscEntryPath,
+    serverDir: explicitServerDir,
     serverEntryPath: explicitServerEntryPath,
     noCompression = false,
     purpose,
@@ -1276,14 +1279,17 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   // Always resolve outDir to absolute to ensure dynamic import() works
   const resolvedOutDir = path.resolve(outDir);
   const clientDir = path.join(resolvedOutDir, "client");
+  const serverDir = explicitServerDir
+    ? path.resolve(explicitServerDir)
+    : path.join(resolvedOutDir, "server");
 
   // Detect build type
   const rscEntryPath = explicitRscEntryPath
     ? path.resolve(explicitRscEntryPath)
-    : path.join(resolvedOutDir, "server", "index.js");
+    : path.join(serverDir, "index.js");
   const serverEntryPath = explicitServerEntryPath
     ? path.resolve(explicitServerEntryPath)
-    : path.join(resolvedOutDir, "server", "entry.js");
+    : path.join(serverDir, "entry.js");
   const isAppRouter = fs.existsSync(rscEntryPath);
 
   if (!isAppRouter && !fs.existsSync(serverEntryPath)) {
@@ -1293,7 +1299,16 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   }
 
   if (isAppRouter) {
-    return startAppRouterServer({ port, host, clientDir, rscEntryPath, compress, purpose, silent });
+    return startAppRouterServer({
+      port,
+      host,
+      clientDir,
+      serverDir,
+      rscEntryPath,
+      compress,
+      purpose,
+      silent,
+    });
   }
 
   return startPagesRouterServer({
@@ -1313,6 +1328,7 @@ type AppRouterServerOptions = {
   port: number;
   host: string;
   clientDir: string;
+  serverDir: string;
   rscEntryPath: string;
   compress: boolean;
   purpose?: ProdServerOptions["purpose"];
@@ -1547,11 +1563,11 @@ function installPagesClientAssets(options: {
  * 4. Stream the Web Response back (with optional compression)
  */
 async function startAppRouterServer(options: AppRouterServerOptions) {
-  const { port, host, clientDir, rscEntryPath, compress, purpose, silent } = options;
+  const { port, host, clientDir, serverDir, rscEntryPath, compress, purpose, silent } = options;
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
-  const prerenderSecret = readPrerenderSecret(path.dirname(rscEntryPath));
+  const prerenderSecret = readPrerenderSecret(serverDir);
 
   // Import the RSC handler. importServerEntryModule uses the bare file://
   // URL so lazy chunks that import the entry back resolve to the same module
@@ -1586,7 +1602,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       ? (rscModule.__imageConfig as ImageConfig)
       : undefined;
   if (imageConfig === undefined) {
-    const imageConfigPath = path.join(path.dirname(rscEntryPath), "image-config.json");
+    const imageConfigPath = path.join(serverDir, "image-config.json");
     if (fs.existsSync(imageConfigPath)) {
       try {
         imageConfig = JSON.parse(fs.readFileSync(imageConfigPath, "utf-8"));
@@ -1619,7 +1635,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // any pre-rendered page is a cache HIT instead of a full re-render.
   const seedPrerenderedRoutes = resolveAppRouterPrerenderSeeder(rscModule);
   const seededRoutes = await runWithServerEntryRequire(rscEntryRequire, () =>
-    seedPrerenderedRoutes(path.dirname(rscEntryPath)),
+    seedPrerenderedRoutes(serverDir),
   );
   if (seededRoutes > 0) {
     console.log(

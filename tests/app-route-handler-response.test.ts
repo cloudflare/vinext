@@ -10,7 +10,10 @@ import {
   markRouteHandlerCacheMiss,
 } from "../packages/vinext/src/server/app-route-handler-response.js";
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
-import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  CloudflareCdnCacheAdapter,
+  encodeCloudflareCacheTag,
+} from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import { hasPostConfigLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 
 function buildCachedRouteValue(
@@ -417,17 +420,20 @@ describe("route handler responses route through the CDN cache adapter", () => {
     delete (globalThis as Record<PropertyKey, unknown>)[CDN_KEY];
   });
 
-  it("emits CDN-Cache-Control + Cache-Tag on a fresh response when an edge adapter is active", () => {
+  it("emits Cloudflare-CDN-Cache-Control + Cache-Tag with an edge adapter", () => {
     setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
     const response = new Response("fresh");
 
     applyRouteHandlerRevalidateHeader(response, 60, 600, ["_N_T_/api/feed", "posts"]);
 
     expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
-    expect(response.headers.get("CDN-Cache-Control")).toBe(
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe(
       "public, max-age=60, stale-while-revalidate=540",
     );
-    expect(response.headers.get("Cache-Tag")).toBe("_N_T_/api/feed,posts");
+    expect(response.headers.get("Cache-Tag")).toBe(
+      ["_N_T_/api/feed", "posts"].map(encodeCloudflareCacheTag).join(","),
+    );
   });
 
   it("does not promote a revalidate=0 (non-cacheable) response to the edge", () => {
@@ -440,5 +446,6 @@ describe("route handler responses route through the CDN cache adapter", () => {
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
     expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
   });
 });

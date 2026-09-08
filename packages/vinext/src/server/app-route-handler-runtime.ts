@@ -371,18 +371,23 @@ export function createTrackedAppRouteRequest(
     const requestWithOverrides = requestHeaders
       ? cloneRequestWithHeaders(input, requestHeaders)
       : input;
-    const sourceCfMetadata = Reflect.get(requestWithOverrides, "cf", requestWithOverrides);
     const sourceCfDescriptor = Reflect.getOwnPropertyDescriptor(requestWithOverrides, "cf");
+    const sourceCfAccessor = sourceCfDescriptor?.get;
+    const sourceCfMetadata = sourceCfAccessor
+      ? undefined
+      : Reflect.get(requestWithOverrides, "cf", requestWithOverrides);
     const nextRequest =
       requestMode === "force-static"
         ? createForceStaticNextRequest(requestWithOverrides, nextConfig)
         : requestWithOverrides instanceof NextRequest && sourceCfDescriptor?.configurable !== false
           ? requestWithOverrides
           : new NextRequest(requestWithOverrides, { nextConfig: nextConfig ?? undefined });
-    const rawCfMetadata =
-      sourceCfMetadata === undefined
+    const rawCfMetadata = sourceCfAccessor
+      ? undefined
+      : sourceCfMetadata === undefined
         ? Reflect.get(nextRequest, "cf", nextRequest)
         : sourceCfMetadata;
+    const hasCfMetadata = sourceCfAccessor !== undefined || rawCfMetadata !== undefined;
     const originalCfDescriptor =
       sourceCfDescriptor ?? Reflect.getOwnPropertyDescriptor(nextRequest, "cf");
     const accessCf = <T>(read: () => T, forceStaticValue: T): T => {
@@ -391,11 +396,17 @@ export function createTrackedAppRouteRequest(
       markDynamicAccess("request.cf");
       return read();
     };
-    const controlledCfGetter = (): unknown => accessCf(() => rawCfMetadata, undefined);
+    const controlledCfGetter = (): unknown =>
+      accessCf(
+        sourceCfAccessor
+          ? () => Reflect.apply(sourceCfAccessor, requestWithOverrides, [])
+          : () => rawCfMetadata,
+        undefined,
+      );
     // Keep request-specific Workers metadata behind one target-owned policy
     // boundary. Request methods stay bound to this branded target, so indirect
     // reads from branded Web APIs still reach the controlled accessor.
-    if (rawCfMetadata !== undefined) {
+    if (hasCfMetadata) {
       if (requestMode === "force-static") {
         // Keep target-bound branded wrappers from reaching the underlying
         // Workers value. Reflection traps hide this configurable accessor.
@@ -414,12 +425,16 @@ export function createTrackedAppRouteRequest(
     }
     const cloneTrackedRequest = (): NextRequest => {
       const cloned = nextRequest.clone();
-      if (rawCfMetadata !== undefined) {
-        Object.defineProperty(cloned, "cf", {
-          value: rawCfMetadata,
-          enumerable: originalCfDescriptor?.enumerable ?? false,
-          configurable: true,
-        });
+      if (hasCfMetadata) {
+        Object.defineProperty(
+          cloned,
+          "cf",
+          sourceCfDescriptor ?? {
+            value: rawCfMetadata,
+            enumerable: originalCfDescriptor?.enumerable ?? false,
+            configurable: true,
+          },
+        );
       }
       return wrapRequest(cloned);
     };

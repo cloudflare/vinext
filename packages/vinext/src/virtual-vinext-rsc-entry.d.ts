@@ -9,10 +9,7 @@
  * See `entries/app-rsc-entry.ts` for the generator that emits these.
  */
 declare module "virtual:vinext-rsc-entry" {
-  const rscHandler: (
-    request: Request,
-    ctx?: unknown,
-  ) => Promise<Response | null | undefined | string>;
+  const rscHandler: import("./server/app-rsc-combined-handler.js").AppRscHandler;
   export default rscHandler;
   export const __assetPrefix: string;
   export const __basePath: string;
@@ -27,4 +24,47 @@ declare module "virtual:vinext-rsc-entry" {
     contentDispositionType?: "inline" | "attachment";
     contentSecurityPolicy?: string;
   };
+}
+
+declare module "virtual:vinext-app-request-entry" {
+  type DispatchAppWorkerResponseStage =
+    import("./server/app-worker-stages.js").DispatchAppWorkerResponseStage;
+  const requestHandler: (
+    request: Request,
+    ctx: unknown,
+    dispatchResponseStage: DispatchAppWorkerResponseStage,
+    probeMode?: import("./server/multi-stage.js").VinextCacheabilityProbeMode | null,
+    prerenderDiscovery?: boolean,
+    trustedPrerenderState?:
+      | import("./server/prerender-route-params.js").TrustedPrerenderState
+      | null,
+  ) => Promise<Response>;
+  export default requestHandler;
+  export const __assetPrefix: string;
+  export const __basePath: string;
+  export const __imageAllowedWidths: number[];
+  export const __prerenderSecret: string;
+  export const __imageConfig: {
+    qualities?: number[];
+    dangerouslyAllowSVG?: boolean;
+    dangerouslyAllowLocalIP?: boolean;
+    contentDispositionType?: "inline" | "attachment";
+    contentSecurityPolicy?: string;
+  };
+}
+
+declare module "virtual:vinext-app-response-entry" {
+  import type { AppWorkerResponseStageProps } from "vinext/server/app-worker-stages";
+  import type { VinextResponseStageDispatchOptions } from "vinext/server/multi-stage";
+
+  const handler: {
+    handleResponseStage(
+      request: Request,
+      ctx: unknown,
+      props: AppWorkerResponseStageProps,
+      options?: VinextResponseStageDispatchOptions,
+    ): Promise<Response>;
+  };
+  export const __cacheabilityManifest: string | null;
+  export default handler;
 }

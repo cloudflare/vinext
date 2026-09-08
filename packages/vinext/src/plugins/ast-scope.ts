@@ -1,10 +1,5 @@
-import {
-  collectBindingNames,
-  forEachAstChild,
-  isAstRecord,
-  nodeArray,
-  type AstRecord,
-} from "./ast-utils.js";
+import type { ESTree } from "vite";
+import { collectBindingNames, forEachAstChild } from "./ast-utils.js";
 
 export type AstScope = {
   parent: AstScope | null;
@@ -22,7 +17,9 @@ export function hasAstBinding(scope: AstScope, name: string): boolean {
   return false;
 }
 
-export function isFunctionNode(node: AstRecord): boolean {
+export function isFunctionNode(
+  node: ESTree.Node,
+): node is ESTree.Function | ESTree.ArrowFunctionExpression {
   return (
     node.type === "FunctionDeclaration" ||
     node.type === "FunctionExpression" ||
@@ -31,25 +28,34 @@ export function isFunctionNode(node: AstRecord): boolean {
 }
 
 export function collectDirectScopeBindings(
-  node: AstRecord,
+  node: ESTree.Node,
   scope: AstScope,
-  onVariableDeclarator?: (declaration: AstRecord, declarator: AstRecord) => void,
+  onVariableDeclarator?: (
+    declaration: ESTree.VariableDeclaration,
+    declarator: ESTree.VariableDeclarator,
+  ) => void,
 ): void {
-  for (const statementValue of nodeArray(node.body)) {
-    const statement = isAstRecord(statementValue) ? statementValue : null;
-    if (!statement) continue;
+  const statements =
+    node.type === "Program" ||
+    node.type === "BlockStatement" ||
+    node.type === "StaticBlock" ||
+    node.type === "TSModuleBlock"
+      ? node.body
+      : node.type === "SwitchCase"
+        ? node.consequent
+        : [];
+
+  for (const statement of statements) {
     const declaration =
       statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration"
-        ? isAstRecord(statement.declaration)
-          ? statement.declaration
-          : null
+        ? statement.declaration
         : statement;
     if (!declaration) continue;
 
     if (declaration.type === "ImportDeclaration") {
       if (declaration.importKind === "type") continue;
-      for (const specifier of nodeArray(declaration.specifiers)) {
-        if (isAstRecord(specifier) && specifier.importKind !== "type") {
+      for (const specifier of declaration.specifiers) {
+        if (specifier.type !== "ImportSpecifier" || specifier.importKind !== "type") {
           collectBindingNames(specifier.local, scope.bindings);
         }
       }
@@ -59,8 +65,7 @@ export function collectDirectScopeBindings(
     ) {
       collectBindingNames(declaration.id, scope.bindings);
     } else if (declaration.type === "VariableDeclaration" && declaration.declare !== true) {
-      for (const declarator of nodeArray(declaration.declarations)) {
-        if (!isAstRecord(declarator)) continue;
+      for (const declarator of declaration.declarations) {
         collectBindingNames(declarator.id, scope.bindings);
         onVariableDeclarator?.(declaration, declarator);
       }
@@ -79,36 +84,40 @@ export function collectDirectScopeBindings(
 }
 
 export function collectLoopScopeBindings(
-  node: AstRecord,
+  node: ESTree.ForStatement | ESTree.ForInStatement | ESTree.ForOfStatement,
   scope: AstScope,
-  onVariableDeclarator?: (declaration: AstRecord, declarator: AstRecord) => void,
+  onVariableDeclarator?: (
+    declaration: ESTree.VariableDeclaration,
+    declarator: ESTree.VariableDeclarator,
+  ) => void,
 ): void {
   const declarationValue = node.type === "ForStatement" ? node.init : node.left;
-  if (!isAstRecord(declarationValue)) return;
-  if (declarationValue.type !== "VariableDeclaration" || declarationValue.declare === true) return;
-  for (const declarator of nodeArray(declarationValue.declarations)) {
-    if (!isAstRecord(declarator)) continue;
+  if (
+    !declarationValue ||
+    declarationValue.type !== "VariableDeclaration" ||
+    declarationValue.declare === true
+  )
+    return;
+  for (const declarator of declarationValue.declarations) {
     collectBindingNames(declarator.id, scope.bindings);
     onVariableDeclarator?.(declarationValue, declarator);
   }
 }
 
 export function collectSwitchScopeBindings(
-  node: AstRecord,
+  node: ESTree.SwitchStatement,
   scope: AstScope,
-  onVariableDeclarator?: (declaration: AstRecord, declarator: AstRecord) => void,
+  onVariableDeclarator?: (
+    declaration: ESTree.VariableDeclaration,
+    declarator: ESTree.VariableDeclarator,
+  ) => void,
 ): void {
-  for (const caseValue of nodeArray(node.cases)) {
-    if (!isAstRecord(caseValue)) continue;
-    collectDirectScopeBindings(
-      { type: "BlockStatement", body: nodeArray(caseValue.consequent) },
-      scope,
-      onVariableDeclarator,
-    );
+  for (const switchCase of node.cases) {
+    collectDirectScopeBindings(switchCase, scope, onVariableDeclarator);
   }
 }
 
-export function collectVarScopeBindings(node: AstRecord, scope: AstScope, root = true): void {
+export function collectVarScopeBindings(node: ESTree.Node, scope: AstScope, root = true): void {
   if (
     !root &&
     (isFunctionNode(node) || node.type === "StaticBlock" || node.type === "TSModuleBlock")
@@ -116,8 +125,8 @@ export function collectVarScopeBindings(node: AstRecord, scope: AstScope, root =
     return;
   }
   if (node.type === "VariableDeclaration" && node.kind === "var" && node.declare !== true) {
-    for (const declarator of nodeArray(node.declarations)) {
-      if (isAstRecord(declarator)) collectBindingNames(declarator.id, scope.bindings);
+    for (const declarator of node.declarations) {
+      collectBindingNames(declarator.id, scope.bindings);
     }
   }
   forEachAstChild(node, (child) => collectVarScopeBindings(child, scope, false));

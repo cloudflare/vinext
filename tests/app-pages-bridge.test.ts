@@ -107,6 +107,54 @@ describe("renderPagesFallback", () => {
     return { encodedBody, observedRuntimes, response };
   }
 
+  it("passes staged response headers to Pages API and GSSP user code", async () => {
+    // Ported from Next.js:
+    // test/e2e/middleware-custom-matchers/app/pages/index.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/app/pages/index.js
+    const initialResponseHeaders = new Headers({
+      "x-config-variant": "preview",
+      "x-from-middleware": "present",
+    });
+    const apiRequest = new Request("http://localhost/api/headers");
+    const handleApiRoute = vi.fn<NonNullable<PagesEntry["handleApiRoute"]>>(
+      (_request, _url, _ctx, _origin, _runtime, headers) => {
+        expect(headers).toEqual(initialResponseHeaders);
+        return new Response("api");
+      },
+    );
+    await renderPagesFallback(
+      {
+        initialResponseHeaders,
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request: apiRequest,
+        url: new URL(apiRequest.url),
+      },
+      { ...defaultDeps, loadPagesEntry: () => ({ handleApiRoute }) },
+    );
+
+    const pageRequest = new Request("http://localhost/page");
+    const renderPage = vi.fn<NonNullable<PagesEntry["renderPage"]>>(
+      (_request, _url, _query, _parsedUrl, _middlewareHeaders, _options, headers) => {
+        expect(headers).toEqual(initialResponseHeaders);
+        return new Response("page");
+      },
+    );
+    await renderPagesFallback(
+      {
+        initialResponseHeaders,
+        isRscRequest: false,
+        middlewareContext: { headers: null, requestHeaders: null, status: null },
+        request: pageRequest,
+        url: new URL(pageRequest.url),
+      },
+      { ...defaultDeps, loadPagesEntry: () => ({ renderPage }) },
+    );
+
+    expect(handleApiRoute).toHaveBeenCalledOnce();
+    expect(renderPage).toHaveBeenCalledOnce();
+  });
+
   it("returns null for RSC requests and does not call the Pages loader", async () => {
     const loadPagesEntry = vi.fn(() => ({}) as PagesEntry);
     const res = await renderPagesFallback(

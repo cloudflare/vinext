@@ -4,7 +4,9 @@ import {
   BROWSER_REVALIDATE_CACHE_CONTROL,
   buildCachedRevalidateCacheControl,
   buildRevalidateCacheControl,
+  captureCdnResponsePolicyOverrides,
   hasExplicitNonCacheableResponsePolicy,
+  reconcileCdnResponseHeadersAfterOuterPolicy,
   shouldUseNextDeployCacheControl,
   validateCdnRequest,
 } from "../packages/vinext/src/server/cache-control.js";
@@ -79,6 +81,12 @@ describe("applyCdnResponseHeaders", () => {
     process.env.VINEXT_NEXT_DEPLOY_CACHE_CONTROL = "1";
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "cdn-cache-control",
+        readCacheControl: (headers) =>
+          headers.get("CDN-Cache-Control") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy: () => false,
+      },
       async get() {
         return null;
       },
@@ -131,6 +139,39 @@ describe("applyCdnResponseHeaders", () => {
     expect(headers.get("X-Example-Cache-Tag")).toBe("a,b");
   });
 
+  it("captures only request-stage policy values that differ from the inner response", () => {
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "cdn-cache-control",
+        readCacheControl: (headers) =>
+          headers.get("CDN-Cache-Control") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy: (headers) =>
+          headers.get("CDN-Cache-Control")?.includes("no-store") === true,
+      },
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {};
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+
+    const overrides = captureCdnResponsePolicyOverrides(
+      new Headers({
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "CDN-Cache-Control": "private, no-store",
+        "X-Unrelated": "ignored",
+      }),
+      new Headers({ "Cache-Control": "public, max-age=0, must-revalidate" }),
+    );
+
+    expect([...overrides]).toEqual([["cdn-cache-control", "private, no-store"]]);
+  });
+
   it("applies adapter-owned header removals without knowing their names", () => {
     const edge: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
@@ -157,6 +198,125 @@ describe("applyCdnResponseHeaders", () => {
     applyCdnResponseHeaders(headers, { cacheControl: "no-store" });
 
     expect(headers.get("Cache-Control")).toBe("no-store");
+    expect(headers.get("X-Example-Edge-Policy")).toBeNull();
+    expect(headers.get("X-Example-Cache-Tag")).toBeNull();
+  });
+
+  it("clears an inner artifact's provider policy when outer composition turns private", () => {
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+        readCacheControl: (headers) =>
+          headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy: (headers) =>
+          [...headers.values()].some((value) => value.includes("no-store")),
+      },
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders(input) {
+        return {
+          "Cache-Control": input.cacheControl,
+          "X-Example-Edge-Policy": null,
+          "X-Example-Cache-Tag": null,
+        };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+    const innerHeaders = new Headers({
+      "Cache-Control": "public, max-age=0, must-revalidate",
+      "X-Example-Edge-Policy": "public, max-age=60",
+      "X-Example-Cache-Tag": "inner",
+    });
+    const headers = new Headers(innerHeaders);
+    headers.set("X-Example-Edge-Policy", "private, no-store");
+
+    reconcileCdnResponseHeadersAfterOuterPolicy(
+      headers,
+      new Headers({ "X-Example-Edge-Policy": "private, no-store" }),
+    );
+
+    expect(headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(headers.get("X-Example-Edge-Policy")).toBeNull();
+    expect(headers.get("X-Example-Cache-Tag")).toBeNull();
+  });
+
+  it("does not reinterpret an opaque provider veto as generic Cache-Control", () => {
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+        readCacheControl: (headers) =>
+          headers.get("X-Example-Edge-Policy") === "allow"
+            ? "public, s-maxage=60"
+            : headers.get("X-Example-Edge-Policy") === "deny"
+              ? "no-store"
+              : headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy: (headers) => headers.get("X-Example-Edge-Policy") === "deny",
+      },
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders({ cacheControl }) {
+        return cacheControl.includes("no-store")
+          ? { "Cache-Control": "no-store", "X-Example-Edge-Policy": null }
+          : { "Cache-Control": "max-age=0", "X-Example-Edge-Policy": "allow" };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+    const headers = new Headers({
+      "Cache-Control": "max-age=0",
+      "X-Example-Edge-Policy": "allow",
+    });
+
+    reconcileCdnResponseHeadersAfterOuterPolicy(
+      headers,
+      new Headers({ "X-Example-Edge-Policy": "deny" }),
+    );
+
+    expect(headers.get("Cache-Control")).toBe("no-store");
+    expect(headers.get("X-Example-Edge-Policy")).toBeNull();
+  });
+
+  it("clears an inner artifact's provider policy when outer composition sets a cookie", () => {
+    const edge: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+        readCacheControl: (headers) =>
+          headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy: () => false,
+      },
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders(input) {
+        return {
+          "Cache-Control": input.cacheControl,
+          "X-Example-Edge-Policy": null,
+          "X-Example-Cache-Tag": null,
+        };
+      },
+      async revalidateTag() {},
+    };
+    setCdnCacheAdapter(edge);
+    const headers = new Headers({
+      "Cache-Control": "public, max-age=0, must-revalidate",
+      "Set-Cookie": "session=private; Path=/; HttpOnly",
+      "X-Example-Cache-Tag": "inner",
+      "X-Example-Edge-Policy": "public, max-age=60",
+    });
+
+    reconcileCdnResponseHeadersAfterOuterPolicy(headers, new Headers());
+
+    expect(headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(headers.get("Set-Cookie")).toContain("session=private");
     expect(headers.get("X-Example-Edge-Policy")).toBeNull();
     expect(headers.get("X-Example-Cache-Tag")).toBeNull();
   });
@@ -223,8 +383,13 @@ describe("applyCdnResponseHeaders", () => {
       buildResponseHeaders() {
         return {};
       },
-      hasExplicitNonCacheableResponsePolicy(headers) {
-        return headers.get("X-Example-Edge-Policy") === "no-store";
+      responsePolicy: {
+        isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+        readCacheControl: (headers) =>
+          headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        hasExplicitNonCacheablePolicy(headers) {
+          return headers.get("X-Example-Edge-Policy") === "no-store";
+        },
       },
       async revalidateTag() {},
     };

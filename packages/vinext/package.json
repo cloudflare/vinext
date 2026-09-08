@@ -68,6 +68,18 @@
       "types": "./dist/server/fetch-handler.d.ts",
       "import": "./dist/server/fetch-handler.js"
     },
+    "./server/multi-stage": {
+      "types": "./dist/server/multi-stage.d.ts",
+      "import": "./dist/server/multi-stage.js"
+    },
+    "./server/request-stage": {
+      "types": "./dist/server/request-stage.d.ts",
+      "import": "./dist/server/request-stage.js"
+    },
+    "./server/response-stage": {
+      "types": "./dist/server/response-stage.d.ts",
+      "import": "./dist/server/response-stage.js"
+    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
@@ -139,6 +151,10 @@
     "./server/app-rsc-handler": {
       "types": "./dist/server/app-rsc-handler.d.ts",
       "import": "./dist/server/app-rsc-handler.js"
+    },
+    "./server/app-rsc-combined-handler": {
+      "types": "./dist/server/app-rsc-combined-handler.d.ts",
+      "import": "./dist/server/app-rsc-combined-handler.js"
     },
     "./config/config-matchers": {
       "types": "./dist/config/config-matchers.d.ts",

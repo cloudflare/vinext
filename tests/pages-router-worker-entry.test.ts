@@ -11,8 +11,62 @@ export const prerenderSecret = "worker-prerender-secret";
 export const vinextConfig = {};
 `,
     ],
+    [
+      "virtual:vinext-pages-request-entry",
+      `
+export const authorizeOnDemandRevalidate = () => false;
+export const buildId = "worker-build";
+export const hasMiddleware = false;
+export const hasRequestAwareDocument = false;
+export const matchApiRoute = () => null;
+export const matchPageRoute = () => ({ route: { dataKind: "static", isDynamic: false, pattern: "/page" } });
+export const normalizeDataRequest = (request) => ({ isDataReq: false, normalizedPathname: null, notFoundResponse: null, request });
+export const prerenderSecret = "worker-prerender-secret";
+export const publicFiles = new Set();
+export const runMiddleware = null;
+export const vinextConfig = {};
+`,
+    ],
+    [
+      "virtual:vinext-pages-response-entry",
+      `
+import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
+export const buildId = "worker-build";
+export const pageRoutes = [];
+export const getRuntimePageDataKind = () => "static";
+export async function renderPage(request, _resolvedUrl, _route, ctx) {
+  const state = ctx[CACHEABILITY_REQUEST_STATE];
+  if (state) {
+    state.route = { kind: "pages-page", pattern: "/page" };
+    state.outcome = request.headers.has("x-runtime-dynamic")
+      ? { cacheable: false, dynamicUsage: true }
+      : { cacheable: true, cacheControl: "s-maxage=60" };
+  }
+  return new Response("page");
+}
+`,
+    ],
     ["virtual:vinext-cacheability-manifest", "export default null;"],
-    ["virtual:vinext-cache-adapters", "export function registerConfiguredCacheAdapters() {}"],
+    [
+      "virtual:vinext-cache-adapters",
+      `
+import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";
+export function registerConfiguredCacheAdapters() {
+  setCdnCacheAdapter({
+    buildResponseHeaders({ cacheControl }) { return { "Cache-Control": cacheControl }; },
+    ownsBackgroundRevalidation: false,
+    requiresCompletedResponseAdmission: true,
+    async get() { return null; },
+    async revalidateTag() {},
+    async set() {},
+  });
+}
+`,
+    ],
+    [
+      "virtual:vinext-cdn-cache-adapter",
+      `export { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";`,
+    ],
     ["virtual:vinext-image-adapters", "export function registerConfiguredImageOptimizer() {}"],
   ]);
 
@@ -79,6 +133,51 @@ describe("Pages Router production Worker readiness", () => {
       expect(response.headers.get("x-vinext-prerender-readiness")).toBe("1");
       expect(unauthorizedResponse.status).toBe(404);
       expect(unauthorizedResponse.headers.get("cache-control")).toBe("no-store");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("finalizes completed-response admission around the whole single-stage Pages pipeline", async () => {
+    const server = await createServer({
+      appType: "custom",
+      configFile: false,
+      logLevel: "silent",
+      plugins: [pagesWorkerEntryVirtualModules()],
+      resolve: {
+        alias: {
+          "vinext/shims": path.resolve(import.meta.dirname, "../packages/vinext/src/shims"),
+        },
+      },
+      server: { middlewareMode: true },
+    });
+
+    try {
+      const entry = (await server.ssrLoadModule(
+        path.resolve(import.meta.dirname, "../packages/vinext/src/server/pages-router-entry.ts"),
+      )) as {
+        default: {
+          fetch(request: Request, env?: unknown, ctx?: { waitUntil(): void }): Promise<Response>;
+        };
+      };
+
+      const admitted = await entry.default.fetch(
+        new Request("https://example.com/page", { headers: { Accept: "text/html" } }),
+        undefined,
+        { waitUntil() {} },
+      );
+      expect(admitted.headers.get("cache-control")).toBe("s-maxage=60");
+      await expect(admitted.text()).resolves.toBe("page");
+
+      const dynamic = await entry.default.fetch(
+        new Request("https://example.com/page", {
+          headers: { Accept: "text/html", "x-runtime-dynamic": "1" },
+        }),
+        undefined,
+        { waitUntil() {} },
+      );
+      expect(dynamic.headers.get("cache-control")).toContain("no-store");
+      await expect(dynamic.text()).resolves.toBe("page");
     } finally {
       await server.close();
     }
