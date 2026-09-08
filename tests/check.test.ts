@@ -884,6 +884,23 @@ describe("checkLibraries", () => {
     expect(items[0].detail).toContain("clerkMiddleware");
   });
 
+  it("detects @next/third-parties as unsupported", () => {
+    // The published package is `@next/third-parties` and its only export is
+    // `@next/third-parties/google`. It must be matched here rather than by the
+    // import scanner, which only collects specifiers starting with `next/`.
+    writeFile(
+      "package.json",
+      JSON.stringify({
+        dependencies: { "@next/third-parties": "^16.0.0" },
+      }),
+    );
+
+    const items = checkLibraries(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("@next/third-parties");
+    expect(items[0].status).toBe("unsupported");
+  });
+
   it("detects supported CSS-in-JS libraries", () => {
     writeFile(
       "package.json",

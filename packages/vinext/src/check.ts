@@ -112,10 +112,6 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/form": { status: "supported", detail: "Form component with client-side navigation" },
   "next/web-vitals": { status: "supported", detail: "reportWebVitals helper" },
   "next/constants": { status: "supported", detail: "PHASE_* constants" },
-  "next/third-parties/google": {
-    status: "unsupported",
-    detail: "third-party script optimization not implemented",
-  },
   "server-only": { status: "supported" },
   "client-only": { status: "supported" },
   // Internal next/dist/* paths used by libraries (testing utilities, older libs, etc.)
@@ -310,6 +306,10 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   nuqs: { status: "supported" },
   "next-view-transitions": { status: "supported" },
   "@vercel/analytics": { status: "supported", detail: "analytics script injected client-side" },
+  "@next/third-parties": {
+    status: "unsupported",
+    detail: "third-party script optimization not implemented",
+  },
   "next-intl": {
     status: "supported",
     detail:
