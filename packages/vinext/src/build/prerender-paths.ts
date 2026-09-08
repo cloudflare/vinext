@@ -124,7 +124,7 @@ function readDiscoveryUserFailure(response: Response, text: string): string | nu
   }
 }
 
-type EmitPrerenderPathManifestOptions = {
+type PrerenderPathDiscoveryOptions = {
   root: string;
   /** Fully resolved Next.js config. Loaded from disk when omitted. */
   nextConfig?: ResolvedNextConfig;
@@ -137,6 +137,8 @@ type EmitPrerenderPathManifestOptions = {
   responseVary?: CdnCacheAdapterCapabilities["responseVary"];
   requestRouting?: CdnCacheAdapterCapabilities["requestRouting"];
   isResponsePolicyHeader?: CdnCacheAdapterCapabilities["isResponsePolicyHeader"];
+  /** Include canonical RSC identities without claiming support for arbitrary Vary fields. */
+  includeCanonicalRsc?: boolean;
   /** Execute dynamic path hooks against an already-uploaded Worker. */
   pathDiscoveryTarget?: {
     baseUrl: string;
@@ -1274,8 +1276,8 @@ async function startPathDiscoveryServer(options: {
   });
 }
 
-export async function emitPrerenderPathManifest(
-  options: EmitPrerenderPathManifestOptions,
+export async function discoverPrerenderPathManifest(
+  options: PrerenderPathDiscoveryOptions,
 ): Promise<PrerenderPathManifest | null> {
   const { root } = options;
   const configuredRouteDirs = resolveConfiguredRouteDirs(root, options.routeRootConfig);
@@ -1568,6 +1570,8 @@ export async function emitPrerenderPathManifest(
     }
   }
 
+  const includeCanonicalRsc = options.responseVary || options.includeCanonicalRsc;
+
   const manifest: PrerenderPathManifest = {
     ...(appDir ? { appPaths: appOwnedWarmPaths.appPaths } : {}),
     ...(config.basePath ? { basePath: config.basePath } : {}),
@@ -1586,24 +1590,34 @@ export async function emitPrerenderPathManifest(
     ...(fallbackRoutePatterns.length > 0 ? { fallbackRoutePatterns } : {}),
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
-    ...(options.responseVary ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),
+    ...(includeCanonicalRsc ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),
     ...(Object.keys(routePatterns).length > 0 ? { routePatterns } : {}),
     ...(appOwnedWarmPaths.appRoutePaths.length > 0
       ? { routeHandlerPaths: appOwnedWarmPaths.appRoutePaths }
       : {}),
-    ...(options.responseVary ? { loadingShellPaths: appOwnedWarmPaths.loadingShellPaths } : {}),
+    ...(includeCanonicalRsc ? { loadingShellPaths: appOwnedWarmPaths.loadingShellPaths } : {}),
     trailingSlash: config.trailingSlash,
     paths: warmPaths,
   };
+  console.log(
+    `  Discovered ${warmPaths.length + appOwnedWarmPaths.appRoutePaths.length} CDN warmup path(s).`,
+  );
+
+  return manifest;
+}
+
+export async function emitPrerenderPathManifest(
+  options: PrerenderPathDiscoveryOptions,
+): Promise<PrerenderPathManifest | null> {
+  const manifest = await discoverPrerenderPathManifest(options);
+  if (!manifest) return null;
+
+  const manifestDir = path.join(options.root, "dist", "server");
   fs.mkdirSync(manifestDir, { recursive: true });
   fs.writeFileSync(
     path.join(manifestDir, PRERENDER_PATHS_MANIFEST),
     JSON.stringify(manifest, null, 2) + "\n",
     "utf-8",
   );
-  console.log(
-    `  Discovered ${warmPaths.length + appOwnedWarmPaths.appRoutePaths.length} CDN warmup path(s).`,
-  );
-
   return manifest;
 }

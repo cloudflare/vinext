@@ -6,18 +6,11 @@ export const revalidate = 0;
 export default function HomePage() {
   return (
     <main>
-      <h1>Request-context cache demo</h1>
+      <h1>Workers Response Store cache adapter</h1>
       <p className="tagline">
-        vinext supports route-level caching through whatever cache the runtime exposes on{" "}
-        <code>ctx.cache</code>. The cache-enabled entrypoint consumes private cache policy and tag
-        headers, while <code>revalidateTag()</code> /{" "}
-        <code>revalidatePath()</code> automatically fan out to <code>ctx.cache.purge(...)</code>{" "}
-        alongside the inner <code>CacheHandler</code>. Deployed here on Cloudflare Workers (which{" "}
-        <a href="https://developers.cloudflare.com/workers/cache/" target="_blank" rel="noreferrer">
-          provides
-        </a>{" "}
-        a compatible <code>ctx.cache</code> when <code>cache.enabled: true</code>), but no
-        Cloudflare-specific import is required.
+        vinext persists ISR and <code>&quot;use cache&quot;</code> values through Workers Response Store.
+        The application Worker stays uncached; a service-bound cache Worker owns Workers Cache,
+        R2 bodies, and SQLite Durable Object metadata.
       </p>
 
       <CacheStatusProbe path="/cached/intro" />
@@ -60,11 +53,22 @@ export default function HomePage() {
 
         <div className="card">
           <h3>
+            <span className="badge">Data</span> Use cache
+          </h3>
+          <p>
+            A dynamic page runs for every request while a <code>&quot;use cache&quot;</code> function keeps
+            the same UUID in the response store.
+          </p>
+          <Link prefetch={false} href="/use-cache">Open /use-cache &rarr;</Link>
+        </div>
+
+        <div className="card">
+          <h3>
             <span className="badge">Dynamic</span> Always-fresh
           </h3>
           <p>
             A delayed <code>cookies()</code> read for comparison. The Worker completes the
-            personalized stream privately on every request and the outer cache is bypassed.
+            personalized stream privately on every request without writing an ISR entry.
           </p>
           <Link prefetch={false} href="/dynamic">Open /dynamic &rarr;</Link>
         </div>

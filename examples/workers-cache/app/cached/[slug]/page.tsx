@@ -1,19 +1,13 @@
 import Link from "next/link";
-import { env } from "cloudflare:workers";
 import { CacheStatusProbe } from "../../components/cache-status-probe";
 import { RevalidateControls } from "../../components/revalidate-controls";
 
 // ISR config — slugs are cached for 60 seconds with a 5-minute
-// stale-while-revalidate window. vinext emits this as
-// `Cache-Control: s-maxage=60, stale-while-revalidate=240` and the Workers
-// Cache layer honours it automatically.
+// stale-while-revalidate window. The data adapter persists the completed
+// vinext cache value in Workers Response Store.
 export const revalidate = 60;
 
 export async function generateStaticParams() {
-  // Exercise path discovery in the deployed Workers runtime. The value is not
-  // significant; reading it proves workerd-only bindings are available before
-  // the prewarmer decides which concrete paths to request.
-  await env.VINEXT_KV_CACHE.get("vinext-prewarm-path-discovery-probe");
   return [{ slug: "intro" }, { slug: "featured" }];
 }
 
@@ -28,10 +22,9 @@ export async function generateMetadata({
 
 /**
  * Pretend to load post data for `slug`. The `next: { tags }` option attaches
- * `post:<slug>` to the page's cache entry — that's the same propagation
- * Next.js does for tagged fetches in real apps. With the tag on the entry,
- * `revalidateTag("post:<slug>")` invalidates the page (in both the inner
- * CacheHandler and the outer Workers Cache via `Cache-Tag`).
+ * `post:<slug>` to the page's cache entry — that's the same propagation Next.js
+ * does for tagged fetches in real apps. `revalidateTag("post:<slug>")` removes
+ * every matching entry through the configured data adapter.
  *
  * The fetch target is a no-op data: URL so the demo has no external
  * dependency — vinext's fetch shim records the tag before doing any I/O.
@@ -57,7 +50,7 @@ export default async function CachedSlugPage({
   // Generated at render time. Embedded into the response so the client probe
   // can tell whether a subsequent fetch was actually re-rendered (new id) or
   // served from cache (same id). This is the only honest source of truth for
-  // "did SSR happen for that response" — outer cache headers describe what
+  // "did SSR happen for that response" — cache status headers describe what
   // the cache layer thinks, not what the React tree actually did.
   const renderedAt = new Date().toISOString();
   const renderId = crypto.randomUUID();
@@ -73,7 +66,7 @@ export default async function CachedSlugPage({
       <p className="tagline">
         ISR-cached for <code>revalidate = 60</code>. A tagged fetch during render attaches{" "}
         <code>{tag}</code> to this page's cache entry — both the inner <code>CacheHandler</code>{" "}
-        and the outer Workers Cache will honour <code>revalidateTag(&quot;{tag}&quot;)</code>.
+        will honour <code>revalidateTag(&quot;{tag}&quot;)</code>.
       </p>
 
       <p>Server-side timestamp:</p>

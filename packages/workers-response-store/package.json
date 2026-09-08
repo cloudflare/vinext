@@ -1,0 +1,52 @@
+{
+  "name": "@vinext/workers-response-store",
+  "version": "0.0.0",
+  "description": "An R2-backed programmatic response store for Cloudflare Workers.",
+  "homepage": "https://vinext.dev/",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cloudflare/vinext.git",
+    "directory": "packages/workers-response-store"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./service": {
+      "types": "./dist/service.d.ts",
+      "import": "./dist/service.js"
+    }
+  },
+  "scripts": {
+    "build": "vp pack",
+    "build:examples": "npm run build && npx --yes wrangler@4.126.0 deploy --dry-run --outdir dist/worker && npx --yes wrangler@4.126.0 deploy --dry-run --config example/service-binding/wrangler.cache.jsonc --outdir ../../dist/service-cache && npx --yes wrangler@4.126.0 deploy --dry-run --config example/service-binding/wrangler.user.jsonc --outdir ../../dist/service-user",
+    "build:worker": "npm run build && npx --yes wrangler@4.126.0 deploy --dry-run --outdir dist/worker",
+    "build:service-workers": "npm run build && npx --yes wrangler@4.126.0 deploy --dry-run --config example/service-binding/wrangler.cache.jsonc --outdir ../../dist/service-cache && npx --yes wrangler@4.126.0 deploy --dry-run --config example/service-binding/wrangler.user.jsonc --outdir ../../dist/service-user",
+    "check": "vp check src example tests README.md package.json tsconfig.json vite.config.ts vitest.config.ts wrangler.jsonc && tsc --noEmit",
+    "deploy": "npm run build && npx --yes wrangler@4.126.0 deploy",
+    "deploy:service": "npm run build && npx --yes wrangler@4.126.0 deploy --config example/service-binding/wrangler.cache.jsonc && npx --yes wrangler@4.126.0 deploy --config example/service-binding/wrangler.user.jsonc",
+    "lint": "vp lint .",
+    "prepack": "vp run build",
+    "test": "npm run check && npm run build:examples && vitest run tests/e2e.test.mjs tests/service-binding-e2e.test.mjs",
+    "test:live": "vitest run tests/live-e2e.test.mjs",
+    "test:service-live": "vitest run tests/service-binding-live-e2e.test.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260904.1",
+    "@types/node": "catalog:",
+    "miniflare": "5.20260730.0-alpha",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

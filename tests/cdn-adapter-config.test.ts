@@ -11,6 +11,7 @@ import {
   cdnAdapter,
   DEFAULT_CDN_VERSION_METADATA_BINDING,
 } from "../packages/cloudflare/src/cache/cdn-adapter.js";
+import { responseStoreAdapter } from "../packages/cloudflare/src/cache/response-store-adapter.js";
 import { resolveCdnAdapterConfig } from "../packages/cloudflare/src/deploy-config.js";
 import { assertCdnVersionMetadataConfig } from "../packages/cloudflare/src/wrangler-version-metadata.js";
 
@@ -308,6 +309,9 @@ describe("CDN version metadata deploy validation", () => {
         cdn: cdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" }),
       }),
     ).toEqual({ versionMetadataBinding: "CUSTOM_VERSION" });
+    expect(resolveCdnAdapterConfig(responseStoreAdapter())).toEqual({
+      versionMetadataBinding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+    });
     expect(resolveCdnAdapterConfig({ cdn: { adapter: "custom-adapter" } })).toBeNull();
   });
 

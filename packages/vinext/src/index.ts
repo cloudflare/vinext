@@ -4206,7 +4206,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (id === RESOLVED_RESPONSE_STAGE) {
             const entry = hasAppDir ? APP_RESPONSE_STAGE_ENTRY : PAGES_RESPONSE_STAGE_ENTRY;
-            return `export { handleResponseStage } from ${JSON.stringify(entry)};\n`;
+            return `export * from ${JSON.stringify(entry)};\n`;
           }
           // Pages Router virtual modules
           if (id === RESOLVED_SERVER_ENTRY) {

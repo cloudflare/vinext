@@ -1,7 +1,9 @@
 /** Cacheable App response stage. This is the only multi-stage App entry that imports user routes. */
 
 import rscHandler, { __cacheabilityManifest } from "virtual:vinext-app-response-entry";
+import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 // @ts-expect-error -- virtual module resolved by vinext
@@ -15,6 +17,7 @@ import { createWorkerRevalidationContext } from "./worker-revalidation-context.j
 import { validateCdnRequest } from "./cache-control.js";
 import { createWorkerPrerenderReadinessResponse } from "./worker-prerender-discovery.js";
 import type {
+  VinextCacheFunctionInvocation,
   VinextRequestStageTransport,
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
@@ -22,6 +25,35 @@ import { withResponseStageCacheability } from "./response-stage-cacheability.js"
 import { serializeResponseStageLinkProvenance } from "./app-response-header-provenance.js";
 
 type AppResponseStageEnv = Record<string, unknown>;
+
+/** Invoke one transformed public cache function without rendering its owning route. */
+export async function invokeCacheFunction(
+  invocation: VinextCacheFunctionInvocation,
+  env: AppResponseStageEnv | undefined,
+  platformCtx: ExecutionContextLike | undefined,
+  dispatchRequestStage: VinextRequestStageTransport,
+): Promise<void> {
+  const [{ loadServerAction }, { invokeCacheFunction: invokeRegisteredCacheFunction }] =
+    await Promise.all([
+      import("@vitejs/plugin-rsc/core/rsc"),
+      import("vinext/shims/cache-callable-runtime"),
+    ]);
+  registerConfiguredCacheAdapters(env);
+  ensureFetchPatch();
+  const executionContext = createWorkerRevalidationContext(
+    platformCtx,
+    (request) => dispatchRequestStage(request),
+    "node",
+  );
+  const context = createRequestContext({
+    currentFetchSoftTags: invocation.softTags,
+    executionContext,
+    rootParams: invocation.rootParams,
+  });
+  await runWithRequestContext(context, () =>
+    invokeRegisteredCacheFunction(invocation, loadServerAction),
+  );
+}
 
 export async function handleResponseStage(
   request: Request,

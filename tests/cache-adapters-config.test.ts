@@ -36,6 +36,7 @@ import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js"
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
+import { responseStoreAdapter } from "../packages/cloudflare/src/cache/response-store-adapter.js";
 import createKvDataCacheAdapter, {
   KVCacheHandler,
 } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
@@ -421,5 +422,19 @@ describe("cdnAdapter builder + factory", () => {
     expect(() => cdnAdapter({ versionMetadataBinding: "" })).toThrow(
       "must be a non-empty string binding name",
     );
+  });
+});
+
+describe("responseStoreAdapter builder", () => {
+  it("declares single-upload, after-render warmup capabilities", () => {
+    const descriptor = responseStoreAdapter();
+    expect(descriptor.cdn.capabilities).toEqual({
+      buildIdentity: "response-header",
+      isResponsePolicyHeader: expect.any(Function),
+      requestRouting: "uncached-stage",
+      warmup: "response-store",
+    });
+    expect(hasBuildIdentityResponseHeader(descriptor)).toBe(true);
+    expect(hasVerbatimResponseVary(descriptor)).toBe(false);
   });
 });

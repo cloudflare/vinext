@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { handleResponseStage } from "../packages/vinext/src/server/app-response-stage-entry.js";
+import {
+  handleResponseStage,
+  invokeCacheFunction,
+} from "../packages/vinext/src/server/app-response-stage-entry.js";
 import {
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   isAppWorkerResponseStageProps,
@@ -64,6 +67,10 @@ describe("App Worker response stage", () => {
     stages.registerImageOptimizer.mockReset();
     stages.renderFullRequest.mockReset();
     stages.renderResponse.mockReset();
+  });
+
+  it("exposes targeted cache-function invocation", () => {
+    expect(invokeCacheFunction).toBeTypeOf("function");
   });
 
   it("validates readiness from inside the App response stage", async () => {

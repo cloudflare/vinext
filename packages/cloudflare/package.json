@@ -1,7 +1,7 @@
 {
   "name": "@vinext/cloudflare",
   "version": "1.0.0-beta.7",
-  "description": "Cloudflare adapters for vinext (KV data cache and Images-backed image optimization).",
+  "description": "Cloudflare cache and image adapters for vinext.",
   "homepage": "https://vinext.dev/",
   "license": "MIT",
   "repository": {
@@ -54,13 +54,19 @@
   "scripts": {
     "build": "vp pack",
     "prepack": "vp run build",
-    "dev": "vp pack --watch"
+    "dev": "vp pack --watch",
+    "test:response-store": "vp run vinext#build && vp run @vinext/workers-response-store#build && vp run @vinext/cloudflare#build && pnpm --filter workers-cache run build && pnpm --filter @vinext/workers-response-store run build:service-workers && vitest run tests/response-store-adapter.e2e.test.ts tests/response-store-data.test.ts"
+  },
+  "dependencies": {
+    "@vinext/workers-response-store": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "miniflare": "5.20260730.0-alpha",
     "vinext": "workspace:*",
     "vite": "catalog:",
-    "vite-plus": "catalog:"
+    "vite-plus": "catalog:",
+    "vitest": "catalog:"
   },
   "peerDependencies": {
     "vinext": "workspace:^"

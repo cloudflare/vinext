@@ -38,7 +38,7 @@ export function RevalidateControls({
         setResult({
           ok: true,
           message: `Revalidated ${kind}=${value}`,
-          detail: `Inner cache cleared and ctx.cache.purge invoked for the matching Cache-Tag entries.`,
+          detail: `Matching Workers Response Store entries were invalidated.`,
         });
       } else {
         setResult({
@@ -61,9 +61,8 @@ export function RevalidateControls({
       <h2 style={{ marginTop: 0 }}>Invalidate this page</h2>
       <p style={{ marginTop: 0, color: "var(--muted)" }}>
         Calls into a server route handler that invokes <code>revalidateTag</code> /{" "}
-        <code>revalidatePath</code>. vinext fans the call out to both the inner CacheHandler
-        (KV / memory) and <code>ctx.cache.purge(...)</code> when the runtime exposes one on the
-        request context.
+        <code>revalidatePath</code>. vinext forwards the matching tags to the configured Workers
+        Response Store data adapter.
       </p>
       <div className="controls">
         <button

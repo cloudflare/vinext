@@ -38,6 +38,14 @@ export type VinextResponseStageDispatchOptions = {
 
 export type VinextCacheabilityProbeMode = "probe" | "identity";
 
+/** A durably replayable invocation of a transformed public `"use cache"` function. */
+export type VinextCacheFunctionInvocation = {
+  encryptedArgs: string;
+  referenceId: string;
+  rootParams: Record<string, string | string[]>;
+  softTags: string[];
+};
+
 /** Trusted route/admission metadata transported independently of user headers. */
 export type VinextResponseStageCacheability = {
   /** Safe positive next.config policy needed for CDN-level Next.js parity. */
@@ -139,4 +147,10 @@ export type VinextRequestStageModule<Env = unknown, Context = unknown> = {
 
 export type VinextResponseStageModule<Env = unknown, Context = unknown> = {
   handleResponseStage: VinextResponseStageHandler<Env, Context>;
+  invokeCacheFunction?: (
+    invocation: VinextCacheFunctionInvocation,
+    env: Env,
+    context: Context,
+    dispatchRequestStage: VinextRequestStageTransport,
+  ) => Promise<void>;
 };

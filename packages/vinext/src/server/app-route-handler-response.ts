@@ -16,6 +16,7 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
+import { markRouteCacheabilityExplicitConfigPolicy } from "vinext/shims/cacheability-classification";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -127,6 +128,7 @@ export function applyRouteHandlerRevalidateHeader(
   expireSeconds?: number,
   tags?: readonly string[],
 ): void {
+  markRouteCacheabilityExplicitConfigPolicy();
   // Fresh (MISS) response: route through the CDN adapter so edge adapters emit
   // their provider-specific policy while the default emits Cache-Control.
   // Uses buildAppRouteMissIsrCacheControl so the revalidate=0→NEVER and

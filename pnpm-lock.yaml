@@ -1060,10 +1060,17 @@ importers:
         version: 0.2.6(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.10(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
 
   packages/cloudflare:
+    dependencies:
+      '@vinext/workers-response-store':
+        specifier: workspace:*
+        version: link:../workers-response-store
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
         version: 25.9.2
+      miniflare:
+        specifier: 5.20260730.0-alpha
+        version: 5.20260730.0-alpha
       vinext:
         specifier: workspace:*
         version: link:../vinext
@@ -1073,6 +1080,9 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 0.2.6(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.10(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+      vitest:
+        specifier: 4.1.10
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/browser-preview@4.1.10)(@vitest/coverage-istanbul@4.1.10(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))
 
   packages/create-vinext-app:
     devDependencies:
@@ -1151,6 +1161,30 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 0.2.6(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.10(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
+  packages/workers-response-store:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 5.20260904.1
+        version: 5.20260904.1
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.9.2
+      miniflare:
+        specifier: 5.20260730.0-alpha
+        version: 5.20260730.0-alpha
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vite:
+        specifier: npm:@voidzero-dev/vite-plus-core@0.2.6
+        version: '@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
+      vite-plus:
+        specifier: 'catalog:'
+        version: 0.2.6(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.10(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+      vitest:
+        specifier: 4.1.10
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/browser-preview@4.1.10)(@vitest/coverage-istanbul@4.1.10(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))
 
   tests/fixtures/app-action-ownership: {}
 
@@ -2264,6 +2298,9 @@ packages:
 
   '@cloudflare/workers-types@4.20260313.1':
     resolution: {integrity: sha512-jMEeX3RKfOSVqqXRKr/ulgglcTloeMzSH3FdzIfqJHtvc12/ELKd5Ldsg8ZHahKX/4eRxYdw3kbzb8jLXbq/jQ==}
+
+  '@cloudflare/workers-types@5.20260904.1':
+    resolution: {integrity: sha512-SbulPvrdb4j5iISDr81Iw+YpNCG4Bb6xRqV3arkgn/Ib6STMaoG63lhPnuWqmZdakOn0qS1OUudBMdxtBFx0Jg==}
 
   '@code-hike/lighter@1.0.1':
     resolution: {integrity: sha512-mccvcsk5UTScRrE02oBz1/qzckyhD8YE3VQlQv++2bSVVZgNuCUX8MpokSCi5OmfRAAxbj6kmNiqq1Um8eXPrw==}
@@ -9407,6 +9444,8 @@ snapshots:
     optional: true
 
   '@cloudflare/workers-types@4.20260313.1': {}
+
+  '@cloudflare/workers-types@5.20260904.1': {}
 
   '@code-hike/lighter@1.0.1':
     dependencies:

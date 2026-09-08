@@ -45,9 +45,8 @@ export default function DynamicPage() {
       </h1>
       <p className="tagline">
         Bypass case for comparison. This page reads <code>cookies()</code> from a delayed
-        Suspense boundary, after streaming starts. The completed render is dynamic, so neither
-        the outer <code>ctx.cache</code> nor the inner CacheHandler may retain its personalized
-        HTML.
+        Suspense boundary, after streaming starts. The completed render is dynamic, so the
+        configured data cache may not retain its personalized HTML.
       </p>
       <Suspense fallback={<p data-testid="late-dynamic-fallback">Resolving viewer…</p>}>
         <LateDynamicViewer />

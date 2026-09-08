@@ -16,10 +16,8 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Path must be a leading-slash route" }, { status: 400 });
   }
 
-  // revalidatePath() invalidates the inner CacheHandler AND, when the
-  // request's ExecutionContext exposes ctx.cache.purge, also purges both
-  // the bare path tag and the `_N_T_<path>` form vinext emits on the
-  // response Cache-Tag header.
+  // vinext turns the path into its cache tags and passes them to the configured
+  // Workers Response Store adapter.
   await revalidatePath(path);
   return Response.json({ revalidated: true, target: path });
 }
