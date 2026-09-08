@@ -244,6 +244,7 @@ export class KVCacheHandler implements CacheHandler {
     const entryRead = this._entryReadOptions
       ? this.kv.get(kvKey, this._entryReadOptions)
       : this.kv.get(kvKey);
+    let softTagCache = this._tagCache;
     const softTagPrime = this._primeTagCache(softTags);
     if (softTags.length > 0) {
       // A miss read no marker before this change, so a marker failure must not
@@ -297,6 +298,12 @@ export class KVCacheHandler implements CacheHandler {
     }
 
     await softTagPrime;
+    // resetRequestCache() may have replaced the Map while the first read was
+    // in flight. Prime each newer generation before consulting its markers.
+    while (softTagCache !== this._tagCache) {
+      softTagCache = this._tagCache;
+      await this._primeTagCache(softTags);
+    }
 
     // The soft-tag batch may have covered an entry tag too, which spares the
     // second hop. Only the post-prime check trusts an entry past its TTL.
