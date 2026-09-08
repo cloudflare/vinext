@@ -72,6 +72,7 @@ type PagesRequestCookiesCarrier = {
 type CreatePagesReqResOptions = {
   allowedRevalidateHeaderKeys?: readonly string[];
   body: unknown;
+  initialResponseHeaders?: Headers;
   query: PagesRequestQuery;
   request: Request;
   trustedRevalidateOrigin?: string;
@@ -599,6 +600,12 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     options.trustedRevalidateOrigin ?? new URL(options.request.url).origin,
     options.allowedRevalidateHeaderKeys,
   ) as PagesReqResResponse;
+  for (const [name, value] of options.initialResponseHeaders ?? []) {
+    if (name.toLowerCase() === "set-cookie") continue;
+    res.setHeader(name, value);
+  }
+  const initialCookies = options.initialResponseHeaders?.getSetCookie() ?? [];
+  if (initialCookies.length > 0) res.setHeader("Set-Cookie", initialCookies);
   attachPagesPreviewApi(req, res);
 
   return { req, res, responsePromise };

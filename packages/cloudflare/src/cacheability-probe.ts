@@ -15,6 +15,7 @@ import type { PrerenderRoutePattern } from "vinext/internal/build/prerender-path
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
 } from "vinext/internal/server/headers";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "./cache/cdn-build-id.js";
@@ -35,11 +36,14 @@ type ProbePayload = {
   pattern?: string;
   reason?: string;
   rendererStatic?: boolean;
+  retryable?: true;
+  routePathname?: string;
   state?: string;
   status?: number;
   version?: number;
   phaseTimedOut?: boolean;
   scope?: "identity" | "pattern";
+  terminal?: true;
 };
 
 export type CacheabilityProbeProgress = {
@@ -125,6 +129,10 @@ function isProbeRouteState(value: unknown): value is ProbeRouteState {
   return value === "static-candidate" || value === "dynamic" || value === "probe-failed";
 }
 
+function isRetryableProbeHttpStatus(status: number): boolean {
+  return status === 404 || status === 408 || status === 429 || status >= 502;
+}
+
 export function readPrerenderSecret(root: string): string {
   const manifestPath = path.join(root, "dist", "server", "vinext-server.json");
   const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as unknown;
@@ -142,7 +150,7 @@ export function readPrerenderSecret(root: string): string {
 
 async function readProbeEnvelope(response: Response): Promise<ProbePayload> {
   if (!response.body) {
-    return { reason: "probe returned invalid JSON", state: "probe-failed", version: 1 };
+    throw new Error("probe returned invalid JSON");
   }
 
   const reader = response.body.getReader();
@@ -163,12 +171,6 @@ async function readProbeEnvelope(response: Response): Promise<ProbePayload> {
       }
       chunks.push(result.value);
     }
-  } catch (error) {
-    return {
-      reason: error instanceof Error ? error.message : String(error),
-      state: "probe-failed",
-      version: 1,
-    };
   } finally {
     reader.releaseLock();
   }
@@ -176,7 +178,7 @@ async function readProbeEnvelope(response: Response): Promise<ProbePayload> {
   try {
     return JSON.parse(Buffer.concat(chunks, bytes).toString("utf8")) as ProbePayload;
   } catch {
-    return { reason: "probe returned invalid JSON", state: "probe-failed", version: 1 };
+    throw new Error("probe returned invalid JSON");
   }
 }
 
@@ -195,8 +197,13 @@ async function probeTarget(options: {
 }): Promise<ProbePayload> {
   const headers = new Headers(options.headers);
   for (const [name, value] of new Headers(options.target.headers)) headers.set(name, value);
-  headers.set("Cache-Control", "no-cache");
   headers.set(VINEXT_CACHEABILITY_PROBE_HEADER, "1");
+  if (options.target.route) {
+    headers.set(
+      VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
+      encodeURIComponent(JSON.stringify([options.target.route.kind, options.target.route.pattern])),
+    );
+  }
   headers.set(VINEXT_PRERENDER_SECRET_HEADER, options.secret);
 
   let reason = "probe failed";
@@ -208,14 +215,15 @@ async function probeTarget(options: {
     version: 1,
   });
   let ordinaryFailures = 0;
+  let retryable = true;
   for (let attempt = 0; ; attempt++) {
     if (options.getDeadlineAt() - Date.now() <= 0) return phaseTimeoutPayload();
 
+    retryable = true;
     const controller = new AbortController();
     const requestDeadlineAt = Date.now() + options.timeoutMs;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let timedOutBy: "phase" | "request" | null = null;
-    let retryable = true;
     let retryUntilDeadline = false;
     try {
       const url = new URL(options.target.pathname, options.targetUrl);
@@ -243,11 +251,20 @@ async function probeTarget(options: {
           return {
             kind: "retry" as const,
             reason: `probe returned HTTP ${response.status}`,
-            retryable: response.status === 404 || response.status === 503,
+            retryable: isRetryableProbeHttpStatus(response.status),
             retryUntilDeadline: false,
           };
         }
-        return { kind: "complete" as const, payload: await readProbeEnvelope(response) };
+        const payload = await readProbeEnvelope(response);
+        if (payload.state === "probe-failed" && payload.retryable === true) {
+          return {
+            kind: "retry" as const,
+            reason: payload.reason ?? "probe failed",
+            retryable: true,
+            retryUntilDeadline: false,
+          };
+        }
+        return { kind: "complete" as const, payload };
       })();
       const timedOut = new Promise<never>((_resolve, reject) => {
         const checkDeadline = (): void => {
@@ -302,7 +319,12 @@ async function probeTarget(options: {
       await delay(delayMs);
     }
   }
-  return { reason, state: "probe-failed", version: 1 };
+  return {
+    reason,
+    ...(retryable ? { retryable: true as const } : {}),
+    state: "probe-failed",
+    version: 1,
+  };
 }
 
 export async function probeStagedWorkerCacheability(options: {
@@ -360,25 +382,28 @@ export async function probeStagedWorkerCacheability(options: {
   let staticPathCount = 0;
   let dynamicPathCount = 0;
 
+  type ConcretePathResult = {
+    rendererStatic: boolean;
+    representation: CdnWarmTarget["kind"];
+    state: Exclude<ProbeRouteState, "probe-failed">;
+    terminal: boolean;
+  };
   type PatternClassification = {
     canPrune: boolean;
     groups: ConcretePathGroup[];
     key: string;
-    pathnames: Set<string>;
+    resultKeys: Set<string>;
     pruned: boolean;
-    results: Map<
-      string,
-      {
-        rendererStatic: boolean;
-        representation: CdnWarmTarget["kind"];
-        state: Exclude<ProbeRouteState, "probe-failed">;
-      }
-    >;
+    results: Map<string, ConcretePathResult>;
     route: NonNullable<CdnWarmTarget["route"]>;
+    requestStageMayTerminate: boolean;
   };
   type ConcretePathGroup = {
+    deferred: boolean;
     pattern: PatternClassification;
     primary: CdnWarmTarget;
+    result?: ConcretePathResult;
+    resultKey: string;
     routePathname: string;
     targets: CdnWarmTarget[];
   };
@@ -387,7 +412,7 @@ export async function probeStagedWorkerCacheability(options: {
     return target.kind === "html" ? 0 : target.kind === "rsc-full" ? 1 : 2;
   };
   const patterns = new Map<string, PatternClassification>();
-  const targetsByConcretePath = new Map<string, CdnWarmTarget[]>();
+  const routableTargets: CdnWarmTarget[] = [];
   let missingRouteMetadata = 0;
   for (const target of options.targets) {
     if (!target.route) {
@@ -399,44 +424,63 @@ export async function probeStagedWorkerCacheability(options: {
       canPrune: true,
       groups: [],
       key,
-      pathnames: new Set<string>(),
+      resultKeys: new Set<string>(),
       pruned: false,
       results: new Map(),
       route: target.route,
+      requestStageMayTerminate: false,
     };
-    pattern.canPrune &&= target.route.cacheabilityProbe?.canPrunePattern === true;
+    pattern.requestStageMayTerminate ||=
+      target.route.cacheabilityProbe?.requestStageMayTerminate === true;
+    pattern.canPrune &&=
+      target.route.cacheabilityProbe?.canPrunePattern === true &&
+      target.route.cacheabilityProbe.routeMayResolve !== true &&
+      target.route.cacheabilityProbe.requestStageMayTerminate !== true;
     patterns.set(key, pattern);
-
-    const routePathname =
-      target.route.cacheabilityProbe?.concretePathname ??
-      cacheabilityRoutePathname(target.pathname, target.kind);
-    pattern.pathnames.add(routePathname);
-    const concreteKey = `${key}\0${routePathname}`;
-    const groupTargets = targetsByConcretePath.get(concreteKey) ?? [];
-    groupTargets.push(target);
-    targetsByConcretePath.set(concreteKey, groupTargets);
+    routableTargets.push(target);
   }
   if (missingRouteMetadata > 0) {
     failures.push(
       `${missingRouteMetadata} warm target${missingRouteMetadata === 1 ? " is" : "s are"} missing route-pattern metadata`,
     );
   }
-  const groups: ConcretePathGroup[] = Array.from(
-    targetsByConcretePath,
-    ([concreteKey, groupTargets]) => {
-      const route = groupTargets[0].route!;
-      const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
-      const pattern = patterns.get(key)!;
-      const routePathname = concreteKey.slice(key.length + 1);
-      groupTargets.sort((first, second) => {
-        const preference = targetPreference(first) - targetPreference(second);
-        return preference || first.sourcePathname.localeCompare(second.sourcePathname);
-      });
-      const group = { pattern, primary: groupTargets[0], routePathname, targets: groupTargets };
-      pattern.groups.push(group);
-      return group;
-    },
-  );
+  const targetGroups = new Map<
+    string,
+    {
+      pattern: PatternClassification;
+      resultKey: string;
+      routePathname: string;
+      targets: CdnWarmTarget[];
+    }
+  >();
+  for (const target of routableTargets) {
+    const route = target.route!;
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    const pattern = patterns.get(key)!;
+    const routePathname =
+      route.cacheabilityProbe?.concretePathname ??
+      cacheabilityRoutePathname(target.pathname, target.kind);
+    const resultKey = routePathname;
+    pattern.resultKeys.add(resultKey);
+    const concreteKey = `${key}\0${resultKey}`;
+    const group = targetGroups.get(concreteKey) ?? {
+      pattern,
+      resultKey,
+      routePathname,
+      targets: [],
+    };
+    group.targets.push(target);
+    targetGroups.set(concreteKey, group);
+  }
+  const groups: ConcretePathGroup[] = Array.from(targetGroups.values(), (targetGroup) => {
+    targetGroup.targets.sort((first, second) => {
+      const preference = targetPreference(first) - targetPreference(second);
+      return preference || first.sourcePathname.localeCompare(second.sourcePathname);
+    });
+    const group = { ...targetGroup, deferred: false, primary: targetGroup.targets[0] };
+    targetGroup.pattern.groups.push(group);
+    return group;
+  });
 
   const reportProgress = (): void => {
     options.onProgress?.({
@@ -472,12 +516,89 @@ export async function probeStagedWorkerCacheability(options: {
     return true;
   };
 
-  const classifyConcretePath = async (group: ConcretePathGroup): Promise<void> => {
+  const moveGroupToResolvedRoute = (
+    group: ConcretePathGroup,
+    route: Pick<PrerenderRoutePattern, "kind" | "pattern">,
+  ): PatternClassification => {
+    const previousPattern = group.pattern;
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    let pattern = patterns.get(key);
+    if (!pattern) {
+      pattern = {
+        canPrune: false,
+        groups: [],
+        key,
+        resultKeys: new Set<string>(),
+        pruned: false,
+        results: new Map(),
+        route,
+        requestStageMayTerminate: previousPattern.requestStageMayTerminate,
+      };
+      patterns.set(key, pattern);
+    }
+    pattern.canPrune = false;
+    pattern.requestStageMayTerminate ||= previousPattern.requestStageMayTerminate;
+    // A direct destination probe may have provisionally pruned this pattern
+    // before the routed source completed. Its retained concrete observation is
+    // authoritative once another public path joins the resolved route.
+    pattern.pruned = false;
+    if (pattern === previousPattern) return pattern;
+
+    const previousGroupIndex = previousPattern.groups.indexOf(group);
+    if (previousGroupIndex !== -1) previousPattern.groups.splice(previousGroupIndex, 1);
+    if (!previousPattern.groups.some((candidate) => candidate.resultKey === group.resultKey)) {
+      previousPattern.resultKeys.delete(group.resultKey);
+    }
+    pattern.groups.push(group);
+    pattern.resultKeys.add(group.resultKey);
+    group.pattern = pattern;
+    return pattern;
+  };
+
+  const updateGroupRoutePathname = (group: ConcretePathGroup, routePathname: string): void => {
+    const normalized = normalizeCacheabilityRoutePathname(routePathname);
+    if (normalized === group.routePathname) return;
+    const pattern = group.pattern;
+    const previousResultKey = group.resultKey;
+    group.routePathname = normalized;
+    group.resultKey = normalized;
+    if (!pattern.groups.some((candidate) => candidate.resultKey === previousResultKey)) {
+      pattern.resultKeys.delete(previousResultKey);
+    }
+    pattern.resultKeys.add(group.resultKey);
+  };
+
+  const deferPairedRepresentationsAtOriginalRoute = (group: ConcretePathGroup): void => {
+    const pairedTargets = group.targets.filter((target) => target !== group.primary);
+    if (pairedTargets.length === 0) return;
+    group.targets = [group.primary];
+    for (const target of pairedTargets) {
+      const routePathname =
+        target.route?.cacheabilityProbe?.concretePathname ??
+        cacheabilityRoutePathname(target.pathname, target.kind);
+      const deferredGroup: ConcretePathGroup = {
+        deferred: true,
+        pattern: group.pattern,
+        primary: target,
+        resultKey: routePathname,
+        routePathname,
+        targets: [target],
+      };
+      group.pattern.groups.push(deferredGroup);
+      group.pattern.resultKeys.add(routePathname);
+    }
+  };
+
+  type ProbeGroupResult = "done" | "retry";
+  const classifyConcretePath = async (
+    group: ConcretePathGroup,
+    attemptOptions: { deferRetry: boolean; inlineRetries: number },
+  ): Promise<ProbeGroupResult> => {
     if (group.pattern.pruned) {
       skippedPathCount += 1;
       completedPathCount += 1;
       reportProgress();
-      return;
+      return "done";
     }
     const target = group.primary;
     const request = new Request(new URL(target.pathname, options.targetUrl), {
@@ -488,7 +609,7 @@ export async function probeStagedWorkerCacheability(options: {
       failures.push(`${target.label}: warm request does not have a cacheable request identity`);
       completedPathCount += 1;
       reportProgress();
-      return;
+      return "done";
     }
 
     const result = await probeTarget({
@@ -496,7 +617,7 @@ export async function probeStagedWorkerCacheability(options: {
       fetchImpl: options.fetchImpl ?? fetch,
       getDeadlineAt,
       headers: options.headers,
-      retries,
+      retries: attemptOptions.inlineRetries,
       retryDelayMs,
       phaseTimeoutMs,
       secret,
@@ -504,13 +625,16 @@ export async function probeStagedWorkerCacheability(options: {
       targetUrl: options.targetUrl,
       timeoutMs,
     });
-    probed += 1;
-    lastProgressAt = Date.now();
-    if (limitFailure) return;
+    if (limitFailure) return "done";
     if (result.phaseTimedOut) {
       phaseTimedOut = true;
-      return;
+      return "done";
     }
+    if (result.state === "probe-failed" && result.retryable === true && attemptOptions.deferRetry) {
+      return "retry";
+    }
+    lastProgressAt = Date.now();
+    probed += 1;
     if (
       result.version !== 1 ||
       (result.kind !== "app-page" && result.kind !== "app-route" && result.kind !== "pages-page") ||
@@ -519,7 +643,19 @@ export async function probeStagedWorkerCacheability(options: {
       !isProbeRouteState(result.state) ||
       (result.scope !== undefined && result.scope !== "identity" && result.scope !== "pattern") ||
       (result.scope === "pattern" && result.state !== "dynamic") ||
+      (result.routePathname !== undefined &&
+        (typeof result.routePathname !== "string" ||
+          !result.routePathname.startsWith("/") ||
+          result.routePathname.includes("?") ||
+          result.routePathname.includes("#"))) ||
+      (result.terminal !== undefined && result.terminal !== true) ||
+      (result.terminal === true &&
+        (result.state !== "dynamic" ||
+          result.scope !== "identity" ||
+          !group.pattern.requestStageMayTerminate)) ||
       (result.rendererStatic !== undefined && typeof result.rendererStatic !== "boolean") ||
+      (result.retryable !== undefined && result.retryable !== true) ||
+      (result.retryable === true && result.state !== "probe-failed") ||
       !Number.isInteger(result.status) ||
       result.status! < 100 ||
       result.status! > 599
@@ -527,25 +663,74 @@ export async function probeStagedWorkerCacheability(options: {
       failures.push(`${target.label}: ${result.reason ?? "probe returned an invalid envelope"}`);
       completedPathCount += 1;
       reportProgress();
-      return;
+      return "done";
     }
     if (result.state === "probe-failed") {
       failures.push(`${target.label}: ${result.reason ?? "probe failed"}`);
       completedPathCount += 1;
       reportProgress();
-      return;
+      return "done";
     }
-    if (
-      !target.route ||
-      result.kind !== target.route.kind ||
-      result.pattern !== target.route.pattern
-    ) {
-      failures.push(`${target.label}: probe resolved to unexpected route ${result.pattern ?? ""}`);
+    if (!target.route) {
+      failures.push(`${target.label}: probe resolved without route metadata`);
       completedPathCount += 1;
       reportProgress();
-      return;
+      return "done";
+    }
+    const resolvedRouteChanged =
+      result.kind !== target.route.kind || result.pattern !== target.route.pattern;
+    const resolvedPathnameChanged =
+      result.routePathname !== undefined &&
+      normalizeCacheabilityRoutePathname(result.routePathname) !== group.routePathname;
+    if (resolvedRouteChanged) {
+      if (target.route.cacheabilityProbe?.routeMayResolve !== true) {
+        failures.push(
+          `${target.label}: probe resolved to unexpected route ${result.pattern ?? ""}`,
+        );
+        completedPathCount += 1;
+        reportProgress();
+        return "done";
+      }
+      if (result.routePathname === undefined) {
+        failures.push(`${target.label}: probe resolved without a concrete route pathname`);
+        completedPathCount += 1;
+        reportProgress();
+        return "done";
+      }
+    }
+    if (
+      target.route.cacheabilityProbe?.routeMayResolve === true &&
+      (resolvedRouteChanged || resolvedPathnameChanged)
+    ) {
+      // The representative request proves only its own routed destination.
+      // Keep alternate representations attached to the original route so
+      // their final completed renders can still pass manifest admission.
+      deferPairedRepresentationsAtOriginalRoute(group);
+    }
+    if (resolvedRouteChanged) {
+      moveGroupToResolvedRoute(group, { kind: result.kind, pattern: result.pattern });
+    }
+    if (result.routePathname !== undefined) {
+      updateGroupRoutePathname(group, result.routePathname);
     }
 
+    const classification: ConcretePathResult = {
+      rendererStatic: result.rendererStatic === true,
+      representation: target.kind,
+      state: result.state,
+      terminal: result.terminal === true,
+    };
+    group.result = classification;
+    const previousClassification = group.pattern.results.get(group.resultKey);
+    if (
+      !previousClassification ||
+      (previousClassification.state === "static-candidate" && classification.state === "dynamic") ||
+      (previousClassification.state === classification.state &&
+        previousClassification.rendererStatic &&
+        !classification.rendererStatic)
+    ) {
+      group.pattern.results.set(group.resultKey, classification);
+    }
     const patternIsDefinitelyDynamic =
       result.state === "dynamic" && result.scope === "pattern" && group.pattern.canPrune;
     if (patternIsDefinitelyDynamic) {
@@ -553,14 +738,8 @@ export async function probeStagedWorkerCacheability(options: {
       dynamicPathCount += 1;
       completedPathCount += 1;
       reportProgress();
-      return;
+      return "done";
     }
-
-    group.pattern.results.set(group.routePathname, {
-      rendererStatic: result.rendererStatic === true,
-      representation: target.kind,
-      state: result.state,
-    });
     if (result.state === "static-candidate") {
       staticPathCount += 1;
     } else {
@@ -568,33 +747,101 @@ export async function probeStagedWorkerCacheability(options: {
     }
     completedPathCount += 1;
     reportProgress();
-  };
-
-  const runGroups = async (scheduledGroups: ConcretePathGroup[]): Promise<void> => {
-    let nextIndex = 0;
-    const worker = async (): Promise<void> => {
-      while (!limitFailure && !phaseTimedOut && nextIndex < scheduledGroups.length) {
-        await classifyConcretePath(scheduledGroups[nextIndex++]);
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, scheduledGroups.length) }, () => worker()),
-    );
+    return "done";
   };
 
   reportProgress();
-  const representativeGroups: ConcretePathGroup[] = [];
-  const siblingGroups: ConcretePathGroup[] = [];
-  const scheduledPatterns = new Set<string>();
-  for (const group of groups) {
-    if (scheduledPatterns.has(group.pattern.key)) siblingGroups.push(group);
-    else {
-      scheduledPatterns.add(group.pattern.key);
-      representativeGroups.push(group);
-    }
+  const routeMovingGroups = groups.filter(
+    (group) => group.primary.route?.cacheabilityProbe?.routeMayResolve === true,
+  );
+  const routeMovingGroupSet = new Set(routeMovingGroups);
+  const readyGroups = [...routeMovingGroups];
+  const readyGroupSet = new Set(routeMovingGroups);
+  // Give route movers and one path per pattern first access to the pool, but
+  // do not leave spare configured slots idle. Any completed concrete path can
+  // provide pattern-wide dynamic proof; later groups observe `pruned` before
+  // starting their render.
+  for (const pattern of patterns.values()) {
+    const representative = pattern.groups[0];
+    if (!representative || readyGroupSet.has(representative)) continue;
+    readyGroups.push(representative);
+    readyGroupSet.add(representative);
   }
-  await runGroups(representativeGroups);
-  if (!limitFailure && !phaseTimedOut) await runGroups(siblingGroups);
+  for (const group of groups) {
+    if (readyGroupSet.has(group)) continue;
+    readyGroups.push(group);
+    readyGroupSet.add(group);
+  }
+
+  const deferredUntilRouteMoversSettle: ConcretePathGroup[] = [];
+  const retriesUsedByGroup = new Map<ConcretePathGroup, number>();
+  const retryGroupSet = new Set<ConcretePathGroup>();
+  const active = new Set<Promise<void>>();
+  let nextReadyIndex = 0;
+  let pendingRouteMovers = routeMovingGroups.length;
+  const enqueue = (scheduledGroups: readonly ConcretePathGroup[]): void => {
+    readyGroups.push(...scheduledGroups);
+  };
+  const startGroup = (group: ConcretePathGroup): void => {
+    const task = (async () => {
+      const isRouteMover = routeMovingGroupSet.has(group);
+      if (!isRouteMover && group.pattern.pruned && pendingRouteMovers > 0) {
+        deferredUntilRouteMoversSettle.push(group);
+        return;
+      }
+      const retriesUsed = retriesUsedByGroup.get(group) ?? 0;
+      const result = await classifyConcretePath(group, {
+        deferRetry: retriesUsed < retries,
+        inlineRetries: 0,
+      });
+      if (result === "retry") {
+        retriesUsedByGroup.set(group, retriesUsed + 1);
+        retryGroupSet.add(group);
+        return;
+      }
+      if (isRouteMover && --pendingRouteMovers === 0) {
+        enqueue(deferredUntilRouteMoversSettle.splice(0));
+      }
+    })();
+    active.add(task);
+    void task.then(
+      () => active.delete(task),
+      () => active.delete(task),
+    );
+  };
+
+  const runReadyGroups = async (): Promise<void> => {
+    while (
+      !limitFailure &&
+      !phaseTimedOut &&
+      (nextReadyIndex < readyGroups.length || active.size > 0)
+    ) {
+      while (active.size < concurrency && nextReadyIndex < readyGroups.length) {
+        startGroup(readyGroups[nextReadyIndex++]);
+      }
+      if (active.size > 0) await Promise.race(active);
+    }
+    await Promise.all(active);
+  };
+
+  await runReadyGroups();
+
+  let retryGroups = groups.filter((group) => retryGroupSet.has(group));
+  while (retryGroups.length > 0) {
+    if (retryDelayMs > 0) {
+      const delayMs = Math.min(retryDelayMs, Math.max(0, getDeadlineAt() - Date.now()));
+      if (delayMs <= 0) {
+        phaseTimedOut = true;
+        break;
+      }
+      await delay(delayMs);
+    }
+    retryGroupSet.clear();
+    readyGroups.splice(0, readyGroups.length, ...retryGroups);
+    nextReadyIndex = 0;
+    await runReadyGroups();
+    retryGroups = groups.filter((group) => retryGroupSet.has(group));
+  }
   if (limitFailure) throw limitFailure;
   if (phaseTimedOut || Date.now() >= getDeadlineAt()) {
     throw new Error(`cacheability probing made no progress for ${phaseTimeoutMs}ms`);
@@ -649,21 +896,28 @@ export async function probeStagedWorkerCacheability(options: {
       }
       continue;
     }
-    if (pattern.results.size === 0) continue;
+    if (pattern.results.size === 0 && !pattern.groups.some((group) => group.deferred)) continue;
     classified += 1;
     if (Array.from(pattern.results.values()).some((result) => result.state === "dynamic")) {
       dynamic += 1;
     }
 
-    const staticPaths: CacheabilityManifestRoute["staticPaths"] = {};
+    const rendererStaticTargets = new Map<string, CdnWarmTarget>();
     const runtimePathSet = new Set<string>();
     for (const group of pattern.groups) {
-      const result = pattern.results.get(group.routePathname);
+      if (group.deferred) {
+        runtimePathSet.add(group.routePathname);
+        cacheableTargets.push(...group.targets);
+        speculativeTargets.push(...group.targets);
+        continue;
+      }
+      const result = group.result;
       if (result?.state === "static-candidate") {
         if (result.rendererStatic) {
-          const paths = staticPaths[result.representation] ?? [];
-          paths.push(group.routePathname);
-          staticPaths[result.representation] = paths;
+          const previous = rendererStaticTargets.get(group.routePathname);
+          if (!previous || targetPreference(group.primary) < targetPreference(previous)) {
+            rendererStaticTargets.set(group.routePathname, group.primary);
+          }
         } else {
           runtimePathSet.add(group.routePathname);
         }
@@ -672,19 +926,31 @@ export async function probeStagedWorkerCacheability(options: {
         continue;
       }
 
-      runtimePathSet.add(group.routePathname);
+      const pairedTargets = group.targets.filter((target) => target !== group.primary);
+      if (result?.terminal !== true || pairedTargets.length > 0) {
+        runtimePathSet.add(group.routePathname);
+      }
       // A representation-specific response policy can make an RSC/data
       // sibling reusable even when the representative HTML render is private.
       // The final completed render decides admission without another probe.
       if (!pattern.pruned) {
-        const pairedTargets = group.targets.filter((target) => target !== group.primary);
         cacheableTargets.push(...pairedTargets);
         speculativeTargets.push(...pairedTargets);
       }
     }
+    const staticPaths: CacheabilityManifestRoute["staticPaths"] = {};
+    for (const [routePathname, staticTarget] of rendererStaticTargets) {
+      // Conflicting observations for one resolved route identity must retain
+      // runtime admission rather than certifying the static observation.
+      if (runtimePathSet.has(routePathname)) continue;
+      const paths = staticPaths[staticTarget.kind] ?? [];
+      paths.push(routePathname);
+      staticPaths[staticTarget.kind] = paths;
+    }
     for (const paths of Object.values(staticPaths)) paths?.sort();
     const allObservedPathsStatic =
-      pattern.results.size === pattern.pathnames.size && runtimePathSet.size === 0;
+      pattern.results.size === pattern.resultKeys.size &&
+      Array.from(pattern.results.values()).every((result) => result.state === "static-candidate");
     const allObservedPathsStaticallyGenerated =
       allObservedPathsStatic &&
       Array.from(pattern.results.values()).every((result) => result.rendererStatic);
@@ -696,7 +962,7 @@ export async function probeStagedWorkerCacheability(options: {
       normalizeCacheabilityRoutePathname(pattern.route.pattern) === soleGroup.routePathname;
     let route: CacheabilityManifestRoute;
     if (literalPatternNamesSolePath) {
-      const result = pattern.results.get(soleGroup.routePathname);
+      const result = pattern.results.get(soleGroup.resultKey);
       route =
         result?.state === "static-candidate"
           ? pattern.route.kind === "app-route"

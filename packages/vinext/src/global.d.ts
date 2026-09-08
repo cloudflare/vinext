@@ -510,6 +510,11 @@ declare module "virtual:vinext-cache-adapters" {
   export function registerConfiguredCacheAdapters(env?: Record<string, unknown>): void;
 }
 
+declare module "virtual:vinext-cdn-cache-adapter" {
+  export const hasConfiguredDataCache: boolean;
+  export function registerConfiguredCacheAdapters(env?: Record<string, unknown>): void;
+}
+
 declare module "virtual:vinext-pages-client-assets" {
   import type { PagesClientAssets } from "vinext/server/pages-client-assets";
   const assets: PagesClientAssets;

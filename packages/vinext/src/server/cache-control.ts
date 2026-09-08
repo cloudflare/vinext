@@ -3,6 +3,7 @@ import {
   isNonCacheableCacheControl,
   type CdnCacheableHeaderInput,
 } from "vinext/shims/cdn-cache";
+import { recordRouteCacheabilityCdnTags } from "vinext/shims/cacheability-classification";
 
 export { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 
@@ -30,13 +31,64 @@ function isSharedCacheControl(cacheControl: string): boolean {
  * inspect the provider-specific policy headers they own; the generic fallback
  * only understands the framework-owned `Cache-Control` header.
  */
-export function hasExplicitNonCacheableResponsePolicy(headers: Headers): boolean {
-  const adapter = getCdnCacheAdapter();
-  if (adapter.hasExplicitNonCacheableResponsePolicy) {
-    return adapter.hasExplicitNonCacheableResponsePolicy(headers);
+export function hasExplicitNonCacheableResponsePolicy(
+  headers: Headers,
+  baseline?: Headers,
+): boolean {
+  const policy = getCdnCacheAdapter().responsePolicy;
+  if (policy) {
+    return policy.hasExplicitNonCacheablePolicy(headers, baseline);
   }
   const cacheControl = headers.get("Cache-Control");
-  return Boolean(cacheControl && isNonCacheableCacheControl(cacheControl));
+  return Boolean(
+    cacheControl &&
+    cacheControl !== baseline?.get("Cache-Control") &&
+    isNonCacheableCacheControl(cacheControl),
+  );
+}
+
+/** Whether a response header controls core or the active CDN adapter. */
+export function isCdnResponsePolicyHeader(name: string): boolean {
+  return (
+    name.toLowerCase() === "cache-control" ||
+    getCdnCacheAdapter().responsePolicy?.isHeader(name) === true
+  );
+}
+
+/** Whether a response declares any core- or adapter-owned cache policy. */
+export function hasCdnResponsePolicy(headers: Headers): boolean {
+  return [...headers.keys()].some(isCdnResponsePolicyHeader);
+}
+
+/** Read the effective shared-cache policy without interpreting provider headers in core. */
+export function readCdnResponseCacheControl(headers: Headers | undefined): string | null {
+  if (!headers) return null;
+  const policy = getCdnCacheAdapter().responsePolicy;
+  return policy ? policy.readCacheControl(headers) : headers.get("Cache-Control");
+}
+
+/** Ask the active adapter whether one policy header explicitly disables storage. */
+export function isNonCacheableCdnResponsePolicy(name: string, value: string): boolean {
+  if (name.toLowerCase() === "cache-control") return isNonCacheableCacheControl(value);
+  return hasExplicitNonCacheableResponsePolicy(new Headers({ [name]: value }));
+}
+
+/** Capture only cache-policy provenance from an outer composition stage. */
+export function captureCdnResponsePolicyHeaders(headers: Headers): Headers {
+  const policy = new Headers();
+  for (const [name, value] of headers) {
+    if (isCdnResponsePolicyHeader(name)) policy.set(name, value);
+  }
+  return policy;
+}
+
+/** Capture policy values that were added above an already-transported baseline. */
+export function captureCdnResponsePolicyOverrides(headers: Headers, baseline: Headers): Headers {
+  const overrides = captureCdnResponsePolicyHeaders(headers);
+  for (const [name, value] of overrides) {
+    if (baseline.get(name) === value) overrides.delete(name);
+  }
+  return overrides;
 }
 
 /** Delegate provider-specific request routing validation to the CDN adapter. */
@@ -55,6 +107,7 @@ export async function validateCdnRequest(request: Request): Promise<Response | n
  * owns before applying that map.
  */
 export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHeaderInput): void {
+  recordRouteCacheabilityCdnTags(input.tags);
   headers.delete("Cache-Control");
   const useNextDeployPolicy =
     shouldUseNextDeployCacheControl() && isSharedCacheControl(input.cacheControl);
@@ -77,6 +130,47 @@ export function applyCdnResponseHeaders(headers: Headers, input: CdnCacheableHea
   }
   if (useNextDeployPolicy) {
     headers.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
+  }
+}
+
+/**
+ * Reconcile request-stage policy composed above a reusable response artifact.
+ * A newly applied private policy must clear any cacheable provider headers that
+ * belonged to the inner artifact before the final response leaves the gateway.
+ * `outerPolicyHeaders` contains only policy set by the uncached request stage,
+ * so an identical inner value cannot hide explicit outer provenance.
+ */
+export function reconcileCdnResponseHeadersAfterOuterPolicy(
+  headers: Headers,
+  outerPolicyHeaders: Headers,
+): void {
+  // Set-Cookie is additive and therefore is not part of the policy-only
+  // provenance snapshot. It can still be introduced by the uncached request
+  // stage after a shared artifact returns, and the completed response must not
+  // retain that artifact's shared-cache policy.
+  if (headers.has("set-cookie")) {
+    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+    return;
+  }
+  const cacheControl = outerPolicyHeaders.get("cache-control");
+  if (cacheControl !== null) {
+    applyCdnResponseHeaders(headers, { cacheControl });
+    // Preserve any explicit provider-specific policy authored alongside the
+    // generic middleware policy after the adapter has derived its defaults.
+    for (const [name, value] of outerPolicyHeaders) {
+      if (name === "cache-control") continue;
+      if (isCdnResponsePolicyHeader(name)) headers.set(name, value);
+    }
+    return;
+  }
+  for (const [name, value] of outerPolicyHeaders) {
+    if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, value)) {
+      applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
+      return;
+    }
+  }
+  if (hasExplicitNonCacheableResponsePolicy(outerPolicyHeaders)) {
+    applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   }
 }
 

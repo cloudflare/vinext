@@ -101,6 +101,47 @@ describe("startProdServer logging", () => {
     ]);
   });
 
+  it("keeps nested App entries authenticated against the server artifact root", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prod-server-nested-entry-"));
+    roots.push(root);
+    const distDir = path.join(root, "dist");
+    const clientDir = path.join(distDir, "client");
+    const serverDir = path.join(distDir, "server");
+    const entryPath = path.join(serverDir, "entries", "application.js");
+    fs.mkdirSync(clientDir, { recursive: true });
+    fs.mkdirSync(path.dirname(entryPath), { recursive: true });
+    fs.writeFileSync(
+      path.join(serverDir, "vinext-server.json"),
+      JSON.stringify({ prerenderSecret: "nested-secret" }),
+    );
+    fs.writeFileSync(
+      entryPath,
+      ["export default async function handler() { return new Response('ok'); }", ""].join("\n"),
+    );
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server, port } = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir: distDir,
+      rscEntryPath: entryPath,
+      serverDir,
+      noCompression: true,
+      silent: true,
+    });
+    try {
+      const denied = await fetch(`http://127.0.0.1:${port}/__vinext/prerender/static-params`);
+      expect(denied.status).toBe(403);
+      const allowed = await fetch(`http://127.0.0.1:${port}/__vinext/prerender/static-params`, {
+        headers: { "x-vinext-prerender-secret": "nested-secret" },
+      });
+      expect(allowed.status).toBe(200);
+      await expect(allowed.text()).resolves.toBe("ok");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("uses the prerender-specific startup log for App Router production servers", async () => {
     const root = createAppBuild();
     roots.push(root);

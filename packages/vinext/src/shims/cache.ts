@@ -15,8 +15,7 @@
  *   vinext({ cache: { data: kvDataAdapter({ binding: 'VINEXT_KV_CACHE' }) } })
  *
  * The imperative `setCacheHandler` / `setDataCacheHandler` setters are
- * deprecated for consumers and retained only as the internal registration
- * target used by the generated cache-adapter module.
+ * deprecated for consumers and retained for backwards compatibility.
  */
 
 import {

@@ -32,10 +32,7 @@ import {
 } from "./app-rsc-render-mode.js";
 import { normalizeAppPageInterceptionProofPathname } from "./app-page-render-identity.js";
 import type { RenderObservation } from "./cache-proof.js";
-import {
-  PRERENDER_REVALIDATE_HEADER,
-  PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
-} from "../utils/protocol-headers.js";
+import { PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER } from "../utils/protocol-headers.js";
 export { normalizeMountedSlotsHeader };
 
 /**
@@ -56,7 +53,12 @@ export { normalizeMountedSlotsHeader };
  * isolates) with a constant-time comparison, and only the matching value (sent
  * by our own `res.revalidate()`) is honored.
  */
-export { PRERENDER_REVALIDATE_HEADER };
+export {
+  getRevalidateSecret,
+  isOnDemandRevalidateRequest,
+  isRevalidateSecret,
+  PRERENDER_REVALIDATE_HEADER,
+} from "./revalidation-request.js";
 
 /**
  * Companion header to {@link PRERENDER_REVALIDATE_HEADER}. When set,
@@ -67,88 +69,6 @@ export { PRERENDER_REVALIDATE_HEADER };
  * `.nextjs-ref/packages/next/src/lib/constants.ts`.
  */
 export { PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER };
-
-/**
- * Build-time secret that authenticates on-demand revalidation requests, the
- * vinext analog of Next.js's prerender-manifest `previewModeId`.
- *
- * `res.revalidate()` loops back into the server via an internal `fetch()`. On
- * Cloudflare Workers that loopback can land on a *different* isolate than the
- * sender, so a per-process random secret would mismatch across isolates and
- * false-reject legitimate revalidations (and, symmetrically, two isolates with
- * independently-rolled secrets could never agree). The fix mirrors Next.js's
- * `previewModeId`: the secret is generated once at BUILD time and baked
- * (server-only — never into the client bundle) into every server bundle via the
- * `__VINEXT_REVALIDATE_SECRET` Vite `define`, so it is byte-for-byte identical in
- * every isolate. See `vinext build` CLI (`__VINEXT_SHARED_REVALIDATE_SECRET`) and
- * the `vinext:compiler-define-server` plugin. The sender attaches it as the
- * {@link PRERENDER_REVALIDATE_HEADER} value; the receiver authorizes a request
- * only when the incoming value equals this secret (see
- * {@link isOnDemandRevalidateRequest}).
- *
- * When the build-time define is absent — dev mode, and any path that doesn't
- * run through `vinext build` — we fall back to a lazily-generated random secret.
- * Those paths are single-process, but Vite can evaluate this module separately
- * in its RSC and SSR module graphs. Store the fallback on `globalThis` under a
- * registry symbol so every module copy in the process reads the same value.
- */
-const _DEV_REVALIDATE_SECRET_KEY = Symbol.for("vinext.isrCache.devRevalidateSecret");
-
-export function getRevalidateSecret(): string {
-  // Production: the build baked the shared secret into every server bundle.
-  // `process.env.__VINEXT_REVALIDATE_SECRET` is statically inlined by Vite's
-  // `define`, so this is a constant string identical across all isolates.
-  const baked = process.env.__VINEXT_REVALIDATE_SECRET;
-  if (baked) return baked;
-
-  // Dev/standalone fallback: no build-time define. Generate a single
-  // process-shared secret lazily. 32 random bytes (256 bits) hex-encoded match
-  // the build-time secret's entropy. Web Crypto's `getRandomValues` works in
-  // both Node and the Workers/edge runtime.
-  const globals = globalThis as unknown as Record<PropertyKey, unknown>;
-  const existing = globals[_DEV_REVALIDATE_SECRET_KEY];
-  if (typeof existing === "string") return existing;
-
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  const secret = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-  globals[_DEV_REVALIDATE_SECRET_KEY] = secret;
-  return secret;
-}
-
-/**
- * Constant-time string equality. Avoids leaking secret length / prefix via
- * early-exit timing on the on-demand revalidation auth check. Returns false
- * for length mismatch (the only safe option without revealing the secret
- * length, and equality is impossible anyway).
- */
-function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < a.length; i++) {
-    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  }
-  return mismatch === 0;
-}
-
-export function isRevalidateSecret(value: string | null | undefined): boolean {
-  if (typeof value !== "string" || value.length === 0) return false;
-  return safeEqual(value, getRevalidateSecret());
-}
-
-/**
- * Authorize an incoming request as an on-demand revalidation trigger. Mirrors
- * Next.js's `checkIsOnDemandRevalidate`: the {@link PRERENDER_REVALIDATE_HEADER}
- * value must *equal* the process revalidate secret. Header presence alone is
- * NOT sufficient — see the security note on {@link PRERENDER_REVALIDATE_HEADER}.
- */
-export function isOnDemandRevalidateRequest(
-  headerValue: string | string[] | null | undefined,
-): boolean {
-  // Reject arrays (duplicate headers) and absent values outright.
-  if (typeof headerValue !== "string") return false;
-  return isRevalidateSecret(headerValue);
-}
 
 export type ISRCacheEntry = {
   value: CacheHandlerValue;

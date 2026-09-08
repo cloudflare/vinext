@@ -141,6 +141,7 @@ export async function resolveStaticAssetSignal(
     "content-encoding",
     "content-length",
     "content-type",
+    "transfer-encoding",
   ]);
 
   cancelResponseBody(signalResponse);

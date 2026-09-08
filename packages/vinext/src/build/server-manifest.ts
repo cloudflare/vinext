@@ -21,3 +21,17 @@ export function readPrerenderSecret(serverDir: string): string | undefined {
   const manifest = readJsonFile<{ prerenderSecret?: string }>(manifestPath);
   return manifest?.prerenderSecret;
 }
+
+/**
+ * Read every server output root that contains a deployable response-stage
+ * graph. Paths are stored relative to the project root so build artifacts stay
+ * relocatable, then resolved for post-build sidecar updates.
+ */
+export function readServerRuntimeOutputDirs(serverDir: string, root: string): string[] {
+  const manifestPath = path.join(serverDir, "vinext-server.json");
+  const manifest = readJsonFile<{ runtimeOutputDirs?: unknown }>(manifestPath);
+  if (!Array.isArray(manifest?.runtimeOutputDirs)) return [];
+  return manifest.runtimeOutputDirs
+    .filter((outputDir): outputDir is string => typeof outputDir === "string")
+    .map((outputDir) => path.resolve(root, outputDir));
+}

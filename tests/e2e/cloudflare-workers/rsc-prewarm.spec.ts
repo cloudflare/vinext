@@ -70,11 +70,14 @@ async function getReusableResponseAfterPromotion(
 
   // Workers Cache is tiered. A deploy fill and this verification request can
   // traverse different lower/upper tiers, so the first request from this
-  // client may still be a MISS. MISS means Cloudflare admitted the completed
-  // response; require the same client to reuse that exact entry immediately.
+  // client may still be a MISS. The named response entrypoint admits the
+  // completed response, while the uncached gateway strips its inner CDN policy
+  // before composing request-specific headers. Require the same client to
+  // reuse that exact entry immediately.
   const trace = `${label} first response headers: ${JSON.stringify(responseHeaders)}`;
-  expect(responseHeaders["cdn-cache-control"], trace).toContain("public");
-  expect(responseHeaders["cache-control"], trace).not.toContain("no-store");
+  expect(responseHeaders["cache-control"], trace).toBe("private, max-age=0, must-revalidate");
+  expect(responseHeaders["cdn-cache-control"], trace).toBeUndefined();
+  expect(responseHeaders["cloudflare-cdn-cache-control"], trace).toBeUndefined();
   await response.body();
 
   const reused = await getResponseAfterPromotion(request, url, headers);
@@ -83,6 +86,22 @@ async function getReusableResponseAfterPromotion(
     `${label} reused response headers: ${JSON.stringify(reused.headers())}`,
   ).toBe("HIT");
   return reused;
+}
+
+async function waitForEdgeCacheState(
+  request: APIRequestContext,
+  url: string,
+  expected: "HIT" | "MISS",
+  failureMessage: string,
+): Promise<APIResponse> {
+  const deadline = Date.now() + 30_000;
+  do {
+    const response = await getResponseAfterPromotion(request, url, { accept: "text/html" });
+    if (response.headers()["cf-cache-status"] === expected) return response;
+    await response.dispose();
+    await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
+  } while (Date.now() < deadline);
+  throw new Error(failureMessage);
 }
 
 async function observeRsc(page: Page, action: () => Promise<unknown>): Promise<ObservedRsc> {
@@ -131,8 +150,9 @@ function expectCanonical(observed: ObservedRsc, rscBuildId: string): void {
     // Chromium negotiates zstd while the Node-based deploy warmer negotiates
     // br. A browser may therefore fill a separate encoded edge object even
     // though the canonical representation was already warmed and verified.
-    expect(responseHeaders["cdn-cache-control"], trace).toContain("public");
-    expect(responseHeaders["cache-control"], trace).not.toContain("no-store");
+    expect(responseHeaders["cache-control"], trace).toBe("private, max-age=0, must-revalidate");
+    expect(responseHeaders["cdn-cache-control"], trace).toBeUndefined();
+    expect(responseHeaders["cloudflare-cdn-cache-control"], trace).toBeUndefined();
   }
 }
 
@@ -248,14 +268,20 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   expect(browserFetchMiss.ok(), JSON.stringify(browserFetchMissHeaders)).toBe(true);
   expect(browserFetchMissHeaders["content-type"]).toContain("text/html");
   expect(browserFetchMissHeaders["cf-cache-status"]).toBe("MISS");
-  expect(browserFetchMissHeaders["cdn-cache-control"]).toContain("public");
-  expect(browserFetchMissHeaders["cache-control"]).not.toContain("no-store");
+  expect(browserFetchMissHeaders["x-vinext-cache"]).toBe("MISS");
+  expect(browserFetchMissHeaders["x-nextjs-cache"]).toBe("MISS");
+  expect(browserFetchMissHeaders["cache-control"]).toBe("private, max-age=0, must-revalidate");
+  expect(browserFetchMissHeaders["cdn-cache-control"]).toBeUndefined();
+  expect(browserFetchMissHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
   const browserFetchBody = await browserFetchMiss.text();
 
   const browserFetchHit = await request.get(browserFetchUrl.href, {
     headers: { accept: "*/*" },
   });
-  expect(browserFetchHit.headers()["cf-cache-status"]).toBe("HIT");
+  const browserFetchHitHeaders = browserFetchHit.headers();
+  expect(browserFetchHitHeaders["cf-cache-status"]).toBe("HIT");
+  expect(browserFetchHitHeaders["x-vinext-cache"]).toBe("HIT");
+  expect(browserFetchHitHeaders["x-nextjs-cache"]).toBe("HIT");
   expect(await browserFetchHit.text()).toBe(browserFetchBody);
 
   const downstreamOnlyOverride = await request.get(`${baseURL}/api/prewarm-version?downstream=1`, {
@@ -294,24 +320,91 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   const pagesResponse = await getReusableResponseAfterPromotion(
     request,
     `${baseURL}${PAGES_TARGET_PATH}`,
-    htmlHeaders,
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-a",
+      "x-test-visitor-id": "visitor-a",
+    },
     "Pages HTML",
   );
   const pagesResponseHeaders = pagesResponse.headers();
   expect(pagesResponse.ok(), JSON.stringify(pagesResponseHeaders)).toBe(true);
   expect(pagesResponseHeaders["content-type"]).toContain("text/html");
   expect(pagesResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
-  expect(pagesResponseHeaders["cache-control"]).toContain("public");
+  expect(pagesResponseHeaders["cache-control"]).toBe("private, max-age=0, must-revalidate");
+  expect(pagesResponseHeaders["cdn-cache-control"]).toBeUndefined();
+  expect(pagesResponseHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
   expect(
     pagesResponseHeaders["cf-cache-status"],
     `Pages response headers: ${JSON.stringify(pagesResponseHeaders)}`,
   ).toBe("HIT");
-  expect(await pagesResponse.text()).toContain("Pages prewarm target");
+  expect(pagesResponseHeaders["x-workers-config-visitor"]).toBe("config-a");
+  expect(pagesResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
+  const pagesBody = await pagesResponse.text();
+  expect(pagesBody).toContain("Pages prewarm target");
+
+  const secondPagesResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${PAGES_TARGET_PATH}`,
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-b",
+      "x-test-visitor-id": "visitor-b",
+    },
+  );
+  const secondPagesResponseHeaders = secondPagesResponse.headers();
+  expect(secondPagesResponse.ok(), JSON.stringify(secondPagesResponseHeaders)).toBe(true);
+  expect(secondPagesResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
+  expect(
+    secondPagesResponseHeaders["cf-cache-status"],
+    `Second Pages response headers: ${JSON.stringify(secondPagesResponseHeaders)}`,
+  ).toBe("HIT");
+  expect(secondPagesResponseHeaders["x-workers-config-visitor"]).toBe("config-b");
+  expect(secondPagesResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
+  expect(await secondPagesResponse.text()).toBe(pagesBody);
+
+  const pagesDataUrl = `${baseURL}/_next/data/${buildId}/pages-prewarm.json`;
+  const pagesDataResponse = await getReusableResponseAfterPromotion(
+    request,
+    pagesDataUrl,
+    {
+      accept: "application/json",
+      "x-nextjs-data": "1",
+      "x-test-config-visitor": "config-a",
+      "x-test-visitor-id": "visitor-a",
+    },
+    "Pages data",
+  );
+  const pagesDataHeaders = pagesDataResponse.headers();
+  expect(pagesDataResponse.ok(), JSON.stringify(pagesDataHeaders)).toBe(true);
+  expect(pagesDataHeaders["content-type"]).toContain("application/json");
+  expect(pagesDataHeaders["cf-cache-status"]).toBe("HIT");
+  expect(pagesDataHeaders["x-workers-config-visitor"]).toBe("config-a");
+  expect(pagesDataHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
+  const pagesDataBody = await pagesDataResponse.text();
+  expect(JSON.parse(pagesDataBody)).toMatchObject({ pageProps: { draftMode: false } });
+
+  const secondPagesDataResponse = await getResponseAfterPromotion(request, pagesDataUrl, {
+    accept: "application/json",
+    "x-nextjs-data": "1",
+    "x-test-config-visitor": "config-b",
+    "x-test-visitor-id": "visitor-b",
+  });
+  const secondPagesDataHeaders = secondPagesDataResponse.headers();
+  expect(secondPagesDataResponse.ok(), JSON.stringify(secondPagesDataHeaders)).toBe(true);
+  expect(secondPagesDataHeaders["cf-cache-status"]).toBe("HIT");
+  expect(secondPagesDataHeaders["x-workers-config-visitor"]).toBe("config-b");
+  expect(secondPagesDataHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
+  expect(await secondPagesDataResponse.text()).toBe(pagesDataBody);
 
   const appHtmlResponse = await getReusableResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}`,
-    htmlHeaders,
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-a",
+      "x-test-visitor-id": "visitor-a",
+    },
     "App HTML",
   );
   const appHtmlResponseHeaders = appHtmlResponse.headers();
@@ -322,12 +415,101 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
     appHtmlResponseHeaders["cf-cache-status"],
     `App HTML response headers: ${JSON.stringify(appHtmlResponseHeaders)}`,
   ).toBe("HIT");
-  expect(await appHtmlResponse.text()).toContain("Prewarm target");
+  expect(appHtmlResponseHeaders["x-workers-config-visitor"]).toBe("config-a");
+  expect(appHtmlResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
+  const appHtmlBody = await appHtmlResponse.text();
+  expect(appHtmlBody).toContain("Prewarm target");
+
+  const secondAppHtmlResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    {
+      ...htmlHeaders,
+      "x-test-config-visitor": "config-b",
+      "x-test-visitor-id": "visitor-b",
+    },
+  );
+  const secondAppHtmlResponseHeaders = secondAppHtmlResponse.headers();
+  expect(secondAppHtmlResponse.ok(), JSON.stringify(secondAppHtmlResponseHeaders)).toBe(true);
+  expect(secondAppHtmlResponseHeaders["x-vinext-build-id"]).toBe(rscBuildId);
+  expect(
+    secondAppHtmlResponseHeaders["cf-cache-status"],
+    `Second App HTML response headers: ${JSON.stringify(secondAppHtmlResponseHeaders)}`,
+  ).toBe("HIT");
+  expect(secondAppHtmlResponseHeaders["x-workers-config-visitor"]).toBe("config-b");
+  expect(secondAppHtmlResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
+  expect(await secondAppHtmlResponse.text()).toBe(appHtmlBody);
+
+  // Next.js limits browser no-cache cache bypass to development. A production
+  // hard reload must continue reusing the admitted App response.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx
+  const reloadedAppHtmlResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    { ...htmlHeaders, "cache-control": "no-cache", pragma: "no-cache" },
+  );
+  const reloadedAppHtmlHeaders = reloadedAppHtmlResponse.headers();
+  expect(
+    reloadedAppHtmlHeaders["cf-cache-status"],
+    `Reloaded App HTML response headers: ${JSON.stringify(reloadedAppHtmlHeaders)}`,
+  ).toBe("HIT");
+  expect(reloadedAppHtmlHeaders["x-vinext-cache"]).toBe("HIT");
+  expect(reloadedAppHtmlHeaders["x-nextjs-cache"]).toBe("HIT");
+  expect(await reloadedAppHtmlResponse.text()).toBe(appHtmlBody);
+
+  // Next.js skips its shared response cache in draft mode. This must be
+  // decided in the uncached request entrypoint because a named-entrypoint HIT
+  // cannot inspect the draft cookie before replaying anonymous bytes.
+  const draftRequest = await playwright.request.newContext();
+  try {
+    const enableDraft = await draftRequest.get(`${baseURL}/api/draft-enable`);
+    expect(enableDraft.ok()).toBe(true);
+    expect(enableDraft.headers()["set-cookie"]).toContain("__prerender_bypass=");
+    expect(enableDraft.headers()["cache-control"]).toContain("no-store");
+
+    for (const pathname of [TARGET_PATH, PAGES_TARGET_PATH]) {
+      const draftResponse = await draftRequest.get(`${baseURL}${pathname}`, {
+        headers: htmlHeaders,
+      });
+      const draftHeaders = draftResponse.headers();
+      expect(draftResponse.ok(), JSON.stringify(draftHeaders)).toBe(true);
+      expect(draftHeaders["cf-cache-status"]).not.toBe("HIT");
+      expect(draftHeaders["cache-control"]).toContain("no-store");
+      expect(await draftResponse.text()).toContain(
+        '<output data-testid="draft-mode">true</output>',
+      );
+    }
+  } finally {
+    await draftRequest.dispose();
+  }
+
+  const anonymousAfterDraft = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    htmlHeaders,
+  );
+  expect(anonymousAfterDraft.headers()["cf-cache-status"]).toBe("HIT");
+  expect(await anonymousAfterDraft.text()).toBe(appHtmlBody);
+
+  for (const variant of ["alpha", "beta"]) {
+    const first = await getResponseAfterPromotion(request, `${baseURL}/vary`, {
+      "x-cache-variant": variant,
+    });
+    expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+    expect(await first.text()).toBe(variant);
+    expect(first.headers()["vary"]?.toLowerCase()).toContain("x-cache-variant");
+
+    const cached = await getResponseAfterPromotion(request, `${baseURL}/vary`, {
+      "x-cache-variant": variant,
+    });
+    expect(cached.headers()["cf-cache-status"], JSON.stringify(cached.headers())).toBe("HIT");
+    expect(await cached.text()).toBe(variant);
+  }
 
   const fullResponse = await getReusableResponseAfterPromotion(
     request,
     `${baseURL}${TARGET_PATH}?_rsc`,
-    fullHeaders,
+    { ...fullHeaders, "x-test-visitor-id": "visitor-a" },
     "full RSC",
   );
   const fullResponseHeaders = fullResponse.headers();
@@ -338,9 +520,25 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
     fullResponseHeaders["cf-cache-status"],
     `full RSC response headers: ${JSON.stringify(fullResponseHeaders)}`,
   ).toBe("HIT");
+  expect(fullResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-a");
   const fullBody = await fullResponse.text();
   expect(fullBody).toContain(buildId);
   expect(fullBody).toContain("Prewarm target");
+
+  const secondFullResponse = await getResponseAfterPromotion(
+    request,
+    `${baseURL}${TARGET_PATH}?_rsc`,
+    { ...fullHeaders, "x-test-visitor-id": "visitor-b" },
+  );
+  const secondFullResponseHeaders = secondFullResponse.headers();
+  expect(secondFullResponse.ok(), JSON.stringify(secondFullResponseHeaders)).toBe(true);
+  expect(secondFullResponseHeaders["x-vinext-rsc-build-id"]).toBe(rscBuildId);
+  expect(
+    secondFullResponseHeaders["cf-cache-status"],
+    `Second full RSC response headers: ${JSON.stringify(secondFullResponseHeaders)}`,
+  ).toBe("HIT");
+  expect(secondFullResponseHeaders["x-workers-cache-visitor"]).toBe("visitor-b");
+  expect(await secondFullResponse.text()).toBe(fullBody);
 
   const shellResponse = await getReusableResponseAfterPromotion(
     request,
@@ -518,40 +716,64 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   // A purge removes the warmed response body, not the manifest embedded in the
   // promoted Worker. The first completed render must therefore be admitted as
   // a CDN MISS, and subsequent requests must eventually reuse that exact entry.
-  const purgeDeadline = Date.now() + 30_000;
-  let coldAfterPurge: APIResponse | undefined;
-  do {
-    const candidate = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}`, {
-      accept: "text/html",
-    });
-    if (candidate.headers()["cf-cache-status"] !== "HIT") {
-      coldAfterPurge = candidate;
-      break;
-    }
-    await candidate.dispose();
-    await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
-  } while (Date.now() < purgeDeadline);
-  expect(coldAfterPurge, "purged App HTML entry remained a CDN HIT").toBeDefined();
-  const coldHeaders = coldAfterPurge!.headers();
-  expect(coldAfterPurge!.ok(), JSON.stringify(coldHeaders)).toBe(true);
+  const coldAfterPurge = await waitForEdgeCacheState(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    "MISS",
+    "purged App HTML entry did not become a CDN MISS",
+  );
+  const coldHeaders = coldAfterPurge.headers();
+  expect(coldAfterPurge.ok(), JSON.stringify(coldHeaders)).toBe(true);
   expect(coldHeaders["cf-cache-status"]).toBe("MISS");
-  expect(coldHeaders["cdn-cache-control"]).toContain("public");
-  expect(await coldAfterPurge!.text()).toContain("Prewarm target");
+  expect(coldHeaders["cdn-cache-control"]).toBeUndefined();
+  expect(coldHeaders["cloudflare-cdn-cache-control"]).toBeUndefined();
+  expect(await coldAfterPurge.text()).toContain("Prewarm target");
 
-  const reuseDeadline = Date.now() + 30_000;
-  let hitAfterPurge: APIResponse | undefined;
-  do {
-    const candidate = await getResponseAfterPromotion(request, `${baseURL}${TARGET_PATH}`, {
-      accept: "text/html",
-    });
-    if (candidate.headers()["cf-cache-status"] === "HIT") {
-      hitAfterPurge = candidate;
-      break;
-    }
-    await candidate.dispose();
-    await new Promise((resolve) => setTimeout(resolve, PROMOTION_PROBE_INTERVAL_MS));
-  } while (Date.now() < reuseDeadline);
-  expect(hitAfterPurge, "cold App HTML cache fill did not become reusable").toBeDefined();
-  expect(hitAfterPurge!.ok(), JSON.stringify(hitAfterPurge!.headers())).toBe(true);
-  expect(await hitAfterPurge!.text()).toContain("Prewarm target");
+  const hitAfterPurge = await waitForEdgeCacheState(
+    request,
+    `${baseURL}${TARGET_PATH}`,
+    "HIT",
+    "cold App HTML cache fill did not become reusable",
+  );
+  expect(hitAfterPurge.ok(), JSON.stringify(hitAfterPurge.headers())).toBe(true);
+  expect(await hitAfterPurge.text()).toContain("Prewarm target");
+
+  const taggedUrl = `${baseURL}/cached/featured`;
+  const taggedHit = await waitForEdgeCacheState(
+    request,
+    taggedUrl,
+    "HIT",
+    "prewarmed tagged App HTML entry did not become reusable",
+  );
+  const taggedBody = await taggedHit.text();
+  const taggedRenderId = /data-render-id="([^"]+)"/.exec(taggedBody)?.[1];
+  expect(taggedRenderId).toBeTruthy();
+
+  const tagPurge = await request.post(`${baseURL}/api/revalidate-tag`, {
+    data: { tag: "post:featured" },
+  });
+  const tagPurgeBody = await tagPurge.json();
+  expect(tagPurge.ok(), JSON.stringify(tagPurgeBody)).toBe(true);
+  expect(tagPurgeBody).toEqual({ revalidated: true, target: "post:featured" });
+
+  const taggedMiss = await waitForEdgeCacheState(
+    request,
+    taggedUrl,
+    "MISS",
+    "tag-invalidated App HTML entry did not become a CDN MISS",
+  );
+  const refreshedTaggedBody = await taggedMiss.text();
+  const refreshedTaggedRenderId = /data-render-id="([^"]+)"/.exec(refreshedTaggedBody)?.[1];
+  expect(refreshedTaggedRenderId).toBeTruthy();
+  expect(refreshedTaggedRenderId).not.toBe(taggedRenderId);
+
+  const taggedReuse = await waitForEdgeCacheState(
+    request,
+    taggedUrl,
+    "HIT",
+    "tag-refreshed App HTML entry did not become reusable",
+  );
+  expect(/data-render-id="([^"]+)"/.exec(await taggedReuse.text())?.[1]).toBe(
+    refreshedTaggedRenderId,
+  );
 });

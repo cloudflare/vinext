@@ -2,20 +2,14 @@ import { getRequestExecutionContext } from "./request-context.js";
 
 export const CACHEABILITY_REQUEST_STATE = Symbol.for("vinext.cacheabilityRequestState");
 
-export const CACHEABILITY_POLICY_HEADERS = [
-  "cache-control",
-  "cdn-cache-control",
-  "cloudflare-cdn-cache-control",
-] as const;
-
-type CacheabilityPolicyHeader = (typeof CACHEABILITY_POLICY_HEADERS)[number];
-
 export type RouteCacheabilityOutcome = {
   cacheControl?: string;
   cacheable: boolean;
   classificationFailure?: boolean;
   dynamicUsage?: boolean;
   reason?: string;
+  /** A transient classification failure that may succeed on another bounded attempt. */
+  retryable?: true;
   tags?: readonly string[];
 };
 
@@ -32,28 +26,42 @@ export type RouteCacheabilityState = {
   captureDeadlineAt: number;
   complete?: (outcome: RouteCacheabilityOutcome) => void;
   completion?: Promise<RouteCacheabilityOutcome>;
+  /** Canonical framework tags most recently handed to the active CDN adapter. */
+  cdnCacheTags?: readonly string[];
   completedResponseBody?: boolean;
+  /** Whether admission must translate a completed response through the active adapter. */
+  applyCompletedResponsePolicy?: boolean;
   explicitConfigCachePolicy?: boolean;
   explicitResponseCachePolicy?: boolean;
   finalResponseVetoReason?: string;
   forcedDynamicReason?: string;
   /** A route-config decision that applies to every concrete identity for this pattern. */
   patternDynamicReason?: string;
-  frameworkResponseCachePolicy?: Partial<Record<CacheabilityPolicyHeader, string>>;
+  frameworkResponseCachePolicy?: Headers;
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   preserveResponseCachePolicy?: boolean;
   /** Cache-key behavior declared by the active CDN adapter. */
   responseVary?: "verbatim";
+  /** Concrete pathname resolved by the trusted request stage before rendering. */
+  resolvedRoutePathname?: string;
   probeBailout?: {
     kind: "private-cache";
     outcome: RouteCacheabilityOutcome;
   };
   route?: {
-    kind: "app-page" | "app-route" | "pages-page";
+    kind: "app-page" | "app-route" | "pages-api" | "pages-page";
     pattern: string;
   };
 };
+
+/** Retain canonical tags across completed-response admission and adapter header shaping. */
+export function recordRouteCacheabilityCdnTags(tags: readonly string[] | undefined): void {
+  if (tags === undefined) return;
+  const state = readRouteCacheabilityState();
+  if (state?.mode !== "admit") return;
+  state.cdnCacheTags = [...tags];
+}
 
 /** Preserve the existing policy when hybrid routing hands the request to Pages Router. */
 export function preserveRouteCacheabilityResponsePolicy(): void {
@@ -72,7 +80,7 @@ export function readRouteCacheabilityState(): RouteCacheabilityState | null {
 }
 
 export function beginRouteCacheability(
-  kind: "app-page" | "app-route" | "pages-page",
+  kind: "app-page" | "app-route" | "pages-api" | "pages-page",
   pattern: string,
 ): boolean {
   const state = readRouteCacheabilityState();
@@ -149,19 +157,13 @@ export function markRouteCacheabilityResponseBodyComplete(): void {
 export function captureRouteCacheabilityResponsePolicy(headers: Headers): void {
   const state = readRouteCacheabilityState();
   if (!state || state.mode !== "admit") return;
-
-  const policy: Partial<Record<CacheabilityPolicyHeader, string>> = {};
-  for (const name of CACHEABILITY_POLICY_HEADERS) {
-    const value = headers.get(name);
-    if (value !== null) policy[name] = value;
-  }
   // Framework response shaping has more than one trusted phase. In
   // particular, the App Page renderer can leave Cache-Control absent before
   // the outer response finalizer applies the adapter's provisional no-store
   // default. Keep the latest trusted snapshot; configurable response headers
   // run after the final capture and remain visible to the strict admission
   // comparison below.
-  state.frameworkResponseCachePolicy = policy;
+  state.frameworkResponseCachePolicy = new Headers(headers);
 }
 
 /** True only for an authenticated probe that must render the matched App Page. */
