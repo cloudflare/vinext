@@ -11,6 +11,7 @@ import {
   WorkersResponseStoreCacheHandler,
   type ResponseStoreInvocationCapture,
 } from "../src/cache/response-store-data.runtime";
+import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
 
 class TestStore implements WorkersResponseStore {
   response?: Response;
@@ -21,6 +22,8 @@ class TestStore implements WorkersResponseStore {
   };
   mutationResult = this.putResult;
   mutationError?: Error;
+  tagExpiration = 0;
+  tagExpirationCalls: string[][] = [];
 
   async fetch(): Promise<Response> {
     return (
@@ -30,6 +33,11 @@ class TestStore implements WorkersResponseStore {
         headers: { "X-Workers-Response-Store": "MISS" },
       })
     );
+  }
+
+  async getTagExpiration(tags: string[]): Promise<number> {
+    this.tagExpirationCalls.push(tags);
+    return this.tagExpiration;
   }
 
   async put(
@@ -256,6 +264,56 @@ test("treats a superseded write as a successful no-op", async () => {
   await expect(
     new WorkersResponseStoreCacheHandler(store).set("key", null),
   ).resolves.toBeUndefined();
+});
+
+// Matches Next.js's lazy custom-handler expiration lookup:
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-custom-handler/use-cache-custom-handler.test.ts
+test("lazily resolves soft-tag expiration once per request after a candidate hit", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    await handler.set("key", null);
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      await expect(handler.get("key", { softTags: ["path", "layout"] })).resolves.not.toBeNull();
+      await expect(handler.get("key", { softTags: ["path", "layout"] })).resolves.not.toBeNull();
+    });
+
+    expect(store.tagExpirationCalls).toHaveLength(1);
+    expect(store.tagExpirationCalls[0]).toHaveLength(2);
+
+    await runWithRequestContext(createRequestContext(), () =>
+      handler.get("key", { softTags: ["path", "layout"] }),
+    );
+    expect(store.tagExpirationCalls).toHaveLength(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("does not resolve soft-tag expiration when the data entry misses", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+
+  await expect(handler.get("missing", { softTags: ["path"] })).resolves.toBeNull();
+  expect(store.tagExpirationCalls).toHaveLength(0);
+});
+
+test("rejects a candidate older than the latest soft-tag invalidation", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    await handler.set("key", null);
+    store.tagExpiration = 10_000;
+
+    await expect(handler.get("key", { softTags: ["path"] })).resolves.toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("honors a shorter revalidate requested by a later read", async () => {
