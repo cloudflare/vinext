@@ -438,6 +438,9 @@ export type ResolvedNextConfig = {
     afterFiles: NextRewrite[];
     fallback: NextRewrite[];
   };
+  /** Unprefixed custom routes used by Next.js-compatible type generation. */
+  typegenRedirects: NextRedirect[];
+  typegenRewrites: NextRewrite[];
   headers: NextHeader[];
   images: NextConfig["images"];
   i18n: NextI18nConfig | null;
@@ -1605,6 +1608,8 @@ export async function resolveNextConfig(
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
+      typegenRedirects: [],
+      typegenRewrites: [],
       headers: [],
       images: undefined,
       i18n: null,
@@ -1909,6 +1914,12 @@ export async function resolveNextConfig(
   const cacheMaxMemorySize: number | undefined =
     typeof config.cacheMaxMemorySize === "number" ? config.cacheMaxMemorySize : undefined;
 
+  // Type generation uses the user-authored sources. Runtime i18n expansion
+  // below adds an internal locale matcher that Next.js does not emit in its
+  // route declarations.
+  const typegenRedirects = redirects;
+  const typegenRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
+
   // Apply Next.js i18n locale-prefix transformation to redirects, rewrites,
   // and headers.
   // When i18n is configured and a rule does NOT carry `locale: false`, the
@@ -1973,6 +1984,8 @@ export async function resolveNextConfig(
     prefetchInlining,
     redirects,
     rewrites,
+    typegenRedirects,
+    typegenRewrites,
     headers,
     images,
     i18n,

@@ -176,6 +176,19 @@ describe("resolveNextConfig typedRoutes", () => {
   it("defaults to false", async () => {
     await expect(resolveNextConfig(null)).resolves.toMatchObject({ typedRoutes: false });
   });
+
+  it("preserves user-authored custom route sources for type generation", async () => {
+    const config = await resolveNextConfig({
+      i18n: { defaultLocale: "en", locales: ["en", "fr"] },
+      redirects: () => [{ source: "/old/:slug", destination: "/new/:slug", permanent: false }],
+      rewrites: () => [{ source: "/legacy/:path*", destination: "/docs/:path*" }],
+    });
+
+    expect(config.typegenRedirects.map(({ source }) => source)).toEqual(["/old/:slug"]);
+    expect(config.typegenRewrites.map(({ source }) => source)).toEqual(["/legacy/:path*"]);
+    expect(config.redirects[0].source).not.toBe("/old/:slug");
+    expect(config.rewrites.afterFiles[0].source).not.toBe("/legacy/:path*");
+  });
 });
 
 describe("loadNextConfig with CJS next.config.js under type:module", () => {
@@ -2195,6 +2208,8 @@ describe("detectNextIntlConfig", () => {
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
+      typegenRedirects: [],
+      typegenRewrites: [],
       headers: [],
       images: undefined,
       i18n: null,

@@ -1613,6 +1613,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       pagesDir: hasPagesDir ? pagesDir : null,
       pageExtensions: nextConfig.pageExtensions,
       typedRoutes: nextConfig.typedRoutes,
+      redirects: nextConfig.typegenRedirects,
+      rewrites: nextConfig.typegenRewrites,
     });
   }
 

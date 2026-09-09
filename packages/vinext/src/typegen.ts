@@ -16,6 +16,8 @@ type GenerateRouteTypesOptions = {
   pagesDir?: string | null;
   pageExtensions?: readonly string[];
   typedRoutes?: boolean;
+  redirects?: readonly { source: string }[];
+  rewrites?: readonly { source: string }[];
 };
 
 export type GenerateRouteTypesResult = {
@@ -76,6 +78,8 @@ export async function generateRouteTypes(
   if (options.typedRoutes === true && pagesDir) {
     await collectPagesRouterLinkRoutes(root, pagesDir, options.pageExtensions, model);
   }
+  collectCustomRoutes(options.redirects, model.redirectRoutes, model.redirectLinkRoutes, model);
+  collectCustomRoutes(options.rewrites, model.rewriteRoutes, model.rewriteLinkRoutes, model);
 
   const content = renderRouteTypes(model, appDir !== null && pagesDir !== null);
 
@@ -162,9 +166,13 @@ type RouteTypeModel = {
   pageRoutes: string[];
   layoutRoutes: string[];
   routeHandlerRoutes: string[];
+  redirectRoutes: string[];
+  rewriteRoutes: string[];
   appPageLinkRoutes: LinkRouteEntry[];
   pagesRouterLinkRoutes: LinkRouteEntry[];
   appRouteHandlerLinkRoutes: LinkRouteEntry[];
+  redirectLinkRoutes: LinkRouteEntry[];
+  rewriteLinkRoutes: LinkRouteEntry[];
   params: Map<string, ParamShape>;
   layoutSlots: Map<string, string[]>;
 };
@@ -177,9 +185,13 @@ function emptyRouteTypeModel(): RouteTypeModel {
     pageRoutes: [],
     layoutRoutes: [],
     routeHandlerRoutes: [],
+    redirectRoutes: [],
+    rewriteRoutes: [],
     appPageLinkRoutes: [],
     pagesRouterLinkRoutes: [],
     appRouteHandlerLinkRoutes: [],
+    redirectLinkRoutes: [],
+    rewriteLinkRoutes: [],
     params: new Map(),
     layoutSlots: new Map(),
   };
@@ -310,6 +322,87 @@ async function collectPagesRouterLinkRoutes(
   model.pagesRouterLinkRoutes.sort(compareLinkRouteEntries);
 }
 
+// Ported from Next.js: packages/next/src/server/lib/router-utils/route-types-utils.ts
+// (convertCustomRouteSource). Unsupported custom regex constraints are omitted,
+// matching Next.js rather than generating a route type that accepts the wrong URLs.
+function convertCustomRouteSource(source: string): string[] {
+  const route = source.startsWith("/") ? source : `/${source}`;
+  let result = "";
+
+  for (let index = 0; index < route.length;) {
+    if (route[index] !== ":") {
+      if (route[index] === "(" || route[index] === "\\") return [];
+      result += route[index++];
+      continue;
+    }
+
+    const nameMatch = /^[\w-]+/.exec(route.slice(index + 1));
+    if (!nameMatch) return [];
+    const name = nameMatch[0];
+    index += name.length + 1;
+
+    let constraint: string | null = null;
+    if (route[index] === "(") {
+      const start = ++index;
+      let depth = 1;
+      while (index < route.length && depth > 0) {
+        if (route[index] === "(") depth++;
+        else if (route[index] === ")") depth--;
+        index++;
+      }
+      if (depth !== 0) return [];
+      constraint = route.slice(start, index - 1);
+    }
+
+    const modifier =
+      route[index] === "*" || route[index] === "+" || route[index] === "?" ? route[index++] : "";
+    if (modifier === "?") return [];
+    if (constraint !== null && constraint !== ".*" && constraint !== ".+") return [];
+
+    const catchAll = modifier === "+" || constraint === ".+";
+    const optionalCatchAll = modifier === "*" || constraint === ".*";
+    result += optionalCatchAll ? `[[...${name}]]` : catchAll ? `[...${name}]` : `[${name}]`;
+  }
+
+  return [result];
+}
+
+function paramsForCustomRoute(route: string): ParamShape {
+  const params: ParamShape = new Map();
+  for (const segment of route.split("/")) {
+    let match = /^\[\[\.\.\.([^\]]+)\]\]$/.exec(segment);
+    if (match) {
+      params.set(match[1], "string[]?");
+      continue;
+    }
+    match = /^\[\.\.\.([^\]]+)\]$/.exec(segment);
+    if (match) {
+      params.set(match[1], "string[]");
+      continue;
+    }
+    match = /^\[([^\]]+)\]$/.exec(segment);
+    if (match) params.set(match[1], "string");
+  }
+  return params;
+}
+
+function collectCustomRoutes(
+  routes: readonly { source: string }[] | undefined,
+  routeLiterals: string[],
+  linkRoutes: LinkRouteEntry[],
+  model: RouteTypeModel,
+): void {
+  const seen = new Set(routeLiterals);
+  for (const { source } of routes ?? []) {
+    for (const route of convertCustomRouteSource(source)) {
+      addRoute(routeLiterals, seen, model.params, route, paramsForCustomRoute(route));
+      linkRoutes.push(createLinkRouteEntry(route, undefined, `next.config ${source}`));
+    }
+  }
+  routeLiterals.sort(compareStrings);
+  linkRoutes.sort(compareLinkRouteEntries);
+}
+
 /**
  * Derive a route's typed-link template from the scanners' pattern parts
  * (`:param` markers with pre-decoded static segments) instead of re-parsing
@@ -409,6 +502,8 @@ function generateLinkTypesFile(model: RouteTypeModel): string {
   for (const routes of [
     model.appPageLinkRoutes,
     model.pagesRouterLinkRoutes,
+    model.redirectLinkRoutes,
+    model.rewriteLinkRoutes,
     model.appRouteHandlerLinkRoutes,
   ]) {
     for (const route of routes) {
@@ -609,6 +704,8 @@ function renderRouteTypes(model: RouteTypeModel, hasPagesCompat: boolean): strin
     ...model.pageRoutes,
     ...model.layoutRoutes,
     ...model.routeHandlerRoutes,
+    ...model.redirectRoutes,
+    ...model.rewriteRoutes,
   ]);
 
   const navigationCompat = hasPagesCompat
@@ -650,6 +747,8 @@ declare namespace VinextRouteTypes {
   type PageRoute = ${routeUnion(model.pageRoutes)};
   type LayoutRoute = ${routeUnion(model.layoutRoutes)};
   type RouteHandlerRoute = ${routeUnion(model.routeHandlerRoutes)};
+  type RedirectRoute = ${routeUnion(model.redirectRoutes)};
+  type RewriteRoute = ${routeUnion(model.rewriteRoutes)};
   type AppRoute = ${routeUnion(allRoutes)};
 
   interface ParamMap {

@@ -480,6 +480,33 @@ describe("generateRouteTypes", () => {
     });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/typed-routes/typed-routes.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/typed-routes/typed-routes.test.ts
+  it("includes redirect and rewrite sources in generated route types", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+
+      const result = await generateRouteTypes({
+        root,
+        typedRoutes: true,
+        redirects: [{ source: "/blog/:category/:slug*" }],
+        rewrites: [{ source: "/docs-old/:path+" }, { source: "/api-legacy/:version/:endpoint*" }],
+      });
+      const routes = await readFile(result.routeTypesPath, "utf-8");
+      const links = await readFile(result.linkTypesPath!, "utf-8");
+
+      expect(routes).toContain('type RedirectRoute = "/blog/[category]/[[...slug]]";');
+      expect(routes).toContain(
+        'type RewriteRoute = "/api-legacy/[version]/[[...endpoint]]" | "/docs-old/[...path]";',
+      );
+      expect(links).toContain(
+        "| `/blog/${SafeSlug<T>}/${OptionalCatchAllSlug<T>}` // next.config /blog/:category/:slug*",
+      );
+      expect(links).toContain("| `/docs-old/${CatchAllSlug<T>}` // next.config /docs-old/:path+");
+    });
+  });
+
   it("keeps percent-encoded literal bracket segments static in typed links", async () => {
     await withTempProject(async (root) => {
       await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);

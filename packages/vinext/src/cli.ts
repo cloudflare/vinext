@@ -904,6 +904,8 @@ async function typegen() {
       : undefined,
     pageExtensions: resolvedNextConfig.pageExtensions,
     typedRoutes: resolvedNextConfig.typedRoutes,
+    redirects: resolvedNextConfig.typegenRedirects,
+    rewrites: resolvedNextConfig.typegenRewrites,
   });
   const nextEnvMessage =
     result.nextEnvStatus === "unchanged"
