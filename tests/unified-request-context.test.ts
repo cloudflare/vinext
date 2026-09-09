@@ -8,7 +8,9 @@ import {
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   consumeRenderRequestApiUsage,
+  markDynamicUsage,
   markRenderRequestApiUsage,
+  runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import {
   getRequestExecutionContext,
@@ -548,6 +550,44 @@ describe("unified-request-context", () => {
           expect(getRequestContext().ssrHeadChildren).toEqual(["<meta data-outer />"]);
         },
       );
+    });
+  });
+
+  describe("dynamic usage across nested scopes", () => {
+    it("keeps a nested scope's late dynamic usage visible to the request", async () => {
+      // Nested scopes wrap lazily consumed streams: the work they spawn keeps
+      // running (and can mark dynamic usage) after their callback settles.
+      await runWithRequestContext(createRequestContext(), async () => {
+        let releaseLateWork!: () => void;
+        const lateWork = new Promise<void>((resolve) => {
+          releaseLateWork = resolve;
+        });
+
+        let lateDynamicUsage!: Promise<void>;
+        await runWithUnifiedStateMutation(
+          () => {},
+          () => {
+            lateDynamicUsage = lateWork.then(() => markDynamicUsage());
+          },
+        );
+
+        expect(getRequestContext().dynamicUsageDetected).toBe(false);
+        releaseLateWork();
+        await lateDynamicUsage;
+        expect(getRequestContext().dynamicUsageDetected).toBe(true);
+      });
+    });
+
+    it("runWithIsolatedDynamicUsage measures a subtree without marking the request", async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const { dynamicDetected } = await runWithIsolatedDynamicUsage(() => {
+          markDynamicUsage();
+          return "measured";
+        });
+
+        expect(dynamicDetected).toBe(true);
+        expect(getRequestContext().dynamicUsageDetected).toBe(false);
+      });
     });
   });
 

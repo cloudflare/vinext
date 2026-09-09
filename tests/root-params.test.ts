@@ -9,6 +9,7 @@ import {
   runWithRequestContext,
   createRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { consumeDynamicUsage, markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
 import { runWithNavigationContext } from "../packages/vinext/src/shims/navigation-state.js";
 import {
   getNavigationContext,
@@ -164,6 +165,27 @@ describe("next/root-params shim", () => {
       langVal: "fr",
       nestedVal: "de",
       langValAfter: "fr",
+    });
+  });
+
+  it("keeps dynamic usage visible to the request after the scope returns", async () => {
+    // handleSsr() renders inside this scope, but the HTML/RSC stream it returns
+    // is consumed later — cookies()/headers() can still fire from that work.
+    await runWithRequestContext(createRequestContext(), async () => {
+      let releaseStreamedWork!: () => void;
+      const streamedWork = new Promise<void>((resolve) => {
+        releaseStreamedWork = resolve;
+      });
+
+      let lateDynamicUsage!: Promise<void>;
+      await runWithRootParamsScope({ lang: "en" }, () => {
+        lateDynamicUsage = streamedWork.then(() => markDynamicUsage());
+      });
+
+      releaseStreamedWork();
+      await lateDynamicUsage;
+
+      expect(consumeDynamicUsage()).toBe(true);
     });
   });
 
