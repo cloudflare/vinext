@@ -301,6 +301,51 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  it("points the Pages Router SSR service at the worker entry under the Nitro preset", async () => {
+    // Regression for cloudflare/vinext#3197. Under the Nitro preset the `ssr`
+    // environment is built into Nitro's SSR *service* and dispatched as a
+    // WinterCG `fetch` handler (`mod.default.fetch(request)`). The context-bag
+    // server entry has no `.fetch`, so every dynamic Pages Router request 500s.
+    // When a nitro plugin is present the ssr build input must be the worker
+    // entry (a real `{ fetch }` handler); otherwise it stays the server entry
+    // the Node prod-server consumes directly.
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-nitro-ssr-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    const ssrBuildInput = async (plugins: Array<{ name: string }>) => {
+      const mainPlugin = vinext().find(
+        (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+      );
+      const result = await (mainPlugin as any).config(
+        { root: tmpDir, build: {}, plugins, optimizeDeps: {} },
+        { command: "build" },
+      );
+      return result.environments.ssr.build.rolldownOptions.input.index;
+    };
+
+    try {
+      // Nitro preset present → the real worker entry, which exports a `{ fetch }`.
+      expect(await ssrBuildInput([{ name: "nitro" }])).toBe("virtual:vinext-worker-entry");
+      // No nitro plugin (e.g. the Node target) → unchanged server entry.
+      expect(await ssrBuildInput([])).toBe("virtual:vinext-server-entry");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   it("merges top-level optimizeDeps.exclude from other plugins into per-environment configs", async () => {
     // Simulates plugins like @lingui/vite-plugin that add entries to
     // config.optimizeDeps.exclude before vinext's config hook runs.

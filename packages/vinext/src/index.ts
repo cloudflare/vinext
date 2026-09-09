@@ -3697,7 +3697,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               build: {
                 outDir: "dist/server",
                 ...withBuildBundlerOptions({
-                  input: { index: VIRTUAL_SERVER_ENTRY },
+                  // Under the Nitro preset this `ssr` environment is built
+                  // into Nitro's SSR *service* and dispatched as a WinterCG
+                  // handler (`mod.default.fetch(request)`). VIRTUAL_SERVER_ENTRY
+                  // is a context bag (renderPage/matchPageRoute/...) with no
+                  // `.fetch`, so every dynamic Pages Router request 500s. Point
+                  // Nitro at the real worker entry (the same one the Cloudflare
+                  // target already uses), whose default export *is* a `{ fetch }`
+                  // handler. Node keeps VIRTUAL_SERVER_ENTRY, consumed directly
+                  // by its prod-server.
+                  input: {
+                    index: hasNitroPlugin ? VIRTUAL_WORKER_ENTRY : VIRTUAL_SERVER_ENTRY,
+                  },
                   output: {
                     entryFileNames: "entry.js",
                   },
