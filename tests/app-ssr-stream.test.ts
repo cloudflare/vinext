@@ -94,6 +94,26 @@ function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   });
 }
 
+function readEmbeddedRscChunks(html: string): RscEmbeddedChunk[] {
+  const self: Record<PropertyKey, unknown> = { addEventListener() {} };
+  const context = createContext({ self });
+
+  for (const scriptSource of html
+    .slice("<script>".length, -"</script>".length)
+    .split("</script><script>")) {
+    runInContext(scriptSource, context);
+  }
+
+  const navigationRuntime = self[Symbol.for("vinext.navigationRuntime")] as {
+    bootstrap: { rsc: { rsc: RscEmbeddedChunk[] } };
+  };
+  return navigationRuntime.bootstrap.rsc.rsc;
+}
+
+function decodeEmbeddedRscChunks(chunks: RscEmbeddedChunk[]): Uint8Array {
+  return concatUint8Arrays(chunks.map(decodeRscEmbeddedChunk));
+}
+
 function createNoopRscEmbedTransform() {
   return {
     flush: () => "",
@@ -305,36 +325,58 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
 
     const transform = createRscEmbedTransform(createByteStream(flightChunks));
     const finalScripts = await transform.finalize();
-    const self: Record<PropertyKey, unknown> = {};
-    const context = createContext({ self });
-
-    for (const scriptSource of finalScripts
-      .slice("<script>".length, -"</script>".length)
-      .split("</script><script>")) {
-      runInContext(scriptSource, context);
-    }
-
-    const navigationRuntime = self[Symbol.for("vinext.navigationRuntime")] as {
-      bootstrap: { rsc: { rsc: RscEmbeddedChunk[] } };
-    };
-    const embeddedChunks = navigationRuntime.bootstrap.rsc.rsc.map(decodeRscEmbeddedChunk);
-    const embeddedBytes = concatUint8Arrays(embeddedChunks);
+    const embeddedBytes = decodeEmbeddedRscChunks(readEmbeddedRscChunks(finalScripts));
 
     expect(embeddedBytes).toEqual(expectedBytes);
+  });
+
+  it.each(["中文", "😀"])("embeds %s as text across every UTF-8 byte split", async (text) => {
+    const bytes = new TextEncoder().encode(text);
+
+    for (let split = 1; split < bytes.byteLength; split++) {
+      const transform = createRscEmbedTransform(
+        createByteStream([bytes.slice(0, split), bytes.slice(split)]),
+      );
+      const embeddedChunks = readEmbeddedRscChunks(await transform.finalize());
+
+      expect(
+        embeddedChunks.every((chunk) => typeof chunk === "string"),
+        `split at byte ${split}`,
+      ).toBe(true);
+      expect(decodeEmbeddedRscChunks(embeddedChunks), `split at byte ${split}`).toEqual(bytes);
+    }
+  });
+
+  it("embeds a four-byte emoji as text across byte-at-a-time chunks", async () => {
+    const bytes = new TextEncoder().encode("😀");
+    const transform = createRscEmbedTransform(
+      createByteStream(Array.from(bytes, (byte) => Uint8Array.of(byte))),
+    );
+
+    const embeddedChunks = readEmbeddedRscChunks(await transform.finalize());
+
+    expect(embeddedChunks.every((chunk) => typeof chunk === "string")).toBe(true);
+    expect(decodeEmbeddedRscChunks(embeddedChunks)).toEqual(bytes);
   });
 
   it("embeds non-UTF-8 RSC chunks as base64 binary chunks", async () => {
     // Ported from Next.js: test/e2e/app-dir/binary/rsc-binary.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/binary/rsc-binary.test.ts
-    const transform = createRscEmbedTransform(
-      createByteStream([new Uint8Array([0xff, 0, 1, 2, 3])]),
-      { mirrorNextFlight: true },
-    );
+    const binaryBytes = new Uint8Array([0xff, 0, 1, 2, 3]);
+    const trailingTextBytes = new TextEncoder().encode("中文");
+    const transform = createRscEmbedTransform(createByteStream([binaryBytes, trailingTextBytes]), {
+      mirrorNextFlight: true,
+    });
 
     const finalScripts = await transform.finalize();
+    const embeddedChunks = readEmbeddedRscChunks(finalScripts);
 
     expect(finalScripts).toContain('.rsc.push([3,"/wABAgM="])');
     expect(finalScripts).toContain('self.__next_f.push([3,"/wABAgM="])');
+    expect(finalScripts).toContain('.rsc.push("中文")');
+    expect(decodeEmbeddedRscChunks(embeddedChunks)).toEqual(
+      concatUint8Arrays([binaryBytes, trailingTextBytes]),
+    );
   });
 
   it("does not lose incomplete UTF-8 bytes before a binary chunk", async () => {
@@ -343,9 +385,20 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     );
 
     const finalScripts = await transform.finalize();
+    const embeddedChunks = readEmbeddedRscChunks(finalScripts);
 
-    expect(finalScripts).toContain('.rsc.push([3,"QcM="])');
-    expect(finalScripts).toContain('.rsc.push([3,"/w=="])');
+    expect(embeddedChunks).toEqual(["A", [3, "w/8="]]);
+    expect(decodeEmbeddedRscChunks(embeddedChunks)).toEqual(new Uint8Array([0x41, 0xc3, 0xff]));
+  });
+
+  it("does not lose an incomplete UTF-8 sequence at EOF", async () => {
+    const bytes = new Uint8Array([0x41, 0xf0, 0x9f, 0x98]);
+    const transform = createRscEmbedTransform(createByteStream([bytes]));
+
+    const embeddedChunks = readEmbeddedRscChunks(await transform.finalize());
+
+    expect(embeddedChunks).toEqual(["A", [3, "8J+Y"]]);
+    expect(decodeEmbeddedRscChunks(embeddedChunks)).toEqual(bytes);
   });
 });
 
