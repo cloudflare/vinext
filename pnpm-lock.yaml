@@ -81,6 +81,9 @@ catalogs:
     '@types/react-dom':
       specifier: ^19.2.3
       version: 19.2.3
+    '@types/ua-parser-js':
+      specifier: 0.7.36
+      version: 0.7.36
     '@unpic/react':
       specifier: ^1.0.2
       version: 1.0.2
@@ -222,6 +225,9 @@ catalogs:
     typescript:
       specifier: ^7.0.0
       version: 7.0.2
+    ua-parser-js:
+      specifier: 1.0.35
+      version: 1.0.35
     use-count-up:
       specifier: 3.0.1
       version: 3.0.1
@@ -1111,6 +1117,9 @@ importers:
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
+      ua-parser-js:
+        specifier: 'catalog:'
+        version: 1.0.35
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.2.6
         version: '@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
@@ -1130,6 +1139,9 @@ importers:
       '@types/react-dom':
         specifier: 'catalog:'
         version: 19.2.3(@types/react@19.2.16)
+      '@types/ua-parser-js':
+        specifier: 'catalog:'
+        version: 0.7.36
       '@vitejs/plugin-react':
         specifier: 'catalog:'
         version: 6.1.0(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(oxc-transform-react@0.145.0)
@@ -5532,6 +5544,9 @@ packages:
   '@types/statuses@2.0.6':
     resolution: {integrity: sha512-xMAgYwceFhRA2zY+XbEA7mxYbA093wdiW8Vu6gZPGWy9cmOyU9XesH1tNcEWsKFd5Vzrqx5T3D38PWx1FIIXkA==}
 
+  '@types/ua-parser-js@0.7.36':
+    resolution: {integrity: sha512-N1rW+njavs70y2cApeIw1vLMYXRwfBy+7trgavGuuTfOd7j1Yh7QTRc/yqsPl6ncokt72ZXuxEU0PiCp9bSwNQ==}
+
   '@types/unist@2.0.11':
     resolution: {integrity: sha512-CmBKiL6NNo/OqgmMn95Fk9Whlp2mtvIv+KNpQKN2F4SjvrEesubTRWGYSg+BnWZOnlCaSTU1sMpsBOzgbYhnsA==}
 
@@ -8611,6 +8626,9 @@ packages:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
     hasBin: true
+
+  ua-parser-js@1.0.35:
+    resolution: {integrity: sha512-fKnGuqmTBnIE+/KXSzCn4db8RTigUzw1AN0DmdU6hJovUTbYJKyqj+8Mt1c4VfRDnOVJnENmfYkIPZ946UrSAA==}
 
   unbash@3.0.0:
     resolution: {integrity: sha512-FeFPZ/WFT0mbRCuydiZzpPFlrYN8ZUpphQKoq4EeElVIYjYyGzPMxQR/simUwCOJIyVhpFk4RbtyO7RuMpMnHA==}
@@ -11780,6 +11798,8 @@ snapshots:
       '@types/node': 25.9.2
 
   '@types/statuses@2.0.6': {}
+
+  '@types/ua-parser-js@0.7.36': {}
 
   '@types/unist@2.0.11': {}
 
@@ -15020,6 +15040,8 @@ snapshots:
       '@typescript/typescript-sunos-x64': 7.0.2
       '@typescript/typescript-win32-arm64': 7.0.2
       '@typescript/typescript-win32-x64': 7.0.2
+
+  ua-parser-js@1.0.35: {}
 
   unbash@3.0.0: {}
 

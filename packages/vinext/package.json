@@ -204,6 +204,7 @@
     "@vinext/types": "workspace:^",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
+    "ua-parser-js": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "web-vitals": "catalog:"
   },
@@ -211,6 +212,7 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "@types/ua-parser-js": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
