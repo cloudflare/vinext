@@ -33,7 +33,10 @@ type ResponseStoreInvocation = {
 };
 
 export type ResponseStoreInvocationCapture = {
+  admittedResponse?: Promise<Response>;
+  captureRscData?: boolean;
   rscData?: Promise<ArrayBuffer>;
+  streamResponse?: boolean;
 };
 
 const ARRAY_BUFFER_MARKER = "$vinextArrayBuffer";
@@ -68,11 +71,131 @@ export function runWithResponseStoreInvocation<T>(
 /** Retain the RSC side stream only when the outer response-store invocation requested it. */
 export function captureResponseStoreRscData(rscData: Promise<ArrayBuffer>): void {
   const capture = invocationStorage.getStore()?.capture;
-  if (capture) {
+  if (capture?.captureRscData) {
     capture.rscData = rscData;
   } else {
     void rscData.catch(() => {});
   }
+}
+
+/** Stream the foreground body while retaining an independent admission branch. */
+export function deferResponseStoreAdmission(
+  response: Response,
+  complete: (response: Response) => Promise<Response>,
+): Response | null {
+  const capture = invocationStorage.getStore()?.capture;
+  if (!capture?.streamResponse || !response.body) return null;
+
+  const source = response.body.getReader();
+  const admission = new TransformStream<Uint8Array, Uint8Array>(
+    undefined,
+    { highWaterMark: 0 },
+    { highWaterMark: 0 },
+  );
+  const writer = admission.writable.getWriter();
+  let admissionOpen = true;
+  let foregroundCancelled = false;
+  let foregroundCancelReason: unknown;
+  let writerReleased = false;
+
+  const releaseSource = () => {
+    try {
+      source.releaseLock();
+    } catch {}
+  };
+  const releaseWriter = () => {
+    if (writerReleased) return;
+    writerReleased = true;
+    try {
+      writer.releaseLock();
+    } catch {}
+  };
+  const cancelSource = (reason: unknown) => {
+    try {
+      const cancellation = source.cancel(reason);
+      releaseSource();
+      void cancellation.catch(() => {}).finally(releaseSource);
+    } catch {
+      releaseSource();
+    }
+  };
+  const finishAdmission = async (failure?: { reason: unknown }) => {
+    if (!admissionOpen) return;
+    admissionOpen = false;
+    if (failure && foregroundCancelled) {
+      cancelSource(foregroundCancelReason);
+    }
+    try {
+      if (failure) await writer.abort(failure.reason);
+      else await writer.close();
+    } catch {
+      // Admission may already have rejected or cancelled its branch.
+    } finally {
+      releaseWriter();
+    }
+  };
+  const writeAdmission = async (chunk: Uint8Array) => {
+    if (!admissionOpen) return;
+    try {
+      await writer.write(chunk);
+    } catch {
+      admissionOpen = false;
+      releaseWriter();
+    }
+  };
+  const foreground = new ReadableStream<Uint8Array>(
+    {
+      async pull(controller) {
+        try {
+          const result = await source.read();
+          if (result.done) {
+            releaseSource();
+            controller.close();
+            await finishAdmission();
+            return;
+          }
+          controller.enqueue(result.value);
+          await writeAdmission(result.value);
+        } catch (error) {
+          releaseSource();
+          controller.error(error);
+          await finishAdmission({ reason: error });
+        }
+      },
+      cancel(reason) {
+        foregroundCancelled = true;
+        foregroundCancelReason = reason;
+        if (!admissionOpen) {
+          cancelSource(reason);
+          return;
+        }
+        void (async () => {
+          try {
+            while (true) {
+              const result = await source.read();
+              if (result.done) break;
+              await writeAdmission(result.value);
+              if (!admissionOpen) {
+                cancelSource(reason);
+                break;
+              }
+            }
+            releaseSource();
+            await finishAdmission();
+          } catch (error) {
+            releaseSource();
+            await finishAdmission({ reason: error });
+          }
+        })();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+
+  capture.admittedResponse = complete(new Response(admission.readable, response));
+  void capture.admittedResponse.catch((error) => finishAdmission({ reason: error }));
+  void writer.closed.catch((error) => finishAdmission({ reason: error }));
+  return new Response(foreground, response);
 }
 
 /** Re-render an invocation and return the exact rewritten data-cache entry. */
