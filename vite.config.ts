@@ -177,9 +177,8 @@ export default defineConfig({
           include: ["tests/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: [
             "tests/fixtures/**/node_modules/**",
-            // Integration tests: spin up Vite dev servers against shared fixture
-            // dirs. Must run serially to avoid Vite deps optimizer cache races
-            // (node_modules/.vite/*) that produce "outdated pre-bundle" 500s.
+            // Integration tests spin up Vite dev servers against shared fixture
+            // dirs and use per-worker optimizer caches in their own project.
             // When adding a test that calls startFixtureServer() or createServer(),
             // move it here.
             "tests/app-router-client-preloading.test.ts",
@@ -241,6 +240,9 @@ export default defineConfig({
         },
         test: {
           name: "integration",
+          env: {
+            VINEXT_PARALLEL_INTEGRATION: "true",
+          },
           // MSW is intentionally NOT installed in the integration project.
           // Integration tests spin up in-process HTTP servers and fixture
           // dev servers and exercise them via `fetch("http://127.0.0.1:<port>/...")`.
@@ -305,9 +307,9 @@ export default defineConfig({
             "tests/nextjs-compat/**/*.test.ts",
           ],
           testTimeout: 30000,
-          // Serial execution prevents Vite deps optimizer cache races when
-          // multiple test files share the same fixture directory.
-          fileParallelism: false,
+          fileParallelism: true,
+          maxWorkers: 3,
+          sequence: { groupOrder: 1 },
         },
       },
     ],
