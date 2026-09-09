@@ -34,7 +34,6 @@ export type RenderAppPageCacheArtifactsOptions = {
   basePath?: string;
   captureRscData: boolean;
   cleanPathname: string;
-  clientTraceMetadata?: readonly string[];
   element: AppPageRenderableElement;
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
@@ -91,7 +90,8 @@ export async function renderAppPageCacheArtifacts(
     },
     {
       basePath: options.basePath,
-      clientTraceMetadata: options.clientTraceMetadata,
+      // No clientTraceMetadata: this render exists to produce a shared cache
+      // artifact, so request-scoped trace context must never be baked into it.
       reactMaxHeadersLength: options.reactMaxHeadersLength,
       rootParams: options.rootParams,
       waitForAllReady: options.waitForAllReady,
