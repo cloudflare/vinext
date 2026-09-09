@@ -99,6 +99,9 @@ export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life
 /** Marks a local prerender-server 500 that originated from a thrown render error. */
 export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
 
+/** Marks a Pages prerender response whose request-derived App props prohibit reuse. */
+export const VINEXT_PRERENDER_SHARED_CACHE_BYPASS_HEADER = "x-vinext-prerender-shared-cache-bypass";
+
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 
