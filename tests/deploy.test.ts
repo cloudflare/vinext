@@ -52,6 +52,7 @@ import {
   readPagesResponseStageEntrySource,
   readPagesRouterEntrySource,
   readPagesSingleEntrySource,
+  readWorkerRequestStageSource,
 } from "./worker-entry-source.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
@@ -1652,9 +1653,11 @@ describe("readPagesRouterEntrySource", () => {
 
   it("includes image optimization handler", () => {
     const content = readPagesRouterEntrySource();
+    const sharedContent = readWorkerRequestStageSource();
     expect(content).toContain("isImageOptimizationPath");
     expect(content).toContain("handleConfiguredImageOptimization");
-    expect(content).toContain("registerConfiguredImageOptimizer(env)");
+    expect(content).toContain("registerWorkerRequestStageAdapters(env)");
+    expect(sharedContent).toContain("registerConfiguredImageOptimizer(env)");
   });
 
   it("does not declare an Images binding in the Worker", () => {

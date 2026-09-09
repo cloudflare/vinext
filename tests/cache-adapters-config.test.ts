@@ -31,6 +31,7 @@ import {
   readAppRequestStageEntrySource,
   readAppRouterEntrySource,
   readPagesRequestStageEntrySource,
+  readWorkerRequestStageSource,
 } from "./worker-entry-source.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
@@ -314,13 +315,15 @@ describe("registration is wired into every router/runtime entry", () => {
   });
 
   it("Pages Router worker entry registers with env", () => {
-    const code = readPagesRequestStageEntrySource();
+    const entryCode = readPagesRequestStageEntrySource();
+    const code = readWorkerRequestStageSource();
     const eagerCdnRegistration = "configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);";
     const validateCdnRequest = "await validateCdnRequest(request)";
     const lazyDataRegistration = code.match(
       /registerLazyDataCacheHandler\(async \(\) => \{[\s\S]*?\n\s*\}\);/,
     )?.[0];
 
+    expect(entryCode).toContain("registerWorkerRequestStageAdapters(env)");
     expect(code).toContain('from "virtual:vinext-cdn-cache-adapter"');
     expect(code).not.toContain('from "virtual:vinext-cache-adapters"');
     expect(code).toContain(eagerCdnRegistration);
@@ -330,7 +333,9 @@ describe("registration is wired into every router/runtime entry", () => {
   });
 
   it("App request stage cannot retain the configured data adapter module", () => {
-    const code = readAppRequestStageEntrySource();
+    const entryCode = readAppRequestStageEntrySource();
+    const code = readWorkerRequestStageSource();
+    expect(entryCode).toContain("registerWorkerRequestStageAdapters(env)");
     expect(code).toContain('from "virtual:vinext-cdn-cache-adapter"');
     expect(code).not.toContain('from "virtual:vinext-cache-adapters"');
   });
@@ -338,9 +343,9 @@ describe("registration is wired into every router/runtime entry", () => {
   it("App Router worker entry validates CDN routing after registering with env", () => {
     const code = readAppRouterEntrySource();
     expect(code).toContain("registerConfiguredCacheAdapters(env");
-    expect(code).toContain("await validateCdnRequest(request)");
+    expect(code).toContain("await validateWorkerPrerenderReadiness(ctx, request)");
     expect(code.indexOf("registerConfiguredCacheAdapters(env")).toBeLessThan(
-      code.indexOf("await validateCdnRequest(request)"),
+      code.indexOf("await validateWorkerPrerenderReadiness(ctx, request)"),
     );
   });
 });

@@ -318,6 +318,24 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
   };
 }
 
+export function resolveAppRscInterceptRoute<
+  Route extends AppRscRouteForMatching & { params: readonly string[] },
+>(
+  intercept: AppRscInterceptMatch | null,
+  routes: readonly Route[],
+): { interceptionSourceIsConcrete: boolean; params: AppRscRouteParams; route: Route } | null {
+  if (!intercept) return null;
+  const route = routes[intercept.sourceRouteIndex];
+  if (!route) return null;
+  const params = createRouteParams();
+  for (const name of route.params) {
+    if (Object.hasOwn(intercept.sourceMatchedParams, name))
+      params[name] = intercept.sourceMatchedParams[name];
+  }
+  const interceptionSourceIsConcrete = intercept.sourceRouteIsConcrete;
+  return { interceptionSourceIsConcrete, params, route };
+}
+
 /**
  * Params for the slot owner when interception falls back to it instead of a
  * concrete descendant source route. The owner is what renders, and

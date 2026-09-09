@@ -1209,20 +1209,17 @@ describe("App Router entry templates", () => {
   it("promotes interception-only RSC targets before not-found dispatch", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname, interceptionId)");
+    expect(code).toContain(
+      "__resolveAppRscInterceptRoute(findIntercept(pathname, sourcePathname, interceptionId), routes)",
+    );
     expect(code).toContain("hasInterceptionId(interceptionId)");
     expect(code).toContain("return __routeMatcher.hasInterceptionId(interceptionId)");
-    expect(code).toContain(
-      "const intercept = findIntercept(pathname, sourcePathname, interceptionId)",
-    );
-    expect(code).toContain("interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete");
     expect(
       code.match(
         /findIntercept\(\s*interceptionPathname,\s*interceptionContext,\s*interceptionId,?\s*\)/g,
       ),
     ).toHaveLength(3);
-    expect(code).toContain("const route = routes[intercept.sourceRouteIndex]");
-    expect(code).toContain("intercept.sourceMatchedParams");
+    expect(code).not.toContain("const route = routes[intercept.sourceRouteIndex]");
   });
 
   it("installs server globals before App Router user modules are imported", () => {
@@ -1729,7 +1726,7 @@ describe("Pages Router entry template", () => {
 
       expect(code).toContain("export function normalizeDataRequest(request)");
       expect(code).toContain(
-        "vinextConfig.basePath,\n    __shouldAddTrailingSlashToPagesDataPath(\n      hasMiddleware,\n      vinextConfig.trailingSlash,\n      vinextConfig.skipProxyUrlNormalize",
+        "__normalizePagesEntryDataRequest(request, buildId, vinextConfig, hasMiddleware)",
       );
       expect(code).toContain("export const hasMiddleware = true");
       expect(code).toContain('"skipProxyUrlNormalize":true');

@@ -542,6 +542,28 @@ function getResponseStageInvocation(
   };
 }
 
+function getResponseStageEntrypointInvocation(
+  context: CloudflareStageContext,
+  cache: VinextResponseStageDispatchOptions["cache"],
+): CloudflareResponseStageInvocation | Response {
+  const invocation = getResponseStageInvocation(context.props, cache);
+  if (!invocation) {
+    return stampResponseStageBuildIdentity(
+      new Response("Invalid vinext response-stage invocation", {
+        status: 400,
+        headers: { "Cache-Control": "no-store" },
+      }),
+    );
+  }
+  if (
+    invocation.expectedResponseStageBuildIdentity !== undefined &&
+    invocation.expectedResponseStageBuildIdentity !== getVinextCdnBuildIdentity()
+  ) {
+    return stampResponseStageBuildIdentity(responseStageUnavailable());
+  }
+  return invocation;
+}
+
 async function invokeResponseStage(
   request: Request,
   env: unknown,
@@ -574,21 +596,8 @@ async function invokeResponseStage(
 export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
   async fetch(request: Request): Promise<Response> {
     const context = withWorkerHostRuntime(this.ctx, this.env);
-    const invocation = getResponseStageInvocation(context.props, "shared");
-    if (!invocation) {
-      return stampResponseStageBuildIdentity(
-        new Response("Invalid vinext response-stage invocation", {
-          status: 400,
-          headers: { "Cache-Control": "no-store" },
-        }),
-      );
-    }
-    if (
-      invocation.expectedResponseStageBuildIdentity !== undefined &&
-      invocation.expectedResponseStageBuildIdentity !== getVinextCdnBuildIdentity()
-    ) {
-      return stampResponseStageBuildIdentity(responseStageUnavailable());
-    }
+    const invocation = getResponseStageEntrypointInvocation(context, "shared");
+    if (invocation instanceof Response) return invocation;
     const restored = restoreResponseStageRequest(
       request,
       invocation.requestUrl,
@@ -619,21 +628,8 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
 export class VinextUncachedResponse extends WorkerEntrypoint<unknown, unknown> {
   async fetch(request: Request): Promise<Response> {
     const context = withResponseStagePurge(withWorkerHostRuntime(this.ctx, this.env));
-    const invocation = getResponseStageInvocation(context.props, "bypass");
-    if (!invocation) {
-      return stampResponseStageBuildIdentity(
-        new Response("Invalid vinext response-stage invocation", {
-          status: 400,
-          headers: { "Cache-Control": "no-store" },
-        }),
-      );
-    }
-    if (
-      invocation.expectedResponseStageBuildIdentity !== undefined &&
-      invocation.expectedResponseStageBuildIdentity !== getVinextCdnBuildIdentity()
-    ) {
-      return stampResponseStageBuildIdentity(responseStageUnavailable());
-    }
+    const invocation = getResponseStageEntrypointInvocation(context, "bypass");
+    if (invocation instanceof Response) return invocation;
     return stampResponseStageBuildIdentity(
       await invokeResponseStage(request, this.env, context, invocation),
     );

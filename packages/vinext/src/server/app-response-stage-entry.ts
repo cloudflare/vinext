@@ -12,8 +12,7 @@ import {
 } from "./app-worker-stages.js";
 import { serializeStaticFileSignalForTransport } from "./static-file-signal.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
-import { validateCdnRequest } from "./cache-control.js";
-import { createWorkerPrerenderReadinessResponse } from "./worker-prerender-discovery.js";
+import { validateWorkerPrerenderReadiness } from "./worker-prerender-discovery.js";
 import type {
   VinextRequestStageTransport,
   VinextResponseStageDispatchOptions,
@@ -66,13 +65,11 @@ export async function handleResponseStage(
           return new Response("Incompatible vinext App response stage", { status: 409 });
         }
         if (props.prerenderDiscovery) {
-          const readinessResponse = createWorkerPrerenderReadinessResponse(
+          const readinessResponse = await validateWorkerPrerenderReadiness(
             cacheabilityContext,
             request,
           );
-          if (readinessResponse) {
-            return (await validateCdnRequest(request)) ?? readinessResponse;
-          }
+          if (readinessResponse) return readinessResponse;
         }
         const fullEntry = await import("virtual:vinext-rsc-entry");
         const render = () =>

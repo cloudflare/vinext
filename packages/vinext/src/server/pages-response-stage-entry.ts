@@ -18,8 +18,7 @@ import {
 } from "./response-stage-policy.js";
 import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
 import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
-import { validateCdnRequest } from "./cache-control.js";
-import { createWorkerPrerenderReadinessResponse } from "./worker-prerender-discovery.js";
+import { validateWorkerPrerenderReadiness } from "./worker-prerender-discovery.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -116,13 +115,11 @@ export async function renderPagesResponse(
   }
   const render = async (cacheabilityContext: ExecutionContextLike): Promise<Response> => {
     if (props.kind === "pages-prerender-discovery") {
-      const readinessResponse = createWorkerPrerenderReadinessResponse(
+      const readinessResponse = await validateWorkerPrerenderReadiness(
         cacheabilityContext,
         request,
       );
-      if (readinessResponse) {
-        return (await validateCdnRequest(request)) ?? readinessResponse;
-      }
+      if (readinessResponse) return readinessResponse;
       const { handleAppPrerenderEndpoint } = await import("./app-prerender-endpoints.js");
       const response = await runWithExecutionContext(cacheabilityContext, () =>
         handleAppPrerenderEndpoint(request, {

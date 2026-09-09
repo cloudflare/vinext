@@ -1,4 +1,5 @@
 import type { ExecutionContextLike } from "vinext/shims/request-context";
+import { validateCdnRequest } from "./cache-control.js";
 import {
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
@@ -64,6 +65,14 @@ export function createWorkerPrerenderReadinessResponse(
       [VINEXT_PRERENDER_READINESS_HEADER]: "1",
     },
   });
+}
+
+export async function validateWorkerPrerenderReadiness(
+  ctx: ExecutionContextLike,
+  request: Request,
+): Promise<Response | null> {
+  const response = createWorkerPrerenderReadinessResponse(ctx, request);
+  return response ? ((await validateCdnRequest(request)) ?? response) : null;
 }
 
 /**

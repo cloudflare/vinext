@@ -291,6 +291,44 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   }));
 }
 
+function generateAppMiddlewareMethod(middlewarePath: string, i18nConfig: string): string {
+  return `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
+    return __applyAppMiddleware({
+      basePath: __basePath,
+      cleanPathname,
+      context,
+      externalRewriteRequest,
+      hadBasePath,
+      filePath: ${JSON.stringify(toSlash(middlewarePath))},
+      i18nConfig: ${i18nConfig},
+      isDataRequest,
+      isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
+      middlewareRequest,
+      module: middlewareModule,
+      request,
+      trailingSlash: __trailingSlash,
+      validateExternalRewriteRequest,
+    });
+  },`;
+}
+
+function generateAppPagesFallbackMethod(loadPagesEntry: string): string {
+  return `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url }) {
+    return __renderPagesFallback(
+      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
+      {
+        async loadPagesEntry() {
+${loadPagesEntry}
+        },
+        buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
+        decodePathParams: __decodePathParams,
+        applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext,
+        getDraftModeCookieHeader,
+      }
+    );
+  },`;
+}
+
 /** Generate the module-free App request stage used by multi-stage Worker outputs. */
 export function generateAppRequestRscEntry(
   appDir: string,
@@ -320,7 +358,7 @@ export function generateAppRequestRscEntry(
   return `
 import ${JSON.stringify(serverGlobalsPath)};
 import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler";
-import { createAppRscRouteMatcher as __createAppRscRouteMatcher } from ${JSON.stringify(appRscRouteMatchingPath)};
+import { createAppRscRouteMatcher as __createAppRscRouteMatcher, resolveAppRscInterceptRoute as __resolveAppRscInterceptRoute } from ${JSON.stringify(appRscRouteMatchingPath)};
 import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stringify(appRequestStageDispatchPath)};
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 import { clearAppRequestStageContext as __clearRequestContext, setAppRequestStageNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestStageContextPath)};
@@ -425,55 +463,14 @@ const __requestHandler = createAppRscRequestHandler({
   hasInterceptionId,
   matchRoute,
   matchRequestRoute,
-  matchInterceptRoute(pathname, sourcePathname, interceptionId) {
-    const intercept = __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
-    if (!intercept) return null;
-    const route = __routes[intercept.sourceRouteIndex];
-    if (!route) return null;
-    const params = Object.create(null);
-    for (const name of route.params) {
-      if (Object.prototype.hasOwnProperty.call(intercept.sourceMatchedParams, name)) {
-        params[name] = intercept.sourceMatchedParams[name];
-      }
-    }
-    return {
-      interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
-      route,
-      params,
-    };
-  },
-  ${
-    middlewarePath
-      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
-    return __applyAppMiddleware({
-      basePath: __basePath,
-      cleanPathname,
-      context,
-      externalRewriteRequest,
-      hadBasePath,
-      filePath: ${JSON.stringify(toSlash(middlewarePath))},
-      i18nConfig: ${JSON.stringify(config?.i18n ?? null)},
-      isDataRequest,
-      isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
-      middlewareRequest,
-      module: middlewareModule,
-      request,
-      trailingSlash: __trailingSlash,
-      validateExternalRewriteRequest,
-    });
-  },`
-      : ""
-  }
+  matchInterceptRoute: (pathname, sourcePathname, interceptionId) => __resolveAppRscInterceptRoute(__routeMatcher.findIntercept(pathname, sourcePathname, interceptionId), __routes),
+  ${middlewarePath ? generateAppMiddlewareMethod(middlewarePath, JSON.stringify(config?.i18n ?? null)) : ""}
   publicFiles: new Set(${JSON.stringify(config?.publicFiles ?? [])}),
   registerCacheAdapters: __registerConfiguredCacheAdapters,
   renderNotFound: async () => null,
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url }) {
-    return __renderPagesFallback(
-      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
-      {
-        async loadPagesEntry() {
+      ? generateAppPagesFallbackMethod(`
           if (!dispatchPagesResponseStage) {
             throw new Error("App request stage requires a Pages response-stage dispatcher");
           }
@@ -485,14 +482,7 @@ const __requestHandler = createAppRscRequestHandler({
               return dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument);
             },
           };
-        },
-        buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
-        decodePathParams: __decodePathParams,
-        applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext,
-        getDraftModeCookieHeader,
-      }
-    );
-  },`
+`)
       : ""
   }
   rootParamNamesByPattern: {},
@@ -743,6 +733,7 @@ import {
 import { makeThenableParams } from ${JSON.stringify(thenableParamsShimPath)};
 import {
   createAppRscRouteMatcher as __createAppRscRouteMatcher,
+  resolveAppRscInterceptRoute as __resolveAppRscInterceptRoute,
   SIBLING_PAGE_INTERCEPT_SLOT_KEY as __SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from ${JSON.stringify(appRscRouteMatchingPath)};
 import {
@@ -1719,45 +1710,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   matchRoute,
   matchRequestRoute,
   hasInterceptionId,
-  matchInterceptRoute(pathname, sourcePathname, interceptionId) {
-    const intercept = findIntercept(pathname, sourcePathname, interceptionId);
-    if (!intercept) return null;
-    const route = routes[intercept.sourceRouteIndex];
-    if (!route) return null;
-    const params = Object.create(null);
-    for (const name of route.params) {
-      if (Object.prototype.hasOwnProperty.call(intercept.sourceMatchedParams, name)) {
-        params[name] = intercept.sourceMatchedParams[name];
-      }
-    }
-    return {
-      interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
-      route,
-      params,
-    };
-  },
-  ${
-    middlewarePath
-      ? `runMiddleware({ cleanPathname, context, externalRewriteRequest, hadBasePath, isDataRequest, middlewareRequest, request, validateExternalRewriteRequest }) {
-    return __applyAppMiddleware({
-      basePath: __basePath,
-      cleanPathname,
-      context,
-      externalRewriteRequest,
-      hadBasePath,
-      filePath: ${JSON.stringify(middlewarePath ? toSlash(middlewarePath) : "")},
-      i18nConfig: __i18nConfig,
-      isDataRequest,
-      isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
-      middlewareRequest,
-      module: middlewareModule,
-      request,
-      trailingSlash: __trailingSlash,
-      validateExternalRewriteRequest,
-    });
-  },`
-      : ""
-  }
+  matchInterceptRoute: (pathname, sourcePathname, interceptionId) => __resolveAppRscInterceptRoute(findIntercept(pathname, sourcePathname, interceptionId), routes),
+  ${middlewarePath ? generateAppMiddlewareMethod(middlewarePath, "__i18nConfig") : ""}
   publicFiles: __publicFiles,
   renderNotFound({ isRscRequest, matchedParams, middlewareContext, request, route, scriptNonce }) {
     const __isEdge = route ? __isEdgeRuntime(__resolveRouteRuntime(route)) : false;
@@ -1765,11 +1719,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   },
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url }) {
-    return __renderPagesFallback(
-      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
-      {
-        async loadPagesEntry() {
+      ? generateAppPagesFallbackMethod(`
           const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
           if (!dispatchPagesResponseStage) {
             return __pagesEntry;
@@ -1792,14 +1742,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
                 }
               : {}),
           };
-        },
-        buildRequestHeaders: __buildRequestHeadersFromMiddlewareResponse,
-        decodePathParams: __decodePathParams,
-        applyRouteHandlerMiddlewareContext: __applyRouteHandlerMiddlewareContext,
-        getDraftModeCookieHeader,
-      }
-    );
-  },`
+`)
       : ""
   }
   rootParamNamesByPattern: rootParamNamesMap,

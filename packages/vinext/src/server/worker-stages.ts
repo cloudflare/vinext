@@ -3,6 +3,7 @@ import type {
   VinextResponseStageCacheability,
   VinextResponseStageTransport,
 } from "./multi-stage.js";
+import { isResponseStageCacheability, isSerializedHeaders } from "./response-stage-contract.js";
 
 export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 4;
 export const PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER =
@@ -52,46 +53,6 @@ export type WorkerResponseStageProps =
  * response as Next.js.
  */
 export type DispatchWorkerResponseStage = VinextResponseStageTransport<WorkerResponseStageProps>;
-
-function isSerializedHeaders(value: unknown): value is Array<[string, string]> {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (entry) =>
-        Array.isArray(entry) &&
-        entry.length === 2 &&
-        typeof entry[0] === "string" &&
-        typeof entry[1] === "string",
-    )
-  );
-}
-
-function isResponseStageCacheability(value: unknown): value is VinextResponseStageCacheability {
-  if (!value || typeof value !== "object") return false;
-  const cacheability = value as Partial<VinextResponseStageCacheability>;
-  return (
-    (cacheability.probeMode === null ||
-      cacheability.probeMode === "probe" ||
-      cacheability.probeMode === "identity") &&
-    (cacheability.policyHeaders === null ||
-      (Array.isArray(cacheability.policyHeaders) &&
-        cacheability.policyHeaders.every(
-          (entry) =>
-            Array.isArray(entry) &&
-            entry.length === 2 &&
-            typeof entry[0] === "string" &&
-            typeof entry[1] === "string",
-        ))) &&
-    (cacheability.representation === undefined ||
-      cacheability.representation === "app-route" ||
-      cacheability.representation === "html" ||
-      cacheability.representation === "pages-data" ||
-      cacheability.representation === "rsc-full" ||
-      cacheability.representation === "rsc-loading-shell") &&
-    typeof cacheability.resolvedRoutePathname === "string" &&
-    cacheability.resolvedRoutePathname.startsWith("/")
-  );
-}
 
 export function isPagesResponseStageProps(value: unknown): value is WorkerResponseStageProps {
   if (!value || typeof value !== "object") return false;
