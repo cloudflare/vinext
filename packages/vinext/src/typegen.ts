@@ -9,6 +9,7 @@ import { patternToNextFormat } from "./routing/route-validation.js";
 import { decodeRouteSegment } from "./routing/utils.js";
 import { compareStrings } from "./utils/compare.js";
 import { findDir } from "./utils/project.js";
+import { parseMiddlewarePath } from "./server/middleware-path-to-regexp.js";
 
 type GenerateRouteTypesOptions = {
   root: string;
@@ -85,15 +86,21 @@ export async function generateRouteTypes(
 
   await fs.mkdir(path.dirname(outPath), { recursive: true });
   await fs.writeFile(outPath, content, "utf-8");
+  const hasNext = await hasNextPackage(root);
   if (options.typedRoutes === true) {
-    await fs.writeFile(linkPath, generateLinkTypesFile(model), "utf-8");
+    await fs.writeFile(linkPath, generateLinkTypesFile(model, hasNext), "utf-8");
   } else {
     // Next.js wipes .next on build, but vinext regenerates in place. Remove a
     // stale declaration so a migrated tsconfig with
     // include: [".next/types/**/*.ts"] cannot keep applying it.
     await fs.rm(linkPath, { force: true });
   }
-  const nextEnv = await ensureNextEnvFile(root, appDir !== null, options.typedRoutes === true);
+  const nextEnv = await ensureNextEnvFile(
+    root,
+    appDir !== null,
+    options.typedRoutes === true,
+    hasNext,
+  );
   return {
     routeTypesPath: outPath,
     linkTypesPath: options.typedRoutes === true ? linkPath : null,
@@ -106,6 +113,7 @@ async function ensureNextEnvFile(
   root: string,
   hasAppDir: boolean,
   typedRoutes: boolean,
+  hasNext: boolean,
 ): Promise<{ path: string; status: GenerateRouteTypesResult["nextEnvStatus"] }> {
   const envPath = path.join(root, "next-env.d.ts");
   let eol = os.EOL;
@@ -117,7 +125,6 @@ async function ensureNextEnvFile(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  const hasNext = await hasNextPackage(root);
   const content = nextEnvFileContent(hasNext, hasAppDir, typedRoutes, eol);
   if (existing === content) return { path: envPath, status: "unchanged" };
   await fs.writeFile(envPath, content, "utf-8");
@@ -323,48 +330,42 @@ async function collectPagesRouterLinkRoutes(
 }
 
 // Ported from Next.js: packages/next/src/server/lib/router-utils/route-types-utils.ts
-// (convertCustomRouteSource). Unsupported custom regex constraints are omitted,
-// matching Next.js rather than generating a route type that accepts the wrong URLs.
+// (convertCustomRouteSource).
 function convertCustomRouteSource(source: string): string[] {
-  const route = source.startsWith("/") ? source : `/${source}`;
-  let result = "";
+  let tokens;
+  try {
+    tokens = parseMiddlewarePath(source);
+  } catch {
+    return [source.startsWith("/") ? source : `/${source}`];
+  }
 
-  for (let index = 0; index < route.length;) {
-    if (route[index] !== ":") {
-      if (route[index] === "(" || route[index] === "\\") return [];
-      result += route[index++];
+  const routes = [""];
+  let slugCount = 1;
+  const append = (suffix: string) => {
+    for (let index = 0; index < routes.length; index++) routes[index] += suffix;
+  };
+
+  for (const token of tokens) {
+    if (typeof token === "string") {
+      append(token);
       continue;
     }
 
-    const nameMatch = /^[\w-]+/.exec(route.slice(index + 1));
-    if (!nameMatch) return [];
-    const name = nameMatch[0];
-    index += name.length + 1;
-
-    let constraint: string | null = null;
-    if (route[index] === "(") {
-      const start = ++index;
-      let depth = 1;
-      while (index < route.length && depth > 0) {
-        if (route[index] === "(") depth++;
-        else if (route[index] === ")") depth--;
-        index++;
-      }
-      if (depth !== 0) return [];
-      constraint = route.slice(start, index - 1);
-    }
-
-    const modifier =
-      route[index] === "*" || route[index] === "+" || route[index] === "?" ? route[index++] : "";
-    if (modifier === "?") return [];
-    if (constraint !== null && constraint !== ".*" && constraint !== ".+") return [];
-
-    const catchAll = modifier === "+" || constraint === ".+";
-    const optionalCatchAll = modifier === "*" || constraint === ".*";
-    result += optionalCatchAll ? `[[...${name}]]` : catchAll ? `[...${name}]` : `[${name}]`;
+    const slug = token.name || (slugCount++ === 1 ? "slug" : `slug${slugCount}`);
+    if (token.modifier === "*") append(`${token.prefix}[[...${slug}]]`);
+    else if (token.modifier === "+") append(`${token.prefix}[...${slug}]`);
+    else if (token.modifier === "") {
+      if (token.pattern === "[^\\/#\\?]+?") append(`${token.prefix}[${slug}]`);
+      else if (token.pattern === ".*") append(`${token.prefix}[[...${slug}]]`);
+      else if (token.pattern === ".+") append(`${token.prefix}[...${slug}]`);
+      else return [];
+    } else if (token.modifier === "?" && /^[a-zA-Z0-9_/]*$/.test(token.pattern)) {
+      append(token.prefix);
+      routes.push(...routes.map((route) => route + token.pattern));
+    } else return [];
   }
 
-  return [result];
+  return routes.map((route) => (route.startsWith("/") ? route : `/${route}`));
 }
 
 function paramsForCustomRoute(route: string): ParamShape {
@@ -490,7 +491,7 @@ function serializeRouteTypes(routeTypes: [routeType: string, cause: string][]) {
   return union;
 }
 
-function generateLinkTypesFile(model: RouteTypeModel): string {
+function generateLinkTypesFile(model: RouteTypeModel, hasNext: boolean): string {
   const visited = new Set<string>();
   const staticRouteTypes: [routeType: string, cause: string][] = [];
   const dynamicRouteTypes: [routeType: string, cause: string][] = [];
@@ -579,8 +580,7 @@ declare namespace __next_route_internal_types__ {
 }
 
 declare module 'next' {
-  export { default } from 'next/types.js'
-  export * from 'next/types.js'
+${hasNext ? "  export { default } from 'next/types.js'\n  export * from 'next/types.js'\n" : ""}
 
   export type Route<T extends string = string> =
     __next_route_internal_types__.RouteImpl<T>
@@ -623,6 +623,7 @@ declare module 'next/navigation' {
   import type { RedirectType } from 'next/dist/client/components/redirect-error.js'
 ${"  "}
   interface AppRouterInstance extends OriginalAppRouterInstance {
+${hasNext ? "" : "    readonly bfcacheId: string\n"}
     /**
      * Navigate to the provided href.
      * Pushes a new history entry.

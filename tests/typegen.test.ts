@@ -210,7 +210,11 @@ async function typecheckTypedRoutesConsumer(
     await writeProjectFile(
       root,
       consumerPath,
-      `import type { Route } from "next";
+      `${
+        withNext
+          ? ""
+          : 'import next from "next";\n// @ts-expect-error vinext does not implement Next.js\'s bare runtime entry.\nnext();\n'
+      }import type { Route } from "next";
 // These are dependencies of generated link.d.ts. Import them from source so
 // skipLibCheck cannot hide a missing @vinext/types compatibility alias.
 import type {} from "next/types.js";
@@ -229,6 +233,7 @@ const dashboardHref: LinkProps<"/dashboard">["href"] = "/dashboard";
 const dynamicHref: LinkProps<"/blog/hello">["href"] = "/blog/hello";
 const catchAllHref: LinkProps<"/docs/a/b">["href"] = "/docs/a/b";
 declare const router: ReturnType<typeof useRouter>;
+router.bfcacheId satisfies string;
 router.push("/dashboard");
 declare const query: string;
 router.push(query ? \`/dashboard?\${query}\` : "/dashboard");
@@ -504,6 +509,34 @@ describe("generateRouteTypes", () => {
         "| `/blog/${SafeSlug<T>}/${OptionalCatchAllSlug<T>}` // next.config /blog/:category/:slug*",
       );
       expect(links).toContain("| `/docs-old/${CatchAllSlug<T>}` // next.config /docs-old/:path+");
+    });
+  });
+
+  it("matches Next.js custom route conversion semantics", async () => {
+    await withTempProject(async (root) => {
+      await writeProjectFile(root, "app/layout.tsx", EMPTY_LAYOUT);
+      await writeProjectFile(root, "app/page.tsx", EMPTY_PAGE);
+
+      const result = await generateRouteTypes({
+        root,
+        typedRoutes: true,
+        redirects: [
+          { source: "/optional/:mode(foo)?" },
+          { source: "/files/(.*)" },
+          { source: String.raw`/escaped/\:literal` },
+        ],
+      });
+      const routes = await readFile(result.routeTypesPath, "utf-8");
+      const links = await readFile(result.linkTypesPath!, "utf-8");
+
+      expect(routes).toContain('"/optional/"');
+      expect(routes).toContain('"/optional/foo"');
+      expect(routes).toContain('"/files/[[...slug]]"');
+      expect(routes).toContain('"/escaped/:literal"');
+      expect(links).toContain("| `/optional/` // next.config /optional/:mode(foo)?");
+      expect(links).toContain("| `/optional/foo` // next.config /optional/:mode(foo)?");
+      expect(links).toContain("| `/files/${OptionalCatchAllSlug<T>}` // next.config /files/(.*)");
+      expect(links).toContain("| `/escaped/:literal` // next.config /escaped/\\:literal");
     });
   });
 
