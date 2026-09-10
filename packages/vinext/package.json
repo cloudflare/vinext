@@ -12,7 +12,8 @@
     "vinext": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_LICENSES.md"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -204,7 +205,6 @@
     "@vinext/types": "workspace:^",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
-    "ua-parser-js": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "web-vitals": "catalog:"
   },
@@ -219,6 +219,7 @@
     "image-size": "catalog:",
     "pathslash": "catalog:",
     "react-server-dom-webpack": "catalog:",
+    "ua-parser-js": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },
