@@ -23,7 +23,7 @@ class TestStore implements WorkersResponseStore {
   mutationResult = this.putResult;
   mutationError?: Error;
   tagExpiration = 0;
-  tagExpirationCalls: string[][] = [];
+  tagExpirationCalls: { newerThan?: number; tags: string[] }[] = [];
 
   async fetch(): Promise<Response> {
     return (
@@ -35,8 +35,8 @@ class TestStore implements WorkersResponseStore {
     );
   }
 
-  async getTagExpiration(tags: string[]): Promise<number> {
-    this.tagExpirationCalls.push(tags);
+  async getTagExpiration(tags: string[], newerThan?: number): Promise<number> {
+    this.tagExpirationCalls.push({ tags, newerThan });
     return this.tagExpiration;
   }
 
@@ -282,7 +282,8 @@ test("lazily resolves soft-tag expiration once per request after a candidate hit
     });
 
     expect(store.tagExpirationCalls).toHaveLength(1);
-    expect(store.tagExpirationCalls[0]).toHaveLength(2);
+    expect(store.tagExpirationCalls[0]).toMatchObject({ newerThan: 10_000 });
+    expect(store.tagExpirationCalls[0]?.tags).toHaveLength(2);
 
     await runWithRequestContext(createRequestContext(), () =>
       handler.get("key", { softTags: ["path", "layout"] }),

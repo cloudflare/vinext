@@ -54,6 +54,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     metadata: CandidateMetadata,
   ): Promise<PublicationResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
+  getLatestTagExpiration(): Promise<number>;
   getTagExpiration(tags: string[]): Promise<number>;
   getEntriesMatching(options: ResponseStoreRefreshOptions): Promise<StoredEntry[]>;
   purgeMatching(options: ResponseStorePurgeOptions): Promise<PurgedEntry[]>;
@@ -530,6 +531,16 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     }
 
     return expiration;
+  }
+
+  getLatestTagExpiration(): number {
+    return (
+      this.ctx.storage.sql
+        .exec<{ invalidated_at: number | null }>(
+          "SELECT MAX(invalidated_at) AS invalidated_at FROM tag_invalidations",
+        )
+        .one().invalidated_at ?? 0
+    );
   }
 
   getEntriesMatching(options: ResponseStoreRefreshOptions): StoredEntry[] {

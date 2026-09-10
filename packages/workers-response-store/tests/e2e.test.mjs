@@ -104,6 +104,17 @@ async function purge(options) {
   return { response, json: await response.json() };
 }
 
+async function tagExpiration(tags, newerThan) {
+  const response = await worker.fetch("https://user.test/admin/tag-expiration", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tags, newerThan }),
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(body));
+  return body.expiration;
+}
+
 async function metadataStub() {
   const namespace = await mf.getDurableObjectNamespace("CACHE_METADATA", "user-worker");
   return namespace.getByName(metadataName);
@@ -456,6 +467,15 @@ test("tag expiration is recorded without creating an R2 marker object", async ()
   await purge({ tags: [batchedTags.at(-1)] });
   assert.ok((await stub.getTagExpiration(batchedTags)) >= before);
   assert.equal((await r2Objects()).objects.length, 0);
+});
+
+test("a global watermark skips unrelated tag lookups until an invalidation", async () => {
+  const before = Date.now();
+  assert.equal(await tagExpiration(["unchanged"], before), 0);
+
+  await purge({ tags: ["changed"] });
+  assert.ok((await tagExpiration(["changed"], before)) >= before);
+  assert.equal(await tagExpiration(["unchanged"], before), 0);
 });
 
 test("the internal purge tag is first and large tag sets remain selectable", async () => {

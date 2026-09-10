@@ -47,7 +47,7 @@ export type RevalidationInput = {
 export type WorkersResponseStore = {
   fetch(request: Request): Promise<Response>;
   /** @internal Return the latest purge timestamp for framework-managed cache tags. */
-  getTagExpiration(tags: string[]): Promise<number>;
+  getTagExpiration(tags: string[], newerThan?: number): Promise<number>;
   put(
     request: Request,
     response: Response,
@@ -169,8 +169,12 @@ export class ResponseStoreService extends WorkerEntrypoint<
     return this.getStore(invocation).fetch(request);
   }
 
-  getTagExpiration(tags: string[], invocation: ResponseStoreServiceInvocation): Promise<number> {
-    return this.getStore(invocation).getTagExpiration(tags);
+  getTagExpiration(
+    tags: string[],
+    invocation: ResponseStoreServiceInvocation,
+    newerThan?: number,
+  ): Promise<number> {
+    return this.getStore(invocation).getTagExpiration(tags, newerThan);
   }
 
   put(
@@ -214,6 +218,9 @@ const CACHE_PURGE_BATCH_SIZE = 100;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
+const TAG_EXPIRATION_HOST = "response-store-metadata.invalid";
+const TAG_EXPIRATION_HEADER = "X-Workers-Response-Store-Tags";
+const TAG_EXPIRATION_CACHE_CONTROL = "public, max-age=315360000";
 
 function* batches<T>(values: readonly T[], size: number): Generator<T[], void> {
   for (let offset = 0; offset < values.length; offset += size) {
@@ -228,6 +235,11 @@ function metadataInteger(value: string | undefined): number | undefined {
 
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function purgeTagForEntry(entry: Pick<StoredEntry, "keyHash">): string {
@@ -281,6 +293,75 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     ) as CacheMetadataStub;
   }
 
+  private tagExpirationCacheTag(): string {
+    return `runtime-cache-invalidations-${this.getVersionId()}`;
+  }
+
+  private async tagExpirationRequest(tags?: string[]): Promise<Request> {
+    const normalized = tags
+      ? [...new Set(tags.map((tag) => tag.toLowerCase()))].sort((a, b) => a.localeCompare(b))
+      : [];
+    const key = tags ? await sha256Hex(JSON.stringify(normalized)) : "latest";
+    return new Request(
+      `https://${TAG_EXPIRATION_HOST}/${encodeURIComponent(this.getVersionId())}/${key}`,
+      tags ? { headers: { [TAG_EXPIRATION_HEADER]: JSON.stringify(normalized) } } : undefined,
+    );
+  }
+
+  private async readCachedTagExpiration(tags?: string[]): Promise<number> {
+    const factory = Reflect.get(this.ctx.exports, "ResponseStoreBinding") as
+      | ResponseStoreBindingFactory
+      | undefined;
+    if (typeof factory !== "function") {
+      throw new Error("The ResponseStoreBinding entrypoint is not exported");
+    }
+
+    const response = await factory({ props: this.ctx.props ?? {} }).fetch(
+      await this.tagExpirationRequest(tags),
+    );
+    const expiration = Number(await response.text());
+    if (!response.ok || !Number.isSafeInteger(expiration) || expiration < 0) {
+      throw new Error("Workers Response Store returned an invalid tag expiration");
+    }
+    return expiration;
+  }
+
+  private async fetchTagExpiration(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const serializedTags = request.headers.get(TAG_EXPIRATION_HEADER);
+    let expiration: number;
+    if (serializedTags === null) {
+      if (url.pathname.split("/").at(-1) !== "latest") return new Response(null, { status: 400 });
+      expiration = await this.getMetadata().getLatestTagExpiration();
+    } else {
+      let tags: unknown;
+      try {
+        tags = JSON.parse(serializedTags);
+      } catch {
+        return new Response(null, { status: 400 });
+      }
+      if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string")) {
+        return new Response(null, { status: 400 });
+      }
+      const normalized = [...new Set(tags.map((tag) => tag.toLowerCase()))].sort((a, b) =>
+        a.localeCompare(b),
+      );
+      if (url.pathname.split("/").at(-1) !== (await sha256Hex(JSON.stringify(normalized)))) {
+        return new Response(null, { status: 400 });
+      }
+      expiration = await this.getMetadata().getTagExpiration(normalized);
+    }
+
+    return new Response(String(expiration), {
+      headers: {
+        "Cache-Control": TAG_EXPIRATION_CACHE_CONTROL,
+        "Cloudflare-CDN-Cache-Control": TAG_EXPIRATION_CACHE_CONTROL,
+        "Cache-Tag": this.tagExpirationCacheTag(),
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+    });
+  }
+
   private async deriveCacheKey(request: Request): Promise<CacheKey> {
     if (request.method !== "GET") {
       throw new TypeError("Workers Response Store keys must be GET requests");
@@ -288,12 +369,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const url = new URL(request.url);
     const cacheKey = `${url.pathname}${url.search}`;
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(cacheKey));
-    const keyHash = [...new Uint8Array(digest)]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-
-    return { cacheKey, keyHash };
+    return { cacheKey, keyHash: await sha256Hex(cacheKey) };
   }
 
   private async purgeEdgeCache(options: CachePurgeOptions): Promise<boolean> {
@@ -579,6 +655,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).hostname === TAG_EXPIRATION_HOST) {
+      return this.fetchTagExpiration(request);
+    }
+
     const { keyHash } = await this.deriveCacheKey(request);
     const metadata = this.getMetadata();
     const entry = await metadata.getEntry(keyHash);
@@ -616,8 +696,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return response;
   }
 
-  getTagExpiration(tags: string[]): Promise<number> {
-    return this.getMetadata().getTagExpiration(tags);
+  async getTagExpiration(tags: string[], newerThan?: number): Promise<number> {
+    if (!tags.length) return 0;
+    if (newerThan !== undefined) {
+      const latest = await this.readCachedTagExpiration();
+      if (latest < newerThan) return latest;
+    }
+    return this.readCachedTagExpiration(tags);
   }
 
   async put(
@@ -693,10 +778,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     if (options.purgeEverything) {
       edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
-    } else if (purged.length) {
-      edgePurgeAccepted = await this.purgeEdgeCacheByTags(
-        purged.map((entry) => purgeTagForEntry(entry)),
-      );
+    } else {
+      const tags = [
+        ...(options.tags?.length ? [this.tagExpirationCacheTag(), ...options.tags] : []),
+        ...purged.map((entry) => purgeTagForEntry(entry)),
+      ];
+      if (tags.length) edgePurgeAccepted = await this.purgeEdgeCacheByTags([...new Set(tags)]);
     }
 
     if (purged.length > 0) {

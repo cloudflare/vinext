@@ -188,6 +188,14 @@ export default {
         return json(await responseStore.purge(options));
       }
 
+      if (request.method === "POST" && url.pathname === "/admin/tag-expiration") {
+        const { newerThan, tags } = (await request.json()) as {
+          newerThan?: number;
+          tags: string[];
+        };
+        return json({ expiration: await responseStore.getTagExpiration(tags, newerThan) });
+      }
+
       if (request.method === "GET" && url.pathname === "/admin/stats") {
         return json({ regenerationCount });
       }
