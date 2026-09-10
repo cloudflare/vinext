@@ -12,7 +12,8 @@
     "vinext": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_LICENSES.md"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -211,12 +212,14 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "@types/ua-parser-js": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
     "image-size": "catalog:",
     "pathslash": "catalog:",
     "react-server-dom-webpack": "catalog:",
+    "ua-parser-js": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },
