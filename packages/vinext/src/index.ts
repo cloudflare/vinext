@@ -2012,6 +2012,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const commonJsTransform = commonJsPlugin.transform;
   if (typeof commonJsTransform === "function") {
     commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+      // The published runtime and its inlined dependencies were already
+      // converted to ESM by tsdown. Workspace links resolve them outside
+      // node_modules, where vite-plugin-commonjs would otherwise process them
+      // again and can append a duplicate default export.
+      if (isPathInside(__dirname, toSlash(stripViteModuleQuery(id)))) return null;
+
       // The independent optimizeDeps Rolldown build already converted these
       // files to ESM. Running vite-plugin-commonjs over its output would append
       // a second export facade (including a duplicate default export).
