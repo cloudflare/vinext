@@ -5,6 +5,12 @@ import {
   getDigestForWellKnownError,
   sanitizeErrorForClient,
 } from "../packages/vinext/src/server/app-rsc-errors.js";
+import {
+  isResponseAbortedError,
+  ResponseAbortedError,
+  tagConsumerCancellation,
+} from "../packages/vinext/src/server/response-aborted.js";
+import { pumpThrough } from "../packages/vinext/src/server/stream-pump.js";
 
 type DigestCarrier = Error & { digest: unknown };
 
@@ -53,6 +59,117 @@ describe("app RSC error primitives", () => {
 
     expect(sanitized).not.toBe(error);
     expect(expectDigestError(sanitized).digest).toBe("existing-digest");
+  });
+
+  it("does not report renders aborted by response consumer cancellation", () => {
+    const reportRequestError = vi.fn();
+    const onError = createRscOnErrorHandler({
+      errorContext: { routerKind: "App Router", routePath: "/aborted", routeType: "render" },
+      nodeEnv: "production",
+      reportRequestError,
+      requestInfo: { path: "/aborted", method: "GET", headers: {} },
+    });
+
+    const digest = onError(new ResponseAbortedError());
+
+    expect(reportRequestError).not.toHaveBeenCalled();
+    expect(typeof digest).toBe("string");
+  });
+
+  it("tags reason-less consumer cancellation before it reaches the render stream", async () => {
+    let cancelReason: unknown = "unset";
+    const inner = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
+
+    await tagConsumerCancellation(inner).cancel();
+
+    expect(isResponseAbortedError(cancelReason)).toBe(true);
+  });
+
+  it("still reports errors that merely share the ResponseAborted name", () => {
+    const reportRequestError = vi.fn();
+    const onError = createRscOnErrorHandler({
+      errorContext: { routerKind: "App Router", routePath: "/fake", routeType: "render" },
+      nodeEnv: "production",
+      reportRequestError,
+      requestInfo: { path: "/fake", method: "GET", headers: {} },
+    });
+
+    const impostor = new Error("looks aborted but is a real failure");
+    impostor.name = "ResponseAborted";
+    onError(impostor);
+
+    expect(reportRequestError).toHaveBeenCalledOnce();
+  });
+
+  it("tags consumer cancellation carrying a standard AbortError reason", async () => {
+    let cancelReason: unknown = "unset";
+    const inner = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
+
+    const abortReason = new DOMException("The operation was aborted.", "AbortError");
+    await tagConsumerCancellation(inner).cancel(abortReason);
+
+    expect(isResponseAbortedError(cancelReason)).toBe(true);
+    expect((cancelReason as Error).cause).toBe(abortReason);
+  });
+
+  it("cancels the pump source promptly when the readable side is cancelled mid-wait", async () => {
+    let sourceCancelled: unknown = null;
+    const neverEndingSource = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise(() => {});
+      },
+      cancel(reason) {
+        sourceCancelled = reason;
+      },
+    });
+
+    const piped = pumpThrough(neverEndingSource, new TransformStream<Uint8Array, Uint8Array>());
+    const reader = piped.getReader();
+    const pending = reader.read();
+    await reader.cancel(new Error("consumer went away"));
+    await pending.catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(sourceCancelled).toBeInstanceOf(Error);
+  });
+
+  it("tags consumer cancellation carrying a premature-close error", async () => {
+    let cancelReason: unknown = "unset";
+    const inner = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
+
+    const prematureClose = Object.assign(new Error("Premature close"), {
+      code: "ERR_STREAM_PREMATURE_CLOSE",
+    });
+    await tagConsumerCancellation(inner).cancel(prematureClose);
+
+    expect(isResponseAbortedError(cancelReason)).toBe(true);
+    expect((cancelReason as Error).cause).toBe(prematureClose);
+  });
+
+  it("forwards an explicit cancellation reason unchanged", async () => {
+    let cancelReason: unknown = "unset";
+    const inner = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
+
+    const explicit = new Error("runtime supplied reason");
+    await tagConsumerCancellation(inner).cancel(explicit);
+
+    expect(cancelReason).toBe(explicit);
   });
 
   it("reports the original server error when the client transport error is sanitized", () => {

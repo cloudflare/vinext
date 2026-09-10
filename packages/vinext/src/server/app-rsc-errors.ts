@@ -1,5 +1,6 @@
 import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
+import { isResponseAbortedError } from "./response-aborted.js";
 
 type DigestError = Error & { digest?: string };
 const ORIGINAL_SERVER_ERROR = Symbol.for("vinext.originalServerError");
@@ -131,6 +132,15 @@ export function createRscOnErrorHandler(
     const wellKnownDigest = getDigestForWellKnownError(error);
     if (wellKnownDigest !== undefined) {
       return wellKnownDigest;
+    }
+
+    // Renders aborted because the response consumer went away (client
+    // disconnect / aborted navigation) are expected control flow, not request
+    // errors. The response boundary tags that cancellation (see
+    // response-aborted.ts); skip reporting, matching Next.js's isAbortError
+    // handling. The digest is moot since no client is listening anymore.
+    if (isResponseAbortedError(error)) {
+      return errorDigest(getThrownValueMessage(error));
     }
 
     if (
