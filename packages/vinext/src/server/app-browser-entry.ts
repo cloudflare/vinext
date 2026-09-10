@@ -1297,6 +1297,7 @@ function BrowserRoot({
   // avoid a stale-read window between commit and layout effects. This mirrors
   // the same render-phase ref update pattern used by Next.js's own router.
   const stateRef = useRef(treeState);
+  // oxlint-disable-next-line react/refs -- navigation from child layout effects needs this render's state
   stateRef.current = treeState;
 
   // Publish the stable ref object and dispatch during layout commit. This keeps

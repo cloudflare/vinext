@@ -247,6 +247,8 @@ function dynamic<P = {}>(
         loader,
         InitialLazyComponent,
       );
+      // Keep the first hydration render equal to the server's loading fallback.
+      // oxlint-disable-next-line react/set-state-in-effect -- client-only loading starts after mount
       React.useEffect(() => setMounted(true), []);
 
       if (!mounted) {

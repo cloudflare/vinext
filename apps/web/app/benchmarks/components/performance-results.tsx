@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Tabs } from "@cloudflare/kumo/components/tabs";
@@ -207,12 +207,7 @@ export function PerformanceTrends({ runs }: { runs: PerformanceRun[] }) {
     [latest],
   );
   const scenarioIds = useMemo(() => scenarios.map((scenario) => scenario.scenarioId), [scenarios]);
-  const [activeScenario, setActiveScenario] = useState(scenarioIds[0] ?? "");
-
-  useEffect(() => {
-    const selected = resolveSelectedBenchmarkFromSearch(scenarioIds, window.location.search);
-    if (selected) setActiveScenario(selected);
-  }, [scenarioIds, searchParams]);
+  const activeScenario = resolveSelectedBenchmarkFromSearch(scenarioIds, searchParams.toString());
 
   const selectedScenario =
     scenarios.find((scenario) => scenario.scenarioId === activeScenario) ?? scenarios[0];
@@ -229,7 +224,6 @@ export function PerformanceTrends({ runs }: { runs: PerformanceRun[] }) {
         }))}
         value={selectedScenario.scenarioId}
         onValueChange={(benchmarkId) => {
-          setActiveScenario(benchmarkId);
           router.replace(
             benchmarkSelectionUrl(
               pathname,

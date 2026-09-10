@@ -1309,8 +1309,8 @@ describe("pages page data", () => {
     let regenPromise: Promise<void> | null = null;
     const applyRequestContexts = vi.fn();
     const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
-    const runInFreshUnifiedContext = vi.fn(
-      async <T>(callback: () => Promise<T>): Promise<T> => callback(),
+    const runInFreshUnifiedContext = vi.fn(async <T>(callback: () => Promise<T>): Promise<T> =>
+      callback(),
     ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
     const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
       regenPromise = renderFn();
@@ -1939,8 +1939,8 @@ describe("pages page data", () => {
   it("passes revalidateReason: 'stale' to getStaticProps during stale-while-revalidate regeneration", async () => {
     let received: unknown = "untouched";
     let regenPromise: Promise<void> | null = null;
-    const runInFreshUnifiedContext = vi.fn(
-      async <T>(callback: () => Promise<T>): Promise<T> => callback(),
+    const runInFreshUnifiedContext = vi.fn(async <T>(callback: () => Promise<T>): Promise<T> =>
+      callback(),
     ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
     const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
       regenPromise = renderFn();

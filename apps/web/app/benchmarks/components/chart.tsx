@@ -50,7 +50,6 @@ export function TrendChart({
   const searchParams = useSearchParams();
   const svgRef = useRef<SVGSVGElement>(null);
   const [hiddenSeries, setHiddenSeries] = useState<Set<string>>(() => new Set());
-  const [showIndividualRuns, setShowIndividualRuns] = useState(true);
   const [tooltip, setTooltip] = useState<{
     x: number;
     y: number;
@@ -58,23 +57,22 @@ export function TrendChart({
     pointId: string;
   } | null>(null);
   const hasTrend = series.some((item) => hasRollingMedian(item.values, TREND_WINDOW));
+  const requestedVisibility = resolveIndividualRunsVisibilityFromSearch(searchParams.toString());
+  const showIndividualRuns = hasTrend ? requestedVisibility : true;
 
   useEffect(() => {
-    const requestedVisibility = resolveIndividualRunsVisibilityFromSearch(window.location.search);
-    setShowIndividualRuns(hasTrend ? requestedVisibility : true);
-
     if (!hasTrend && !requestedVisibility) {
       router.replace(
         individualRunsVisibilityUrl(
           pathname,
-          new URLSearchParams(window.location.search),
+          new URLSearchParams(searchParams.toString()),
           true,
           window.location.hash,
         ),
         { scroll: false },
       );
     }
-  }, [hasTrend, pathname, router, searchParams]);
+  }, [hasTrend, pathname, requestedVisibility, router, searchParams]);
 
   // Collect all non-null values to determine y-axis bounds
   const allValues = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
@@ -319,7 +317,6 @@ export function TrendChart({
             onClick={() => {
               setTooltip(null);
               const visible = !showIndividualRuns;
-              setShowIndividualRuns(visible);
               router.replace(
                 individualRunsVisibilityUrl(
                   pathname,

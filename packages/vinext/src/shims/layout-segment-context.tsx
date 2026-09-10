@@ -48,8 +48,10 @@ export function LayoutSegmentProvider({
 }) {
   const previousSegmentMap = useRef<SegmentMap | null>(null);
   const ctx = getLayoutSegmentContext();
+  // oxlint-disable-next-line react/refs -- merge against the last committed segment map
+  const committedSegmentMap = previousSegmentMap.current;
   const previousSegmentMapForProvider =
-    previousSegmentMap.current ??
+    committedSegmentMap ??
     (providerId ? (committedSegmentMapsByProviderId.get(providerId) ?? null) : null);
   const mergedSegmentMap = mergeLayoutSegmentMap(previousSegmentMapForProvider, segmentMap);
   useEffect(() => {

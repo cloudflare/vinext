@@ -44,7 +44,7 @@ export function Html(
   return <html {...props} />;
 }
 
-// oxlint-disable-next-line typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field
+// oxlint-disable-next-line no-redeclare, typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field
 export interface Head {
   context: HtmlProps;
 }
@@ -102,7 +102,7 @@ export function Main(): React.ReactElement {
   return <div id="__next" dangerouslySetInnerHTML={{ __html: "__NEXT_MAIN__" }} />;
 }
 
-// oxlint-disable-next-line typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field
+// oxlint-disable-next-line no-redeclare, typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field
 export interface NextScript {
   context: HtmlProps;
 }

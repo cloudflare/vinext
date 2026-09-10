@@ -1,3 +1,4 @@
+/* oxlint-disable eslint/no-irregular-whitespace -- keep the route glob readable in this block comment */
 /**
  * Regression coverage for issue #1827 — `trailingSlash` not applied to App
  * Router route handlers (`app/**​/route.ts`).
@@ -10,6 +11,7 @@
  *
  * Refs cloudflare/vinext#1827
  */
+/* oxlint-enable eslint/no-irregular-whitespace */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

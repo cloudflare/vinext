@@ -1182,12 +1182,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const pendingPagesIntentPrefetchRef = useRef<(() => void) | null>(null);
   // Stable setter so the global navigation registry can reset this link's
   // pending state from another navigation without depending on render identity.
-  const setPendingRef = useRef<PendingLinkSetter | null>(null);
-  if (setPendingRef.current === null) {
-    setPendingRef.current = (next: boolean) => {
-      if (mountedRef.current) setPending(next);
-    };
-  }
+  const setPendingRef = useRef<PendingLinkSetter>((next: boolean) => {
+    if (mountedRef.current) setPending(next);
+  });
   useEffect(() => {
     mountedRef.current = true;
     const setter = setPendingRef.current;
@@ -1566,15 +1563,18 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
           (childRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
         }
       };
+      // Next.js also clones the legacy child and merges its ref during render.
+      // oxlint-disable-next-line react/refs -- preserve the Next.js legacy Link contract
+      const dangerousChild = React.cloneElement(child, {
+        ref: setDangerousRefs,
+        onClick: (event: MouseEvent<HTMLAnchorElement>) => {
+          if (childOnClick) childOnClick(event);
+          reportBlockedDangerousNavigation();
+        },
+      });
       return (
         <LinkStatusContext.Provider value={linkStatusValue}>
-          {React.cloneElement(child, {
-            ref: setDangerousRefs,
-            onClick: (event: MouseEvent<HTMLAnchorElement>) => {
-              if (childOnClick) childOnClick(event);
-              reportBlockedDangerousNavigation();
-            },
-          })}
+          {dangerousChild}
         </LinkStatusContext.Provider>
       );
     }
@@ -1666,10 +1666,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (shouldForwardHref) {
       clonedProps.href = fullHref;
     }
+    // Next.js also clones the legacy child and merges its ref during render.
+    // oxlint-disable-next-line react/refs -- preserve the Next.js legacy Link contract
+    const clonedChild = React.cloneElement(child, clonedProps);
     return (
-      <LinkStatusContext.Provider value={linkStatusValue}>
-        {React.cloneElement(child, clonedProps)}
-      </LinkStatusContext.Provider>
+      <LinkStatusContext.Provider value={linkStatusValue}>{clonedChild}</LinkStatusContext.Provider>
     );
   }
 

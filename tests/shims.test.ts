@@ -1435,18 +1435,15 @@ describe("next/navigation shim", () => {
     expect(consumerCtx).toBeTruthy();
 
     const register = () => {};
-    let received: unknown = undefined;
 
     function Probe() {
-      received = React.useContext(consumerCtx!);
+      expect(React.useContext(consumerCtx!)).toBe(register);
       return null;
     }
 
     renderToStaticMarkup(
       React.createElement(providerCtx!.Provider, { value: register }, React.createElement(Probe)),
     );
-
-    expect(received).toBe(register);
   });
 
   it("useSelectedLayoutSegments returns empty array outside React context", async () => {
@@ -1776,14 +1773,13 @@ describe("next/navigation shim", () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
 
-    let captured: string | null = "";
     function Probe() {
-      captured = useUntrackedPathname();
-      return React.createElement("span", null, captured ?? "null");
+      const pathname = useUntrackedPathname();
+      expect(pathname).toBe("/");
+      return React.createElement("span", null, pathname ?? "null");
     }
 
     renderToStaticMarkup(React.createElement(Probe));
-    expect(captured).toBe("/");
   });
 
   it("useUntrackedPathname returns pathname from server context", async () => {
@@ -1799,15 +1795,14 @@ describe("next/navigation shim", () => {
       params: {},
     });
 
-    let captured: string | null = "";
     function Probe() {
-      captured = useUntrackedPathname();
-      return React.createElement("span", null, captured ?? "null");
+      const pathname = useUntrackedPathname();
+      expect(pathname).toBe("/untracked/test");
+      return React.createElement("span", null, pathname ?? "null");
     }
 
     try {
       renderToStaticMarkup(React.createElement(Probe));
-      expect(captured).toBe("/untracked/test");
     } finally {
       setNavigationContext(null);
     }
@@ -1852,16 +1847,15 @@ describe("next/navigation shim", () => {
         {},
       );
 
-      let pathname: string | null = "";
       function Probe() {
-        pathname = useUntrackedPathname();
+        const pathname = useUntrackedPathname();
+        expect(pathname).toBe("/pending-untracked");
         return React.createElement("span", null, pathname ?? "null");
       }
 
       renderToStaticMarkup(
         React.createElement(Context.Provider, { value: snapshot }, React.createElement(Probe)),
       );
-      expect(pathname).toBe("/pending-untracked");
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -1913,17 +1907,15 @@ describe("next/navigation shim", () => {
         {},
       );
 
-      let pathname: string | null = "";
       function Probe() {
-        pathname = useUntrackedPathname();
+        const pathname = useUntrackedPathname();
+        expect(pathname).toBe("/committed");
         return React.createElement("span", null, pathname ?? "null");
       }
 
       renderToStaticMarkup(
         React.createElement(Context.Provider, { value: snapshot }, React.createElement(Probe)),
       );
-      // Must return the committed pathname, not the stale provider snapshot.
-      expect(pathname).toBe("/committed");
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -1972,16 +1964,15 @@ describe("next/navigation shim", () => {
       );
       navigation.commitClientNavigationState(7, { releaseSnapshot: false });
 
-      let pathname: string | null = "";
       function Probe() {
-        pathname = useUntrackedPathname();
+        const pathname = useUntrackedPathname();
+        expect(pathname).toBe("/in-flight");
         return React.createElement("span", null, pathname ?? "null");
       }
 
       renderToStaticMarkup(
         React.createElement(Context.Provider, { value: snapshot }, React.createElement(Probe)),
       );
-      expect(pathname).toBe("/in-flight");
 
       navigation.commitClientNavigationState(undefined, { releaseSnapshot: true });
     } finally {
@@ -2011,14 +2002,13 @@ describe("next/navigation shim", () => {
         hookPath
       )) as typeof import("../packages/vinext/src/shims/internal/navigation-untracked.js");
 
-      let captured: string | null = "";
       function Probe() {
-        captured = useUntrackedPathname();
-        return React.createElement("span", null, captured ?? "null");
+        const pathname = useUntrackedPathname();
+        expect(pathname).toBe("/pages/untracked");
+        return React.createElement("span", null, pathname ?? "null");
       }
 
       renderToStaticMarkup(React.createElement(Probe));
-      expect(captured).toBe("/pages/untracked");
     } finally {
       if (previousAccessor === undefined) {
         delete globalRecord[accessorKey];
@@ -3422,10 +3412,9 @@ describe("next/router withRouter HOC", () => {
       await import("../packages/vinext/src/shims/internal/router-context.js");
 
     const providedRouter = createTestRouter({ pathname: "/from-context" });
-    let captured: NextRouter | null = null;
 
     function Probe() {
-      captured = useRouter();
+      expect(useRouter()).toBe(providedRouter);
       return React.createElement("span", null, "ok");
     }
 
@@ -3436,8 +3425,6 @@ describe("next/router withRouter HOC", () => {
         React.createElement(Probe),
       ),
     );
-
-    expect(captured).toBe(providedRouter);
   });
 
   it("next/router useRouter throws when the Pages Router context is not mounted", async () => {
@@ -16337,14 +16324,12 @@ describe("next/compat/router shim", () => {
     const { renderToStaticMarkup } = await import("react-dom/server");
     const { useRouter } = await import("../packages/vinext/src/shims/compat-router.js");
 
-    let captured: unknown = "NOT_SET";
     function Probe() {
-      captured = useRouter();
+      expect(useRouter()).toBeNull();
       return React.createElement("div", null, "probe");
     }
 
     renderToStaticMarkup(React.createElement(Probe));
-    expect(captured).toBeNull();
   });
 
   it("useRouter returns the router when wrapWithRouterContext wraps the tree", async () => {
@@ -16354,20 +16339,19 @@ describe("next/compat/router shim", () => {
       await import("../packages/vinext/src/shims/compat-router.js");
     const { wrapWithRouterContext } = await import("../packages/vinext/src/shims/router.js");
 
-    let captured: unknown = "NOT_SET";
     function Probe() {
-      captured = useCompatRouter();
+      const router = useCompatRouter();
+      expect(router).not.toBeNull();
+      expect(typeof router?.pathname).toBe("string");
+      expect(typeof router?.push).toBe("function");
+      expect(typeof router?.replace).toBe("function");
+      expect(typeof router?.back).toBe("function");
+      expect(typeof router?.reload).toBe("function");
       return React.createElement("div", null, "probe");
     }
 
     const element = wrapWithRouterContext(React.createElement(Probe));
     renderToStaticMarkup(element);
-    expect(captured).not.toBeNull();
-    expect(typeof (captured as any).pathname).toBe("string");
-    expect(typeof (captured as any).push).toBe("function");
-    expect(typeof (captured as any).replace).toBe("function");
-    expect(typeof (captured as any).back).toBe("function");
-    expect(typeof (captured as any).reload).toBe("function");
   });
 
   it("useRouter returns router reflecting SSR context when set", async () => {
@@ -16384,9 +16368,12 @@ describe("next/compat/router shim", () => {
       asPath: "/posts/42?tab=comments",
     });
 
-    let captured: unknown = "NOT_SET";
     function Probe() {
-      captured = useCompatRouter();
+      const router = useCompatRouter();
+      expect(router).not.toBeNull();
+      expect(router?.pathname).toBe("/posts/42");
+      expect(router?.asPath).toBe("/posts/42?tab=comments");
+      expect(router?.query.id).toBe("42");
       return React.createElement("div", null, "probe");
     }
 
@@ -16394,11 +16381,6 @@ describe("next/compat/router shim", () => {
     renderToStaticMarkup(element);
 
     setSSRContext(null);
-
-    expect(captured).not.toBeNull();
-    expect((captured as any).pathname).toBe("/posts/42");
-    expect((captured as any).asPath).toBe("/posts/42?tab=comments");
-    expect((captured as any).query.id).toBe("42");
   });
 
   it("preserves array query values from SSR context", async () => {
@@ -16415,9 +16397,10 @@ describe("next/compat/router shim", () => {
       asPath: "/docs/a/b",
     });
 
-    let captured: unknown = "NOT_SET";
     function Probe() {
-      captured = useCompatRouter();
+      const router = useCompatRouter();
+      expect(router).not.toBeNull();
+      expect(router?.query.slug).toEqual(["a", "b"]);
       return React.createElement("div", null, "probe");
     }
 
@@ -16425,9 +16408,6 @@ describe("next/compat/router shim", () => {
     renderToStaticMarkup(element);
 
     setSSRContext(null);
-
-    expect(captured).not.toBeNull();
-    expect((captured as any).query.slug).toEqual(["a", "b"]);
   });
 
   // Regression for issue #1466: React's `useSyncExternalStore` calls
@@ -16681,19 +16661,17 @@ describe("next/compat/router shim", () => {
     };
 
     try {
-      let captured: unknown = "NOT_SET";
       function Probe() {
-        captured = useCompatRouter();
+        const router = useCompatRouter();
+        expect(router).not.toBeNull();
+        expect(router?.query.slug).toEqual(["a", "b"]);
+        expect(router?.query.tag).toEqual(["a", "b"]);
+        expect(router?.asPath).toBe("/docs/a/b?tag=a&tag=b#section");
         return React.createElement("div", null, "probe");
       }
 
       const element = wrapWithRouterContext(React.createElement(Probe));
       renderToStaticMarkup(element);
-
-      expect(captured).not.toBeNull();
-      expect((captured as any).query.slug).toEqual(["a", "b"]);
-      expect((captured as any).query.tag).toEqual(["a", "b"]);
-      expect((captured as any).asPath).toBe("/docs/a/b?tag=a&tag=b#section");
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -16728,18 +16706,16 @@ describe("next/compat/router shim", () => {
     };
 
     try {
-      let captured: unknown = "NOT_SET";
       function Probe() {
-        captured = useCompatRouter();
+        const router = useCompatRouter();
+        expect(router).not.toBeNull();
+        expect(router?.query.slug).toEqual(["a", "b"]);
+        expect(router?.asPath).toBe("/docs/a/b?slug=c");
         return React.createElement("div", null, "probe");
       }
 
       const element = wrapWithRouterContext(React.createElement(Probe));
       renderToStaticMarkup(element);
-
-      expect(captured).not.toBeNull();
-      expect((captured as any).query.slug).toEqual(["a", "b"]);
-      expect((captured as any).asPath).toBe("/docs/a/b?slug=c");
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -16774,20 +16750,18 @@ describe("next/compat/router shim", () => {
     };
 
     try {
-      let captured: unknown = "NOT_SET";
       function Probe() {
-        captured = useCompatRouter();
+        const router = useCompatRouter();
+        expect(router).not.toBeNull();
+        expect(Reflect.get(router?.query ?? {}, "toString")).toBe("a");
+        expect(router?.query.constructor).toBe("b");
+        expect(router?.query.__proto__).toBe("c");
+        expect(Object.getPrototypeOf(router?.query)).toBe(Object.prototype);
         return React.createElement("div", null, "probe");
       }
 
       const element = wrapWithRouterContext(React.createElement(Probe));
       renderToStaticMarkup(element);
-
-      expect(captured).not.toBeNull();
-      expect((captured as any).query.toString).toBe("a");
-      expect((captured as any).query.constructor).toBe("b");
-      expect((captured as any).query.__proto__).toBe("c");
-      expect(Object.getPrototypeOf((captured as any).query)).toBe(Object.prototype);
     } finally {
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
@@ -16970,18 +16944,17 @@ describe("Pages Router router helpers", () => {
     try {
       await routerModule.default.push("/posts/43", undefined, { shallow: true });
 
-      let captured: unknown = "NOT_SET";
       function Probe() {
-        captured = useCompatRouter();
+        const router = useCompatRouter();
+        expect(router).not.toBeNull();
+        expect(router?.pathname).toBe("/posts/[id]");
+        expect(router?.asPath).toBe("/posts/43");
+        expect(router?.query).toEqual({ id: "43" });
         return React.createElement("div", null, "probe");
       }
 
       renderToStaticMarkup(routerModule.wrapWithRouterContext(React.createElement(Probe)));
 
-      expect(captured).not.toBeNull();
-      expect((captured as any).pathname).toBe("/posts/[id]");
-      expect((captured as any).asPath).toBe("/posts/43");
-      expect((captured as any).query).toEqual({ id: "43" });
       expect(win.__NEXT_DATA__.query).toEqual({ id: "42" });
     } finally {
       if (previousWindow === undefined) {
@@ -17106,16 +17079,14 @@ describe("Pages Router router helpers", () => {
       await import("../packages/vinext/src/shims/compat-router.js");
     const routerSingleton = mod.default;
 
-    let captured: unknown = "NOT_SET";
     function Probe() {
-      captured = useCompatRouter();
+      expect(typeof useCompatRouter()?.beforePopState).toBe("function");
       return React.createElement("div", null, "probe");
     }
 
     renderToStaticMarkup(mod.wrapWithRouterContext(React.createElement(Probe)));
 
     expect(typeof (routerSingleton as any).beforePopState).toBe("function");
-    expect(typeof (captured as any).beforePopState).toBe("function");
   });
 
   describe("isExternalUrl", () => {

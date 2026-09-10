@@ -268,6 +268,7 @@ export function FlameGraph({
   ariaLabel: string;
 }) {
   const fullGraph = flameGraph;
+  const [previousGraph, setPreviousGraph] = useState(fullGraph);
   const [categoryFilters, setCategoryFilters] = useState<Set<TraceCategory> | null>(
     defaultTraceFilters,
   );
@@ -293,14 +294,15 @@ export function FlameGraph({
   const rowHeight = 24;
   const height = (maxDepth + 1) * rowHeight;
 
-  useEffect(() => {
+  if (previousGraph !== fullGraph) {
+    setPreviousGraph(fullGraph);
     const nextFilters = defaultTraceFilters();
     const nextRoot = graphForFilters(fullGraph, nextFilters);
     setCategoryFilters(nextFilters);
     setFocusPath(nextRoot ? [nextRoot] : []);
     setFrameQuery("");
     setHovered(null);
-  }, [fullGraph]);
+  }
 
   useEffect(() => {
     const viewport = graphViewportRef.current;
