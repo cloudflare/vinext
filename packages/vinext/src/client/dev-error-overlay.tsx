@@ -425,7 +425,6 @@ function DevErrorOverlayApp(): React.ReactNode {
         />
       ) : (
         <DevErrorOverlay
-          key={current.id}
           error={current}
           index={state.index}
           total={state.errors.length}
@@ -502,7 +501,13 @@ function DevErrorOverlay({
         : [],
     [error.stack, error.ignoredStackFrames, error.projectRoot, isBuildError],
   );
+  const [previousErrorId, setPreviousErrorId] = useState(error.id);
   const [showIgnoredFrames, setShowIgnoredFrames] = useState(false);
+  // Reset only frame visibility so pagination buttons retain their DOM nodes and focus.
+  if (previousErrorId !== error.id) {
+    setPreviousErrorId(error.id);
+    setShowIgnoredFrames(false);
+  }
   const hasVisibleFrame = frames.some((frame) => !frame.ignored);
   const ignoredFramesTally = hasVisibleFrame
     ? frames.reduce((tally, frame) => tally + (frame.ignored ? 1 : 0), 0)
