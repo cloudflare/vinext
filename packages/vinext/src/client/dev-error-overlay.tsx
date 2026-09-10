@@ -425,6 +425,7 @@ function DevErrorOverlayApp(): React.ReactNode {
         />
       ) : (
         <DevErrorOverlay
+          key={current.id}
           error={current}
           index={state.index}
           total={state.errors.length}
@@ -510,10 +511,6 @@ function DevErrorOverlay({
     showIgnoredFrames || ignoredFramesTally === 0
       ? frames
       : frames.filter((frame) => !frame.ignored);
-
-  useEffect(() => {
-    setShowIgnoredFrames(false);
-  }, [error.id]);
 
   // Esc minimizes, ←/→ navigate between errors. Esc no longer dismisses
   // outright — once a developer wants the overlay gone they can hit the ×
