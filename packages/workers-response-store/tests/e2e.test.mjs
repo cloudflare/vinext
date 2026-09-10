@@ -113,10 +113,6 @@ async function metadata() {
   return (await metadataStub()).inspect();
 }
 
-async function tagIndex() {
-  return (await metadataStub()).inspectTagIndex();
-}
-
 async function r2Objects() {
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
   return bucket.list();
@@ -422,7 +418,7 @@ test("refresh accepts more tag selectors than one SQLite parameter batch", async
   assert.equal(await (await read("/refresh-many-tags")).text(), "refreshed");
 });
 
-test("refresh and purge use a reverse tag-to-entry index that follows publication", async () => {
+test("refresh and purge select entries from their stored tags", async () => {
   await put("/tag-index", "seed", {
     tags: ["Original", "Shared"],
     revalidator: {
@@ -432,25 +428,18 @@ test("refresh and purge use a reverse tag-to-entry index that follows publicatio
     },
   });
 
-  assert.deepEqual(
-    (await tagIndex()).map(({ tag }) => tag),
-    ["original", "shared"],
-  );
+  assert.deepEqual((await metadata())[0].cacheTags, ["Original", "Shared"]);
   assert.deepEqual((await refreshSelectors({ tags: ["ORIGINAL"] })).json, {
     backingStoreUpdated: true,
     edgePurgeAccepted: false,
   });
-  assert.deepEqual(
-    (await tagIndex()).map(({ tag }) => tag),
-    ["replacement"],
-  );
+  assert.deepEqual((await metadata())[0].cacheTags, ["Replacement"]);
   assert.deepEqual((await refreshSelectors({ tags: ["original"] })).json, {
     backingStoreUpdated: false,
     edgePurgeAccepted: false,
   });
 
   await purge({ tags: ["REPLACEMENT"] });
-  assert.deepEqual(await tagIndex(), []);
   assert.equal((await read("/tag-index")).status, 404);
   assert.ok((await (await metadataStub()).getTagExpiration(["replacement"])) > 0);
 });

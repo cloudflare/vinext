@@ -26,11 +26,6 @@ type WriteReservation = {
   revision: number;
 };
 
-type TagIndexEntry = {
-  keyHash: string;
-  tag: string;
-};
-
 export type CacheMetadataStub = DurableObjectStub & {
   beginWrite(keyHash: string, cacheKey: string): Promise<number>;
   reserveWrite(
@@ -63,7 +58,6 @@ export type CacheMetadataStub = DurableObjectStub & {
   getEntriesMatching(options: ResponseStoreRefreshOptions): Promise<StoredEntry[]>;
   purgeMatching(options: ResponseStorePurgeOptions): Promise<PurgedEntry[]>;
   inspect(): Promise<StoredEntry[]>;
-  inspectTagIndex(): Promise<TagIndexEntry[]>;
 };
 
 type EntryRow = Record<string, SqlStorageValue> & {
@@ -83,11 +77,6 @@ type EntryRow = Record<string, SqlStorageValue> & {
   revalidator_args: string | null;
   cache_tags: string | null;
   tombstoned: number;
-};
-
-type TagRow = Record<string, SqlStorageValue> & {
-  key_hash: string;
-  tag: string;
 };
 
 const MAX_SQL_PARAMETERS = 100;
@@ -212,38 +201,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
         CREATE INDEX IF NOT EXISTS pending_objects_created_at ON pending_objects(created_at);
       `);
-
-      const hasBackfilledTagIndex =
-        ctx.storage.sql
-          .exec<{ version: number }>(
-            "SELECT version FROM metadata_schema_migrations WHERE version = 1",
-          )
-          .toArray().length > 0;
-
-      if (!hasBackfilledTagIndex) {
-        ctx.storage.transactionSync(() => {
-          const rows = ctx.storage.sql
-            .exec<{ key_hash: string; cache_tags: string | null }>(
-              `SELECT key_hash, cache_tags FROM entries
-              WHERE tombstoned = 0 AND active_revision IS NOT NULL`,
-            )
-            .toArray();
-
-          for (const row of rows) {
-            const tags = JSON.parse(row.cache_tags ?? "[]") as string[];
-
-            for (const tag of normalizeTags(tags)) {
-              ctx.storage.sql.exec(
-                "INSERT OR IGNORE INTO entry_tags (tag, key_hash) VALUES (?, ?)",
-                tag,
-                row.key_hash,
-              );
-            }
-          }
-
-          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (1)");
-        });
-      }
     });
   }
 
@@ -266,43 +223,18 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         .toArray();
     }
 
-    const matches = new Map<string, EntryRow>();
-    const tags = normalizeTags(options.tags ?? []);
-
-    for (let offset = 0; offset < tags.length; offset += MAX_SQL_PARAMETERS) {
-      const batch = tags.slice(offset, offset + MAX_SQL_PARAMETERS);
-      const placeholders = batch.map(() => "?").join(", ");
-      const rows = this.ctx.storage.sql
-        .exec<EntryRow>(
-          `SELECT DISTINCT entries.* FROM entries
-          INNER JOIN entry_tags ON entry_tags.key_hash = entries.key_hash
-          WHERE entries.tombstoned = 0 AND entries.active_revision IS NOT NULL
-            AND entry_tags.tag IN (${placeholders})`,
-          ...batch,
-        )
-        .toArray();
-
-      for (const row of rows) {
-        matches.set(row.key_hash, row);
-      }
-    }
-
+    const tags = new Set(normalizeTags(options.tags ?? []));
     const prefixes = options.pathPrefixes ?? [];
-    if (prefixes.length) {
-      const rows = this.ctx.storage.sql
-        .exec<EntryRow>(
-          "SELECT * FROM entries WHERE tombstoned = 0 AND active_revision IS NOT NULL",
-        )
-        .toArray();
-
-      for (const row of rows) {
-        if (prefixes.some((prefix) => row.cache_key.startsWith(prefix))) {
-          matches.set(row.key_hash, row);
-        }
-      }
-    }
-
-    return [...matches.values()];
+    return this.ctx.storage.sql
+      .exec<EntryRow>("SELECT * FROM entries WHERE tombstoned = 0 AND active_revision IS NOT NULL")
+      .toArray()
+      .filter(
+        (row) =>
+          prefixes.some((prefix) => row.cache_key.startsWith(prefix)) ||
+          normalizeTags(JSON.parse(row.cache_tags ?? "[]") as string[]).some((tag) =>
+            tags.has(tag),
+          ),
+      );
   }
 
   async trackPendingObjects(objectKeys: string[], createdAt: number): Promise<void> {
@@ -541,17 +473,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       );
 
       const published = update.rowsWritten === 1;
-      if (published) {
-        this.ctx.storage.sql.exec("DELETE FROM entry_tags WHERE key_hash = ?", keyHash);
-
-        for (const tag of normalizeTags(metadata.cacheTags)) {
-          this.ctx.storage.sql.exec(
-            "INSERT INTO entry_tags (tag, key_hash) VALUES (?, ?)",
-            tag,
-            keyHash,
-          );
-        }
-      }
 
       const entry: StoredEntry = {
         keyHash,
@@ -654,7 +575,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           "DELETE FROM revalidation_claims WHERE key_hash = ?",
           row.key_hash,
         );
-        this.ctx.storage.sql.exec("DELETE FROM entry_tags WHERE key_hash = ?", row.key_hash);
       }
 
       return matches.map((row) => ({
@@ -670,12 +590,5 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       .exec<EntryRow>("SELECT * FROM entries ORDER BY cache_key")
       .toArray();
     return storedEntriesFromRows(rows);
-  }
-
-  inspectTagIndex(): TagIndexEntry[] {
-    return this.ctx.storage.sql
-      .exec<TagRow>("SELECT key_hash, tag FROM entry_tags ORDER BY tag, key_hash")
-      .toArray()
-      .map((row) => ({ keyHash: row.key_hash, tag: row.tag }));
   }
 }
