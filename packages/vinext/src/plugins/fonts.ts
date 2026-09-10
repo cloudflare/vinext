@@ -28,8 +28,17 @@ import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import path, { toSlash } from "pathslash";
 import fs from "node:fs";
-import { escapeRegExp } from "../utils/regex.js";
 import { lastSignificantChar } from "../utils/has-trailing-comma.js";
+import {
+  type AstRange,
+  type AstRecord,
+  forEachAstChild,
+  getAstName,
+  getBindingsInScope,
+  hasRange,
+  isAstRecord,
+  nodeArray,
+} from "./ast-utils.js";
 import MagicString from "magic-string";
 import { magicStringTransformResult } from "./transform-result.js";
 import {
@@ -163,8 +172,31 @@ type GoogleFontNamedSpecifier = {
   imported: string;
   local: string;
   isType: boolean;
-  raw: string;
 };
+
+type GoogleFontImportInfo = {
+  start: number;
+  end: number;
+  source: AstRange;
+  defaultLocal: string | null;
+  namespaceLocal: string | null;
+  named: GoogleFontNamedSpecifier[];
+};
+
+type GoogleFontExportInfo = {
+  start: number;
+  end: number;
+  source: AstRange;
+  named: GoogleFontNamedSpecifier[];
+};
+
+type LocalFontCallInfo = {
+  call: AstRange;
+  options: AstRange;
+  bindingName: string | null;
+};
+
+const FONT_FILE_EXTENSION_RE = /\.(?:woff2?|ttf|otf|eot)$/i;
 
 // ── Helpers shared with index.ts ──────────────────────────────────────────────
 
@@ -334,88 +366,338 @@ export function generateGoogleFontsVirtualModule(
   return lines.join("\n");
 }
 
-// ── Import clause parsers ─────────────────────────────────────────────────────
-
-function parseGoogleFontNamedSpecifiers(
-  specifiersStr: string,
-  forceType = false,
-): GoogleFontNamedSpecifier[] {
-  return specifiersStr
-    .split(",")
-    .map((spec) => spec.trim())
-    .filter(Boolean)
-    .map((raw) => {
-      const isType = forceType || raw.startsWith("type ");
-      const valueSpec = isType ? raw.replace(/^type\s+/, "") : raw;
-      const asParts = valueSpec.split(/\s+as\s+/);
-      const imported = asParts[0]?.trim() ?? "";
-      const local = (asParts[1] || asParts[0] || "").trim();
-      return { imported, local, isType, raw };
-    })
-    .filter((spec) => spec.imported.length > 0 && spec.local.length > 0);
-}
-
-function parseGoogleFontImportClause(clause: string): {
-  defaultLocal: string | null;
-  namespaceLocal: string | null;
-  named: GoogleFontNamedSpecifier[];
-} {
-  const trimmed = clause.trim();
-
-  if (trimmed.startsWith("type ")) {
-    const braceStart = trimmed.indexOf("{");
-    const braceEnd = trimmed.lastIndexOf("}");
-    if (braceStart === -1 || braceEnd === -1) {
-      return { defaultLocal: null, namespaceLocal: null, named: [] };
-    }
-    return {
-      defaultLocal: null,
-      namespaceLocal: null,
-      named: parseGoogleFontNamedSpecifiers(trimmed.slice(braceStart + 1, braceEnd), true),
-    };
-  }
-
-  const braceStart = trimmed.indexOf("{");
-  const braceEnd = trimmed.lastIndexOf("}");
-  if (braceStart !== -1 && braceEnd !== -1) {
-    const beforeNamed = trimmed.slice(0, braceStart).trim().replace(/,\s*$/, "").trim();
-    return {
-      defaultLocal: beforeNamed || null,
-      namespaceLocal: null,
-      named: parseGoogleFontNamedSpecifiers(trimmed.slice(braceStart + 1, braceEnd)),
-    };
-  }
-
-  const commaIndex = trimmed.indexOf(",");
-  if (commaIndex !== -1) {
-    const defaultLocal = trimmed.slice(0, commaIndex).trim() || null;
-    const rest = trimmed.slice(commaIndex + 1).trim();
-    if (rest.startsWith("* as ")) {
-      return {
-        defaultLocal,
-        namespaceLocal: rest.slice("* as ".length).trim() || null,
-        named: [],
-      };
-    }
-  }
-
-  if (trimmed.startsWith("* as ")) {
-    return {
-      defaultLocal: null,
-      namespaceLocal: trimmed.slice("* as ".length).trim() || null,
-      named: [],
-    };
-  }
-
-  return {
-    defaultLocal: trimmed || null,
-    namespaceLocal: null,
-    named: [],
-  };
-}
-
 function propertyNameToGoogleFontFamily(prop: string): string {
   return prop.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
+}
+
+function parseTransformAst(code: string, id: string): ReturnType<typeof parseAst> | null {
+  const lang = id.endsWith(".ts") ? "ts" : "tsx";
+  try {
+    return parseAst(code, { lang });
+  } catch {
+    return null;
+  }
+}
+
+function getStringProperty(node: AstRecord, key: string): string | null {
+  const value = node[key];
+  return typeof value === "string" ? value : null;
+}
+
+function getSourceValue(node: AstRecord): string | null {
+  const source = node.source;
+  if (!isAstRecord(source)) return null;
+  const value = source.value;
+  return typeof value === "string" ? value : null;
+}
+
+function isTypeOnlyDeclaration(node: AstRecord): boolean {
+  return node.importKind === "type" || node.exportKind === "type";
+}
+
+function isTypeOnlySpecifier(node: AstRecord, parent: AstRecord): boolean {
+  return isTypeOnlyDeclaration(parent) || node.importKind === "type" || node.exportKind === "type";
+}
+
+function collectGoogleFontImports(ast: ReturnType<typeof parseAst>): GoogleFontImportInfo[] {
+  const imports: GoogleFontImportInfo[] = [];
+  for (const item of ast.body) {
+    if (item.type !== "ImportDeclaration") continue;
+    const node = item as unknown as AstRecord;
+    if (getSourceValue(node) !== "next/font/google") continue;
+    if (!hasRange(node)) continue;
+    const sourceNode = node.source as AstRecord | null;
+    if (!sourceNode || !hasRange(sourceNode)) continue;
+
+    let defaultLocal: string | null = null;
+    let namespaceLocal: string | null = null;
+    const named: GoogleFontNamedSpecifier[] = [];
+    const declarationIsType = isTypeOnlyDeclaration(node);
+
+    for (const specifierValue of nodeArray(node.specifiers)) {
+      if (!isAstRecord(specifierValue) || !hasRange(specifierValue)) continue;
+      const spec = specifierValue;
+      if (spec.type === "ImportDefaultSpecifier") {
+        if (!declarationIsType) defaultLocal = getAstName(spec.local);
+        continue;
+      }
+      if (spec.type === "ImportNamespaceSpecifier") {
+        if (!declarationIsType) namespaceLocal = getAstName(spec.local);
+        continue;
+      }
+      if (spec.type !== "ImportSpecifier") continue;
+      const imported = getAstName(spec.imported) ?? getAstName(spec.local);
+      const local = getAstName(spec.local) ?? imported;
+      if (!imported || !local) continue;
+      named.push({
+        imported,
+        local,
+        isType: isTypeOnlySpecifier(spec, node),
+      });
+    }
+
+    imports.push({
+      start: node.start,
+      end: node.end,
+      source: sourceNode,
+      defaultLocal,
+      namespaceLocal,
+      named,
+    });
+  }
+  return imports;
+}
+
+function collectGoogleFontExports(ast: ReturnType<typeof parseAst>): GoogleFontExportInfo[] {
+  const exports: GoogleFontExportInfo[] = [];
+  for (const item of ast.body) {
+    if (item.type !== "ExportNamedDeclaration") continue;
+    const node = item as unknown as AstRecord;
+    if (getSourceValue(node) !== "next/font/google") continue;
+    if (!hasRange(node)) continue;
+    const sourceNode = node.source as AstRecord | null;
+    if (!sourceNode || !hasRange(sourceNode)) continue;
+
+    const named: GoogleFontNamedSpecifier[] = [];
+    for (const specifierValue of nodeArray(node.specifiers)) {
+      if (!isAstRecord(specifierValue) || !hasRange(specifierValue)) continue;
+      if (specifierValue.type !== "ExportSpecifier") continue;
+      const imported = getAstName(specifierValue.local);
+      const local = getAstName(specifierValue.exported) ?? imported;
+      if (!imported || !local) continue;
+      named.push({
+        imported,
+        local,
+        isType: isTypeOnlySpecifier(specifierValue, node),
+      });
+    }
+
+    exports.push({
+      start: node.start,
+      end: node.end,
+      source: sourceNode,
+      named,
+    });
+  }
+  return exports;
+}
+
+function isIdentifierReference(node: unknown, name: string): boolean {
+  return isAstRecord(node) && node.type === "Identifier" && node.name === name;
+}
+
+// Node types that open a new scope for shadowing purposes during the font-call
+// traversal. getBindingsInScope is merged into the shadow set when descending
+// into these.
+function isScopeNode(node: AstRecord): boolean {
+  switch (node.type) {
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+    case "ArrowFunctionExpression":
+    case "BlockStatement":
+    case "CatchClause":
+    case "ForStatement":
+    case "ForInStatement":
+    case "ForOfStatement":
+    case "SwitchStatement":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function collectLocalFontPathLiterals(options: AstRange): Array<{ node: AstRange; path: string }> {
+  const paths: Array<{ node: AstRange; path: string }> = [];
+
+  for (const prop of nodeArray(options.properties)) {
+    if (!isAstRecord(prop) || prop.type !== "Property" || prop.computed) continue;
+    if (getAstName(prop.key) !== "src") continue;
+
+    const value = prop.value;
+    if (!isAstRecord(value)) continue;
+
+    if (value.type === "Literal" && typeof value.value === "string" && hasRange(value)) {
+      if (FONT_FILE_EXTENSION_RE.test(value.value)) {
+        paths.push({ node: value, path: value.value });
+      }
+    } else {
+      const objects =
+        value.type === "ObjectExpression"
+          ? [value]
+          : value.type === "ArrayExpression"
+            ? nodeArray(value.elements).filter(isAstRecord)
+            : [];
+      for (const obj of objects) {
+        if (obj.type !== "ObjectExpression") continue;
+        for (const subProp of nodeArray(obj.properties)) {
+          if (!isAstRecord(subProp) || subProp.type !== "Property" || subProp.computed) continue;
+          if (getAstName(subProp.key) !== "path") continue;
+          const pathVal = subProp.value;
+          if (
+            isAstRecord(pathVal) &&
+            hasRange(pathVal) &&
+            pathVal.type === "Literal" &&
+            typeof pathVal.value === "string" &&
+            FONT_FILE_EXTENSION_RE.test(pathVal.value)
+          ) {
+            paths.push({ node: pathVal, path: pathVal.value });
+          }
+        }
+      }
+    }
+  }
+
+  return paths;
+}
+
+function objectHasVinextProperty(options: AstRange): boolean {
+  for (const property of nodeArray(options.properties)) {
+    if (!isAstRecord(property) || property.type !== "Property" || property.computed) continue;
+    if (getAstName(property.key) === "_vinext") return true;
+  }
+  return false;
+}
+
+function firstObjectArgument(node: AstRecord): AstRange | null {
+  const args = nodeArray(node.arguments);
+  const firstArg = args[0];
+  if (!isAstRecord(firstArg) || firstArg.type !== "ObjectExpression" || !hasRange(firstArg)) {
+    return null;
+  }
+  return firstArg;
+}
+
+function getLocalFontDefaultImport(ast: ReturnType<typeof parseAst>): string | null {
+  for (const item of ast.body) {
+    if (item.type !== "ImportDeclaration") continue;
+    const node = item as unknown as AstRecord;
+    if (getSourceValue(node) !== "next/font/local") continue;
+    if (isTypeOnlyDeclaration(node)) continue;
+    for (const specifier of nodeArray(node.specifiers)) {
+      if (!isAstRecord(specifier) || specifier.type !== "ImportDefaultSpecifier") continue;
+      return getAstName(specifier.local);
+    }
+  }
+  return null;
+}
+
+function localFontCallFromInitializer(
+  init: unknown,
+  localFontIdentifier: string,
+): { call: AstRange; options: AstRange } | null {
+  if (!isAstRecord(init) || init.type !== "CallExpression" || !hasRange(init)) return null;
+  if (!isIdentifierReference(init.callee, localFontIdentifier)) return null;
+  const options = firstObjectArgument(init);
+  if (!options) return null;
+  return { call: init, options };
+}
+
+function collectLocalFontCalls(
+  ast: ReturnType<typeof parseAst>,
+  localFontIdentifier: string,
+): LocalFontCallInfo[] {
+  const calls: LocalFontCallInfo[] = [];
+
+  function visit(node: AstRecord, shadowed: Set<string>): void {
+    const nextShadowed = isScopeNode(node)
+      ? new Set([...shadowed, ...getBindingsInScope(node)])
+      : shadowed;
+
+    if (node.type === "VariableDeclarator") {
+      if (!nextShadowed.has(localFontIdentifier)) {
+        const localCall = localFontCallFromInitializer(node.init, localFontIdentifier);
+        if (localCall) {
+          calls.push({
+            ...localCall,
+            bindingName: getAstName(node.id),
+          });
+        }
+      }
+      visit(node.id as AstRecord, nextShadowed);
+      if (node.init) visit(node.init as AstRecord, nextShadowed);
+      return;
+    }
+
+    if (
+      node.type === "CallExpression" &&
+      hasRange(node) &&
+      !nextShadowed.has(localFontIdentifier) &&
+      isIdentifierReference(node.callee, localFontIdentifier)
+    ) {
+      const options = firstObjectArgument(node);
+      if (options) {
+        calls.push({ call: node, options, bindingName: null });
+      }
+    }
+
+    forEachAstChild(node, (child) => visit(child, nextShadowed));
+  }
+
+  const initialShadowed = getBindingsInScope(ast as unknown as AstRecord);
+  for (const item of ast.body) {
+    visit(item as AstRecord, initialShadowed);
+  }
+  return calls;
+}
+
+function collectGoogleFontCalls(
+  ast: ReturnType<typeof parseAst>,
+  fontLocals: Map<string, string>,
+  proxyObjectLocals: Set<string>,
+): Array<{ call: AstRange; options: AstRange; family: string; calleeSource: string }> {
+  const calls: Array<{ call: AstRange; options: AstRange; family: string; calleeSource: string }> =
+    [];
+
+  function visit(node: AstRecord, shadowed: Set<string>): void {
+    const nextShadowed = isScopeNode(node)
+      ? new Set([...shadowed, ...getBindingsInScope(node)])
+      : shadowed;
+
+    if (node.type === "CallExpression" && hasRange(node)) {
+      const options = firstObjectArgument(node);
+      const callee = isAstRecord(node.callee) && hasRange(node.callee) ? node.callee : null;
+      if (options && callee?.type === "Identifier") {
+        const localName = getStringProperty(callee, "name");
+        const importedName = localName ? fontLocals.get(localName) : undefined;
+        if (localName && importedName && !nextShadowed.has(localName)) {
+          calls.push({
+            call: node,
+            options,
+            family: importedName.replace(/_/g, " "),
+            calleeSource: localName,
+          });
+          return;
+        }
+      }
+
+      if (options && callee?.type === "MemberExpression" && !callee.computed) {
+        const objectName = getAstName(callee.object);
+        const propName = getAstName(callee.property);
+        if (
+          objectName &&
+          propName &&
+          proxyObjectLocals.has(objectName) &&
+          !nextShadowed.has(objectName)
+        ) {
+          calls.push({
+            call: node,
+            options,
+            family: propertyNameToGoogleFontFamily(propName),
+            calleeSource: `${objectName}.${propName}`,
+          });
+          return;
+        }
+      }
+    }
+
+    forEachAstChild(node, (child) => visit(child, nextShadowed));
+  }
+
+  const initialShadowed = getBindingsInScope(ast as unknown as AstRecord);
+  for (const item of ast.body) {
+    visit(item as AstRecord, initialShadowed);
+  }
+  return calls;
 }
 
 // ── Font fetching and caching ─────────────────────────────────────────────────
@@ -728,6 +1010,9 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         if (!code.includes("next/font/google")) return null;
         if (id.startsWith(shimsDir)) return null;
 
+        const ast = parseTransformAst(code, id);
+        if (!ast) return null;
+
         // Read the resolved `build.assetsDir` from the current Vite
         // environment so it can be closed over by the inner
         // `injectSelfHostedCss` helper (a plain function declaration
@@ -743,23 +1028,7 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         const fontLocals = new Map<string, string>();
         const proxyObjectLocals = new Set<string>();
 
-        // The clause is a sequence of either a brace block (`\{[^}]*?\}` —
-        // newlines allowed inside, but `[^}]` keeps it from spanning past
-        // the matching close brace) or a single non-`;` non-`\n` char.
-        // Effect: multi-line bracket imports (Prettier wraps past
-        // `printWidth`) match, but a preceding semicolon-less line
-        // (e.g. `import type { Metadata } from 'next'`) can't be swallowed
-        // into the clause via newline crossings. Both shapes used to fail
-        // silently — the rewrite was skipped because the resulting clause
-        // wasn't a valid single import.
-        const importRe =
-          /^[ \t]*import\s+((?:\{[^}]*?\}|[^;\n])+?)\s+from\s*(["'])next\/font\/google\2\s*;?/gm;
-        let importMatch;
-        while ((importMatch = importRe.exec(code)) !== null) {
-          const [fullMatch, clause] = importMatch;
-          const matchStart = importMatch.index;
-          const matchEnd = matchStart + fullMatch.length;
-          const parsed = parseGoogleFontImportClause(clause);
+        for (const parsed of collectGoogleFontImports(ast)) {
           const utilityImports = parsed.named.filter(
             (spec) => !spec.isType && GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
           );
@@ -780,12 +1049,8 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
               fonts: Array.from(new Set(fontImports.map((spec) => spec.imported))),
               utilities: Array.from(new Set(utilityImports.map((spec) => spec.imported))),
             });
-            s.overwrite(
-              matchStart,
-              matchEnd,
-              `import ${clause} from ${JSON.stringify(virtualId)};`,
-            );
-            overwrittenRanges.push([matchStart, matchEnd]);
+            s.overwrite(parsed.source.start, parsed.source.end, JSON.stringify(virtualId));
+            overwrittenRanges.push([parsed.start, parsed.end]);
             hasChanges = true;
             continue;
           }
@@ -799,20 +1064,15 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
               replacementLines.push(`var ${parsed.defaultLocal} = ${proxyImportName};`);
             }
             replacementLines.push(`var ${parsed.namespaceLocal} = ${proxyImportName};`);
-            s.overwrite(matchStart, matchEnd, replacementLines.join("\n"));
-            overwrittenRanges.push([matchStart, matchEnd]);
+            s.overwrite(parsed.start, parsed.end, replacementLines.join("\n"));
+            overwrittenRanges.push([parsed.start, parsed.end]);
             proxyObjectLocals.add(parsed.namespaceLocal);
             hasChanges = true;
           }
         }
 
-        const exportRe = /^[ \t]*export\s*\{([^}]+)\}\s*from\s*(["'])next\/font\/google\2\s*;?/gm;
-        let exportMatch;
-        while ((exportMatch = exportRe.exec(code)) !== null) {
-          const [fullMatch, specifiers] = exportMatch;
-          const matchStart = exportMatch.index;
-          const matchEnd = matchStart + fullMatch.length;
-          const namedExports = parseGoogleFontNamedSpecifiers(specifiers);
+        for (const parsed of collectGoogleFontExports(ast)) {
+          const namedExports = parsed.named;
           const utilityExports = namedExports.filter(
             (spec) => !spec.isType && GOOGLE_FONT_UTILITY_EXPORTS.has(spec.imported),
           );
@@ -826,12 +1086,8 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
             fonts: Array.from(new Set(fontExports.map((spec) => spec.imported))),
             utilities: Array.from(new Set(utilityExports.map((spec) => spec.imported))),
           });
-          s.overwrite(
-            matchStart,
-            matchEnd,
-            `export { ${specifiers.trim()} } from ${JSON.stringify(virtualId)};`,
-          );
-          overwrittenRanges.push([matchStart, matchEnd]);
+          s.overwrite(parsed.source.start, parsed.source.end, JSON.stringify(virtualId));
+          overwrittenRanges.push([parsed.start, parsed.end]);
           hasChanges = true;
         }
 
@@ -991,65 +1247,21 @@ export function createGoogleFontsPlugin(fontGoogleShimPath: string, shimsDir: st
         // against the dev origin; in build, the `writeBundle` hook copies
         // them into the client output directory.
 
-        // Match: Identifier( — where the argument starts with {
-        // The regex intentionally does NOT capture the options object; we use
-        // _findBalancedObject() to handle nested braces correctly.
-        const namedCallRe = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
-        let namedCallMatch;
-        while ((namedCallMatch = namedCallRe.exec(code)) !== null) {
-          const [fullMatch, localName] = namedCallMatch;
-          const importedName = fontLocals.get(localName);
-          if (!importedName) continue;
-
-          const callStart = namedCallMatch.index;
-          // The regex consumed up to (but not including) the '{' due to the
-          // lookahead — find the balanced object starting at the lookahead pos.
-          const openParenEnd = callStart + fullMatch.length;
-          const objRange = _findBalancedObject(code, openParenEnd);
-          if (!objRange) continue;
-          const optionsStr = code.slice(objRange[0], objRange[1]);
-          const callEnd = _findCallEnd(code, objRange[1]);
-          if (callEnd === null) continue;
-
-          if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
+        for (const fontCall of collectGoogleFontCalls(ast, fontLocals, proxyObjectLocals)) {
+          if (
+            overwrittenRanges.some(
+              ([start, end]) => fontCall.call.start < end && fontCall.call.end > start,
+            )
+          ) {
             continue;
           }
 
           await injectSelfHostedCss(
-            callStart,
-            callEnd,
-            optionsStr,
-            importedName.replace(/_/g, " "),
-            localName,
-          );
-        }
-
-        // Match: Identifier.Identifier( — where the argument starts with {
-        const memberCallRe =
-          /\b([A-Za-z_$][A-Za-z0-9_$]*)\.([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*(?=\{)/g;
-        let memberCallMatch;
-        while ((memberCallMatch = memberCallRe.exec(code)) !== null) {
-          const [fullMatch, objectName, propName] = memberCallMatch;
-          if (!proxyObjectLocals.has(objectName)) continue;
-
-          const callStart = memberCallMatch.index;
-          const openParenEnd = callStart + fullMatch.length;
-          const objRange = _findBalancedObject(code, openParenEnd);
-          if (!objRange) continue;
-          const optionsStr = code.slice(objRange[0], objRange[1]);
-          const callEnd = _findCallEnd(code, objRange[1]);
-          if (callEnd === null) continue;
-
-          if (overwrittenRanges.some(([start, end]) => callStart < end && callEnd > start)) {
-            continue;
-          }
-
-          await injectSelfHostedCss(
-            callStart,
-            callEnd,
-            optionsStr,
-            propertyNameToGoogleFontFamily(propName),
-            `${objectName}.${propName}`,
+            fontCall.call.start,
+            fontCall.call.end,
+            code.slice(fontCall.options.start, fontCall.options.end),
+            fontCall.family,
+            fontCall.calleeSource,
           );
         }
 
@@ -1172,61 +1384,52 @@ export function createLocalFontsPlugin(shimsDir: string): Plugin {
         // `font-local` are still transformed. Mirrors `createGoogleFontsPlugin`.
         if (id.startsWith(shimsDir)) return null;
 
-        // Verify there's actually a default import from next/font/local and
-        // remember its local binding so family payloads only attach to real
+        const ast = parseTransformAst(code, id);
+        if (!ast) return null;
+
+        // Verify there's actually a value default import from next/font/local
+        // and remember its local binding so family payloads only attach to real
         // localFont calls.
-        const importMatch =
-          /\bimport\s+([A-Za-z_$][A-Za-z0-9_$]*)\s+from\s*(['"])next\/font\/local\2/.exec(code);
-        if (!importMatch) return null;
-        const localFontIdentifier = importMatch[1];
+        const localFontIdentifier = getLocalFontDefaultImport(ast);
+        if (!localFontIdentifier) return null;
 
         const s = new MagicString(code);
         let hasChanges = false;
         let fontImportCounter = 0;
         const imports: string[] = [];
 
-        // Match font file paths in `path: "..."` or `src: "..."` properties.
-        // Captures: (1) property+colon prefix, (2) quote char, (3) the path.
-        const fontPathRe = /((?:path|src)\s*:\s*)(['"])([^'"]+\.(?:woff2?|ttf|otf|eot))\2/g;
-
-        let match;
-        while ((match = fontPathRe.exec(code)) !== null) {
-          const [fullMatch, prefix, _quote, fontPath] = match;
-          const varName = `__vinext_local_font_${fontImportCounter++}`;
-
-          // Add an import for this font file — Vite resolves it as a static
-          // asset and returns the correct URL for both dev and prod.
-          imports.push(`import ${varName} from ${JSON.stringify(fontPath)};`);
-
-          // Replace: path: "./font.woff2" -> path: __vinext_local_font_0
-          const matchStart = match.index;
-          const matchEnd = matchStart + fullMatch.length;
-          s.overwrite(matchStart, matchEnd, `${prefix}${varName}`);
-          hasChanges = true;
-        }
-
-        const localFontCallRe = new RegExp(
-          String.raw`(?:^|[;{}\n])\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*${escapeRegExp(localFontIdentifier)}\s*\(\s*(?=\{)`,
-          "g",
-        );
         const familyPayloadInsertions = new Set<number>();
-        let localFontCallMatch;
-        while ((localFontCallMatch = localFontCallRe.exec(code)) !== null) {
-          const bindingName = localFontCallMatch[1];
-          const objRange = _findBalancedObject(code, localFontCallRe.lastIndex);
-          if (!objRange) continue;
-          if (_findCallEnd(code, objRange[1]) === null) continue;
+        const rewrittenPathRanges = new Set<string>();
+        for (const localFontCall of collectLocalFontCalls(ast, localFontIdentifier)) {
+          for (const fontPathLiteral of collectLocalFontPathLiterals(localFontCall.options)) {
+            const rangeKey = `${fontPathLiteral.node.start}:${fontPathLiteral.node.end}`;
+            if (rewrittenPathRanges.has(rangeKey)) continue;
+            rewrittenPathRanges.add(rangeKey);
 
-          const insertAt = objRange[1] - 1;
+            const varName = `__vinext_local_font_${fontImportCounter++}`;
+
+            // Add an import for this font file — Vite resolves it as a static
+            // asset and returns the correct URL for both dev and prod.
+            imports.push(`import ${varName} from ${JSON.stringify(fontPathLiteral.path)};`);
+
+            // Replace the string literal value:
+            // path: "./font.woff2" -> path: __vinext_local_font_0
+            s.overwrite(fontPathLiteral.node.start, fontPathLiteral.node.end, varName);
+            hasChanges = true;
+          }
+
+          const bindingName = localFontCall.bindingName;
+          if (!bindingName) continue;
+          const insertAt = localFontCall.options.end - 1;
           if (familyPayloadInsertions.has(insertAt)) continue;
-          const optionsStr = code.slice(objRange[0], objRange[1]);
-          if (/(?:^|[,{])\s*_vinext\s*:/.test(optionsStr)) continue;
+          if (objectHasVinextProperty(localFontCall.options)) continue;
 
           // Decide the separator from the last significant character before the
           // closing brace (see injectSelfHostedCss): comment- and
           // string-literal-aware, so a trailing comma hidden behind a comment is
           // honoured and a `//` inside a value (e.g. a path) is not mistaken for
           // a comment that would swallow the real comma → double comma.
+          const optionsStr = code.slice(localFontCall.options.start, localFontCall.options.end);
           const lastChar = lastSignificantChar(optionsStr.slice(0, -1));
           const separator = lastChar === "{" || lastChar === "," ? "" : ", ";
           s.appendLeft(

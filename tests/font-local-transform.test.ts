@@ -132,6 +132,150 @@ describe("vinext:local-fonts plugin", () => {
     expect(result).toBeNull();
   });
 
+  it("does not rewrite font-looking paths in comments", () => {
+    // Next.js handles next/font through an AST/SWC transform, so text in
+    // comments is never treated as a local font descriptor. Regex scanning
+    // used to promote this comment into a bogus asset import.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `// const unused = localFont({ src: "./commented.woff2" });`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).toBeNull();
+  });
+
+  it("only rewrites font paths inside actual localFont calls", () => {
+    // Ported from the shape of Next.js's AST font transform:
+    // crates/next-custom-transforms/src/transforms/fonts/font_imports_generator.rs
+    // https://github.com/vercel/next.js/blob/canary/crates/next-custom-transforms/src/transforms/fonts/font_imports_generator.rs
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `const unrelated = { src: "./unrelated.woff2" };`,
+      `const myFont = localFont({ src: "./my-font.woff2" });`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./my-font.woff2");
+    expect(result.code).not.toContain(`"./unrelated.woff2";`);
+    expect(result.code).toContain(`const unrelated = { src: "./unrelated.woff2" };`);
+  });
+
+  it("does not rewrite font-looking paths in nested metadata objects", () => {
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `const myFont = localFont({`,
+      `  src: "./real-font.woff2",`,
+      `  metadata: {`,
+      `    path: "./do-not-bundle.woff2",`,
+      `  },`,
+      `});`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./real-font.woff2");
+    expect(result.code).not.toContain(`"./do-not-bundle.woff2";`);
+    expect(result.code).toContain(`path: "./do-not-bundle.woff2"`);
+  });
+
+  it("does not rewrite shadowed local font calls", () => {
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `function render(localFont: any) {`,
+      `  return localFont({ src: "./not-a-next-font.woff2" });`,
+      `}`,
+      `const realFont = localFont({ src: "./real-font.woff2" });`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./real-font.woff2");
+    expect(result.code).not.toContain(`"./not-a-next-font.woff2";`);
+    expect(result.code).toContain(`return localFont({ src: "./not-a-next-font.woff2" });`);
+  });
+
+  it("does not shadow outer scope localFont calls when redeclared inside nested blocks", () => {
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `{`,
+      `  const localFont = () => null;`,
+      `}`,
+      `const realFont = localFont({ src: "./real.woff2" });`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./real.woff2");
+  });
+
+  it("does not rewrite localFont calls shadowed by a var hoisted from a nested block", () => {
+    // `var localFont` is function-scoped, so it shadows the import for the whole
+    // function body, including the call that is a sibling of the if-block.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `function render(condition: boolean) {`,
+      `  if (condition) {`,
+      `    var localFont = () => null;`,
+      `  }`,
+      `  return localFont({ src: "./not-a-next-font.woff2" });`,
+      `}`,
+      `const realFont = localFont({ src: "./real.woff2" });`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./real.woff2");
+    // Shadowed by the hoisted var → must not be promoted to an import.
+    expect(result.code).not.toContain(`from "./not-a-next-font.woff2"`);
+    expect(result.code).toContain(`return localFont({ src: "./not-a-next-font.woff2" });`);
+  });
+
+  it("does not rewrite localFont calls shadowed by a const inside a switch case", () => {
+    // The switch block is one lexical scope; a `const localFont` in a case
+    // shadows the import for the whole switch. No braces → the SwitchStatement
+    // is the only scope boundary.
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `function render(kind: string) {`,
+      `  switch (kind) {`,
+      `    case "custom":`,
+      `      const localFont = (options: unknown) => options;`,
+      `      return localFont({ src: "./not-a-next-font.woff2" });`,
+      `  }`,
+      `}`,
+      `const realFont = localFont({ src: "./real.woff2" });`,
+    ].join("\n");
+
+    const result = transform.call(plugin, code, "/app/layout.tsx");
+
+    expect(result).not.toBeNull();
+    expectImported(result.code, "./real.woff2");
+    expect(result.code).not.toContain(`from "./not-a-next-font.woff2"`);
+    expect(result.code).toContain(`return localFont({ src: "./not-a-next-font.woff2" });`);
+  });
+
   // ── Helper: assert a font file string was promoted to an ESM import ──
   // The transform's contract is that font path strings get rewritten to ESM
   // imports so Vite can fingerprint and serve them. We don't care about the
