@@ -55,10 +55,9 @@ const ROUTE_REVALIDATOR_ID = "vinext:response";
 const RESPONSE_STORE_KEY_PARAM = "__vinext_response_store";
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
 const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
-const REPLAY_REQUEST_HEADERS = [
-  "accept",
-  ...VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
-];
+const REPLAY_REQUEST_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
+  name.trim().toLowerCase(),
+);
 
 function stageContext(
   ctx: WorkerExecutionContext,

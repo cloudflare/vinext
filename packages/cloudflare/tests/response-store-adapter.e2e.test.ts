@@ -171,6 +171,14 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(html.headers.get("x-vinext-cache"), "MISS");
     await html.arrayBuffer();
 
+    const browserHtml = await request(pathname, {
+      headers: {
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+    });
+    assert.equal(browserHtml.headers.get("x-vinext-cache"), "HIT");
+    await browserHtml.body?.cancel();
+
     const rsc = await request(`${pathname}?_rsc`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
