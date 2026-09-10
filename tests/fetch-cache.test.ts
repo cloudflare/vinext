@@ -820,6 +820,73 @@ describe("fetch cache shim", () => {
     });
   });
 
+  it.each(["use cache", "unstable_cache"])(
+    "preserves route fetch revalidate during a %s background refresh",
+    async (kind) => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
+      const memory = new MemoryCacheHandler();
+      const writes: Array<{ revalidate: number | false }> = [];
+      setCacheHandler({
+        async get(key, context) {
+          if (key.startsWith("use-cache:") || key.startsWith("unstable_cache:")) {
+            return {
+              lastModified: Date.now(),
+              cacheState: "stale",
+              value: {
+                kind: "FETCH",
+                data: {
+                  headers: {},
+                  url: key,
+                  body: kind === "use cache" ? '"stale"' : '{"v":"stale"}',
+                },
+                revalidate: 60,
+              },
+            };
+          }
+          return memory.get(key, context);
+        },
+        async set(key, value, context) {
+          if (value?.kind === "FETCH" && value.data.url.startsWith("https://")) {
+            writes.push({ revalidate: value.revalidate });
+          }
+          await memory.set(key, value, context);
+        },
+        async revalidateTag() {},
+      });
+      const refresh = async () => {
+        await fetch("https://api.example.com/detached-route-interval", {
+          next: { tags: ["route"] },
+        });
+        return "fresh";
+      };
+      const cached =
+        kind === "use cache"
+          ? registerCachedFunction(refresh, "detached-route-interval")
+          : unstable_cache(refresh, ["detached-route-interval"]);
+      const pending: Promise<unknown>[] = [];
+      const context = createRequestContext({
+        functionCacheRevalidationMode: "background",
+        currentFetchRevalidate: 60,
+        executionContext: {
+          waitUntil: (promise) => {
+            pending.push(promise);
+          },
+        },
+      });
+      try {
+        await expect(runWithRequestContext(context, () => cached())).resolves.toBe("stale");
+        await Promise.all(pending);
+        expect(writes).toEqual([{ revalidate: 60 }]);
+        expect(context.currentRequestTags).toEqual([]);
+      } finally {
+        await Promise.allSettled(pending);
+        setCacheHandler(new MemoryCacheHandler());
+      }
+    },
+  );
+
   it("explicit fetch revalidate overrides the active route revalidate", async () => {
     setCurrentFetchRevalidate(60);
 

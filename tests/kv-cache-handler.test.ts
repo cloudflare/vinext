@@ -173,6 +173,37 @@ describe("KVCacheHandler", () => {
     handler = new KVCacheHandler(kv as any);
   });
 
+  it.each(["hard", "soft"])(
+    "preserves an in-flight %s tag invalidation across handler instances",
+    async (tagKind) => {
+      const clock = vi.spyOn(Date, "now").mockReturnValue(103_000);
+      try {
+        await handler.revalidateTag("refresh-tag");
+        clock.mockReturnValue(104_000);
+        const value = {
+          kind: "FETCH" as const,
+          data: { headers: {}, body: "old", url: "/data" },
+          revalidate: 60,
+        };
+        const context = { lastModified: 102_000, tags: tagKind === "hard" ? ["refresh-tag"] : [] };
+        await handler.set("refresh", value, context);
+        const reader = new KVCacheHandler(kv as any);
+        expect(
+          await reader.get("refresh", { softTags: tagKind === "soft" ? ["refresh-tag"] : [] }),
+        ).toBeNull();
+        clock.mockReturnValue(105_000);
+        await handler.set(
+          "refresh",
+          { ...value, data: { ...value.data, body: "current" } },
+          { ...context, lastModified: 104_000 },
+        );
+        expect((await reader.get("refresh"))?.value).toMatchObject({ data: { body: "current" } });
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+
   // -------------------------------------------------------------------------
   // Basic round-trip
   // -------------------------------------------------------------------------
@@ -1720,6 +1751,23 @@ describe("KVCacheHandler", () => {
   });
 
   describe("revalidate: 0 skips storage", () => {
+    it("deletes an existing entry when set to null", async () => {
+      await handler.set("deleted", {
+        kind: "FETCH",
+        data: { headers: {}, body: "test", url: "" },
+        tags: [],
+        revalidate: 60,
+      });
+
+      await handler.set("deleted", null, { fetchCache: true });
+
+      expect(store.has("cache:deleted")).toBe(false);
+      expect(kv.delete).toHaveBeenCalledWith("cache:deleted");
+
+      await handler.set("response-null", null);
+      expect(await handler.get("response-null")).toMatchObject({ value: null });
+    });
+
     it("skips KV write when ctx.revalidate is 0", async () => {
       await handler.set(
         "no-cache-ctx",

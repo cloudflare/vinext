@@ -8,7 +8,10 @@ import {
   setCurrentForceDynamicFetchDefault,
   type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
-import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
+import {
+  _drainPendingRevalidations,
+  setFunctionCacheRevalidationMode,
+} from "vinext/shims/cache-request-state";
 import {
   consumeDynamicUsage,
   getActiveDraftModeState,
@@ -138,9 +141,10 @@ async function runInRouteHandlerRevalidationContext(
     routePattern: options.routePattern,
   });
   const requestContext = createRequestContext({
+    bypassNestedUnstableCacheReads: true,
     headersContext,
     executionContext: getRequestExecutionContext(),
-    unstableCacheRevalidation: "foreground",
+    functionCacheRevalidationMode: "foreground",
   });
 
   const revalidation = runWithRequestContext(requestContext, async () => {
@@ -324,6 +328,22 @@ export async function dispatchAppRouteHandler(
     if (cachedRouteResponse) {
       return applyCdnResponseBuildIdentityHeaders(cachedRouteResponse);
     }
+  }
+
+  // A GET handler can return its own public cache policy without exporting
+  // revalidate. Prepare fresh dependencies before that policy is known; auto
+  // mode still permits stale reads after a dynamic API makes the result private.
+  if (
+    isProduction &&
+    (method === "GET" || isAutoHead) &&
+    configuredRevalidateSeconds !== 0 &&
+    handler.dynamic !== "force-dynamic" &&
+    !isDraftMode &&
+    !hasDraftModeTransition &&
+    !getRouteCacheabilityDynamicReason() &&
+    !isKnownDynamicAppRoute(route.pattern)
+  ) {
+    setFunctionCacheRevalidationMode("auto");
   }
 
   if (resolvedHandlerFn) {

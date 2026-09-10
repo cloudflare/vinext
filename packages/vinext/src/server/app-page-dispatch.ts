@@ -2,7 +2,10 @@ import { type ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
-import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
+import {
+  _captureRequestScopedCacheLifeAccessors,
+  setFunctionCacheRevalidationMode,
+} from "vinext/shims/cache-request-state";
 import type { RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
@@ -570,12 +573,13 @@ async function runAppPageRevalidationContext<
     routePattern: options.routePattern,
   });
   const requestContext = createRequestContext({
+    bypassNestedUnstableCacheReads: true,
     headersContext,
     currentFetchCacheMode: options.currentFetchCacheMode ?? null,
     currentFetchRevalidate: options.currentFetchRevalidate ?? null,
     currentForceDynamicFetchDefault: options.dynamicConfig === "force-dynamic",
     executionContext: getRequestExecutionContext(),
-    unstableCacheRevalidation: "foreground",
+    functionCacheRevalidationMode: "foreground",
   });
 
   const revalidation = runWithRequestContext(requestContext, async () => {
@@ -731,6 +735,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
   }
 
+  let shouldUseForegroundFunctionCache = false;
   if (
     !isRouteCacheabilityProbe() &&
     options.bypassInterceptionContextCache !== true &&
@@ -888,6 +893,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     if (cachedPageResponse) {
       return cachedPageResponse;
     }
+    shouldUseForegroundFunctionCache = true;
+    // A miss or expired artifact falls through to a cache-producing render.
+    // This includes pages whose cacheLife is discovered during rendering.
+    if (!(options.isRscRequest && options.mountedSlotsHeader)) {
+      setFunctionCacheRevalidationMode("auto");
+    }
   }
 
   // Next.js' production force-dynamic routes are absent from the prerender
@@ -934,6 +945,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   let interceptDynamicConfig: string | null | undefined;
   let interceptDynamicConfigResolved = false;
+  const resetFunctionCacheModeForIntercept =
+    shouldUseForegroundFunctionCache && !(options.isRscRequest && options.mountedSlotsHeader);
+  if (resetFunctionCacheModeForIntercept) {
+    setFunctionCacheRevalidationMode("background");
+  }
   const interceptResult = await resolveAppPageIntercept<
     TRoute,
     unknown,
@@ -1038,6 +1054,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   });
   if (interceptResult.response) {
     return interceptResult.response;
+  }
+
+  if (resetFunctionCacheModeForIntercept) {
+    setFunctionCacheRevalidationMode("auto");
   }
 
   const buildCurrentPageElement = () =>

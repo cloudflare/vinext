@@ -39,12 +39,22 @@ import {
   _hasPendingRevalidatedTag,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
+  decideCacheRead,
+  getFunctionCacheRevalidationMode,
   type CacheLifeConfig,
 } from "./cache-request-state.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
+import {
+  type CacheRevalidationLease,
+  hasPendingCacheWrites,
+  runForegroundCacheRevalidation,
+  scheduleBackgroundCacheRevalidation,
+} from "./internal/cache-revalidation.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
+  createCacheRevalidationContext,
+  runWithRequestContext,
   isInsideUnifiedScope,
   getRequestContext,
   runWithUnifiedStateMutation,
@@ -726,9 +736,140 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const rootParams = getCurrentRootParams();
       const knownRootParamNames = knownRootParamsByFunctionId.get(id);
       const coarseCacheKey = cacheKey;
+      // Root-param dependencies may expand while a refresh is rendering. Use
+      // every available root-param value only for coordination so the key is
+      // stable across that discovery without joining different route variants.
+      const coordinationKey = rootParams
+        ? coarseCacheKey +
+          computeRootParamsCacheKeySuffix(rootParams, new Set(Object.keys(rootParams)))
+        : coarseCacheKey;
       if (knownRootParamNames && rootParams) {
         cacheKey += computeRootParamsCacheKeySuffix(rootParams, knownRootParamNames);
       }
+
+      // Both misses and stale refreshes use the same serialization and key-selection
+      // path, including root params read by lazy Server Components.
+      const refreshSharedCacheEntry = async (
+        lease: CacheRevalidationLease,
+        background = false,
+      ): Promise<{
+        result: TResult;
+        effectiveLife: CacheLifeConfig;
+        tags: string[];
+        rootParamNames: Set<string> | undefined;
+      }> => {
+        const lastModified = Date.now();
+        const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
+          fn,
+          callArgs,
+          cacheVariant,
+          (value) => serializeCacheResult(value, rsc),
+        );
+
+        const rootParamNames =
+          ctx.readRootParamNames && ctx.readRootParamNames.size > 0
+            ? addKnownRootParamNames(id, ctx.readRootParamNames)
+            : knownRootParamsByFunctionId.get(id);
+
+        const revalidateSeconds =
+          effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
+        const refreshed = (result: TResult) => ({
+          result,
+          effectiveLife,
+          tags: [...ctx.tags],
+          rootParamNames: rootParamNames ? new Set(rootParamNames) : undefined,
+        });
+
+        // Serialization ran while the cache ALS was active so lazy Server
+        // Component work is reflected in `ctx` before selecting the final key.
+        if (collectedResult?.cacheEntry) {
+          try {
+            if (revalidateSeconds === 0) {
+              // Handlers skip no-store writes, which would leave an older stale
+              // value reusable. Replace it with a cache miss instead.
+              const finalKey =
+                rootParamNames && rootParams
+                  ? coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames)
+                  : cacheKey;
+              if (existing?.value || hadPendingCacheWrites) {
+                const deleteEntry = (key: string) =>
+                  lease.write(key, () => handler.set(key, null, { fetchCache: true }));
+                await deleteEntry(finalKey);
+                if (finalKey !== cacheKey) {
+                  await deleteEntry(cacheKey);
+                }
+              }
+              return refreshed(collectedResult.result);
+            }
+            const serialized = collectedResult.cacheEntry;
+            const cacheValue = {
+              kind: "FETCH",
+              data: {
+                headers: serialized.headers,
+                body: serialized.body,
+                url: cacheKey,
+              },
+              tags: ctx.tags,
+              revalidate: revalidateSeconds,
+            } satisfies CachedFetchValue;
+            const cacheContext = {
+              fetchCache: true,
+              lastModified,
+              tags: ctx.tags,
+              cacheControl: {
+                revalidate: revalidateSeconds,
+                expire: effectiveLife.expire,
+                // Persisted so a later hit re-registers the same claim; otherwise
+                // the enclosing render's minimum depends on cache temperature.
+                stale: effectiveLife.stale,
+              },
+            };
+
+            if (rootParamNames && rootParamNames.size > 0 && rootParams) {
+              const specificCacheKey =
+                coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
+              const redirectTags = [
+                ...ctx.tags,
+                ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
+              ];
+              const writeRedirect = () =>
+                handler.set(
+                  coarseCacheKey,
+                  {
+                    kind: "FETCH",
+                    data: {
+                      headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
+                      body: "",
+                      url: coarseCacheKey,
+                    },
+                    tags: redirectTags,
+                    revalidate: revalidateSeconds,
+                  },
+                  { ...cacheContext, tags: redirectTags },
+                );
+              await lease.write(coarseCacheKey, writeRedirect);
+              // Write the useful entry last. A bounded LRU that can retain only
+              // one of the pair must keep the specific value, not the redirect.
+              cacheValue.data.url = specificCacheKey;
+              const writeValue = () => handler.set(specificCacheKey, cacheValue, cacheContext);
+              await lease.write(specificCacheKey, writeValue);
+            } else {
+              const writeValue = () => handler.set(cacheKey, cacheValue, cacheContext);
+              await lease.write(cacheKey, writeValue);
+            }
+          } catch (error) {
+            // A handler failure skips caching but must not fail the render.
+            if (background) {
+              console.error(
+                "[vinext] use cache background revalidation cache write failed:",
+                error,
+              );
+            }
+          }
+        }
+
+        return refreshed(collectedResult ? collectedResult.result : result);
+      };
 
       // Check cache — deserialize via RSC stream when available, JSON otherwise.
       // Pass soft tags so that revalidatePath() / revalidateTag() invalidation
@@ -752,7 +893,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const redirectValue = existing?.value;
       if (
         isRootParamRedirect(existing) &&
-        existing?.cacheState !== "stale" &&
+        existing?.cacheState !== "expired" &&
         rootParams &&
         redirectValue?.kind === "FETCH" &&
         !_hasPendingRevalidatedTag([...(redirectValue.tags ?? []), ...softTags])
@@ -767,123 +908,74 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           existing = null;
         }
       }
+      const hadPendingCacheWrites = hasPendingCacheWrites(coarseCacheKey);
+      const cacheReadAction = decideCacheRead(
+        existing?.cacheState,
+        // A surrounding cache will persist this result. Resolve stale
+        // dependencies now instead of giving them a new lifetime in the parent.
+        cacheContextStorage.getStore() || unstableCacheContextStorage.getStore()
+          ? "foreground"
+          : getFunctionCacheRevalidationMode(),
+      );
+      const refreshSharedCacheEntryInForeground = async (): Promise<TResult> => {
+        const refreshed = await runForegroundCacheRevalidation(
+          coordinationKey,
+          (lease) => refreshSharedCacheEntry(lease),
+          coarseCacheKey,
+        );
+        // A joined foreground generation executes only once, but every caller
+        // must receive the cache metadata in its own request/cache ALS scope.
+        propagateRootParamNamesToParent(refreshed.rootParamNames);
+        recordRequestScopedCacheControl(refreshed.effectiveLife);
+        propagateCacheTagsToRequest(refreshed.tags);
+        return refreshed.result;
+      };
       if (
-        existing?.value &&
-        existing.value.kind === "FETCH" &&
-        existing.cacheState !== "stale" &&
+        existing?.value?.kind === "FETCH" &&
+        !isRootParamRedirect(existing) &&
+        cacheReadAction !== "revalidate" &&
         !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
       ) {
+        let result: TResult;
         try {
-          propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
-          // Surface the cached entry's tags to the surrounding request so the
-          // enclosing page / route-handler ISR entry carries them even on a data
-          // cache HIT — otherwise `revalidateTag()` could not evict the rendered
-          // output that embeds this cached value (issue #1453).
-          propagateCacheTagsToRequest(existing.value.tags);
           if (rsc && existing.value.data.headers[VINEXT_RSC_MARKER_HEADER] === "1") {
-            // RSC-serialized entry: base64 → bytes → stream → deserialize
-            const bytes = base64ToUint8(existing.value.data.body);
-            const stream = uint8ToStream(bytes);
-            const result = await rsc.createFromReadableStream<TResult>(
+            const stream = uint8ToStream(base64ToUint8(existing.value.data.body));
+            result = await rsc.createFromReadableStream<TResult>(
               stream,
               {},
               { preserveServerReferences: true },
             );
-            recordRequestScopedCacheControl(existing.cacheControl);
-            return result;
-          }
-          // JSON-serialized entry (legacy or no RSC available)
-          const result = JSON.parse(existing.value.data.body);
-          recordRequestScopedCacheControl(existing.cacheControl);
-          return result;
-        } catch {
-          // Corrupted entry, fall through to re-execute
-        }
-      }
-
-      // Cache miss (or stale) — execute with context
-      const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
-        fn,
-        callArgs,
-        cacheVariant,
-        (value) => serializeCacheResult(value, rsc),
-      );
-
-      const rootParamNames =
-        ctx.readRootParamNames && ctx.readRootParamNames.size > 0
-          ? addKnownRootParamNames(id, ctx.readRootParamNames)
-          : knownRootParamsByFunctionId.get(id);
-
-      recordRequestScopedCacheLife(effectiveLife);
-      // Bubble the cache scope's tags up to the surrounding request so the
-      // enclosing page / route-handler ISR entry is tagged for on-demand
-      // revalidation (issue #1453). `ctx.tags` already includes any nested
-      // child cache's tags via `runCachedFunctionWithContext`.
-      propagateCacheTagsToRequest(ctx.tags);
-      const revalidateSeconds =
-        effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
-
-      // Serialization ran while the cache ALS was active so lazy Server
-      // Component work is reflected in `ctx` before selecting the final key.
-      if (collectedResult?.cacheEntry) {
-        try {
-          const serialized = collectedResult.cacheEntry;
-          const cacheValue = {
-            kind: "FETCH",
-            data: {
-              headers: serialized.headers,
-              body: serialized.body,
-              url: cacheKey,
-            },
-            tags: ctx.tags,
-            revalidate: revalidateSeconds,
-          } satisfies CachedFetchValue;
-          const cacheContext = {
-            fetchCache: true,
-            tags: ctx.tags,
-            cacheControl: {
-              revalidate: revalidateSeconds,
-              expire: effectiveLife.expire,
-              // Persisted so a later hit re-registers the same claim; otherwise
-              // the enclosing render's minimum depends on cache temperature.
-              stale: effectiveLife.stale,
-            },
-          };
-
-          if (rootParamNames && rootParamNames.size > 0 && rootParams) {
-            const specificCacheKey =
-              coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
-            const redirectTags = [
-              ...ctx.tags,
-              ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
-            ];
-            await handler.set(
-              coarseCacheKey,
-              {
-                kind: "FETCH",
-                data: {
-                  headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
-                  body: "",
-                  url: coarseCacheKey,
-                },
-                tags: redirectTags,
-                revalidate: revalidateSeconds,
-              },
-              { ...cacheContext, tags: redirectTags },
-            );
-            // Write the useful entry last. A bounded LRU that can retain only
-            // one of the pair must keep the specific value, not the redirect.
-            cacheValue.data.url = specificCacheKey;
-            await handler.set(specificCacheKey, cacheValue, cacheContext);
           } else {
-            await handler.set(cacheKey, cacheValue, cacheContext);
+            result = JSON.parse(existing.value.data.body);
           }
         } catch {
-          // A handler failure skips caching but must not fail the render.
+          // Corrupted entries must regenerate without contributing metadata.
+          return refreshSharedCacheEntryInForeground();
         }
+        // Corrupt entries must not contribute tags or lifetime to the render.
+        propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
+        propagateCacheTagsToRequest(existing.value.tags);
+        recordRequestScopedCacheControl(
+          existing.cacheControl ?? { revalidate: existing.value.revalidate },
+        );
+        if (cacheReadAction === "serve-and-revalidate") {
+          const refreshContext = createCacheRevalidationContext(softTags);
+          scheduleBackgroundCacheRevalidation(
+            coordinationKey,
+            (lease) =>
+              cacheContextStorage.exit(() =>
+                runWithRequestContext(refreshContext, () => refreshSharedCacheEntry(lease, true)),
+              ),
+            (error) => {
+              console.error("[vinext] use cache background revalidation failed:", error);
+            },
+            coarseCacheKey,
+          );
+        }
+        return result;
       }
 
-      return collectedResult ? collectedResult.result : result;
+      return refreshSharedCacheEntryInForeground();
     }, cacheVariant);
   };
 
@@ -931,7 +1023,9 @@ function throwPrivateUseCacheInsideUnstableCacheError(): never {
   throw error;
 }
 
-function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
+function recordRequestScopedCacheControl(
+  cacheControl: CacheControlMetadata | CacheLifeConfig | undefined,
+): void {
   if (cacheControl === undefined) return;
   // A hit must contribute the same claim its producing execution did — both to
   // the request scope and, when nested, to the enclosing cache scope (like the

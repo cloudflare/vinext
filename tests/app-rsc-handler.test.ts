@@ -33,6 +33,7 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
+import { renderPagesFallback as renderHybridPagesFallback } from "../packages/vinext/src/server/app-pages-bridge.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
@@ -71,6 +72,7 @@ import {
   markFrameworkLinkHeaders,
   serializeResponseStageLinkProvenance,
 } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import { getRequestContext } from "../packages/vinext/src/shims/unified-request-context.js";
 
 type TestRoute = {
   __loadPage?: unknown;
@@ -725,6 +727,65 @@ describe("createAppRscHandler", () => {
       );
 
       expect(response.headers.get("Content-Length")).toBeNull();
+    },
+  );
+
+  it.each(["direct", "response-stage"] as const)(
+    "keeps nested unstable_cache reads enabled in a hybrid Pages API %s fallback",
+    async (mode) => {
+      const observedBypassFlags: boolean[] = [];
+      const renderPagesFallback: NonNullable<HandlerOptions["renderPagesFallback"]> = (options) =>
+        renderHybridPagesFallback(options, {
+          loadPagesEntry: () => ({
+            handleApiRoute: () => {
+              observedBypassFlags.push(getRequestContext().bypassNestedUnstableCacheReads);
+              return new Response("pages-api");
+            },
+          }),
+          buildRequestHeaders: () => null,
+          decodePathParams: (pathname) => pathname,
+          applyRouteHandlerMiddlewareContext: (response) => response,
+          getDraftModeCookieHeader: () => null,
+        });
+      const handler = createHandler({
+        configHeaders: [],
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        renderPagesFallback,
+      });
+      const request = new Request("https://example.test/docs/api/hybrid");
+
+      const response =
+        mode === "direct"
+          ? await handler(request, null)
+          : await handler.handleResponseStage(request, null, {
+              allowRscDocumentFallback: false,
+              appRouteMatch: null,
+              buildId: "build-id",
+              cacheability: {
+                policyHeaders: null,
+                probeMode: null,
+                resolvedRoutePathname: "/api/hybrid",
+              },
+              canonicalPathname: "/api/hybrid",
+              cleanPathname: "/api/hybrid",
+              draftModeCookie: null,
+              isDataRequest: false,
+              isRscRequest: false,
+              kind: "hybrid-pages",
+              matchKind: "static",
+              middlewareCookieOverlay: null,
+              preHandlerHeaders: null,
+              protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+              requestOrigin: "https://example.test",
+              requestUrl: request.url,
+              resolvedUrl: "/api/hybrid",
+              resourceKind: "api",
+              scriptNonce: null,
+            });
+
+      await expect(response.text()).resolves.toBe("pages-api");
+      expect(observedBypassFlags).toEqual([false]);
     },
   );
 
@@ -4306,6 +4367,104 @@ describe("createAppRscHandler", () => {
           staticParamsValidationParams: { id: "sticks & stones" },
         }),
       );
+    } finally {
+      if (previousPrerender === undefined) {
+        delete process.env.VINEXT_PRERENDER;
+      } else {
+        process.env.VINEXT_PRERENDER = previousPrerender;
+      }
+    }
+  });
+
+  it.each([false, true])(
+    "preserves prerender cache policy through the response stage (%s)",
+    async (prerender) => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { getCacheHandler, setCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const previousHandler = getCacheHandler();
+      setCacheHandler({
+        async get(key) {
+          return {
+            lastModified: Date.now(),
+            cacheState: "stale",
+            value: {
+              kind: "FETCH",
+              data: { headers: {}, body: '"stale-data"', url: key },
+              revalidate: 60,
+            },
+          };
+        },
+        async set() {},
+        async revalidateTag() {},
+      });
+      const cached = registerCachedFunction(
+        async () => "fresh-data",
+        `staged-prerender-${prerender}`,
+      );
+      const pending: Promise<unknown>[] = [];
+      const ctx = {
+        waitUntil: (promise: Promise<unknown>) => {
+          pending.push(promise);
+        },
+      };
+      const stageHandler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage: async () => new Response(await cached()),
+      });
+      const handler = createHandler({ configHeaders: [] });
+      const previous = process.env.VINEXT_PRERENDER;
+      try {
+        if (prerender) process.env.VINEXT_PRERENDER = "1";
+        else delete process.env.VINEXT_PRERENDER;
+        const response = await handler(
+          new Request("https://example.test/docs/about"),
+          ctx,
+          false,
+          (request, props) => stageHandler.handleResponseStage(request, ctx, props),
+        );
+        expect(await response.text()).toBe(prerender ? "fresh-data" : "stale-data");
+      } finally {
+        await Promise.allSettled(pending);
+        setCacheHandler(previousHandler);
+        if (previous === undefined) delete process.env.VINEXT_PRERENDER;
+        else process.env.VINEXT_PRERENDER = previous;
+      }
+    },
+  );
+
+  it("seeds foreground function-cache revalidation only while prerendering", async () => {
+    // Ordinary runtime requests serve stale "use cache"/unstable_cache data and
+    // refresh in the background. A build/prerender request (VINEXT_PRERENDER=1)
+    // bakes the response into a static artifact, so it must await the refresh in
+    // the foreground — otherwise a stale persistent entry would be written into
+    // the generated artifact. Regression for the mode seeded at the handler's
+    // createRequestContext call.
+    const { getFunctionCacheRevalidationMode } =
+      await import("../packages/vinext/src/shims/cache-request-state.js");
+
+    async function observeMode(): Promise<string> {
+      let observed = "";
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage: async () => {
+          observed = getFunctionCacheRevalidationMode();
+          return new Response("page", { status: 200 });
+        },
+      });
+      const response = await handler(new Request("https://example.test/docs/about"), null);
+      expect(response.status).toBe(200);
+      return observed;
+    }
+
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    try {
+      delete process.env.VINEXT_PRERENDER;
+      expect(await observeMode()).toBe("background");
+
+      process.env.VINEXT_PRERENDER = "1";
+      expect(await observeMode()).toBe("foreground");
     } finally {
       if (previousPrerender === undefined) {
         delete process.env.VINEXT_PRERENDER;

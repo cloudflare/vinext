@@ -23,6 +23,7 @@ import {
 } from "./app-route-handler-response.js";
 import {
   _consumeRequestScopedCacheLife,
+  setFunctionCacheRevalidationMode,
   cacheLifeProfiles,
   type CacheLifeConfig,
 } from "vinext/shims/cache-request-state";
@@ -326,7 +327,10 @@ async function runMetadataRouteRegeneration(
   previousEntry: ISRCacheEntry,
   executionContext: ReturnType<typeof getRequestExecutionContext>,
 ): Promise<void> {
-  const requestContext = createRequestContext({ executionContext });
+  const requestContext = createRequestContext({
+    bypassNestedUnstableCacheReads: true,
+    executionContext,
+  });
   try {
     await runWithRequestContext(requestContext, async () => {
       ensureFetchPatch();
@@ -685,6 +689,22 @@ export function isMetadataRouteRequestPath(
   return false;
 }
 
+function prepareMetadataRouteMiss(
+  options: MetadataRouteRequestOptions,
+  functions: MetadataRouteFunctions,
+): void {
+  if (
+    isOuterMetadataCacheEnabled() &&
+    isUseCacheFunction(functions.defaultExport) &&
+    options.isrRouteKey &&
+    options.isrSet
+  ) {
+    // Both request and response stages use this render boundary. An outer
+    // artifact must not give a stale function value a new lifetime.
+    setFunctionCacheRevalidationMode("auto");
+  }
+}
+
 async function writeMetadataRouteMiss(
   options: MetadataRouteRequestOptions,
   route: MetadataRuntimeRoute,
@@ -742,6 +762,7 @@ export async function handleMetadataRouteRequest(
             render,
           );
           if (cached.response) return cached.response;
+          prepareMetadataRouteMiss(options, functions);
           const rendered = await render();
           if (rendered) {
             await writeMetadataRouteMiss(options, route, functions, rendered, cached.cachedEntry);
@@ -775,6 +796,7 @@ export async function handleMetadataRouteRequest(
     );
     if (cached.response) return cached.response;
 
+    prepareMetadataRouteMiss(options, functions);
     const rendered = await render();
     await writeMetadataRouteMiss(options, route, functions, rendered, cached.cachedEntry);
     return rendered.response;

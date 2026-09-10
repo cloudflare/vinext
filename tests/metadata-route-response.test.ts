@@ -11,6 +11,7 @@ import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 
 type MetadataRuntimeRoute = MetadataFileRoute & {
@@ -344,6 +345,105 @@ describe("handleMetadataRouteRequest", () => {
     expect(metadataCalls).toBe(1);
     expect(await response?.text()).toContain("/runtime");
   });
+
+  it.each(["cold", "expired", "generated", "uncached"])(
+    "uses fresh function data for a %s metadata artifact render",
+    async (state) => {
+      const generated = state === "generated";
+      const writes: string[] = [];
+      const pending: Promise<unknown>[] = [];
+      const source = [{ url: "https://example.com/fresh" }];
+      setCacheHandler({
+        async get() {
+          return {
+            lastModified: 1,
+            cacheState: "stale",
+            value: {
+              kind: "FETCH",
+              data: {
+                headers: {},
+                body: JSON.stringify([{ url: "https://example.com/stale" }]),
+                url: "metadata-function",
+              },
+              revalidate: 60,
+            },
+          };
+        },
+        async set() {},
+        async revalidateTag() {},
+      });
+      const cached = registerCachedFunction(async () => source, `metadata-freshness:${state}`, "", {
+        argumentCount: 0,
+      });
+      try {
+        const response = await withEnvVar("NODE_ENV", "production", () =>
+          runWithRequestContext(
+            createRequestContext({
+              functionCacheRevalidationMode: "background",
+              executionContext: {
+                waitUntil(promise) {
+                  pending.push(promise);
+                },
+              },
+            }),
+            () =>
+              handleMetadataRouteRequest({
+                cleanPathname: generated ? "/sitemap/0.xml" : "/sitemap.xml",
+                isrRouteKey: (pathname) => `metadata:${pathname}`,
+                async isrGet() {
+                  return state === "expired"
+                    ? {
+                        isStale: true,
+                        isExpired: true,
+                        value: {
+                          lastModified: 1,
+                          value: {
+                            kind: "APP_ROUTE",
+                            status: 200,
+                            body: new TextEncoder().encode("expired").buffer,
+                            headers: {
+                              "content-type": "application/xml",
+                              "x-vinext-metadata-route-cache": "1",
+                            },
+                          },
+                        },
+                      }
+                    : null;
+                },
+                isrSet:
+                  state === "uncached"
+                    ? undefined
+                    : async (_key, value) => {
+                        writes.push(new TextDecoder().decode(value.body));
+                      },
+                makeThenableParams,
+                metadataRoutes: [
+                  {
+                    type: "sitemap",
+                    isDynamic: true,
+                    filePath: "/tmp/app/sitemap.ts",
+                    routePrefix: "",
+                    routeSegments: [],
+                    servedUrl: "/sitemap.xml",
+                    contentType: "application/xml",
+                    module: {
+                      default: cached,
+                      ...(generated ? { generateSitemaps: async () => [{ id: 0 }] } : {}),
+                    },
+                  },
+                ],
+              }),
+          ),
+        );
+        expect(await response?.text()).toContain(state === "uncached" ? "/stale" : "/fresh");
+        expect(writes).toHaveLength(state === "uncached" ? 0 : 1);
+        for (const body of writes) expect(body).toContain("/fresh");
+      } finally {
+        await Promise.allSettled(pending);
+        setCacheHandler(new MemoryCacheHandler());
+      }
+    },
+  );
 
   it("serves stale metadata while regenerating its value and invalidation tags", async () => {
     let metadataCalls = 0;

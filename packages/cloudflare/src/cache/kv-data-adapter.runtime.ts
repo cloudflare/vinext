@@ -442,6 +442,10 @@ export class KVCacheHandler implements CacheHandler {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
+    if (data === null && ctx?.fetchCache === true) {
+      return this.kv.delete(this._entryKey(key));
+    }
+
     // Collect, validate, and dedupe tags from data and context
     const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
@@ -471,6 +475,14 @@ export class KVCacheHandler implements CacheHandler {
     if (effectiveRevalidate === 0) return Promise.resolve();
 
     const now = Date.now();
+    // The value may have been read before an in-flight tag invalidation.
+    // Preserve its creation time so a later write cannot resurrect old data.
+    const lastModified =
+      typeof ctx?.lastModified === "number" &&
+      Number.isFinite(ctx.lastModified) &&
+      ctx.lastModified >= 0
+        ? Math.min(ctx.lastModified, now)
+        : now;
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
@@ -496,7 +508,7 @@ export class KVCacheHandler implements CacheHandler {
     const entry: KVCacheEntry = {
       value: serializable,
       tags,
-      lastModified: now,
+      lastModified,
       revalidateAt,
       expireAt,
       cacheControl,

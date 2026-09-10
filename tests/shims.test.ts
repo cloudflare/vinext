@@ -6279,6 +6279,24 @@ describe("next/cache shim", () => {
     }
   });
 
+  it("MemoryCacheHandler deletes entries set to null", async () => {
+    const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    await handler.set("deleted", {
+      kind: "FETCH",
+      data: { headers: {}, body: '"cached"', url: "test" },
+      tags: [],
+      revalidate: 3600,
+    });
+
+    await handler.set("deleted", null, { fetchCache: true });
+
+    expect(await handler.get("deleted")).toBeNull();
+
+    await handler.set("response-null", null);
+    expect(await handler.get("response-null")).toMatchObject({ value: null });
+  });
+
   it("MemoryCacheHandler evicts least-recently-used entries when max size is exceeded", async () => {
     const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
 
@@ -6557,6 +6575,17 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
+  it("decideCacheRead distinguishes fresh, stale, and unusable cache states", async () => {
+    const { decideCacheRead } = await import("../packages/vinext/src/shims/cache-request-state.js");
+
+    expect(decideCacheRead(undefined, "background")).toBe("serve");
+    expect(decideCacheRead("stale", "background")).toBe("serve-and-revalidate");
+    expect(decideCacheRead("stale", "foreground")).toBe("revalidate");
+    expect(decideCacheRead("expired", "background")).toBe("revalidate");
+    expect(decideCacheRead("fresh", "background")).toBe("serve");
+    expect(decideCacheRead("unknown", "background")).toBe("serve");
+  });
+
   it("unstable_cache serves stale entries and refreshes them in the background during App Router requests", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -6608,7 +6637,7 @@ describe("next/cache shim", () => {
     // pending revalidate and return the stale response immediately.
     // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-cache.ts
     const requestContext = createRequestContext({
-      unstableCacheRevalidation: "background",
+      functionCacheRevalidationMode: "background",
       executionContext: {
         waitUntil(promise) {
           waitUntilPromises.push(promise);
@@ -6630,6 +6659,159 @@ describe("next/cache shim", () => {
       await Promise.all(waitUntilPromises);
 
       expect(setBodies).toEqual([JSON.stringify({ v: "fresh-value" })]);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("runs unstable_cache background refreshes as isolated work units with fresh nested reads", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const setBodies = new Map<string, string>();
+    const handler: CacheHandler = {
+      async get(key: string): Promise<CacheHandlerValue> {
+        return {
+          lastModified: Date.now() - 2_000,
+          cacheState: "stale",
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({
+                v: key.includes("swr-nested-inner") ? "inner-stale" : "outer-stale",
+              }),
+              url: key,
+            },
+            tags: [],
+            revalidate: 1,
+          },
+        };
+      },
+      async set(key: string, data: IncrementalCacheValue | null) {
+        if (data?.kind === "FETCH") {
+          setBodies.set(key, data.data.body);
+        }
+      },
+      async revalidateTag(_tags: string | string[]) {},
+    };
+    setCacheHandler(handler);
+
+    let innerCalls = 0;
+    const inner = unstable_cache(
+      async () => {
+        innerCalls++;
+        return "inner-fresh";
+      },
+      ["swr-nested-inner"],
+      { tags: ["nested-inner-tag"], revalidate: 1 },
+    );
+    let outerCalls = 0;
+    const outer = unstable_cache(
+      async () => {
+        outerCalls++;
+        return { inner: await inner() };
+      },
+      ["swr-nested-outer"],
+      { revalidate: 1 },
+    );
+
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      bypassNestedUnstableCacheReads: true,
+      functionCacheRevalidationMode: "background",
+      executionContext: {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      },
+    });
+
+    try {
+      // The stale outer entry is served without waiting for the refresh.
+      await expect(runWithRequestContext(requestContext, () => outer())).resolves.toBe(
+        "outer-stale",
+      );
+      expect(waitUntilPromises).toHaveLength(1);
+      await Promise.all(waitUntilPromises);
+
+      // Next.js bypasses nested unstable_cache reads but still writes the fresh
+      // inner value. The detached refresh therefore persists fresh data at
+      // both levels.
+      expect(outerCalls).toBe(1);
+      expect(innerCalls).toBe(1);
+      expect([...setBodies].find(([key]) => key.includes(":swr-nested-inner:"))?.[1]).toBe(
+        JSON.stringify({ v: "inner-fresh" }),
+      );
+      expect([...setBodies].find(([key]) => key.includes(":swr-nested-outer:"))?.[1]).toBe(
+        JSON.stringify({ v: { inner: "inner-fresh" } }),
+      );
+
+      // Tags and observations recorded inside the refresh belong to its
+      // isolated context, not to the request that happened to trigger it.
+      expect(requestContext.currentRequestTags).toEqual([]);
+      expect(requestContext.unstableCacheObservations.size).toBe(1);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("unstable_cache revalidates expired entries in the foreground", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const setEntry = vi.fn<CacheHandler["set"]>(async () => {});
+    setCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now() - 60_000,
+          cacheState: "expired",
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ v: "expired-value" }),
+              url: "unstable_cache:expired-test:[]",
+            },
+            tags: ["expired"],
+            revalidate: 1,
+          },
+        };
+      },
+      set: setEntry,
+      async revalidateTag() {},
+    });
+
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      functionCacheRevalidationMode: "background",
+      executionContext: {
+        waitUntil(promise) {
+          waitUntilCalls.push(promise);
+        },
+      },
+    });
+    let callCount = 0;
+    const cached = unstable_cache(
+      async () => {
+        callCount++;
+        return "fresh-value";
+      },
+      ["expired-test"],
+      { tags: ["expired"], revalidate: 1 },
+    );
+
+    try {
+      await expect(runWithRequestContext(requestContext, () => cached())).resolves.toBe(
+        "fresh-value",
+      );
+      expect(callCount).toBe(1);
+      expect(waitUntilCalls).toHaveLength(0);
+      expect(setEntry).toHaveBeenCalledOnce();
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -6678,7 +6860,7 @@ describe("next/cache shim", () => {
     // regenerating a static/ISR page so the regenerated page stores fresh data.
     // Source test: https://github.com/vercel/next.js/blob/canary/test/production/app-dir/unstable-cache-foreground-revalidate/unstable-cache-foreground-revalidate.test.ts
     const requestContext = createRequestContext({
-      unstableCacheRevalidation: "foreground",
+      functionCacheRevalidationMode: "foreground",
     });
 
     try {
@@ -7041,6 +7223,713 @@ describe('"use cache" runtime', () => {
     // Immediate second call — cached
     await cached();
     expect(callCount).toBe(1);
+  });
+
+  it("serves concurrent stale shared entries while one background revalidation runs", async () => {
+    // Ported from Next.js: test/e2e/app-dir/use-cache-swr/use-cache-swr.test.ts
+    // https://github.com/vercel/next.js/blob/a6223ac95d5e5a2f542d9bb76bd41e7451a21c73/test/e2e/app-dir/use-cache-swr/use-cache-swr.test.ts
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { addCollectedRequestTags, getCurrentFetchSoftTags } =
+      await import("../packages/vinext/src/shims/fetch-cache.js");
+    const { draftMode } = await import("../packages/vinext/src/shims/headers.js");
+    const { getRootParam } = await import("../packages/vinext/src/shims/root-params.js");
+    const { createRequestContext, getRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const staleEntry = {
+      lastModified: Date.now() - 2_000,
+      cacheState: "stale",
+      cacheControl: { revalidate: 3_600, expire: 7_200 },
+      value: {
+        kind: "FETCH",
+        data: {
+          headers: {},
+          body: JSON.stringify({ version: "stale" }),
+          url: "use-cache:test:stale-swr",
+        },
+        tags: ["stale-entry-tag"],
+        revalidate: 3_600,
+      },
+    } satisfies CacheHandlerValue;
+    const setEntry = vi.fn<CacheHandler["set"]>(async () => {});
+    setCacheHandler({
+      async get() {
+        return staleEntry;
+      },
+      set: setEntry,
+      async revalidateTag() {},
+    });
+
+    let markRevalidationStarted = () => {};
+    const revalidationStarted = new Promise<void>((resolve) => {
+      markRevalidationStarted = resolve;
+    });
+    let releaseRevalidation = () => {};
+    const revalidationGate = new Promise<void>((resolve) => {
+      releaseRevalidation = resolve;
+    });
+    const firstWaitUntilCalls: Promise<unknown>[] = [];
+    const secondWaitUntilCalls: Promise<unknown>[] = [];
+    const staleCalls: Promise<{ version: string }>[] = [];
+    const firstRequestContext = createRequestContext({
+      functionCacheRevalidationMode: "background",
+      currentFetchSoftTags: ["implicit-route-tag"],
+      headersContext: {
+        headers: new Headers({ "x-request-only": "first" }),
+        cookies: new Map([["request-only", "first"]]),
+        draftModeSecret: "test-secret",
+      },
+      isFetchDedupeActive: true,
+      rootParams: { lang: "en" },
+      executionContext: {
+        waitUntil(promise) {
+          firstWaitUntilCalls.push(promise);
+        },
+      },
+    });
+    const secondRequestContext = createRequestContext({
+      functionCacheRevalidationMode: "background",
+      currentFetchSoftTags: ["implicit-route-tag"],
+      headersContext: {
+        headers: new Headers({ "x-request-only": "second" }),
+        cookies: new Map([["request-only", "second"]]),
+        draftModeSecret: "test-secret",
+      },
+      isFetchDedupeActive: true,
+      rootParams: { lang: "en" },
+      executionContext: {
+        waitUntil(promise) {
+          secondWaitUntilCalls.push(promise);
+        },
+      },
+    });
+    let revalidationCalls = 0;
+    let refreshSoftTags: string[] = [];
+    let refreshRootParam: string | string[] | undefined;
+    let refreshDraftModeEnabled: boolean | undefined;
+    let refreshRequestHeader: string | null | undefined;
+    let refreshRequestCookie: string | undefined;
+    let refreshDraftModeSecret: string | undefined;
+    let refreshFetchDedupeActive = false;
+    let refreshFetchDedupeEntries: unknown;
+
+    const cached = registerCachedFunction(async () => {
+      revalidationCalls++;
+      try {
+        refreshSoftTags = getCurrentFetchSoftTags();
+        refreshRootParam = await getRootParam("lang");
+        refreshDraftModeEnabled = (await draftMode()).isEnabled;
+        const refreshHeadersContext = getRequestContext().headersContext;
+        refreshRequestHeader = refreshHeadersContext?.headers.get("x-request-only");
+        refreshRequestCookie = refreshHeadersContext?.cookies.get("request-only");
+        refreshDraftModeSecret = refreshHeadersContext?.draftModeSecret;
+        refreshFetchDedupeActive = getRequestContext().isFetchDedupeActive;
+        refreshFetchDedupeEntries = getRequestContext().currentFetchDedupeEntries;
+        cacheLife({ stale: 1, revalidate: 1, expire: 60 });
+        addCollectedRequestTags(["refresh-fetch-tag"]);
+        // These are the exact request-state slices updated by cached and
+        // uncached fetch observations during a real refresh.
+        getRequestContext().cacheableFetchUrls.add("https://example.com/refresh-cacheable");
+        getRequestContext().dynamicFetchUrls.add("https://example.com/refresh-dynamic");
+      } finally {
+        markRevalidationStarted();
+      }
+      await revalidationGate;
+      return { version: "fresh" };
+    }, "test:stale-swr");
+
+    try {
+      staleCalls.push(
+        runWithRequestContext(firstRequestContext, () => cached()),
+        runWithRequestContext(secondRequestContext, () => cached()),
+      );
+      await revalidationStarted;
+
+      const outcome = await Promise.race([
+        Promise.all(staleCalls).then((values) => ({ status: "returned" as const, values })),
+        new Promise<{ status: "blocked" }>((resolve) => {
+          setImmediate(() => resolve({ status: "blocked" }));
+        }),
+      ]);
+
+      expect(outcome).toEqual({
+        status: "returned",
+        values: [{ version: "stale" }, { version: "stale" }],
+      });
+      expect(
+        [firstWaitUntilCalls.length, secondWaitUntilCalls.length].sort((a, b) => a - b),
+      ).toEqual([0, 1]);
+      expect(revalidationCalls).toBe(1);
+      expect(refreshSoftTags).toEqual(["implicit-route-tag"]);
+      expect(refreshRootParam).toBe("en");
+      expect(refreshDraftModeEnabled).toBe(false);
+      expect(refreshRequestHeader).toBeNull();
+      expect(refreshRequestCookie).toBeUndefined();
+      expect(refreshDraftModeSecret).toBe("test-secret");
+      expect(refreshFetchDedupeActive).toBe(true);
+      expect(refreshFetchDedupeEntries).not.toBe(firstRequestContext.currentFetchDedupeEntries);
+      expect(refreshFetchDedupeEntries).not.toBe(secondRequestContext.currentFetchDedupeEntries);
+    } finally {
+      releaseRevalidation();
+      await Promise.allSettled([...staleCalls, ...firstWaitUntilCalls, ...secondWaitUntilCalls]);
+      setCacheHandler(new MemoryCacheHandler());
+    }
+
+    // Reading a root param during refresh writes the routing hint first,
+    // then the value under the locale-specific key.
+    expect(setEntry).toHaveBeenCalledTimes(2);
+    const [redirectWrite, valueWrite] = setEntry.mock.calls;
+    expect(redirectWrite[0]).toBe("use-cache:test:stale-swr");
+    expect(valueWrite[0]).not.toBe(redirectWrite[0]);
+    expect(valueWrite[1]).toMatchObject({
+      kind: "FETCH",
+      data: { body: JSON.stringify({ version: "fresh" }), url: valueWrite[0] },
+    });
+    for (const requestContext of [firstRequestContext, secondRequestContext]) {
+      expect(requestContext.requestScopedCacheLife).toEqual({
+        revalidate: 3_600,
+        expire: 7_200,
+      });
+      expect(requestContext.currentRequestTags).toEqual(["stale-entry-tag"]);
+      expect(requestContext.cacheableFetchUrls).toEqual(new Set());
+      expect(requestContext.dynamicFetchUrls).toEqual(new Set());
+    }
+  });
+
+  it.each([
+    ["use cache", "use cache"],
+    ["use cache", "unstable_cache"],
+    ["unstable_cache", "use cache"],
+    ["unstable_cache", "unstable_cache"],
+  ])("refreshes a stale %s child before a %s miss persists it", async (childKind, outerKind) => {
+    // Next.js use-cache-wrapper.ts uses willConsumerServerCache() to force
+    // fresh dependencies when the caller is itself producing a cache entry.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife, unstable_cache } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const isChildKey = (key: string) =>
+      childKind === "use cache"
+        ? key === "use-cache:test:swr-nested-child"
+        : key.includes(":swr-nested-child:");
+    const isOuterKey = (key: string) =>
+      outerKind === "use cache"
+        ? key === "use-cache:test:swr-nested-outer"
+        : key.includes(":swr-nested-outer:");
+
+    const staleChild = {
+      lastModified: Date.now() - 2_000,
+      cacheState: "stale",
+      cacheControl: { revalidate: 5, expire: 50 },
+      value: {
+        kind: "FETCH",
+        data: {
+          headers: {},
+          body: JSON.stringify(
+            childKind === "use cache" ? { child: "stale" } : { v: { child: "stale" } },
+          ),
+          url: "child",
+        },
+        tags: [],
+        revalidate: 5,
+      },
+    } satisfies CacheHandlerValue;
+
+    const setEntry = vi.fn<CacheHandler["set"]>(async () => {});
+    setCacheHandler({
+      // Child key is a stale hit; outer key is a miss so the outer executes and
+      // embeds the served child value.
+      async get(key) {
+        return isChildKey(key) ? staleChild : null;
+      },
+      set: setEntry,
+      async revalidateTag() {},
+    });
+
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      functionCacheRevalidationMode: "background",
+      executionContext: {
+        waitUntil(promise) {
+          waitUntilCalls.push(promise);
+        },
+      },
+    });
+
+    const renderChild = async () => {
+      cacheLife({ revalidate: 10, expire: 600 });
+      return { child: "fresh" };
+    };
+    const child =
+      childKind === "use cache"
+        ? registerCachedFunction(renderChild, "test:swr-nested-child")
+        : unstable_cache(renderChild, ["swr-nested-child"], { revalidate: 10 });
+    // The outer sets no cacheLife of its own, so the nested child is its only
+    // lifetime source; the default would otherwise resolve to 900s.
+    const renderOuter = async () => {
+      const c = await child();
+      return { outer: true, c };
+    };
+    const outer =
+      outerKind === "use cache"
+        ? registerCachedFunction(renderOuter, "test:swr-nested-outer")
+        : unstable_cache(renderOuter, ["swr-nested-outer"]);
+
+    try {
+      await expect(runWithRequestContext(requestContext, () => outer())).resolves.toEqual({
+        outer: true,
+        c: { child: "fresh" },
+      });
+      expect(waitUntilCalls).toHaveLength(0);
+      const outerSet = setEntry.mock.calls.find(([key]) => isOuterKey(key));
+      expect(outerSet).toBeDefined();
+      expect(outerSet![1]).toMatchObject({
+        data: {
+          body: JSON.stringify(
+            outerKind === "use cache"
+              ? { outer: true, c: { child: "fresh" } }
+              : { v: { outer: true, c: { child: "fresh" } } },
+          ),
+        },
+      });
+      if (outerKind === "use cache" && childKind === "use cache") {
+        expect(outerSet![2]).toMatchObject({ cacheControl: { revalidate: 10, expire: 600 } });
+      }
+    } finally {
+      await Promise.allSettled(waitUntilCalls);
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("derives a fresh nested hit's cache life from the entry revalidate when cacheControl is absent", async () => {
+    // Regression: a custom CacheHandler or legacy entry can return a fresh
+    // FETCH value without the optional `cacheControl` metadata. The required
+    // `value.revalidate` still bounds the entry's lifetime, so an outer miss
+    // embedding the served hit must inherit it instead of resolving the
+    // default 900s window around child data.
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const childKey = "use-cache:test:swr-bare-child";
+    const outerKey = "use-cache:test:swr-bare-outer";
+
+    const staleChild = {
+      lastModified: Date.now() - 2_000,
+      value: {
+        kind: "FETCH",
+        data: { headers: {}, body: JSON.stringify({ child: "cached" }), url: childKey },
+        tags: [],
+        revalidate: 5,
+      },
+    } satisfies CacheHandlerValue;
+
+    const setEntry = vi.fn<CacheHandler["set"]>(async () => {});
+    setCacheHandler({
+      async get(key) {
+        return key === childKey ? staleChild : null;
+      },
+      set: setEntry,
+      async revalidateTag() {},
+    });
+
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      functionCacheRevalidationMode: "background",
+      executionContext: {
+        waitUntil(promise) {
+          waitUntilCalls.push(promise);
+        },
+      },
+    });
+
+    const child = registerCachedFunction(async () => ({ child: "fresh" }), "test:swr-bare-child");
+    const outer = registerCachedFunction(async () => {
+      const c = await child();
+      return { outer: true, c };
+    }, "test:swr-bare-outer");
+
+    try {
+      await runWithRequestContext(requestContext, () => outer());
+      const outerSet = setEntry.mock.calls.find(([key]) => key === outerKey);
+      expect(outerSet).toBeDefined();
+      expect((outerSet![2] as { cacheControl?: unknown }).cacheControl).toEqual({
+        revalidate: 5,
+      });
+    } finally {
+      await Promise.allSettled(waitUntilCalls);
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it.each([
+    ["expired", JSON.stringify({ version: "expired" })],
+    ["stale", "not-json"],
+    [undefined, "not-json"],
+  ])(
+    '"use cache" regenerates unusable entries (%s, %s) in the foreground',
+    async (cacheState, body) => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { createRequestContext, runWithRequestContext } =
+        await import("../packages/vinext/src/shims/unified-request-context.js");
+
+      const setEntry = vi.fn<CacheHandler["set"]>(async () => {});
+      setCacheHandler({
+        async get() {
+          return {
+            lastModified: Date.now() - 60_000,
+            cacheState,
+            cacheControl: { revalidate: 1, expire: 10 },
+            value: {
+              kind: "FETCH",
+              data: {
+                headers: {},
+                body: body!,
+                url: "use-cache:test:expired",
+              },
+              tags: ["unusable-entry-tag"],
+              revalidate: 1,
+            },
+          };
+        },
+        set: setEntry,
+        async revalidateTag() {},
+      });
+
+      const waitUntilCalls: Promise<unknown>[] = [];
+      const requestContext = createRequestContext({
+        functionCacheRevalidationMode: "background",
+        executionContext: {
+          waitUntil(promise) {
+            waitUntilCalls.push(promise);
+          },
+        },
+      });
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        callCount++;
+        return { version: "fresh" };
+      }, "test:expired");
+
+      try {
+        await expect(runWithRequestContext(requestContext, () => cached())).resolves.toEqual({
+          version: "fresh",
+        });
+        expect(callCount).toBe(1);
+        expect(requestContext.currentRequestTags).toEqual([]);
+        expect(requestContext.requestScopedCacheLife?.revalidate).toBe(900);
+        expect(waitUntilCalls).toHaveLength(0);
+        expect(setEntry).toHaveBeenCalledOnce();
+      } finally {
+        setCacheHandler(new MemoryCacheHandler());
+      }
+    },
+  );
+
+  it("bypasses persistent shared cache while draft mode is enabled", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { draftMode, headersContextFromRequest } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const getEntry = vi.fn<CacheHandler["get"]>(async () => ({
+      lastModified: Date.now() - 2_000,
+      cacheState: "stale",
+      cacheControl: { revalidate: 1, expire: 60 },
+      value: {
+        kind: "FETCH",
+        data: {
+          headers: {},
+          body: JSON.stringify({ version: "published-stale" }),
+          url: "use-cache:test:draft-mode-bypass",
+        },
+        tags: [],
+        revalidate: 1,
+      },
+    }));
+    const setEntry = vi.fn<CacheHandler["set"]>(async () => {});
+    setCacheHandler({
+      get: getEntry,
+      set: setEntry,
+      async revalidateTag() {},
+    });
+
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      functionCacheRevalidationMode: "background",
+      headersContext: headersContextFromRequest(
+        new Request("https://example.com/preview", {
+          headers: { cookie: "__prerender_bypass=test-secret" },
+        }),
+        { draftModeSecret: "test-secret" },
+      ),
+      executionContext: {
+        waitUntil(promise) {
+          waitUntilCalls.push(promise);
+        },
+      },
+    });
+    let calls = 0;
+    let observedDraftMode = false;
+    const cached = registerCachedFunction(async () => {
+      calls++;
+      observedDraftMode = (await draftMode()).isEnabled;
+      cacheLife({ revalidate: 5, expire: 60 });
+      return { version: "preview-fresh" };
+    }, "test:draft-mode-bypass");
+
+    try {
+      await expect(runWithRequestContext(requestContext, () => cached())).resolves.toEqual({
+        version: "preview-fresh",
+      });
+      expect(calls).toBe(1);
+      expect(observedDraftMode).toBe(true);
+      expect(getEntry).not.toHaveBeenCalled();
+      expect(setEntry).not.toHaveBeenCalled();
+      expect(waitUntilCalls).toHaveLength(0);
+      expect(requestContext.requestScopedCacheLife).toEqual({
+        revalidate: 5,
+        expire: 60,
+      });
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("logs failed background writes and retries stale entries without waitUntil", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    let resolveFirstWrite = () => {};
+    const firstWrite = new Promise<void>((resolve) => {
+      resolveFirstWrite = resolve;
+    });
+    let resolveSecondWrite = () => {};
+    const secondWrite = new Promise<void>((resolve) => {
+      resolveSecondWrite = resolve;
+    });
+    let writeCalls = 0;
+    setCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now() - 2_000,
+          cacheState: "stale",
+          cacheControl: { revalidate: 1, expire: 60 },
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ version: "stale" }),
+              url: "use-cache:test:stale-write-retry",
+            },
+            tags: [],
+            revalidate: 1,
+          },
+        };
+      },
+      async set() {
+        writeCalls++;
+        if (writeCalls === 1) {
+          resolveFirstWrite();
+          throw new Error("cache backend unavailable");
+        }
+        resolveSecondWrite();
+      },
+      async revalidateTag() {},
+    });
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    let revalidationCalls = 0;
+    const cached = registerCachedFunction(async () => {
+      revalidationCalls++;
+      return { version: "fresh" };
+    }, "test:stale-write-retry");
+    const requestContext = createRequestContext({
+      functionCacheRevalidationMode: "background",
+      executionContext: null,
+    });
+
+    try {
+      await expect(runWithRequestContext(requestContext, () => cached())).resolves.toEqual({
+        version: "stale",
+      });
+      await firstWrite;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(consoleError).toHaveBeenCalledWith(
+        "[vinext] use cache background revalidation cache write failed:",
+        expect.objectContaining({ message: "cache backend unavailable" }),
+      );
+
+      await expect(runWithRequestContext(requestContext, () => cached())).resolves.toEqual({
+        version: "stale",
+      });
+      await secondWrite;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    } finally {
+      consoleError.mockRestore();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+
+    expect(revalidationCalls).toBe(2);
+    expect(writeCalls).toBe(2);
+  });
+
+  it("refreshes stale shared entries in foreground runtime revalidation contexts", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+
+    const setEntry = vi.fn<CacheHandler["set"]>(async () => {});
+    setCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now() - 2_000,
+          cacheState: "stale",
+          cacheControl: { revalidate: 1, expire: 60 },
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ version: "stale" }),
+              url: "use-cache:test:stale-runtime-isr",
+            },
+            tags: [],
+            revalidate: 1,
+          },
+        };
+      },
+      set: setEntry,
+      async revalidateTag() {},
+    });
+
+    let markRefreshStarted = () => {};
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    let releaseRefresh = () => {};
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const waitUntilCalls: Promise<unknown>[] = [];
+    const requestContext = createRequestContext({
+      functionCacheRevalidationMode: "foreground",
+      executionContext: {
+        waitUntil(promise) {
+          waitUntilCalls.push(promise);
+        },
+      },
+    });
+    const cached = registerCachedFunction(async () => {
+      markRefreshStarted();
+      await refreshGate;
+      return { version: "fresh" };
+    }, "test:stale-runtime-isr");
+    const resultPromise = runWithRequestContext(requestContext, () => cached());
+
+    try {
+      await refreshStarted;
+      const outcome = await Promise.race([
+        resultPromise.then((value) => ({ status: "returned" as const, value })),
+        new Promise<{ status: "blocked" }>((resolve) => {
+          setImmediate(() => resolve({ status: "blocked" }));
+        }),
+      ]);
+
+      expect(outcome).toEqual({ status: "blocked" });
+      expect(waitUntilCalls).toHaveLength(0);
+    } finally {
+      releaseRefresh();
+    }
+
+    try {
+      await expect(resultPromise).resolves.toEqual({ version: "fresh" });
+      expect(setEntry).toHaveBeenCalledOnce();
+      expect(setEntry).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          kind: "FETCH",
+          data: expect.objectContaining({ body: JSON.stringify({ version: "fresh" }) }),
+        }),
+        expect.any(Object),
+      );
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("refreshes stale shared entries in the foreground during prerendering", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    const setEntry = vi.fn<CacheHandler["set"]>(async () => {});
+    setCacheHandler({
+      async get() {
+        return {
+          lastModified: Date.now() - 2_000,
+          cacheState: "stale",
+          cacheControl: { revalidate: 1, expire: 60 },
+          value: {
+            kind: "FETCH",
+            data: {
+              headers: {},
+              body: JSON.stringify({ version: "stale" }),
+              url: "use-cache:test:stale-prerender",
+            },
+            tags: [],
+            revalidate: 1,
+          },
+        };
+      },
+      set: setEntry,
+      async revalidateTag() {},
+    });
+
+    let callCount = 0;
+    const cached = registerCachedFunction(async () => {
+      callCount++;
+      return { version: "fresh" };
+    }, "test:stale-prerender");
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+
+    try {
+      process.env.VINEXT_PRERENDER = "1";
+      await expect(cached()).resolves.toEqual({ version: "fresh" });
+      expect(callCount).toBe(1);
+      expect(setEntry).toHaveBeenCalledOnce();
+    } finally {
+      if (previousPrerender === undefined) {
+        delete process.env.VINEXT_PRERENDER;
+      } else {
+        process.env.VINEXT_PRERENDER = previousPrerender;
+      }
+      setCacheHandler(new MemoryCacheHandler());
+    }
   });
 
   it("a use cache hit re-registers its client stale time on the request scope", async () => {

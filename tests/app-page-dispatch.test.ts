@@ -60,6 +60,7 @@ import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
+import { getFunctionCacheRevalidationMode } from "../packages/vinext/src/shims/cache-request-state.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -590,6 +591,142 @@ function createLayoutParamProbe(
 }
 
 describe("app page dispatch", () => {
+  it.each(["cold", "expired", "cache-life", "dynamic", "no-store", "auto-dynamic", "slots"])(
+    "uses fresh function data for an ISR page render (%s)",
+    async (state) => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { getCacheHandler, setCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { createRequestContext, runWithRequestContext } =
+        await import("../packages/vinext/src/shims/unified-request-context.js");
+      const previous = getCacheHandler();
+      setCacheHandler({
+        async get(key) {
+          return {
+            lastModified: Date.now(),
+            cacheState: "stale",
+            value: {
+              kind: "FETCH",
+              data: { headers: {}, body: '"stale-data"', url: key },
+              revalidate: 60,
+            },
+          };
+        },
+        async set() {},
+        async revalidateTag() {},
+      });
+      const cached = registerCachedFunction(async () => "fresh-data", `page-isr-${state}`);
+      const pending: Promise<unknown>[] = [];
+      const ctx = createRequestContext({
+        functionCacheRevalidationMode: "background",
+        headersContext: { headers: new Headers(), cookies: new Map() },
+        executionContext: {
+          waitUntil: (promise) => {
+            pending.push(promise);
+          },
+        },
+      });
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      let rendered = "";
+      const { options } = createDispatchOptions({
+        isProduction: true,
+        isRscRequest: state === "slots",
+        mountedSlotsHeader: state === "slots" ? "slot:modal:/feed" : null,
+        revalidateSeconds: state === "no-store" ? 0 : state === "cache-life" ? null : 60,
+        dynamicConfig: state === "dynamic" ? "force-dynamic" : undefined,
+        isrGet: async () =>
+          state === "expired"
+            ? {
+                ...buildISRCacheEntry(buildCachedAppPageValue("expired-artifact"), true),
+                isExpired: true,
+              }
+            : null,
+        isrSet,
+        buildPageElement: async () => {
+          if (state === "auto-dynamic")
+            await (await import("../packages/vinext/src/shims/headers.js")).cookies();
+          rendered = await cached();
+          return React.createElement("main", null, rendered);
+        },
+        renderToReadableStream: () => createStream([rendered]),
+        loadSsrHandler: async () => ({
+          handleSsr: async (_stream, _ctx, _fontData, capture) => {
+            if (capture?.capturedRscDataRef)
+              capture.capturedRscDataRef.value = Promise.resolve(
+                new TextEncoder().encode(rendered).buffer,
+              );
+            return createStream([`<html>${rendered}</html>`]);
+          },
+        }),
+      });
+      try {
+        const response = await runWithRequestContext(ctx, () => dispatchAppPage(options));
+        const expected =
+          state === "dynamic" ||
+          state === "no-store" ||
+          state === "auto-dynamic" ||
+          state === "slots"
+            ? "stale-data"
+            : "fresh-data";
+        expect(await response.text()).toContain(expected);
+        await Promise.all(pending);
+        if (state === "cold" || state === "expired" || state === "cache-life") {
+          expect(isrSet).toHaveBeenCalled();
+          const htmlWrite = isrSet.mock.calls.find(([key]) => key.startsWith("html:"));
+          expect(htmlWrite?.[1]).toMatchObject({
+            kind: "APP_PAGE",
+            html: "<html>fresh-data</html>",
+          });
+          const rscWrite = isrSet.mock.calls.find(([key]) => key.startsWith("rsc:"));
+          expect(rscWrite?.[1]).toMatchObject({
+            kind: "APP_PAGE",
+            rscData: new TextEncoder().encode("fresh-data").buffer,
+          });
+        } else expect(isrSet).not.toHaveBeenCalled();
+      } finally {
+        await Promise.allSettled(pending);
+        setCacheHandler(previous);
+      }
+    },
+  );
+
+  it("keeps function revalidation in background mode for a direct interception response", async () => {
+    // Direct interception responses are dynamic and not persisted, matching Next.js:
+    // test/e2e/app-dir/dynamic-interception-route-revalidate/dynamic-interception-route-revalidate.test.ts
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    let observedMode: ReturnType<typeof getFunctionCacheRevalidationMode> | undefined;
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isRscRequest: true,
+      interceptionContext: "/feed",
+      revalidateSeconds: 60,
+      findIntercept: () => ({
+        matchedParams: {},
+        page: { default: "modal-page" },
+        slotId: "slot:modal:/feed",
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute: (index) => (index === 1 ? sourceRoute : undefined),
+      resolveRouteDynamicConfig: (route) => (route === sourceRoute ? "force-dynamic" : undefined),
+      buildPageElement: async () => {
+        observedMode = getFunctionCacheRevalidationMode();
+        return "intercepted";
+      },
+      renderToReadableStream: () => createStream(["intercepted"]),
+    });
+    const context = createRequestContext({
+      functionCacheRevalidationMode: "background",
+      headersContext: { headers: new Headers(), cookies: new Map() },
+    });
+
+    const response = await runWithRequestContext(context, () => dispatchAppPage(options));
+
+    await expect(response.text()).resolves.toBe("intercepted");
+    expect(observedMode).toBe("background");
+  });
+
   it("does not probe layouts below an active ancestor loading boundary", async () => {
     const probeLayoutAt = vi.fn((_layoutIndex: number) => null);
     const probePage = vi.fn(() => null);

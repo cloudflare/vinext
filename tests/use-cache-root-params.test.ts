@@ -120,4 +120,99 @@ describe('"use cache" root-param entry generation', () => {
     await expect(invoke()).resolves.toBe("en");
     expect(calls).toBe(1);
   });
+
+  it("refreshes lazy root-param entries with decrypted captures and isolated metadata", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { getRootParam } = await import("../packages/vinext/src/shims/root-params.js");
+    const { MemoryCacheHandler, setCacheHandler, cacheLife, cacheTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const memory = new MemoryCacheHandler();
+    let stale = false;
+    setCacheHandler({
+      async get(key, context) {
+        const entry = await memory.get(key, context);
+        return stale &&
+          entry?.value?.kind === "FETCH" &&
+          entry.value.data.headers["x-vinext-use-cache-root-params"] !== "1"
+          ? { ...entry, cacheState: "stale" }
+          : entry;
+      },
+      set: (key, value, context) => memory.set(key, value, context),
+      revalidateTag: (tags) => memory.revalidateTag(tags),
+    });
+    let version = "old";
+    let calls = 0;
+    async function LazyChild() {
+      const lang = await getRootParam("lang");
+      if (typeof lang !== "string") throw new Error("Expected a locale root param");
+      cacheTag(`content-${version}`);
+      cacheLife({ stale: 30, revalidate: 60, expire: 600 });
+      return createElement("span", null, `${lang}:${version}`);
+    }
+    const cached = registerCachedFunction(
+      async (captures: unknown) => {
+        expect(captures).toEqual(["decrypted"]);
+        calls++;
+        return createElement(LazyChild);
+      },
+      "test:swr-lazy-root-captures",
+      "",
+      {
+        argumentCount: 0,
+        decryptCaptures: async () => ["decrypted"],
+      },
+    );
+    const pending: Promise<unknown>[] = [];
+    const contexts = ["en", "fr"].map((lang) =>
+      createRequestContext({
+        rootParams: { lang },
+        functionCacheRevalidationMode: "background",
+        executionContext: {
+          waitUntil: (promise) => {
+            pending.push(promise);
+          },
+        },
+      }),
+    );
+    const invoke = () =>
+      Promise.all(contexts.map((ctx) => runWithRequestContext(ctx, () => cached("encrypted"))));
+    try {
+      await invoke();
+      for (const ctx of contexts) {
+        ctx.currentRequestTags = [];
+        ctx.requestScopedCacheLife = null;
+      }
+      // Simulate a new isolate discovering the root-param redirect from storage.
+      const known = Reflect.get(
+        globalThis,
+        Symbol.for("vinext.cacheRuntime.knownRootParamsByFunctionId"),
+      ) as Map<string, Set<string>>;
+      known.clear();
+      stale = true;
+      version = "new";
+      await expect(invoke()).resolves.toEqual([
+        { type: "span", children: "en:old" },
+        { type: "span", children: "fr:old" },
+      ]);
+      await Promise.all(pending);
+      expect(calls).toBe(4);
+      expect(pending).toHaveLength(2);
+      for (const ctx of contexts) {
+        expect(ctx.currentRequestTags).toEqual(["content-old"]);
+        expect(ctx.requestScopedCacheLife).toEqual({ stale: 30, revalidate: 60, expire: 600 });
+      }
+      stale = false;
+      await expect(invoke()).resolves.toEqual([
+        { type: "span", children: "en:new" },
+        { type: "span", children: "fr:new" },
+      ]);
+      expect(calls).toBe(4);
+    } finally {
+      await Promise.allSettled(pending);
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
 });

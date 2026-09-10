@@ -2,6 +2,7 @@ import type { AppMiddlewareContext } from "./app-middleware.js";
 import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
 import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { runWithUnifiedStateMutation } from "vinext/shims/unified-request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
@@ -155,7 +156,8 @@ export async function renderPagesFallback(
   const pagesSearch = queryIndex === -1 ? url.search || "" : pathname.slice(queryIndex);
   const pagesUrl = decodePathParams(pagesPathname) + pagesSearch;
   if (pagesPathname.startsWith("/api/") || pagesPathname === "/api") {
-    if (typeof pagesEntry.handleApiRoute !== "function") return null;
+    const handleApiRoute = pagesEntry.handleApiRoute;
+    if (typeof handleApiRoute !== "function") return null;
     const hasApiMatcher = typeof pagesEntry.matchApiRoute === "function";
     const apiMatch = hasApiMatcher
       ? (pagesEntry.matchApiRoute?.(pagesUrl, pagesRequest) ?? null)
@@ -179,9 +181,15 @@ export async function renderPagesFallback(
       executionContext?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
       executionContext?.hostRuntime ?? "node",
     ] as const;
-    const pagesApiResponse = await (initialResponseHeaders
-      ? pagesEntry.handleApiRoute(...apiArgs, initialResponseHeaders)
-      : pagesEntry.handleApiRoute(...apiArgs));
+    const pagesApiResponse = await runWithUnifiedStateMutation(
+      (ctx) => {
+        ctx.bypassNestedUnstableCacheReads = false;
+      },
+      () =>
+        initialResponseHeaders
+          ? handleApiRoute(...apiArgs, initialResponseHeaders)
+          : handleApiRoute(...apiArgs),
+    );
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
       applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
