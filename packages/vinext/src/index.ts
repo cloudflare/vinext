@@ -4202,6 +4202,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const entry = hasAppDir
               ? "vinext/server/app-router-entry"
               : "vinext/server/pages-router-entry";
+            if (!hasAppDir && hasNitroPlugin) {
+              return [
+                `import worker from ${JSON.stringify(entry)};`,
+                "export default { fetch(request, env, ctx) {",
+                '  return worker.fetch(request, env, { ...ctx, hostRuntime: "node" });',
+                "} };",
+              ].join("\n");
+            }
             return `export { default } from ${JSON.stringify(entry)};`;
           }
           if (id === RESOLVED_REQUEST_STAGE) {

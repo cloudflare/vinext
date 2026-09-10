@@ -1,9 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
+import http, { type Server } from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { gzipSync } from "node:zlib";
 import { createBuilder, type Plugin } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
@@ -50,13 +52,33 @@ async function stopServer(server: ChildProcess | undefined): Promise<void> {
 describe("Pages Router on Nitro", () => {
   let root = "";
   let server: ChildProcess | undefined;
+  let upstream: Server | undefined;
   let baseUrl = "";
 
   beforeAll(async () => {
+    const upstreamBody = gzipSync("decoded by the Nitro host");
+    upstream = http.createServer((_request, response) => {
+      response.writeHead(200, {
+        "content-encoding": "gzip",
+        "content-length": String(upstreamBody.byteLength),
+        "content-type": "text/plain",
+      });
+      response.end(upstreamBody);
+    });
+    await new Promise<void>((resolve, reject) => {
+      upstream!.once("error", reject);
+      upstream!.listen(0, "127.0.0.1", resolve);
+    });
+    const upstreamAddress = upstream.address();
+    if (!upstreamAddress || typeof upstreamAddress === "string") {
+      throw new Error("Nitro test upstream did not bind a TCP port");
+    }
+
     root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-nitro-"));
     await Promise.all([
       fs.mkdir(path.join(root, "pages/post"), { recursive: true }),
       fs.mkdir(path.join(root, "pages/api/echo"), { recursive: true }),
+      fs.mkdir(path.join(root, "pages/api/proxy"), { recursive: true }),
       fs.mkdir(path.join(root, "public"), { recursive: true }),
       fs.symlink(NITRO_NODE_MODULES, path.join(root, "node_modules"), "junction"),
     ]);
@@ -74,6 +96,14 @@ export default function Post({ slug }) { return <main>post:{slug}</main>; }
         path.join(root, "pages/api/echo/[slug].ts"),
         `export default function handler(req, res) {
   res.status(200).json({ method: req.method, slug: req.query.slug });
+}
+`,
+      ),
+      fs.writeFile(
+        path.join(root, "pages/api/proxy/index.ts"),
+        `export const config = { runtime: "edge" };
+export default function handler() {
+  return fetch("http://127.0.0.1:${upstreamAddress.port}");
 }
 `,
       ),
@@ -123,6 +153,12 @@ export function proxy(request) {
 
   afterAll(async () => {
     await stopServer(server);
+    if (upstream) {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        upstream!.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -145,6 +181,14 @@ export function proxy(request) {
     const response = await fetch(`${baseUrl}/api/echo/hello`, { method: "POST" });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ method: "POST", slug: "hello" });
+  });
+
+  it("uses Node response semantics for edge API fetch output", async () => {
+    const response = await fetch(`${baseUrl}/api/proxy`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(await response.text()).toBe("decoded by the Nitro host");
   });
 
   // Ported from Next.js: test/e2e/500-page/500-page.test.ts and test/e2e/file-serving.
