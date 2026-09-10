@@ -520,7 +520,7 @@ test("a newer put wins and the superseded candidate is cleaned up", async () => 
   assert.equal((await r2Objects()).objects.length, 1);
 });
 
-test("retention cleanup removes orphaned candidates without deleting active R2 objects", async () => {
+test("retention sweep removes orphaned candidates without deleting active R2 objects", async () => {
   await put("/active-cleanup", "active");
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
   const stub = await metadataStub();
@@ -530,10 +530,7 @@ test("retention cleanup removes orphaned candidates without deleting active R2 o
   await stub.trackPendingObject(activeObjectKey, 0);
   await stub.trackPendingObjects([orphanObjectKey], 0);
 
-  await put("/cleanup-trigger", "trigger");
-  for (let attempt = 0; attempt < 20 && (await bucket.head(orphanObjectKey)); attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  assert.equal(await stub.sweepExpiredPendingObjects(1), 1);
 
   assert.equal(await bucket.head(orphanObjectKey), null);
   assert.notEqual(await bucket.head(activeObjectKey), null);

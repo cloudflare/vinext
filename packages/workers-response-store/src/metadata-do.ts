@@ -11,12 +11,19 @@ import type {
 
 type RevalidationClaim = {
   claimId: string;
+  objectKey: string;
   revision: number;
 };
 
 type PublicationResult = {
+  entry: StoredEntry | null;
   published: boolean;
   previousObjectKey?: string;
+};
+
+type WriteReservation = {
+  objectKey: string;
+  revision: number;
 };
 
 type TagIndexEntry = {
@@ -26,10 +33,17 @@ type TagIndexEntry = {
 
 export type CacheMetadataStub = DurableObjectStub & {
   beginWrite(keyHash: string, cacheKey: string): Promise<number>;
+  reserveWrite(
+    keyHash: string,
+    cacheKey: string,
+    objectKeyPrefix: string,
+    createdAt: number,
+  ): Promise<WriteReservation>;
   claimRevalidation(
     keyHash: string,
     activeRevision: number,
     cacheKey: string,
+    objectKeyPrefix: string,
     now: number,
     leaseMs: number,
   ): Promise<RevalidationClaim | null>;
@@ -38,6 +52,7 @@ export type CacheMetadataStub = DurableObjectStub & {
   trackPendingObjects(objectKeys: string[], createdAt: number): Promise<void>;
   finishPendingObjects(objectKeys: string[]): Promise<void>;
   listExpiredPendingObjects(cutoff: number, limit: number): Promise<string[]>;
+  sweepExpiredPendingObjects(cutoff?: number): Promise<number>;
   publish(
     keyHash: string,
     revision: number,
@@ -76,6 +91,12 @@ type TagRow = Record<string, SqlStorageValue> & {
 };
 
 const MAX_SQL_PARAMETERS = 100;
+const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
+const ORPHAN_CLEANUP_LIMIT = 100;
+
+type CacheMetadataEnv = {
+  CACHE_BODIES: R2Bucket;
+};
 
 function normalizeTags(tags: string[]): string[] {
   const normalized = tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean);
@@ -138,8 +159,10 @@ function storedEntriesFromRows(rows: EntryRow[]): StoredEntry[] {
   return entries;
 }
 
-export class CacheMetadata extends DurableObject<Record<string, never>> {
-  constructor(ctx: DurableObjectState, env: Record<string, never>) {
+export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
+  private cleanupAlarmKnown = false;
+
+  constructor(ctx: DurableObjectState, env: CacheMetadataEnv) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
       ctx.storage.sql.exec(`
@@ -224,6 +247,16 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
     });
   }
 
+  private async ensureCleanupAlarm(createdAt: number): Promise<void> {
+    if (this.cleanupAlarmKnown) return;
+
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null) {
+      await this.ctx.storage.setAlarm(createdAt + ORPHAN_RETENTION_MS);
+    }
+    this.cleanupAlarmKnown = true;
+  }
+
   private findMatchingEntryRows(options: ResponseStorePurgeOptions): EntryRow[] {
     if (options.purgeEverything) {
       return this.ctx.storage.sql
@@ -272,7 +305,7 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
     return [...matches.values()];
   }
 
-  trackPendingObjects(objectKeys: string[], createdAt: number): void {
+  async trackPendingObjects(objectKeys: string[], createdAt: number): Promise<void> {
     if (!objectKeys.length) {
       return;
     }
@@ -286,10 +319,11 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
         );
       }
     });
+    await this.ensureCleanupAlarm(createdAt);
   }
 
-  trackPendingObject(objectKey: string, createdAt: number): void {
-    this.trackPendingObjects([objectKey], createdAt);
+  trackPendingObject(objectKey: string, createdAt: number): Promise<void> {
+    return this.trackPendingObjects([objectKey], createdAt);
   }
 
   finishPendingObjects(objectKeys: string[]): void {
@@ -320,14 +354,45 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
       .map((row) => row.object_key);
   }
 
-  claimRevalidation(
+  async sweepExpiredPendingObjects(cutoff = Date.now() - ORPHAN_RETENTION_MS): Promise<number> {
+    const objectKeys = this.listExpiredPendingObjects(cutoff, ORPHAN_CLEANUP_LIMIT);
+    if (objectKeys.length) {
+      await this.env.CACHE_BODIES.delete(objectKeys);
+      this.finishPendingObjects(objectKeys);
+    }
+
+    this.cleanupAlarmKnown = false;
+    const next = this.ctx.storage.sql
+      .exec<{ created_at: number | null }>(
+        `SELECT MIN(pending_objects.created_at) AS created_at FROM pending_objects
+        LEFT JOIN entries
+          ON entries.object_key = pending_objects.object_key AND entries.tombstoned = 0
+        WHERE entries.object_key IS NULL`,
+      )
+      .one().created_at;
+    if (objectKeys.length === ORPHAN_CLEANUP_LIMIT) {
+      await this.ctx.storage.setAlarm(Date.now());
+      this.cleanupAlarmKnown = true;
+    } else if (next !== null) {
+      await this.ensureCleanupAlarm(next);
+    }
+
+    return objectKeys.length;
+  }
+
+  async alarm(): Promise<void> {
+    await this.sweepExpiredPendingObjects();
+  }
+
+  async claimRevalidation(
     keyHash: string,
     activeRevision: number,
     cacheKey: string,
+    objectKeyPrefix: string,
     now: number,
     leaseMs: number,
-  ): RevalidationClaim | null {
-    return this.ctx.storage.transactionSync(() => {
+  ): Promise<RevalidationClaim | null> {
+    const claim = this.ctx.storage.transactionSync(() => {
       const entry = this.ctx.storage.sql
         .exec<{ active_revision: number | null; latest_revision: number; tombstoned: number }>(
           `SELECT active_revision, latest_revision, tombstoned
@@ -352,6 +417,7 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
 
       const revision = entry.latest_revision + 1;
       const claimId = crypto.randomUUID();
+      const objectKey = `${objectKeyPrefix}/${revision}`;
 
       this.ctx.storage.sql.exec(
         "UPDATE entries SET latest_revision = ? WHERE key_hash = ? AND active_revision = ?",
@@ -370,9 +436,16 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
         now,
         now + leaseMs,
       );
+      this.ctx.storage.sql.exec(
+        "INSERT OR REPLACE INTO pending_objects (object_key, created_at) VALUES (?, ?)",
+        objectKey,
+        now,
+      );
 
-      return { claimId, revision };
+      return { claimId, objectKey, revision };
     });
+    if (claim) await this.ensureCleanupAlarm(now);
+    return claim;
   }
 
   finishRevalidation(keyHash: string, claimId: string): void {
@@ -383,46 +456,65 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
     );
   }
 
+  private reserveRevision(keyHash: string, cacheKey: string): number {
+    const current = this.ctx.storage.sql
+      .exec<{ latest_revision: number }>(
+        "SELECT latest_revision FROM entries WHERE key_hash = ?",
+        keyHash,
+      )
+      .toArray()[0];
+    const revision = (current?.latest_revision ?? 0) + 1;
+
+    if (!current) {
+      this.ctx.storage.sql.exec(
+        "INSERT INTO entries (key_hash, cache_key, latest_revision, tombstoned) VALUES (?, ?, ?, 1)",
+        keyHash,
+        cacheKey,
+        revision,
+      );
+    } else {
+      this.ctx.storage.sql.exec(
+        "UPDATE entries SET cache_key = ?, latest_revision = ? WHERE key_hash = ?",
+        cacheKey,
+        revision,
+        keyHash,
+      );
+    }
+
+    return revision;
+  }
+
   beginWrite(keyHash: string, cacheKey: string): number {
-    return this.ctx.storage.transactionSync(() => {
-      const current = this.ctx.storage.sql
-        .exec<{ latest_revision: number }>(
-          "SELECT latest_revision FROM entries WHERE key_hash = ?",
-          keyHash,
-        )
-        .toArray()[0];
-      const revision = (current?.latest_revision ?? 0) + 1;
+    return this.ctx.storage.transactionSync(() => this.reserveRevision(keyHash, cacheKey));
+  }
 
-      if (!current) {
-        this.ctx.storage.sql.exec(
-          "INSERT INTO entries (key_hash, cache_key, latest_revision, tombstoned) VALUES (?, ?, ?, 1)",
-          keyHash,
-          cacheKey,
-          revision,
-        );
-      } else {
-        this.ctx.storage.sql.exec(
-          "UPDATE entries SET cache_key = ?, latest_revision = ? WHERE key_hash = ?",
-          cacheKey,
-          revision,
-          keyHash,
-        );
-      }
-
-      return revision;
+  async reserveWrite(
+    keyHash: string,
+    cacheKey: string,
+    objectKeyPrefix: string,
+    createdAt: number,
+  ): Promise<WriteReservation> {
+    const reservation = this.ctx.storage.transactionSync(() => {
+      const revision = this.reserveRevision(keyHash, cacheKey);
+      const objectKey = `${objectKeyPrefix}/${revision}`;
+      this.ctx.storage.sql.exec(
+        "INSERT OR REPLACE INTO pending_objects (object_key, created_at) VALUES (?, ?)",
+        objectKey,
+        createdAt,
+      );
+      return { objectKey, revision };
     });
+    await this.ensureCleanupAlarm(createdAt);
+    return reservation;
   }
 
   publish(keyHash: string, revision: number, metadata: CandidateMetadata): PublicationResult {
     return this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
-        .exec<{ latest_revision: number; object_key: string | null }>(
-          "SELECT latest_revision, object_key FROM entries WHERE key_hash = ?",
-          keyHash,
-        )
+        .exec<EntryRow>("SELECT * FROM entries WHERE key_hash = ?", keyHash)
         .toArray()[0];
       if (!current || current.latest_revision !== revision) {
-        return { published: false };
+        return { entry: current ? storedEntryFromRow(current) : null, published: false };
       }
 
       const responseMetadataIsInR2 = metadata.responseMetadataInR2 === true;
@@ -461,7 +553,31 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
         }
       }
 
+      const entry: StoredEntry = {
+        keyHash,
+        cacheKey: current.cache_key,
+        activeRevision: revision,
+        latestRevision: revision,
+        objectKey: metadata.objectKey,
+        statusText: metadata.statusText,
+        responseHeaders: metadata.responseHeaders,
+        freshUntil: metadata.freshUntil,
+        swrUntil: metadata.swrUntil,
+        revalidator: metadata.revalidator,
+        cacheTags: metadata.cacheTags,
+        ...(responseMetadataIsInR2
+          ? {}
+          : {
+              legacyResponseMetadata: {
+                status: metadata.status,
+                createdAt: metadata.createdAt,
+                initialAge: metadata.initialAge,
+              },
+            }),
+      };
+
       return {
+        entry: published ? entry : null,
         published,
         ...(current.object_key ? { previousObjectKey: current.object_key } : {}),
       };
