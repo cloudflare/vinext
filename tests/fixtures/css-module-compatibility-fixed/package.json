@@ -1,0 +1,19 @@
+{
+  "name": "css-module-compatibility-fixed-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vitejs/plugin-rsc": "catalog:",
+    "postcss": "catalog:",
+    "postcss-extend-rule": "4.0.0",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "vite-css-modules": "1.16.0"
+  },
+  "devDependencies": {
+    "vite-plus": "catalog:"
+  }
+}
