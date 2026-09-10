@@ -69,6 +69,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
+  hasCapturedRenderError: () => boolean;
   interceptionContext?: string | null;
   interceptionId?: string | null;
   omitPendingDynamicCacheState?: boolean;
@@ -92,6 +93,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   isrDebug?: AppPageDebugLogger;
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
+  hasCapturedRenderError: () => boolean;
   interceptionContext?: string | null;
   interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
@@ -307,6 +309,11 @@ export function finalizeAppPageHtmlCacheResponse(
         return;
       }
 
+      if (options.hasCapturedRenderError()) {
+        options.isrDebug?.("HTML cache write skipped (render error)", htmlKey);
+        return;
+      }
+
       const pageTags = options.getPageTags();
       const observationState =
         options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
@@ -439,6 +446,11 @@ export function scheduleAppPageRscCacheWrite(
       });
       if (!cacheControl) {
         options.isrDebug?.("RSC cache write skipped (no cache policy)", rscKey);
+        return;
+      }
+
+      if (options.hasCapturedRenderError()) {
+        options.isrDebug?.("RSC cache write skipped (render error)", rscKey);
         return;
       }
 
