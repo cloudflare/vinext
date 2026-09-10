@@ -23,7 +23,7 @@ class TestStore implements WorkersResponseStore {
   mutationResult = this.putResult;
   mutationError?: Error;
   tagExpiration = 0;
-  tagExpirationCalls: string[][] = [];
+  tagExpirationCalls: { newerThan?: number; tags: string[] }[] = [];
 
   async fetch(): Promise<Response> {
     return (
@@ -35,8 +35,8 @@ class TestStore implements WorkersResponseStore {
     );
   }
 
-  async getTagExpiration(tags: string[]): Promise<number> {
-    this.tagExpirationCalls.push(tags);
+  async getTagExpiration(tags: string[], newerThan?: number): Promise<number> {
+    this.tagExpirationCalls.push({ tags, newerThan });
     return this.tagExpiration;
   }
 
@@ -70,6 +70,7 @@ test("only attaches loopback regeneration to replayable requests", async () => {
     handler.set("get", null, { cacheControl: { revalidate: 1, expire: 2 } }),
   );
   expect(store.options).toMatchObject({
+    coalesce: true,
     purgeExisting: true,
     revalidator: { id: "vinext:data", args: ["get", "safe-get"] },
   });
@@ -78,7 +79,7 @@ test("only attaches loopback regeneration to replayable requests", async () => {
   await runWithResponseStoreInvocation("unsafe-post", false, () =>
     handler.set("post", null, { cacheControl: { revalidate: 1, expire: 2 } }),
   );
-  expect(store.options).toEqual({ purgeExisting: true });
+  expect(store.options).toEqual({ coalesce: true, purgeExisting: true });
   expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBeNull();
   expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
 });
@@ -282,7 +283,8 @@ test("lazily resolves soft-tag expiration once per request after a candidate hit
     });
 
     expect(store.tagExpirationCalls).toHaveLength(1);
-    expect(store.tagExpirationCalls[0]).toHaveLength(2);
+    expect(store.tagExpirationCalls[0]).toMatchObject({ newerThan: 10_000 });
+    expect(store.tagExpirationCalls[0]?.tags).toHaveLength(2);
 
     await runWithRequestContext(createRequestContext(), () =>
       handler.get("key", { softTags: ["path", "layout"] }),

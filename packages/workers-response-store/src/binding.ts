@@ -17,6 +17,8 @@ export type SerializableValue =
   | { [key: string]: SerializableValue };
 
 export type ResponseStorePutOptions = {
+  /** @internal Collapse overlapping framework writes for the same cache key. */
+  coalesce?: boolean;
   revalidator?: RevalidatorDescriptor;
   purgeExisting?: boolean;
 };
@@ -47,7 +49,7 @@ export type RevalidationInput = {
 export type WorkersResponseStore = {
   fetch(request: Request): Promise<Response>;
   /** @internal Return the latest purge timestamp for framework-managed cache tags. */
-  getTagExpiration(tags: string[]): Promise<number>;
+  getTagExpiration(tags: string[], newerThan?: number): Promise<number>;
   put(
     request: Request,
     response: Response,
@@ -102,6 +104,8 @@ type CacheKey = {
 };
 
 type WriteReservation = CacheKey & {
+  coalesced?: boolean;
+  objectKey: string;
   revision: number;
 };
 
@@ -111,6 +115,7 @@ type StoreResult = {
 };
 
 type PublicationResult = {
+  entry: StoredEntry | null;
   published: boolean;
   previousObjectKey?: string;
 };
@@ -167,8 +172,12 @@ export class ResponseStoreService extends WorkerEntrypoint<
     return this.getStore(invocation).fetch(request);
   }
 
-  getTagExpiration(tags: string[], invocation: ResponseStoreServiceInvocation): Promise<number> {
-    return this.getStore(invocation).getTagExpiration(tags);
+  getTagExpiration(
+    tags: string[],
+    invocation: ResponseStoreServiceInvocation,
+    newerThan?: number,
+  ): Promise<number> {
+    return this.getStore(invocation).getTagExpiration(tags, newerThan);
   }
 
   put(
@@ -207,13 +216,14 @@ const MISS_HEADERS = {
 };
 
 const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
-const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
-const ORPHAN_CLEANUP_LIMIT = 100;
 const R2_DELETE_BATCH_SIZE = 1_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
+const TAG_EXPIRATION_HOST = "response-store-metadata.invalid";
+const TAG_EXPIRATION_HEADER = "X-Workers-Response-Store-Tags";
+const TAG_EXPIRATION_CACHE_CONTROL = "public, max-age=315360000";
 
 function* batches<T>(values: readonly T[], size: number): Generator<T[], void> {
   for (let offset = 0; offset < values.length; offset += size) {
@@ -228,6 +238,11 @@ function metadataInteger(value: string | undefined): number | undefined {
 
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function purgeTagForEntry(entry: Pick<StoredEntry, "keyHash">): string {
@@ -281,6 +296,75 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     ) as CacheMetadataStub;
   }
 
+  private tagExpirationCacheTag(): string {
+    return `runtime-cache-invalidations-${this.getVersionId()}`;
+  }
+
+  private async tagExpirationRequest(tags?: string[]): Promise<Request> {
+    const normalized = tags
+      ? [...new Set(tags.map((tag) => tag.toLowerCase()))].sort((a, b) => a.localeCompare(b))
+      : [];
+    const key = tags ? await sha256Hex(JSON.stringify(normalized)) : "latest";
+    return new Request(
+      `https://${TAG_EXPIRATION_HOST}/${encodeURIComponent(this.getVersionId())}/${key}`,
+      tags ? { headers: { [TAG_EXPIRATION_HEADER]: JSON.stringify(normalized) } } : undefined,
+    );
+  }
+
+  private async readCachedTagExpiration(tags?: string[]): Promise<number> {
+    const factory = Reflect.get(this.ctx.exports, "ResponseStoreBinding") as
+      | ResponseStoreBindingFactory
+      | undefined;
+    if (typeof factory !== "function") {
+      throw new Error("The ResponseStoreBinding entrypoint is not exported");
+    }
+
+    const response = await factory({ props: this.ctx.props ?? {} }).fetch(
+      await this.tagExpirationRequest(tags),
+    );
+    const expiration = Number(await response.text());
+    if (!response.ok || !Number.isSafeInteger(expiration) || expiration < 0) {
+      throw new Error("Workers Response Store returned an invalid tag expiration");
+    }
+    return expiration;
+  }
+
+  private async fetchTagExpiration(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    const serializedTags = request.headers.get(TAG_EXPIRATION_HEADER);
+    let expiration: number;
+    if (serializedTags === null) {
+      if (url.pathname.split("/").at(-1) !== "latest") return new Response(null, { status: 400 });
+      expiration = await this.getMetadata().getLatestTagExpiration();
+    } else {
+      let tags: unknown;
+      try {
+        tags = JSON.parse(serializedTags);
+      } catch {
+        return new Response(null, { status: 400 });
+      }
+      if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== "string")) {
+        return new Response(null, { status: 400 });
+      }
+      const normalized = [...new Set(tags.map((tag) => tag.toLowerCase()))].sort((a, b) =>
+        a.localeCompare(b),
+      );
+      if (url.pathname.split("/").at(-1) !== (await sha256Hex(JSON.stringify(normalized)))) {
+        return new Response(null, { status: 400 });
+      }
+      expiration = await this.getMetadata().getTagExpiration(normalized);
+    }
+
+    return new Response(String(expiration), {
+      headers: {
+        "Cache-Control": TAG_EXPIRATION_CACHE_CONTROL,
+        "Cloudflare-CDN-Cache-Control": TAG_EXPIRATION_CACHE_CONTROL,
+        "Cache-Tag": this.tagExpirationCacheTag(),
+        "Content-Type": "text/plain; charset=utf-8",
+      },
+    });
+  }
+
   private async deriveCacheKey(request: Request): Promise<CacheKey> {
     if (request.method !== "GET") {
       throw new TypeError("Workers Response Store keys must be GET requests");
@@ -288,12 +372,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const url = new URL(request.url);
     const cacheKey = `${url.pathname}${url.search}`;
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(cacheKey));
-    const keyHash = [...new Uint8Array(digest)]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
-
-    return { cacheKey, keyHash };
+    return { cacheKey, keyHash: await sha256Hex(cacheKey) };
   }
 
   private async purgeEdgeCache(options: CachePurgeOptions): Promise<boolean> {
@@ -339,6 +418,26 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return accepted;
   }
 
+  private objectKeyPrefix(keyHash: string): string {
+    return ["runtime-cache", this.getVersionId(), keyHash].join("/");
+  }
+
+  private async reserveWrite(
+    metadata: CacheMetadataStub,
+    keyHash: string,
+    cacheKey: string,
+    coalesce = false,
+  ): Promise<WriteReservation> {
+    const reservation = await metadata.reserveWrite(
+      keyHash,
+      cacheKey,
+      this.objectKeyPrefix(keyHash),
+      Date.now(),
+      coalesce,
+    );
+    return { cacheKey, keyHash, ...reservation };
+  }
+
   private logCleanupFailure(objectKey: string, error: unknown): void {
     console.error(
       JSON.stringify({
@@ -349,10 +448,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     );
   }
 
-  private async deletePendingObjects(
-    metadata: CacheMetadataStub,
-    objectKeys: string[],
-  ): Promise<void> {
+  private async deleteObjects(objectKeys: string[]): Promise<void> {
     if (!objectKeys.length) {
       return;
     }
@@ -360,45 +456,16 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     for (const batch of batches(objectKeys, R2_DELETE_BATCH_SIZE)) {
       try {
         await this.env.CACHE_BODIES.delete(batch);
-        await metadata.finishPendingObjects(batch);
       } catch (error) {
         this.logCleanupFailure(batch.join(","), error);
       }
     }
   }
 
-  private async trackPendingObjects(
-    metadata: CacheMetadataStub,
-    objectKeys: string[],
-    createdAt: number,
-  ): Promise<void> {
-    try {
-      await metadata.trackPendingObjects(objectKeys, createdAt);
-    } catch (bulkError) {
-      try {
-        for (const objectKey of objectKeys) {
-          await metadata.trackPendingObject(objectKey, createdAt);
-        }
-      } catch (fallbackError) {
-        throw new AggregateError([bulkError, fallbackError], "Failed to track pending R2 objects");
-      }
-    }
-  }
-
-  private async cleanupExpiredPendingObjects(metadata: CacheMetadataStub): Promise<void> {
-    try {
-      const objectKeys = await metadata.listExpiredPendingObjects(
-        Date.now() - ORPHAN_RETENTION_MS,
-        ORPHAN_CLEANUP_LIMIT,
-      );
-      if (!objectKeys.length) {
-        return;
-      }
-
-      await this.deletePendingObjects(metadata, objectKeys);
-    } catch (error) {
-      this.logCleanupFailure("expired-pending-objects", error);
-    }
+  private async releaseFailedWrite(metadata: CacheMetadataStub, objectKey: string): Promise<void> {
+    await metadata
+      .releaseWrite(objectKey)
+      .catch((error) => this.logCleanupFailure(objectKey, error));
   }
 
   private async readStoredResponse(entry: StoredEntry, now = Date.now()): Promise<Response | null> {
@@ -456,10 +523,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     revalidator: ResponseStorePutOptions["revalidator"],
     reservation?: WriteReservation,
   ): Promise<StoreResult> {
-    const { cacheKey, keyHash } = reservation ?? (await this.deriveCacheKey(request));
-    const revision = reservation?.revision ?? (await metadata.beginWrite(keyHash, cacheKey));
-
-    const objectKey = ["runtime-cache", this.getVersionId(), keyHash, String(revision)].join("/");
+    const cacheKey = reservation ?? (await this.deriveCacheKey(request));
+    const write =
+      reservation ??
+      (await this.reserveWrite(metadata, cacheKey.keyHash, cacheKey.cacheKey, false));
+    const { keyHash, objectKey, revision } = write;
 
     const now = Date.now();
     const policy = deriveCachePolicy(response.headers, now);
@@ -493,8 +561,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       responseMetadataInR2: true,
     };
 
-    await this.trackPendingObjects(metadata, [objectKey], now);
-
+    let publication: PublicationResult;
     try {
       // RPC-transferred Response streams do not retain the fixed-length marker
       // required by R2's single-part put API. Materialise only in the cache
@@ -507,37 +574,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           initialAge: String(policy.initialAge),
         },
       });
-    } catch (error) {
-      await this.deletePendingObjects(metadata, [objectKey]);
-      throw error;
-    }
 
-    let publication: PublicationResult;
-    try {
       publication = await metadata.publish(keyHash, revision, candidate);
     } catch (error) {
-      await this.deletePendingObjects(metadata, [objectKey]);
+      await this.releaseFailedWrite(metadata, objectKey);
       throw error;
     }
 
     if (!publication.published) {
-      await this.deletePendingObjects(metadata, [objectKey]);
-      return { published: false, entry: await metadata.getEntry(keyHash) };
+      await this.deleteObjects([objectKey]);
+      return { published: false, entry: publication.entry };
     }
 
-    await metadata
-      .finishPendingObjects([objectKey])
-      .catch((error) => this.logCleanupFailure(objectKey, error));
-
-    const previousObjectKey = publication.previousObjectKey;
-    if (previousObjectKey && previousObjectKey !== objectKey) {
-      await this.trackPendingObjects(metadata, [previousObjectKey], Date.now()).catch((error) =>
-        this.logCleanupFailure(previousObjectKey, error),
-      );
-      await this.deletePendingObjects(metadata, [previousObjectKey]);
+    if (publication.previousObjectKey && publication.previousObjectKey !== objectKey) {
+      await this.deleteObjects([publication.previousObjectKey]);
     }
 
-    return { published: true, entry: await metadata.getEntry(keyHash) };
+    return { published: true, entry: publication.entry };
   }
 
   private async regenerateEntry(
@@ -560,18 +613,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     const cacheRequest = new Request(`https://runtime-cache.invalid${entry.cacheKey}`);
-    const writeReservation = reservation ?? {
-      cacheKey: entry.cacheKey,
-      keyHash: entry.keyHash,
-      revision: await metadata.beginWrite(entry.keyHash, entry.cacheKey),
-    };
+    const writeReservation =
+      reservation ?? (await this.reserveWrite(metadata, entry.keyHash, entry.cacheKey));
 
-    const response = await origin.regenerate({
-      request: cacheRequest,
-      id: entry.revalidator.id,
-      args: entry.revalidator.args,
-      reason,
-    });
+    let response: Response;
+    try {
+      response = await origin.regenerate({
+        request: cacheRequest,
+        id: entry.revalidator.id,
+        args: entry.revalidator.args,
+        reason,
+      });
+    } catch (error) {
+      await this.releaseFailedWrite(metadata, writeReservation.objectKey);
+      throw error;
+    }
 
     return this.storeResponse(
       metadata,
@@ -594,6 +650,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       entry.keyHash,
       entry.activeRevision,
       entry.cacheKey,
+      this.objectKeyPrefix(entry.keyHash),
       Date.now(),
       BACKGROUND_REVALIDATION_LEASE_MS,
     );
@@ -605,6 +662,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       await this.regenerateEntry(metadata, entry, "swr", {
         cacheKey: entry.cacheKey,
         keyHash: entry.keyHash,
+        objectKey: claim.objectKey,
         revision: claim.revision,
       });
     } catch (error) {
@@ -621,6 +679,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).hostname === TAG_EXPIRATION_HOST) {
+      return this.fetchTagExpiration(request);
+    }
+
     const { keyHash } = await this.deriveCacheKey(request);
     const metadata = this.getMetadata();
     const entry = await metadata.getEntry(keyHash);
@@ -658,8 +720,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return response;
   }
 
-  getTagExpiration(tags: string[]): Promise<number> {
-    return this.getMetadata().getTagExpiration(tags);
+  async getTagExpiration(tags: string[], newerThan?: number): Promise<number> {
+    if (!tags.length) return 0;
+    if (newerThan !== undefined) {
+      const latest = await this.readCachedTagExpiration();
+      if (latest < newerThan) return latest;
+    }
+    return this.readCachedTagExpiration(tags);
   }
 
   async put(
@@ -668,9 +735,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     options: ResponseStorePutOptions = {},
   ): Promise<ResponseStoreMutationResult> {
     const metadata = this.getMetadata();
-    this.ctx.waitUntil(this.cleanupExpiredPendingObjects(metadata));
 
-    const result = await this.storeResponse(metadata, request, response, options.revalidator);
+    const { cacheKey, keyHash } = await this.deriveCacheKey(request);
+    const reservation = await this.reserveWrite(metadata, keyHash, cacheKey, options.coalesce);
+    if (reservation.coalesced) {
+      await response.body?.cancel().catch(() => {});
+      return { backingStoreUpdated: false, edgePurgeAccepted: false };
+    }
+
+    const result = await this.storeResponse(
+      metadata,
+      request,
+      response,
+      options.revalidator,
+      reservation,
+    );
     if (!result.published || !result.entry) {
       return { backingStoreUpdated: false, edgePurgeAccepted: false };
     }
@@ -736,16 +815,16 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     if (options.purgeEverything) {
       edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
-    } else if (purged.length) {
-      edgePurgeAccepted = await this.purgeEdgeCacheByTags(
-        purged.map((entry) => purgeTagForEntry(entry)),
-      );
+    } else {
+      const tags = [
+        ...(options.tags?.length ? [this.tagExpirationCacheTag(), ...options.tags] : []),
+        ...purged.map((entry) => purgeTagForEntry(entry)),
+      ];
+      if (tags.length) edgePurgeAccepted = await this.purgeEdgeCacheByTags([...new Set(tags)]);
     }
 
     if (purged.length > 0) {
-      const objectKeys = purged.map((entry) => entry.objectKey);
-      await this.trackPendingObjects(metadata, objectKeys, Date.now());
-      await this.deletePendingObjects(metadata, objectKeys);
+      await this.deleteObjects(purged.map((entry) => entry.objectKey));
     }
 
     return { backingStoreUpdated: true, edgePurgeAccepted };

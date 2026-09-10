@@ -400,6 +400,7 @@ export default {
                 return;
               }
               await responseStore.put(key, admitted, {
+                coalesce: true,
                 revalidator: { id: ROUTE_REVALIDATOR_ID, args: [invocation] },
               });
             })
@@ -426,6 +427,7 @@ export default {
       const [foreground, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
       const cacheResponse = new Response(cacheBody, rendered);
       await responseStore.put(key, cacheResponse, {
+        coalesce: true,
         revalidator: { id: ROUTE_REVALIDATOR_ID, args: [invocation] },
       });
 
@@ -446,7 +448,10 @@ export default {
             headers: rscHeaders,
             status: 200,
           }),
-          { revalidator: { id: ROUTE_REVALIDATOR_ID, args: [rscInvocation] } },
+          {
+            coalesce: true,
+            revalidator: { id: ROUTE_REVALIDATOR_ID, args: [rscInvocation] },
+          },
         );
       }
       return publicResponse(new Response(foreground, rendered), "MISS");

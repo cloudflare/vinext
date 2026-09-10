@@ -64,6 +64,8 @@ async function put(path, body, options = {}) {
   }
   if (options.noRevalidator) headers.set("X-No-Revalidator", "1");
   if (options.purgeExisting) headers.set("X-Purge-Existing", "1");
+  if (options.coalesce) headers.set("X-Coalesce", "1");
+  if (options.bodyFailure) headers.set("X-Body-Failure", "1");
   if (options.bodyDelayMs) headers.set("X-Body-Delay-Ms", String(options.bodyDelayMs));
   const response = await worker.fetch(`https://user.test/admin/put${path}`, {
     method: "PUT",
@@ -104,6 +106,17 @@ async function purge(options) {
   return { response, json: await response.json() };
 }
 
+async function tagExpiration(tags, newerThan) {
+  const response = await worker.fetch("https://user.test/admin/tag-expiration", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tags, newerThan }),
+  });
+  const body = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(body));
+  return body.expiration;
+}
+
 async function metadataStub() {
   const namespace = await mf.getDurableObjectNamespace("CACHE_METADATA", "user-worker");
   return namespace.getByName(metadataName);
@@ -111,10 +124,6 @@ async function metadataStub() {
 
 async function metadata() {
   return (await metadataStub()).inspect();
-}
-
-async function tagIndex() {
-  return (await metadataStub()).inspectTagIndex();
 }
 
 async function r2Objects() {
@@ -422,7 +431,7 @@ test("refresh accepts more tag selectors than one SQLite parameter batch", async
   assert.equal(await (await read("/refresh-many-tags")).text(), "refreshed");
 });
 
-test("refresh and purge use a reverse tag-to-entry index that follows publication", async () => {
+test("refresh and purge select entries from their stored tags", async () => {
   await put("/tag-index", "seed", {
     tags: ["Original", "Shared"],
     revalidator: {
@@ -432,25 +441,18 @@ test("refresh and purge use a reverse tag-to-entry index that follows publicatio
     },
   });
 
-  assert.deepEqual(
-    (await tagIndex()).map(({ tag }) => tag),
-    ["original", "shared"],
-  );
+  assert.deepEqual((await metadata())[0].cacheTags, ["Original", "Shared"]);
   assert.deepEqual((await refreshSelectors({ tags: ["ORIGINAL"] })).json, {
     backingStoreUpdated: true,
     edgePurgeAccepted: false,
   });
-  assert.deepEqual(
-    (await tagIndex()).map(({ tag }) => tag),
-    ["replacement"],
-  );
+  assert.deepEqual((await metadata())[0].cacheTags, ["Replacement"]);
   assert.deepEqual((await refreshSelectors({ tags: ["original"] })).json, {
     backingStoreUpdated: false,
     edgePurgeAccepted: false,
   });
 
   await purge({ tags: ["REPLACEMENT"] });
-  assert.deepEqual(await tagIndex(), []);
   assert.equal((await read("/tag-index")).status, 404);
   assert.ok((await (await metadataStub()).getTagExpiration(["replacement"])) > 0);
 });
@@ -467,6 +469,15 @@ test("tag expiration is recorded without creating an R2 marker object", async ()
   await purge({ tags: [batchedTags.at(-1)] });
   assert.ok((await stub.getTagExpiration(batchedTags)) >= before);
   assert.equal((await r2Objects()).objects.length, 0);
+});
+
+test("a global watermark skips unrelated tag lookups until an invalidation", async () => {
+  const before = Date.now();
+  assert.equal(await tagExpiration(["unchanged"], before), 0);
+
+  await purge({ tags: ["changed"] });
+  assert.ok((await tagExpiration(["changed"], before)) >= before);
+  assert.equal(await tagExpiration(["unchanged"], before), 0);
 });
 
 test("the internal purge tag is first and large tag sets remain selectable", async () => {
@@ -520,7 +531,34 @@ test("a newer put wins and the superseded candidate is cleaned up", async () => 
   assert.equal((await r2Objects()).objects.length, 1);
 });
 
-test("retention cleanup removes orphaned candidates without deleting active R2 objects", async () => {
+test("overlapping framework writes can be coalesced", async () => {
+  const first = put("/coalesced", "first", { bodyDelayMs: 300, coalesce: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = await put("/coalesced", "second", { coalesce: true });
+  const firstResult = await first;
+
+  assert.deepEqual(firstResult.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.deepEqual(second.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.equal(await (await read("/coalesced")).text(), "first");
+  assert.equal((await metadata())[0].activeRevision, 1);
+  assert.equal((await r2Objects()).objects.length, 1);
+});
+
+test("a failed coalesced write does not suppress an immediate retry", async () => {
+  await assert.rejects(
+    put("/coalesced-retry", "fails", {
+      bodyFailure: true,
+      coalesce: true,
+    }),
+    /put fixture returned 500/,
+  );
+
+  const retry = await put("/coalesced-retry", "succeeds", { coalesce: true });
+  assert.deepEqual(retry.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal(await (await read("/coalesced-retry")).text(), "succeeds");
+});
+
+test("retention sweep removes orphaned candidates without deleting active R2 objects", async () => {
   await put("/active-cleanup", "active");
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
   const stub = await metadataStub();
@@ -530,10 +568,7 @@ test("retention cleanup removes orphaned candidates without deleting active R2 o
   await stub.trackPendingObject(activeObjectKey, 0);
   await stub.trackPendingObjects([orphanObjectKey], 0);
 
-  await put("/cleanup-trigger", "trigger");
-  for (let attempt = 0; attempt < 20 && (await bucket.head(orphanObjectKey)); attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  assert.equal(await stub.sweepExpiredPendingObjects(1), 1);
 
   assert.equal(await bucket.head(orphanObjectKey), null);
   assert.notEqual(await bucket.head(activeObjectKey), null);
@@ -543,6 +578,24 @@ test("retention cleanup removes orphaned candidates without deleting active R2 o
   await stub.trackPendingObjects(finishedKeys, 0);
   await stub.finishPendingObjects(finishedKeys);
   assert.deepEqual(await stub.listExpiredPendingObjects(1, finishedKeys.length), []);
+});
+
+test("replacement and purge retain cleanup coverage for legacy active objects", async () => {
+  await put("/legacy-cleanup", "first");
+  const stub = await metadataStub();
+  const firstObjectKey = (await metadata())[0].objectKey;
+  await stub.finishPendingObjects([firstObjectKey]);
+
+  await put("/legacy-cleanup", "second");
+  assert.deepEqual(await stub.listExpiredPendingObjects(Date.now() + 1, 10), [firstObjectKey]);
+  await stub.sweepExpiredPendingObjects(Date.now() + 1);
+
+  const secondObjectKey = (await metadata())[0].objectKey;
+  await stub.finishPendingObjects([secondObjectKey]);
+  await purge({ pathPrefixes: ["/legacy-cleanup"] });
+  assert.deepEqual(await stub.listExpiredPendingObjects(Date.now() + 1, 10), [secondObjectKey]);
+  await stub.sweepExpiredPendingObjects(Date.now() + 1);
+  assert.deepEqual(await stub.listExpiredPendingObjects(Date.now() + 1, 10), []);
 });
 
 test("purge tombstones an entry before a slow regeneration can publish", async () => {
