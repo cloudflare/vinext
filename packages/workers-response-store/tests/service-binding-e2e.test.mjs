@@ -92,6 +92,16 @@ test("a service-bound cache Worker stores and returns responses", async () => {
   assert.equal(response.headers.get("X-Workers-Response-Store"), "R2-FRESH");
 });
 
+test("a service-bound cache Worker resolves authoritative tag expirations", async () => {
+  const initial = await worker.fetch("https://user.test/admin/tag-expiration", {
+    method: "POST",
+    body: JSON.stringify({ tags: ["unchanged"] }),
+  });
+  const body = await initial.json();
+  assert.equal(initial.status, 200, JSON.stringify(body));
+  assert.deepEqual(body, { expiration: 0 });
+});
+
 test("manual refresh calls back into the user Worker version", async () => {
   await put("/manual", "seed", { regeneratedBody: "manually-regenerated" });
 

@@ -104,6 +104,11 @@ export default {
         return json(await responseStore.purge((await request.json()) as ResponseStorePurgeOptions));
       }
 
+      if (request.method === "POST" && url.pathname === "/admin/tag-expiration") {
+        const { tags } = (await request.json()) as { tags: string[] };
+        return json({ expiration: await responseStore.getTagExpiration(tags) });
+      }
+
       return new Response("Not found", { status: 404 });
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : String(error) }, 500);

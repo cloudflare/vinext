@@ -1,6 +1,6 @@
 # Workers Response Store adapter POC
 
-This example uses one `responseStoreAdapter()` from `@vinext/cloudflare` in place of both `cdnAdapter()` and `kvDataAdapter()`. The application Worker keeps Workers Cache disabled. Its `RESPONSE_STORE` service binding calls a separately deployed cache Worker that owns Workers Cache, R2 response bodies, SQLite Durable Object metadata, tag indexes, and SWR regeneration.
+This example uses one `responseStoreAdapter()` from `@vinext/cloudflare` in place of both `cdnAdapter()` and `kvDataAdapter()`. The application Worker keeps Workers Cache disabled. Its `RESPONSE_STORE` service binding calls a separately deployed cache Worker that owns Workers Cache, R2 response bodies, SQLite Durable Object metadata and tag invalidation timestamps, and SWR regeneration.
 
 The cache Worker is shared infrastructure, not a second deployment of the application. Each application version has one ordinary build and deploy. Cached entries retain a loopback to that application version's vinext response-stage entrypoint. Route and fetch-cache entries can replay that stage, while a transformed public `"use cache"` entry records its encrypted arguments and server-reference identity so regeneration invokes only that function. If its arguments cannot be safely recorded, the adapter falls back to replaying the cacheable route.
 

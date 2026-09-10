@@ -17,6 +17,8 @@ export type SerializableValue =
   | { [key: string]: SerializableValue };
 
 export type ResponseStorePutOptions = {
+  /** @internal Collapse overlapping framework writes for the same cache key. */
+  coalesce?: boolean;
   revalidator?: RevalidatorDescriptor;
   purgeExisting?: boolean;
 };
@@ -102,6 +104,9 @@ type CacheKey = {
 };
 
 type WriteReservation = CacheKey & {
+  claimId?: string;
+  coalesced?: boolean;
+  objectKey: string;
   revision: number;
 };
 
@@ -111,8 +116,8 @@ type StoreResult = {
 };
 
 type PublicationResult = {
+  entry: StoredEntry | null;
   published: boolean;
-  previousObjectKey?: string;
 };
 
 export type WorkersResponseStoreEnv = {
@@ -207,9 +212,6 @@ const MISS_HEADERS = {
 };
 
 const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
-const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
-const ORPHAN_CLEANUP_LIMIT = 100;
-const R2_DELETE_BATCH_SIZE = 1_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
@@ -339,6 +341,30 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return accepted;
   }
 
+  private objectKeyRoot(): string {
+    return ["runtime-cache", this.getVersionId()].join("/");
+  }
+
+  private objectKeyPrefix(keyHash: string): string {
+    return `${this.objectKeyRoot()}/${keyHash}`;
+  }
+
+  private async reserveWrite(
+    metadata: CacheMetadataStub,
+    keyHash: string,
+    cacheKey: string,
+    coalesce = false,
+  ): Promise<WriteReservation> {
+    const reservation = await metadata.reserveWrite(
+      keyHash,
+      cacheKey,
+      this.objectKeyPrefix(keyHash),
+      Date.now(),
+      coalesce,
+    );
+    return { cacheKey, keyHash, ...reservation };
+  }
+
   private logCleanupFailure(objectKey: string, error: unknown): void {
     console.error(
       JSON.stringify({
@@ -349,56 +375,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     );
   }
 
-  private async deletePendingObjects(
+  private async releaseFailedWrite(
     metadata: CacheMetadataStub,
-    objectKeys: string[],
+    write: Pick<WriteReservation, "claimId" | "keyHash" | "objectKey">,
   ): Promise<void> {
-    if (!objectKeys.length) {
-      return;
-    }
-
-    for (const batch of batches(objectKeys, R2_DELETE_BATCH_SIZE)) {
-      try {
-        await this.env.CACHE_BODIES.delete(batch);
-        await metadata.finishPendingObjects(batch);
-      } catch (error) {
-        this.logCleanupFailure(batch.join(","), error);
-      }
-    }
-  }
-
-  private async trackPendingObjects(
-    metadata: CacheMetadataStub,
-    objectKeys: string[],
-    createdAt: number,
-  ): Promise<void> {
-    try {
-      await metadata.trackPendingObjects(objectKeys, createdAt);
-    } catch (bulkError) {
-      try {
-        for (const objectKey of objectKeys) {
-          await metadata.trackPendingObject(objectKey, createdAt);
-        }
-      } catch (fallbackError) {
-        throw new AggregateError([bulkError, fallbackError], "Failed to track pending R2 objects");
-      }
-    }
-  }
-
-  private async cleanupExpiredPendingObjects(metadata: CacheMetadataStub): Promise<void> {
-    try {
-      const objectKeys = await metadata.listExpiredPendingObjects(
-        Date.now() - ORPHAN_RETENTION_MS,
-        ORPHAN_CLEANUP_LIMIT,
-      );
-      if (!objectKeys.length) {
-        return;
-      }
-
-      await this.deletePendingObjects(metadata, objectKeys);
-    } catch (error) {
-      this.logCleanupFailure("expired-pending-objects", error);
-    }
+    await metadata
+      .releaseWrite(write.keyHash, write.objectKey, write.claimId)
+      .catch((error) => this.logCleanupFailure(write.objectKey, error));
   }
 
   private async readStoredResponse(entry: StoredEntry, now = Date.now()): Promise<Response | null> {
@@ -456,46 +439,45 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     revalidator: ResponseStorePutOptions["revalidator"],
     reservation?: WriteReservation,
   ): Promise<StoreResult> {
-    const { cacheKey, keyHash } = reservation ?? (await this.deriveCacheKey(request));
-    const revision = reservation?.revision ?? (await metadata.beginWrite(keyHash, cacheKey));
+    const cacheKey = reservation ?? (await this.deriveCacheKey(request));
+    const write =
+      reservation ??
+      (await this.reserveWrite(metadata, cacheKey.keyHash, cacheKey.cacheKey, false));
+    const { keyHash, objectKey, revision } = write;
 
-    const objectKey = ["runtime-cache", this.getVersionId(), keyHash, String(revision)].join("/");
-
-    const now = Date.now();
-    const policy = deriveCachePolicy(response.headers, now);
-    const responseHeaders = [...response.headers].filter(([name]) => {
-      const lower = name.toLowerCase();
-      return lower !== "age" && lower !== "cf-cache-status" && lower !== "content-length";
-    });
-    const responseCacheTags = [
-      ...new Set(
-        (response.headers.get("Cache-Tag") ?? "")
-          .split(",")
-          .map((tag) => tag.trim())
-          .filter(Boolean),
-      ),
-    ];
-
-    const candidate: CandidateMetadata = {
-      objectKey,
-      status: response.status,
-      statusText: response.statusText,
-      responseHeaders,
-      createdAt: policy.createdAt,
-      initialAge: policy.initialAge,
-      freshUntil: policy.freshUntil,
-      swrUntil: policy.swrUntil,
-      revalidator: revalidator ?? null,
-      cacheTags: responseCacheTags,
-      // Keep the scalar values in the RPC payload so an older DO can still
-      // publish during a rolling deployment. The marker tells the current DO
-      // not to duplicate them in SQLite.
-      responseMetadataInR2: true,
-    };
-
-    await this.trackPendingObjects(metadata, [objectKey], now);
-
+    let publication: PublicationResult;
     try {
+      const now = Date.now();
+      const policy = deriveCachePolicy(response.headers, now);
+      const responseHeaders = [...response.headers].filter(([name]) => {
+        const lower = name.toLowerCase();
+        return lower !== "age" && lower !== "cf-cache-status" && lower !== "content-length";
+      });
+      const responseCacheTags = [
+        ...new Set(
+          (response.headers.get("Cache-Tag") ?? "")
+            .split(",")
+            .map((tag) => tag.trim())
+            .filter(Boolean),
+        ),
+      ];
+      const candidate: CandidateMetadata = {
+        objectKey,
+        status: response.status,
+        statusText: response.statusText,
+        responseHeaders,
+        createdAt: policy.createdAt,
+        initialAge: policy.initialAge,
+        freshUntil: policy.freshUntil,
+        swrUntil: policy.swrUntil,
+        revalidator: revalidator ?? null,
+        cacheTags: responseCacheTags,
+        // Keep the scalar values in the RPC payload so an older DO can still
+        // publish during a rolling deployment. The marker tells the current DO
+        // not to duplicate them in SQLite.
+        responseMetadataInR2: true,
+      };
+
       // RPC-transferred Response streams do not retain the fixed-length marker
       // required by R2's single-part put API. Materialise only in the cache
       // Worker; bodies are never stored in the metadata Durable Object.
@@ -507,37 +489,18 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           initialAge: String(policy.initialAge),
         },
       });
-    } catch (error) {
-      await this.deletePendingObjects(metadata, [objectKey]);
-      throw error;
-    }
 
-    let publication: PublicationResult;
-    try {
-      publication = await metadata.publish(keyHash, revision, candidate);
+      publication = await metadata.publish(keyHash, revision, candidate, write.claimId);
     } catch (error) {
-      await this.deletePendingObjects(metadata, [objectKey]);
+      await this.releaseFailedWrite(metadata, write);
       throw error;
     }
 
     if (!publication.published) {
-      await this.deletePendingObjects(metadata, [objectKey]);
-      return { published: false, entry: await metadata.getEntry(keyHash) };
+      return { published: false, entry: publication.entry };
     }
 
-    await metadata
-      .finishPendingObjects([objectKey])
-      .catch((error) => this.logCleanupFailure(objectKey, error));
-
-    const previousObjectKey = publication.previousObjectKey;
-    if (previousObjectKey && previousObjectKey !== objectKey) {
-      await this.trackPendingObjects(metadata, [previousObjectKey], Date.now()).catch((error) =>
-        this.logCleanupFailure(previousObjectKey, error),
-      );
-      await this.deletePendingObjects(metadata, [previousObjectKey]);
-    }
-
-    return { published: true, entry: await metadata.getEntry(keyHash) };
+    return { published: true, entry: publication.entry };
   }
 
   private async regenerateEntry(
@@ -550,28 +513,30 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       throw new Error("Cache entry has no configured revalidator");
     }
 
-    const origin =
-      this.ctx.props?.revalidator ??
-      (Reflect.get(this.ctx.exports, "ResponseStoreRevalidator") as
-        | RevalidationService
-        | undefined);
-    if (typeof origin?.regenerate !== "function") {
-      throw new Error("The ResponseStoreRevalidator entrypoint is unavailable");
-    }
-
     const cacheRequest = new Request(`https://runtime-cache.invalid${entry.cacheKey}`);
-    const writeReservation = reservation ?? {
-      cacheKey: entry.cacheKey,
-      keyHash: entry.keyHash,
-      revision: await metadata.beginWrite(entry.keyHash, entry.cacheKey),
-    };
+    const writeReservation =
+      reservation ?? (await this.reserveWrite(metadata, entry.keyHash, entry.cacheKey));
 
-    const response = await origin.regenerate({
-      request: cacheRequest,
-      id: entry.revalidator.id,
-      args: entry.revalidator.args,
-      reason,
-    });
+    let response: Response;
+    try {
+      const origin =
+        this.ctx.props?.revalidator ??
+        (Reflect.get(this.ctx.exports, "ResponseStoreRevalidator") as
+          | RevalidationService
+          | undefined);
+      if (typeof origin?.regenerate !== "function") {
+        throw new Error("The ResponseStoreRevalidator entrypoint is unavailable");
+      }
+      response = await origin.regenerate({
+        request: cacheRequest,
+        id: entry.revalidator.id,
+        args: entry.revalidator.args,
+        reason,
+      });
+    } catch (error) {
+      await this.releaseFailedWrite(metadata, writeReservation);
+      throw error;
+    }
 
     return this.storeResponse(
       metadata,
@@ -594,6 +559,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       entry.keyHash,
       entry.activeRevision,
       entry.cacheKey,
+      this.objectKeyPrefix(entry.keyHash),
       Date.now(),
       BACKGROUND_REVALIDATION_LEASE_MS,
     );
@@ -604,7 +570,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     try {
       await this.regenerateEntry(metadata, entry, "swr", {
         cacheKey: entry.cacheKey,
+        claimId: claim.claimId,
         keyHash: entry.keyHash,
+        objectKey: claim.objectKey,
         revision: claim.revision,
       });
     } catch (error) {
@@ -615,8 +583,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           error: error instanceof Error ? error.message : String(error),
         }),
       );
-    } finally {
-      await metadata.finishRevalidation(entry.keyHash, claim.claimId);
     }
   }
 
@@ -668,9 +634,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     options: ResponseStorePutOptions = {},
   ): Promise<ResponseStoreMutationResult> {
     const metadata = this.getMetadata();
-    this.ctx.waitUntil(this.cleanupExpiredPendingObjects(metadata));
 
-    const result = await this.storeResponse(metadata, request, response, options.revalidator);
+    const { cacheKey, keyHash } = await this.deriveCacheKey(request);
+    const reservation = await this.reserveWrite(metadata, keyHash, cacheKey, options.coalesce);
+    if (reservation.coalesced) {
+      await response.body?.cancel().catch(() => {});
+      return { backingStoreUpdated: false, edgePurgeAccepted: false };
+    }
+
+    const result = await this.storeResponse(
+      metadata,
+      request,
+      response,
+      options.revalidator,
+      reservation,
+    );
     if (!result.published || !result.entry) {
       return { backingStoreUpdated: false, edgePurgeAccepted: false };
     }
@@ -688,14 +666,25 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     const metadata = this.getMetadata();
-    const activeEntries = await metadata.getEntriesMatching(options);
-    if (activeEntries.length === 0) {
+    const candidates = await metadata.reserveRefresh(options, this.objectKeyRoot(), Date.now());
+    if (candidates.length === 0) {
       return { backingStoreUpdated: false, edgePurgeAccepted: false };
     }
 
     const settled = await Promise.allSettled(
-      activeEntries.map(async (entry) => {
-        const result = await this.regenerateEntry(metadata, entry, "manual");
+      candidates.map(async ({ entry, reservation }) => {
+        const result = await this.regenerateEntry(
+          metadata,
+          entry,
+          "manual",
+          reservation
+            ? {
+                cacheKey: entry.cacheKey,
+                keyHash: entry.keyHash,
+                ...reservation,
+              }
+            : undefined,
+        );
         return result.published ? result.entry : null;
       }),
     );
@@ -720,7 +709,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     return {
-      backingStoreUpdated: refreshed.length === activeEntries.length,
+      backingStoreUpdated: refreshed.length === candidates.length,
       edgePurgeAccepted,
     };
   }
@@ -740,12 +729,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       edgePurgeAccepted = await this.purgeEdgeCacheByTags(
         purged.map((entry) => purgeTagForEntry(entry)),
       );
-    }
-
-    if (purged.length > 0) {
-      const objectKeys = purged.map((entry) => entry.objectKey);
-      await this.trackPendingObjects(metadata, objectKeys, Date.now());
-      await this.deletePendingObjects(metadata, objectKeys);
     }
 
     return { backingStoreUpdated: true, edgePurgeAccepted };

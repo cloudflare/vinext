@@ -70,6 +70,7 @@ test("only attaches loopback regeneration to replayable requests", async () => {
     handler.set("get", null, { cacheControl: { revalidate: 1, expire: 2 } }),
   );
   expect(store.options).toMatchObject({
+    coalesce: true,
     purgeExisting: true,
     revalidator: { id: "vinext:data", args: ["get", "safe-get"] },
   });
@@ -78,7 +79,7 @@ test("only attaches loopback regeneration to replayable requests", async () => {
   await runWithResponseStoreInvocation("unsafe-post", false, () =>
     handler.set("post", null, { cacheControl: { revalidate: 1, expire: 2 } }),
   );
-  expect(store.options).toEqual({ purgeExisting: true });
+  expect(store.options).toEqual({ coalesce: true, purgeExisting: true });
   expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBeNull();
   expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
 });

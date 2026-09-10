@@ -442,6 +442,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
 
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
+      coalesce: true,
       purgeExisting: true,
     });
   }
