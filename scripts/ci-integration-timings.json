@@ -392,9 +392,9 @@
       "samples": 5
     },
     "tests/pages-router-nitro.test.ts": {
-      "estimateMs": 1000,
-      "medianMs": 1000,
-      "p75Ms": 1000,
+      "estimateMs": 2083,
+      "medianMs": 2083,
+      "p75Ms": 2083,
       "samples": 1
     },
     "tests/pages-router.test.ts": {

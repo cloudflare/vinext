@@ -51,6 +51,8 @@ async function stopServer(server: ChildProcess | undefined): Promise<void> {
 
 describe("Pages Router on Nitro", () => {
   let root = "";
+  let workerdRoot = "";
+  let workerdServiceEntry = "";
   let server: ChildProcess | undefined;
   let upstream: Server | undefined;
   let baseUrl = "";
@@ -132,14 +134,55 @@ export function proxy(request) {
 
     const nitroModule = (await import(
       pathToFileURL(path.join(root, "node_modules/nitro/dist/vite.mjs")).href
-    )) as { nitro(): Plugin[] };
+    )) as { nitro(config?: Record<string, unknown>): Plugin[] };
     const builder = await createBuilder({
       root,
       configFile: false,
       logLevel: "silent",
-      plugins: [vinext(), nitroModule.nitro()],
+      plugins: [vinext(), nitroModule.nitro({ buildDir: path.join(root, ".nitro") })],
     });
     await builder.buildApp();
+
+    workerdRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-nitro-workerd-"));
+    await Promise.all([
+      fs.mkdir(path.join(workerdRoot, "pages/api"), { recursive: true }),
+      fs.symlink(NITRO_NODE_MODULES, path.join(workerdRoot, "node_modules"), "junction"),
+    ]);
+    const encodedBody = gzipSync("encoded by workerd");
+    await Promise.all([
+      fs.writeFile(path.join(workerdRoot, "package.json"), "{}"),
+      fs.writeFile(
+        path.join(workerdRoot, "pages/api/encoded.ts"),
+        `export const config = { runtime: "edge" };
+export default function handler() {
+  const body = Uint8Array.from(${JSON.stringify([...encodedBody])});
+  return new Response(body, { headers: {
+    "content-encoding": "gzip",
+    "content-length": String(body.byteLength),
+  } });
+}
+`,
+      ),
+    ]);
+    const workerdBuildDir = path.join(workerdRoot, ".nitro");
+    const workerdBuilder = await createBuilder({
+      root: workerdRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [
+        vinext(),
+        nitroModule.nitro({
+          buildDir: workerdBuildDir,
+          output: { dir: path.join(workerdRoot, ".output") },
+          preset: "cloudflare_module",
+        }),
+      ],
+    });
+    await workerdBuilder.buildApp();
+    workerdServiceEntry = await fs.readFile(
+      path.join(workerdBuildDir, "vite/services/ssr/entry.js"),
+      "utf8",
+    );
 
     const port = await getAvailablePort();
     baseUrl = `http://127.0.0.1:${port}`;
@@ -160,6 +203,7 @@ export function proxy(request) {
       });
     }
     if (root) await fs.rm(root, { recursive: true, force: true });
+    if (workerdRoot) await fs.rm(workerdRoot, { recursive: true, force: true });
   });
 
   // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
@@ -189,6 +233,10 @@ export function proxy(request) {
     expect(response.headers.get("content-encoding")).toBeNull();
     expect(response.headers.get("content-length")).toBeNull();
     expect(await response.text()).toBe("decoded by the Nitro host");
+  });
+
+  it("uses Worker response semantics for Nitro's Cloudflare preset", () => {
+    expect(workerdServiceEntry).toContain('hostRuntime: "worker"');
   });
 
   // Ported from Next.js: test/e2e/500-page/500-page.test.ts and test/e2e/file-serving.

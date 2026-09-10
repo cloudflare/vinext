@@ -1465,6 +1465,7 @@ export type VinextOptions = {
 type NitroSetupContext = {
   options: {
     dev?: boolean;
+    exportConditions?: string[];
     routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
   };
@@ -1531,6 +1532,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   };
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+  let nitroHostRuntime: "node" | "worker" = "node";
   let resolvedServerExternalPackages: string[] = [];
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
@@ -4206,7 +4208,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               return [
                 `import worker from ${JSON.stringify(entry)};`,
                 "export default { fetch(request, env, ctx) {",
-                '  return worker.fetch(request, env, { ...ctx, hostRuntime: "node" });',
+                `  return worker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)} });`,
                 "} };",
               ].join("\n");
             }
@@ -7192,6 +7194,9 @@ export const loadServerActionClient = ${
       name: "vinext:nitro-route-rules",
       nitro: {
         setup: async (nitro: NitroSetupContext) => {
+          nitroHostRuntime = nitro.options.exportConditions?.includes("workerd")
+            ? "worker"
+            : "node";
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
