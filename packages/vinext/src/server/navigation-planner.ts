@@ -534,7 +534,10 @@ function classifyRscFetchResult(facts: RscFetchResultFacts): RscFetchResultDecis
     }
     if (redirectDecision.kind === "follow") {
       return createRscFetchResultFollowRedirectDecision({
-        discardBody: false,
+        // The browser executor follows live response-URL redirects by fetching
+        // the target in a new loop iteration. The current response body is not
+        // read, so release it before the next fetch.
+        discardBody: facts.source === "live",
         facts,
         redirect: {
           href: redirectDecision.href,
