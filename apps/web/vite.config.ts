@@ -17,6 +17,7 @@ export default defineConfig({
       },
     }),
     cloudflare({
+      types: { includeRuntime: false },
       viteEnvironment: {
         name: "rsc",
         childEnvironments: ["ssr"],
