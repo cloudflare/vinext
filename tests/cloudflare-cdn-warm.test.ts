@@ -1344,11 +1344,11 @@ describe("Cloudflare CDN warmup", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("does not retry a deterministic failure when either build identity matches", async () => {
+  it("retries until every build identity matches", async () => {
+    let attempts = 0;
     const fetchImpl = vi.fn(async () => {
       const response = cacheableRsc();
-      response.headers.delete(VINEXT_CDN_BUILD_ID_HEADER);
-      response.headers.set("vary", `${VINEXT_RSC_VARY_HEADER}, User-Agent`);
+      if (++attempts === 1) response.headers.delete(VINEXT_CDN_BUILD_ID_HEADER);
       return response;
     });
 
@@ -1359,14 +1359,14 @@ describe("Cloudflare CDN warmup", () => {
         fetchImpl: fetchImpl as typeof fetch,
         paths: [],
         propagatingTarget: true,
-        retries: 60,
+        retries: 1,
         retryDelayMs: 0,
-        rscPaths: ["/invalid-current-rsc-build"],
+        rscPaths: ["/partially-propagated"],
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).rejects.toThrow(`response ${VINEXT_CDN_BUILD_ID_HEADER} does not match build build-a`);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    ).resolves.toMatchObject({ warmed: 1, failed: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("retries first and later staged-target failures only after the initial queue", async () => {
