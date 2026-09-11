@@ -2,3 +2,4 @@
 # Prevents Windows clones (with core.autocrlf=true) from converting LF→CRLF
 # and breaking oxfmt, which only accepts LF.
 * text=auto eol=lf
+apps/web/worker-configuration.d.ts whitespace=-trailing-space

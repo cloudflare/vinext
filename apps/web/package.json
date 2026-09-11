@@ -24,7 +24,6 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "https://pkg.pr.new/@cloudflare/vite-plugin@15508",
-    "@cloudflare/workers-types": "catalog:",
     "@tailwindcss/postcss": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
