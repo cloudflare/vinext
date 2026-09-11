@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   createValidFileMatcher,
   normalizePageExtensions,
+  normalizeViteResolveExtensions,
   scanWithExtensions,
 } from "../packages/vinext/src/routing/file-matcher.js";
 import { shouldInvalidateAppRouteFile } from "../packages/vinext/src/server/dev-route-files.js";
@@ -112,5 +113,26 @@ describe("file matcher", () => {
     expect(shouldInvalidateAppRouteFile(appDir, "/project/app/blog/robots.ts", matcher)).toBe(
       false,
     );
+  });
+});
+
+describe("normalizeViteResolveExtensions", () => {
+  it("keeps framework-internal extensions resolvable when a user override omits them", () => {
+    // A webpack `resolve.extensions` / Turbopack `resolveExtensions` override
+    // replaces the resolver defaults. If it omits `.mjs`, vinext's own internal
+    // entry `nitro/dist/presets/bun/runtime/bun` (a `.mjs` file) becomes
+    // unresolvable → `[UNRESOLVED_ENTRY]`. The framework-required extensions
+    // must still be present, at lowest precedence.
+    const result = normalizeViteResolveExtensions([".foo.js", ".ts", ".tsx"]);
+    expect(result).toContain(".mjs");
+    expect(result).toContain(".js");
+    // User extensions retain highest precedence (their app code wins).
+    expect(result.indexOf(".foo.js")).toBe(0);
+    expect(result.indexOf(".foo.js")).toBeLessThan(result.indexOf(".mjs"));
+  });
+
+  it("does not duplicate an internal extension the user already listed", () => {
+    const result = normalizeViteResolveExtensions([".mjs", ".js"]);
+    expect(result.filter((e) => e === ".mjs")).toHaveLength(1);
   });
 });
