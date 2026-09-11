@@ -1,5 +1,31 @@
 # vinext
 
+## 1.0.0-beta.10
+
+### Features
+
+#### Build
+
+- support independently deployed worker stages (#3155)
+- select adapter-owned worker stages (#3150)
+- define adapter-owned worker stages (#3142)
+
+### Bug Fixes
+
+- **Isr:** ignore interception context on HTML renders (#2915)
+- **App Router:** dedupe next/dynamic module preloads (#3186)
+- **Cloudflare:** restore bounded probe scheduling (#3171)
+- **Cloudflare:** reduce staged CDN probe work (#3168)
+- **Cache:** preserve staged cache invalidation parity (#3158)
+- **Build:** preserve staged prerender routing (#3151)
+- **Cache:** resolve CDN admission from matched route kind (#3160)
+
+### Contributors
+
+- @james-elicx
+- @JamesbbBriz
+- @keeltrace
+
 ## 1.0.0-beta.9
 
 ### Features

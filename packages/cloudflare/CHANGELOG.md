@@ -1,5 +1,35 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.8
+
+### Features
+
+- **Cloudflare:** isolate cached response entrypoint (#3152)
+- **Cloudflare:** summarize CDN warmup by route (#3163)
+
+### Bug Fixes
+
+#### Cloudflare
+
+- restore bounded probe scheduling (#3171)
+- reduce staged CDN probe work (#3168)
+- prewarm routed response stages (#3153)
+- wait for per-route version propagation (#3164)
+
+#### Misc
+
+- **Cache:** preserve staged cache invalidation parity (#3158)
+- **Build:** preserve staged prerender routing (#3151)
+
+### Performance
+
+- **Cloudflare:** cut KV data cache round trips from 3 to 2 per tagged hit (#3187)
+
+### Contributors
+
+- @james-elicx
+- @LubomirGeorgiev
+
 ## 1.0.0-beta.7
 
 ### Features
