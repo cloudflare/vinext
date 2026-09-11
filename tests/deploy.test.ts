@@ -18,6 +18,7 @@ import {
   projectRequiresRouteCacheabilityProbeManifest,
   resolveCfBin,
   resolveDeploymentTool,
+  resolveViteBuildMode,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runWranglerKVBulkPut,
@@ -570,6 +571,11 @@ describe("resolveWranglerBin", () => {
 });
 
 describe("cf Build Output deployment", () => {
+  it("builds the selected Cloudflare mode before prebuilt deployment", () => {
+    expect(resolveViteBuildMode(undefined)).toBe("production");
+    expect(resolveViteBuildMode("staging")).toBe("staging");
+  });
+
   it("selects cf for typed Cloudflare configs and Wrangler for legacy configs", () => {
     expect(resolveDeploymentTool(tmpDir)).toBe("wrangler");
     writeFile(tmpDir, "wrangler.jsonc", "{}");

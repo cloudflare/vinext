@@ -490,10 +490,17 @@ async function loadProjectWranglerApi(root: string): Promise<ProjectWranglerApi>
   return (await import(/* @vite-ignore */ pathToFileURL(wranglerPath).href)) as ProjectWranglerApi;
 }
 
-async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteConfigMetadata> {
+export function resolveViteBuildMode(env: string | undefined): string {
+  return env ?? "production";
+}
+
+async function loadDeployViteConfigMetadata(
+  root: string,
+  env: string | undefined,
+): Promise<DeployViteConfigMetadata> {
   const vite = await loadProjectViteApi(root);
   const loaded = await vite.loadConfigFromFile(
-    { command: "build", mode: "production" },
+    { command: "build", mode: resolveViteBuildMode(env) },
     undefined,
     root,
   );
@@ -522,7 +529,7 @@ async function runBuild(info: ProjectInfo, env: string | undefined): Promise<voi
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
   await withCloudflareEnv(env, async () => {
-    const builder = await createBuilder({ root: info.root });
+    const builder = await createBuilder({ root: info.root, mode: resolveViteBuildMode(env) });
     await builder.buildApp();
   });
 }
@@ -2054,7 +2061,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // This load is intentionally eager: inline `vinext({ nextConfig })` can decide
   // export/prerender behavior, so deploy cannot safely short-circuit before reading it.
   const viteConfigMetadata = await withCloudflareEnv(buildEnv, () =>
-    loadDeployViteConfigMetadata(info.root),
+    loadDeployViteConfigMetadata(info.root, buildEnv),
   );
   const cdnAdapterConfig = resolveCdnAdapterConfig(viteConfigMetadata.cacheConfig);
   const nextConfig = await withCloudflareEnv(buildEnv, async () => {
