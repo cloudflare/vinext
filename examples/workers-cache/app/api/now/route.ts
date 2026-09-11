@@ -1,7 +1,6 @@
-// Cached App Route handler. vinext emits ISR Cache-Control headers and a
-// Cache-Tag for the path so the Workers Cache layer caches the response
-// for 30 seconds and tag-based revalidation works.
-export const revalidate = 30;
+// Cached App Route handler. The response-store adapter persists vinext's
+// binary APP_ROUTE cache value for one second so the POC can exercise SWR.
+export const revalidate = 1;
 
 export async function GET(): Promise<Response> {
   // `renderId` is freshly generated on every handler invocation. The client
@@ -11,6 +10,6 @@ export async function GET(): Promise<Response> {
     now: new Date().toISOString(),
     renderId: crypto.randomUUID(),
     random: Math.random(),
-    note: "Cached by vinext + Workers Cache for 30 seconds.",
+    note: "Cached by vinext + Workers Response Store with one-second freshness.",
   });
 }

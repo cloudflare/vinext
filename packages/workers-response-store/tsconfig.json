@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["@cloudflare/workers-types", "node"],
+    "paths": {
+      "@vinext/workers-response-store": ["./src/index.ts"],
+      "@vinext/workers-response-store/service": ["./src/service.ts"]
+    },
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "example/**/*.ts"]
+}

@@ -19,6 +19,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
   DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS,
+  discoverPrerenderPathManifest,
   emitPrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
 import { runPrerender } from "vinext/internal/build/run-prerender";
@@ -39,6 +40,8 @@ import {
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
+  supportsCanonicalRscWarmup,
+  usesVinextCacheWarmupStatus,
   requiresRouteCacheabilityProbeManifest,
   resolveVinextPrerenderDecision,
   type ResolvedVinextPrerenderConfig,
@@ -56,8 +59,8 @@ import { parseWranglerConfig, runTPR } from "./tpr.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
   createCdnWarmTargets,
+  createPrerenderWarmPlan,
   CdnOperationProgress,
-  readPrerenderWarmPlan,
   waitForCdnWarmTargetReadiness,
   warmCdnCache,
   type CdnWarmOptions,
@@ -813,6 +816,7 @@ type CdnWarmDeployOptions = Pick<
     | "routeHandlerPaths"
     | "routePatterns"
     | "rscPaths"
+    | "statusSource"
   > & {
     /** Probe a staged Worker and upload the resulting manifest as a second version. */
     cacheabilityProbe?: boolean;
@@ -1026,6 +1030,7 @@ async function deployUploadedVersionWithCdnWarmup(
           : undefined,
       requireCacheHit,
       strict: requireCacheHit || !allowUnverifiedPromotion,
+      statusSource: options.statusSource,
     });
 
   const wranglerConfig = parseWranglerConfig(root, options.config);
@@ -1298,7 +1303,7 @@ async function deployUploadedVersionWithCdnWarmup(
   const promotionTraffic = [{ versionId: upload.versionId, percentage: 100 }];
   let promotionAttempted = false;
   try {
-    if (stagedCacheFilled) {
+    if (stagedCacheFilled && options.statusSource !== "vinext") {
       const promotionDelay = options.warmCdnPromotionDelay ?? DEFAULT_CDN_WARM_PROMOTION_DELAY_MS;
       if (promotionDelay > 0) {
         console.log(
@@ -1956,6 +1961,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
   const hasStagedRequestRouting = hasUncachedRequestRouting(viteConfigMetadata.cacheConfig);
   const hasBuildIdentityHeader = hasBuildIdentityResponseHeader(viteConfigMetadata.cacheConfig);
+  const hasCanonicalRscWarmup = supportsCanonicalRscWarmup(viteConfigMetadata.cacheConfig);
+  const hasVinextCacheWarmupStatus = usesVinextCacheWarmupStatus(viteConfigMetadata.cacheConfig);
   const needsCacheabilityProbeManifest = projectRequiresRouteCacheabilityProbeManifest(
     info,
     viteConfigMetadata.cacheConfig,
@@ -2069,10 +2076,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
       ...wranglerOptions,
       cacheabilityProbe: needsCacheabilityProbeManifest,
       discoverWarmPlan: async ({ headers, targetUrl }) => {
-        await emitPrerenderPathManifest({
+        const discovery = await discoverPrerenderPathManifest({
           root: info.root,
           nextConfig,
           buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
+          includeCanonicalRsc: hasCanonicalRscWarmup,
           requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
           responseVary: hasStrictResponseVary ? "verbatim" : undefined,
           isResponsePolicyHeader: (name) =>
@@ -2087,11 +2095,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
             retryDelayMs: DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS,
           },
         });
-        return readPrerenderWarmPlan(root, {
+        if (!discovery) return { loadingShellPaths: [], paths: [], rscPaths: [] };
+        return createPrerenderWarmPlan(root, discovery, {
+          includeCanonicalRsc: hasCanonicalRscWarmup,
           includeFallbackShells: options.warmCdnIncludeFallbacks,
           strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
         });
       },
+      statusSource: hasVinextCacheWarmupStatus ? "vinext" : "cloudflare",
       warmCdnConcurrency: options.warmCdnConcurrency,
       warmCdnTarget,
       warmCdnTimeout: options.warmCdnTimeout,

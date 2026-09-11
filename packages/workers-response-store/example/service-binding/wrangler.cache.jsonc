@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "vinext-workers-response-store-service-poc",
+  "main": "cache-worker.ts",
+  "compatibility_date": "2026-09-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "preview_urls": true,
+  "placement": { "region": "aws:eu-west-2" },
+  "cache": { "enabled": true },
+  "exports": {
+    "default": { "type": "worker", "cache": { "enabled": false } },
+    "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },
+  },
+  "r2_buckets": [{ "binding": "CACHE_BODIES", "bucket_name": "vinext-programmatic-cache-poc" }],
+  "durable_objects": {
+    "bindings": [{ "name": "CACHE_METADATA", "class_name": "CacheMetadata" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CacheMetadata"] }],
+  "observability": { "enabled": true },
+}

@@ -118,6 +118,14 @@ export default {
       entry: [...entriesFromPackageJson("packages/cloudflare/package.json")],
       project: ["src/**/*.{ts,tsx}"],
     },
+    "packages/workers-response-store": {
+      entry: [
+        ...entriesFromPackageJson("packages/workers-response-store/package.json"),
+        "example/worker.ts",
+        "example/service-binding/{cache-worker,user-worker}.ts",
+      ],
+      project: ["src/**/*.{ts,tsx}", "example/**/*.ts"],
+    },
     "packages/create-vinext-app": {
       entry: [...entriesFromPackageJson("packages/create-vinext-app/package.json")],
       project: ["src/**/*.{ts,tsx}"],

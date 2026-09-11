@@ -25,6 +25,7 @@ import {
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import {
+  VINEXT_CACHE_HEADER,
   VINEXT_PRERENDER_READINESS_HEADER,
   VINEXT_PRERENDER_READINESS_PATH,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -63,6 +64,8 @@ export type CdnWarmOptions = {
   /** Require the response to come from a reusable cache entry, not merely an eligible MISS. */
   requireCacheHit?: boolean;
   strict?: boolean;
+  /** Cache-admission signal exposed by the deployed adapter. */
+  statusSource?: "cloudflare" | "vinext";
   fetchImpl?: typeof fetch;
 };
 
@@ -231,15 +234,17 @@ function readPrerenderPathManifest(manifestPath: string): PrerenderPathManifest 
   }
 }
 
-function readPrerenderPathWarmPaths(
+type PrerenderWarmPlanOptions = {
+  includeCanonicalRsc?: boolean;
+  includeFallbackShells?: boolean;
+  strict?: boolean;
+};
+
+function createPrerenderPathWarmPaths(
   root: string,
+  manifest: PrerenderPathManifest,
   options?: { strict?: boolean },
 ): { manifest: PrerenderPathManifest; pagesPaths: string[]; paths: string[] } | null {
-  const manifest = readPrerenderPathManifest(
-    path.join(root, "dist", "server", PRERENDER_PATHS_MANIFEST),
-  );
-  if (!manifest) return null;
-
   const builtBuildId = readBuiltBuildId(root);
   if (!manifest.buildId || !builtBuildId || manifest.buildId !== builtBuildId) {
     const message =
@@ -262,20 +267,20 @@ function readPrerenderPathWarmPaths(
   };
 }
 
-export function readPrerenderWarmPlan(
+export function createPrerenderWarmPlan(
   root: string,
-  options?: { includeFallbackShells?: boolean; strict?: boolean },
+  manifest: PrerenderPathManifest,
+  options?: PrerenderWarmPlanOptions,
 ): PrerenderWarmPlan {
-  const pathPlan = readPrerenderPathWarmPaths(root, options);
+  const pathPlan = createPrerenderPathWarmPaths(root, manifest, options);
   if (!pathPlan) {
-    const message = "[vinext] CDN warmup skipped: prerender path manifest not found.";
+    const message = "[vinext] CDN warmup skipped: prerender path discovery is invalid.";
     if (options?.strict) throw new Error(message);
     return { loadingShellPaths: [], paths: [], rscPaths: [] };
   }
 
-  const { manifest } = pathPlan;
   const supportsCanonicalRsc =
-    manifest.responseVary === "verbatim" &&
+    (manifest.responseVary === "verbatim" || options?.includeCanonicalRsc === true) &&
     manifest.rscPaths !== undefined &&
     manifest.rscBuildId !== undefined;
   const applyConfig = (pathname: string) => applyWarmPathConfig(pathname, manifest);
@@ -332,6 +337,21 @@ export function readPrerenderWarmPlan(
       : {}),
     ...(routePatterns ? { routePatterns } : {}),
   };
+}
+
+export function readPrerenderWarmPlan(
+  root: string,
+  options?: PrerenderWarmPlanOptions,
+): PrerenderWarmPlan {
+  const manifest = readPrerenderPathManifest(
+    path.join(root, "dist", "server", PRERENDER_PATHS_MANIFEST),
+  );
+  if (!manifest) {
+    const message = "[vinext] CDN warmup skipped: prerender path manifest not found.";
+    if (options?.strict) throw new Error(message);
+    return { loadingShellPaths: [], paths: [], rscPaths: [] };
+  }
+  return createPrerenderWarmPlan(root, manifest, options);
 }
 
 export function readPrerenderWarmPaths(
@@ -837,6 +857,27 @@ function validateCachePolicy(
   return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
 }
 
+function validateVinextCacheStatus(response: Response): WarmValidation {
+  const status = response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase();
+  if (status === "MISS" || status === "HIT" || status === "UPDATING") {
+    return { outcome: "warmed" };
+  }
+  if (status === "BYPASS" || status === "DYNAMIC") {
+    return { outcome: "skipped", reason: `${VINEXT_CACHE_HEADER} is ${status}` };
+  }
+  return { outcome: "failed", error: `response is missing ${VINEXT_CACHE_HEADER}` };
+}
+
+function validateWarmAdmission(
+  response: Response,
+  statusSource: "cloudflare" | "vinext",
+  requireCacheHit: boolean,
+): WarmValidation {
+  return statusSource === "vinext"
+    ? validateVinextCacheStatus(response)
+    : validateCachePolicy(response, true, requireCacheHit);
+}
+
 function validateBuildIdentity(
   response: Response,
   expectedBuildId?: string,
@@ -863,6 +904,7 @@ function validateRscWarmResponse(
   expectedBuildId?: string,
   expectedRscBuildId?: string,
   requireCacheHit = false,
+  statusSource: "cloudflare" | "vinext" = "cloudflare",
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
@@ -891,7 +933,7 @@ function validateRscWarmResponse(
   ) {
     return { outcome: "failed", error: `expected ${VINEXT_RSC_CONTENT_TYPE} response` };
   }
-  const cachePolicyValidation = validateCachePolicy(response, true, requireCacheHit);
+  const cachePolicyValidation = validateWarmAdmission(response, statusSource, requireCacheHit);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
   if (
     terminalResponse &&
@@ -916,6 +958,7 @@ function validateHtmlWarmResponse(
   response: Response,
   expectedBuildId?: string,
   requireCacheHit = false,
+  statusSource: "cloudflare" | "vinext" = "cloudflare",
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
@@ -928,7 +971,7 @@ function validateHtmlWarmResponse(
       return { outcome: "failed", error: `HTTP ${response.status}` };
     }
   }
-  const cachePolicyValidation = validateCachePolicy(response, true, requireCacheHit);
+  const cachePolicyValidation = validateWarmAdmission(response, statusSource, requireCacheHit);
   if (cachePolicyValidation.outcome !== "warmed") return cachePolicyValidation;
   return { outcome: "warmed" };
 }
@@ -937,8 +980,14 @@ function validatePagesDataWarmResponse(
   response: Response,
   expectedBuildId?: string,
   requireCacheHit = false,
+  statusSource: "cloudflare" | "vinext" = "cloudflare",
 ): WarmValidation {
-  const validation = validateHtmlWarmResponse(response, expectedBuildId, requireCacheHit);
+  const validation = validateHtmlWarmResponse(
+    response,
+    expectedBuildId,
+    requireCacheHit,
+    statusSource,
+  );
   if (validation.outcome !== "warmed") return validation;
   if (!response.headers.get("Content-Type")?.toLowerCase().startsWith("application/json")) {
     return { outcome: "failed", error: "expected application/json response" };
@@ -1201,6 +1250,7 @@ async function warmOnePath(
     retrySkipped: boolean;
     phaseTimeoutMs?: number;
     requireCacheHit: boolean;
+    statusSource: "cloudflare" | "vinext";
   },
 ): Promise<
   | { path: string; ok: true; skipped: false }
@@ -1275,6 +1325,7 @@ async function warmOnePath(
           options.expectedBuildId,
           options.expectedRscBuildId,
           options.requireCacheHit,
+          options.statusSource,
         );
         if (validation.outcome === "warmed") {
           return { path: target.label, ok: true, skipped: false };
@@ -1313,8 +1364,14 @@ async function warmOnePath(
               response,
               options.expectedBuildId,
               options.requireCacheHit,
+              options.statusSource,
             )
-          : validateHtmlWarmResponse(response, options.expectedBuildId, options.requireCacheHit);
+          : validateHtmlWarmResponse(
+              response,
+              options.expectedBuildId,
+              options.requireCacheHit,
+              options.statusSource,
+            );
       if (validation.outcome === "warmed") {
         return { path: target.label, ok: true, skipped: false };
       }
@@ -1449,6 +1506,7 @@ export async function warmCdnCache(options: CdnWarmOptions): Promise<CdnWarmResu
       retryNotFound: isPropagationRequest,
       phaseTimeoutMs,
       requireCacheHit: options.requireCacheHit === true,
+      statusSource: options.statusSource ?? "cloudflare",
       retrySkipped:
         isPropagationRequest &&
         options.retrySkippedTargetKeys?.has(cdnWarmTargetKey(target)) === true,

@@ -104,6 +104,7 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain("rm -rf .perf-base-staging .perf-manifests .perf-harness");
     expect(workflow).toContain("grant_write_paths()");
     expect(workflow).toContain("packages/vinext/dist");
+    expect(workflow).toContain("packages/workers-response-store");
     expect(workflow).toContain("node_modules/.vite/task-cache");
     expect(workflow).toContain("benchmarks/nextjs/node_modules");
     expect(workflow).toContain('sudo chmod +t "$path"');
@@ -119,6 +120,7 @@ describe("paired performance benchmarks", () => {
     expect(workflow).toContain("- name: Lock benchmark inputs after setup");
     expect(workflow).toContain('"$root/packages/vinext/dist"');
     expect(workflow).toContain('"$root/packages/cloudflare/dist"');
+    expect(workflow).toContain('"$root/packages/workers-response-store/dist"');
     expect(workflow).toContain('"$root/node_modules/.vite/task-cache"');
     expect(workflow).toContain("benchmarks/vinext/node_modules/.vite-temp");
     expect(workflow).toContain('sudo chown -R "$USER":"$USER" "$path"');

@@ -62,6 +62,7 @@ import {
 } from "./cacheability-classification.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { suppressHangingPromiseAbortRejections } from "./internal/make-hanging-promise.js";
+import type { VinextCacheFunctionInvocation } from "../server/multi-stage.js";
 
 export { markAppPagePropsForUseCache } from "./internal/app-page-props-cache-key.js";
 
@@ -577,6 +578,8 @@ export type RegisterCachedFunctionOptions = {
   /** Number of declared arguments supplied by the directive transform. */
   argumentCount?: number;
   decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
+  encodeInvocationArgs?: (args: unknown[]) => Promise<string>;
+  serverReferenceId?: string;
 };
 
 /**
@@ -827,6 +830,21 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // Component work is reflected in `ctx` before selecting the final key.
       if (collectedResult?.cacheEntry) {
         try {
+          let cacheFunctionInvocation: VinextCacheFunctionInvocation | undefined;
+          if (options.serverReferenceId && options.encodeInvocationArgs) {
+            try {
+              cacheFunctionInvocation = {
+                encryptedArgs: await options.encodeInvocationArgs(admittedArgs),
+                referenceId: options.serverReferenceId,
+                rootParams: Object.fromEntries(
+                  Object.entries(rootParams ?? {}).filter((entry) => entry[1] !== undefined),
+                ) as Record<string, string | string[]>,
+                softTags,
+              };
+            } catch {
+              // Some request-local values cannot be replayed after this render.
+            }
+          }
           const serialized = collectedResult.cacheEntry;
           const cacheValue = {
             kind: "FETCH",
@@ -841,6 +859,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           const cacheContext = {
             fetchCache: true,
             tags: ctx.tags,
+            ...(cacheFunctionInvocation ? { cacheFunctionInvocation } : {}),
             cacheControl: {
               revalidate: revalidateSeconds,
               expire: effectiveLife.expire,
@@ -914,6 +933,13 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
 /** @internal Symbol carrying transform-derived cached function argument metadata. */
 const USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL = Symbol.for("vinext.useCacheAcceptsSecondArgument");
+
+/** Whether a loaded server reference is a transformed `"use cache"` function. */
+export function isUseCacheFunction(
+  value: unknown,
+): value is (...args: unknown[]) => Promise<unknown> {
+  return typeof value === "function" && Reflect.get(value, USE_CACHE_FUNCTION_SYMBOL) === true;
+}
 
 function throwPrivateUseCacheInsidePublicUseCacheError(): never {
   const error = new Error(

@@ -93,6 +93,7 @@ jobs:
           for path in \
             packages/vinext \
             packages/cloudflare \
+            packages/workers-response-store \
             benchmarks/vinext \
             benchmarks/nextjs; do
             validate_directory "$path"
@@ -100,6 +101,7 @@ jobs:
           for path in \
             packages/vinext/dist \
             packages/cloudflare/dist \
+            packages/workers-response-store/dist \
             benchmarks/vinext/app \
             benchmarks/vinext/dist \
             benchmarks/vinext/.vite \
@@ -229,6 +231,7 @@ jobs:
             local project_roots=(
               packages/vinext
               packages/cloudflare
+              packages/workers-response-store
               packages/create-vinext-app
               benchmarks/vinext
               benchmarks/nextjs
@@ -245,6 +248,7 @@ jobs:
             local paths=(
               packages/vinext/dist
               packages/cloudflare/dist
+              packages/workers-response-store/dist
               node_modules/.vite/task-cache
               benchmarks/vinext/dist
               benchmarks/vinext/.vite
@@ -366,6 +370,7 @@ jobs:
             for path in \
               "$root/packages/vinext/dist" \
               "$root/packages/cloudflare/dist" \
+              "$root/packages/workers-response-store/dist" \
               "$root/node_modules/.vite/task-cache" \
               "$root/benchmarks/nextjs/node_modules"; do
               sudo chown -R "$USER":"$USER" "$path"

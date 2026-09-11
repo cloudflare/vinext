@@ -7546,6 +7546,32 @@ describe('"use cache" runtime', () => {
     expect(calls).toBe(1);
   });
 
+  it("excludes framework arguments from revalidation invocations", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    const set = vi.spyOn(handler, "set");
+    const encodeInvocationArgs = vi.fn(async (args: unknown[]) => JSON.stringify(args));
+    setCacheHandler(handler);
+
+    const cached = registerCachedFunction(async () => "value", "test:revalidation-arity", "", {
+      argumentCount: 0,
+      encodeInvocationArgs,
+      serverReferenceId: "test#cached",
+    });
+    await (cached as (...args: unknown[]) => Promise<string>)("framework argument");
+
+    expect(encodeInvocationArgs).toHaveBeenCalledWith([]);
+    expect(set.mock.calls[0]?.[2]).toMatchObject({
+      cacheFunctionInvocation: {
+        encryptedArgs: "[]",
+        referenceId: "test#cached",
+      },
+    });
+  });
+
   it("preserves rest arguments when declared arity is unknown", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");

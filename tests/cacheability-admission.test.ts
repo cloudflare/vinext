@@ -20,6 +20,7 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
+import { applyRouteHandlerRevalidateHeader } from "../packages/vinext/src/server/app-route-handler-response.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 const encoder = new TextEncoder();
@@ -522,6 +523,39 @@ describe("single-request cacheability admission", () => {
 
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
     await expect(response.text()).resolves.toBe("public");
+  });
+
+  it("admits a completed Route Handler with an exported revalidate policy", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        new Request("https://example.com/api/data", { headers: { Accept: "*/*" } }),
+        null,
+        "build-a",
+        true,
+        undefined,
+        undefined,
+        undefined,
+        { applyCompletedResponsePolicy: true },
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-route", pattern: "/api/data" };
+      state.completedResponseBody = true;
+
+      const response = await runWithExecutionContext(context, async () => {
+        const rendered = new Response("public");
+        applyRouteHandlerRevalidateHeader(rendered, 60, 600);
+        return finalizeWorkerCacheabilityResponse(rendered, context);
+      });
+
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe(
+        "public, max-age=60, stale-while-revalidate=540",
+      );
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("admits an unmanifested Route Handler only with an explicit response policy", async () => {

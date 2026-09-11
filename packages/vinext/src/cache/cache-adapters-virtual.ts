@@ -42,6 +42,8 @@ export type CdnCacheAdapterCapabilities = {
    * guarantee is present. URL-only caches retain the contextual `_rsc` digest.
    */
   responseVary?: "verbatim";
+  /** Warm by observing after-render `X-Vinext-Cache` admission from Response Store. */
+  warmup?: "response-store";
   /**
    * Rewrites and other request routing run before the shared response stage,
    * and the resolved response-stage invocation participates in cache identity.
@@ -95,6 +97,14 @@ export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<st
 
 export function hasVerbatimResponseVary(cache?: VinextCacheConfig | null): boolean {
   return cache?.cdn?.capabilities?.responseVary === "verbatim";
+}
+
+export function supportsCanonicalRscWarmup(cache?: VinextCacheConfig | null): boolean {
+  return hasVerbatimResponseVary(cache) || cache?.cdn?.capabilities?.warmup === "response-store";
+}
+
+export function usesVinextCacheWarmupStatus(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.warmup === "response-store";
 }
 
 export function hasUncachedRequestRouting(cache?: VinextCacheConfig | null): boolean {

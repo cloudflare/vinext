@@ -104,6 +104,10 @@
       "types": "./dist/server/app-rsc-cache-busting.d.ts",
       "import": "./dist/server/app-rsc-cache-busting.js"
     },
+    "./internal/server/app-rsc-vary": {
+      "types": "./dist/server/app-rsc-vary.d.ts",
+      "import": "./dist/server/app-rsc-vary.js"
+    },
     "./internal/server/prerender-manifest": {
       "types": "./dist/server/prerender-manifest.d.ts",
       "import": "./dist/server/prerender-manifest.js"

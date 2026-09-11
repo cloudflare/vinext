@@ -1280,6 +1280,15 @@ describe("viteConfigHasCacheAdapter", () => {
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
   });
 
+  it("detects a cache config returned by an adapter factory", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ cache: responseStoreAdapter() })] };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
   it("returns false when the cache object is empty", () => {
     writeFile(tmpDir, "vite.config.ts", `export default { plugins: [vinext({ cache: {} })] };`);
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(false);

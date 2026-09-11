@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 type ProbeState = {
   status: number;
+  vinextCache: string | null;
   cfCacheStatus: string | null;
   age: string | null;
   cacheControl: string | null;
@@ -20,11 +21,7 @@ type SsrVerdict =
   | { kind: "cached"; detail: string }
   | { kind: "unknown"; detail: string };
 
-/**
- * Map a `cf-cache-status` value to one of our badge classes. Mirrors the
- * states documented at
- * https://developers.cloudflare.com/cache/concepts/default-cache-behavior/#cloudflare-cache-responses
- */
+/** Map a cache status to one of our badge classes. */
 function badgeClassFor(status: string | null): string {
   if (!status) return "";
   switch (status.toUpperCase()) {
@@ -124,25 +121,21 @@ export function CacheStatusProbe({ path }: { path: string }) {
   const [error, setError] = useState<string | null>(null);
   // The render-id from the previous probe. We compare probe-to-probe rather
   // than against the page navigation's render-id — those are two separate
-  // requests with different Accept headers, so they land in different Vary
-  // buckets in the outer cache and would falsely look like an SSR diff.
+  // requests with different Accept headers, so they can use different cached
+  // representations and would falsely look like an SSR diff.
   const previousRenderIdRef = useRef<string | null>(null);
 
   const probe = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      // `cache: 'no-store'` bypasses the browser HTTP cache. With
-      // `max-age=60` on cacheable responses, consecutive probes within a
-      // minute would otherwise be served from the browser cache and never
-      // talk to the edge — making the probe useless for observing outer
-      // cache behaviour. Workers Cache itself is unaffected: confirmed
-      // empirically that both probe and navigation responses still report
-      // `cf-cache-status: HIT` from the cache-enabled response entrypoint.
+      // `cache: 'no-store'` bypasses the browser HTTP cache so every probe
+      // reaches the application Worker and can report vinext's cache state.
       const res = await fetch(path, { method: "GET", cache: "no-store" });
       const markers = await extractRenderMarkers(res);
       setState({
         status: res.status,
+        vinextCache: res.headers.get("x-vinext-cache"),
         cfCacheStatus: res.headers.get("cf-cache-status"),
         age: res.headers.get("age"),
         cacheControl: res.headers.get("cache-control"),
@@ -179,9 +172,9 @@ export function CacheStatusProbe({ path }: { path: string }) {
         Issues a no-store <code>fetch</code> against the route. The route embeds a fresh{" "}
         <code>render-id</code> into every server-rendered response — comparing it across probes is
         the most reliable way to tell whether SSR actually happened or a cache served the same
-        bytes again. <code>cf-cache-status</code> is shown alongside as the cached response
-        entrypoint verdict. Cache admission and tag headers are private to that entrypoint and are
-        consumed before this public response.
+        bytes again. <code>x-vinext-cache</code> reports whether vinext read its durable data cache;
+        <code>cf-cache-status</code> should remain unset because this application Worker does not
+        enable Workers Cache.
       </p>
 
       {verdict ? <SsrBadge verdict={verdict} /> : null}
@@ -202,6 +195,16 @@ export function CacheStatusProbe({ path }: { path: string }) {
         <dd>{state?.renderId ?? "—"}</dd>
         <dt>render-time</dt>
         <dd>{state?.renderTime ?? "—"}</dd>
+        <dt>x-vinext-cache</dt>
+        <dd>
+          {state?.vinextCache ? (
+            <span className={`badge ${badgeClassFor(state.vinextCache)}`}>
+              {state.vinextCache}
+            </span>
+          ) : (
+            "—"
+          )}
+        </dd>
         <dt>cf-cache-status</dt>
         <dd>
           {cfStatus ? (
