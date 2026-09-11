@@ -162,6 +162,41 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(await secondRsc.text(), firstBody);
   });
 
+  test("seeds canonical RSC from one HTML warmup request", async () => {
+    const pathname = "/cached/intro";
+    const html = await request(pathname, {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    assert.equal(html.status, 200);
+    assert.equal(html.headers.get("x-vinext-cache"), "MISS");
+    await html.arrayBuffer();
+
+    const rsc = await request(`${pathname}?_rsc`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    assert.equal(rsc.status, 200);
+    assert.equal(rsc.headers.get("x-vinext-cache"), "HIT");
+    assert.match(rsc.headers.get("content-type") ?? "", /^text\/x-component/);
+    assert.ok((await rsc.arrayBuffer()).byteLength > 0);
+
+    const retryPath = `${pathname}?retry=1`;
+    const storedHtml = await request(retryPath);
+    assert.equal(storedHtml.headers.get("x-vinext-cache"), "MISS");
+    await storedHtml.arrayBuffer();
+
+    const retriedWarmup = await request(retryPath, {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    assert.equal(retriedWarmup.headers.get("x-vinext-cache"), "MISS");
+    await retriedWarmup.arrayBuffer();
+
+    const repairedRsc = await request(`${retryPath}&_rsc`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    assert.equal(repairedRsc.headers.get("x-vinext-cache"), "HIT");
+    await repairedRsc.body?.cancel();
+  });
+
   test("caches HEAD independently without storing a body", async () => {
     const first = await request("/pages-prewarm?head=1", { method: "HEAD" });
     const second = await request("/pages-prewarm?head=1", { method: "HEAD" });
@@ -183,7 +218,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(await second.text(), await first.text());
 
     const namespace = await miniflare.getDurableObjectNamespace("CACHE_METADATA", "cache");
-    const metadata = namespace.getByName(`vinext/workers-cache-poc/${workerVersionId}`);
+    const metadata = namespace.getByName(workerVersionId);
     const inspect = Reflect.get(metadata, "inspect");
     assert.equal(typeof inspect, "function");
     const serialized = JSON.stringify(await Reflect.apply(inspect, metadata, []));

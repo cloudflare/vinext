@@ -100,7 +100,7 @@ export function hasVerbatimResponseVary(cache?: VinextCacheConfig | null): boole
 }
 
 export function supportsCanonicalRscWarmup(cache?: VinextCacheConfig | null): boolean {
-  return hasVerbatimResponseVary(cache) || cache?.cdn?.capabilities?.warmup === "response-store";
+  return hasVerbatimResponseVary(cache);
 }
 
 export function usesVinextCacheWarmupStatus(cache?: VinextCacheConfig | null): boolean {

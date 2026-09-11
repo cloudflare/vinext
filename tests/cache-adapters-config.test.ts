@@ -21,6 +21,7 @@ import {
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
+  supportsCanonicalRscWarmup,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
   VIRTUAL_CDN_CACHE_ADAPTER,
@@ -436,5 +437,6 @@ describe("responseStoreAdapter builder", () => {
     });
     expect(hasBuildIdentityResponseHeader(descriptor)).toBe(true);
     expect(hasVerbatimResponseVary(descriptor)).toBe(false);
+    expect(supportsCanonicalRscWarmup(descriptor)).toBe(false);
   });
 });

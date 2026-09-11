@@ -14,7 +14,14 @@ import type {
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
-import { VINEXT_RSC_VARY_HEADER } from "vinext/internal/server/app-rsc-vary";
+import {
+  applyRscCompatibilityIdHeader,
+  applyRscDeploymentIdHeader,
+  createCanonicalRscRequestHeaders,
+  createCanonicalRscRequestUrl,
+  VINEXT_RSC_CONTENT_TYPE,
+  VINEXT_RSC_VARY_HEADER,
+} from "vinext/internal/server/app-rsc-cache-busting";
 
 import {
   CACHE_FUNCTION_REVALIDATOR_ID,
@@ -22,6 +29,7 @@ import {
   DATA_REVALIDATOR_ID,
   runWithResponseStoreInvocation,
   setResponseStore,
+  type ResponseStoreInvocationCapture,
 } from "./response-store-data.runtime.js";
 
 type WorkerExecutionContext = {
@@ -46,6 +54,7 @@ type StoredInvocation = {
 const ROUTE_REVALIDATOR_ID = "vinext:response";
 const RESPONSE_STORE_KEY_PARAM = "__vinext_response_store";
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
+const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const REPLAY_REQUEST_HEADERS = [
   "accept",
   ...VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
@@ -151,6 +160,7 @@ async function invokeResponseStage(
   env: WorkersResponseStoreClientEnv,
   ctx: WorkerExecutionContext,
   cache: VinextResponseStageDispatchOptions["cache"],
+  capture?: ResponseStoreInvocationCapture,
 ): Promise<Response> {
   const context = stageContext(ctx, env);
   const dispatchRequestStage: VinextRequestStageTransport = (request) =>
@@ -160,8 +170,11 @@ async function invokeResponseStage(
     StageContext
   >();
   const serialized = serializeInvocation(request, props);
-  return runWithResponseStoreInvocation(serialized, isReplayableInvocation(request, props), () =>
-    handleResponseStage(request, env, context, props, dispatchRequestStage, { cache }),
+  return runWithResponseStoreInvocation(
+    serialized,
+    isReplayableInvocation(request, props),
+    () => handleResponseStage(request, env, context, props, dispatchRequestStage, { cache }),
+    capture,
   );
 }
 
@@ -270,6 +283,10 @@ function isCacheable(response: Response): boolean {
   );
 }
 
+function isResponseStoreMiss(response: Response): boolean {
+  return response.status === 404 && response.headers.get("X-Workers-Response-Store") === "MISS";
+}
+
 function publicResponse(response: Response, cacheStatus?: string): Response {
   const headers = new Headers(response.headers);
   const publicCacheStatus =
@@ -331,20 +348,80 @@ export default {
         );
       }
 
+      const canSeedRsc =
+        request.headers.get("user-agent") === WARMUP_USER_AGENT &&
+        props !== null &&
+        typeof props === "object" &&
+        Reflect.get(props, "kind") === "app-page" &&
+        Reflect.get(props, "isRscRequest") === false &&
+        Reflect.get(props, "matchKind") === "request" &&
+        Reflect.get(props, "interceptionContext") === null &&
+        Reflect.get(props, "interceptionId") === null &&
+        Reflect.get(props, "mountedSlotsHeader") === null;
+      const rscSeed = canSeedRsc
+        ? {
+            props: {
+              ...(props as Record<string, unknown>),
+              isRscRequest: true,
+              renderMode: "navigation",
+            },
+            request: new Request(
+              new URL(createCanonicalRscRequestUrl(stageRequest.url), stageRequest.url),
+              { headers: createCanonicalRscRequestHeaders() },
+            ),
+          }
+        : undefined;
+      const rscKey = rscSeed ? await cacheRequest(rscSeed.request, rscSeed.props) : undefined;
       const key = await cacheRequest(stageRequest, props);
       const stored = await responseStore.fetch(key);
-      if (!(stored.status === 404 && stored.headers.get("X-Workers-Response-Store") === "MISS")) {
-        return publicResponse(stored, "HIT");
+      if (!isResponseStoreMiss(stored)) {
+        if (!rscKey) return publicResponse(stored, "HIT");
+
+        const storedRsc = await responseStore.fetch(rscKey);
+        if (!isResponseStoreMiss(storedRsc)) {
+          await storedRsc.body?.cancel();
+          return publicResponse(stored, "HIT");
+        }
+        await Promise.all([stored.body?.cancel(), storedRsc.body?.cancel()]);
       }
 
-      const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "shared");
-      if (!isCacheable(rendered)) return publicResponse(rendered, "BYPASS");
+      const capture: ResponseStoreInvocationCapture | undefined = rscSeed ? {} : undefined;
+      const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "shared", capture);
+      if (!isCacheable(rendered)) {
+        void capture?.rscData?.catch(() => {});
+        return publicResponse(rendered, "BYPASS");
+      }
+      if (rscSeed && !capture?.rscData) {
+        await rendered.body?.cancel();
+        throw new Error("Vinext response-store warmup did not capture the App page RSC payload");
+      }
 
       const [foreground, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
       const cacheResponse = new Response(cacheBody, rendered);
       await responseStore.put(key, cacheResponse, {
         revalidator: { id: ROUTE_REVALIDATOR_ID, args: [invocation] },
       });
+
+      if (rscSeed && rscKey && capture?.rscData) {
+        const rscData = await capture.rscData;
+        const rscHeaders = new Headers(rendered.headers);
+        rscHeaders.delete("Content-Length");
+        rscHeaders.delete("Link");
+        rscHeaders.delete("X-Vinext-Response-Store-Replayable");
+        rscHeaders.set("Content-Type", VINEXT_RSC_CONTENT_TYPE);
+        rscHeaders.set("Vary", VINEXT_RSC_VARY_HEADER);
+        applyRscCompatibilityIdHeader(rscHeaders);
+        applyRscDeploymentIdHeader(rscHeaders);
+        const rscInvocation = serializeInvocation(rscSeed.request, rscSeed.props);
+        await responseStore.put(
+          rscKey,
+          new Response(rscData, {
+            headers: rscHeaders,
+            status: 200,
+          }),
+          { revalidator: { id: ROUTE_REVALIDATOR_ID, args: [rscInvocation] } },
+        );
+      }
       return publicResponse(new Response(foreground, rendered), "MISS");
     };
 

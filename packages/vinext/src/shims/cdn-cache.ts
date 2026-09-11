@@ -128,6 +128,9 @@ export type CdnCacheAdapter = {
    */
   readonly requiresCompletedResponseAdmission?: boolean;
 
+  /** Capture the full-route RSC side stream while admitting a completed HTML response. */
+  captureAppPageRscData?(rscData: Promise<ArrayBuffer>): void;
+
   /**
    * Validate provider-specific request routing before the application handles
    * the request. Returning a response short-circuits the request pipeline;
