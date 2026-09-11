@@ -216,6 +216,20 @@ describe("scanImports", () => {
     expect(items[0].name).toBe("next/image");
   });
 
+  it("ignores build output from other toolchains during migrations", () => {
+    // An OpenNext deployment's worker bundle and wrangler's local state
+    // contain bundled next/* imports and CJS globals that are not
+    // application source; reporting them blocks real migration findings.
+    writeFile(".open-next/server-functions/default/handler.mjs", `import Link from "next/link";`);
+    writeFile(".wrangler/state/v3/d1/cache.js", `import { useAmp } from "next/amp";`);
+    writeFile(".output/server/index.mjs", `import Link from "next/link";`);
+    writeFile("app/page.tsx", `import Image from "next/image";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/image");
+  });
+
   it("ignores imports used only by test modules and tool config files", () => {
     writeFile("app/page.test.tsx", `import { useAmp } from "next/amp";`);
     writeFile("vitest.config.ts", `import { useAmp } from "next/amp";`);
