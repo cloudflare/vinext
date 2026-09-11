@@ -386,7 +386,10 @@ describe("pages page data", () => {
           pageProps: { fromApp: true, fromStatic: true },
         },
       }),
-      { cacheControl: { revalidate: 10, expire: 300 } },
+      {
+        cacheControl: { revalidate: 10, expire: 300 },
+        timestamp: expect.any(Number),
+      },
     );
   });
 
@@ -1380,7 +1383,7 @@ describe("pages page data", () => {
         html: expect.stringContaining("<div>fresh-body</div>"),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      { cacheControl: { revalidate: false } },
+      { cacheControl: { revalidate: false }, timestamp: expect.any(Number) },
     );
     expect(isrSet).toHaveBeenCalledWith(
       "pages:/posts/post",
@@ -1389,7 +1392,7 @@ describe("pages page data", () => {
         html: expect.stringContaining('"__vinext":{"hasMiddleware":true}'),
         pageData: { pageProps: { title: "fresh" } },
       }),
-      { cacheControl: { revalidate: false } },
+      { cacheControl: { revalidate: false }, timestamp: expect.any(Number) },
     );
   });
 
@@ -1733,6 +1736,7 @@ describe("pages page data", () => {
       documentReqRes: null,
       gsspRes: null,
       isrExpireSeconds: 300,
+      isrFillStartedAt: expect.any(Number),
       isrRevalidateSeconds: 30,
       pageProps: { title: "hello" },
       props: { pageProps: { title: "hello" } },

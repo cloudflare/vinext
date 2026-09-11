@@ -229,6 +229,12 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
   const requestContext = createRequestContext({
     headersContext,
     executionContext,
+    ...(props.forwardedRevalidation
+      ? {
+          previouslyRevalidatedTags: new Set(props.forwardedRevalidation.tags),
+          requestStartTime: props.forwardedRevalidation.requestStartTime,
+        }
+      : {}),
     unstableCacheRevalidation: "background",
   });
   const middlewareContext: AppMiddlewareContext = {

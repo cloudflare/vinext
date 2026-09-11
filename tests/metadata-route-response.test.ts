@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   getPrerenderableMetadataRoutePaths,
   handleMetadataRouteRequest,
@@ -27,6 +27,9 @@ function markUseCache<T extends (...args: never[]) => unknown>(fn: T): T {
 }
 
 describe("handleMetadataRouteRequest", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   it("enumerates cached text metadata routes for build prerendering", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/use-cache-metadata-route-handler/use-cache-metadata-route-handler.test.ts
@@ -346,15 +349,18 @@ describe("handleMetadataRouteRequest", () => {
   });
 
   it("serves stale metadata while regenerating its value and invalidation tags", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
     let metadataCalls = 0;
     let regenerate: (() => Promise<void>) | undefined;
     const writes: Array<{
       key: string;
-      policy: { cacheControl?: unknown; tags?: string[] };
+      policy: { cacheControl?: unknown; tags?: string[]; timestamp?: number };
       value: { headers: Record<string, string | string[]>; body: ArrayBuffer };
     }> = [];
     const defaultExport = markUseCache(async () => {
       metadataCalls++;
+      vi.setSystemTime(3_000);
       addCollectedRequestTags(["metadata-user-tag"]);
       return { rules: { userAgent: "*", allow: "/regenerated" } };
     });
@@ -405,6 +411,7 @@ describe("handleMetadataRouteRequest", () => {
     expect(await response?.text()).toContain("/stale");
     expect(regenerate).toBeTypeOf("function");
 
+    vi.setSystemTime(2_000);
     await regenerate?.();
     expect(metadataCalls).toBe(1);
     expect(writes).toHaveLength(1);
@@ -414,6 +421,7 @@ describe("handleMetadataRouteRequest", () => {
       expire: 300,
       stale: 30,
     });
+    expect(writes[0].policy.timestamp).toBe(2_000);
     expect(writes[0].policy.tags).toEqual(
       expect.arrayContaining([
         "/robots.txt",

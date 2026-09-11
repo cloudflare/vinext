@@ -1,5 +1,6 @@
 import { getHeadersAccessPhase } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { getCacheTimestamp } from "./cache-handler.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -62,7 +63,9 @@ export type UnstableCacheObservation = Readonly<{
 
 export type CacheState = {
   actionRevalidationKind: ActionRevalidationKind;
-  pendingRevalidatedTags: Set<string>;
+  pendingRevalidatedTags: Map<string, number>;
+  previouslyRevalidatedTags: Set<string>;
+  requestStartTime: number;
   pendingRevalidations: Set<Promise<void>>;
   requestScopedCacheLife: CacheLifeConfig | null;
   unstableCacheObservations: Map<string, UnstableCacheObservation>;
@@ -79,7 +82,9 @@ export const ACTION_DID_REVALIDATE_DYNAMIC_ONLY = 2 satisfies ActionRevalidation
 
 const fallbackState = (globalState[FALLBACK_KEY] ??= {
   actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
-  pendingRevalidatedTags: new Set<string>(),
+  pendingRevalidatedTags: new Map<string, number>(),
+  previouslyRevalidatedTags: new Set<string>(),
+  requestStartTime: getCacheTimestamp(),
   pendingRevalidations: new Set<Promise<void>>(),
   requestScopedCacheLife: null,
   unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
@@ -106,7 +111,9 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
   }
   const state: CacheState = {
     actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
-    pendingRevalidatedTags: new Set<string>(),
+    pendingRevalidatedTags: new Map<string, number>(),
+    previouslyRevalidatedTags: new Set<string>(),
+    requestStartTime: getCacheTimestamp(),
     pendingRevalidations: new Set<Promise<void>>(),
     requestScopedCacheLife: null,
     unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
@@ -148,14 +155,44 @@ function hasRequestScopedCacheState(): boolean {
 /** @internal */
 export function _markPendingRevalidatedTag(tag: string): void {
   if (!hasRequestScopedCacheState()) return;
-  getCacheState().pendingRevalidatedTags.add(tag);
+  getCacheState().pendingRevalidatedTags.set(tag, getCacheTimestamp());
 }
 
 /** @internal */
-export function _hasPendingRevalidatedTag(tags: readonly string[]): boolean {
-  if (!hasRequestScopedCacheState()) return false;
+export function _getPendingRevalidatedTags(): string[] {
+  if (!hasRequestScopedCacheState()) return [];
+  return [...getCacheState().pendingRevalidatedTags.keys()];
+}
+
+/** @internal */
+export function _getPendingRevalidatedTagTimestamp(tags: readonly string[]): number | null {
+  if (!hasRequestScopedCacheState()) return null;
   const pendingTags = getCacheState().pendingRevalidatedTags;
-  return tags.some((tag) => pendingTags.has(tag));
+  let latest: number | null = null;
+  for (const tag of tags) {
+    const revalidatedAt = pendingTags.get(tag);
+    if (revalidatedAt !== undefined && (latest === null || revalidatedAt > latest)) {
+      latest = revalidatedAt;
+    }
+  }
+  return latest;
+}
+
+/** @internal */
+export function _wasTagRevalidatedAfter(
+  tags: readonly string[],
+  entryLastModified: number,
+): boolean {
+  if (!hasRequestScopedCacheState()) return false;
+  const state = getCacheState();
+  if (
+    entryLastModified <= state.requestStartTime &&
+    tags.some((tag) => state.previouslyRevalidatedTags.has(tag))
+  ) {
+    return true;
+  }
+  const revalidatedAt = _getPendingRevalidatedTagTimestamp(tags);
+  return revalidatedAt !== null && revalidatedAt > entryLastModified;
 }
 
 /**

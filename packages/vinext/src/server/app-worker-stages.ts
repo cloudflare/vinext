@@ -6,7 +6,7 @@ import type {
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 7;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 8;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -17,6 +17,11 @@ type AppWorkerResponseStageEnvelope = {
   buildId: string | null;
   cacheability: VinextResponseStageCacheability;
   draftModeCookie: string | null;
+  /** Authenticated invalidations consumed by the request stage before dispatch. */
+  forwardedRevalidation?: {
+    requestStartTime: number;
+    tags: string[];
+  };
   middlewareCookieOverlay: string | null;
   protocolVersion: typeof APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION;
   /** Canonical public request origin used to partition and validate shared renders. */
@@ -131,6 +136,22 @@ function isCanonicalHttpOrigin(value: unknown): value is string {
   }
 }
 
+function isForwardedRevalidation(
+  value: unknown,
+): value is NonNullable<AppWorkerResponseStageEnvelope["forwardedRevalidation"]> {
+  if (!value || typeof value !== "object") return false;
+  const state = value as Partial<
+    NonNullable<AppWorkerResponseStageEnvelope["forwardedRevalidation"]>
+  >;
+  return (
+    typeof state.requestStartTime === "number" &&
+    Number.isFinite(state.requestStartTime) &&
+    Array.isArray(state.tags) &&
+    state.tags.length > 0 &&
+    state.tags.every((tag) => typeof tag === "string" && tag.length > 0)
+  );
+}
+
 export function isAppWorkerResponseStageProps(
   value: unknown,
 ): value is AppWorkerResponseStageProps {
@@ -141,6 +162,8 @@ export function isAppWorkerResponseStageProps(
     (props.buildId !== null && typeof props.buildId !== "string") ||
     !isResponseStageCacheability(props.cacheability) ||
     (props.draftModeCookie !== null && typeof props.draftModeCookie !== "string") ||
+    (props.forwardedRevalidation !== undefined &&
+      !isForwardedRevalidation(props.forwardedRevalidation)) ||
     (props.middlewareCookieOverlay !== null && typeof props.middlewareCookieOverlay !== "string") ||
     !isCanonicalHttpOrigin(props.requestOrigin) ||
     (props.scriptNonce !== null && typeof props.scriptNonce !== "string")

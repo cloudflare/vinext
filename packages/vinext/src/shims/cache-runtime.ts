@@ -30,13 +30,14 @@
 
 import {
   getDataCacheHandler,
+  getCacheTimestamp,
   type CachedFetchValue,
   type CacheControlMetadata,
   type CacheHandlerValue,
 } from "./cache-handler.js";
 import {
   cacheLifeProfiles,
-  _hasPendingRevalidatedTag,
+  _wasTagRevalidatedAfter,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
   type CacheLifeConfig,
@@ -742,20 +743,22 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // `fn` still propagate with their digest intact instead of being masked
       // by the handler's own exception.
       let existing: CacheHandlerValue | null = null;
-      if (!_hasPendingRevalidatedTag(softTags)) {
-        try {
-          existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
-        } catch (error) {
-          console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
-        }
+      try {
+        existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
+      } catch (error) {
+        console.error("[vinext] use cache: handler.get failed; treating as a cache miss:", error);
       }
       const redirectValue = existing?.value;
       if (
+        existing !== null &&
         isRootParamRedirect(existing) &&
         existing?.cacheState !== "stale" &&
         rootParams &&
         redirectValue?.kind === "FETCH" &&
-        !_hasPendingRevalidatedTag([...(redirectValue.tags ?? []), ...softTags])
+        !_wasTagRevalidatedAfter(
+          [...(redirectValue.tags ?? []), ...softTags],
+          existing.lastModified,
+        )
       ) {
         const redirectNames = rootParamNamesFromTags(redirectValue.tags);
         const combinedNames = addKnownRootParamNames(id, redirectNames);
@@ -771,7 +774,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         existing?.value &&
         existing.value.kind === "FETCH" &&
         existing.cacheState !== "stale" &&
-        !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
+        !_wasTagRevalidatedAfter(
+          [...(existing.value.tags ?? []), ...softTags],
+          existing.lastModified,
+        )
       ) {
         try {
           propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
@@ -801,7 +807,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       }
 
-      // Cache miss (or stale) — execute with context
+      // Cache miss (or stale) — capture the entry timestamp before user code
+      // starts. Handlers persist this causal boundary unchanged, matching
+      // Next.js CacheEntry.timestamp.
+      const fillStartedAt = getCacheTimestamp();
       const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
         fn,
         callArgs,
@@ -822,10 +831,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       propagateCacheTagsToRequest(ctx.tags);
       const revalidateSeconds =
         effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
+      const fillWasInvalidated = _wasTagRevalidatedAfter([...ctx.tags, ...softTags], fillStartedAt);
 
       // Serialization ran while the cache ALS was active so lazy Server
       // Component work is reflected in `ctx` before selecting the final key.
-      if (collectedResult?.cacheEntry) {
+      if (collectedResult?.cacheEntry && !fillWasInvalidated) {
         try {
           const serialized = collectedResult.cacheEntry;
           const cacheValue = {
@@ -841,6 +851,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           const cacheContext = {
             fetchCache: true,
             tags: ctx.tags,
+            timestamp: fillStartedAt,
             cacheControl: {
               revalidate: revalidateSeconds,
               expire: effectiveLife.expire,

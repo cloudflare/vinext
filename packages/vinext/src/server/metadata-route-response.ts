@@ -37,6 +37,7 @@ import {
 } from "vinext/shims/fetch-cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
+import { getCacheTimestamp } from "vinext/shims/cache-handler";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { VINEXT_METADATA_ROUTE_CACHE_HEADER } from "./headers.js";
@@ -97,6 +98,7 @@ type RenderedMetadataRoute = {
   cacheLife: CacheLifeConfig | null;
   collectedTags: string[];
   response: Response;
+  timestamp: number;
 };
 
 function isOuterMetadataCacheEnabled(): boolean {
@@ -278,14 +280,17 @@ function buildMetadataRouteTags(
   return buildPageCacheTags(cleanPathname, collectedTags, route.routeSegments ?? [], "route");
 }
 
-function captureRenderedMetadataRoute(response: Response): RenderedMetadataRoute {
+function captureRenderedMetadataRoute(
+  response: Response,
+  timestamp: number,
+): RenderedMetadataRoute {
   const cacheLife = _consumeRequestScopedCacheLife();
   const collectedTags = getCollectedFetchTags();
   if (process.env.VINEXT_PRERENDER === "1") {
     applyPrerenderCacheLifeHeader(response.headers, cacheLife);
     applyPrerenderCacheTagsHeader(response.headers, collectedTags);
   }
-  return { cacheLife, collectedTags, response };
+  return { cacheLife, collectedTags, response, timestamp };
 }
 
 async function writeRenderedMetadataRoute(
@@ -315,6 +320,7 @@ async function writeRenderedMetadataRoute(
       ...(typeof stale === "number" ? { staleSeconds: stale } : {}),
     }),
     tags: buildMetadataRouteTags(route, options.cleanPathname, rendered.collectedTags),
+    timestamp: rendered.timestamp,
   });
 }
 
@@ -731,9 +737,10 @@ export async function handleMetadataRouteRequest(
       if (functions.generateSitemaps) {
         if (isGeneratedSitemapPath(route, options.cleanPathname)) {
           const render = async (): Promise<RenderedMetadataRoute | null> => {
+            const fillStartedAt = getCacheTimestamp();
             setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
             const response = await handleGeneratedSitemap(route, options.cleanPathname, functions);
-            return response ? captureRenderedMetadataRoute(response) : null;
+            return response ? captureRenderedMetadataRoute(response, fillStartedAt) : null;
           };
           const cached = await readMatchedPrerenderedMetadataRouteResponse(
             options,
@@ -761,11 +768,12 @@ export async function handleMetadataRouteRequest(
     }
 
     const render = async (): Promise<RenderedMetadataRoute> => {
+      const fillStartedAt = getCacheTimestamp();
       setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
       const response = route.isDynamic
         ? await callDynamicMetadataRoute(route, match, options.makeThenableParams, functions)
         : serveStaticMetadataRoute(route);
-      return captureRenderedMetadataRoute(response);
+      return captureRenderedMetadataRoute(response, fillStartedAt);
     };
     const cached = await readMatchedPrerenderedMetadataRouteResponse(
       options,

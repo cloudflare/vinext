@@ -17,9 +17,24 @@ import {
 import {
   _captureRequestScopedCacheLifeAccessors,
   _setRequestScopedCacheLife,
+  _wasTagRevalidatedAfter,
 } from "../packages/vinext/src/shims/cache-request-state.js";
 
 describe("unified-request-context", () => {
+  it("treats forwarded tags as revalidated at request start", () => {
+    const ctx = createRequestContext({
+      previouslyRevalidatedTags: new Set(["posts", "users"]),
+      requestStartTime: 1_000,
+    });
+
+    void runWithRequestContext(ctx, () => {
+      expect(_wasTagRevalidatedAfter(["other", "posts"], 999)).toBe(true);
+      expect(_wasTagRevalidatedAfter(["posts"], 1_000)).toBe(true);
+      expect(_wasTagRevalidatedAfter(["posts"], 1_001)).toBe(false);
+      expect(_wasTagRevalidatedAfter(["other"], 999)).toBe(false);
+    });
+  });
+
   describe("isInsideUnifiedScope", () => {
     it("returns false outside any scope", () => {
       expect(isInsideUnifiedScope()).toBe(false);

@@ -25,6 +25,9 @@ import {
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
+  NEXT_CACHE_REVALIDATED_TAGS_HEADER,
+  NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER,
+  VINEXT_CACHE_REVALIDATED_TAGS_HEADER,
   RSC_HEADER,
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
@@ -61,6 +64,7 @@ import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
+import { _wasTagRevalidatedAfter } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -230,6 +234,41 @@ function useSplitPolicyAdapter(): void {
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 describe("createAppRscHandler", () => {
+  it("restores authenticated forwarded invalidations without exposing protocol headers", async () => {
+    const observed: Record<string, boolean | string | null> = {};
+    const handler = createHandler({
+      async dispatchMatchedPage() {
+        observed.oldEntry = _wasTagRevalidatedAfter(["posts,tenant"], 0);
+        observed.newEntry = _wasTagRevalidatedAfter(["posts,tenant"], Date.now() + 10_000);
+        const headers = await requestHeaders();
+        observed.tagsHeader = headers.get(NEXT_CACHE_REVALIDATED_TAGS_HEADER);
+        observed.tokenHeader = headers.get(NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER);
+        observed.vinextTagsHeader = headers.get(VINEXT_CACHE_REVALIDATED_TAGS_HEADER);
+        return new Response("page");
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about", {
+        headers: {
+          [NEXT_CACHE_REVALIDATED_TAGS_HEADER]: "posts,tenant",
+          [NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER]: "test-draft-secret",
+          [VINEXT_CACHE_REVALIDATED_TAGS_HEADER]: '["posts,tenant"]',
+        },
+      }),
+      null,
+    );
+
+    expect(response.status).toBe(200);
+    expect(observed).toEqual({
+      oldEntry: true,
+      newEntry: false,
+      tagsHeader: null,
+      tokenHeader: null,
+      vinextTagsHeader: null,
+    });
+  });
+
   it("dispatches a matched GET through the App response stage and composes request-stage headers", async () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async (_request, props) => {
       expect(props).toMatchObject({
@@ -259,6 +298,49 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("x-test-header")).toBe("applied");
     expect(response.headers.get("x-response-stage")).toBe("yes");
     expect(await response.text()).toBe("response-stage");
+  });
+
+  it("restores authenticated forwarded invalidations across the App response stage", async () => {
+    const observed: Record<string, boolean | string | null> = {};
+    const responseHandler = createHandler({
+      async dispatchMatchedPage() {
+        observed.oldEntry = _wasTagRevalidatedAfter(["posts,tenant"], 0);
+        observed.newEntry = _wasTagRevalidatedAfter(["posts,tenant"], Date.now() + 10_000);
+        const headers = await requestHeaders();
+        observed.tagsHeader = headers.get(NEXT_CACHE_REVALIDATED_TAGS_HEADER);
+        observed.tokenHeader = headers.get(NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER);
+        observed.vinextTagsHeader = headers.get(VINEXT_CACHE_REVALIDATED_TAGS_HEADER);
+        return new Response("page");
+      },
+    });
+    const requestHandler = createHandler();
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+      (request, props, stageOptions) =>
+        responseHandler.handleResponseStage(request, null, props, stageOptions),
+    );
+
+    const response = await requestHandler(
+      new Request("https://example.test/docs/about", {
+        headers: {
+          [NEXT_CACHE_REVALIDATED_TAGS_HEADER]: "posts,tenant",
+          [NEXT_CACHE_REVALIDATE_TAG_TOKEN_HEADER]: "test-draft-secret",
+          [VINEXT_CACHE_REVALIDATED_TAGS_HEADER]: '["posts,tenant"]',
+        },
+      }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(response.status).toBe(200);
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+    expect(observed).toEqual({
+      oldEntry: true,
+      newEntry: false,
+      tagsHeader: null,
+      tokenHeader: null,
+      vinextTagsHeader: null,
+    });
   });
 
   it.each(["no-cache", "no-store", "max-age=0, no-cache"])(

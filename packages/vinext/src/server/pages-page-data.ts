@@ -3,11 +3,12 @@ import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
-import type {
-  CachedPagesValue,
-  CachedRedirectValue,
-  CacheHandlerValue,
-  CacheControlMetadata,
+import {
+  getCacheTimestamp,
+  type CachedPagesValue,
+  type CachedRedirectValue,
+  type CacheHandlerValue,
+  type CacheControlMetadata,
 } from "vinext/shims/cache-handler";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
@@ -382,6 +383,8 @@ type ResolvePagesPageDataRenderResult = {
   gsspRes: PagesGsspResponse | null;
   isrRevalidateSeconds: number | false | null;
   isrExpireSeconds?: number;
+  /** Timestamp captured before getStaticProps begins for this cache fill. */
+  isrFillStartedAt?: number;
   pageProps: Record<string, unknown>;
   props: PagesRenderProps;
   /**
@@ -1401,6 +1404,7 @@ export async function resolvePagesPageData(
 
   let isrRevalidateSeconds: number | false | null = null;
   let isrExpireSeconds: number | undefined;
+  let isrFillStartedAt: number | undefined;
 
   if (typeof options.pageModule.getStaticProps === "function") {
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
@@ -1422,6 +1426,7 @@ export async function resolvePagesPageData(
         cacheKey,
         async function () {
           return options.runInFreshUnifiedContext(async () => {
+            const fillStartedAt = getCacheTimestamp();
             options.applyRequestContexts();
             const freshAppResult = await loadPagesAppInitialRenderProps(options, () =>
               options.createGsspReqRes(),
@@ -1455,7 +1460,10 @@ export async function resolvePagesPageData(
                   kind: "REDIRECT",
                   props: buildPagesRedirectProps(redirect, freshRenderProps),
                 },
-                { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
+                {
+                  cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+                  timestamp: fillStartedAt,
+                },
               );
               return;
             }
@@ -1463,6 +1471,7 @@ export async function resolvePagesPageData(
             if (freshResult.notFound) {
               await options.isrSet(cacheKey, null, {
                 cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+                timestamp: fillStartedAt,
               });
               return;
             }
@@ -1494,7 +1503,10 @@ export async function resolvePagesPageData(
               await options.isrSet(
                 cacheKey,
                 buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
-                { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
+                {
+                  cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+                  timestamp: fillStartedAt,
+                },
               );
               return;
             }
@@ -1512,7 +1524,10 @@ export async function resolvePagesPageData(
                 headers: undefined,
                 status: undefined,
               },
-              { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
+              {
+                cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+                timestamp: fillStartedAt,
+              },
             );
           });
         },
@@ -1691,6 +1706,7 @@ export async function resolvePagesPageData(
         ? cachedValue.pageData
         : null;
     if (!generatedPageData) {
+      isrFillStartedAt = getCacheTimestamp();
       const shortCircuit = await loadForegroundAppInitialRenderProps();
       if (shortCircuit) return shortCircuit;
     }
@@ -1736,7 +1752,10 @@ export async function resolvePagesPageData(
             kind: "REDIRECT",
             props: buildPagesRedirectProps(redirect, renderProps),
           },
-          { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
+          {
+            cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+            timestamp: isrFillStartedAt,
+          },
         );
         applyPagesTerminalMissHeaders(response, revalidateSeconds, pathname, expireSeconds);
       }
@@ -1752,6 +1771,7 @@ export async function resolvePagesPageData(
       if (previewData === false) {
         await options.isrSet(cacheKey, null, {
           cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
+          timestamp: isrFillStartedAt,
         });
       }
       const notFoundResult = buildPagesNotFoundResult(
@@ -1812,7 +1832,10 @@ export async function resolvePagesPageData(
           headers: undefined,
           status: undefined,
         },
-        { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds: isrExpireSeconds }) },
+        {
+          cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds: isrExpireSeconds }),
+          timestamp: isrFillStartedAt,
+        },
       );
     }
   }
@@ -1866,6 +1889,7 @@ export async function resolvePagesPageData(
     gsspRes,
     isrRevalidateSeconds,
     isrExpireSeconds,
+    isrFillStartedAt,
     pageProps,
     props: renderProps,
     isFallback: false,

@@ -186,6 +186,27 @@ describe("App Worker response stage", () => {
     expect(isAppWorkerResponseStageProps(withoutInterceptionId)).toBe(false);
   });
 
+  it("validates forwarded revalidation state", () => {
+    expect(
+      isAppWorkerResponseStageProps({
+        ...notFoundStage,
+        forwardedRevalidation: { requestStartTime: 1_000, tags: ["posts"] },
+      }),
+    ).toBe(true);
+    expect(
+      isAppWorkerResponseStageProps({
+        ...notFoundStage,
+        forwardedRevalidation: { requestStartTime: Number.NaN, tags: ["posts"] },
+      }),
+    ).toBe(false);
+    expect(
+      isAppWorkerResponseStageProps({
+        ...notFoundStage,
+        forwardedRevalidation: { requestStartTime: 1_000, tags: [] },
+      }),
+    ).toBe(false);
+  });
+
   it.each([
     { name: "missing", requestOrigin: undefined },
     { name: "relative", requestOrigin: "example.com" },
