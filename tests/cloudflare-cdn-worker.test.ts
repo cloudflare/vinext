@@ -667,6 +667,29 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response).not.toHaveBeenCalled();
   });
 
+  it("returns redirects from shared dispatch instead of following them", async () => {
+    // A cache-fronted fetch follows redirects by default. When the render
+    // responds with a redirect, following it re-enters the entrypoint for the
+    // redirect target while the invocation still describes the original URL,
+    // re-rendering the redirect source until the runtime's redirect budget is
+    // exhausted (observed as `TypeError: Too many redirects` on any route that
+    // redirects unauthenticated visitors, e.g. a CMS admin login gate).
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 307 }));
+    const binding = vi.fn(() => ({ fetch }));
+    stages.request.mockImplementation((_request, _env, _ctx, dispatch) =>
+      dispatch(new Request("https://example.com/admin"), { kind: "app-page" }, { cache: "shared" }),
+    );
+
+    const result = await worker.fetch(new Request("https://example.com/admin"), {}, {
+      exports: { VinextCachedResponse: binding },
+    } as never);
+
+    expect(result.status).toBe(307);
+    expect(fetch).toHaveBeenCalledOnce();
+    const cacheRequest = fetch.mock.calls[0]![0] as Request;
+    expect(cacheRequest.redirect).toBe("manual");
+  });
+
   it.each(["HIT", "MISS", "UPDATING"])(
     "exposes the response-entrypoint %s status through vinext cache headers",
     async (cacheStatus) => {
