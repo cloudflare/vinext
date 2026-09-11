@@ -15,6 +15,12 @@ const PHASE_PRODUCTION_BUILD = "phase-production-build";
 
 type BrowserGlobalName = "window" | "document";
 
+type ConsoleTaskLike = { name: string; run: <T>(fn: () => T) => T };
+
+type ConsoleWithCreateTask = typeof console & {
+  createTask?: unknown;
+};
+
 function clearBrowserGlobal(name: BrowserGlobalName): void {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
 
@@ -40,6 +46,30 @@ function clearBrowserGlobal(name: BrowserGlobalName): void {
   }
 }
 
+/**
+ * Fall back to a synchronous passthrough when `console.createTask` is inert.
+ *
+ * workerd's console exposes `createTask` but throws "not implemented" when it
+ * is called, and React's development builds call it at module initialization
+ * and during rendering (scheduler task tracing). The combination crashes every
+ * server environment on Workers, so probe the runtime implementation once and
+ * replace it with a passthrough when it cannot execute. A working
+ * implementation (Node's task tracer) is left untouched.
+ */
+function installCreateTaskFallback(): void {
+  const existing = (console as ConsoleWithCreateTask).createTask;
+  if (typeof existing !== "function") return;
+
+  try {
+    (existing as (name: string) => ConsoleTaskLike)("vinext:createTask-probe").run(() => {});
+  } catch {
+    (console as ConsoleWithCreateTask).createTask = (name: string): ConsoleTaskLike => ({
+      name,
+      run: (fn) => fn(),
+    });
+  }
+}
+
 export function installServerGlobals(): void {
   clearBrowserGlobal("window");
   clearBrowserGlobal("document");
@@ -54,6 +84,8 @@ export function installServerGlobals(): void {
       writable: true,
     });
   }
+
+  installCreateTaskFallback();
 
   const nextPhaseDescriptor = Object.getOwnPropertyDescriptor(globalThis, "__VINEXT_NEXT_PHASE");
   if (!nextPhaseDescriptor || nextPhaseDescriptor.configurable) {
