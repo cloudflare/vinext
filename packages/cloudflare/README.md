@@ -95,5 +95,17 @@ Deploy Cloudflare Workers projects with the package CLI:
 npx @vinext/cloudflare deploy
 ```
 
+Projects with `cloudflare.config.ts` opt into the experimental Cloudflare Vite
+plugin v2 path and deploy their generated Build Output with `cf`. Existing
+Wrangler-configured projects continue to use Wrangler. A normal typed-config
+deploy does not need `wrangler.jsonc`.
+
+Experimental staged CDN warming is currently a hybrid flow: `cf` builds and
+uploads the Worker version, while Wrangler reads deployment status, stages and
+promotes traffic, and applies triggers when needed. Until `cf` supports those
+control-plane operations, warming also needs an equivalent Wrangler config for
+trigger and version-metadata configuration. This is an alternative path for
+trying `cf`, not a replacement for vinext's default Wrangler deployment path.
+
 With Vite+, use `vpx @vinext/cloudflare deploy`, or
 `vp exec vinext-cloudflare deploy` when running the locally installed bin.

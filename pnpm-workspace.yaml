@@ -4,10 +4,7 @@ preferFrozenLockfile: true
 saveExact: true
 blockExoticSubdeps: true
 minimumReleaseAge: 1440
-minimumReleaseAgeExclude:
-  - miniflare
-  - wrangler
-  - vite
+resolutionMode: highest
 
 packages:
   - apps/*

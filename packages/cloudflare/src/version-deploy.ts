@@ -1,4 +1,6 @@
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import {
   buildNodeCliInvocation,
@@ -49,6 +51,32 @@ type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readBuildOutputWorkerName(root: string): string {
+  const configPath = path.join(
+    root,
+    ".cloudflare",
+    "output",
+    "v0",
+    "workers",
+    "default",
+    "config.json",
+  );
+  let config: unknown;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (cause) {
+    throw new Error(
+      "Could not read the generated Cloudflare Build Output config. Rebuild the app before deploying.",
+      { cause },
+    );
+  }
+  const name = isRecord(config) ? config.name : undefined;
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error("The generated Cloudflare Build Output config does not declare a Worker name.");
+  }
+  return name;
 }
 
 function parseJsonObject(output: string): JsonRecord | unknown[] | null {
@@ -342,6 +370,7 @@ export function runCfVersionUpload(
   },
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionUploadResult {
+  const workerName = readBuildOutputWorkerName(root);
   const { args, mode } = buildCfVersionUploadArgs(options);
   console.log(
     mode
@@ -349,9 +378,10 @@ export function runCfVersionUpload(
       : "\n  Uploading Worker Build Output...",
   );
   try {
-    return parseWranglerVersionUploadOutput(
+    const result = parseWranglerVersionUploadOutput(
       runCfCommand(root, args, execute, options.verbose === true),
     );
+    return { ...result, workerName };
   } catch (error) {
     if (isMissingWorkerVersionUploadError(error)) throw withInitialDeployRequiredMessage();
     throw error;

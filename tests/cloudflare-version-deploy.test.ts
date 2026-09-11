@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   buildCfVersionUploadArgs,
@@ -49,30 +52,46 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
 
   it("uses cf for a Build Output version upload", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-upload-"));
+    const configPath = path.join(root, ".cloudflare/output/v0/workers/default/config.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ name: "my-worker" }));
     const execute = vi.fn(
       () => `
-      Uploaded my-worker (1.23 sec)
       Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22
       Version Preview URL: https://095f00a7-my-worker.example.workers.dev
     `,
     );
 
-    expect(runCfVersionUpload("/tmp/app", {}, execute as never)).toMatchObject({
+    expect(runCfVersionUpload(root, {}, execute as never)).toMatchObject({
       versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
       workerName: "my-worker",
       previewUrl: "https://095f00a7-my-worker.example.workers.dev",
     });
     expect(execute).toHaveBeenCalledWith(
       process.execPath,
-      ["/tmp/app/node_modules/cf/bin/cf", "versions", "upload", "--prebuilt"],
-      expect.objectContaining({ cwd: "/tmp/app", shell: false }),
+      [path.join(root, "node_modules/cf/bin/cf"), "versions", "upload", "--prebuilt"],
+      expect.objectContaining({ cwd: root, shell: false }),
     );
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("reads the Build Output Worker name before uploading", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-upload-"));
+    const execute = vi.fn();
+
+    expect(() => runCfVersionUpload(root, {}, execute as never)).toThrow(
+      "Could not read the generated Cloudflare Build Output config",
+    );
+    expect(execute).not.toHaveBeenCalled();
+    fs.rmSync(root, { recursive: true, force: true });
   });
 
   it.each([
     "│  Uploaded my-worker (3.55 sec)",
     "\u001B[32m|  Uploaded my-worker (3.55 sec)\u001B[0m",
-  ])("parses cf's guided uploaded Worker name from %j", (output) => {
+  ])("parses Wrangler's uploaded Worker name from %j", (output) => {
     expect(parseUploadedWorkerName(output)).toBe("my-worker");
   });
 
