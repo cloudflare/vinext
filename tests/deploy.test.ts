@@ -7,16 +7,21 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
   deploy,
+  buildCfDeployArgs,
   buildNodeCliInvocation,
   buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
+  configureBuildOutputWorkerName,
   getZeroPercentStagingTraffic,
   parseDeployArgs,
   projectRequiresRouteCacheabilityProbeManifest,
+  resolveCfBin,
+  resolveDeploymentTool,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runWranglerKVBulkPut,
+  runCfDeploy,
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
@@ -101,6 +106,14 @@ function writeWranglerPackageForTest(
 ) {
   writeFile(dir, "node_modules/wrangler/package.json", JSON.stringify({ name: "wrangler", bin }));
   writeFile(dir, "node_modules/wrangler/bin/wrangler.js", "#!/usr/bin/env node");
+}
+
+function writeCfPackageForTest(
+  dir: string,
+  bin: string | Record<string, string> = { cf: "bin/cf" },
+) {
+  writeFile(dir, "node_modules/cf/package.json", JSON.stringify({ name: "cf", bin }));
+  writeFile(dir, "node_modules/cf/bin/cf", "#!/usr/bin/env node");
 }
 
 function expectedWranglerBinForTest(dir: string): string {
@@ -553,6 +566,67 @@ describe("resolveWranglerBin", () => {
 
     expect(JSON.parse(fs.readFileSync(argvPath, "utf-8"))).toEqual(["deploy", "--env", payload]);
     expect(fs.existsSync(pwnedPath)).toBe(false);
+  });
+});
+
+describe("cf Build Output deployment", () => {
+  it("selects cf for typed Cloudflare configs and Wrangler for legacy configs", () => {
+    expect(resolveDeploymentTool(tmpDir)).toBe("wrangler");
+    writeFile(tmpDir, "wrangler.jsonc", "{}");
+    expect(resolveDeploymentTool(tmpDir)).toBe("wrangler");
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
+    expect(resolveDeploymentTool(tmpDir)).toBe("cf");
+  });
+
+  it("resolves cf's JavaScript entrypoint from its bin map", () => {
+    writeCfPackageForTest(tmpDir);
+    expect(resolveCfBin(tmpDir)).toBe(
+      fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
+    );
+  });
+
+  it("builds prebuilt deploy args with an optional Cloudflare mode", () => {
+    expect(buildCfDeployArgs({})).toEqual({ args: ["deploy", "--prebuilt"], mode: undefined });
+    expect(buildCfDeployArgs({ env: "staging" })).toEqual({
+      args: ["deploy", "--prebuilt", "--mode", "staging"],
+      mode: "staging",
+    });
+  });
+
+  it("writes a CLI Worker name override into Build Output", () => {
+    const configPath = path.join(tmpDir, ".cloudflare/output/v0/workers/default/config.json");
+    writeFile(
+      tmpDir,
+      ".cloudflare/output/v0/workers/default/config.json",
+      JSON.stringify({ name: "configured-worker", type: "worker" }),
+    );
+
+    configureBuildOutputWorkerName(tmpDir, "cli-worker");
+
+    expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual({
+      name: "cli-worker",
+      type: "worker",
+    });
+  });
+
+  it("runs cf with shell disabled and returns its workers.dev URL", async () => {
+    writeCfPackageForTest(tmpDir);
+    let observed: Parameters<typeof spawn> | undefined;
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      observed = args;
+      return createMockChildProcess(
+        "Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22\nhttps://app.example.workers.dev\n",
+      );
+    }) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, {}, execute)).resolves.toBe("https://app.example.workers.dev");
+    expect(observed?.[0]).toBe(process.execPath);
+    expect(observed?.[1]).toEqual([
+      fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
+      "deploy",
+      "--prebuilt",
+    ]);
+    expect(observed?.[2]).toMatchObject({ shell: false });
   });
 });
 

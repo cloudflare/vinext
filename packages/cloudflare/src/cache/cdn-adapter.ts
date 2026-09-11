@@ -21,12 +21,12 @@ export type CdnAdapterOptions = {
  * request-time routing before dispatching to cached or uncached response-stage
  * entrypoints.
  *
- * The emitted Wrangler configuration enables Workers Cache only for that
- * response-stage export, so cache hits do not start the application stage.
- * The generated deployment config automatically enables Workers Cache for the
- * cached response entrypoint and adds the version metadata binding used by
- * warmup. The uncached response entrypoint keeps bypass and probe renders out
- * of the gateway without enabling Workers Cache for them.
+ * The deployment configuration enables Workers Cache only for that response-stage
+ * export, so cache hits do not start the application stage. Legacy Cloudflare
+ * builds receive this policy in their generated Wrangler config. Cloudflare Vite
+ * plugin v2 builds declare the same entrypoint policy in `cloudflare.config.ts`.
+ * The uncached response entrypoint keeps bypass and probe renders out of the
+ * gateway without enabling Workers Cache for them.
  *
  * The adapter adds a transport-only URL digest so distinct response-stage
  * identities cannot collide. Workers Cache owns this key independently of
@@ -63,13 +63,16 @@ export function cdnAdapter(options?: CdnAdapterOptions) {
         return `${code}\nexport { VinextCachedResponse, VinextUncachedResponse } from ${JSON.stringify(workerEntry)};\n`;
       },
       finalizeBuildOutput({
+        root,
         outDir,
         isPrimaryServerOutput,
       }: {
+        root: string;
         outDir: string;
         isPrimaryServerOutput: boolean;
       }) {
         return finalizeCdnAdapterBuildOutput({
+          root,
           outDir,
           isPrimaryServerOutput,
           binding: versionMetadataBinding,

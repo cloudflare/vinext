@@ -40,15 +40,37 @@ export default defineConfig({
 `cdnAdapter()` is optional. Configuring it asks the Cloudflare build for two
 Worker entrypoints: the default entrypoint runs middleware and request-time
 routing with caching disabled, while `VinextCachedResponse` lazily loads the
-render stage with Workers Cache enabled. These settings are written to the
-generated `dist/server/wrangler.json`; do not enable Workers Cache on the
-default entrypoint in your source config. The generated config also declares
-the version metadata binding used for staged warmup.
+render stage with Workers Cache enabled. Legacy Cloudflare Vite plugin builds
+write these settings and the version metadata binding to the generated
+`dist/server/wrangler.json`.
 
 ```ts
 import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 
 vinext({ cache: { cdn: cdnAdapter() } });
+```
+
+Cloudflare Vite plugin v2 uses Build Output and treats `cloudflare.config.ts`
+as the deployment source of truth. Declare the equivalent policies there:
+
+```ts
+import {
+  bindings,
+  defineWorker,
+  exports as workerExports,
+} from "@cloudflare/vite-plugin/experimental-config";
+
+export default defineWorker({
+  // ...
+  cache: { enabled: false },
+  env: {
+    CF_VERSION_METADATA: bindings.versionMetadata(),
+  },
+  exports: {
+    VinextCachedResponse: workerExports.worker({ cache: { enabled: true } }),
+    VinextUncachedResponse: workerExports.worker({ cache: { enabled: false } }),
+  },
+});
 ```
 
 The generated version metadata binding lets staged warmup prove that every

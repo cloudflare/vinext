@@ -13,12 +13,6 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
-    "plugins": [
-      {
-        "name": "next"
-      }
-    ],
-    "types": ["@cloudflare/workers-types"],
     "paths": {
       "@/*": ["./*"]
     }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  buildCfVersionUploadArgs,
   buildWranglerDeploymentsStatusArgs,
   buildWranglerTriggersDeployArgs,
   buildWranglerVersionDeployArgs,
@@ -8,6 +9,7 @@ import {
   parseWorkersDevUrl,
   parseWranglerDeploymentStatusOutput,
   parseWranglerVersionUploadOutput,
+  runCfVersionUpload,
   runWranglerDeploymentStatus,
   runWranglerVersionDeploy,
   runWranglerVersionUpload,
@@ -23,6 +25,47 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       args: ["versions", "upload"],
       env: undefined,
     });
+  });
+
+  it("builds cf Build Output version upload args", () => {
+    expect(buildCfVersionUploadArgs({})).toEqual({
+      args: ["versions", "upload", "--prebuilt"],
+      mode: undefined,
+    });
+    expect(buildCfVersionUploadArgs({ env: "staging", previewAlias: "warm-build" })).toEqual({
+      args: [
+        "versions",
+        "upload",
+        "--prebuilt",
+        "--mode",
+        "staging",
+        "--preview-alias",
+        "warm-build",
+      ],
+      mode: "staging",
+    });
+  });
+
+  it("uses cf for a Build Output version upload", () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const execute = vi.fn(
+      () => `
+      Uploaded my-worker (1.23 sec)
+      Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22
+      Version Preview URL: https://095f00a7-my-worker.example.workers.dev
+    `,
+    );
+
+    expect(runCfVersionUpload("/tmp/app", {}, execute as never)).toMatchObject({
+      versionId: "095f00a7-23a7-43b7-a227-e4c97cab5f22",
+      workerName: "my-worker",
+      previewUrl: "https://095f00a7-my-worker.example.workers.dev",
+    });
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      ["/tmp/app/node_modules/cf/bin/cf", "versions", "upload", "--prebuilt"],
+      expect.objectContaining({ cwd: "/tmp/app", shell: false }),
+    );
   });
 
   it("builds version upload args for a named environment and preview alias", () => {

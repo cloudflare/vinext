@@ -1,15 +1,18 @@
 {
+  // Cloudflare Vite plugin v2 and cf read cloudflare.config.ts. Wrangler is
+  // retained as a control-plane fallback for staged traffic promotion and
+  // deployment status until cf exposes equivalent stable commands.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "vinext-web",
   "compatibility_date": "2026-04-08",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "./worker/index.ts",
+  "main": ".cloudflare/output/v0/workers/default/bundle/index.js",
   "preview_urls": true,
   "account_id": "d48e2eb599d9aa075d5e682deaecc518",
   "assets": {
     "not_found_handling": "none",
     "binding": "ASSETS",
-    "directory": "dist/client",
+    "directory": ".cloudflare/output/v0/workers/default/assets",
   },
   "images": {
     "binding": "IMAGES",
@@ -56,7 +59,7 @@
     "required": ["COMPAT_INGEST_SECRET"],
   },
   "cache": {
-    "enabled": true,
+    "enabled": false,
   },
   "version_metadata": {
     "binding": "CF_VERSION_METADATA",

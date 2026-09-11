@@ -4,29 +4,26 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "dev:vinext": "vinext dev --port 3001",
-    "build:vinext": "vinext build",
-    "start:vinext": "vinext start",
+    "dev": "cf dev",
+    "build": "cf build",
+    "start": "vinext start",
+    "deploy:cloudflare": "vinext-cloudflare deploy --config wrangler.jsonc --experimental-warm-cdn-cache --warm-cdn-target https://vinext.dev",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "wrangler d1 migrations apply vinext-metrics --local",
-    "db:migrate:remote": "wrangler d1 migrations apply vinext-metrics --remote"
+    "db:migrate:local": "cf d1 migrations apply 63e7cd24-9d47-4f17-a41d-b5806babc406 --local",
+    "db:migrate:remote": "cf d1 migrations apply 63e7cd24-9d47-4f17-a41d-b5806babc406"
   },
   "dependencies": {
     "@cloudflare/kumo": "catalog:",
     "@phosphor-icons/react": "catalog:",
     "@vinext/cloudflare": "workspace:*",
     "drizzle-orm": "catalog:",
-    "next": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "shiki": "catalog:",
     "vinext": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "catalog:",
+    "@cloudflare/vite-plugin": "https://pkg.pr.new/@cloudflare/vite-plugin@15508",
     "@cloudflare/workers-types": "catalog:",
     "@tailwindcss/postcss": "catalog:",
     "@types/node": "catalog:",
@@ -34,12 +31,13 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
+    "cf": "catalog:cloudflare-vite-v2",
     "drizzle-kit": "catalog:",
     "postcss": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
-    "vite": "catalog:",
-    "wrangler": "catalog:"
+    "vite": "catalog:cloudflare-vite-v2",
+    "wrangler": "catalog:cloudflare-vite-v2"
   }
 }

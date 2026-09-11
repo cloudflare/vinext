@@ -77,6 +77,7 @@ import {
 } from "./deploy-config.js";
 import { assertCdnVersionMetadataConfig } from "./wrangler-version-metadata.js";
 import {
+  runCfVersionUpload,
   runWranglerDeploymentStatus,
   runWranglerTriggersDeploy,
   runWranglerVersionDeploy,
@@ -168,6 +169,8 @@ export type DeployOptions = {
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
 };
+
+export type DeploymentTool = "cf" | "wrangler";
 
 type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
 
@@ -563,6 +566,11 @@ type WranglerDeployArgs = {
   env: string | undefined;
 };
 
+type CfDeployArgs = {
+  args: string[];
+  mode: string | undefined;
+};
+
 type WranglerKVBulkPutArgs = {
   args: string[];
   env: string | undefined;
@@ -592,6 +600,44 @@ export function buildWranglerDeployArgs(
     args.push("--env", validateWranglerEnvName(env));
   }
   return { args, env };
+}
+
+export function resolveDeploymentTool(root: string): DeploymentTool {
+  return fs.existsSync(path.join(root, "cloudflare.config.ts")) ? "cf" : "wrangler";
+}
+
+export function configureBuildOutputWorkerName(root: string, name: string): void {
+  const configPath = path.join(
+    root,
+    ".cloudflare",
+    "output",
+    "v0",
+    "workers",
+    "default",
+    "config.json",
+  );
+  let config: unknown;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (cause) {
+    throw new Error(
+      `Could not read Cloudflare Build Output config at ${path.relative(root, configPath)}. Rebuild the app before deploying.`,
+      { cause },
+    );
+  }
+  if (config === null || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error(
+      `Cloudflare Build Output config at ${path.relative(root, configPath)} is invalid.`,
+    );
+  }
+  fs.writeFileSync(configPath, `${JSON.stringify({ ...config, name }, null, 2)}\n`);
+}
+
+export function buildCfDeployArgs(options: Pick<DeployOptions, "preview" | "env">): CfDeployArgs {
+  const mode = options.env || (options.preview ? "preview" : undefined);
+  const args = ["deploy", "--prebuilt"];
+  if (mode) args.push("--mode", validateWranglerEnvName(mode));
+  return { args, mode };
 }
 
 export function buildWranglerKVBulkPutArgs(options: {
@@ -633,6 +679,27 @@ export function resolveWranglerBin(
   }
 
   return path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+}
+
+export function resolveCfBin(
+  root: string,
+  resolvePackageJson: (root: string) => string | null = (projectRoot) => {
+    try {
+      return createRequire(path.join(projectRoot, "package.json")).resolve("cf/package.json");
+    } catch {
+      return findInNodeModules(projectRoot, "cf/package.json");
+    }
+  },
+): string {
+  const packageJsonPath = resolvePackageJson(root);
+  if (packageJsonPath) {
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as {
+      bin?: string | Record<string, string>;
+    };
+    const bin = typeof packageJson.bin === "string" ? packageJson.bin : packageJson.bin?.cf;
+    if (bin) return path.resolve(path.dirname(packageJsonPath), bin);
+  }
+  return path.join(root, "node_modules", "cf", "bin", "cf");
 }
 
 export function buildNodeCliInvocation(
@@ -756,6 +823,47 @@ export async function runWranglerDeploy(
   return deployedUrl ?? "(URL not detected in wrangler output)";
 }
 
+export async function runCfDeploy(
+  root: string,
+  options: Pick<DeployOptions, "preview" | "env">,
+  execute: typeof spawn = spawn,
+): Promise<string> {
+  const { args, mode } = buildCfDeployArgs(options);
+  console.log(
+    mode ? `\n  Deploying Build Output in mode: ${mode}...` : "\n  Deploying Build Output...",
+  );
+
+  const child = execute(process.execPath, [resolveCfBin(root), ...args], {
+    cwd: root,
+    stdio: ["inherit", "pipe", "pipe"],
+    shell: false,
+  });
+  let output = "";
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    const text = chunk.toString();
+    output += text;
+    process.stdout.write(text);
+  });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    const text = chunk.toString();
+    output += text;
+    process.stderr.write(text);
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) resolve();
+      else
+        reject(
+          new Error(
+            `cf deploy failed with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}.`,
+          ),
+        );
+    });
+  });
+  return parseWorkerDeploymentUrl(output) ?? "(URL not detected in cf output)";
+}
+
 export function hasCdnWarmRequests(
   plan: Omit<CdnWarmRequestPlan, "pagesDataPaths"> & { pagesDataPaths?: readonly string[] },
 ): boolean {
@@ -814,6 +922,7 @@ type CdnWarmDeployOptions = Pick<
     | "routePatterns"
     | "rscPaths"
   > & {
+    deploymentTool?: DeploymentTool;
     /** Probe a staged Worker and upload the resulting manifest as a second version. */
     cacheabilityProbe?: boolean;
     discoverWarmPlan?: (target: {
@@ -821,6 +930,15 @@ type CdnWarmDeployOptions = Pick<
       targetUrl: string;
     }) => Promise<PrerenderWarmPlan>;
   };
+
+function runVersionUpload(
+  root: string,
+  options: CdnWarmDeployOptions,
+): WranglerVersionUploadResult {
+  return options.deploymentTool === "cf"
+    ? runCfVersionUpload(root, options)
+    : runWranglerVersionUpload(root, options);
+}
 
 type PreparedCdnWarmDeployOptions = CdnWarmDeployOptions & {
   expectedDeploymentState?: WranglerDeploymentStatus;
@@ -989,7 +1107,7 @@ async function deployUploadedVersionWithCdnWarmup(
     remainingWarmPlan = prepareWarmPlan(remainingWarmPlan);
   }
 
-  const upload = options.uploadedVersion ?? runWranglerVersionUpload(root, options);
+  const upload = options.uploadedVersion ?? runVersionUpload(root, options);
   const warmUploadedVersion = (
     targetUrl: string,
     headers?: HeadersInit,
@@ -1474,7 +1592,7 @@ async function deployWithCacheabilityProbe(
 
   const prerenderSecret = readPrerenderSecret(root);
 
-  const probeUpload = runWranglerVersionUpload(root, options);
+  const probeUpload = runVersionUpload(root, options);
   const initialDeployment = runWranglerDeploymentStatus(root, options);
   const probeTraffic = getZeroPercentStagingTraffic(initialDeployment, probeUpload.versionId);
   if (!probeTraffic) {
@@ -1698,13 +1816,15 @@ async function deployWithCacheabilityProbe(
       stagedProbeDeployment,
       "Two-stage CDN warming stopped because Worker deployment traffic or deployment identity changed while cacheability was being probed. No final version was promoted.",
     );
-    const finalConfig = writeCacheabilityManifestArtifact(root, options.config, probe.manifest);
-    const finalUpload = runWranglerVersionUpload(root, {
-      config: finalConfig,
-      env: options.env,
-      name: options.name,
-      preview: options.preview,
-      verbose: options.verbose,
+    const finalConfig = writeCacheabilityManifestArtifact(
+      root,
+      options.config,
+      probe.manifest,
+      options.deploymentTool,
+    );
+    const finalUpload = runVersionUpload(root, {
+      ...options,
+      config: options.deploymentTool === "cf" ? options.config : finalConfig,
     });
     prepared = {
       optionalWarmTargetKeys: new Set(probe.speculativeTargets.map(cdnWarmTargetKey)),
@@ -1859,6 +1979,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     options.env || (options.preview ? "preview" : "production"),
   );
   const root = path.resolve(options.root);
+  const deploymentTool = resolveDeploymentTool(root);
   loadDotenv({ root, mode: "production" });
 
   console.log("\n  vinext-cloudflare deploy\n");
@@ -1968,6 +2089,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
+  if (deploymentTool === "cf" && options.name) {
+    configureBuildOutputWorkerName(root, options.name);
+  }
+
   if (options.warmCdnCache && cdnAdapterConfig) {
     const wrangler = await loadProjectWranglerApi(info.root);
     const previousCwd = process.cwd();
@@ -2067,6 +2192,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (options.warmCdnCache) {
     url = await deployWithCdnWarmup(root, [], {
       ...wranglerOptions,
+      deploymentTool,
       cacheabilityProbe: needsCacheabilityProbeManifest,
       discoverWarmPlan: async ({ headers, targetUrl }) => {
         await emitPrerenderPathManifest({
@@ -2109,6 +2235,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
       warmCdnPromote: options.warmCdnPromote,
       warmCdnPromotionDelay: options.warmCdnPromotionDelay,
     });
+  } else if (deploymentTool === "cf") {
+    url = await runCfDeploy(root, wranglerOptions);
   } else {
     url = await runWranglerDeploy(root, wranglerOptions);
   }

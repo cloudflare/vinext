@@ -1,6 +1,7 @@
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import {
   buildNodeCliInvocation,
+  resolveCfBin,
   resolveWranglerBin,
   validateWranglerEnvName,
   type DeployOptions,
@@ -36,6 +37,11 @@ export type WranglerDeploymentStatus = {
 type WranglerVersionArgs = {
   args: string[];
   env: string | undefined;
+};
+
+type CfVersionArgs = {
+  args: string[];
+  mode: string | undefined;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -131,6 +137,16 @@ export function buildWranglerVersionUploadArgs(
   return { args, env };
 }
 
+export function buildCfVersionUploadArgs(
+  options: Pick<DeployOptions, "preview" | "env"> & { previewAlias?: string },
+): CfVersionArgs {
+  const mode = options.env || (options.preview ? "preview" : undefined);
+  const args = ["versions", "upload", "--prebuilt"];
+  if (mode) args.push("--mode", validateWranglerEnvName(mode));
+  if (options.previewAlias) args.push("--preview-alias", options.previewAlias);
+  return { args, mode };
+}
+
 export function buildWranglerVersionDeployArgs(
   versionTraffic: readonly WranglerVersionTraffic[],
   options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose">,
@@ -207,6 +223,25 @@ function runWranglerCommand(
     for (const line of output.trim().split("\n")) {
       console.log(`  ${line}`);
     }
+  }
+  return output;
+}
+
+function runCfCommand(
+  root: string,
+  args: string[],
+  execute: typeof execFileSync = execFileSync,
+  verbose = false,
+): string {
+  const invocation = buildNodeCliInvocation(resolveCfBin(root), args);
+  const output = execute(invocation.file, invocation.args, {
+    cwd: root,
+    stdio: "pipe",
+    encoding: "utf-8",
+    shell: false,
+  }) as string;
+  if (verbose && output.trim()) {
+    for (const line of output.trim().split("\n")) console.log(`  ${line}`);
   }
   return output;
 }
@@ -291,6 +326,29 @@ export function runWranglerVersionUpload(
     if (isMissingWorkerVersionUploadError(error)) {
       throw withInitialDeployRequiredMessage();
     }
+    throw error;
+  }
+}
+
+export function runCfVersionUpload(
+  root: string,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+    previewAlias?: string;
+  },
+  execute: typeof execFileSync = execFileSync,
+): WranglerVersionUploadResult {
+  const { args, mode } = buildCfVersionUploadArgs(options);
+  console.log(
+    mode
+      ? `\n  Uploading Worker Build Output in mode: ${mode}...`
+      : "\n  Uploading Worker Build Output...",
+  );
+  try {
+    return parseWranglerVersionUploadOutput(
+      runCfCommand(root, args, execute, options.verbose === true),
+    );
+  } catch (error) {
+    if (isMissingWorkerVersionUploadError(error)) throw withInitialDeployRequiredMessage();
     throw error;
   }
 }

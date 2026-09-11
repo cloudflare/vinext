@@ -65,7 +65,7 @@ jobs:
           - name: web
             project: vinext-web
             working_directory: apps/web
-            wrangler_config: dist/server/wrangler.json
+            wrangler_config: wrangler.jsonc
             warm_cdn_cache: true
             warm_cdn_target: https://vinext.dev
     steps:
@@ -103,12 +103,11 @@ jobs:
 
       - name: Apply D1 migrations (web only)
         if: matrix.example.name == 'web' && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/web
-          command: d1 migrations apply vinext-metrics --remote
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: vp run db:migrate:remote
 
       - name: Deploy to Cloudflare Workers (Production)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true
@@ -134,13 +133,21 @@ jobs:
           vp exec vinext-cloudflare deploy "${args[@]}"
 
       - name: Deploy Preview Version
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == ''
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
+
+      - name: Deploy Build Output Preview Version with cf
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != ''
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: vp exec cf versions upload --prebuilt --preview-alias pr-${{ github.event.pull_request.number }}
 
       # `versions upload` does not apply non-versioned workers.dev/preview URL
       # settings. A newly added assets-only Worker has no routes until this runs.
