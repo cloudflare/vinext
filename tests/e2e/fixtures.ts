@@ -7,6 +7,11 @@
  */
 import { test as base, expect } from "@playwright/test";
 
+// Opt in only in tests that intentionally block eval. React 19.3 emits this
+// development debugging diagnostic while application scripts still obey CSP.
+export const REACT_DEV_CSP_EVAL_WARNING =
+  /^eval\(\) is not supported in this environment\. If this page was served with a `Content-Security-Policy` header, make sure that `unsafe-eval` is included\. React requires eval\(\) in development mode for various debugging features like reconstructing callstacks from a different environment\.\nReact will never use eval\(\) in production mode$/;
+
 /**
  * Patterns to ignore in console error checking.
  * Some errors are expected or come from third-party code.
@@ -29,15 +34,22 @@ function shouldIgnoreError(message: string): boolean {
 /**
  * Extended test fixture that collects console errors and fails if any occur.
  */
-export const test = base.extend<{ consoleErrors: string[] }>({
-  consoleErrors: async ({ page }, run) => {
+export const test = base.extend<{
+  consoleErrors: string[];
+  expectedConsoleErrorPatterns: RegExp[];
+}>({
+  expectedConsoleErrorPatterns: [[], { option: true }],
+  consoleErrors: async ({ page, expectedConsoleErrorPatterns }, run) => {
     const errors: string[] = [];
 
     // Collect console errors
     page.on("console", (msg) => {
       if (msg.type() === "error") {
         const text = msg.text();
-        if (!shouldIgnoreError(text)) {
+        if (
+          !shouldIgnoreError(text) &&
+          !expectedConsoleErrorPatterns.some((pattern) => pattern.test(text))
+        ) {
           errors.push(text);
         }
       }

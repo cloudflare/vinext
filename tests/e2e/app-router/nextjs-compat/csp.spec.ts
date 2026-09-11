@@ -5,8 +5,10 @@
  * https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
  */
 
-import { test, expect } from "../../fixtures";
+import { test, expect, REACT_DEV_CSP_EVAL_WARNING } from "../../fixtures";
 import { waitForAppRouterHydration } from "../../helpers";
+
+test.use({ expectedConsoleErrorPatterns: [REACT_DEV_CSP_EVAL_WARNING] });
 
 const BASE = "http://localhost:4174";
 

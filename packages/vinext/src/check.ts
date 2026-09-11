@@ -8,6 +8,7 @@
 import { detectPackageManager, findDir } from "./utils/project.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
+import { hasReactViewTransitionRuntime } from "./utils/react-version.js";
 import path from "pathslash";
 
 // ── Support status definitions ─────────────────────────────────────────────
@@ -205,6 +206,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   cacheComponents: {
     status: "partial",
     detail: "experimental support; behavior is incomplete",
+  },
+  "experimental.viewTransition": {
+    status: "supported",
+    detail: "React View Transition navigation; requires matching React 19.3+ runtimes",
   },
   "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },
   "experimental.typedRoutes": { status: "unsupported", detail: "typed routes not implemented" },
@@ -1114,10 +1119,13 @@ export function checkConventions(root: string): CheckItem[] {
   }
   // Emit items for the combined scan results
   if (viewTransitionFiles.length > 0) {
+    const supported = hasReactViewTransitionRuntime(root);
     items.push({
-      name: "ViewTransition (React canary API)",
-      status: "partial",
-      detail: "vinext auto-shims with a passthrough fallback, view transitions won't animate",
+      name: "ViewTransition",
+      status: supported ? "supported" : "partial",
+      detail: supported
+        ? "Native React View Transitions available; enable experimental.viewTransition for Link transition types"
+        : "Requires matching React, React DOM and RSC runtimes with ViewTransition (React 19.3+); otherwise uses a passthrough fallback",
       files: viewTransitionFiles,
     });
   }

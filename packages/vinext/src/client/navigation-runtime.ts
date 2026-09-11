@@ -53,6 +53,7 @@ export type NavigationRuntimeNavigate = (
   scrollIntent?: AppRouterScrollIntent | null,
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode,
   bypassNavigationCache?: boolean,
+  transitionTypes?: readonly string[],
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {

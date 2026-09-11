@@ -1759,6 +1759,18 @@ describe("resolveNextConfig prefetchInlining", () => {
   });
 });
 
+describe("resolveNextConfig viewTransition", () => {
+  it("defaults view transitions to false", async () => {
+    expect((await resolveNextConfig({})).viewTransition).toBe(false);
+  });
+
+  it("accepts experimental.viewTransition", async () => {
+    expect(
+      (await resolveNextConfig({ experimental: { viewTransition: true } })).viewTransition,
+    ).toBe(true);
+  });
+});
+
 describe("resolveNextConfig gestureTransition", () => {
   it("defaults experimental.gestureTransition to false", async () => {
     const resolved = await resolveNextConfig({});
@@ -2150,6 +2162,7 @@ describe("detectNextIntlConfig", () => {
       cacheComponents: false,
       appNavFailHandling: false,
       gestureTransition: false,
+      viewTransition: false,
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },

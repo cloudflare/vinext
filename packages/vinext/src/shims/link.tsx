@@ -141,6 +141,7 @@ export type LinkProps<_RouteInferType = unknown> = {
   locale?: string | false;
   /** Called before navigation happens (Next.js 16). Return value is ignored. */
   onNavigate?: (event: { preventDefault(): void }) => void;
+  /** React View Transition types applied to this App Router navigation. */
   transitionTypes?: string[];
   children?: React.ReactNode;
 } & Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href">;
@@ -1057,7 +1058,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     unstable_dynamicOnHover = false,
     legacyBehavior = false,
     passHref = false,
-    transitionTypes: _transitionTypes,
+    transitionTypes,
     ...rest
   },
   forwardedRef,
@@ -1489,12 +1490,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       if (setter) setLinkForCurrentNavigation(setter);
       setPending(true);
       React.startTransition(() => {
-        void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, false).finally(
-          () => {
-            if (mountedRef.current) setPending(false);
-            if (setter) clearLinkForCurrentNavigation(setter);
-          },
-        );
+        void navigateClientSide(
+          navigateHref,
+          replace ? "replace" : "push",
+          scroll,
+          false,
+          "transition",
+          transitionTypes,
+        ).finally(() => {
+          if (mountedRef.current) setPending(false);
+          if (setter) clearLinkForCurrentNavigation(setter);
+        });
       });
       return;
     } else if (HAS_PAGES_ROUTER) {

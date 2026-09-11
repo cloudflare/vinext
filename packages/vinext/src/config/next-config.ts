@@ -325,6 +325,8 @@ export type NextConfig = {
      * `useRouter().experimental_gesturePush()`.
      */
     gestureTransition?: boolean;
+    /** Enables React View Transition navigation integration (requires React 19.3+). */
+    viewTransition?: boolean;
     /**
      * Enables App Router Segment Cache prefetch inlining. When provided as an
      * object, thresholds are resolved with Next.js defaults and non-finite
@@ -418,6 +420,8 @@ export type ResolvedNextConfig = {
    * `useRouter().experimental_gesturePush()`.
    */
   gestureTransition: boolean;
+  /** Enables React View Transition navigation integration. */
+  viewTransition: boolean;
   /**
    * Resolved `experimental.prefetchInlining` config. Next.js normalizes `true`
    * and partial object config into concrete thresholds.
@@ -1588,6 +1592,7 @@ export async function resolveNextConfig(
       cacheComponents: false,
       appNavFailHandling: false,
       gestureTransition: false,
+      viewTransition: false,
       prefetchInlining: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -1953,6 +1958,7 @@ export async function resolveNextConfig(
     cacheComponents: config.cacheComponents ?? false,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
+    viewTransition: experimental?.viewTransition === true,
     prefetchInlining,
     redirects,
     rewrites,

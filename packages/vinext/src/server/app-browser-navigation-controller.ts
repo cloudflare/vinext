@@ -1,4 +1,4 @@
-import {
+import React, {
   startTransition,
   useInsertionEffect,
   useLayoutEffect,
@@ -117,6 +117,7 @@ type BrowserNavigationPayloadOptions = {
   targetHistoryIndex?: number | null;
   targetHref: string;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
+  transitionTypes?: readonly string[];
 };
 
 type BrowserNavigationController = {
@@ -579,6 +580,7 @@ export function createAppBrowserNavigationController(
     commit: ApprovedVisibleCommit,
     pendingRouterState: PendingBrowserRouterState | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode,
+    transitionTypes?: readonly string[],
   ): void {
     const setter = getBrowserRouterStateSetter();
     const pendingCommit = pendingNavigationCommits.get(renderId);
@@ -632,6 +634,14 @@ export function createAppBrowserNavigationController(
     }
 
     startTransition(() => {
+      // The response arrives after the Link's initiating transition. Register
+      // its types here, only after this navigation has approval to become visible.
+      if (process.env.__NEXT_VIEW_TRANSITION && "addTransitionType" in React) {
+        const addTransitionType = React.addTransitionType;
+        if (typeof addTransitionType === "function") {
+          for (const type of transitionTypes ?? []) addTransitionType(type);
+        }
+      }
       const committedState = captureCandidateState(
         applyApprovedVisibleCommit(getBrowserRouterState(), commit),
       );
@@ -885,6 +895,7 @@ export function createAppBrowserNavigationController(
         shouldForceSynchronousCommit(options)
           ? "synchronous"
           : (options.visibleCommitMode ?? "transition"),
+        options.transitionTypes,
       );
       if (options.navigationResponseCompletion) {
         // Keep the live Flight branch streaming. If React commits it normally,
