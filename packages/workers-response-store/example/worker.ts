@@ -62,6 +62,13 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
   if (cdnCacheControl) headers.set("CDN-Cache-Control", cdnCacheControl);
 
   let body = request.body;
+  if (request.headers.get("X-Body-Failure") === "1") {
+    body = new ReadableStream({
+      start(controller) {
+        controller.error(new Error("Fixture body failure"));
+      },
+    });
+  }
   if (body && bodyDelayMs > 0) {
     const reader = body.getReader();
     let delayed = false;
@@ -99,6 +106,7 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
         };
 
   const result = await store.put(target, response, {
+    coalesce: request.headers.get("X-Coalesce") === "1",
     revalidator,
     purgeExisting: request.headers.get("X-Purge-Existing") === "1",
   });
@@ -186,6 +194,14 @@ export default {
       if (request.method === "POST" && url.pathname === "/admin/purge") {
         const options = (await request.json()) as ResponseStorePurgeOptions;
         return json(await responseStore.purge(options));
+      }
+
+      if (request.method === "POST" && url.pathname === "/admin/tag-expiration") {
+        const { newerThan, tags } = (await request.json()) as {
+          newerThan?: number;
+          tags: string[];
+        };
+        return json({ expiration: await responseStore.getTagExpiration(tags, newerThan) });
       }
 
       if (request.method === "GET" && url.pathname === "/admin/stats") {

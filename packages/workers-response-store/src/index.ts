@@ -64,7 +64,7 @@ function createRevalidatorEntrypoint<Env>(options: WorkersResponseStoreOptions<E
 function createStoreFacade(getStore: () => WorkersResponseStore): WorkersResponseStore {
   return {
     fetch: (request) => getStore().fetch(request),
-    getTagExpiration: (tags) => getStore().getTagExpiration(tags),
+    getTagExpiration: (tags, newerThan) => getStore().getTagExpiration(tags, newerThan),
     put: (request, response, options) => getStore().put(request, response, options),
     refresh: (options) => getStore().refresh(options),
     purge: (options) => getStore().purge(options),
@@ -125,8 +125,8 @@ export function createWorkersResponseStoreClient<
       return this.service.read(request, this.getInvocation());
     }
 
-    getTagExpiration(tags: string[]): Promise<number> {
-      return this.service.getTagExpiration(tags, this.getInvocation());
+    getTagExpiration(tags: string[], newerThan?: number): Promise<number> {
+      return this.service.getTagExpiration(tags, this.getInvocation(), newerThan);
     }
 
     put(

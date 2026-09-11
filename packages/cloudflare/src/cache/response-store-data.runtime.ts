@@ -336,7 +336,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       const expirations = this.tagExpirations();
       let expiration = expirations.get(key);
       if (!expiration) {
-        expiration = this.store.getTagExpiration(softTags);
+        expiration = this.store.getTagExpiration(softTags, entry.lastModified);
         expirations.set(key, expiration);
       }
       if ((await expiration) >= entry.lastModified) return null;
@@ -442,6 +442,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
 
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
+      coalesce: true,
       purgeExisting: true,
     });
   }

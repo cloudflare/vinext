@@ -285,7 +285,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.doesNotMatch(serialized, /first-secret|second-secret/);
   });
 
-  test("keeps concurrent cold renders successful when a cache write loses CAS", async () => {
+  test("keeps concurrent cold renders successful", async () => {
     const responses = await Promise.all(
       Array.from({ length: 8 }, () => request("/cached/concurrent")),
     );

@@ -74,7 +74,9 @@ The complete pair lives in `example/service-binding`: `cache-worker.ts` owns the
 
 ## API and storage model
 
-The library exposes `fetch`, `put`, `refresh({ tags, pathPrefixes })`, and `purge({ tags, pathPrefixes, purgeEverything })`. Cache identity is the request pathname plus query string. Response bodies live only in revision-specific R2 objects; SQLite stores metadata, freshness, revalidator descriptors, tag invalidation timestamps, and the reverse tag-to-entry index needed by refresh and purge.
+The library exposes `fetch`, `put`, `refresh({ tags, pathPrefixes })`, and `purge({ tags, pathPrefixes, purgeEverything })`. Cache identity is the request pathname plus query string. Response bodies live only in revision-specific R2 objects; SQLite stores metadata, freshness, revalidator descriptors, and tag invalidation timestamps. Explicit refresh and purge operations scan stored entry metadata instead of maintaining a write-heavy tag index.
+
+Framework soft-tag checks first consult a version-wide invalidation watermark through the cache-enabled binding entrypoint. Entries newer than that watermark need no tag-specific lookup; older candidates use a cacheable tag-set marker that is evicted with the watermark on the next tag purge. Workers Cache hits therefore avoid repeated metadata DO reads while preserving globally purged tag state.
 
 SQLite assigns monotonically increasing revisions and conditionally publishes metadata, so slow writes cannot replace newer writes or resurrect purged entries. User RPC, R2, and purge I/O happen outside SQLite transactions. Stale R2 responses within their SWR window return immediately while `ctx.waitUntil()` runs one claimed regeneration; hard-expired responses are never returned.
 
