@@ -24529,6 +24529,30 @@ describe("next/image component rendering", () => {
     expect(html).not.toContain("height=");
   });
 
+  it("fill images leave object-fit to the caller, matching Next.js", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/logo.png", alt: "Logo", fill: true }),
+    );
+    expect(html).toContain("position:absolute");
+    // No inline object-fit: the value comes from the caller's style or CSS,
+    // exactly like next/image. A hardcoded cover crops non-cover images.
+    expect(html).not.toContain("object-fit");
+
+    const contained = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/logo.png",
+        alt: "Logo",
+        fill: true,
+        style: { objectFit: "contain" },
+      }),
+    );
+    expect(contained).toContain("object-fit:contain");
+  });
+
   it("renders priority image with fetchpriority=high and loading=eager", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
