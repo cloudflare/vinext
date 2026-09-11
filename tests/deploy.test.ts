@@ -637,6 +637,30 @@ describe("cf Build Output deployment", () => {
     });
   });
 
+  it.each(["env.staging", "env . staging", '"env"."staging"', "env.'staging'"])(
+    "recognizes nested-only Wrangler TOML environment %s",
+    (envPath) => {
+      writeFile(
+        tmpDir,
+        "wrangler.toml",
+        `[${envPath}.triggers] # staging\ncrons = ["0 * * * *"]\n`,
+      );
+
+      expect(
+        resolveWranglerControlPlaneOptions(
+          tmpDir,
+          { deploymentTool: "cf", env: "staging", config: "wrangler.toml" },
+          { workerName: "typed-staging-worker" },
+        ),
+      ).toEqual({
+        config: "wrangler.toml",
+        env: "staging",
+        name: "typed-staging-worker",
+        verbose: undefined,
+      });
+    },
+  );
+
   it("builds prebuilt deploy args with an optional Cloudflare mode", () => {
     expect(buildCfDeployArgs({})).toEqual({ args: ["deploy", "--prebuilt"], mode: undefined });
     expect(buildCfDeployArgs({ env: "staging" })).toEqual({
