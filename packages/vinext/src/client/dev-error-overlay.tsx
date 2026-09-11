@@ -1,20 +1,33 @@
-// Dev-only runtime error overlay. Surfaces four error sources that
-// otherwise only reach the console:
+// Dev-only runtime error overlay. Surfaces error sources that otherwise only
+// reach the console:
 //   1. React render errors caught by an error.tsx boundary (onCaughtError)
 //   2. React render errors with no boundary above them (onUncaughtError)
-//   3. Plain script errors / unhandled promise rejections (window listeners)
-//   4. Vite build/transform errors reported over HMR (vite:error)
+//   3. React recoverable errors, incl. text/tree hydration mismatches
+//      (onRecoverableError)
+//   4. The one hydration warning React reports ONLY via console.error and
+//      never via onRecoverableError: an attribute-only mismatch (patched
+//      console.error, narrowly gated — see handleInterceptedConsoleError)
+//   5. Plain script errors / unhandled promise rejections (window listeners)
+//   6. Vite build/transform errors reported over HMR (vite:error)
 //
 // Rendered via a separate React root mounted on a detached <div> appended to
 // the body. That isolation means the overlay survives an unmount of the main
 // hydrateRoot(document, ...) tree — necessary because most of the errors we
 // want to surface are exactly the ones that take that tree down.
 
-import { Fragment, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  captureOwnerStack,
+  Fragment,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
+import { formatConsoleArgs, isAttributeOnlyHydrationWarningMessage } from "./dev-console-error.js";
 import {
   type OverlayState,
   type OverlayCodeFrame,
@@ -53,7 +66,9 @@ type ReactRefreshWindow = Window &
 // Errors React already routed through onCaughtError/onUncaughtError shouldn't
 // also surface from the window listeners — otherwise the same throw appears
 // twice in the dialog ("Runtime Error" + "Unhandled Script Error"). We track
-// instances we've reported and skip them in the global handlers.
+// instances we've reported and skip them in the global handlers. This is
+// identity-based, so it only dedups Error instances (not string console args —
+// those use message-based dedup below).
 const reportedErrors = new WeakSet<object>();
 
 function rememberReported(error: unknown): void {
@@ -64,6 +79,46 @@ function alreadyReported(error: unknown): boolean {
   return !!error && typeof error === "object" && reportedErrors.has(error);
 }
 
+// React 19's captureOwnerStack() reports the JSX call-site chain of whoever
+// is currently rendering, but only when called synchronously within React's
+// own call stack — e.g. from console.error while React is mid-render, or
+// from a callback React invokes directly (onCaughtError/onUncaughtError/
+// onRecoverableError). Capturing it at each report entry point, rather than
+// later, is what lets the store's dedup (dev-error-overlay-store.ts) tell
+// apart two call sites that happen to log an identical message/stack —
+// matching Next.js's setOwnerStackIfAvailable.
+function captureCurrentOwnerStack(): string | null | undefined {
+  return typeof captureOwnerStack === "function" ? captureOwnerStack() : undefined;
+}
+
+// Patch console.error so the one hydration warning React reports ONLY this
+// way — an attribute-only mismatch, never followed by onRecoverableError —
+// still reaches the overlay. Deliberately narrow: unlike Next.js's
+// patchConsoleError (which opens a Console Error entry for any console.error
+// call), this only reports messages matching the attribute-mismatch pattern;
+// every other console.error call is left exactly as before. Must run before
+// hydration so it is in place when React emits its first warning.
+function patchConsoleErrorForOverlay(): void {
+  const globalConsole = window.console;
+  const forward = globalConsole.error.bind(globalConsole);
+  globalConsole.error = (...args: unknown[]): void => {
+    handleInterceptedConsoleError(args, forward);
+  };
+}
+
+function handleInterceptedConsoleError(
+  args: unknown[],
+  forward: (...args: unknown[]) => void,
+): void {
+  // Preserve default console behavior for everything.
+  forward(...args);
+
+  const message = formatConsoleArgs(args);
+  if (!isAttributeOnlyHydrationWarningMessage(message)) return;
+
+  reportConsoleError(message, undefined, captureCurrentOwnerStack());
+}
+
 export function installDevErrorOverlay(): void {
   if (typeof window === "undefined") return;
 
@@ -71,6 +126,8 @@ export function installDevErrorOverlay(): void {
 
   if (installed) return;
   installed = true;
+
+  patchConsoleErrorForOverlay();
 
   window.addEventListener("error", (event: ErrorEvent) => {
     const err = event.error;
@@ -253,20 +310,59 @@ function reportDevError(
         : safeStringify(error);
   const stack = error instanceof Error ? error.stack : undefined;
 
-  ensureMounted();
-  const id = reportToOverlay({
+  submitOverlayError({
     source: options.source,
     message,
     stack,
+    componentStack: options.componentStack,
+    ownerStack: captureCurrentOwnerStack(),
+  });
+}
+
+// Report a formatted console.error message. Unlike reportDevError, the display
+// message comes from the formatted variadic args (so the hydration diff is
+// preserved) while the stack, when present, comes from an embedded Error so the
+// call site can still be source-mapped. ownerStack must be captured by the
+// caller — it's only valid when read synchronously while still inside the
+// patched console.error call, before any of this function's own logic runs.
+function reportConsoleError(
+  message: string,
+  embeddedError: Error | undefined,
+  ownerStack: string | null | undefined,
+): void {
+  if (typeof window === "undefined") return;
+  if (embeddedError) rememberReported(embeddedError);
+  submitOverlayError({
+    source: "console-error",
+    message,
+    stack: embeddedError?.stack,
+    componentStack: undefined,
+    ownerStack,
+  });
+}
+
+function submitOverlayError(input: {
+  source: Source;
+  message: string;
+  stack: string | undefined;
+  componentStack: string | undefined;
+  ownerStack: string | null | undefined;
+}): void {
+  ensureMounted();
+  const id = reportToOverlay({
+    source: input.source,
+    message: input.message,
+    stack: input.stack,
     ignoredStackFrames: undefined,
     projectRoot: undefined,
     codeFrame: undefined,
-    componentStack: options.componentStack,
+    componentStack: input.componentStack,
+    ownerStack: input.ownerStack,
   });
 
-  void resolveBrowserStackTrace(stack).then((mappedStackTrace) => {
+  void resolveBrowserStackTrace(input.stack).then((mappedStackTrace) => {
     if (
-      mappedStackTrace.stack !== stack ||
+      mappedStackTrace.stack !== input.stack ||
       mappedStackTrace.ignoredFrames !== undefined ||
       mappedStackTrace.codeFrame ||
       mappedStackTrace.projectRoot
@@ -315,6 +411,27 @@ export function devOnUncaughtError(
     console.error("The above error occurred in a React component:\n" + errorInfo.componentStack);
   }
   reportDevError(error, { source: "uncaught", componentStack: errorInfo?.componentStack });
+}
+
+// Dev variant of onRecoverableError. React reports recoverable errors —
+// including text and element-tree hydration mismatches — through this
+// callback. React also logs these via console.error, but with a different
+// message pattern than the attribute-only mismatch (see
+// handleInterceptedConsoleError's narrow regex gate), so that echo is simply
+// never picked up by the interceptor — no explicit suppression needed here.
+// Wiring this in dev also stops React from falling back to its default
+// handler (reportError → a global "error" event), which would otherwise
+// mislabel the mismatch as "Unhandled Script Error".
+export function devOnRecoverableError(
+  error: unknown,
+  errorInfo?: { componentStack?: string },
+): void {
+  if (isNavigationSignalError(error)) return;
+  // React wraps the original error in error.cause for recoverable reports;
+  // unwrap it so the overlay shows the real message and stack.
+  const actual = error instanceof Error && error.cause !== undefined ? error.cause : error;
+  if (alreadyReported(actual)) return;
+  reportDevError(actual, { source: "recoverable", componentStack: errorInfo?.componentStack });
 }
 
 function safeStringify(value: unknown): string {
@@ -394,11 +511,19 @@ function configureDevErrorOverlayHost(host: HTMLElement): void {
 // React component tree
 // ---------------------------------------------------------------------------
 
+// Intentionally diverges from current Next.js canary, which derives labels
+// dynamically (`Runtime ${error.name}`, `Console ${error.name}`,
+// `Recoverable ${error.name}`) with no caught/uncaught split. We keep fixed,
+// finer-grained labels (separating caught/uncaught/window-error/promise
+// rejection) since that distinction is more informative, and two e2e specs
+// assert on these exact strings.
 const SOURCE_LABEL: Record<Source, string> = {
   server: "Server Error",
   vite: "Build Error",
   uncaught: "Unhandled Runtime Error",
   caught: "Runtime Error",
+  recoverable: "Recoverable Error",
+  "console-error": "Console Error",
   "window-error": "Unhandled Script Error",
   unhandledrejection: "Unhandled Promise Rejection",
 };
