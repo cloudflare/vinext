@@ -126,7 +126,10 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WARM_CDN_TARGET: ${{ matrix.example.warm_cdn_target }}
         run: |
-          args=(--skip-build --config "${{ matrix.example.wrangler_config }}" --experimental-warm-cdn-cache)
+          args=(--skip-build --experimental-warm-cdn-cache)
+          if [[ ! -f cloudflare.config.ts ]]; then
+            args+=(--config "${{ matrix.example.wrangler_config }}")
+          fi
           if [[ -n "$WARM_CDN_TARGET" ]]; then
             args+=(--warm-cdn-target "$WARM_CDN_TARGET")
           fi

@@ -5,6 +5,7 @@ import {
   buildWranglerTriggersDeployArgs,
   buildWranglerVersionDeployArgs,
   buildWranglerVersionUploadArgs,
+  parseUploadedWorkerName,
   parseVersionId,
   parseWorkersDevUrl,
   parseWranglerDeploymentStatusOutput,
@@ -66,6 +67,13 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       ["/tmp/app/node_modules/cf/bin/cf", "versions", "upload", "--prebuilt"],
       expect.objectContaining({ cwd: "/tmp/app", shell: false }),
     );
+  });
+
+  it.each([
+    "│  Uploaded my-worker (3.55 sec)",
+    "\u001B[32m|  Uploaded my-worker (3.55 sec)\u001B[0m",
+  ])("parses cf's guided uploaded Worker name from %j", (output) => {
+    expect(parseUploadedWorkerName(output)).toBe("my-worker");
   });
 
   it("builds version upload args for a named environment and preview alias", () => {

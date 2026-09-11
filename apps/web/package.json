@@ -7,7 +7,7 @@
     "dev": "cf dev",
     "build": "cf build",
     "start": "vinext start",
-    "deploy:cloudflare": "vinext-cloudflare deploy --config wrangler.jsonc --experimental-warm-cdn-cache --warm-cdn-target https://vinext.dev",
+    "deploy:cloudflare": "vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://vinext.dev",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "cf d1 migrations apply 63e7cd24-9d47-4f17-a41d-b5806babc406 --local",
     "db:migrate:remote": "cf d1 migrations apply 63e7cd24-9d47-4f17-a41d-b5806babc406"

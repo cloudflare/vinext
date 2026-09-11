@@ -1,4 +1,5 @@
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
+import { stripVTControlCharacters } from "node:util";
 import {
   buildNodeCliInvocation,
   resolveCfBin,
@@ -99,7 +100,11 @@ export function parseVersionId(output: string): string | null {
 }
 
 export function parseUploadedWorkerName(output: string): string | null {
-  return output.match(/^\s*Uploaded\s+(\S+)\s+\(\d+(?:\.\d+)?\s+sec\)\s*$/im)?.[1] ?? null;
+  return (
+    stripVTControlCharacters(output).match(
+      /^\s*(?:[│|]\s*)?Uploaded\s+(\S+)\s+\(\d+(?:\.\d+)?\s+sec\)\s*$/im,
+    )?.[1] ?? null
+  );
 }
 
 export function parseWranglerVersionUploadOutput(output: string): WranglerVersionUploadResult {
