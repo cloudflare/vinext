@@ -55,17 +55,15 @@ describe("Next.js compat: metadata", () => {
 
   // ── Title template ───────────────────────────────────────────
   // Next.js: 'should support title template'
-  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L34-L38
+  // Source: https://github.com/vercel/next.js/blob/v16.3.2/test/e2e/app-dir/metadata/metadata.test.ts#L37-L47
 
-  it("should apply title template from layout", async () => {
+  it("should not apply a leaf layout title template to its same-layer page", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template");
-    // Layout has template "%s | Layout", page has title "Page"
-    // Result should be "Page | Layout"
-    expect(html).toContain("<title>Page | Layout</title>");
+    expect(html).toContain("<title>Page</title>");
   });
 
   // Next.js: 'should support stashed title in one layer'
-  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L40-L44
+  // Source: https://github.com/vercel/next.js/blob/v16.3.2/test/e2e/app-dir/metadata/metadata.test.ts#L43-L47
 
   it("should apply title template to child page", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/child");

@@ -104,10 +104,10 @@ test.describe("Next.js compat: metadata (browser)", () => {
   });
 
   // Next.js: 'should support title template'
-  // Source: metadata.test.ts#L34-L38
-  test("title template applies correctly", async ({ page }) => {
+  // Source: https://github.com/vercel/next.js/blob/v16.3.2/test/e2e/app-dir/metadata/metadata.test.ts#L37-L47
+  test("leaf layout title template does not apply to its same-layer page", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/metadata-title-template`);
-    await expect(page).toHaveTitle("Page | Layout");
+    await expect(page).toHaveTitle("Page");
   });
 
   test("title template applies to child page", async ({ page }) => {
