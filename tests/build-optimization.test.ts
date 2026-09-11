@@ -476,7 +476,7 @@ describe("optimizeDeps.exclude for vinext", () => {
     "react-server-dom-webpack/client.edge",
   ];
 
-  async function setupAppRouterConfigTest(prefix: string) {
+  async function setupAppRouterConfigTest(prefix: string, nextConfig: object = {}) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const mainPlugin = vinext().find(
       (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
@@ -498,7 +498,10 @@ describe("optimizeDeps.exclude for vinext", () => {
       path.join(root, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(path.join(root, "next.config.mjs"), `export default {};`);
+    await fsp.writeFile(
+      path.join(root, "next.config.mjs"),
+      `export default ${JSON.stringify(nextConfig)};`,
+    );
 
     return {
       config(userConfig: Record<string, unknown> = {}, command: "serve" | "build" = "serve") {
@@ -532,6 +535,35 @@ describe("optimizeDeps.exclude for vinext", () => {
       // external: true and recreate the duplicate-React bug.
       expect(result.ssr?.noExternal).toBeUndefined();
       expect(result.ssr?.external).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("excludes server-external packages and file-type from every dev optimizer", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-optdeps-server-external-", {
+      serverExternalPackages: ["jose"],
+    });
+
+    try {
+      const result = await fixture.config();
+
+      const rscExclude = result.environments.rsc.optimizeDeps?.exclude ?? [];
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      const clientExclude = result.environments.client.optimizeDeps?.exclude ?? [];
+
+      for (const [name, exclude] of [
+        ["rsc", rscExclude],
+        ["ssr", ssrExclude],
+        ["client", clientExclude],
+      ] as const) {
+        // server-external packages must stay out of every pre-bundle — the
+        // runtime resolver loads them, and their node-only conditional
+        // exports resolve to the wrong entry inside the optimizer.
+        expect(exclude, `${name} exclude should contain jose`).toContain("jose");
+        // known dual-shape interop package (file-type) is excluded everywhere
+        expect(exclude, `${name} exclude should contain file-type`).toContain("file-type");
+      }
     } finally {
       await fixture.cleanup();
     }
