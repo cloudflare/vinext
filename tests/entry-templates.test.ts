@@ -362,10 +362,10 @@ describe("App Router generated manifest construction", () => {
       '{"canPrefetchLoadingShell":false,"patternParts":["blog",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":true,"canUseCanonicalLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
+      '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":true,"canUseCanonicalLoadingShell":true,"patternParts":["ancestor-loading","slow"],"isDynamic":false}',
+      '{"canPrefetchLoadingShell":true,"patternParts":["ancestor-loading","slow"],"isDynamic":false}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["teams",":team","dashboard"],"isDynamic":true,"requiresDynamicNavigationRequest":true}',
@@ -419,7 +419,6 @@ describe("App Router generated manifest construction", () => {
     } satisfies AppRoute;
 
     expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
-    expect(toLinkPrefetchRoute(route).canUseCanonicalLoadingShell).toBeUndefined();
     expect(
       toLinkPrefetchRoute({
         ...route,
@@ -474,7 +473,6 @@ describe("App Router generated manifest construction", () => {
     } satisfies AppRoute;
 
     expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
-    expect(toLinkPrefetchRoute(route).canUseCanonicalLoadingShell).toBeUndefined();
   });
 
   it("marks root-param routes for concrete route-tree prefetching", () => {
@@ -495,7 +493,6 @@ describe("App Router generated manifest construction", () => {
     expect(toLinkPrefetchRoute(route)).toEqual(
       expect.objectContaining({
         canPrefetchLoadingShell: true,
-        canUseCanonicalLoadingShell: true,
         hasRootParams: true,
       }),
     );
@@ -544,7 +541,6 @@ describe("App Router generated manifest construction", () => {
     ]);
     expect(source.canPrefetchLoadingShell).toBe(false);
     expect(target.canPrefetchLoadingShell).toBe(true);
-    expect(target.canUseCanonicalLoadingShell).toBeUndefined();
     expect(unrelated.canPrefetchLoadingShell).toBe(false);
   });
 
@@ -1157,6 +1153,7 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain('request.headers.get("upgrade")');
     expect(code).not.toContain("__usesFullRequestGraph");
     expect(code).not.toContain("|| __isMetadataPath(pathname)");
+    expect(code).toContain('"canUseCanonicalLoadingShell":false');
   });
 
   it("preserves exact and generated metadata identities in the App request stage", () => {

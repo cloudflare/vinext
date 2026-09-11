@@ -532,17 +532,11 @@ function prefetchUrl(
           headers.set(NEXT_ROUTER_PREFETCH_HEADER, "1");
           headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         }
-        const { additionalRscUrls, rscUrl, usesCanonicalPrewarmedRequest } =
-          await resolveAppPrefetchRscRequest({
-            canUseCanonicalLoadingShell: autoPrefetch.canUseCanonicalLoadingShell === true,
-            fullHref,
-            headers,
-            interceptionContext,
-            mountedSlotsHeader,
-            prefetchInlining: __prefetchInlining,
-            requiresRouteTreePrefetch,
-            rewrittenPrefetchHref,
-          });
+        const { additionalRscUrls, rscUrl } = await resolveAppPrefetchRscRequest({
+          fullHref,
+          headers,
+          rewrittenPrefetchHref,
+        });
         if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
@@ -667,7 +661,6 @@ function prefetchUrl(
         // timing so duplicate visible links see the full payload as already
         // pending while tests/userland can still observe the later data fetch.
         const gateViaRouteTree =
-          !usesCanonicalPrewarmedRequest &&
           (__prefetchInlining || requiresRouteTreePrefetch) &&
           mode === "auto" &&
           autoPrefetch.prefetchShellFirst;
@@ -677,7 +670,6 @@ function prefetchUrl(
           autoPrefetch.prefetchShellFirst &&
           mountedSlotsHeader === null;
         const gateViaLoadingShell =
-          !usesCanonicalPrewarmedRequest &&
           (mode === "full-after-shell" || gateViaExplicitSearchShell) &&
           autoPrefetch.prefetchShellFirst;
         const fetchPromise =
@@ -710,7 +702,6 @@ function prefetchUrl(
               })()
             : fetchFullRscPayload();
         if (
-          !usesCanonicalPrewarmedRequest &&
           !__prefetchInlining &&
           mode === "full" &&
           autoPrefetch.cacheForNavigation &&

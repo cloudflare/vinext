@@ -6,7 +6,7 @@ import type {
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 7;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 8;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -34,6 +34,7 @@ type AppFullRequestWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
 export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   kind: "app-page" | "app-route-handler";
   bypassInterceptionContextCache: boolean;
+  canUseCanonicalLoadingShell: boolean;
   canonicalPathname: string;
   cleanPathname: string;
   interceptionContext: string | null;
@@ -201,6 +202,7 @@ export function isAppWorkerResponseStageProps(
   return (
     (props.kind === "app-page" || props.kind === "app-route-handler") &&
     typeof props.bypassInterceptionContextCache === "boolean" &&
+    typeof props.canUseCanonicalLoadingShell === "boolean" &&
     typeof props.canonicalPathname === "string" &&
     props.canonicalPathname.startsWith("/") &&
     typeof props.cleanPathname === "string" &&
