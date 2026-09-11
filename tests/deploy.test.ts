@@ -12,7 +12,6 @@ import {
   buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
-  configureBuildOutputWorkerName,
   getZeroPercentStagingTraffic,
   isCfCliInstalled,
   parseDeployArgs,
@@ -297,6 +296,14 @@ describe("buildWranglerKVBulkPutArgs", () => {
 });
 
 describe("deploy environment validation", () => {
+  it("keeps the typed Cloudflare config authoritative for the Worker name", async () => {
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
+
+    await expect(deploy({ root: tmpDir, name: "cli-worker", dryRun: true })).rejects.toThrow(
+      "Set `name` in cloudflare.config.ts instead.",
+    );
+  });
+
   it("rejects invalid environment names before project side effects", async () => {
     writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
     const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
@@ -666,22 +673,6 @@ describe("cf Build Output deployment", () => {
     expect(buildCfDeployArgs({ env: "staging" })).toEqual({
       args: ["deploy", "--prebuilt", "--mode", "staging"],
       mode: "staging",
-    });
-  });
-
-  it("writes a CLI Worker name override into Build Output", () => {
-    const configPath = path.join(tmpDir, ".cloudflare/output/v0/workers/default/config.json");
-    writeFile(
-      tmpDir,
-      ".cloudflare/output/v0/workers/default/config.json",
-      JSON.stringify({ name: "configured-worker", type: "worker" }),
-    );
-
-    configureBuildOutputWorkerName(tmpDir, "cli-worker");
-
-    expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual({
-      name: "cli-worker",
-      type: "worker",
     });
   });
 

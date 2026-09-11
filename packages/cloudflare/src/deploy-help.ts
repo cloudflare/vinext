@@ -13,7 +13,7 @@ export function formatDeployHelp(): string {
   Options:
     --preview                Deploy to preview environment (same as --env preview)
     --env <name>             Deploy using wrangler env.<name>
-    --name <name>            Custom Worker name (default: from package.json)
+    --name <name>            Custom Worker name for Wrangler config projects
     --config <path>          Wrangler config path (default: wrangler.jsonc/json/toml)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying

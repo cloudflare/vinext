@@ -625,33 +625,6 @@ export function isCfCliInstalled(
   return resolvePackageJson(root) !== null;
 }
 
-export function configureBuildOutputWorkerName(root: string, name: string): void {
-  const configPath = path.join(
-    root,
-    ".cloudflare",
-    "output",
-    "v0",
-    "workers",
-    "default",
-    "config.json",
-  );
-  let config: unknown;
-  try {
-    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-  } catch (cause) {
-    throw new Error(
-      `Could not read Cloudflare Build Output config at ${path.relative(root, configPath)}. Rebuild the app before deploying.`,
-      { cause },
-    );
-  }
-  if (config === null || typeof config !== "object" || Array.isArray(config)) {
-    throw new Error(
-      `Cloudflare Build Output config at ${path.relative(root, configPath)} is invalid.`,
-    );
-  }
-  fs.writeFileSync(configPath, `${JSON.stringify({ ...config, name }, null, 2)}\n`);
-}
-
 export function buildCfDeployArgs(options: Pick<DeployOptions, "preview" | "env">): CfDeployArgs {
   const mode = options.env || (options.preview ? "preview" : undefined);
   const args = ["deploy", "--prebuilt"];
@@ -2031,6 +2004,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (deployEnv) validateWranglerEnvName(deployEnv);
   const root = path.resolve(options.root);
   const deploymentTool = resolveDeploymentTool(root);
+  if (deploymentTool === "cf" && options.name) {
+    throw new Error(
+      "--name is not supported for cloudflare.config.ts projects. Set `name` in cloudflare.config.ts instead.",
+    );
+  }
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
   const wranglerFallbackEnv =
     deploymentTool === "cf"
@@ -2147,10 +2125,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
     await runBuild(info, deployEnv, viteMode);
   } else {
     console.log("\n  Skipping build (--skip-build)");
-  }
-
-  if (deploymentTool === "cf" && options.name) {
-    configureBuildOutputWorkerName(root, options.name);
   }
 
   if (options.warmCdnCache && cdnAdapterConfig) {
