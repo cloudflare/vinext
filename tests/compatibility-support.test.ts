@@ -31,12 +31,12 @@ describe("compatibility suite support policy", () => {
 
     expect(counts).toEqual({
       deferred: 25,
-      "needs-vite-equivalent": 3,
+      "needs-vite-equivalent": 4,
       unsupported: 6,
     });
-    expect(NON_SUPPORTED_SUITES).toHaveLength(34);
-    expect(CLASSIFIED_SUITES).toHaveLength(69);
-    expect(new Set(CLASSIFIED_SUITES).size).toBe(69);
+    expect(NON_SUPPORTED_SUITES).toHaveLength(35);
+    expect(CLASSIFIED_SUITES).toHaveLength(70);
+    expect(new Set(CLASSIFIED_SUITES).size).toBe(70);
   });
 
   it("classifies the mixed legacy Edge Runtime suite at file scope", () => {
