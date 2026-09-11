@@ -5,6 +5,7 @@ import os from "node:os";
 import {
   init,
   generateViteConfig,
+  getInitDependencyGroups,
   addScripts,
   getInitDeps,
   isDepInstalled,
@@ -938,6 +939,35 @@ describe("init — generated project snapshots", () => {
     await runInit(tmpDir, { platform: "cloudflare", _today: "2026-06-23" });
 
     expect(snapshotProject(tmpDir)).toMatchSnapshot();
+  });
+
+  it("adds MDX and Tailwind devDependencies for detected frameworks", () => {
+    const groups = getInitDependencyGroups(true, "node", {
+      hasMDX: true,
+      hasTailwind: true,
+    });
+    expect(groups.devDependencies).toContain("@mdx-js/rollup");
+    expect(groups.devDependencies).toContain("@tailwindcss/vite");
+
+    const bare = getInitDependencyGroups(true, "node");
+    expect(bare.devDependencies).not.toContain("@mdx-js/rollup");
+    expect(bare.devDependencies).not.toContain("@tailwindcss/vite");
+  });
+
+  it("generates a vite config with the Tailwind plugin when detected", () => {
+    const withTailwind = generateViteConfig(false, false, { hasTailwind: true });
+    expect(withTailwind).toContain('import tailwindcss from "@tailwindcss/vite"');
+    expect(withTailwind).toContain("tailwindcss()");
+
+    const without = generateViteConfig(false, false);
+    expect(without).not.toContain("tailwindcss");
+    expect(without).toBe(`import vinext from "vinext";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [vinext()],
+});
+`);
   });
 
   it("snapshots a fresh Node Pages Router init", async () => {

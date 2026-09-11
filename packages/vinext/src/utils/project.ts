@@ -316,6 +316,8 @@ export type ProjectInfo = {
   hasMDX: boolean;
   /** CodeHike is a dependency */
   hasCodeHike: boolean;
+  /** tailwindcss is a dependency (Tailwind v4 needs @tailwindcss/vite) */
+  hasTailwind: boolean;
   /** Native Node modules that need stubbing for Workers */
   nativeModulesToStub: string[];
 };
@@ -410,6 +412,7 @@ export function detectProject(root: string): ProjectInfo {
     ...(pkg?.devDependencies as Record<string, unknown> | undefined),
   };
   const hasCodeHike = "codehike" in allDeps;
+  const hasTailwind = "tailwindcss" in allDeps;
   const nativeModulesToStub = detectNativeModules(allDeps);
 
   return {
@@ -427,6 +430,7 @@ export function detectProject(root: string): ProjectInfo {
     hasTypeModule,
     hasMDX,
     hasCodeHike,
+    hasTailwind,
     nativeModulesToStub,
   };
 }
