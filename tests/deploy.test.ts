@@ -14,11 +14,13 @@ import {
   buildWranglerDeployArgs,
   configureBuildOutputWorkerName,
   getZeroPercentStagingTraffic,
+  isCfCliInstalled,
   parseDeployArgs,
   projectRequiresRouteCacheabilityProbeManifest,
   resolveCfBin,
   resolveDeploymentTool,
   resolveViteBuildMode,
+  resolveWranglerControlPlaneOptions,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runWranglerKVBulkPut,
@@ -572,8 +574,9 @@ describe("resolveWranglerBin", () => {
 
 describe("cf Build Output deployment", () => {
   it("builds the selected Cloudflare mode before prebuilt deployment", () => {
-    expect(resolveViteBuildMode(undefined)).toBe("production");
-    expect(resolveViteBuildMode("staging")).toBe("staging");
+    expect(resolveViteBuildMode("cf", undefined)).toBe("production");
+    expect(resolveViteBuildMode("cf", "staging")).toBe("staging");
+    expect(resolveViteBuildMode("wrangler", "staging")).toBe("production");
   });
 
   it("selects cf for typed Cloudflare configs and Wrangler for legacy configs", () => {
@@ -589,6 +592,49 @@ describe("cf Build Output deployment", () => {
     expect(resolveCfBin(tmpDir)).toBe(
       fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
     );
+  });
+
+  it("detects whether the cf CLI is installed", () => {
+    expect(isCfCliInstalled(tmpDir, () => "/app/node_modules/cf/package.json")).toBe(true);
+    expect(isCfCliInstalled(tmpDir, () => null)).toBe(false);
+  });
+
+  it("targets the uploaded Worker without treating an unmapped mode as a Wrangler env", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "fallback-worker" }));
+
+    expect(
+      resolveWranglerControlPlaneOptions(
+        tmpDir,
+        { deploymentTool: "cf", env: "staging", config: "wrangler.jsonc" },
+        { workerName: "typed-staging-worker" },
+      ),
+    ).toEqual({
+      config: "wrangler.jsonc",
+      env: undefined,
+      name: "typed-staging-worker",
+      verbose: undefined,
+    });
+  });
+
+  it("uses an explicitly mapped Wrangler fallback environment", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({ name: "fallback-worker", env: { staging: {} } }),
+    );
+
+    expect(
+      resolveWranglerControlPlaneOptions(
+        tmpDir,
+        { deploymentTool: "cf", env: "staging", config: "wrangler.jsonc" },
+        { workerName: "typed-staging-worker" },
+      ),
+    ).toEqual({
+      config: "wrangler.jsonc",
+      env: "staging",
+      name: "typed-staging-worker",
+      verbose: undefined,
+    });
   });
 
   it("builds prebuilt deploy args with an optional Cloudflare mode", () => {

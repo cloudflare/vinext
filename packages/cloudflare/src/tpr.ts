@@ -290,10 +290,7 @@ function extractEnvConfigs(envs: unknown): Record<string, WranglerEnvironmentCon
   const result: Record<string, WranglerEnvironmentConfig> = {};
   for (const [envName, rawConfig] of Object.entries(envs)) {
     if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) continue;
-    const envConfig = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
-    if (envConfig.name || envConfig.customDomain) {
-      result[envName] = envConfig;
-    }
+    result[envName] = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
@@ -433,9 +430,7 @@ function extractEnvConfigsFromTOML(
       const domain =
         extractTomlScalarRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
-      if (envConfig.name || envConfig.customDomain) {
-        result[envName] = envConfig;
-      }
+      result[envName] = envConfig;
       continue;
     }
 
@@ -444,9 +439,7 @@ function extractEnvConfigsFromTOML(
       const envConfig = result[routesEnvName] ?? {};
       const domain = extractTomlRouteBlockDomain(section.body);
       if (domain) envConfig.customDomain = domain;
-      if (envConfig.name || envConfig.customDomain) {
-        result[routesEnvName] = envConfig;
-      }
+      result[routesEnvName] = envConfig;
     }
   }
 
