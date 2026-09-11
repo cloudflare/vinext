@@ -7,16 +7,23 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
   deploy,
+  buildCfDeployArgs,
   buildNodeCliInvocation,
   buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
   getZeroPercentStagingTraffic,
+  isCfCliInstalled,
   parseDeployArgs,
   projectRequiresRouteCacheabilityProbeManifest,
+  resolveCfBin,
+  resolveDeploymentTool,
+  resolveViteBuildMode,
+  resolveWranglerControlPlaneOptions,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runWranglerKVBulkPut,
+  runCfDeploy,
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
@@ -101,6 +108,14 @@ function writeWranglerPackageForTest(
 ) {
   writeFile(dir, "node_modules/wrangler/package.json", JSON.stringify({ name: "wrangler", bin }));
   writeFile(dir, "node_modules/wrangler/bin/wrangler.js", "#!/usr/bin/env node");
+}
+
+function writeCfPackageForTest(
+  dir: string,
+  bin: string | Record<string, string> = { cf: "bin/cf" },
+) {
+  writeFile(dir, "node_modules/cf/package.json", JSON.stringify({ name: "cf", bin }));
+  writeFile(dir, "node_modules/cf/bin/cf", "#!/usr/bin/env node");
 }
 
 function expectedWranglerBinForTest(dir: string): string {
@@ -281,6 +296,14 @@ describe("buildWranglerKVBulkPutArgs", () => {
 });
 
 describe("deploy environment validation", () => {
+  it("keeps the typed Cloudflare config authoritative for the Worker name", async () => {
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
+
+    await expect(deploy({ root: tmpDir, name: "cli-worker", dryRun: true })).rejects.toThrow(
+      "Set `name` in cloudflare.config.ts instead.",
+    );
+  });
+
   it("rejects invalid environment names before project side effects", async () => {
     writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
     const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
@@ -553,6 +576,124 @@ describe("resolveWranglerBin", () => {
 
     expect(JSON.parse(fs.readFileSync(argvPath, "utf-8"))).toEqual(["deploy", "--env", payload]);
     expect(fs.existsSync(pwnedPath)).toBe(false);
+  });
+});
+
+describe("cf Build Output deployment", () => {
+  it("builds the selected Cloudflare mode before prebuilt deployment", () => {
+    expect(resolveViteBuildMode("cf", undefined)).toBe("production");
+    expect(resolveViteBuildMode("cf", "staging")).toBe("staging");
+    expect(resolveViteBuildMode("wrangler", "staging")).toBe("production");
+  });
+
+  it("selects cf for typed Cloudflare configs and Wrangler for legacy configs", () => {
+    expect(resolveDeploymentTool(tmpDir)).toBe("wrangler");
+    writeFile(tmpDir, "wrangler.jsonc", "{}");
+    expect(resolveDeploymentTool(tmpDir)).toBe("wrangler");
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
+    expect(resolveDeploymentTool(tmpDir)).toBe("cf");
+  });
+
+  it("resolves cf's JavaScript entrypoint from its bin map", () => {
+    writeCfPackageForTest(tmpDir);
+    expect(resolveCfBin(tmpDir)).toBe(
+      fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
+    );
+  });
+
+  it("detects whether the cf CLI is installed", () => {
+    expect(isCfCliInstalled(tmpDir, () => "/app/node_modules/cf/package.json")).toBe(true);
+    expect(isCfCliInstalled(tmpDir, () => null)).toBe(false);
+  });
+
+  it("targets the uploaded Worker without treating an unmapped mode as a Wrangler env", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "fallback-worker" }));
+
+    expect(
+      resolveWranglerControlPlaneOptions(
+        tmpDir,
+        { deploymentTool: "cf", env: "staging", config: "wrangler.jsonc" },
+        { workerName: "typed-staging-worker" },
+      ),
+    ).toEqual({
+      config: "wrangler.jsonc",
+      env: undefined,
+      name: "typed-staging-worker",
+      verbose: undefined,
+    });
+  });
+
+  it("uses an explicitly mapped Wrangler fallback environment", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({ name: "fallback-worker", env: { staging: {} } }),
+    );
+
+    expect(
+      resolveWranglerControlPlaneOptions(
+        tmpDir,
+        { deploymentTool: "cf", env: "staging", config: "wrangler.jsonc" },
+        { workerName: "typed-staging-worker" },
+      ),
+    ).toEqual({
+      config: "wrangler.jsonc",
+      env: "staging",
+      name: "typed-staging-worker",
+      verbose: undefined,
+    });
+  });
+
+  it.each(["env.staging", "env . staging", '"env"."staging"', "env.'staging'"])(
+    "recognizes nested-only Wrangler TOML environment %s",
+    (envPath) => {
+      writeFile(
+        tmpDir,
+        "wrangler.toml",
+        `[${envPath}.triggers] # staging\ncrons = ["0 * * * *"]\n`,
+      );
+
+      expect(
+        resolveWranglerControlPlaneOptions(
+          tmpDir,
+          { deploymentTool: "cf", env: "staging", config: "wrangler.toml" },
+          { workerName: "typed-staging-worker" },
+        ),
+      ).toEqual({
+        config: "wrangler.toml",
+        env: "staging",
+        name: "typed-staging-worker",
+        verbose: undefined,
+      });
+    },
+  );
+
+  it("builds prebuilt deploy args with an optional Cloudflare mode", () => {
+    expect(buildCfDeployArgs({})).toEqual({ args: ["deploy", "--prebuilt"], mode: undefined });
+    expect(buildCfDeployArgs({ env: "staging" })).toEqual({
+      args: ["deploy", "--prebuilt", "--mode", "staging"],
+      mode: "staging",
+    });
+  });
+
+  it("runs cf with shell disabled and returns its workers.dev URL", async () => {
+    writeCfPackageForTest(tmpDir);
+    let observed: Parameters<typeof spawn> | undefined;
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      observed = args;
+      return createMockChildProcess(
+        "Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22\nhttps://app.example.workers.dev\n",
+      );
+    }) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, {}, execute)).resolves.toBe("https://app.example.workers.dev");
+    expect(observed?.[0]).toBe(process.execPath);
+    expect(observed?.[1]).toEqual([
+      fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
+      "deploy",
+      "--prebuilt",
+    ]);
+    expect(observed?.[2]).toMatchObject({ shell: false });
   });
 });
 

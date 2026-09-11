@@ -51,12 +51,14 @@ describe("Cloudflare CDN adapter generated config", () => {
     });
 
     await finalizeCdnAdapterBuildOutput({
+      root,
       outDir: path.dirname(auxiliaryPath),
       isPrimaryServerOutput: false,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
       bindingIsExplicit: false,
     });
     await finalizeCdnAdapterBuildOutput({
+      root,
       outDir: path.dirname(generatedPath),
       isPrimaryServerOutput: true,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
@@ -85,6 +87,7 @@ describe("Cloudflare CDN adapter generated config", () => {
     });
 
     await finalizeCdnAdapterBuildOutput({
+      root,
       outDir: path.dirname(generatedPath),
       isPrimaryServerOutput: true,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
@@ -104,6 +107,7 @@ describe("Cloudflare CDN adapter generated config", () => {
     const before = fs.readFileSync(auxiliaryPath, "utf8");
 
     await finalizeCdnAdapterBuildOutput({
+      root,
       outDir: path.dirname(auxiliaryPath),
       isPrimaryServerOutput: false,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
@@ -124,6 +128,7 @@ describe("Cloudflare CDN adapter generated config", () => {
     });
 
     await finalizeCdnAdapterBuildOutput({
+      root,
       outDir: path.dirname(primaryPath),
       isPrimaryServerOutput: true,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
@@ -141,6 +146,7 @@ describe("Cloudflare CDN adapter generated config", () => {
 
     await expect(
       finalizeCdnAdapterBuildOutput({
+        root,
         outDir,
         isPrimaryServerOutput: true,
         binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
@@ -151,6 +157,21 @@ describe("Cloudflare CDN adapter generated config", () => {
     );
   });
 
+  it("defers CDN policy finalization to Cloudflare Build Output config", async () => {
+    writeJson("cloudflare.config.ts", {});
+    const outDir = path.join(root, ".cloudflare/output/v0/workers/default/bundle");
+
+    await expect(
+      finalizeCdnAdapterBuildOutput({
+        root,
+        outDir,
+        isPrimaryServerOutput: true,
+        binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+        bindingIsExplicit: false,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it("rejects a malformed generated config in the primary output", async () => {
     const generatedPath = path.join(root, "dist/server/wrangler.json");
     fs.mkdirSync(path.dirname(generatedPath), { recursive: true });
@@ -158,6 +179,7 @@ describe("Cloudflare CDN adapter generated config", () => {
 
     await expect(
       finalizeCdnAdapterBuildOutput({
+        root,
         outDir: path.dirname(generatedPath),
         isPrimaryServerOutput: true,
         binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
@@ -172,6 +194,7 @@ describe("Cloudflare CDN adapter generated config", () => {
       version_metadata: { binding: DEFAULT_CDN_VERSION_METADATA_BINDING },
     });
     await finalizeCdnAdapterBuildOutput({
+      root,
       outDir: path.dirname(generatedPath),
       isPrimaryServerOutput: true,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
@@ -180,6 +203,7 @@ describe("Cloudflare CDN adapter generated config", () => {
     const before = fs.readFileSync(generatedPath, "utf8");
 
     await finalizeCdnAdapterBuildOutput({
+      root,
       outDir: path.dirname(generatedPath),
       isPrimaryServerOutput: true,
       binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
@@ -197,6 +221,7 @@ describe("Cloudflare CDN adapter generated config", () => {
 
     await expect(
       finalizeCdnAdapterBuildOutput({
+        root,
         outDir: path.dirname(generatedPath),
         isPrimaryServerOutput: true,
         binding: DEFAULT_CDN_VERSION_METADATA_BINDING,

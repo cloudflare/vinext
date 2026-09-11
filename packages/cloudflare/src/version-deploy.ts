@@ -1,6 +1,10 @@
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import {
   buildNodeCliInvocation,
+  resolveCfBin,
   resolveWranglerBin,
   validateWranglerEnvName,
   type DeployOptions,
@@ -38,10 +42,41 @@ type WranglerVersionArgs = {
   env: string | undefined;
 };
 
+type CfVersionArgs = {
+  args: string[];
+  mode: string | undefined;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readBuildOutputWorkerName(root: string): string {
+  const configPath = path.join(
+    root,
+    ".cloudflare",
+    "output",
+    "v0",
+    "workers",
+    "default",
+    "config.json",
+  );
+  let config: unknown;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (cause) {
+    throw new Error(
+      "Could not read the generated Cloudflare Build Output config. Rebuild the app before deploying.",
+      { cause },
+    );
+  }
+  const name = isRecord(config) ? config.name : undefined;
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error("The generated Cloudflare Build Output config does not declare a Worker name.");
+  }
+  return name;
 }
 
 function parseJsonObject(output: string): JsonRecord | unknown[] | null {
@@ -93,7 +128,11 @@ export function parseVersionId(output: string): string | null {
 }
 
 export function parseUploadedWorkerName(output: string): string | null {
-  return output.match(/^\s*Uploaded\s+(\S+)\s+\(\d+(?:\.\d+)?\s+sec\)\s*$/im)?.[1] ?? null;
+  return (
+    stripVTControlCharacters(output).match(
+      /^\s*(?:[│|]\s*)?Uploaded\s+(\S+)\s+\(\d+(?:\.\d+)?\s+sec\)\s*$/im,
+    )?.[1] ?? null
+  );
 }
 
 export function parseWranglerVersionUploadOutput(output: string): WranglerVersionUploadResult {
@@ -129,6 +168,16 @@ export function buildWranglerVersionUploadArgs(
     args.push("--preview-alias", options.previewAlias);
   }
   return { args, env };
+}
+
+export function buildCfVersionUploadArgs(
+  options: Pick<DeployOptions, "preview" | "env"> & { previewAlias?: string },
+): CfVersionArgs {
+  const mode = options.env || (options.preview ? "preview" : undefined);
+  const args = ["versions", "upload", "--prebuilt"];
+  if (mode) args.push("--mode", validateWranglerEnvName(mode));
+  if (options.previewAlias) args.push("--preview-alias", options.previewAlias);
+  return { args, mode };
 }
 
 export function buildWranglerVersionDeployArgs(
@@ -207,6 +256,25 @@ function runWranglerCommand(
     for (const line of output.trim().split("\n")) {
       console.log(`  ${line}`);
     }
+  }
+  return output;
+}
+
+function runCfCommand(
+  root: string,
+  args: string[],
+  execute: typeof execFileSync = execFileSync,
+  verbose = false,
+): string {
+  const invocation = buildNodeCliInvocation(resolveCfBin(root), args);
+  const output = execute(invocation.file, invocation.args, {
+    cwd: root,
+    stdio: "pipe",
+    encoding: "utf-8",
+    shell: false,
+  }) as string;
+  if (verbose && output.trim()) {
+    for (const line of output.trim().split("\n")) console.log(`  ${line}`);
   }
   return output;
 }
@@ -291,6 +359,31 @@ export function runWranglerVersionUpload(
     if (isMissingWorkerVersionUploadError(error)) {
       throw withInitialDeployRequiredMessage();
     }
+    throw error;
+  }
+}
+
+export function runCfVersionUpload(
+  root: string,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+    previewAlias?: string;
+  },
+  execute: typeof execFileSync = execFileSync,
+): WranglerVersionUploadResult {
+  const workerName = readBuildOutputWorkerName(root);
+  const { args, mode } = buildCfVersionUploadArgs(options);
+  console.log(
+    mode
+      ? `\n  Uploading Worker Build Output in mode: ${mode}...`
+      : "\n  Uploading Worker Build Output...",
+  );
+  try {
+    const result = parseWranglerVersionUploadOutput(
+      runCfCommand(root, args, execute, options.verbose === true),
+    );
+    return { ...result, workerName };
+  } catch (error) {
+    if (isMissingWorkerVersionUploadError(error)) throw withInitialDeployRequiredMessage();
     throw error;
   }
 }

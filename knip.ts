@@ -130,6 +130,9 @@ export default {
         "vite",
       ],
     },
+    "apps/web": {
+      entry: ["cloudflare.config.ts", "worker/index.ts"],
+    },
   },
   ignoreWorkspaces: ["examples/**", "tests/fixtures/**", "benchmarks/**"],
   ignoreDependencies: [

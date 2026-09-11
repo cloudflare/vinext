@@ -134,6 +134,39 @@ function writeTwoStageWorkerArtifact(): void {
   );
 }
 
+function writeBuildOutputWorkerArtifact(): void {
+  writeFile(
+    ".cloudflare/output/v0/workers/default/config.json",
+    JSON.stringify({
+      manifest: { mainModule: "index.js", modules: {}, type: "partial" },
+      name: "my-worker",
+      type: "worker",
+    }),
+  );
+  writeFile(
+    ".cloudflare/output/v0/workers/default/bundle/index.js",
+    'void import("./response-stage.js");\n',
+  );
+  writeFile(
+    ".cloudflare/output/v0/workers/default/bundle/response-stage.js",
+    `import "./${CACHEABILITY_MANIFEST_MODULE}";\n`,
+  );
+  writeFile(
+    ".cloudflare/output/v0/workers/default/bundle/.vite/manifest.json",
+    JSON.stringify({
+      "virtual:cloudflare/worker-entry": {
+        dynamicImports: ["virtual:vinext-response-stage"],
+        file: "index.js",
+      },
+      "virtual:vinext-response-stage": { file: "response-stage.js" },
+    }),
+  );
+  writeFile(
+    `.cloudflare/output/v0/workers/default/bundle/${CACHEABILITY_MANIFEST_MODULE}`,
+    "export default null;\n",
+  );
+}
+
 function appPageProbeResponse(
   state: "static-candidate" | "probe-failed" = "static-candidate",
   pattern = "/about",
@@ -330,6 +363,29 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         version: 1,
       }),
     ).toThrow(`Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}`);
+  });
+
+  it("writes a cacheability manifest into the cf Build Output bundle", () => {
+    writeBuildOutputWorkerArtifact();
+
+    expect(
+      writeCacheabilityManifestArtifact(
+        tmpDir,
+        "wrangler.jsonc",
+        { buildId: "build-a", routes: {}, version: 1 },
+        "cf",
+      ),
+    ).toBe(".cloudflare/output/v0/workers/default/config.json");
+    expect(
+      fs.readFileSync(
+        path.join(
+          tmpDir,
+          ".cloudflare/output/v0/workers/default/bundle",
+          CACHEABILITY_MANIFEST_MODULE,
+        ),
+        "utf8",
+      ),
+    ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
   });
 
   it.each([

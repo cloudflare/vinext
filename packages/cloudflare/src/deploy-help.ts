@@ -8,16 +8,16 @@ export function formatDeployHelp(): string {
     - Detects App Router or Pages Router
     - Validates setup from vinext init --platform=cloudflare
     - Builds the project with Vite
-    - Deploys via wrangler
+    - Deploys with cf for typed Cloudflare config projects, or Wrangler otherwise
 
   Options:
     --preview                Deploy to preview environment (same as --env preview)
-    --env <name>             Deploy using wrangler env.<name>
-    --name <name>            Custom Worker name (default: from package.json)
+    --env <name>             Cloudflare mode for typed config; Wrangler environment otherwise
+    --name <name>            Custom Worker name for Wrangler config projects
     --config <path>          Wrangler config path (default: wrangler.jsonc/json/toml)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
-    --verbose                Print raw output from internal Wrangler commands
+    --verbose                Print raw output from internal Cloudflare CLI commands
     --prerender-all          Pre-render discovered routes after building (future
                              releases will auto-populate the remote cache)
     --prerender-concurrency <count>
@@ -88,7 +88,7 @@ export function formatDeployHelp(): string {
     vpx @vinext/cloudflare deploy                                      Build and deploy with Vite+
     vp exec vinext-cloudflare deploy                                   Run the locally installed Vite+ bin
     vinext-cloudflare deploy --preview                                 Deploy to a preview URL
-    vinext-cloudflare deploy --env staging                             Deploy using wrangler env.staging
+    vinext-cloudflare deploy --env staging                             Deploy using Cloudflare mode/environment staging
     vinext-cloudflare deploy --config dist/server/wrangler.json        Deploy using a generated Wrangler config
     vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
     vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name

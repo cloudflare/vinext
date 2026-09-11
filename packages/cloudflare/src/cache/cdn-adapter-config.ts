@@ -144,13 +144,26 @@ async function writeGeneratedConfig(
   await fs.writeFile(generatedConfigPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
+async function usesCloudflareBuildOutput(root: string): Promise<boolean> {
+  try {
+    return (await fs.stat(path.resolve(root, "cloudflare.config.ts"))).isFile();
+  } catch (cause) {
+    if (cause !== null && typeof cause === "object" && "code" in cause && cause.code === "ENOENT") {
+      return false;
+    }
+    throw cause;
+  }
+}
+
 /** Apply the complete CDN adapter policy to the primary generated config. */
 export async function finalizeCdnAdapterBuildOutput({
+  root,
   outDir,
   isPrimaryServerOutput,
   binding,
   bindingIsExplicit,
 }: {
+  root: string;
   outDir: string;
   isPrimaryServerOutput: boolean;
   binding: string;
@@ -159,7 +172,10 @@ export async function finalizeCdnAdapterBuildOutput({
   if (!isPrimaryServerOutput) return;
 
   const generatedConfigPath = path.resolve(outDir, "wrangler.json");
-  const generatedConfig = await readGeneratedConfig(generatedConfigPath, false);
+  const generatedConfig = await readGeneratedConfig(
+    generatedConfigPath,
+    await usesCloudflareBuildOutput(root),
+  );
   if (!generatedConfig) return;
   const withVersionMetadata = configureCdnVersionMetadata(generatedConfig, {
     binding,
