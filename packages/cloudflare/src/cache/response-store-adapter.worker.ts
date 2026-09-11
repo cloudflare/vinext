@@ -348,8 +348,9 @@ export default {
         );
       }
 
+      const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
       const canSeedRsc =
-        request.headers.get("user-agent") === WARMUP_USER_AGENT &&
+        isWarmup &&
         props !== null &&
         typeof props === "object" &&
         Reflect.get(props, "kind") === "app-page" &&
@@ -385,8 +386,35 @@ export default {
         await Promise.all([stored.body?.cancel(), storedRsc.body?.cancel()]);
       }
 
-      const capture: ResponseStoreInvocationCapture | undefined = rscSeed ? {} : undefined;
+      const capture: ResponseStoreInvocationCapture = rscSeed
+        ? { captureRscData: true }
+        : isWarmup
+          ? {}
+          : { streamResponse: true };
       const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "shared", capture);
+      if (capture.admittedResponse) {
+        ctx.waitUntil(
+          capture.admittedResponse
+            .then(async (admitted) => {
+              if (!isCacheable(admitted)) {
+                await admitted.body?.cancel().catch(() => {});
+                return;
+              }
+              await responseStore.put(key, admitted, {
+                revalidator: { id: ROUTE_REVALIDATOR_ID, args: [invocation] },
+              });
+            })
+            .catch((error) => {
+              console.error(
+                JSON.stringify({
+                  message: "Vinext response-store admission failed",
+                  error: error instanceof Error ? error.message : String(error),
+                }),
+              );
+            }),
+        );
+        return publicResponse(rendered, "MISS");
+      }
       if (!isCacheable(rendered)) {
         void capture?.rscData?.catch(() => {});
         return publicResponse(rendered, "BYPASS");

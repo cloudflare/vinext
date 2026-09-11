@@ -197,6 +197,21 @@ describe("Cloudflare Workers Response Store adapter", () => {
     await repairedRsc.body?.cancel();
   });
 
+  test("publishes non-App-page warmups before returning", async () => {
+    for (const pathname of ["/api/now", "/pages-prewarm"]) {
+      const key = `${pathname}?warmup=${crypto.randomUUID()}`;
+      const warmed = await request(key, {
+        headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+      });
+      assert.equal(warmed.headers.get("x-vinext-cache"), "MISS");
+      await warmed.arrayBuffer();
+
+      const stored = await request(key);
+      assert.equal(stored.headers.get("x-vinext-cache"), "HIT");
+      await stored.body?.cancel();
+    }
+  });
+
   test("caches HEAD independently without storing a body", async () => {
     const first = await request("/pages-prewarm?head=1", { method: "HEAD" });
     const second = await request("/pages-prewarm?head=1", { method: "HEAD" });
@@ -204,6 +219,43 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(second.headers.get("x-vinext-cache"), "HIT");
     assert.equal(await first.text(), "");
     assert.equal(await second.text(), "");
+  });
+
+  test("returns cold App pages before their bodies complete and publishes them", async () => {
+    const namespace = await miniflare.getDurableObjectNamespace("CACHE_METADATA", "cache");
+    const metadata = namespace.getByName(workerVersionId);
+    const inspect = Reflect.get(metadata, "inspect");
+    assert.equal(typeof inspect, "function");
+    const previousEntries = (await Reflect.apply(inspect, metadata, [])) as unknown[];
+    const key = `/streaming-cache?key=${crypto.randomUUID()}`;
+    const startedAt = Date.now();
+    const first = await request(key);
+    assert.equal(first.headers.get("x-vinext-cache"), "MISS");
+    const responseElapsed = Date.now() - startedAt;
+    assert.ok(responseElapsed < 800, `App page response took ${responseElapsed}ms`);
+    const body = await first.text();
+    const totalElapsed = Date.now() - startedAt;
+    assert.ok(
+      totalElapsed - responseElapsed > 500,
+      `App page body completed only ${totalElapsed - responseElapsed}ms after its response`,
+    );
+    assert.match(body, /streaming-shell/);
+    assert.match(body, /streaming-complete/);
+
+    let published = false;
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const entries = (await Reflect.apply(inspect, metadata, [])) as unknown[];
+      if (entries.length > previousEntries.length) {
+        published = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    assert.ok(published, "completed response was not published");
+    const second = await request(key);
+    assert.equal(second.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await second.text(), body);
   });
 
   test("does not persist credentials or fragment a public entry by them", async () => {
@@ -236,8 +288,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
   test("keeps dynamic and unsupported Vary responses out of shared storage", async () => {
     const firstDynamic = await cacheStatus("/dynamic");
     const secondDynamic = await cacheStatus("/dynamic");
-    assert.equal(firstDynamic.status, "BYPASS");
-    assert.equal(secondDynamic.status, "BYPASS");
+    assert.equal(firstDynamic.status, "MISS");
+    assert.equal(secondDynamic.status, "MISS");
     assert.notEqual(firstDynamic.body, secondDynamic.body);
 
     const firstVary = await cacheStatus("/vary");

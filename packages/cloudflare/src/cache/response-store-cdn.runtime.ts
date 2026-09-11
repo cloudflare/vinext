@@ -5,7 +5,10 @@ import type {
 } from "vinext/shims/cdn-cache";
 
 import createCloudflareCdnCacheAdapter from "./cdn-adapter.runtime.js";
-import { captureResponseStoreRscData } from "./response-store-data.runtime.js";
+import {
+  captureResponseStoreRscData,
+  deferResponseStoreAdmission,
+} from "./response-store-data.runtime.js";
 
 /** Response Store owns page serving and SWR; vinext only emits admitted response policy. */
 class ResponseStoreCdnCacheAdapter implements CdnCacheAdapter {
@@ -31,6 +34,12 @@ class ResponseStoreCdnCacheAdapter implements CdnCacheAdapter {
   }
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
     return this.headers.buildResponseHeaders(input);
+  }
+  deferCompletedPageResponseAdmission(
+    response: Response,
+    complete: (response: Response) => Promise<Response>,
+  ): Response | null {
+    return deferResponseStoreAdmission(response, complete);
   }
   captureAppPageRscData(rscData: Promise<ArrayBuffer>): void {
     captureResponseStoreRscData(rscData);
