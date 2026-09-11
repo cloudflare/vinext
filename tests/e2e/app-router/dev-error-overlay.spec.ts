@@ -191,6 +191,59 @@ test.describe("Dev error overlay", () => {
     );
   });
 
+  // Next.js keeps pagination mounted when the active error changes:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/next-devtools/dev-overlay/components/errors/error-overlay-pagination/error-overlay-pagination.tsx
+  test("keyboard pagination preserves focus and resets ignored frames", async ({ page }) => {
+    await page.route("**/__vinext_original-stack-trace", async (route) => {
+      const { stack } = route.request().postDataJSON() as { stack: string };
+      await route.fulfill({ json: { stack, ignoredFrames: [false, true] } });
+    });
+    await page.goto(`${BASE}/dev-overlay-test`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      for (let index = 1; index <= 3; index++) {
+        const error = new Error(`pagination error ${index}`);
+        error.stack = `${error.name}: ${error.message}\n    at userFrame (/app/page.tsx:1:1)\n    at ignoredFrame (/node_modules/framework/index.js:2:1)`;
+        window.dispatchEvent(new ErrorEvent("error", { error, message: error.message }));
+      }
+    });
+
+    const counter = page.getByTestId("vinext-dev-error-counter");
+    const previous = page.getByRole("button", { name: "Previous error" });
+    const next = page.getByRole("button", { name: "Next error" });
+    const toggle = page.getByTestId("vinext-dev-error-ignored-frames-toggle");
+    const frames = page.getByTestId("vinext-dev-error-stack").locator("li");
+
+    await expect(counter).toHaveText("3 of 3");
+    await expect(frames).toHaveCount(1);
+    await toggle.click();
+    await expect(frames).toHaveCount(2);
+
+    await previous.focus();
+    await page.keyboard.press("Enter");
+    await expect(counter).toHaveText("2 of 3");
+    await expect(previous).toBeFocused();
+    await expect(toggle).toHaveAttribute("data-vinext-ignored-frames-open", "false");
+    await expect(frames).toHaveCount(1);
+    // Do not focus the button again: the second Enter must use retained focus.
+    await page.keyboard.press("Enter");
+    await expect(counter).toHaveText("1 of 3");
+
+    await toggle.click();
+    await expect(frames).toHaveCount(2);
+    await next.focus();
+    await page.keyboard.press("Enter");
+    await expect(counter).toHaveText("2 of 3");
+    await expect(next).toBeFocused();
+    await expect(toggle).toHaveAttribute("data-vinext-ignored-frames-open", "false");
+    await expect(frames).toHaveCount(1);
+    await page.keyboard.press("Enter");
+    await expect(counter).toHaveText("3 of 3");
+    // Returning to an error must not restore its previously expanded frames.
+    await expect(toggle).toHaveAttribute("data-vinext-ignored-frames-open", "false");
+    await expect(frames).toHaveCount(1);
+  });
+
   test("renders a parsed stack when one is available", async ({ page }) => {
     await page.goto(`${BASE}/dev-overlay-test`);
     await clickUntilOverlay(page, "trigger-window-error");

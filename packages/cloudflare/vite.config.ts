@@ -10,9 +10,11 @@ export default defineConfig({
     entry: ["src/**/*.ts", "src/**/*.tsx", "!src/**/*.d.ts"],
     clean: true,
     deps: {
-      skipNodeModulesBundle: true,
+      resolveDepSubpath: true,
+      neverBundle: true,
     },
     dts: {
+      generator: "tsgo",
       tsgo: { path: getTscPath() },
     },
     fixedExtension: false,

@@ -6,6 +6,14 @@ updates:
       interval: "daily"
     cooldown:
       default-days: 1 # zizmor: ignore[dependabot-cooldown] — fast cooldown is intentional
+    groups:
+      vite-plus-and-vitest:
+        patterns:
+          - "vite"
+          - "vite-plus"
+          - "@voidzero-dev/vite-plus-*"
+          - "vitest"
+          - "@vitest/*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
