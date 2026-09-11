@@ -452,6 +452,21 @@ test("refresh and purge use a reverse tag-to-entry index that follows publicatio
   await purge({ tags: ["REPLACEMENT"] });
   assert.deepEqual(await tagIndex(), []);
   assert.equal((await read("/tag-index")).status, 404);
+  assert.ok((await (await metadataStub()).getTagExpiration(["replacement"])) > 0);
+});
+
+test("tag expiration is recorded without creating an R2 marker object", async () => {
+  const before = Date.now();
+  await purge({ tags: ["missing-tag"] });
+
+  const stub = await metadataStub();
+  assert.ok((await stub.getTagExpiration(["missing-tag"])) >= before);
+  assert.equal(await stub.getTagExpiration(["other-tag"]), 0);
+
+  const batchedTags = Array.from({ length: 101 }, (_, index) => `tag-${index}`);
+  await purge({ tags: [batchedTags.at(-1)] });
+  assert.ok((await stub.getTagExpiration(batchedTags)) >= before);
+  assert.equal((await r2Objects()).objects.length, 0);
 });
 
 test("the internal purge tag is first and large tag sets remain selectable", async () => {

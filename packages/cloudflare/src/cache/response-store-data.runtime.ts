@@ -11,6 +11,7 @@ import type {
   CacheHandlerValue,
   IncrementalCacheValue,
 } from "vinext/shims/cache";
+import { cacheForRequest } from "vinext/cache";
 import type { VinextCacheFunctionInvocation } from "vinext/server/multi-stage";
 
 import { encodeCloudflareCacheTag } from "./cdn-adapter.runtime.js";
@@ -43,7 +44,6 @@ const ARRAY_BUFFER_MARKER = "$vinextArrayBuffer";
 const CACHE_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60;
 const CACHE_MAX_AGE = `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
 const DATA_ENTRY_PATH = "__vinext_data";
-const SOFT_TAG_MARKER_PATH = "__vinext_data_soft_tag";
 const REPLAYABLE_HEADER = "X-Vinext-Response-Store-Replayable";
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const DATA_REVALIDATOR_ID = "vinext:data";
@@ -300,6 +300,8 @@ function cachePolicy(revalidate: number | false | undefined, expire: number | un
 }
 
 export class WorkersResponseStoreCacheHandler implements CacheHandler {
+  private readonly tagExpirations = cacheForRequest(() => new Map<string, Promise<number>>());
+
   constructor(private readonly store: WorkersResponseStore = responseStore!) {
     if (!store) {
       throw new Error(
@@ -326,19 +328,19 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       return null;
     }
 
-    const invalidatedAt = await Promise.all(
-      readStringArrayField(context, "softTags").map(async (tag) => {
-        const markerRequest = await cacheRequest(tag, SOFT_TAG_MARKER_PATH);
-        const marker = await this.store.fetch(markerRequest);
-        if (marker.status === 404 && marker.headers.get("X-Workers-Response-Store") === "MISS") {
-          return 0;
-        }
-        if (!marker.ok) throw new Error(`Workers Response Store returned ${marker.status}`);
-        const timestamp = Number(await marker.text());
-        return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY;
-      }),
-    );
-    if (invalidatedAt.some((timestamp) => timestamp > entry.lastModified)) return null;
+    const softTags = [
+      ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
+    ].sort();
+    if (softTags.length) {
+      const key = softTags.join(",");
+      const expirations = this.tagExpirations();
+      let expiration = expirations.get(key);
+      if (!expiration) {
+        expiration = this.store.getTagExpiration(softTags);
+        expirations.set(key, expiration);
+      }
+      if ((await expiration) >= entry.lastModified) return null;
+    }
 
     const age = Date.now() - entry.lastModified;
     const requestedRevalidate = readCacheControlField(context, "revalidate");
@@ -451,18 +453,6 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     if (durations?.expire && durations.expire > 0) {
       await this.store.refresh({ tags: encodedTags });
     } else {
-      const invalidatedAt = String(Date.now());
-      await Promise.all(
-        dataTags
-          .filter((tag) => tag.startsWith("_N_T_"))
-          .map(async (tag) =>
-            this.store.put(
-              await cacheRequest(tag, SOFT_TAG_MARKER_PATH),
-              new Response(invalidatedAt, { headers: { "Cache-Control": CACHE_MAX_AGE } }),
-              { purgeExisting: true },
-            ),
-          ),
-      );
       await this.store.purge({
         tags: encodedTags,
       } satisfies ResponseStorePurgeOptions);

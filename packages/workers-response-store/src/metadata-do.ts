@@ -44,6 +44,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     metadata: CandidateMetadata,
   ): Promise<PublicationResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
+  getTagExpiration(tags: string[]): Promise<number>;
   getEntriesMatching(options: ResponseStoreRefreshOptions): Promise<StoredEntry[]>;
   purgeMatching(options: ResponseStorePurgeOptions): Promise<PurgedEntry[]>;
   inspect(): Promise<StoredEntry[]>;
@@ -175,6 +176,10 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
           PRIMARY KEY (tag, key_hash)
         ) WITHOUT ROWID;
         CREATE INDEX IF NOT EXISTS entry_tags_key_hash ON entry_tags(key_hash);
+        CREATE TABLE IF NOT EXISTS tag_invalidations (
+          tag TEXT PRIMARY KEY,
+          invalidated_at INTEGER NOT NULL
+        ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS metadata_schema_migrations (
           version INTEGER PRIMARY KEY
         );
@@ -470,6 +475,26 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
     return row ? storedEntryFromRow(row) : null;
   }
 
+  getTagExpiration(tags: string[]): number {
+    const normalized = normalizeTags(tags);
+    let expiration = 0;
+
+    for (let offset = 0; offset < normalized.length; offset += MAX_SQL_PARAMETERS) {
+      const batch = normalized.slice(offset, offset + MAX_SQL_PARAMETERS);
+      const placeholders = batch.map(() => "?").join(", ");
+      const row = this.ctx.storage.sql
+        .exec<{ invalidated_at: number | null }>(
+          `SELECT MAX(invalidated_at) AS invalidated_at
+          FROM tag_invalidations WHERE tag IN (${placeholders})`,
+          ...batch,
+        )
+        .one();
+      expiration = Math.max(expiration, row.invalidated_at ?? 0);
+    }
+
+    return expiration;
+  }
+
   getEntriesMatching(options: ResponseStoreRefreshOptions): StoredEntry[] {
     return storedEntriesFromRows(this.findMatchingEntryRows(options));
   }
@@ -477,6 +502,17 @@ export class CacheMetadata extends DurableObject<Record<string, never>> {
   purgeMatching(options: ResponseStorePurgeOptions): PurgedEntry[] {
     return this.ctx.storage.transactionSync(() => {
       const matches = this.findMatchingEntryRows(options);
+      const invalidatedAt = Date.now();
+
+      for (const tag of normalizeTags(options.tags ?? [])) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO tag_invalidations (tag, invalidated_at) VALUES (?, ?)
+          ON CONFLICT(tag) DO UPDATE SET invalidated_at =
+            MAX(tag_invalidations.invalidated_at, excluded.invalidated_at)`,
+          tag,
+          invalidatedAt,
+        );
+      }
 
       for (const row of matches) {
         this.ctx.storage.sql.exec(

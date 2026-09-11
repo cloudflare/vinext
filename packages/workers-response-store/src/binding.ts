@@ -46,6 +46,8 @@ export type RevalidationInput = {
 
 export type WorkersResponseStore = {
   fetch(request: Request): Promise<Response>;
+  /** @internal Return the latest purge timestamp for framework-managed cache tags. */
+  getTagExpiration(tags: string[]): Promise<number>;
   put(
     request: Request,
     response: Response,
@@ -165,6 +167,10 @@ export class ResponseStoreService extends WorkerEntrypoint<
     return this.getStore(invocation).fetch(request);
   }
 
+  getTagExpiration(tags: string[], invocation: ResponseStoreServiceInvocation): Promise<number> {
+    return this.getStore(invocation).getTagExpiration(tags);
+  }
+
   put(
     request: Request,
     response: Response,
@@ -191,7 +197,7 @@ export class ResponseStoreService extends WorkerEntrypoint<
 
 export type ResponseStoreServiceBinding = Pick<
   ResponseStoreService,
-  "read" | "put" | "refresh" | "purge"
+  "read" | "getTagExpiration" | "put" | "refresh" | "purge"
 >;
 
 const MISS_HEADERS = {
@@ -650,6 +656,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     return response;
+  }
+
+  getTagExpiration(tags: string[]): Promise<number> {
+    return this.getMetadata().getTagExpiration(tags);
   }
 
   async put(

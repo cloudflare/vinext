@@ -74,7 +74,7 @@ The complete pair lives in `example/service-binding`: `cache-worker.ts` owns the
 
 ## API and storage model
 
-The library exposes `fetch`, `put`, `refresh({ tags, pathPrefixes })`, and `purge({ tags, pathPrefixes, purgeEverything })`. Cache identity is the request pathname plus query string. Response bodies live only in revision-specific R2 objects; SQLite stores metadata, freshness, revalidator descriptors, and the reverse tag-to-entry index needed by refresh and purge.
+The library exposes `fetch`, `put`, `refresh({ tags, pathPrefixes })`, and `purge({ tags, pathPrefixes, purgeEverything })`. Cache identity is the request pathname plus query string. Response bodies live only in revision-specific R2 objects; SQLite stores metadata, freshness, revalidator descriptors, tag invalidation timestamps, and the reverse tag-to-entry index needed by refresh and purge.
 
 SQLite assigns monotonically increasing revisions and conditionally publishes metadata, so slow writes cannot replace newer writes or resurrect purged entries. User RPC, R2, and purge I/O happen outside SQLite transactions. Stale R2 responses within their SWR window return immediately while `ctx.waitUntil()` runs one claimed regeneration; hard-expired responses are never returned.
 
