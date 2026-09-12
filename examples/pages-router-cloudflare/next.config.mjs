@@ -1,4 +1,6 @@
 export default {
+  typedRoutes: true,
+
   async headers() {
     return [
       {

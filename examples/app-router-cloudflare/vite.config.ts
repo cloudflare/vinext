@@ -6,7 +6,10 @@ import path from "node:path";
 
 export default defineConfig({
   plugins: [
-    vinext({ images: { optimizer: imagesOptimizer() } }),
+    vinext({
+      images: { optimizer: imagesOptimizer() },
+      nextConfig: { typedRoutes: true },
+    }),
     cloudflare({
       // The worker entry runs in the RSC environment, with SSR as a child.
       viteEnvironment: {

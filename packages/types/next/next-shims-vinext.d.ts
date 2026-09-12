@@ -34,3 +34,33 @@ declare module "next/navigation" {
     bfcacheId: string;
   };
 }
+
+// Next.js's generated typed-route declarations import these private module
+// paths. Keep them resolvable when vinext supplies the vendored declarations
+// instead of an installed `next` package.
+declare module "next/types.js" {
+  export * from "@vinext/types/next/upstream/types";
+  export { default } from "@vinext/types/next/upstream/types";
+}
+
+declare module "next/dist/client/link.js" {
+  export * from "@vinext/types/next/upstream/dist/client/link";
+  export { default } from "@vinext/types/next/upstream/dist/client/link";
+}
+
+declare module "next/dist/client/components/navigation.js" {
+  export * from "@vinext/types/next/upstream/dist/client/components/navigation";
+}
+
+declare module "next/dist/shared/lib/app-router-context.shared-runtime.js" {
+  export * from "@vinext/types/next/upstream/dist/shared/lib/app-router-context.shared-runtime";
+}
+
+declare module "next/dist/client/components/redirect-error.js" {
+  export * from "@vinext/types/next/upstream/dist/client/components/redirect-error";
+}
+
+declare module "next/dist/client/form.js" {
+  export * from "@vinext/types/next/upstream/dist/client/form";
+  export { default } from "@vinext/types/next/upstream/dist/client/form";
+}
