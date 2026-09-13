@@ -27,7 +27,7 @@ import { hasUserDocumentGetInitialProps } from "./document-initial-head.js";
 import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
-import { renderPagesPageResponse } from "./pages-page-response.js";
+import { applyGsspResponseHeaders, renderPagesPageResponse } from "./pages-page-response.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
@@ -1050,24 +1050,16 @@ export function createPagesPageHandler(
         // and expects the full props envelope (pageProps plus any app-level
         // props like __N_SSP, __N_SSG) as JSON instead of the full HTML page.
         if (isDataReq) {
-          const headers = new Headers();
-          if (gsspRes && typeof gsspRes.getHeaders === "function") {
-            const gsspHeaders = gsspRes.getHeaders();
-            for (const k of Object.keys(gsspHeaders)) {
-              const v = gsspHeaders[k];
-              if (v === undefined || v === null) continue;
-              if (k.toLowerCase() === "set-cookie" && Array.isArray(v)) {
-                for (const cookie of v) headers.append(k, String(cookie));
-              } else {
-                headers.set(k, Array.isArray(v) ? v.join(", ") : String(v));
-              }
-            }
-          }
+          const headers = new Headers({ "Content-Type": "application/json" });
+          applyGsspResponseHeaders(headers, gsspRes);
+          headers.set("Content-Type", "application/json");
+          const status = gsspRes?.statusCode ?? 200;
           if (gsspRes) {
             // Default Cache-Control for gSSP-driven _next/data responses —
             // skip when gSSP already set one via res.setHeader. Fixes #1461.
-            if (!headers.has("Cache-Control"))
+            if (!headers.has("Cache-Control")) {
               headers.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+            }
           } else if (isStaticPropsRoute) {
             if (isrRevalidateSeconds !== null) {
               const stem = isrCachePathname.endsWith("/")
@@ -1097,7 +1089,7 @@ export function createPagesPageHandler(
             }
           }
           return finalizePagesPreviewResponse(
-            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, { headers }),
+            buildNextDataPropsJsonResponse(renderProps, safeJsonStringify, { headers, status }),
             preview,
           );
         }
