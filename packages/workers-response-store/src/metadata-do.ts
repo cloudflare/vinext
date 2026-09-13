@@ -74,6 +74,8 @@ type EntryRow = Record<string, SqlStorageValue> & {
   active_revision: number | null;
   latest_revision: number;
   object_key: string | null;
+  claim_id?: string | null;
+  claim_revision?: number | null;
   current_invalidation_sequence?: number;
   pending_invalidation_sequence?: number | null;
   status_text: string | null;
@@ -554,11 +556,14 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const current = this.ctx.storage.sql
         .exec<EntryRow>(
           `SELECT entries.*,
+            revalidation_claims.claim_id AS claim_id,
+            revalidation_claims.revision AS claim_revision,
             pending_objects.invalidation_sequence AS pending_invalidation_sequence,
             metadata_state.tag_invalidation_sequence AS current_invalidation_sequence
           FROM entries
           CROSS JOIN metadata_state
           LEFT JOIN pending_objects ON pending_objects.object_key = ?
+          LEFT JOIN revalidation_claims ON revalidation_claims.key_hash = entries.key_hash
           WHERE entries.key_hash = ?`,
           metadata.objectKey,
           keyHash,
@@ -570,6 +575,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         current.pending_invalidation_sequence === undefined ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
+        (claimId !== undefined &&
+          (current.claim_id !== claimId || current.claim_revision !== revision)) ||
         (metadata.fenceTags.length > 0 &&
           current.current_invalidation_sequence! > current.pending_invalidation_sequence &&
           this.getTagInvalidationMaximum(metadata.fenceTags, "invalidation_sequence") >

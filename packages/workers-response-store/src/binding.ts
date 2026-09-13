@@ -208,7 +208,7 @@ const CACHE_PURGE_BATCH_SIZE = 100;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
-const pendingPuts = new Map<string, Promise<ResponseStoreMutationResult>>();
+const pendingPuts = new Map<string, Promise<StoreResult>>();
 
 function* batches<T>(values: readonly T[], size: number): Generator<T[], void> {
   for (let offset = 0; offset < values.length; offset += size) {
@@ -635,13 +635,18 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
         try {
           const result = await pending;
-          if (result.backingStoreUpdated) {
+          if (result.published && result.entry) {
             const objectKey = reservation.objectKey;
             await metadata
               .finishPendingObjects([objectKey])
               .catch((error) => this.logCleanupFailure(objectKey, error));
-            await response.body?.cancel().catch(() => {});
-            return result;
+            void response.body?.cancel().catch(() => {});
+            return {
+              backingStoreUpdated: true,
+              edgePurgeAccepted: options.purgeExisting
+                ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+                : true,
+            };
           }
         } catch {
           // Preserve this response as the fallback when the leading write fails.
@@ -652,9 +657,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       }
     }
 
-    const write = (async (): Promise<ResponseStoreMutationResult> => {
+    const write = (async (): Promise<StoreResult> => {
       reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
-      const result = await this.storeResponse(
+      return this.storeResponse(
         metadata,
         request,
         response,
@@ -662,23 +667,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         reservation,
         cacheTags,
       );
+    })();
+    if (options.coalesce) pendingPuts.set(pendingPutKey, write);
+    try {
+      const result = await write;
       if (!result.published || !result.entry) {
         return { backingStoreUpdated: false, edgePurgeAccepted: false };
       }
-
-      const edgePurgeAccepted = options.purgeExisting
-        ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
-        : true;
-
-      return { backingStoreUpdated: true, edgePurgeAccepted };
-    })();
-    if (!options.coalesce) return write;
-
-    pendingPuts.set(pendingPutKey, write);
-    try {
-      return await write;
+      return {
+        backingStoreUpdated: true,
+        edgePurgeAccepted: options.purgeExisting
+          ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+          : true,
+      };
     } finally {
-      if (pendingPuts.get(pendingPutKey) === write) {
+      if (options.coalesce && pendingPuts.get(pendingPutKey) === write) {
         pendingPuts.delete(pendingPutKey);
       }
     }

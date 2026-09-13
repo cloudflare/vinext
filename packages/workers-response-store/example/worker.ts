@@ -89,6 +89,10 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
       },
     });
   }
+  let teeSibling: ReadableStream | undefined;
+  if (body && request.headers.get("X-Tee-Body") === "1") {
+    [body, teeSibling] = body.tee();
+  }
 
   const response = new Response(NULL_BODY_STATUSES.has(status) ? null : body, {
     status,
@@ -110,6 +114,7 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
     revalidator,
     purgeExisting: request.headers.get("X-Purge-Existing") === "1",
   });
+  await new Response(teeSibling).arrayBuffer();
 
   return json(result);
 }

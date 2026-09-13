@@ -71,6 +71,7 @@ async function put(path, body, options = {}) {
   if (options.coalesce) headers.set("X-Coalesce", "1");
   if (options.bodyFailure) headers.set("X-Body-Failure", "1");
   if (options.bodyDelayMs) headers.set("X-Body-Delay-Ms", String(options.bodyDelayMs));
+  if (options.teeBody) headers.set("X-Tee-Body", "1");
   const response = await worker.fetch(`https://user.test/admin/put${path}`, {
     method: "PUT",
     headers,
@@ -561,6 +562,18 @@ test("overlapping framework writes can be coalesced", async () => {
   assert.equal(await metadataRowCount("pending_objects"), 0);
 });
 
+test("a coalesced tee body does not block on its unread sibling", async () => {
+  const first = put("/coalesced-tee", "first", { bodyDelayMs: 300, coalesce: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = put("/coalesced-tee", "second", { coalesce: true, teeBody: true });
+
+  assert.deepEqual((await second).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  await first;
+});
+
 test("writes with different purge requirements are not coalesced", async () => {
   const first = put("/coalesced-purge", "first", { bodyDelayMs: 300, coalesce: true });
   await new Promise((resolve) => setTimeout(resolve, 50));
@@ -687,6 +700,47 @@ test("tag purge prevents a pending tagged write from publishing", async () => {
     edgePurgeAccepted: false,
   });
   assert.equal((await read("/purge-pending-tag")).status, 404);
+});
+
+test("an expired revalidation claim cannot publish after its replacement", async () => {
+  await put("/claim-replacement", "seed");
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+  const first = await stub.claimRevalidation(
+    entry.keyHash,
+    entry.activeRevision,
+    entry.cacheKey,
+    "runtime-cache/poc-v2/claim-replacement",
+    100,
+    1,
+  );
+  const second = await stub.claimRevalidation(
+    entry.keyHash,
+    entry.activeRevision,
+    entry.cacheKey,
+    "runtime-cache/poc-v2/claim-replacement",
+    102,
+    100,
+  );
+  assert.ok(first);
+  assert.ok(second);
+
+  const result = await stub.publish(
+    entry.keyHash,
+    first.revision,
+    {
+      objectKey: first.objectKey,
+      statusText: "",
+      responseHeaders: [],
+      freshUntil: 1_000,
+      swrUntil: 1_000,
+      revalidator: null,
+      cacheTags: [],
+      fenceTags: [],
+    },
+    first.claimId,
+  );
+  assert.equal(result.published, false);
 });
 
 test("a write reserved after a tag purge is not rejected by its timestamp", async () => {
