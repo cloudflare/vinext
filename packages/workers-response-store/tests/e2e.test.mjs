@@ -156,7 +156,6 @@ test("put and fetch use pathname plus query, excluding host", async () => {
   assert.equal(entries.length, 1);
   assert.equal(entries[0].cacheKey, "/identity?a=1");
   assert.equal("body" in entries[0], false);
-  assert.equal("legacyResponseMetadata" in entries[0], false);
   const objects = await r2Objects();
   assert.equal(objects.objects.length, 1);
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
@@ -184,36 +183,6 @@ test("null-body response statuses refill without an R2 body stream", async () =>
   assert.equal(response.status, 204);
   assert.equal(await response.text(), "");
   assert.equal((await r2Objects()).objects.length, 1);
-});
-
-test("metadata remains readable when published by the pre-R2-metadata binding", async () => {
-  const cacheKey = "/legacy-object-metadata";
-  const keyHash = [
-    ...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(cacheKey))),
-  ]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-  const objectKey = "runtime-cache/legacy-object-metadata";
-  const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
-  await bucket.put(objectKey, "legacy-body");
-  const stub = await metadataStub();
-  const revision = await stub.beginWrite(keyHash, cacheKey);
-  await stub.publish(keyHash, revision, {
-    objectKey,
-    status: 200,
-    statusText: "",
-    responseHeaders: [["content-type", "text/plain"]],
-    createdAt: Date.now(),
-    initialAge: 0,
-    freshUntil: Date.now() + 60_000,
-    swrUntil: Date.now() + 60_000,
-    revalidator: null,
-    cacheTags: [],
-  });
-
-  const response = await read(cacheKey);
-  assert.equal(response.status, 200);
-  assert.equal(await response.text(), "legacy-body");
 });
 
 test("a cold refill preserves downstream headers, representation age, and remaining freshness", async () => {
@@ -612,15 +581,15 @@ test("retention sweep removes orphaned candidates without deleting active R2 obj
 });
 
 test("replacement and purge clean their durable object markers", async () => {
-  await put("/legacy-cleanup", "first");
+  await put("/replacement-cleanup", "first");
   const stub = await metadataStub();
   assert.equal(await metadataRowCount("pending_objects"), 0);
 
-  await put("/legacy-cleanup", "second");
+  await put("/replacement-cleanup", "second");
   assert.equal(await metadataRowCount("pending_objects"), 0);
   assert.equal((await r2Objects()).objects.length, 1);
 
-  await purge({ pathPrefixes: ["/legacy-cleanup"] });
+  await purge({ pathPrefixes: ["/replacement-cleanup"] });
   assert.equal(await metadataRowCount("pending_objects"), 0);
   assert.deepEqual(await stub.listExpiredPendingObjects(Date.now() + 1, 10), []);
   assert.equal((await r2Objects()).objects.length, 0);

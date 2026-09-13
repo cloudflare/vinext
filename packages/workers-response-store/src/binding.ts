@@ -69,23 +69,13 @@ type EntryMetadata = {
   cacheTags: string[];
 };
 
-export type CandidateMetadata = EntryMetadata & {
-  status: number;
-  createdAt: number;
-  initialAge: number;
-  responseMetadataInR2?: true;
-};
+export type CandidateMetadata = EntryMetadata;
 
 export type StoredEntry = EntryMetadata & {
   keyHash: string;
   cacheKey: string;
   activeRevision: number;
   latestRevision: number;
-  legacyResponseMetadata?: {
-    status: number;
-    createdAt: number;
-    initialAge: number;
-  };
 };
 
 export type PurgedEntry = {
@@ -390,13 +380,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       return null;
     }
 
-    const status =
-      metadataInteger(object.customMetadata?.status) ?? entry.legacyResponseMetadata?.status;
-    const createdAt =
-      metadataInteger(object.customMetadata?.createdAt) ?? entry.legacyResponseMetadata?.createdAt;
-    const initialAge =
-      metadataInteger(object.customMetadata?.initialAge) ??
-      entry.legacyResponseMetadata?.initialAge;
+    const status = metadataInteger(object.customMetadata?.status);
+    const createdAt = metadataInteger(object.customMetadata?.createdAt);
+    const initialAge = metadataInteger(object.customMetadata?.initialAge);
     if (
       status === undefined ||
       status < 200 ||
@@ -463,19 +449,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       ];
       const candidate: CandidateMetadata = {
         objectKey,
-        status: response.status,
         statusText: response.statusText,
         responseHeaders,
-        createdAt: policy.createdAt,
-        initialAge: policy.initialAge,
         freshUntil: policy.freshUntil,
         swrUntil: policy.swrUntil,
         revalidator: revalidator ?? null,
         cacheTags: responseCacheTags,
-        // Keep the scalar values in the RPC payload so an older DO can still
-        // publish during a rolling deployment. The marker tells the current DO
-        // not to duplicate them in SQLite.
-        responseMetadataInR2: true,
       };
 
       // RPC-transferred Response streams do not retain the fixed-length marker

@@ -77,11 +77,8 @@ type EntryRow = Record<string, SqlStorageValue> & {
   active_revision: number | null;
   latest_revision: number;
   object_key: string | null;
-  status: number | null;
   status_text: string | null;
   response_headers: string | null;
-  created_at: number | null;
-  initial_age: number | null;
   fresh_until: number | null;
   swr_until: number | null;
   revalidator_id: string | null;
@@ -124,7 +121,7 @@ function storedEntryFromRow(row: EntryRow): StoredEntry | null {
     return null;
   }
 
-  const entry: StoredEntry = {
+  return {
     keyHash: row.key_hash,
     cacheKey: row.cache_key,
     activeRevision: row.active_revision,
@@ -143,16 +140,6 @@ function storedEntryFromRow(row: EntryRow): StoredEntry | null {
           },
     cacheTags: JSON.parse(row.cache_tags ?? "[]") as string[],
   };
-
-  if (row.status !== null && row.created_at !== null && row.initial_age !== null) {
-    entry.legacyResponseMetadata = {
-      status: row.status,
-      createdAt: row.created_at,
-      initialAge: row.initial_age,
-    };
-  }
-
-  return entry;
 }
 
 function storedEntriesFromRows(rows: EntryRow[]): StoredEntry[] {
@@ -181,11 +168,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           active_revision INTEGER,
           latest_revision INTEGER NOT NULL,
           object_key TEXT,
-          status INTEGER,
           status_text TEXT,
           response_headers TEXT,
-          created_at INTEGER,
-          initial_age INTEGER,
           fresh_until INTEGER,
           swr_until INTEGER,
           revalidator_id TEXT,
@@ -206,30 +190,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           tag TEXT PRIMARY KEY,
           invalidated_at INTEGER NOT NULL
         ) WITHOUT ROWID;
-        CREATE TABLE IF NOT EXISTS metadata_schema_migrations (
-          version INTEGER PRIMARY KEY
-        );
         CREATE TABLE IF NOT EXISTS pending_objects (
           object_key TEXT PRIMARY KEY,
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS pending_objects_created_at ON pending_objects(created_at);
       `);
-
-      const legacyTagIndexIsActive =
-        ctx.storage.sql
-          .exec<{ version: number }>(
-            "SELECT version FROM metadata_schema_migrations WHERE version = 1",
-          )
-          .toArray().length > 0;
-      if (legacyTagIndexIsActive) {
-        // A rollback rebuilds this index and restores the marker. Clear it once
-        // when moving forward so ordinary writes do not retain duplicate rows.
-        ctx.storage.sql.exec(`
-          DELETE FROM entry_tags;
-          DELETE FROM metadata_schema_migrations WHERE version = 1;
-        `);
-      }
     });
   }
 
@@ -598,20 +564,16 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         };
       }
 
-      const responseMetadataIsInR2 = metadata.responseMetadataInR2 === true;
       const update = this.ctx.storage.sql.exec(
         `UPDATE entries SET
-          active_revision = ?, object_key = ?, status = ?, status_text = ?,
-          response_headers = ?, created_at = ?, initial_age = ?, fresh_until = ?, swr_until = ?,
+          active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
+          fresh_until = ?, swr_until = ?,
           revalidator_id = ?, revalidator_args = ?, cache_tags = ?, tombstoned = 0
         WHERE key_hash = ? AND latest_revision = ?`,
         revision,
         metadata.objectKey,
-        responseMetadataIsInR2 ? null : metadata.status,
         metadata.statusText,
         JSON.stringify(metadata.responseHeaders),
-        responseMetadataIsInR2 ? null : metadata.createdAt,
-        responseMetadataIsInR2 ? null : metadata.initialAge,
         metadata.freshUntil,
         metadata.swrUntil,
         metadata.revalidator?.id ?? null,
@@ -655,15 +617,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         swrUntil: metadata.swrUntil,
         revalidator: metadata.revalidator,
         cacheTags: metadata.cacheTags,
-        ...(responseMetadataIsInR2
-          ? {}
-          : {
-              legacyResponseMetadata: {
-                status: metadata.status,
-                createdAt: metadata.createdAt,
-                initialAge: metadata.initialAge,
-              },
-            }),
       };
 
       return {
@@ -808,11 +761,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             latest_revision = latest_revision + 1,
             active_revision = NULL,
             object_key = NULL,
-            status = NULL,
             status_text = NULL,
             response_headers = NULL,
-            created_at = NULL,
-            initial_age = NULL,
             fresh_until = NULL,
             swr_until = NULL,
             revalidator_id = NULL,
