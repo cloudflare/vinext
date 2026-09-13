@@ -666,6 +666,31 @@ test("tag purge prevents a pending tagged write from publishing", async () => {
   assert.equal((await read("/purge-pending-tag")).status, 404);
 });
 
+test("a write reserved after a tag purge is not rejected by its timestamp", async () => {
+  const createdAt = Date.now();
+  await purge({ tags: ["already-purged"] });
+
+  const stub = await metadataStub();
+  const reservation = await stub.reserveWrite(
+    "post-purge-write",
+    "/post-purge-write",
+    "runtime-cache/poc-v2/post-purge-write",
+    createdAt,
+  );
+  const result = await stub.publish("post-purge-write", reservation.revision, {
+    objectKey: reservation.objectKey,
+    statusText: "",
+    responseHeaders: [],
+    freshUntil: createdAt + 60_000,
+    swrUntil: createdAt + 60_000,
+    revalidator: null,
+    cacheTags: ["already-purged"],
+    fenceTags: ["already-purged"],
+  });
+
+  assert.equal(result.published, true);
+});
+
 test("retention sweep removes orphaned candidates without deleting active R2 objects", async () => {
   await put("/active-cleanup", "active");
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");

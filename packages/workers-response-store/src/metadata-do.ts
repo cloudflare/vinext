@@ -74,7 +74,8 @@ type EntryRow = Record<string, SqlStorageValue> & {
   active_revision: number | null;
   latest_revision: number;
   object_key: string | null;
-  pending_created_at?: number | null;
+  current_invalidation_sequence?: number;
+  pending_invalidation_sequence?: number | null;
   status_text: string | null;
   response_headers: string | null;
   fresh_until: number | null;
@@ -185,10 +186,17 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
         CREATE TABLE IF NOT EXISTS tag_invalidations (
           tag TEXT PRIMARY KEY,
-          invalidated_at INTEGER NOT NULL
+          invalidated_at INTEGER NOT NULL,
+          invalidation_sequence INTEGER NOT NULL
         ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS metadata_state (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          tag_invalidation_sequence INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO metadata_state (singleton, tag_invalidation_sequence) VALUES (1, 0);
         CREATE TABLE IF NOT EXISTS pending_objects (
           object_key TEXT PRIMARY KEY,
+          invalidation_sequence INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS pending_objects_created_at ON pending_objects(created_at);
@@ -430,7 +438,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         now + leaseMs,
       );
       this.ctx.storage.sql.exec(
-        "INSERT OR REPLACE INTO pending_objects (object_key, created_at) VALUES (?, ?)",
+        `INSERT OR REPLACE INTO pending_objects
+          (object_key, created_at, invalidation_sequence)
+        VALUES (?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))`,
         objectKey,
         now,
       );
@@ -484,7 +494,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const revision = this.reserveRevision(keyHash, cacheKey, current);
       const objectKey = `${objectKeyPrefix}/${revision}`;
       this.ctx.storage.sql.exec(
-        "INSERT OR REPLACE INTO pending_objects (object_key, created_at) VALUES (?, ?)",
+        `INSERT OR REPLACE INTO pending_objects
+          (object_key, created_at, invalidation_sequence)
+        VALUES (?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))`,
         objectKey,
         createdAt,
       );
@@ -503,8 +515,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     const { cleanupObjectKey, result } = this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
         .exec<EntryRow>(
-          `SELECT entries.*, pending_objects.created_at AS pending_created_at
+          `SELECT entries.*,
+            pending_objects.invalidation_sequence AS pending_invalidation_sequence,
+            metadata_state.tag_invalidation_sequence AS current_invalidation_sequence
           FROM entries
+          CROSS JOIN metadata_state
           LEFT JOIN pending_objects ON pending_objects.object_key = ?
           WHERE entries.key_hash = ?`,
           metadata.objectKey,
@@ -513,12 +528,14 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         .toArray()[0];
       if (
         !current ||
-        current.pending_created_at === null ||
-        current.pending_created_at === undefined ||
+        current.pending_invalidation_sequence === null ||
+        current.pending_invalidation_sequence === undefined ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
         (metadata.fenceTags.length > 0 &&
-          this.getTagExpiration(metadata.fenceTags) >= current.pending_created_at)
+          current.current_invalidation_sequence! > current.pending_invalidation_sequence &&
+          this.getTagInvalidationMaximum(metadata.fenceTags, "invalidation_sequence") >
+            current.pending_invalidation_sequence)
       ) {
         if (claimId) {
           this.ctx.storage.sql.exec(
@@ -618,7 +635,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return row ? storedEntryFromRow(row) : null;
   }
 
-  getTagExpiration(tags: string[]): number {
+  private getTagInvalidationMaximum(
+    tags: string[],
+    column: "invalidated_at" | "invalidation_sequence",
+  ): number {
     const normalized = normalizeTags(tags);
     let expiration = 0;
 
@@ -626,7 +646,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const placeholders = batch.map(() => "?").join(", ");
       const row = this.ctx.storage.sql
         .exec<{ invalidated_at: number | null }>(
-          `SELECT MAX(invalidated_at) AS invalidated_at
+          `SELECT MAX(${column}) AS invalidated_at
           FROM tag_invalidations WHERE tag IN (${placeholders})`,
           ...batch,
         )
@@ -635,6 +655,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     }
 
     return expiration;
+  }
+
+  getTagExpiration(tags: string[]): number {
+    return this.getTagInvalidationMaximum(tags, "invalidated_at");
   }
 
   async reserveRefresh(
@@ -667,9 +691,13 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       }
       for (const batch of batches(reservations, MAX_SQL_PARAMETERS / 2)) {
         this.ctx.storage.sql.exec(
-          `INSERT OR REPLACE INTO pending_objects (object_key, created_at) VALUES ${batch
-            .map(() => "(?, ?)")
-            .join(", ")}`,
+          `INSERT OR REPLACE INTO pending_objects
+            (object_key, created_at, invalidation_sequence) VALUES ${batch
+              .map(
+                () =>
+                  "(?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
+              )
+              .join(", ")}`,
           ...batch.flatMap(({ objectKey }) => [objectKey, createdAt]),
         );
       }
@@ -707,13 +735,27 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const matches = this.findMatchingEntryRows(options, true);
 
       const tags = normalizeTags(options.tags ?? []);
+      if (tags.length) {
+        this.ctx.storage.sql.exec(
+          `UPDATE metadata_state SET tag_invalidation_sequence = tag_invalidation_sequence + 1
+          WHERE singleton = 1`,
+        );
+      }
       for (const batch of batches(tags, MAX_SQL_PARAMETERS / 2)) {
         this.ctx.storage.sql.exec(
-          `INSERT INTO tag_invalidations (tag, invalidated_at) VALUES ${batch
-            .map(() => "(?, ?)")
-            .join(", ")}
+          `INSERT INTO tag_invalidations
+            (tag, invalidated_at, invalidation_sequence) VALUES ${batch
+              .map(
+                () =>
+                  "(?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
+              )
+              .join(", ")}
           ON CONFLICT(tag) DO UPDATE SET invalidated_at =
-            MAX(tag_invalidations.invalidated_at, excluded.invalidated_at)`,
+            MAX(tag_invalidations.invalidated_at, excluded.invalidated_at),
+            invalidation_sequence = MAX(
+              tag_invalidations.invalidation_sequence,
+              excluded.invalidation_sequence
+            )`,
           ...batch.flatMap((tag) => [tag, invalidatedAt]),
         );
       }
