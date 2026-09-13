@@ -625,7 +625,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const { cacheKey, keyHash } = await this.deriveCacheKey(request);
     const cacheTags = cacheTagsFromResponse(response);
-    const pendingPutKey = `${this.getVersionId()}:${keyHash}`;
+    const pendingPutKey = `${this.getVersionId()}:${keyHash}:${Boolean(options.purgeExisting)}`;
     let reservation: WriteReservation | undefined;
     if (options.coalesce) {
       for (;;) {

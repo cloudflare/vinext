@@ -561,6 +561,26 @@ test("overlapping framework writes can be coalesced", async () => {
   assert.equal(await metadataRowCount("pending_objects"), 0);
 });
 
+test("writes with different purge requirements are not coalesced", async () => {
+  const first = put("/coalesced-purge", "first", { bodyDelayMs: 300, coalesce: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = await put("/coalesced-purge", "second", {
+    coalesce: true,
+    purgeExisting: true,
+  });
+  const firstResult = await first;
+
+  assert.deepEqual(firstResult.json, {
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
+  });
+  assert.deepEqual(second.json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.equal(await (await read("/coalesced-purge")).text(), "second");
+});
+
 test("a failed coalesced write does not suppress an immediate retry", async () => {
   await assert.rejects(
     put("/coalesced-retry", "fails", {
