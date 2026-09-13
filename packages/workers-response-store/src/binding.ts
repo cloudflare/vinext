@@ -95,7 +95,6 @@ type CacheKey = {
 
 type WriteReservation = CacheKey & {
   claimId?: string;
-  coalesced?: boolean;
   objectKey: string;
   revision: number;
 };
@@ -206,6 +205,7 @@ const CACHE_PURGE_BATCH_SIZE = 100;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
+const pendingPuts = new Map<string, Promise<ResponseStoreMutationResult>>();
 
 function* batches<T>(values: readonly T[], size: number): Generator<T[], void> {
   for (let offset = 0; offset < values.length; offset += size) {
@@ -343,14 +343,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     metadata: CacheMetadataStub,
     keyHash: string,
     cacheKey: string,
-    coalesce = false,
   ): Promise<WriteReservation> {
     const reservation = await metadata.reserveWrite(
       keyHash,
       cacheKey,
       this.objectKeyPrefix(keyHash),
       Date.now(),
-      coalesce,
     );
     return { cacheKey, keyHash, ...reservation };
   }
@@ -427,8 +425,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
     const write =
-      reservation ??
-      (await this.reserveWrite(metadata, cacheKey.keyHash, cacheKey.cacheKey, false));
+      reservation ?? (await this.reserveWrite(metadata, cacheKey.keyHash, cacheKey.cacheKey));
     const { keyHash, objectKey, revision } = write;
 
     let publication: PublicationResult;
@@ -615,28 +612,56 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const metadata = this.getMetadata();
 
     const { cacheKey, keyHash } = await this.deriveCacheKey(request);
-    const reservation = await this.reserveWrite(metadata, keyHash, cacheKey, options.coalesce);
-    if (reservation.coalesced) {
-      await response.body?.cancel().catch(() => {});
-      return { backingStoreUpdated: false, edgePurgeAccepted: false };
+    const pendingPutKey = `${this.getVersionId()}:${keyHash}`;
+    if (options.coalesce) {
+      for (;;) {
+        const pending = pendingPuts.get(pendingPutKey);
+        if (!pending) break;
+
+        try {
+          const result = await pending;
+          if (result.backingStoreUpdated) {
+            await response.body?.cancel().catch(() => {});
+            return result;
+          }
+        } catch {
+          // Preserve this response as the fallback when the leading write fails.
+        }
+        if (pendingPuts.get(pendingPutKey) === pending) {
+          pendingPuts.delete(pendingPutKey);
+        }
+      }
     }
 
-    const result = await this.storeResponse(
-      metadata,
-      request,
-      response,
-      options.revalidator,
-      reservation,
-    );
-    if (!result.published || !result.entry) {
-      return { backingStoreUpdated: false, edgePurgeAccepted: false };
+    const write = (async (): Promise<ResponseStoreMutationResult> => {
+      const reservation = await this.reserveWrite(metadata, keyHash, cacheKey);
+      const result = await this.storeResponse(
+        metadata,
+        request,
+        response,
+        options.revalidator,
+        reservation,
+      );
+      if (!result.published || !result.entry) {
+        return { backingStoreUpdated: false, edgePurgeAccepted: false };
+      }
+
+      const edgePurgeAccepted = options.purgeExisting
+        ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+        : true;
+
+      return { backingStoreUpdated: true, edgePurgeAccepted };
+    })();
+    if (!options.coalesce) return write;
+
+    pendingPuts.set(pendingPutKey, write);
+    try {
+      return await write;
+    } finally {
+      if (pendingPuts.get(pendingPutKey) === write) {
+        pendingPuts.delete(pendingPutKey);
+      }
     }
-
-    const edgePurgeAccepted = options.purgeExisting
-      ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
-      : true;
-
-    return { backingStoreUpdated: true, edgePurgeAccepted };
   }
 
   async refresh(options: ResponseStoreRefreshOptions): Promise<ResponseStoreMutationResult> {

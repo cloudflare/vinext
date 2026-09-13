@@ -551,7 +551,7 @@ test("overlapping framework writes can be coalesced", async () => {
   const firstResult = await first;
 
   assert.deepEqual(firstResult.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
-  assert.deepEqual(second.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.deepEqual(second.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
   assert.equal(await (await read("/coalesced")).text(), "first");
   assert.equal((await metadata())[0].activeRevision, 1);
   assert.equal((await r2Objects()).objects.length, 1);
@@ -569,6 +569,23 @@ test("a failed coalesced write does not suppress an immediate retry", async () =
   const retry = await put("/coalesced-retry", "succeeds", { coalesce: true });
   assert.deepEqual(retry.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
   assert.equal(await (await read("/coalesced-retry")).text(), "succeeds");
+});
+
+test("a failed coalesced write preserves an overlapping successful write", async () => {
+  const failing = put("/coalesced-fallback", "fails", {
+    bodyDelayMs: 300,
+    bodyFailure: true,
+    coalesce: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const fallback = put("/coalesced-fallback", "succeeds", { coalesce: true });
+
+  await assert.rejects(failing, /put fixture returned 500/);
+  assert.deepEqual((await fallback).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  assert.equal(await (await read("/coalesced-fallback")).text(), "succeeds");
 });
 
 test("retention sweep removes orphaned candidates without deleting active R2 objects", async () => {

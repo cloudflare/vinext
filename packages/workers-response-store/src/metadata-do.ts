@@ -21,7 +21,6 @@ type PublicationResult = {
 };
 
 type WriteReservation = {
-  coalesced: boolean;
   objectKey: string;
   revision: number;
 };
@@ -38,7 +37,6 @@ export type CacheMetadataStub = DurableObjectStub & {
     cacheKey: string,
     objectKeyPrefix: string,
     createdAt: number,
-    coalesce?: boolean,
   ): Promise<WriteReservation>;
   claimRevalidation(
     keyHash: string,
@@ -92,7 +90,6 @@ const R2_DELETE_BATCH_SIZE = 1_000;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
 const ORPHAN_CLEANUP_LIMIT = 100;
 const ORPHAN_CLEANUP_RETRY_MS = 60 * 1000;
-const WRITE_COALESCE_LEASE_MS = 30_000;
 
 type CacheMetadataEnv = {
   CACHE_BODIES: R2Bucket;
@@ -484,47 +481,14 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     cacheKey: string,
     objectKeyPrefix: string,
     createdAt: number,
-    coalesce = false,
   ): Promise<WriteReservation> {
     const reservation = this.ctx.storage.transactionSync(() => {
-      const current:
-        | {
-            active_revision: number | null;
-            latest_revision: number;
-            write_pending?: number;
-          }
-        | undefined = coalesce
-        ? this.ctx.storage.sql
-            .exec<{
-              active_revision: number | null;
-              latest_revision: number;
-              write_pending: number;
-            }>(
-              `SELECT entries.active_revision, entries.latest_revision,
-                pending_objects.object_key IS NOT NULL AS write_pending
-              FROM entries
-              LEFT JOIN pending_objects ON pending_objects.object_key = ? || '/' || entries.latest_revision
-                AND pending_objects.created_at > ?
-              WHERE entries.key_hash = ?`,
-              objectKeyPrefix,
-              createdAt - WRITE_COALESCE_LEASE_MS,
-              keyHash,
-            )
-            .toArray()[0]
-        : this.ctx.storage.sql
-            .exec<{ active_revision: number | null; latest_revision: number }>(
-              "SELECT active_revision, latest_revision FROM entries WHERE key_hash = ?",
-              keyHash,
-            )
-            .toArray()[0];
-      if (
-        coalesce &&
-        current?.active_revision !== current?.latest_revision &&
-        current?.write_pending
-      ) {
-        const objectKey = `${objectKeyPrefix}/${current.latest_revision}`;
-        return { coalesced: true, objectKey, revision: current.latest_revision };
-      }
+      const current = this.ctx.storage.sql
+        .exec<{ active_revision: number | null; latest_revision: number }>(
+          "SELECT active_revision, latest_revision FROM entries WHERE key_hash = ?",
+          keyHash,
+        )
+        .toArray()[0];
 
       const revision = this.reserveRevision(keyHash, cacheKey, current);
       const objectKey = `${objectKeyPrefix}/${revision}`;
@@ -533,7 +497,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         objectKey,
         createdAt,
       );
-      return { coalesced: false, objectKey, revision };
+      return { objectKey, revision };
     });
     await this.ensureCleanupAlarm(createdAt);
     return reservation;
