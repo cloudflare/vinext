@@ -823,6 +823,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           },
           async () => {
             const { renderAppPageCacheArtifacts } = await import("./app-page-cache-render.js");
+            const { createAppPageRscErrorTracker } = await import("./app-page-stream.js");
             const revalidatedElement = await options.buildPageElement(
               revalidationTarget.route,
               revalidationTarget.params,
@@ -837,9 +838,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 serveStreamingMetadata: false,
               },
             );
-            const revalidatedOnError = options.createRscOnErrorHandler(
-              options.cleanPathname,
-              revalidationTarget.route.pattern,
+            const rscErrorTracker = createAppPageRscErrorTracker(
+              options.createRscOnErrorHandler(
+                options.cleanPathname,
+                revalidationTarget.route.pattern,
+              ),
             );
             // No inner runWithFetchDedupe here: this renderFn is already
             // wrapped in runWithFetchDedupe by runAppPageRevalidationContext.
@@ -856,7 +859,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               loadSsrHandler: options.loadSsrHandler,
               mountedSlotsHeader: options.mountedSlotsHeader,
               navigationParams: revalidationTarget.navigationParams,
-              onError: revalidatedOnError,
+              onError: rscErrorTracker.onRenderError,
               reactMaxHeadersLength: options.reactMaxHeadersLength,
               renderToReadableStream: options.renderToReadableStream,
               rootParams: options.rootParams,
@@ -866,6 +869,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             });
             options.clearRequestContext();
             return {
+              hasCapturedRenderError: rscErrorTracker.getCapturedError() !== null,
               html: rendered.html,
               htmlRenderObservation: rendered.htmlRenderObservation,
               linkHeader: rendered.linkHeader,

@@ -62,6 +62,7 @@ type AppPageCacheOutcomeRecorder = (metric: AppPageCacheOutcomeMetric) => void;
 
 type AppPageCacheRenderResult = {
   cacheControl?: CacheControlMetadata;
+  hasCapturedRenderError: boolean;
   html: string;
   htmlRenderObservation?: RenderObservation;
   linkHeader?: string;
@@ -465,6 +466,11 @@ export async function readAppPageCacheResponse(
       // reuse it instead of recomputing the hash.
       options.scheduleBackgroundRegeneration(isrKey, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
+        if (revalidatedPage.hasCapturedRenderError) {
+          options.isrDebug?.("regen skipped (render error)", options.cleanPathname);
+          return;
+        }
+
         const cacheControl = resolveRegeneratedAppPageCacheControl({
           expireSeconds: options.expireSeconds,
           renderCacheControl: revalidatedPage.cacheControl,
