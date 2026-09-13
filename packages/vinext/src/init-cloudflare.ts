@@ -14,6 +14,7 @@ export type CloudflareProjectInfo = {
   isAppRouter: boolean;
   hasISR: boolean;
   hasMDX: boolean;
+  hasTailwind: boolean;
   nativeModulesToStub: string[];
 };
 
@@ -589,10 +590,18 @@ export function generateAppRouterViteConfig(
     imports.push(`import path from "node:path";`);
   }
 
+  if (info?.hasTailwind) {
+    imports.push(`import tailwindcss from "@tailwindcss/vite";`);
+  }
+
   const plugins: string[] = [];
 
   if (info?.hasMDX) {
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
+  }
+
+  if (info?.hasTailwind) {
+    plugins.push(`    tailwindcss(),`);
   }
   plugins.push(
     `    ${vinextExpression(
@@ -656,6 +665,10 @@ export function generatePagesRouterViteConfig(
     imports.push(`import path from "node:path";`);
   }
 
+  if (info?.hasTailwind) {
+    imports.push(`import tailwindcss from "@tailwindcss/vite";`);
+  }
+
   // Build resolve.alias for native module stubs (tsconfig paths are handled
   // by the vinext plugin's native Vite support).
   let resolveBlock = "";
@@ -675,14 +688,14 @@ export function generatePagesRouterViteConfig(
 
 export default defineConfig({
   plugins: [
-    ${vinextExpression(
-      options,
-      "vinext",
-      "imagesOptimizer",
-      imagesBinding,
-      prerender,
-      versionMetadataBinding,
-    ).replace(/\n/g, "\n    ")},
+${info?.hasTailwind ? "    tailwindcss(),\n" : ""}    ${vinextExpression(
+    options,
+    "vinext",
+    "imagesOptimizer",
+    imagesBinding,
+    prerender,
+    versionMetadataBinding,
+  ).replace(/\n/g, "\n    ")},
     cloudflare(),
   ],${resolveBlock}
 });

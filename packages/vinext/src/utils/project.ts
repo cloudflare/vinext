@@ -316,6 +316,8 @@ export type ProjectInfo = {
   hasMDX: boolean;
   /** CodeHike is a dependency */
   hasCodeHike: boolean;
+  /** Tailwind v4 is detected and can use @tailwindcss/vite. */
+  hasTailwind: boolean;
   /** Native Node modules that need stubbing for Workers */
   nativeModulesToStub: string[];
 };
@@ -410,6 +412,22 @@ export function detectProject(root: string): ProjectInfo {
     ...(pkg?.devDependencies as Record<string, unknown> | undefined),
   };
   const hasCodeHike = "codehike" in allDeps;
+  // Tailwind v3 uses its PostCSS plugin and must not be upgraded by init.
+  // https://v3.tailwindcss.com/docs/guides/vite
+  let tailwindVersion = allDeps.tailwindcss;
+  const tailwindPackage = findInNodeModules(root, "tailwindcss/package.json");
+  if (tailwindPackage && tailwindVersion) {
+    try {
+      tailwindVersion = JSON.parse(fs.readFileSync(tailwindPackage, "utf-8")).version;
+    } catch {
+      // Fall back to the declared version when the installed manifest is unreadable.
+    }
+  }
+  const hasTailwind =
+    typeof tailwindVersion === "string" &&
+    (/^[~^]?4(?:\.|$)/.test(tailwindVersion) ||
+      (tailwindVersion === "latest" &&
+        ("@tailwindcss/postcss" in allDeps || "@tailwindcss/vite" in allDeps)));
   const nativeModulesToStub = detectNativeModules(allDeps);
 
   return {
@@ -427,6 +445,7 @@ export function detectProject(root: string): ProjectInfo {
     hasTypeModule,
     hasMDX,
     hasCodeHike,
+    hasTailwind,
     nativeModulesToStub,
   };
 }
