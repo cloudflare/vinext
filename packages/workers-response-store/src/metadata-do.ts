@@ -187,8 +187,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         CREATE TABLE IF NOT EXISTS tag_invalidations (
           tag TEXT PRIMARY KEY,
           invalidated_at INTEGER NOT NULL,
-          invalidation_sequence INTEGER NOT NULL
+          invalidation_sequence INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS metadata_schema_migrations (
+          version INTEGER PRIMARY KEY
+        );
         CREATE TABLE IF NOT EXISTS metadata_state (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
           tag_invalidation_sequence INTEGER NOT NULL
@@ -201,6 +204,41 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
         CREATE INDEX IF NOT EXISTS pending_objects_created_at ON pending_objects(created_at);
       `);
+
+      ctx.storage.transactionSync(() => {
+        const migrated = ctx.storage.sql
+          .exec<{ version: number }>(
+            "SELECT version FROM metadata_schema_migrations WHERE version = 2",
+          )
+          .toArray().length;
+        if (migrated) return;
+
+        const schemas = ctx.storage.sql
+          .exec<{ name: string; sql: string }>(
+            `SELECT name, sql FROM sqlite_schema
+            WHERE type = 'table' AND name IN ('tag_invalidations', 'pending_objects')`,
+          )
+          .toArray();
+        if (
+          !schemas
+            .find(({ name }) => name === "tag_invalidations")
+            ?.sql.includes("invalidation_sequence")
+        ) {
+          ctx.storage.sql.exec(
+            "ALTER TABLE tag_invalidations ADD COLUMN invalidation_sequence INTEGER NOT NULL DEFAULT 0",
+          );
+        }
+        if (
+          !schemas
+            .find(({ name }) => name === "pending_objects")
+            ?.sql.includes("invalidation_sequence")
+        ) {
+          ctx.storage.sql.exec(
+            "ALTER TABLE pending_objects ADD COLUMN invalidation_sequence INTEGER NOT NULL DEFAULT 0",
+          );
+        }
+        ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (2)");
+      });
     });
   }
 

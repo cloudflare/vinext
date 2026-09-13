@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Miniflare } from "miniflare";
@@ -689,6 +692,109 @@ test("a write reserved after a tag purge is not rejected by its timestamp", asyn
   });
 
   assert.equal(result.published, true);
+});
+
+test("the previous metadata schema is upgraded in place", async () => {
+  const persistencePath = await mkdtemp(path.join(tmpdir(), "response-store-migration-"));
+  let legacy;
+  let upgraded;
+
+  try {
+    legacy = new Miniflare({
+      compatibilityDate: "2026-04-08",
+      resourcePersistencePath: persistencePath,
+      unsafeEphemeralDurableObjects: true,
+      workers: [
+        {
+          name: "migration-worker",
+          modules: true,
+          script: `
+            import { DurableObject } from "cloudflare:workers";
+            export class CacheMetadata extends DurableObject {
+              constructor(ctx, env) {
+                super(ctx, env);
+                ctx.blockConcurrencyWhile(async () => ctx.storage.sql.exec(\`
+                  CREATE TABLE tag_invalidations (
+                    tag TEXT PRIMARY KEY,
+                    invalidated_at INTEGER NOT NULL
+                  ) WITHOUT ROWID;
+                  CREATE TABLE metadata_schema_migrations (version INTEGER PRIMARY KEY);
+                  INSERT INTO metadata_schema_migrations (version) VALUES (1);
+                  CREATE TABLE pending_objects (
+                    object_key TEXT PRIMARY KEY,
+                    created_at INTEGER NOT NULL
+                  );
+                \`));
+              }
+              seed() {
+                this.ctx.storage.sql.exec(
+                  "INSERT INTO tag_invalidations (tag, invalidated_at) VALUES ('old-tag', 123)"
+                );
+              }
+            }
+            export default { fetch() { return new Response("ok"); } };
+          `,
+          durableObjects: {
+            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+          },
+        },
+      ],
+    });
+    const legacyNamespace = await legacy.getDurableObjectNamespace(
+      "CACHE_METADATA",
+      "migration-worker",
+    );
+    await legacyNamespace.getByName(metadataName).seed();
+    await legacy.dispose();
+    legacy = undefined;
+
+    upgraded = new Miniflare({
+      compatibilityDate: "2026-04-08",
+      compatibilityFlags: ["nodejs_compat"],
+      resourcePersistencePath: persistencePath,
+      unsafeEphemeralDurableObjects: true,
+      workers: [
+        {
+          name: "migration-worker",
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat"],
+          modules: true,
+          scriptPath: workerScript,
+          durableObjects: {
+            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+          },
+          r2Buckets: { CACHE_BODIES: "migration-test" },
+          bindings: {
+            CF_VERSION_METADATA: {
+              id: metadataName,
+              tag: "test",
+              timestamp: "2026-09-04T00:00:00Z",
+            },
+          },
+        },
+      ],
+    });
+    const upgradedNamespace = await upgraded.getDurableObjectNamespace(
+      "CACHE_METADATA",
+      "migration-worker",
+    );
+    const stub = upgradedNamespace.getByName(metadataName);
+    const reservation = await stub.reserveWrite(
+      "migrated-write",
+      "/migrated-write",
+      "runtime-cache/poc-v2/migrated-write",
+      Date.now(),
+    );
+    await stub.purgeMatching({ tags: ["new-tag"] });
+
+    assert.ok(reservation.objectKey);
+    assert.equal(await stub.getTagExpiration(["old-tag"]), 123);
+    assert.ok((await stub.getTagExpiration(["new-tag"])) > 123);
+  } finally {
+    await legacy?.dispose();
+    await upgraded?.dispose();
+    await rm(persistencePath, { force: true, recursive: true });
+  }
 });
 
 test("retention sweep removes orphaned candidates without deleting active R2 objects", async () => {
