@@ -2,9 +2,10 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
-import { createBuilder, createServer, type ViteDevServer } from "vite";
+import { createBuilder } from "vite";
 import {
   startChildProductionServer,
+  startChildViteDevServer,
   stopChildProductionServer,
   type ChildProductionServer,
 } from "../production-server";
@@ -17,7 +18,7 @@ for (const mode of ["development", "production"] as const) {
   test.describe(`React View Transitions (${mode})`, () => {
     let fixtureRoot: string;
     let baseUrl: string;
-    let devServer: ViteDevServer | undefined;
+    let devServer: ChildProductionServer | undefined;
     let prodServer: ChildProductionServer | undefined;
 
     test.beforeAll(async () => {
@@ -67,20 +68,24 @@ export default function Layout({ children }) {
           `export default function Page() { return <main>${route}</main>; }`,
         );
       }
-      const vinext = (await import("../../../packages/vinext/src/index.js")).default;
-      const config = {
-        root: fixtureRoot,
-        configFile: false as const,
-        plugins: [vinext({ appDir: fixtureRoot })],
-        logLevel: "silent" as const,
-      };
       if (mode === "development") {
-        devServer = await createServer({ ...config, server: { host: "127.0.0.1", port: 0 } });
-        await devServer.listen();
-        const address = devServer.httpServer!.address();
-        if (!address || typeof address === "string") throw new Error("Missing dev server port");
-        baseUrl = `http://127.0.0.1:${address.port}`;
+        // A prior production build can cache React's production renderer in this
+        // worker. Keep development JSX and renderer modules in a fresh process.
+        await fs.writeFile(
+          path.join(fixtureRoot, "vite.config.ts"),
+          `import vinext from ${JSON.stringify(path.resolve("packages/vinext/src/index.ts"))};
+export default { plugins: [vinext({ appDir: ${JSON.stringify(fixtureRoot)} })] };`,
+        );
+        devServer = await startChildViteDevServer(fixtureRoot);
+        baseUrl = `http://127.0.0.1:${devServer.port}`;
       } else {
+        const vinext = (await import("../../../packages/vinext/src/index.js")).default;
+        const config = {
+          root: fixtureRoot,
+          configFile: false as const,
+          plugins: [vinext({ appDir: fixtureRoot })],
+          logLevel: "silent" as const,
+        };
         const builder = await createBuilder(config);
         await builder.buildApp();
         prodServer = await startChildProductionServer(fixtureRoot);
@@ -89,7 +94,7 @@ export default function Layout({ children }) {
     });
 
     test.afterAll(async () => {
-      await devServer?.close();
+      if (devServer) await stopChildProductionServer(devServer);
       if (prodServer) await stopChildProductionServer(prodServer);
       if (fixtureRoot) await fs.rm(fixtureRoot, { recursive: true, force: true });
     });
