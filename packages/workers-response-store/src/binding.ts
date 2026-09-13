@@ -636,7 +636,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         try {
           const result = await pending;
           if (result.backingStoreUpdated) {
-            await metadata.finishPendingObjects([reservation.objectKey]);
+            const objectKey = reservation.objectKey;
+            await metadata
+              .finishPendingObjects([objectKey])
+              .catch((error) => this.logCleanupFailure(objectKey, error));
             await response.body?.cancel().catch(() => {});
             return result;
           }
