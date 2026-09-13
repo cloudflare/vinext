@@ -62,6 +62,12 @@ export const SUITE_SUPPORT_POLICY = {
     DEFERRED_PARTIAL_PRERENDERING,
   "test/e2e/app-dir/fallback-shells/fallback-shells.test.ts": DEFERRED_PARTIAL_PRERENDERING,
   "test/e2e/app-dir/next-config/index.test.ts": NEXT_BUNDLER_SPECIFIC,
+  "test/e2e/app-dir/next-dynamic-csp-nonce/next-dynamic-csp-nonce.test.ts": {
+    status: "needs-vite-equivalent",
+    feature: "CSP nonces on dynamically imported module preloads",
+    reason:
+      "Next.js asserts webpack's script preload shape. Vinext emits Vite modulepreload links with the nonce and verifies them on Cloudflare Workers in tests/e2e/cloudflare-workers/dynamic-preload.spec.ts.",
+  },
   "test/e2e/app-dir/next-after-app-deploy/index.test.ts": {
     status: "unsupported",
     feature: "Next.js dual Node.js and legacy Edge Runtime builds",
