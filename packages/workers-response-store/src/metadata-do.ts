@@ -427,8 +427,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         active: number;
         created_at: number;
         object_key: string;
+        publishable: number;
       }>(
         `SELECT pending_objects.object_key, pending_objects.created_at,
+          pending_objects.publishable,
           entries.object_key IS NOT NULL AS active
         FROM pending_objects
         LEFT JOIN entries
@@ -443,26 +445,34 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       .filter(({ active }) => active)
       .map(({ object_key }) => object_key);
     const expired = batch.filter(({ active, created_at }) => !active && created_at <= cutoff);
+    const reservations = expired.filter(({ publishable }) => publishable === 1);
+    const cleanupObjectKeys = expired
+      .filter(({ publishable }) => publishable === 0)
+      .map(({ object_key }) => object_key);
+    const fencedAt = Date.now();
     const expiredObjectKeys = expired.map(({ object_key }) => object_key);
     this.finishPendingObjects(activeObjectKeys);
-    for (const expiredBatch of batches(expiredObjectKeys, MAX_SQL_PARAMETERS)) {
+    for (const reservationBatch of batches(reservations, MAX_SQL_PARAMETERS - 1)) {
       this.ctx.storage.sql.exec(
-        `UPDATE pending_objects SET created_at = 0, publishable = 0
-        WHERE object_key IN (${expiredBatch.map(() => "?").join(", ")})`,
-        ...expiredBatch,
+        `UPDATE pending_objects SET created_at = ?, publishable = 0
+        WHERE object_key IN (${reservationBatch.map(() => "?").join(", ")})`,
+        fencedAt,
+        ...reservationBatch.map(({ object_key }) => object_key),
       );
     }
     if (expiredObjectKeys.length) {
       await this.env.CACHE_BODIES.delete(expiredObjectKeys);
-      this.finishPendingObjects(expiredObjectKeys);
+      this.finishPendingObjects(cleanupObjectKeys);
     }
 
     const next = batch.find(({ active, created_at }) => !active && created_at > cutoff);
     if (!next && rows.length > ORPHAN_CLEANUP_LIMIT) {
       await this.ctx.storage.setAlarm(Date.now());
       this.cleanupAlarmKnown = true;
-    } else if (next) {
-      await this.ensureCleanupAlarm(next.created_at);
+    } else if (next || reservations.length) {
+      await this.ensureCleanupAlarm(
+        Math.min(next?.created_at ?? Number.POSITIVE_INFINITY, fencedAt),
+      );
     }
 
     return expiredObjectKeys.length;

@@ -948,6 +948,36 @@ test("retention sweep removes orphaned candidates without deleting active R2 obj
   assert.deepEqual(await stub.listExpiredPendingObjects(1, finishedKeys.length), []);
 });
 
+test("retention cleanup fences a body recreated after its first delete", async () => {
+  const stub = await metadataStub();
+  const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
+  const createdAt = Date.now();
+  const reservation = await stub.reserveWrite(
+    "expired-reservation",
+    "/expired-reservation",
+    "runtime-cache/poc-v2/expired-reservation",
+    createdAt,
+  );
+
+  assert.equal(await stub.sweepExpiredPendingObjects(createdAt + 1), 1);
+  assert.equal(await metadataRowCount("pending_objects"), 1);
+  await bucket.put(reservation.objectKey, "recreated-after-delete");
+
+  const result = await stub.publish("expired-reservation", reservation.revision, {
+    objectKey: reservation.objectKey,
+    statusText: "",
+    responseHeaders: [],
+    freshUntil: 1_000,
+    swrUntil: 1_000,
+    revalidator: null,
+    cacheTags: [],
+    fenceTags: [],
+  });
+  assert.equal(result.published, false);
+  assert.equal(await bucket.head(reservation.objectKey), null);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
 test("replacement and purge clean their durable object markers", async () => {
   await put("/replacement-cleanup", "first");
   const stub = await metadataStub();
