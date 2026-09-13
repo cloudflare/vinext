@@ -254,6 +254,17 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     this.cleanupAlarmKnown = true;
   }
 
+  private async maintainCleanupAlarm(createdAt: number): Promise<void> {
+    await this.ensureCleanupAlarm(createdAt).catch((error) => {
+      console.error(
+        JSON.stringify({
+          message: "Workers Response Store cleanup alarm update failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    });
+  }
+
   private findMatchingEntryRows(
     options: ResponseStorePurgeOptions,
     includePending = false,
@@ -667,14 +678,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     });
 
     if (cleanupObjectKey) {
-      await this.ensureCleanupAlarm(Date.now()).catch((error) => {
-        console.error(
-          JSON.stringify({
-            message: "Workers Response Store cleanup alarm update failed",
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      });
+      await this.maintainCleanupAlarm(Date.now());
       await this.deleteTrackedObjects([cleanupObjectKey]);
     }
     return result;
@@ -851,7 +855,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       );
     });
     if (matches.length) {
-      await this.ensureCleanupAlarm(invalidatedAt);
+      await this.maintainCleanupAlarm(invalidatedAt);
       await this.deleteTrackedObjects(matches.map((entry) => entry.objectKey));
     }
     return matches;
