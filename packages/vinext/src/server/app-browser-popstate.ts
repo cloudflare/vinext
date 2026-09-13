@@ -1,4 +1,5 @@
 import {
+  isExternalHistoryState,
   readHistoryStateTraversalIndex,
   type HistoryTraversalIntent,
 } from "./app-browser-state.js";
@@ -59,6 +60,17 @@ function createPopstateTraversalIntent(historyState: unknown): HistoryTraversalI
     historyState,
     targetHistoryIndex: readHistoryStateTraversalIndex(historyState),
   };
+}
+
+export function shouldCommitPopstateUrlWithoutNavigation(options: {
+  historyState: unknown;
+  isCurrentExternalHistoryTree: boolean;
+  isSameAppRouteTarget: boolean;
+}): boolean {
+  if (isExternalHistoryState(options.historyState)) {
+    return options.isCurrentExternalHistoryTree;
+  }
+  return options.isSameAppRouteTarget;
 }
 
 export function createPopstateRestoreHandler(

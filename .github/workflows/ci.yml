@@ -521,6 +521,10 @@ jobs:
             label: cloudflare-workers
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-encoded-paths
+            label: cloudflare-encoded-paths
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-sentry-app
             label: cloudflare-sentry-app
             shardIndex: 1
@@ -541,6 +545,10 @@ jobs:
             label: static-export
             shardIndex: 1
             shardTotal: 1
+          - project: static-export-basepath
+            label: static-export-basepath
+            shardIndex: 1
+            shardTotal: 1
           - project: app-with-src
             label: app-with-src
             shardIndex: 1
@@ -559,6 +567,18 @@ jobs:
             shardTotal: 1
           - project: app-front-redirect-issue
             label: app-front-redirect-issue
+            shardIndex: 1
+            shardTotal: 1
+          - project: web-worker-vinext
+            label: web-worker-vinext
+            shardIndex: 1
+            shardTotal: 1
+          - project: web-worker-cloudflare
+            label: web-worker-cloudflare
+            shardIndex: 1
+            shardTotal: 1
+          - project: nextjs-worker-cloudflare
+            label: nextjs-worker-cloudflare
             shardIndex: 1
             shardTotal: 1
     steps:

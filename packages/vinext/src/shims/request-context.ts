@@ -53,6 +53,8 @@ export type ExecutionContextLike = {
   dispatchPagesRevalidate?: (request: Request) => Promise<Response>;
   /** Marks a request currently executing through the internal revalidation dispatcher. */
   isInternalPagesRevalidation?: boolean;
+  /** Marks a build-secret-authorized Worker request that may run prerender discovery hooks. */
+  isPrerenderPathDiscovery?: boolean;
 };
 
 // ---------------------------------------------------------------------------

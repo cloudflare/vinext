@@ -17,7 +17,7 @@
  * | ------------------ | --------------------------------------- | ------------------------------------------- |
  * | Serve from store?  | Yes — reads the data cache              | No — origin renders fresh, edge caches      |
  * | Background regen   | In-process via `waitUntil`              | Edge re-requests origin                     |
- * | Response headers   | `Cache-Control` (SWR)                   | `Cache-Control: no-store` + `CDN-Cache-Control: <SWR>` |
+ * | Response headers   | Framework cache policy                  | Provider-specific cache policy                         |
  * | Invalidation       | (data cache handles tag invalidation)   | purge / revalidate via request context      |
  *
  * The default adapter is a thin shim over the data cache + the framework's
@@ -25,11 +25,9 @@
  * pre-split implementation.
  */
 
-import {
-  getDataCacheHandler,
-  type CacheHandlerValue,
-  type IncrementalCacheValue,
-} from "./cache-handler.js";
+import type { CacheHandlerValue, IncrementalCacheValue } from "./cache-handler.js";
+import { getExplicitCdnCacheAdapter } from "./cdn-cache-state.js";
+export { setCdnCacheAdapter } from "./cdn-cache-state.js";
 
 /** A map of response header name -> value the adapter wants applied or removed. */
 export type CdnResponseHeaders = Record<string, string | null>;
@@ -48,18 +46,61 @@ export type CdnCacheableHeaderInput = {
    *
    * The default adapter forces `no-store` for the browser in this case — the
    * page is instead served from the origin store on subsequent requests. Edge
-   * adapters may instead emit edge-only cache headers (e.g. `CDN-Cache-Control`)
-   * so the CDN performs SWR while the browser still sees `no-store`.
+   * adapters may instead emit edge-only cache headers so the CDN performs SWR
+   * while the browser receives a separate policy.
    */
   pendingDynamicCheck?: boolean;
   /**
    * The cache tags associated with this page/route, already canonicalised
    * (e.g. via `encodeCacheTag`). Edge adapters use these to emit a tag header
-   * (e.g. a `Cache-Tag` header) so tag-based purging can target the response.
+   * so tag-based purging can target the response.
    * The default adapter ignores them.
    */
   tags?: readonly string[];
 };
+
+export type CdnResponsePolicy = {
+  /** Whether a provider-specific response header controls shared caching. */
+  isHeader(name: string): boolean;
+  /**
+   * Read the effective shared-cache policy from a response. The returned value
+   * uses Cache-Control syntax so core can apply the framework's cacheability
+   * rules without knowing which provider header carried it.
+   */
+  readCacheControl(headers: Headers): string | null;
+  /** Whether provider policy explicitly opts out of storage. */
+  hasExplicitNonCacheablePolicy(headers: Headers, baseline?: Headers): boolean;
+};
+
+/** Whether a Cache-Control value contains an exact non-cacheable directive. */
+export function isNonCacheableCacheControl(cacheControl: string): boolean {
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+
+  for (let index = 0; index <= cacheControl.length; index++) {
+    const char = cacheControl[index];
+    if (index === cacheControl.length || (char === "," && !quoted)) {
+      const directive = cacheControl.slice(start, index);
+      const equals = directive.indexOf("=");
+      const name = (equals === -1 ? directive : directive.slice(0, equals)).trim().toLowerCase();
+      if (name === "no-store" || (equals === -1 && (name === "private" || name === "no-cache"))) {
+        return true;
+      }
+      start = index + 1;
+      continue;
+    }
+
+    if (quoted && char === "\\" && !escaped) {
+      escaped = true;
+      continue;
+    }
+    if (char === '"' && !escaped) quoted = !quoted;
+    escaped = false;
+  }
+
+  return false;
+}
 
 /**
  * The serving strategy for page-level ISR. Implement this to delegate
@@ -70,6 +111,33 @@ export type CdnCacheableHeaderInput = {
 // `buildResponseHeaders` / `ownsBackgroundRevalidation` have no data-cache
 // equivalent and stay CDN-specific.
 export type CdnCacheAdapter = {
+  /**
+   * The shared cache selects response variants using every request header
+   * named by `Vary`, comparing values verbatim.
+   */
+  readonly responseVary?: "verbatim";
+
+  /** Provider-specific response-policy interpretation, when the adapter has one. */
+  readonly responsePolicy?: CdnResponsePolicy;
+
+  /**
+   * Fresh App Page responses must reach clean EOF before this adapter may emit
+   * shared-cache headers. Used by edge adapters whose cache sits in front of
+   * the Worker; origin-managed adapters can stream privately and persist only
+   * the completed artifact.
+   */
+  readonly requiresCompletedResponseAdmission?: boolean;
+
+  /**
+   * Validate provider-specific request routing before the application handles
+   * the request. Returning a response short-circuits the request pipeline;
+   * returning `null` continues normally.
+   *
+   * Core deliberately passes the untouched request and does not interpret any
+   * provider headers or bindings itself.
+   */
+  validateRequest?(request: Request): Response | null | Promise<Response | null>;
+
   /**
    * Read a page-level artifact. Returning a value lets the origin serve it
    * (HIT/STALE); returning `null` makes the origin render fresh.
@@ -93,10 +161,19 @@ export type CdnCacheAdapter = {
 
   /**
    * Build the response cache headers for a given policy. Returns a map so an
-   * adapter can emit more than one header (e.g. `Cache-Control` +
-   * `CDN-Cache-Control`) and remove stale adapter-owned headers with `null`.
+   * adapter can emit more than one header and remove stale adapter-owned
+   * headers with `null`. Adapters must return `null` for every header they own
+   * when the input policy should remove it; core never infers provider header
+   * names or deletes headers the active adapter did not claim.
    */
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders;
+
+  /**
+   * Build adapter-owned headers that identify the deployed application build.
+   * Core applies these at the outer page-response boundary, including response
+   * paths that do not pass through cache-policy finalization.
+   */
+  buildResponseIdentityHeaders?(): CdnResponseHeaders;
 
   /**
    * Whether the **origin** runs in-process background regeneration when a stale
@@ -123,12 +200,15 @@ const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
 /**
  * Default origin-managed ISR strategy: store page artifacts in the data cache,
  * serve HIT/STALE from it, run in-process background regeneration, and emit the
- * framework's standard `Cache-Control` headers.
+ * framework's standard `Cache-Control` headers. It deliberately leaves unknown
+ * response headers alone. Deployments where provider headers carry cache
+ * semantics must configure the adapter that owns those headers.
  */
 export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    const { getDataCacheHandler } = await import("./cache-handler.js");
     return getDataCacheHandler().get(key, ctx);
   }
 
@@ -137,6 +217,7 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
+    const { getDataCacheHandler } = await import("./cache-handler.js");
     await getDataCacheHandler().set(key, data, ctx);
   }
 
@@ -167,9 +248,6 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
 //   2. Otherwise, the origin-managed DefaultCdnCacheAdapter.
 // ---------------------------------------------------------------------------
 
-const _CDN_KEY = Symbol.for("vinext.cdnCacheAdapter");
-const _gCdn = globalThis as unknown as Record<PropertyKey, unknown>;
-
 let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
 
 /**
@@ -191,20 +269,15 @@ let _defaultAdapter: DefaultCdnCacheAdapter | null = null;
  * ```
  *
  * The plugin registers the adapter across every runtime/router entry, so you
- * don't have to call this from a worker entry. This setter remains as the
- * internal registration target and for backwards compatibility, but is not the
- * recommended consumer API.
+ * don't have to call this from a worker entry. This setter remains for
+ * backwards compatibility, but is not the recommended consumer API.
  */
-export function setCdnCacheAdapter(adapter: CdnCacheAdapter): void {
-  _gCdn[_CDN_KEY] = adapter;
-}
-
 /**
  * Get the active CDN cache adapter. An explicitly configured adapter wins;
  * otherwise the origin-managed {@link DefaultCdnCacheAdapter} is used.
  */
 export function getCdnCacheAdapter(): CdnCacheAdapter {
-  const active = _gCdn[_CDN_KEY] as CdnCacheAdapter | undefined;
+  const active = getExplicitCdnCacheAdapter();
   if (active) return active;
 
   return (_defaultAdapter ??= new DefaultCdnCacheAdapter());

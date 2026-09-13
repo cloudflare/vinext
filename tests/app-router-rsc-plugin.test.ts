@@ -4,7 +4,7 @@ import path from "node:path";
 import { type ViteDevServer } from "vite";
 import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { APP_FIXTURE_DIR, fetchHtml, RSC_ENTRIES } from "./helpers.js";
+import { APP_FIXTURE_DIR, fetchHtml, RSC_ENTRIES, testCacheDir } from "./helpers.js";
 
 describe("RSC plugin auto-registration", () => {
   let server: ViteDevServer;
@@ -18,6 +18,7 @@ describe("RSC plugin auto-registration", () => {
     const { createServer } = await import("vite");
     server = await createServer({
       root: APP_FIXTURE_DIR,
+      cacheDir: testCacheDir(APP_FIXTURE_DIR),
       configFile: false,
       plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
       optimizeDeps: { holdUntilCrawlEnd: true },
@@ -53,6 +54,7 @@ describe("RSC plugin auto-registration", () => {
     const { createServer } = await import("vite");
     const deploymentServer = await createServer({
       root: APP_FIXTURE_DIR,
+      cacheDir: testCacheDir(APP_FIXTURE_DIR),
       configFile: false,
       plugins: [
         vinext({
@@ -91,6 +93,7 @@ describe("RSC plugin auto-registration", () => {
     // Should work without errors (no duplicate registration).
     const serverWithExplicitRsc = await createServer({
       root: APP_FIXTURE_DIR,
+      cacheDir: testCacheDir(APP_FIXTURE_DIR),
       configFile: false,
       plugins: [vinext({ appDir: APP_FIXTURE_DIR, rsc: false }), rsc({ entries: RSC_ENTRIES })],
       optimizeDeps: { holdUntilCrawlEnd: true },
@@ -111,6 +114,22 @@ describe("RSC plugin auto-registration", () => {
     }
   }, 30000);
 
+  it("rejects a manually registered RSC plugin placed before vinext", async () => {
+    const { createServer } = await import("vite");
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+    await expect(
+      createServer({
+        root: APP_FIXTURE_DIR,
+        cacheDir: testCacheDir(APP_FIXTURE_DIR),
+        configFile: false,
+        plugins: [rsc({ entries: RSC_ENTRIES }), vinext({ appDir: APP_FIXTURE_DIR, rsc: false })],
+        optimizeDeps: { holdUntilCrawlEnd: true },
+        server: { port: 0, cors: false },
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow("vinext({ rsc: false }) must appear before rsc()");
+  }, 30000);
+
   it("throws an error when user double-registers rsc() alongside auto-registration", async () => {
     const { createBuilder } = await import("vite");
     const rsc = (await import("@vitejs/plugin-rsc")).default;
@@ -121,6 +140,7 @@ describe("RSC plugin auto-registration", () => {
     await expect(
       createBuilder({
         root: APP_FIXTURE_DIR,
+        cacheDir: testCacheDir(APP_FIXTURE_DIR),
         configFile: false,
         plugins: [vinext({ appDir: APP_FIXTURE_DIR }), rsc({ entries: RSC_ENTRIES })],
         logLevel: "silent",

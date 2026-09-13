@@ -9,8 +9,8 @@ export default function HomePage() {
       <h1>Request-context cache demo</h1>
       <p className="tagline">
         vinext supports route-level caching through whatever cache the runtime exposes on{" "}
-        <code>ctx.cache</code>. ISR responses carry <code>Cache-Control</code> and{" "}
-        <code>Cache-Tag</code> headers, and <code>revalidateTag()</code> /{" "}
+        <code>ctx.cache</code>. The cache-enabled entrypoint consumes private cache policy and tag
+        headers, while <code>revalidateTag()</code> /{" "}
         <code>revalidatePath()</code> automatically fan out to <code>ctx.cache.purge(...)</code>{" "}
         alongside the inner <code>CacheHandler</code>. Deployed here on Cloudflare Workers (which{" "}
         <a href="https://developers.cloudflare.com/workers/cache/" target="_blank" rel="noreferrer">
@@ -63,8 +63,8 @@ export default function HomePage() {
             <span className="badge">Dynamic</span> Always-fresh
           </h3>
           <p>
-            <code>force-dynamic</code> for comparison. The Worker runs on every request and the
-            outer cache is bypassed.
+            A delayed <code>cookies()</code> read for comparison. The Worker completes the
+            personalized stream privately on every request and the outer cache is bypassed.
           </p>
           <Link prefetch={false} href="/dynamic">Open /dynamic &rarr;</Link>
         </div>

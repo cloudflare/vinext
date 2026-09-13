@@ -10,7 +10,6 @@ import type { IncomingMessage } from "node:http";
 import {
   getEncodingQuality,
   HAS_ZSTD,
-  isEncodingAccepted,
   negotiateEncoding,
   parseAcceptedEncodings,
   selectAcceptedEncoding,
@@ -62,9 +61,9 @@ describe("parseAcceptedEncodings", () => {
 
   it("matches coding tokens exactly and case-insensitively", () => {
     const parsed = parseAcceptedEncodings("GZIP, brotli-future");
-    expect(isEncodingAccepted(parsed, "gzip")).toBe(true);
-    expect(isEncodingAccepted(parsed, "br")).toBe(false);
-    expect(isEncodingAccepted(parsed, "brotli-future")).toBe(true);
+    expect(getEncodingQuality(parsed, "gzip")).toBe(1);
+    expect(getEncodingQuality(parsed, "br")).toBe(0);
+    expect(getEncodingQuality(parsed, "brotli-future")).toBe(1);
   });
 
   it("matches Next.js parameter-name casing semantics", () => {

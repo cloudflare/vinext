@@ -388,7 +388,22 @@ function manifestDependencySpecFor(name, spec, fromPackageDir) {
   throw new Error(`Unable to resolve dependency spec for ${name}`)
 }
 
+const reactRuntimePackages = new Set(['react', 'react-dom', 'react-server-dom-webpack'])
+
 function dependencySpecFor(name) {
+  // Deploy fixtures have no lockfile, so open peer ranges can silently mix
+  // incompatible React releases between nightly runs. Reuse the exact trio
+  // that built vinext in the already-frozen workspace install.
+  if (reactRuntimePackages.has(name)) {
+    for (const parent of [path.join(vinextDir, 'packages', 'vinext'), vinextDir]) {
+      const manifestPath = path.join(parent, 'node_modules', name, 'package.json')
+      if (fs.existsSync(manifestPath)) {
+        return JSON.parse(fs.readFileSync(manifestPath, 'utf8')).version
+      }
+    }
+    throw new Error(`Unable to find installed ${name} version`)
+  }
+
   for (const deps of [
     vinextPkg.peerDependencies,
     vinextPkg.dependencies,
@@ -509,29 +524,11 @@ fs.writeFileSync(
 pkg.devDependencies = pkg.devDependencies || {}
 pkg.devDependencies.vinext = 'file:.vinext-local-package'
 
-// App Router fixtures need React to satisfy the same peer range as the
-// injected react-server-dom-webpack. If they install an older React pair first,
-// `vinext build` runs its RSC compatibility upgrade and pays for a second
-// package-manager install inside every throwaway test app. Normalize the temp
-// manifest before the first install so the final dependency graph is unchanged
-// but setup is single-pass.
+// App Router fixtures need the same React trio that built vinext. Pinning the
+// throwaway manifest keeps nightly results tied to the frozen workspace install
+// and avoids a second compatibility install during `vinext build`.
 function hasAppRouterDir(root) {
   return fs.existsSync(path.join(root, 'app')) || fs.existsSync(path.join(root, 'src', 'app'))
-}
-
-function compareSemver(a, b) {
-  for (let index = 0; index < 3; index += 1) {
-    if (a[index] < b[index]) return -1
-    if (a[index] > b[index]) return 1
-  }
-
-  return 0
-}
-
-function parseSemverSpec(spec) {
-  const match = /(\d+)\.(\d+)\.(\d+)/.exec(spec)
-  if (!match) return null
-  return [Number(match[1]), Number(match[2]), Number(match[3])]
 }
 
 function dependencyBucketFor(name) {
@@ -545,25 +542,18 @@ function dependencyBucketFor(name) {
 function normalizeAppRouterReactDeps() {
   if (!hasAppRouterDir(process.cwd())) return
 
-  for (const dep of ['react', 'react-dom']) {
-    const bucket = dependencyBucketFor(dep)
-    if (!bucket) continue
-
+  for (const dep of reactRuntimePackages) {
+    const bucket = dependencyBucketFor(dep) || 'devDependencies'
     const current = pkg[bucket][dep]
-    const version = parseSemverSpec(current)
     const replacement = dependencySpecFor(dep)
-    const minimumVersion = parseSemverSpec(replacement)
-    if (!minimumVersion) continue
-    if (!version || compareSemver(version, minimumVersion) >= 0) continue
+    if (current === replacement) continue
 
     pkg[bucket][dep] = replacement
     console.log(
-      `Bumped ${bucket}.${dep} from ${current} to ${replacement} for RSC compatibility`,
+      `Pinned ${bucket}.${dep} from ${current || '(missing)'} to ${replacement} for RSC compatibility`,
     )
   }
 }
-
-normalizeAppRouterReactDeps()
 
 // Catalog-tracked deps: spec sourced from vinext or workspace root package.json.
 // Includes the Vite/RSC peers that vinext consumers must install, plus runtime
@@ -584,6 +574,8 @@ for (const dep of [
     pkg.devDependencies[dep] = dependencySpecFor(dep)
   }
 }
+
+normalizeAppRouterReactDeps()
 
 // Some Next.js scss test fixtures pin sass to an old version (e.g. 1.54.0)
 // that predates `sass.initAsyncCompiler`. Vite 8's built-in vite:css preprocessor

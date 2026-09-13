@@ -1,0 +1,3 @@
+@use "dependency-tokens" as tokens;
+
+$dependency-color: tokens.$dependency;

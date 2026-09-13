@@ -6,7 +6,6 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   decodeVlqSegment,
   installDevStackSourcemapMiddleware,
-  mapStackLine,
   mapStackLineWithMetadata,
   originalPositionFor,
   resolveSourceFile,
@@ -18,6 +17,12 @@ const SOURCE_MAP = {
   sources: ["./original.tsx"],
   mappings: "AAAA,KASE",
 } satisfies SourceMapPayload;
+
+async function mapStackLineForTest(
+  ...args: Parameters<typeof mapStackLineWithMetadata>
+): Promise<string> {
+  return (await mapStackLineWithMetadata(...args)).line;
+}
 
 const SITE_FOOTER_SOURCE = [
   "line 1",
@@ -342,7 +347,7 @@ describe("mapStackLine", () => {
       const { server, transformRequests } = createServer();
 
       await expect(
-        mapStackLine(
+        mapStackLineForTest(
           server,
           input,
           "localhost:5173",
@@ -358,7 +363,7 @@ describe("mapStackLine", () => {
     const line = "    at onClick (http://evil.test/src/App.tsx?t=1:1:6)";
 
     await expect(
-      mapStackLine(
+      mapStackLineForTest(
         server,
         line,
         "localhost:5173",
@@ -507,7 +512,12 @@ describe("mapStackLine", () => {
 
     const mappedFileUrl = pathToFileURL("/repo/app/app/_components/site-footer.tsx").href;
     await expect(
-      mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
+      mapStackLineForTest(
+        server,
+        line,
+        undefined,
+        new Map<string, Promise<SourceMapPayload | null>>(),
+      ),
     ).resolves.toBe(`    at SiteFooter (${mappedFileUrl}:6:9)`);
     expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
   });
@@ -520,7 +530,12 @@ describe("mapStackLine", () => {
       const line = "    at SiteFooter (C:\\repo\\app\\app\\_components\\site-footer.tsx:9:8)";
 
       await expect(
-        mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
+        mapStackLineForTest(
+          server,
+          line,
+          undefined,
+          new Map<string, Promise<SourceMapPayload | null>>(),
+        ),
       ).resolves.toBe(line);
       expect(transformRequests).toEqual(["rsc:C:\\repo\\app\\app\\_components\\site-footer.tsx"]);
     },
@@ -531,7 +546,12 @@ describe("mapStackLine", () => {
     const line = "    at SiteFooter (/repo/app/app/_components/site-footer.tsx:9:8)";
 
     await expect(
-      mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
+      mapStackLineForTest(
+        server,
+        line,
+        undefined,
+        new Map<string, Promise<SourceMapPayload | null>>(),
+      ),
     ).resolves.toBe(line);
     expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
   });
@@ -549,7 +569,12 @@ describe("mapStackLine", () => {
     const line = `    at SiteFooter (about://React/Server/${footerUrl}?9:9:8)`;
 
     await expect(
-      mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
+      mapStackLineForTest(
+        server,
+        line,
+        undefined,
+        new Map<string, Promise<SourceMapPayload | null>>(),
+      ),
     ).resolves.toBe(`    at SiteFooter (${footerUrl}:6:9)`);
     expect(transformRequests).toEqual([`rsc:${fileURLToPath(footerUrl)}`]);
   });
@@ -564,7 +589,12 @@ describe("mapStackLine", () => {
     const line = `    at SiteFooter (about://React/Server/${footerUrl}?9:9:8)`;
 
     await expect(
-      mapStackLine(server, line, undefined, new Map<string, Promise<SourceMapPayload | null>>()),
+      mapStackLineForTest(
+        server,
+        line,
+        undefined,
+        new Map<string, Promise<SourceMapPayload | null>>(),
+      ),
     ).resolves.toBe(`    at SiteFooter (${footerUrl}:6:9)`);
     expect(transformRequests).toEqual([`rsc:${fileURLToPath(footerUrl)}`]);
   });

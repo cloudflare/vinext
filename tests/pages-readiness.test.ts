@@ -49,10 +49,10 @@ describe("buildPagesReadinessNextData", () => {
     });
 
     expect(nextData).toMatchObject({
-      appGip: false,
       autoExport: true,
       nextExport: true,
     });
+    expect(nextData.appGip).toBeUndefined();
 
     // The auto-export markers keep the dynamic route pre-ready so the client
     // can replace the route-pattern query/asPath with the live URL state on
@@ -90,8 +90,32 @@ describe("buildPagesReadinessNextData", () => {
       }),
     ).toMatchObject({
       appGip: true,
-      autoExport: false,
+      autoExport: undefined,
       nextExport: undefined,
     });
+  });
+
+  it("omits false Next.js data-fetching markers from the serialized shape", () => {
+    expect(
+      buildPagesReadinessNextData({
+        pageModule: {},
+        appComponent: null,
+        hasRewrites: false,
+      }),
+    ).toEqual({
+      autoExport: true,
+      nextExport: true,
+      __vinext: { hasRewrites: false },
+    });
+  });
+
+  it("emits true getServerSideProps marker", () => {
+    expect(
+      buildPagesReadinessNextData({
+        pageModule: { getServerSideProps: async () => ({ props: {} }) },
+        appComponent: null,
+        hasRewrites: false,
+      }),
+    ).toMatchObject({ gssp: true });
   });
 });

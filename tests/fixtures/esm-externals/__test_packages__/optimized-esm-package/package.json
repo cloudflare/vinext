@@ -1,0 +1,9 @@
+{
+  "name": "optimized-esm-package",
+  "type": "module",
+  "exports": {
+    "./entry": {
+      "import": "./entry.mjs"
+    }
+  }
+}

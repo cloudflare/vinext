@@ -1,5 +1,240 @@
 # vinext
 
+## 1.0.0-beta.9
+
+### Features
+
+#### Cache
+
+- classify and warm static Route Handlers (#3113)
+- probe Pages Router cacheability (#3098)
+- deploy probed manifests in two stages (#3093)
+- probe App Page cacheability on staged Workers (#3091)
+
+#### Misc
+
+- **Cloudflare:** prewarm canonical ISR RSC requests (#3002)
+
+### Bug Fixes
+
+#### Cloudflare
+
+- finalize CDN version metadata output (#3137)
+- harden post-deploy readiness checks (#3136)
+- classify CDN cacheability per concrete route (#3115)
+- discover prewarm paths from staged worker (#3090)
+- verify Worker version IDs during CDN warmup (#3072)
+- complete warmup response and promotion contracts (#3046)
+- harden canonical RSC warmup end to end (#3040)
+
+#### Misc
+
+- **Cache:** preserve Cache Components ownership during probing (#3103)
+- **Cache:** gate CDN admission on probed routes (#3092)
+- **App Router:** support soft navigation in static exports (#3112)
+- **Build:** support trailing-slash static exports (#3081)
+- **App Router:** validate interception context identity (#3078)
+- **App:** authenticate static file signals (#3077)
+- **Build:** validate CDN warm discovery and deploy inputs (#3057)
+
+### Contributors
+
+- @james-elicx
+
+## 1.0.0-beta.8
+
+### Features
+
+- experimental support for React Compiler via react: { compiler: true } (#3005)
+
+### Bug Fixes
+
+- **Build:** avoid workerd cwd in module identity (#3007)
+
+### Contributors
+
+- @james-elicx
+- @jlucaso1
+
+## 1.0.0-beta.7
+
+### Bug Fixes
+
+#### App Router
+
+- route server actions through their owning pages (#2520)
+- restore shallow history tree snapshots (#2885)
+- preserve static hydration search params (#2944)
+- settle optimistic search navigations (#2952)
+- retain shared layouts across loading shells (#2940)
+- match current navigation identity (#2876)
+- retain loading shell prefetches (#2938)
+
+#### Build
+
+- preserve bundled ESM module identity (#2942)
+- preserve portable CommonJS module identity (#2826)
+- preserve require export conditions (#2881)
+- support deployed web worker graphs (#2314)
+- make vinext shim chunk rule reachable for installed copies (#2795)
+
+#### Misc
+
+- **Cache:** inherit route revalidate for tagged fetches (#2985)
+- **Security:** validate supplemental interception selectors (#2976)
+- **Router:** refresh retained parallel routes (#2880)
+- **Pages Router:** emit dev build ID in next data (#2962)
+- **Cache:** reject unserializable use cache results (#2954)
+- **Pages:** align GSSP client transitions (#2240)
+- **Fonts:** normalize self-hosted URLs on Windows (#2934)
+- **RSC:** web crypto subtle api is unavailable in non-secure contexts (#2929)
+
+### Contributors
+
+- @james-elicx
+- @Jbithell
+- @NriotHrreion
+
+## 1.0.0-beta.6
+
+### Features
+
+- **Use Cache:** support callable cached functions with rsc plugin api (#2156)
+
+### Bug Fixes
+
+#### App Router
+
+- reject unverified Worker prerender params (#2901)
+- preserve request.cf in route handlers (#2886)
+- preserve valued RSC queries through routing (#2883)
+- bail out static search params rendering (#2882)
+- expose not-found fallback flight payload (#2349)
+- prefetch root-param segment trees (#2856)
+- preserve full prefetch stale windows (#2851)
+
+#### Build
+
+- support Pages Router ESM externals (#2877)
+- preserve server export conditions (#2918)
+- bundle image-size in vinext (#2913)
+- define process.browser per environment (#2899)
+- preserve transitive external versions (#2887)
+
+#### Cache
+
+- preserve binary fetch response bodies (#2907)
+- ISR cache should store the framework preload header (#2900)
+- vary use cache entries by root params (#2847)
+- keep encoded dynamic prefetches learning-only (#2866)
+- delegate CDN header cleanup to adapters (#2797)
+
+#### Misc
+
+- **Headers:** preserve config Link headers alongside React preload links (#2791)
+- **Pages:** keep charset first in custom document heads (#2909)
+- **Font:** not emitting 400 as default value when font weight is omitted (#2796)
+- **Use Cache:** allow literal exports from use-cache files (#2906)
+- **Router:** preserve basePath in Pages Router events (#2888)
+- **RSC:** preserve BOM bytes in embedded Flight chunks (#2905)
+- **Pages:** align middleware rewrite navigation (#2891)
+- **Config:** preserve native TypeScript dynamic imports (#2353)
+- **Prerender:** cache use-cache metadata routes (#2848)
+- **Prerender:** expose the production build phase (#2846)
+
+### Contributors
+
+- @james-elicx
+- @lyzno1
+- @MaxtuneLee
+- @NathanDrake2406
+- @NriotHrreion
+- @ting-hong-shieh
+
+## 1.0.0-beta.5
+
+### Features
+
+- **Client:** expose host React to Module Federation remotes (#2828)
+
+### Bug Fixes
+
+#### App Router
+
+- hand off zero-stale prefetches (#2801)
+- pass rewrite validation to source middleware (#2798)
+- keep server metadata out of RSC payloads (#2769)
+- stop flooring dynamic prefetch stale times (#2757)
+- validate external RSC rewrites before proxying (#2754)
+- let concrete Pages routes win middleware rewrites (#2730)
+- keep mounted-slot RSC responses no-store (#2728)
+- authorize the interception source route before rendering it (#2733)
+- reject Route Handlers as interception source routes (#2732)
+- preserve page result render ordering (#2760)
+- render pages before consuming layouts (#2751)
+- honor cacheLife stale on the client router (#2708)
+
+#### Build
+
+- throw error if there is `_next` folder inside the public folder (#2814)
+- exclude filtered require.context modules (#2736)
+- recognize Vite dist client aliases (#2750)
+- support dynamic package subpath imports (#2746)
+- skip unhelpful precompressed variants (#2712)
+
+#### Middleware
+
+- align encoded path matching (#2802)
+- preserve safe origins for double-slash redirects (#2766)
+- preserve headers for empty override value (#2767)
+- stop restoring credentials middleware deleted before external rewrites (#2739)
+
+#### Pages
+
+- apply fallback rewrites after API misses (#2827)
+- run middleware before image endpoint (#2776)
+- preserve raw data URLs for middleware (#2775)
+- preserve gSSP headers on redirects (#2771)
+- preserve not-found response headers (#2773)
+- support bodyless API responses (#2772)
+- refresh next/head tags when regenerating ISR HTML (#2729)
+
+#### Server
+
+- prevent bot user-agent regex backtracking (#2765)
+- evaluate lazy route modules outside the request context (#2740)
+- transfer request bodies into NextRequest instead of teeing (#2741)
+- support Node production entry contracts (#2749)
+- reject unsupported static asset methods (#2714)
+- honor static freshness validators (#2715)
+- use weak comparison for If-None-Match (#2710)
+- serve static assets with standard MIME types (#2713)
+
+#### Misc
+
+- **Dev:** adopt initial Pages stylesheets in Vite (#2825)
+- **CSS:** resolve Sass tsconfig path aliases (#2824)
+- **Fetch Cache:** honor RequestInit in request dedupe (#2762)
+- **Script:** reject event attributes in hoisted HTML (#2763)
+- **Actions:** run redirect targets through full request pipeline (#2785)
+- **Pages Router:** stream piped API responses with backpressure (#2735)
+- **Router:** minimize client rewrite manifests (#2734)
+- **Create Vinext App:** generate next env on first run (#2768)
+- **Cache:** bypass shared "use cache" entries in draft mode (#2744)
+- **Document:** HTML-escape NextScript.getInlineScriptSource output (#2727)
+- **Navigation:** reuse router.prefetch payloads during navigation (#2709)
+- **Metadata:** preserve Content-Length for fully buffered responses (#2703)
+- **Image:** match Next.js 16 default image sizes (#2704)
+
+### Contributors
+
+- @Boyeep
+- @james-elicx
+- @kdy1
+- @NathanDrake2406
+- @NriotHrreion
+- @tomvoss
+
 ## 1.0.0-beta.4
 
 ### Bug Fixes

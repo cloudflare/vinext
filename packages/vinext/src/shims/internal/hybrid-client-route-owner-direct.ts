@@ -31,12 +31,23 @@ declare global {
 
 const appRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 const pagesRouteTrieCache = createRouteTrieCache<VinextPagesLinkPrefetchRoute>();
+const pagesPageRoutesCache = new WeakMap<
+  VinextPagesLinkPrefetchRoute[],
+  VinextPagesLinkPrefetchRoute[]
+>();
+const pagesApiRoutesCache = new WeakMap<
+  VinextPagesLinkPrefetchRoute[],
+  VinextPagesLinkPrefetchRoute[]
+>();
 
 function patternFromParts(parts: readonly string[]): string {
   return "/" + parts.join("/");
 }
 
-export function resolveSameOriginPathname(href: string, basePath: string): string | null {
+function resolveSameOriginPathnames(
+  href: string,
+  basePath: string,
+): { appPathname: string; pagesApiRequest: boolean; pagesPathname: string } | null {
   if (typeof window === "undefined") return null;
   let url: URL;
   try {
@@ -45,28 +56,57 @@ export function resolveSameOriginPathname(href: string, basePath: string): strin
     return null;
   }
   if (url.origin !== window.location.origin) return null;
-  const pathname = stripBasePath(url.pathname, basePath);
-  const locale = getLocalePathPrefix(pathname, window.__VINEXT_LOCALES__);
-  if (!locale) return pathname;
-  const localePrefixLength = locale.length + 1;
-  return pathname.length === localePrefixLength ? "/" : pathname.slice(localePrefixLength);
+  const appPathname = stripBasePath(url.pathname, basePath);
+  const locale = getLocalePathPrefix(appPathname, window.__VINEXT_LOCALES__);
+  const localePrefixLength = locale ? locale.length + 1 : 0;
+  const pagesPathname = !locale
+    ? appPathname
+    : appPathname.length === localePrefixLength
+      ? "/"
+      : appPathname.slice(localePrefixLength);
+  return {
+    appPathname,
+    pagesApiRequest: appPathname === "/api" || appPathname.startsWith("/api/"),
+    pagesPathname,
+  };
+}
+
+export function resolveSameOriginAppPathname(href: string, basePath: string): string | null {
+  return resolveSameOriginPathnames(href, basePath)?.appPathname ?? null;
+}
+
+function selectPagesRoutes(
+  routes: VinextPagesLinkPrefetchRoute[],
+  apiRequest: boolean,
+): VinextPagesLinkPrefetchRoute[] {
+  const cache = apiRequest ? pagesApiRoutesCache : pagesPageRoutesCache;
+  let selected = cache.get(routes);
+  if (!selected) {
+    selected = routes.filter((route) => Boolean(route.documentOnly) === apiRequest);
+    cache.set(routes, selected);
+  }
+  return selected;
 }
 
 export function matchDirectHybridClientRoutes(
   href: string,
   basePath: string,
 ): HybridClientRouteMatches {
-  const pathname = resolveSameOriginPathname(href, basePath);
-  if (pathname === null) return { appMatch: null, pagesMatch: null };
+  const pathnames = resolveSameOriginPathnames(href, basePath);
+  if (pathnames === null) return { appMatch: null, pagesMatch: null };
 
   const appRoutes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   const pagesRoutes = window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__;
   return {
     appMatch: appRoutes
-      ? (matchRouteWithTrie(pathname, appRoutes, appRouteTrieCache)?.route ?? null)
+      ? (matchRouteWithTrie(pathnames.appPathname, appRoutes, appRouteTrieCache)?.route ?? null)
       : null,
     pagesMatch: pagesRoutes
-      ? (matchRouteWithTrie(pathname, pagesRoutes, pagesRouteTrieCache)?.route ?? null)
+      ? (matchRouteWithTrie(
+          pathnames.pagesPathname,
+          selectPagesRoutes(pagesRoutes, pathnames.pagesApiRequest),
+          pagesRouteTrieCache,
+        )?.route ?? null)
       : null,
   };
 }

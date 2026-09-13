@@ -72,6 +72,7 @@ type PagesRequestCookiesCarrier = {
 type CreatePagesReqResOptions = {
   allowedRevalidateHeaderKeys?: readonly string[];
   body: unknown;
+  initialResponseHeaders?: Headers;
   query: PagesRequestQuery;
   request: Request;
   trustedRevalidateOrigin?: string;
@@ -184,20 +185,6 @@ function createRequestReadable(request: Request): Readable {
 
 function parsePagesRequestCookies(cookieHeader: string | string[] | null | undefined) {
   return parseCookieHeader(Array.isArray(cookieHeader) ? cookieHeader.join("; ") : cookieHeader);
-}
-
-function getPagesPreviewDataFromCookieHeader(
-  cookieHeader: string | string[] | null | undefined,
-  options: { isOnDemandRevalidate?: boolean } = {},
-): PagesPreviewData | false {
-  return getPagesPreviewState(cookieHeader, options).data;
-}
-
-export function getPagesPreviewData(
-  request: Request,
-  options: { isOnDemandRevalidate?: boolean } = {},
-): PagesPreviewData | false {
-  return getPagesPreviewDataFromCookieHeader(request.headers.get("cookie"), options);
 }
 
 export function attachPagesRequestCookies(req: PagesRequestCookiesCarrier): void {
@@ -613,6 +600,12 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     options.trustedRevalidateOrigin ?? new URL(options.request.url).origin,
     options.allowedRevalidateHeaderKeys,
   ) as PagesReqResResponse;
+  for (const [name, value] of options.initialResponseHeaders ?? []) {
+    if (name.toLowerCase() === "set-cookie") continue;
+    res.setHeader(name, value);
+  }
+  const initialCookies = options.initialResponseHeaders?.getSetCookie() ?? [];
+  if (initialCookies.length > 0) res.setHeader("Set-Cookie", initialCookies);
   attachPagesPreviewApi(req, res);
 
   return { req, res, responsePromise };

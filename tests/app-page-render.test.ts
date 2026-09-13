@@ -881,6 +881,52 @@ describe("app page render lifecycle", () => {
     );
   });
 
+  it("keeps request-specific middleware Link headers out of live ISR cache entries", async () => {
+    // Related Next.js middleware response-header coverage:
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-middleware/app-middleware.test.ts
+    const common = createCommonOptions();
+    const frameworkLinkHeader = "</framework.css>; rel=preload; as=style";
+    const middlewareLinkHeader = "</new-ui.css>; rel=preload; as=style";
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.capturedRscDataRef) {
+            options.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("flight-data").buffer,
+            );
+          }
+          if (options?.sideStream) {
+            void options.sideStream.getReader().cancel();
+          }
+
+          return {
+            htmlStream: createStream(["<html>page</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: options?.capturedRscDataRef?.value ?? null,
+            linkHeader: frameworkLinkHeader,
+          };
+        },
+      }),
+      middlewareContext: {
+        headers: new Headers({ Link: middlewareLinkHeader }),
+        status: null,
+      },
+      revalidateSeconds: 30,
+    });
+
+    // Middleware replaces earlier config/user values, then the framework's
+    // render-owned preload is appended to the outgoing response.
+    expect(response.headers.get("link")).toBe(`${middlewareLinkHeader}, ${frameworkLinkHeader}`);
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    await Promise.all(common.waitUntilPromises);
+
+    const htmlCacheWrite = common.isrSet.mock.calls.find(([key]) => key === "html:/posts/post");
+    expect(htmlCacheWrite?.[1].headers?.link).toBe(frameworkLinkHeader);
+  });
+
   it("does not wait for cacheLife-only RSC capture before returning production HTML responses", async () => {
     const common = createCommonOptions();
     const releaseRsc = createDeferred();
@@ -1216,6 +1262,75 @@ describe("app page render lifecycle", () => {
     expect(response.headers.get("cache-control")).toBe("s-maxage=1, stale-while-revalidate=2");
     await expect(response.text()).resolves.toBe("<html>page</html>");
     expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("preserves prerender cacheLife metadata when the HTML footer finalizes before the outer read", async () => {
+    const common = createCommonOptions();
+    let requestCacheLife: { stale: number; revalidate: number; expire: number } | null = null;
+    let initialNavigationCacheMetadata: InitialNavigationCacheMetadata | undefined;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        const value = requestCacheLife;
+        requestCacheLife = null;
+        return value;
+      },
+      isPrerender: true,
+      isProduction: false,
+      loadSsrHandler: async () => ({
+        async handleSsr(
+          rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: {
+            sideStream?: ReadableStream<Uint8Array>;
+            capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
+            getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
+          },
+        ) {
+          const stream = options?.sideStream ?? rscStream;
+          const capturedRscData = new Response(stream).arrayBuffer();
+          if (options?.capturedRscDataRef) {
+            options.capturedRscDataRef.value = capturedRscData;
+          }
+
+          // The real RSC embed transform finalizes its navigation footer as
+          // soon as this capture drains. That can happen before handleSsr()
+          // returns and before renderAppPageLifecycle performs its consuming
+          // cacheLife read.
+          await capturedRscData;
+          initialNavigationCacheMetadata = options?.getInitialNavigationCacheMetadata?.();
+
+          return {
+            htmlStream: createStream(["<html>page</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData,
+          };
+        },
+      }),
+      peekRequestCacheLife() {
+        return requestCacheLife;
+      },
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              controller.close();
+              return;
+            }
+            requestCacheLife = { stale: 30, revalidate: 1, expire: 60 };
+            controller.enqueue(new TextEncoder().encode("flight-data"));
+            sent = true;
+          },
+        });
+      },
+      revalidateSeconds: null,
+    });
+
+    expect(initialNavigationCacheMetadata).toEqual({ kind: "static", staleTimeSeconds: 30 });
+    await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
   it("preserves prerender cache metadata for the manifest writer after shaping headers", async () => {

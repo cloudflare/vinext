@@ -16,6 +16,7 @@
  */
 import { parseAst } from "vite";
 import MagicString from "magic-string";
+import { magicStringTransformResult } from "./transform-result.js";
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
 type BindingNode = Extract<ASTNode, { type: string }>;
@@ -310,5 +311,5 @@ export function removeConsoleCalls(
   if (!changed) return null;
   // Emit the MagicString sourcemap rather than dropping it: stripped calls and
   // statements shift positions, so a null map would break client-build debugging.
-  return { code: s.toString(), map: s.generateMap({ hires: "boundary" }) };
+  return magicStringTransformResult(s);
 }

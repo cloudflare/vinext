@@ -255,6 +255,7 @@ type BuildAppPageElementsOptions<
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = BuildAppPageRouteElementOptions<TModule, TErrorModule> & {
   interception?: AppElementsInterception | null;
+  interceptionId?: string | null;
   interceptionContext?: string | null;
   isRscRequest?: boolean;
   mountedSlotIds?: ReadonlySet<string> | null;
@@ -634,6 +635,7 @@ function createAppPageSlotBindings<
   ) => AppPageSlotOverride<TModule> | undefined,
   options: {
     interception: AppElementsInterception | null;
+    interceptionId: string | null;
     routeId: string;
     routePath: string;
   },
@@ -664,8 +666,15 @@ function createAppPageSlotBindings<
           ? options.interception.targetRouteId
           : AppElementsWire.encodeRouteId(options.routePath, null)
         : null;
+    const isInterceptedSlot = options.interception?.slotId === slotId;
     bindings.push({
       ...(activeRouteId !== null ? { activeRouteId } : {}),
+      ...(isInterceptedSlot && options.interceptionId !== null
+        ? { interceptionId: options.interceptionId }
+        : {}),
+      ...(isInterceptedSlot
+        ? { interceptionSourceMatchedUrl: options.interception!.sourceMatchedUrl }
+        : {}),
       ownerLayoutId,
       slotId,
       state,
@@ -925,6 +934,7 @@ export function buildAppPageElements<
     resolveSlotOverride,
     {
       interception,
+      interceptionId: options.interceptionId ?? null,
       routeId,
       routePath: options.routePath,
     },

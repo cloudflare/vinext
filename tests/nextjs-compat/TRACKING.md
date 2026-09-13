@@ -1141,10 +1141,9 @@ tests are either entirely new coverage or complementary to existing integration/
 | 1-9   | `isrCacheKey()`: pages/app prefix, root, trailing slash, nested, hash for long paths, deterministic hashing, different hashes | PASS   |       |
 | 10-11 | `buildPagesCacheValue()`: structure, status field                                                                             | PASS   |       |
 | 12-14 | `buildAppPageCacheValue()`: structure, rscData, status                                                                        | PASS   |       |
-| 15-18 | `setRevalidateDuration`/`getRevalidateDuration`: store/retrieve, unknown key, overwrite, zero                                 | PASS   |       |
-| 19-23 | `triggerBackgroundRegeneration()`: calls render, deduplicates, allows after completion, handles errors, independent keys      | PASS   |       |
+| 15-19 | `triggerBackgroundRegeneration()`: calls render, deduplicates, allows after completion, handles errors, independent keys      | PASS   |       |
 
-**Result: 23/23 pass**
+**Result: 19/19 pass**
 
 ### P5-8: Error boundary digest classification ✅
 

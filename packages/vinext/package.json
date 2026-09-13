@@ -1,7 +1,8 @@
 {
   "name": "vinext",
-  "version": "1.0.0-beta.4",
+  "version": "1.0.0-beta.9",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
+  "homepage": "https://vinext.dev/",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -20,6 +21,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
     },
     "./cache": {
       "types": "./dist/cache.d.ts",
@@ -63,6 +68,18 @@
       "types": "./dist/server/fetch-handler.d.ts",
       "import": "./dist/server/fetch-handler.js"
     },
+    "./server/multi-stage": {
+      "types": "./dist/server/multi-stage.d.ts",
+      "import": "./dist/server/multi-stage.js"
+    },
+    "./server/request-stage": {
+      "types": "./dist/server/request-stage.d.ts",
+      "import": "./dist/server/request-stage.js"
+    },
+    "./server/response-stage": {
+      "types": "./dist/server/response-stage.d.ts",
+      "import": "./dist/server/response-stage.js"
+    },
     "./server/app-router-entry": {
       "types": "./dist/server/app-router-entry.d.ts",
       "import": "./dist/server/app-router-entry.js"
@@ -83,6 +100,10 @@
       "types": "./dist/server/app-page-cache.d.ts",
       "import": "./dist/server/app-page-cache.js"
     },
+    "./internal/server/app-rsc-cache-busting": {
+      "types": "./dist/server/app-rsc-cache-busting.d.ts",
+      "import": "./dist/server/app-rsc-cache-busting.js"
+    },
     "./internal/server/prerender-manifest": {
       "types": "./dist/server/prerender-manifest.d.ts",
       "import": "./dist/server/prerender-manifest.js"
@@ -90,6 +111,10 @@
     "./internal/server/pregenerated-concrete-paths": {
       "types": "./dist/server/pregenerated-concrete-paths.d.ts",
       "import": "./dist/server/pregenerated-concrete-paths.js"
+    },
+    "./internal/server/cacheability-manifest": {
+      "types": "./dist/server/cacheability-manifest.d.ts",
+      "import": "./dist/server/cacheability-manifest.js"
     },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
@@ -126,6 +151,10 @@
     "./server/app-rsc-handler": {
       "types": "./dist/server/app-rsc-handler.d.ts",
       "import": "./dist/server/app-rsc-handler.js"
+    },
+    "./server/app-rsc-combined-handler": {
+      "types": "./dist/server/app-rsc-combined-handler.d.ts",
+      "import": "./dist/server/app-rsc-combined-handler.js"
     },
     "./config/config-matchers": {
       "types": "./dist/config/config-matchers.d.ts",
@@ -173,7 +202,6 @@
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
     "@vinext/types": "workspace:^",
-    "image-size": "catalog:",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
     "vite-plugin-commonjs": "catalog:",
@@ -186,6 +214,7 @@
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
+    "image-size": "catalog:",
     "pathslash": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "vite": "catalog:",
@@ -194,7 +223,7 @@
   "peerDependencies": {
     "@mdx-js/rollup": "^3.0.0",
     "@vitejs/plugin-react": "^5.1.4 || ^6.0.0",
-    "@vitejs/plugin-rsc": "^0.5.26",
+    "@vitejs/plugin-rsc": "^0.5.34",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-server-dom-webpack": "^19.2.6",

@@ -1,40 +1,35 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { expect, test } from "../fixtures";
+import {
+  FIXTURE_HOOK_TIMEOUT_MS,
+  startFixtureDevServer,
+  stopFixtureDevServer,
+  type FixtureDevServer,
+} from "../../fixture-dev-server.js";
 
 const FIXTURE_DIR = `${process.cwd()}/tests/e2e/cloudflare-workers/fixture`;
 const BASE_URL = "http://localhost:4192";
 
-let server: ChildProcess;
-
-async function waitForServer(): Promise<void> {
-  for (let attempt = 0; attempt < 120; attempt++) {
-    if (server.exitCode !== null) {
-      throw new Error(`pure App Worker exited with code ${server.exitCode}`);
-    }
-    try {
-      const response = await fetch(`${BASE_URL}/dynamic-preload`);
-      if (response.ok) return;
-    } catch {}
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  throw new Error("Timed out waiting for pure App Worker");
-}
+let server: FixtureDevServer;
 
 test.describe("Cloudflare Workers dynamic preloads", () => {
-  test.beforeAll(async () => {
-    server = spawn(
-      "created_node_modules=0; if ! test -e node_modules && ! test -L node_modules; then ln -s ../../../../examples/app-router-cloudflare/node_modules node_modules; created_node_modules=1; fi; trap 'if test \"$created_node_modules\" = 1; then rm node_modules; fi' EXIT; npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4192",
-      {
-        cwd: FIXTURE_DIR,
-        shell: true,
-        stdio: "inherit",
+  test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
+    testInfo.setTimeout(FIXTURE_HOOK_TIMEOUT_MS);
+    server = await startFixtureDevServer({
+      name: "pure App Worker",
+      root: FIXTURE_DIR,
+      port: 4192,
+      command: {
+        bin: "sh",
+        args: [
+          "-c",
+          "created_node_modules=0; if ! test -e node_modules && ! test -L node_modules; then ln -s ../../../../examples/app-router-cloudflare/node_modules node_modules; created_node_modules=1; fi; trap 'if test \"$created_node_modules\" = 1; then rm node_modules; fi' EXIT; npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4192",
+        ],
       },
-    );
-    await waitForServer();
+    });
   });
 
   test.afterAll(() => {
-    server.kill();
+    stopFixtureDevServer(server?.process);
   });
 
   test("preloads dynamic assets with the CSP nonce in a pure App Worker", async ({
@@ -53,10 +48,14 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
     );
 
     const dynamicScriptPreloads = page.locator(
-      'link[rel="preload"][as="script"][fetchpriority="low"]',
+      'link[rel="modulepreload"][as="script"][fetchpriority="low"]',
     );
     await expect(dynamicScriptPreloads).not.toHaveCount(0);
+    await expect(page.locator('link[rel="preload"][as="script"][fetchpriority="low"]')).toHaveCount(
+      0,
+    );
     for (const preload of await dynamicScriptPreloads.all()) {
+      expect(await preload.getAttribute("crossorigin")).toBe("");
       expect(await preload.evaluate((element) => (element as HTMLLinkElement).nonce)).toBe(
         "vinext-test-nonce",
       );
@@ -66,5 +65,28 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
     await expect(page.locator('[data-testid="dynamic-count"]')).toHaveText("Dynamic count: 1");
 
     void consoleErrors;
+  });
+
+  test("preserves request.cf in App Router route handlers without ISR caching", async ({
+    request,
+  }) => {
+    for (const marker of ["first", "second"]) {
+      const response = await request.get(`${BASE_URL}/api/request-cf?marker=${marker}`);
+
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({
+        marker,
+        clonedMarker: marker,
+      });
+    }
+
+    const forceStaticResponse = await request.get(
+      `${BASE_URL}/api/request-cf-force-static?marker=hidden`,
+    );
+    expect(forceStaticResponse.status()).toBe(200);
+    expect(await forceStaticResponse.json()).toEqual({
+      hidesCfAfterDelete: true,
+      hidesCfAfterLock: true,
+    });
   });
 });

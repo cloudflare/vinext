@@ -125,6 +125,7 @@ describe("App prerender endpoint helpers", () => {
     );
 
     expect(response?.status).toBe(404);
+    expect(response?.headers.get("cache-control")).toBe("no-store");
     await expect(response?.text()).resolves.toBe("This page could not be found");
   });
 
@@ -148,6 +149,7 @@ describe("App prerender endpoint helpers", () => {
 
     expect(generateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
     expect(response?.status).toBe(200);
+    expect(response?.headers.get("cache-control")).toBe("no-store");
     await expect(response?.json()).resolves.toEqual([{ category: "docs", slug: "hello" }]);
   });
 
@@ -229,7 +231,7 @@ describe("App prerender endpoint helpers", () => {
     });
   });
 
-  it("returns JSON null when the requested prerender function is absent", async () => {
+  it("returns no content when the requested prerender function is absent", async () => {
     const staticParamsResponse = await handleAppPrerenderEndpoint(
       new Request("http://localhost/__vinext/prerender/static-params?pattern=/missing"),
       {
@@ -248,13 +250,28 @@ describe("App prerender endpoint helpers", () => {
       },
     );
 
-    expect(staticParamsResponse?.status).toBe(200);
-    await expect(staticParamsResponse?.text()).resolves.toBe("null");
-    expect(pagesResponse?.status).toBe(200);
-    await expect(pagesResponse?.text()).resolves.toBe("null");
+    expect(staticParamsResponse?.status).toBe(204);
+    expect(staticParamsResponse?.headers.get("cache-control")).toBe("no-store");
+    await expect(staticParamsResponse?.text()).resolves.toBe("");
+    expect(pagesResponse?.status).toBe(204);
+    await expect(pagesResponse?.text()).resolves.toBe("");
   });
 
-  it("returns JSON null when the Pages Router loader returns a non-route shape", async () => {
+  it("returns no content when a lazy App route resolves without a generator", async () => {
+    const response = await handleAppPrerenderEndpoint(
+      new Request("http://localhost/__vinext/prerender/static-params?pattern=/dynamic/:slug"),
+      {
+        isPrerenderEnabled: () => true,
+        pathname: "/__vinext/prerender/static-params",
+        staticParamsMap: { "/dynamic/:slug": async () => null },
+      },
+    );
+
+    expect(response?.status).toBe(204);
+    await expect(response?.text()).resolves.toBe("");
+  });
+
+  it("returns no content when the Pages Router loader returns a non-route shape", async () => {
     const response = await handleAppPrerenderEndpoint(
       new Request("http://localhost/__vinext/prerender/pages-static-paths?pattern=/missing"),
       {
@@ -265,8 +282,8 @@ describe("App prerender endpoint helpers", () => {
       },
     );
 
-    expect(response?.status).toBe(200);
-    await expect(response?.text()).resolves.toBe("null");
+    expect(response?.status).toBe(204);
+    await expect(response?.text()).resolves.toBe("");
   });
 
   it("returns explicit endpoint errors for missing query fields and thrown user functions", async () => {
@@ -292,6 +309,7 @@ describe("App prerender endpoint helpers", () => {
     );
 
     expect(missingPatternResponse?.status).toBe(400);
+    expect(missingPatternResponse?.headers.get("cache-control")).toBe("no-store");
     await expect(missingPatternResponse?.text()).resolves.toBe("missing pattern");
     expect(thrownResponse?.status).toBe(500);
     await expect(thrownResponse?.json()).resolves.toEqual({ error: "Error: boom" });

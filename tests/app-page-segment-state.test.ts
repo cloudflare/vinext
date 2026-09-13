@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  resolveAppPageLeafSegmentStateKey,
+  canonicalizeAppPageParams,
   resolveAppPagePatternStateKey,
   resolveAppPageRouteStateKey,
   resolveAppPageSegmentStateKey,
@@ -37,15 +37,6 @@ describe("app page segment state keys", () => {
     ).toBe("slug|launch|d");
   });
 
-  it("keeps the leaf segment helper scoped to the active local segment", () => {
-    expect(
-      resolveAppPageLeafSegmentStateKey(["(marketing)", "blog", "[slug]"], {
-        slug: "launch",
-      }),
-    ).toBe("slug|launch|d");
-    expect(resolveAppPageLeafSegmentStateKey(["(marketing)"], {})).toBe("");
-  });
-
   it("uses the full visible segment-state path for route-wide reset keys", () => {
     expect(
       resolveAppPageRouteStateKey(["(marketing)", "blog", "[slug]"], {
@@ -79,6 +70,16 @@ describe("app page segment state keys", () => {
         parts: [],
       }),
     ).toBe("parts||oc");
+
+    const first = { parts: ["a/b", "c"] };
+    const second = { parts: ["a", "b/c"] };
+    canonicalizeAppPageParams(first);
+    canonicalizeAppPageParams(second);
+    expect(first).toEqual({ parts: ["a%2Fb", "c"] });
+    expect(second).toEqual({ parts: ["a", "b%2Fc"] });
+    expect(resolveAppPageRouteStateKey(["docs", "[...parts]"], first)).not.toBe(
+      resolveAppPageRouteStateKey(["docs", "[...parts]"], second),
+    );
   });
 
   it("canonicalizes interception pattern params with their full target path", () => {

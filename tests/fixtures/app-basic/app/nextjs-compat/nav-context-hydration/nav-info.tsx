@@ -6,12 +6,12 @@ import { usePathname, useSearchParams } from "next/navigation";
  * "use client" component for the nav-context-hydration regression fixture.
  *
  * Renders usePathname() and useSearchParams() during SSR so the test can
- * assert the SSR-rendered values match the __VINEXT_RSC_NAV__ payload that
+ * assert the SSR-rendered values match the navigation bootstrap payload that
  * the browser entry restores before hydration.
  *
- * The fix under test: __VINEXT_RSC_NAV__ is embedded in <head> as a script
- * tag so that useSyncExternalStore's getServerSnapshot returns the same
- * pathname/searchParams that were rendered on the server, preventing React
+ * The fix under test: navigation state is embedded in <head> as part of the
+ * runtime bootstrap so useSyncExternalStore's getServerSnapshot returns the
+ * same pathname/searchParams that were rendered on the server, preventing React
  * hydration mismatch error #418.
  *
  * Without the fix, getServerSnapshot falls back to "/" and empty search

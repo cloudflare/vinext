@@ -394,24 +394,18 @@ type UseCacheGuardContext = {
   invalidDynamicUsageError?: unknown;
 };
 
-type CacheScopeStorage = {
-  getStore: () => unknown;
-};
-
-function _getGlobalCacheScopeStorage(key: symbol): CacheScopeStorage | null {
+function _getGlobalCacheScopeStore(key: symbol): unknown {
   const value = Reflect.get(globalThis, key);
   if (!value || typeof value !== "object") return null;
 
   const getStore = Reflect.get(value, "getStore");
   if (typeof getStore !== "function") return null;
 
-  return {
-    getStore: () => getStore.call(value),
-  };
+  return getStore.call(value);
 }
 
 function _getUseCacheGuardContext(): UseCacheGuardContext | null {
-  const store = _getGlobalCacheScopeStorage(_USE_CACHE_ALS_KEY)?.getStore();
+  const store = _getGlobalCacheScopeStore(_USE_CACHE_ALS_KEY);
   if (!store || typeof store !== "object") return null;
   return store;
 }
@@ -426,7 +420,12 @@ function _isInsidePublicUseCache(): boolean {
 }
 
 function _isInsideUnstableCache(): boolean {
-  return _getGlobalCacheScopeStorage(_UNSTABLE_CACHE_ALS_KEY)?.getStore() === true;
+  return _getGlobalCacheScopeStore(_UNSTABLE_CACHE_ALS_KEY) === true;
+}
+
+/** Whether work is executing inside a cache boundary that owns its reuse. */
+export function isInsideAnyCacheScope(): boolean {
+  return _getUseCacheGuardContext() !== null || _isInsideUnstableCache();
 }
 
 /**
@@ -555,6 +554,57 @@ export function getHeadersAccessPhase(): HeadersAccessPhase {
  */
 export function getHeadersContext(): HeadersContext | null {
   return _getState().headersContext;
+}
+
+/** Serialize the effective request-cookie view, including middleware Set-Cookie overlays. */
+export function getEffectiveRequestCookieHeader(): string | null {
+  const context = getHeadersContext();
+  if (!context || context.cookies.size === 0) return null;
+  return [...context.cookies]
+    .map(([name, value]) => `${name}=${encodeURIComponent(value)}`)
+    .join("; ");
+}
+
+export function hasEffectiveRequestCookieChanges(cookieHeader: string | null): boolean {
+  const effective = getHeadersContext()?.cookies;
+  if (!effective) return false;
+  const original = parseEdgeRequestCookieHeader(cookieHeader ?? "");
+  if (effective.size !== original.size) return true;
+  for (const [name, value] of effective) {
+    if (original.get(name) !== value) return true;
+  }
+  return false;
+}
+
+/**
+ * Replace only the request-cookie view for the active request scope.
+ *
+ * Middleware Set-Cookie mutations are visible through `cookies()` during the
+ * same request in Next.js, but they do not rewrite the raw `Cookie` value
+ * returned by `headers()`. The staged App renderer uses this seam to restore
+ * that split view without changing the request Headers object.
+ */
+export function applyEffectiveRequestCookieHeader(cookieHeader: string): void {
+  const state = _getState();
+  const context = state.headersContext;
+  if (!context) return;
+  rebuildCookiesFromHeader(context, cookieHeader);
+  context.readonlyCookies = undefined;
+  context.mutableCookies = undefined;
+}
+
+/** Restore a middleware draft-mode transition inside a staged render scope. */
+export function restoreDraftModeTransition(cookieHeader: string): void {
+  const state = _getState();
+  const context = state.headersContext;
+  if (!context) return;
+  const entry = setCookieNameValue(cookieHeader);
+  if (!entry || entry.name !== DRAFT_MODE_COOKIE) return;
+  context.cookies.set(entry.name, entry.value);
+  context.readonlyCookies = undefined;
+  context.mutableCookies = undefined;
+  context.draftModeEnabled = entry.value === validateDraftModeSecret(context.draftModeSecret ?? "");
+  state.draftModeCookieHeader = cookieHeader;
 }
 
 export function setHeadersContext(ctx: HeadersContext | null): void {

@@ -4,8 +4,8 @@
  * Used by hand-written example worker entries and by the generated Pages
  * Router worker entry through "vinext/server/worker-utils".
  */
-import { VINEXT_STATIC_FILE_HEADER } from "./headers.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
+import { readStaticFileSignal } from "./static-file-signal.js";
 
 /**
  * Merge middleware/config headers into a response.
@@ -42,7 +42,9 @@ export function finalizeMissingStaticAssetResponse(
 ): Response {
   if (!missingBuildAsset || response.status !== 404) return response;
   cancelResponseBody(response);
-  return notFoundStaticAssetResponse();
+  // The missing asset still ran through middleware before route handling.
+  // Replace the rendered 404 body without dropping headers middleware added.
+  return notFoundStaticAssetResponse(response.headers);
 }
 
 function buildHeaderRecord(
@@ -125,7 +127,7 @@ export async function resolveStaticAssetSignal(
     fetchAsset(path: string): Promise<Response>;
   },
 ): Promise<Response | null> {
-  const signal = signalResponse.headers.get(VINEXT_STATIC_FILE_HEADER);
+  const signal = readStaticFileSignal(signalResponse);
   if (!signal) return null;
 
   let assetPath = "/";
@@ -136,10 +138,10 @@ export async function resolveStaticAssetSignal(
   }
 
   const extraHeaders = buildHeaderRecord(signalResponse, [
-    VINEXT_STATIC_FILE_HEADER,
     "content-encoding",
     "content-length",
     "content-type",
+    "transfer-encoding",
   ]);
 
   cancelResponseBody(signalResponse);

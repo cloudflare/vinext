@@ -3,6 +3,11 @@ import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
 export {
   findVinextCacheConfigInPlugins,
+  isConfiguredCdnResponsePolicyHeader,
+  hasBuildIdentityResponseHeader,
+  hasUncachedRequestRouting,
+  hasVerbatimResponseVary,
+  requiresRouteCacheabilityProbeManifest,
   loadVinextCacheConfigFromViteConfig,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,

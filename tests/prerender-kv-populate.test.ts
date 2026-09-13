@@ -97,6 +97,58 @@ describe("buildPrerenderKVPairs", () => {
     });
   });
 
+  it("builds an APP_ROUTE KV entry for prerendered metadata", () => {
+    writePrerenderFixture(
+      {
+        buildId: "metadata-build",
+        routes: [
+          {
+            route: "/products/sitemap.xml",
+            path: "/products/sitemap/hello%20world.xml",
+            routeSegments: ["products"],
+            status: "rendered",
+            revalidate: 900,
+            expire: 3600,
+            stale: 300,
+            router: "metadata",
+            headers: {
+              "content-type": "application/xml",
+              "x-vinext-metadata-route-cache": "1",
+            },
+            responseStatus: 200,
+            tags: ["metadata-user-tag"],
+          },
+        ],
+      },
+      { "products/sitemap/hello%20world.xml.route": "<urlset>buildtime</urlset>" },
+    );
+
+    const { routeCount, pairs } = buildPrerenderKVPairs(serverDir, { now: 1_000 });
+    expect(routeCount).toBe(1);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].key).toBe("cache:app:metadata-build:/products/sitemap/hello world.xml:route");
+    expect(pairs[0].expiration_ttl).toBe(30 * 24 * 3600);
+    expect(JSON.parse(pairs[0].value)).toMatchObject({
+      value: {
+        kind: "APP_ROUTE",
+        body: Buffer.from("<urlset>buildtime</urlset>").toString("base64"),
+        headers: {
+          "content-type": "application/xml",
+          "x-vinext-metadata-route-cache": "1",
+        },
+        status: 200,
+      },
+      cacheControl: { revalidate: 900, expire: 3600, stale: 300 },
+      tags: expect.arrayContaining([
+        "/products/sitemap/hello world.xml",
+        "_N_T_/products/sitemap/hello world.xml",
+        "_N_T_/layout",
+        "_N_T_/products/route",
+        "metadata-user-tag",
+      ]),
+    });
+  });
+
   it("omits KV expiration for static prerendered routes and skips zero revalidate", () => {
     writePrerenderFixture(
       {

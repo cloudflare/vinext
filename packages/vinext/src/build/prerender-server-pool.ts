@@ -18,6 +18,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "pathslash";
 import { fileURLToPath } from "node:url";
+import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKER_ENTRY = path.join(__dirname, "prerender-server-entry.js");
@@ -125,8 +126,9 @@ function isWorkerTransportError(err: unknown): boolean {
 export async function startPrerenderServerPool(
   outDir: string,
   size: number,
-  entry = WORKER_ENTRY,
+  options: { entry?: string; rscEntryPath?: string; serverDir?: string } = {},
 ): Promise<PrerenderServerPool> {
+  const { entry = WORKER_ENTRY, rscEntryPath, serverDir } = options;
   const children: ChildProcess[] = [];
   let shuttingDown = false;
   let crash: { port?: number; code: number | null; signal: NodeJS.Signals | null } | null = null;
@@ -144,7 +146,10 @@ export async function startPrerenderServerPool(
         env: {
           ...process.env,
           VINEXT_PRERENDER: "1",
+          NEXT_PHASE: PHASE_PRODUCTION_BUILD,
           VINEXT_PRERENDER_OUTDIR: outDir,
+          ...(rscEntryPath ? { VINEXT_PRERENDER_RSC_ENTRY_PATH: rscEntryPath } : {}),
+          ...(serverDir ? { VINEXT_PRERENDER_SERVER_DIR: serverDir } : {}),
         },
         // Inherit stdout/stderr so server-side errors surface; keep IPC.
         stdio: ["ignore", "inherit", "inherit", "ipc"],

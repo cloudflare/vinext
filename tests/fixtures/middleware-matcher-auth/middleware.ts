@@ -33,5 +33,24 @@ export const config = {
       ],
       missing: [{ type: "query", key: "blocked", value: "1" }],
     },
+    {
+      // Matches the negative-lookahead shape recommended in the Next.js docs.
+      // The header keeps this broad matcher isolated to the encoded-path auth
+      // regression without changing the fixture's existing public routes.
+      source: "/((?!api|_next/static|_next/image|favicon.ico).*)",
+      has: [{ type: "header", key: "x-encoded-path-auth", value: "1" }],
+    },
+    {
+      source: "/orders/:id(\\d+)",
+      has: [{ type: "header", key: "x-encoded-delimiter-auth", value: "1" }],
+    },
+    {
+      source: "/xx/admin/dash/board",
+      has: [{ type: "header", key: "x-encoded-delimiter-auth", value: "1" }],
+    },
+    {
+      source: "/billing/invoices/current/q3",
+      has: [{ type: "header", key: "x-encoded-delimiter-auth", value: "1" }],
+    },
   ],
 };

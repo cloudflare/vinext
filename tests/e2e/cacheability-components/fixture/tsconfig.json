@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "paths": {
+      "vinext/shims/cache-handler": ["../../../../packages/vinext/src/shims/cache-handler.ts"]
+    }
+  },
+  "include": ["app"]
+}

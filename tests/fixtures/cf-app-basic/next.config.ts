@@ -7,6 +7,10 @@ const nextConfig: NextConfig = {
         source: "/about",
         headers: [{ key: "X-Page-Header", value: "about-page" }],
       },
+      {
+        source: "/pages-about",
+        headers: [{ key: "Cache-Control", value: "private, no-store" }],
+      },
     ];
   },
   async redirects() {

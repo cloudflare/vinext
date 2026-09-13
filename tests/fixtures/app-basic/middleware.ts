@@ -17,6 +17,19 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  if (pathname === "/internal-header-secret.txt") {
+    return new Response("blocked by middleware", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
+  if (pathname === "/static-file-header-collision.txt") {
+    const response = NextResponse.next();
+    response.headers.set("x-vinext-static-file", "/internal-header-secret.txt");
+    return response;
+  }
+
   // Ported from Next.js: test/e2e/app-dir/app/middleware.js
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app/middleware.js
   // The source also exists in pages/, so the client must honor the middleware
@@ -89,6 +102,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Add headers to prove middleware ran and NextRequest APIs worked
   response.headers.set("x-mw-pathname", pathname);
   response.headers.set("x-mw-ran", "true");
+
+  if (pathname === "/config-link-preload" && request.nextUrl.searchParams.has("middleware-link")) {
+    response.headers.set("Link", '</middleware.css>; rel="preload"; as="style"');
+    return response;
+  }
 
   if (sessionToken) {
     response.headers.set("x-mw-has-session", "true");
@@ -249,6 +267,22 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     headers.set(
       "cookie",
       existing ? existing + "; mw-pages-fallback-user=1" : "mw-pages-fallback-user=1",
+    );
+    return NextResponse.next({ request: { headers } });
+  }
+
+  // Gate the hybrid Pages -> App API fallback rewrite on a request cookie
+  // injected by middleware. The Pages dev pipeline owns this middleware pass,
+  // so its App handoff must carry both the resolved target and request headers.
+  if (
+    pathname.startsWith("/api/pages-fallback-to-app/") &&
+    request.nextUrl.searchParams.has("mw-auth")
+  ) {
+    const headers = new Headers(request.headers);
+    const existing = headers.get("cookie") ?? "";
+    headers.set(
+      "cookie",
+      existing ? existing + "; mw-api-fallback-user=1" : "mw-api-fallback-user=1",
     );
     return NextResponse.next({ request: { headers } });
   }
@@ -425,6 +459,8 @@ export const config = {
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
     "/middleware-blocked",
+    "/internal-header-secret.txt",
+    "/static-file-header-collision.txt",
     "/admin",
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
@@ -437,6 +473,7 @@ export const config = {
     "/api/header-override-delete",
     "/api/header-override-stray",
     "/api/pages-og",
+    "/api/pages-fallback-to-app/:path*",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",
     "/revalidate-test",
@@ -447,6 +484,7 @@ export const config = {
     "/nextjs-compat/action-forward-loop",
     "/nextjs-compat/action-node-mw",
     "/metadata-icons-stream/:path*",
+    "/config-link-preload",
     "/use-client-page-pathname/:path*",
     "/rsc-fetch-redirect-src",
     "/rsc-fetch-error-target",

@@ -11,6 +11,9 @@ export default function HomePage() {
             <Link href="/about">About (App Router)</Link>
           </li>
           <li>
+            <Link href="/search-params?value=navigated">Search params (App Router)</Link>
+          </li>
+          <li>
             <Link href="/blog/hello-world">Blog: hello-world</Link>
           </li>
           <li>
@@ -21,6 +24,9 @@ export default function HomePage() {
           </li>
           <li>
             <Link href="/products/widget">Product: widget (Pages Router)</Link>
+          </li>
+          <li>
+            <Link href="/missing-static-artifact">Missing route</Link>
           </li>
         </ul>
       </nav>

@@ -1,15 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
+const emitPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
+const realWranglerUrl = pathToFileURL(
+  createRequire(path.join(process.cwd(), "examples/app-router-cloudflare/package.json")).resolve(
+    "wrangler",
+  ),
+).href;
 
 vi.mock("vinext/internal/build/run-prerender", () => ({
   runPrerender: runPrerenderMock,
 }));
+
+vi.mock("vinext/internal/build/prerender-paths", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../packages/vinext/src/build/prerender-paths.js")>();
+  return {
+    ...actual,
+    emitPrerenderPathManifest: async (
+      options: Parameters<typeof actual.emitPrerenderPathManifest>[0],
+    ) => {
+      emitPrerenderPathManifestMock(options);
+      return actual.emitPrerenderPathManifest(options);
+    },
+  };
+});
 
 vi.mock("vinext/internal/utils/project", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../packages/vinext/src/utils/project.js")>();
@@ -28,13 +50,15 @@ vi.mock("node:child_process", async (importOriginal) => {
         return "Uploaded version 22222222-2222-4222-8222-222222222222\n";
       }
       if (args.includes("status")) {
-        return JSON.stringify({ versions: [] });
+        return JSON.stringify({
+          versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+        });
+      }
+      if (args.includes("triggers")) {
+        return "Triggers deployed\n  https://app.example.workers.dev\n";
       }
       if (args.includes("deploy")) {
         return "Deployed version\n";
-      }
-      if (args.includes("triggers")) {
-        return "Triggers deployed\n";
       }
       throw new Error(`Unexpected Wrangler args: ${args.join(" ")}`);
     }),
@@ -85,7 +109,7 @@ function writeProject(prerenderConfig: string, cacheConfig?: string): void {
   );
   writeFile(
     "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
   );
   writeFile(
     "vite.config.ts",
@@ -118,7 +142,7 @@ function writeProjectWithInlineNextConfig(nextConfig: string): void {
   );
   writeFile(
     "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
   );
   writeFile(
     "vite.config.ts",
@@ -147,18 +171,27 @@ function writeApiOnlyProject(): void {
     "export function cloudflare() { return { name: 'test-cloudflare-plugin' }; }\n",
   );
   writeFile(
+    "node_modules/wrangler/package.json",
+    JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
+  );
+  writeFile(
+    "node_modules/wrangler/index.js",
+    `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+  );
+  writeFile(
     "wrangler.jsonc",
-    '{"main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"},"version_metadata":{"binding":"CF_VERSION_METADATA"}}\n',
   );
   writeFile(
     "vite.config.ts",
     [
       'import { defineConfig } from "vite";',
       'import { cloudflare } from "@cloudflare/vite-plugin";',
+      'import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";',
       'import vinext from "../packages/vinext/src/index";',
       "",
       "export default defineConfig({",
-      "  plugins: [vinext(), cloudflare()],",
+      "  plugins: [vinext({ cache: { cdn: { adapter: cdnAdapter().adapter } } }), cloudflare()],",
       "});",
       "",
     ].join("\n"),
@@ -171,12 +204,28 @@ describe("deploy prerender config wiring", () => {
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(process.cwd(), ".tmp-vinext-deploy-prerender-"));
     runPrerenderMock.mockClear();
+    emitPrerenderPathManifestMock.mockClear();
     vi.mocked(execFileSync).mockClear();
     vi.mocked(spawn).mockClear();
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("rejects a missing CDN version binding before uploading", async () => {
+    writeApiOnlyProject();
+    writeFile(
+      "wrangler.jsonc",
+      '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true })).rejects.toThrow(
+      "does not declare version_metadata",
+    );
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it("runs prerender during deploy when vinext config uses the true shorthand", async () => {
@@ -211,6 +260,29 @@ describe("deploy prerender config wiring", () => {
         root: tmpDir,
         concurrency: undefined,
         nextConfig: expect.any(Object),
+      }),
+    );
+  });
+
+  it("passes configured build output roots to deploy prerendering", async () => {
+    writeProject("true");
+    const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+    fs.writeFileSync(
+      viteConfigPath,
+      fs
+        .readFileSync(viteConfigPath, "utf-8")
+        .replace(
+          "vinext({ prerender: true",
+          'vinext({ rscOutDir: "build/application", prerender: true',
+        ),
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        routeRootConfig: expect.objectContaining({ rscOutDir: "build/application" }),
       }),
     );
   });
@@ -273,7 +345,12 @@ describe("deploy prerender config wiring", () => {
     );
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
+    await deploy({
+      root: tmpDir,
+      skipBuild: true,
+      warmCdnCache: true,
+      dangerouslyPromoteOnCdnWarmError: true,
+    });
 
     expect(fs.readFileSync(path.join(tmpDir, "config-load-count.txt"), "utf8")).toBe("1");
     expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(true);
@@ -398,18 +475,72 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
 
+    expect(runPrerenderMock).not.toHaveBeenCalled();
+
     expect(
       JSON.parse(
         fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
       ),
     ).toEqual({
+      appPaths: [],
       buildId: "build-a",
       trailingSlash: false,
       paths: [],
     });
-    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
-      expect.stringContaining("wrangler"),
-      "deploy",
-    ]);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+        const wranglerArgs = args as string[];
+        return wranglerArgs.includes("versions") && wranglerArgs.includes("upload");
+      }),
+    ).toBe(true);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+        const wranglerArgs = args as string[];
+        return wranglerArgs.includes("versions") && wranglerArgs.includes("deploy");
+      }),
+    ).toBe(true);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("keeps default discovery retries deadline-bounded and forwards explicit limits", async () => {
+    writeApiOnlyProject();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
+
+    expect(emitPrerenderPathManifestMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        pathDiscoveryTarget: expect.objectContaining({ retries: undefined }),
+      }),
+    );
+
+    emitPrerenderPathManifestMock.mockClear();
+    await deploy({
+      root: tmpDir,
+      skipBuild: true,
+      warmCdnCache: true,
+      warmCdnDiscoveryRetries: 7,
+    });
+
+    expect(emitPrerenderPathManifestMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        pathDiscoveryTarget: expect.objectContaining({ retries: 7 }),
+      }),
+    );
+  });
+
+  it("rejects no-promote warmup when discovery finds no requests", async () => {
+    writeApiOnlyProject();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deploy({
+        root: tmpDir,
+        skipBuild: true,
+        warmCdnCache: true,
+        warmCdnPromote: false,
+      }),
+    ).rejects.toThrow("no build-discovered requests were found to warm");
+    expect(spawn).not.toHaveBeenCalled();
   });
 });

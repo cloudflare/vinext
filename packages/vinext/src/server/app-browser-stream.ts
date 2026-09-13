@@ -3,7 +3,6 @@ import {
   ensureNavigationRuntimeRscBootstrap,
   getNavigationRuntime,
   type NavigationRuntimeRscBootstrap,
-  type NavigationRuntimeSnapshot,
 } from "../client/navigation-runtime.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
 import { decodeRscEmbeddedChunk, type RscEmbeddedChunk } from "./app-rsc-embedded-chunks.js";
@@ -13,7 +12,6 @@ type VinextBrowserGlobals = {
   __VINEXT_RSC_DONE__?: boolean;
   [RSC_FORM_STATE_GLOBAL]?: ReactFormState;
   __VINEXT_RSC_PARAMS__?: Record<string, string | string[]>;
-  __VINEXT_RSC_NAV__?: NavigationRuntimeSnapshot;
 };
 
 export function getVinextBrowserGlobal(): typeof globalThis & VinextBrowserGlobals {

@@ -4,7 +4,10 @@
   "type": "module",
   "exports": {
     ".": "./package-entry.ts",
-    "./locales/*": ["./messages/*", "./messages/*.json"]
+    "./locales/*": [
+      "./messages/*",
+      "./messages/*.json"
+    ]
   },
   "dependencies": {
     "react": "catalog:",

@@ -44,7 +44,7 @@ export function createWasmModuleImportPlugin(): Plugin {
         // font-patch transform could slip past this guard and reintroduce
         // the double-shipped-WASM bug.
         const importerPath = importer
-          ? (importer.startsWith("\0") ? importer.slice(1) : importer).split("?")[0]
+          ? stripViteModuleQuery(importer.startsWith("\0") ? importer.slice(1) : importer)
           : "";
         if (importerPath.includes("@vercel/og")) return null;
 

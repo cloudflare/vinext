@@ -59,6 +59,7 @@ import {
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
+import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -281,6 +282,7 @@ function createRoute(overrides: Partial<TestRoute> = {}): TestRoute {
 
 type CreateDispatchOptionsOverrides = {
   buildPageElement?: DispatchOptions["buildPageElement"];
+  bypassInterceptionContextCache?: DispatchOptions["bypassInterceptionContextCache"];
   cleanPathname?: string;
   clearRequestContext?: DispatchOptions["clearRequestContext"];
   dynamicConfig?: DispatchOptions["dynamicConfig"];
@@ -317,6 +319,7 @@ type CreateDispatchOptionsOverrides = {
   request?: Request;
   revalidateSeconds?: number | null;
   resolveRouteFetchCacheMode?: DispatchOptions["resolveRouteFetchCacheMode"];
+  resolveRouteRevalidateSeconds?: DispatchOptions["resolveRouteRevalidateSeconds"];
   resolveRouteDynamicConfig?: DispatchOptions["resolveRouteDynamicConfig"];
   route?: TestRoute;
   scheduleBackgroundRegeneration?: DispatchOptions["scheduleBackgroundRegeneration"];
@@ -343,6 +346,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     }));
   const options: DispatchOptions = {
     buildPageElement,
+    bypassInterceptionContextCache: overrides.bypassInterceptionContextCache,
     cleanPathname: overrides.cleanPathname ?? "/posts/hello",
     clearRequestContext,
     createRscOnErrorHandler() {
@@ -413,6 +417,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     request: overrides.request ?? new Request("https://example.test/posts/hello"),
     revalidateSeconds: overrides.revalidateSeconds ?? null,
     resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
+    resolveRouteRevalidateSeconds: overrides.resolveRouteRevalidateSeconds,
     resolveRouteDynamicConfig: overrides.resolveRouteDynamicConfig,
     route,
     runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
@@ -792,6 +797,49 @@ describe("app page dispatch", () => {
     expect(cachePolicy.cacheControl.revalidate).toBe(60);
     expect(cachePolicy.tags).toEqual(expect.arrayContaining(["_N_T_/posts/hello"]));
     expect(cachePolicy.cacheControl.expire).toBeUndefined();
+  });
+
+  it("writes HTML-captured RSC data under the plain key when interception context is absent", async () => {
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const { options } = createDispatchOptions({
+      cleanPathname: "/photos/123",
+      interceptionContext: null,
+      isProduction: true,
+      isrRscKey(pathname, mountedSlotsHeader, _renderMode, interceptionContext) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${interceptionContext ?? "none"}`;
+      },
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("direct-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>direct</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+    });
+
+    const response = await runWithExecutionContext(executionContext, () =>
+      dispatchAppPage(options),
+    );
+    await response.text();
+    await Promise.all(waitUntilPromises.splice(0));
+
+    const writtenKeys = isrSet.mock.calls.map(([key]) => key);
+    expect(writtenKeys).toHaveLength(2);
+    expect(writtenKeys).toEqual(
+      expect.arrayContaining(["html:/photos/123", "rsc:/photos/123:none:none"]),
+    );
   });
 
   it("does not reuse queryless HTML when the page reads searchParams", async () => {
@@ -1951,6 +1999,27 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>static cached</html>");
   });
 
+  it("treats an empty generateStaticParams route as an on-demand static page", async () => {
+    // Ported from Next.js build behavior: a defined empty prerenderedRoutes
+    // array still marks the route as SSG with the default revalidate=false.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+    const { options } = createDispatchOptions({
+      generateStaticParams: async () => [],
+      isProduction: true,
+      route: createRoute({ isDynamic: true }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    // Ordinary streaming misses remain private until the response completes;
+    // the CDN-admission E2E covers the manifest-backed public header.
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(options.isrSet).toHaveBeenCalled();
+  });
+
   it("returns method policy responses instead of rendering unsupported methods", async () => {
     const { options } = createDispatchOptions({
       async buildPageElement() {
@@ -2392,6 +2461,9 @@ describe("app page dispatch", () => {
     const resolveRouteFetchCacheMode = vi.fn((route: TestRoute) =>
       route === sourceRoute ? "force-cache" : null,
     );
+    const resolveRouteRevalidateSeconds = vi.fn((route: TestRoute) =>
+      route === sourceRoute ? 30 : null,
+    );
     const { options } = createDispatchOptions({
       buildPageElement,
       cleanPathname: "/photos/123",
@@ -2436,6 +2508,7 @@ describe("app page dispatch", () => {
       mountedSlotsHeader: "slot:modal:/feed",
       revalidateSeconds: 60,
       resolveRouteFetchCacheMode,
+      resolveRouteRevalidateSeconds,
       route: currentRoute,
       scheduleBackgroundRegeneration,
       searchParams: new URLSearchParams("tab=popular"),
@@ -2449,6 +2522,7 @@ describe("app page dispatch", () => {
 
     const [routeArg, paramsArg, optsArg, searchParamsArg] = buildPageElement.mock.calls[0];
     expect(resolveRouteFetchCacheMode).toHaveBeenCalledWith(sourceRoute);
+    expect(resolveRouteRevalidateSeconds).toHaveBeenCalledWith(sourceRoute);
     expect(routeArg).toBe(sourceRoute);
     expect(paramsArg).toEqual({});
     expect(searchParamsArg.toString()).toBe("tab=popular");
@@ -2461,6 +2535,95 @@ describe("app page dispatch", () => {
     });
     expect(options.isrGet).not.toHaveBeenCalled();
     expect(options.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("bypasses shared caches for an unverified interception context", async () => {
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(
+        buildCachedAppPageValue(
+          "",
+          new TextEncoder().encode("cached-flight").buffer,
+          undefined,
+          buildQueryInvariantRenderObservation(),
+        ),
+      ),
+    );
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const waitUntilPromises: Promise<unknown>[] = [];
+    const executionContext = {
+      waitUntil(promise) {
+        waitUntilPromises.push(promise);
+      },
+    } satisfies ExecutionContextLike;
+    const { options } = createDispatchOptions({
+      bypassInterceptionContextCache: true,
+      interceptionContext: "/attacker-selected",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet,
+      isrSet,
+      renderToReadableStream: () => createStream(["fresh-flight"]),
+      revalidateSeconds: 60,
+    });
+
+    const response = await runWithExecutionContext(executionContext, () =>
+      dispatchAppPage(options),
+    );
+
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("fresh-flight");
+    await Promise.all(waitUntilPromises.splice(0));
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("uses a verified interception id in the persistent RSC cache key", async () => {
+    const interceptionId = "interception:slot:modal:/feed:/feed->/photos/:id";
+    const isrRscKey = vi.fn(
+      (
+        pathname: string,
+        _mountedSlotsHeader?: string | null,
+        _renderMode?: DispatchOptions["renderMode"],
+        _interceptionContext?: string | null,
+        selector?: string | null,
+      ) => `rsc:${pathname}:${selector ?? "none"}`,
+    );
+    const isrGet = vi.fn(async () =>
+      buildISRCacheEntry(
+        buildCachedAppPageValue(
+          "",
+          new TextEncoder().encode("stale-flight").buffer,
+          undefined,
+          buildQueryInvariantRenderObservation(),
+        ),
+      ),
+    );
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const request = new Request("https://example.test/photos/123", {
+      headers: {
+        [VINEXT_INTERCEPTION_ID_HEADER]: interceptionId,
+      },
+    });
+    const { options } = createDispatchOptions({
+      cleanPathname: "/photos/123",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet,
+      isrRscKey,
+      isrSet,
+      request,
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+    await expect(response.text()).resolves.toBe("stale-flight");
+
+    expect(response.headers.get("cache-control")).not.toContain("no-store");
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(isrRscKey).toHaveBeenCalledWith("/photos/123", null, undefined, null, interceptionId);
+    expect(isrGet).toHaveBeenCalledWith(`rsc:/photos/123:${interceptionId}`);
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("resolves the intercept source route's dynamic config for force-dynamic fetch defaults", async () => {
@@ -2804,6 +2967,53 @@ describe("app page dispatch", () => {
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(isrSet).toHaveBeenCalled();
     expect(afterRan).toBe(true);
+  });
+
+  it("regenerates stale HTML-captured RSC data under the plain key without interception context", async () => {
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      cleanPathname: "/photos/123",
+      interceptionContext: null,
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale direct</html>"), true),
+      ),
+      isrRscKey(pathname, mountedSlotsHeader, _renderMode, interceptionContext) {
+        return `rsc:${pathname}:${mountedSlotsHeader ?? "none"}:${interceptionContext ?? "none"}`;
+      },
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("regenerated-direct-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>regenerated direct</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await expect(response.text()).resolves.toBe("<html>stale direct</html>");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await scheduledRender();
+
+    const writtenKeys = isrSet.mock.calls.map(([key]) => key);
+    expect(writtenKeys).toHaveLength(2);
+    expect(writtenKeys).toEqual(
+      expect.arrayContaining(["html:/photos/123", "rsc:/photos/123:none:none"]),
+    );
   });
 
   it.each(["page", "metadata"] as const)(

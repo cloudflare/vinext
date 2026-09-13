@@ -44,11 +44,11 @@ export function buildPagesReadinessNextData(options: {
     options.appComponent.getInitialProps !== options.appComponent.origGetInitialProps;
   const autoExport = !hasPageGssp && !hasPageGsp && !hasPageGip && !hasAppGip;
   return {
-    gssp: hasPageGssp,
+    gssp: hasPageGssp ? true : undefined,
     gsp: hasPageGsp ? true : undefined,
-    gip: hasPageGip,
-    appGip: hasAppGip,
-    autoExport,
+    gip: hasPageGip ? true : undefined,
+    appGip: hasAppGip ? true : undefined,
+    autoExport: autoExport ? true : undefined,
     nextExport: autoExport ? true : undefined,
     __vinext: { hasRewrites: options.hasRewrites },
   };

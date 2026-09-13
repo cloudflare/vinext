@@ -347,9 +347,12 @@ test.describe("Next.js compat: App Router autoscroll", () => {
     await expect(page.locator("#current-page")).toHaveText("2");
     await expectScroll(page, { x: 0, y: 0 });
 
-    await page.locator("#pages").scrollIntoViewIfNeeded();
-    const noScrollY = await page.evaluate(() => Math.round(window.scrollY));
-    expect(noScrollY).toBeGreaterThan(0);
+    // Keep this away from the document's maximum scroll position. The loading
+    // shell can briefly make the document shorter during the navigation, and
+    // browsers permanently clamp a scroll position that exceeds that
+    // intermediate maximum even after the final content restores the height.
+    const noScrollY = 1_000;
+    await scrollTo(page, { x: 0, y: noScrollY });
 
     await push(page, "/nextjs-compat/router-autoscroll/loading-scroll?page=3&skipSleep=1", {
       scroll: false,

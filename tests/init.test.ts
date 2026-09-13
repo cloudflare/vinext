@@ -540,6 +540,7 @@ describe("init — basic functionality", () => {
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
       cache: { enabled: true },
       main: "vinext/server/fetch-handler",
+      version_metadata: { binding: "CF_VERSION_METADATA" },
     });
   });
 

@@ -186,19 +186,13 @@ function getDynamicErrorBoundary() {
 // Detect server vs client
 const isServer = typeof window === "undefined";
 
-// Legacy preload queue — kept for backward compatibility with Pages Router
-// which calls flushPreloads() before rendering. The App Router uses React.lazy
-// + Suspense instead, so this queue is no longer populated.
-const preloadQueue: Promise<void>[] = [];
-
 /**
- * Wait for all pending dynamic() preloads to resolve, then clear the queue.
- * Called by the Pages Router SSR handler before rendering.
- * No-op for the App Router path which uses React.lazy + Suspense.
+ * Retained for the Pages Router render pipeline, which calls this before
+ * rendering. Dynamic imports now use React.lazy + Suspense, so there is no
+ * separate preload work to await.
  */
 export function flushPreloads(): Promise<void[]> {
-  const pending = preloadQueue.splice(0);
-  return Promise.all(pending);
+  return Promise.resolve([]);
 }
 
 function dynamic<P = {}>(

@@ -17,6 +17,9 @@ import Head, {
   _applyHeadPropsToElement,
   _syncClientHead,
   _clientHeadChildren,
+  _removeClientHeadInstance,
+  _updateClientHeadInstance,
+  isEqualHeadNode,
 } from "../packages/vinext/src/shims/head.js";
 
 // ─── SSR rendering (mirrors Next.js test/unit/next-head-rendering.test.ts) ──
@@ -735,11 +738,13 @@ describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
   class FakeElement {
     attributes = new Map<string, string>();
     innerHTML = "";
+    nonce = "";
     textContent = "";
     parentNode: FakeHead | null = null;
     constructor(public readonly tagName: string) {}
     setAttribute(name: string, value: string): void {
       this.attributes.set(name, value);
+      if (name === "nonce") this.nonce = value;
     }
     getAttribute(name: string): string | null {
       return this.attributes.has(name) ? this.attributes.get(name)! : null;
@@ -755,6 +760,14 @@ describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
         if (other.attributes.get(k) !== v) return false;
       }
       return this.textContent === other.textContent && this.innerHTML === other.innerHTML;
+    }
+    cloneNode(): FakeElement {
+      const clone = new FakeElement(this.tagName);
+      clone.attributes = new Map(this.attributes);
+      clone.innerHTML = this.innerHTML;
+      clone.nonce = this.nonce;
+      clone.textContent = this.textContent;
+      return clone;
     }
   }
 
@@ -798,12 +811,31 @@ describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
     const createElement = (tag: string) => new FakeElement(tag);
     const fakeDocument = { createElement, head };
     const prevDocument = (globalThis as Record<string, unknown>).document;
+    const prevHTMLElement = (globalThis as Record<string, unknown>).HTMLElement;
+    Object.defineProperty(fakeDocument, "title", {
+      configurable: true,
+      get() {
+        return (
+          head.children.find((child) => child.tagName.toLowerCase() === "title")?.textContent ?? ""
+        );
+      },
+      set(value: string) {
+        let title = head.children.find((child) => child.tagName.toLowerCase() === "title");
+        if (!title) {
+          title = createElement("title");
+          head.appendChild(title);
+        }
+        title.textContent = value;
+      },
+    });
     (globalThis as Record<string, unknown>).document = fakeDocument;
+    (globalThis as Record<string, unknown>).HTMLElement = FakeElement;
     return {
       head,
       createElement,
       restore: () => {
         (globalThis as Record<string, unknown>).document = prevDocument;
+        (globalThis as Record<string, unknown>).HTMLElement = prevHTMLElement;
       },
     };
   }
@@ -858,6 +890,110 @@ describe("Head client sync (defaults + order, issue #1569 / #1677)", () => {
       expect(metas.filter((el) => el.getAttribute("charset") === "utf-8")).toHaveLength(1);
       expect(metas.filter((el) => el.getAttribute("name") === "viewport")).toHaveLength(1);
     } finally {
+      restore();
+    }
+  });
+
+  it("reuses nonce-bearing nodes when CSP hides the live nonce attribute", () => {
+    // Ported from Next.js: test/unit/is-equal-node.unit.test.ts
+    const { createElement, restore } = installFakeDocument();
+    try {
+      const oldTag = createElement("script");
+      oldTag.setAttribute("nonce", "abc123");
+      // Simulate Chromium/Firefox after insertion under a matching CSP.
+      oldTag.setAttribute("nonce", "");
+      oldTag.nonce = "abc123";
+      const newTag = createElement("script");
+      newTag.setAttribute("nonce", "abc123");
+
+      expect(isEqualHeadNode(oldTag as unknown as Element, newTag as unknown as Element)).toBe(
+        true,
+      );
+      newTag.setAttribute("nonce", "different");
+      expect(isEqualHeadNode(oldTag as unknown as Element, newTag as unknown as Element)).toBe(
+        false,
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("updates title text without moving or replacing the SSR title node", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      const server = seedServerHead(head, createElement);
+      _clientHeadChildren.set(Symbol("test"), React.createElement("title", null, "Updated title"));
+
+      _syncClientHead();
+
+      expect(head.children[2]).toBe(server.title);
+      expect(server.title.textContent).toBe("Updated title");
+      expect(head.children.filter((child) => child.tagName.toLowerCase() === "title")).toHaveLength(
+        1,
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it("inserts changed tag types in Next.js head-manager order", () => {
+    const { head, createElement, restore } = installFakeDocument();
+    try {
+      seedServerHead(head, createElement);
+      _clientHeadChildren.set(
+        Symbol("test"),
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement("script", { src: "/new.js" }),
+          React.createElement("meta", { name: "new-meta", content: "1" }),
+        ),
+      );
+
+      _syncClientHead();
+
+      const metaIndex = head.children.findIndex((tag) => tag.getAttribute("name") === "new-meta");
+      const scriptIndex = head.children.findIndex((tag) => tag.getAttribute("src") === "/new.js");
+      expect(metaIndex).toBeGreaterThan(-1);
+      expect(scriptIndex).toBeGreaterThan(metaIndex);
+    } finally {
+      restore();
+    }
+  });
+
+  it("batches replacement instances and makes the most recently updated Head win", async () => {
+    const { head, restore } = installFakeDocument();
+    const first = Symbol("first");
+    const second = Symbol("second");
+    try {
+      _updateClientHeadInstance(
+        first,
+        React.createElement("meta", { name: "shared", content: "first" }),
+      );
+      await Promise.resolve();
+      const firstNode = head.children.find((tag) => tag.getAttribute("name") === "shared");
+      expect(firstNode).toBeDefined();
+
+      // Removing and replacing one instance in the same effects flush must not
+      // delete/recreate an identical DOM node between registrations.
+      _removeClientHeadInstance(first);
+      _updateClientHeadInstance(
+        second,
+        React.createElement("meta", { name: "shared", content: "first" }),
+      );
+      await Promise.resolve();
+      expect(head.children.find((tag) => tag.getAttribute("name") === "shared")).toBe(firstNode);
+
+      _updateClientHeadInstance(
+        first,
+        React.createElement("meta", { name: "shared", content: "updated-first" }),
+      );
+      await Promise.resolve();
+      expect(
+        head.children.find((tag) => tag.getAttribute("name") === "shared")?.getAttribute("content"),
+      ).toBe("updated-first");
+    } finally {
+      _clientHeadChildren.clear();
       restore();
     }
   });

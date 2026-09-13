@@ -1,0 +1,30 @@
+---
+"@vinext/cloudflare": minor
+"vinext": minor
+---
+
+- fix(cloudflare): finalize CDN version metadata output (#3137)
+- fix(cloudflare): support explicit CDN warm targets (#3138)
+- fix(cloudflare): harden post-deploy readiness checks (#3136)
+- fix(cloudflare): restore web CDN warmup deploy (#3135)
+- fix(cloudflare): classify CDN cacheability per concrete route (#3115)
+- feat(cache): classify and warm static Route Handlers (#3113)
+- feat(cache): probe Pages Router cacheability (#3098)
+- fix(cache): certify staged cache fills before promotion (#3094)
+- feat(cache): deploy probed manifests in two stages (#3093)
+- fix(cache): gate CDN admission on probed routes (#3092)
+- fix(cloudflare): discover prewarm paths from staged worker (#3090)
+- fix(cloudflare): verify Worker version IDs during CDN warmup (#3072)
+- fix(build): validate CDN warm discovery and deploy inputs (#3057)
+- fix(cloudflare): complete warmup response and promotion contracts (#3046)
+- fix(cloudflare): harden canonical RSC warmup end to end (#3040)
+- feat(cloudflare): configure warmup promotion delay (#3017)
+- feat(cloudflare): allow warmup without promotion (#3016)
+- fix(cloudflare): default CDN warmup concurrency to 25 (#3015)
+- feat(cloudflare): prewarm canonical ISR RSC requests (#3002)
+- fix(cache): preserve Cache Components ownership during probing (#3103)
+- feat(cache): probe App Page cacheability on staged Workers (#3091)
+- fix(app-router): support soft navigation in static exports (#3112)
+- fix(build): support trailing-slash static exports (#3081)
+- fix(app-router): validate interception context identity (#3078)
+- fix(app): authenticate static file signals (#3077)

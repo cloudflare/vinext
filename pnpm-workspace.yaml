@@ -16,7 +16,7 @@ packages:
 
 catalog:
   "@cloudflare/kumo": ^2.2.0
-  "@cloudflare/vite-plugin": ^1.31.0
+  "@cloudflare/vite-plugin": ^1.50.0
   "@cloudflare/workers-types": ^4.0.0
   "@heroicons/react": 2.2.0
   "@mdx-js/loader": 3.1.0
@@ -40,11 +40,12 @@ catalog:
   "@types/react-dom": ^19.2.3
   "@unpic/react": ^1.0.2
   "@vercel/og": ^0.8.6
-  "@vitejs/plugin-react": ^6.0.1
+  "@vitejs/plugin-react": ^6.1.0
+  oxc-transform-react: ^0.145.0
   "@next/mdx": 16.2.7
   recma-codehike: 0.0.1
   remark-codehike: 0.0.1
-  "@vitejs/plugin-rsc": ^0.5.27
+  "@vitejs/plugin-rsc": ^0.5.34
   "@vitest/coverage-istanbul": 4.1.10
   better-auth: ^1.5.6
   better-sqlite3: ^12.0.0
@@ -92,7 +93,7 @@ catalog:
   vite-plus: 0.2.6
   vitest: 4.1.10
   web-vitals: ^4.2.4
-  wrangler: ^4.80.0
+  wrangler: ^4.118.0
   zod: 3.24.3
   knip: ^6.16.0
 overrides:

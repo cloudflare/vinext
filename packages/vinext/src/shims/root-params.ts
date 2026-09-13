@@ -1,4 +1,5 @@
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { _recordUseCacheRootParamRead } from "./cache-request-state.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -71,7 +72,13 @@ export function getRootParam(name: string): Promise<string | string[] | undefine
       `Route ${usage.routePattern} used \`import('next/root-params').${name}()\` inside a Route Handler. Support for this API in Route Handlers is planned for a future version of Next.js.`,
     );
   }
+  _recordUseCacheRootParamRead(name);
   return Promise.resolve(getState().rootParams?.[name]);
+}
+
+/** @internal Current route root params for `"use cache"` key derivation. */
+export function getCurrentRootParams(): RootParams | null {
+  return getState().rootParams;
 }
 
 export function runWithRootParamsUsage<T>(

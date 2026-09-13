@@ -8,6 +8,7 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import type { RootParams } from "vinext/shims/root-params";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
@@ -139,8 +140,14 @@ export type AppPageSsrHandler = {
       pprFallbackShellSignal?: AbortSignal;
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
+      /** Render is producing a static/prerendered HTML artifact. */
+      isStaticGeneration?: boolean;
+      /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
+      isForceStatic?: boolean;
       /** Dev-only: original server error to surface in the browser overlay. */
       initialDevServerError?: unknown;
+      /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
+      mirrorNextFlight?: boolean;
       /** When true, an SSR-phase-only shell render error resolves to the
        *  default `__next_error__` error-document shell (with the original
        *  flight payload and bootstrap) instead of rejecting. See handleSsr. */
@@ -183,10 +190,16 @@ type RenderAppPageHtmlStreamOptions = {
   pprFallbackShellSignal?: AbortSignal;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
+  /** Render is producing a static/prerendered HTML artifact. */
+  isStaticGeneration?: boolean;
+  /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
+  isForceStatic?: boolean;
   /** Override the default shell-error recovery decision passed to handleSsr. */
   fallbackToErrorDocumentOnShellError?: boolean;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
+  /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
+  mirrorNextFlight?: boolean;
   /** True when the app supplies a custom global-error.tsx. Disables the
    *  default error-document shell fallback so SSR shell errors keep driving
    *  the server-rendered global-error boundary re-render. */
@@ -253,7 +266,10 @@ export async function renderAppPageHtmlStream(
     capturedRscDataRef: options.capturedRscDataRef,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
     waitForAllReady: options.waitForAllReady,
+    isStaticGeneration: options.isStaticGeneration,
+    isForceStatic: options.isForceStatic,
     initialDevServerError: options.initialDevServerError,
+    mirrorNextFlight: options.mirrorNextFlight,
     // Only when the caller affirmatively knows there is no custom
     // global-error.tsx; undefined (unknown) keeps reject semantics.
     fallbackToErrorDocumentOnShellError:
@@ -276,7 +292,7 @@ export async function renderAppPageHtmlStream(
 export async function renderAppPageHtmlResponse(
   options: RenderAppPageHtmlResponseOptions,
 ): Promise<Response> {
-  const { htmlStream } = await renderAppPageHtmlStream(options);
+  const { htmlStream, linkHeader: reactLinkHeader } = await renderAppPageHtmlStream(options);
 
   // Defer clearRequestContext() until the stream is fully consumed by the HTTP
   // layer. Calling it synchronously here would race the lazy RSC/SSR pipeline:
@@ -293,16 +309,22 @@ export async function renderAppPageHtmlResponse(
 
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
-  if (options.fontLinkHeader) {
-    headers.set("Link", options.fontLinkHeader);
+  mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
+  const frameworkLinkHeader = buildAppPageLinkHeader(
+    reactLinkHeader,
+    options.fontLinkHeader,
+    options.reactMaxHeadersLength,
+  );
+  if (frameworkLinkHeader) {
+    headers.append("Link", frameworkLinkHeader);
   }
 
-  mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
-
-  return new Response(safeStream, {
+  const response = new Response(safeStream, {
     status: options.status,
     headers,
   });
+  markFrameworkLinkHeaders(response.headers, frameworkLinkHeader);
+  return response;
 }
 
 export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(

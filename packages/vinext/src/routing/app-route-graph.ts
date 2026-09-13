@@ -431,7 +431,7 @@ function createAppRouteGraphSiblingInterceptSlotId(sourcePattern: string): strin
   return createAppRouteGraphSlotId(SIBLING_INTERCEPT_SLOT_NAME, sourcePattern);
 }
 
-function createAppRouteGraphInterceptionId(
+export function createAppRouteGraphInterceptionId(
   slotId: string,
   sourcePattern: string,
   targetPattern: string,

@@ -111,6 +111,25 @@ function getPackageName(id: string): string | null {
  */
 export function createClientManualChunks(shimsDir: string, preserveRouteBoundaries = false) {
   return function clientManualChunks(id: string): string | undefined {
+    // Check the shims prefix before the node_modules branch: for an installed
+    // copy the shims live under <app>/node_modules/vinext/dist/shims/, so the
+    // node_modules early return would otherwise swallow them and the "vinext"
+    // chunk would never form, leaving the shims to graph-based splitting that
+    // can place them in a static import cycle with the browser entry chunk.
+    //
+    // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
+    // id can carry native backslashes on Windows, so slash it before matching.
+    const slashedId = toSlash(id);
+    if (slashedId.startsWith(shimsDir)) {
+      if (preserveRouteBoundaries) {
+        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
+        const extensionIndex = relativeId.lastIndexOf(".");
+        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
+      }
+      return "vinext";
+    }
+
     // React framework — always loaded, shared across all pages.
     // Isolating React into its own chunk is the single highest-value
     // split: it's ~130KB compressed, loaded on every page, and its
@@ -129,9 +148,6 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
         // example that does). Split those entrypoints into their own chunk
         // so the server renderer loads lazily, only on routes that use it,
         // instead of weighing down first paint on every page.
-        // Windows ids carry backslashes, so slash-normalize before matching
-        // the "react-dom/" separator (same convention as getPackageName).
-        const slashedId = toSlash(id);
         const sub = slashedId.slice(slashedId.lastIndexOf("react-dom/") + "react-dom/".length);
         if (
           sub.startsWith("server.") ||
@@ -150,19 +166,6 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
       // shared chunks (typically 5-15) based on actual import patterns,
       // with good compression efficiency.
       return undefined;
-    }
-
-    // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
-    // id can carry native backslashes on Windows, so slash it before matching.
-    const slashedId = toSlash(id);
-    if (slashedId.startsWith(shimsDir)) {
-      if (preserveRouteBoundaries) {
-        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
-        const extensionIndex = relativeId.lastIndexOf(".");
-        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
-        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
-      }
-      return "vinext";
     }
 
     return undefined;
@@ -234,6 +237,23 @@ export function isRscFrameworkModule(id: string): boolean {
 }
 
 /**
+ * Keep virtual entry ids out of emitted RSC chunk filenames.
+ *
+ * Rolldown's entries-aware chunk names can contain the `\\0` virtual-id marker,
+ * which is not a portable module-specifier or filesystem name. Preserve every
+ * other character and remove both the printable and actual-NUL forms.
+ */
+export function sanitizeRscChunkFileName(name: string): string {
+  const withoutVirtualMarkers = name.replaceAll("\\0", "");
+  const invalid = new Set(["<", ">", ":", '"', "/", "\\", "|", "?", "*"]);
+  let sanitized = "";
+  for (const character of withoutVirtualMarkers) {
+    sanitized += character.charCodeAt(0) <= 31 || invalid.has(character) ? "_" : character;
+  }
+  return sanitized;
+}
+
+/**
  * Output config that isolates React (and the RSC flight runtime) into a
  * dedicated "framework" chunk in the RSC server build. See
  * {@link RSC_FRAMEWORK_CHUNK_TEST} for the motivation (issue #1549). Framework
@@ -242,6 +262,7 @@ export function isRscFrameworkModule(id: string): boolean {
  */
 export function createRscFrameworkChunkOutputConfig() {
   return {
+    sanitizeFileName: sanitizeRscChunkFileName,
     codeSplitting: {
       groups: [
         {
@@ -283,4 +304,68 @@ export function withBuildBundlerOptions(
   bundlerOptions: VinextBuildBundlerOptions,
 ): Partial<VinextBuildConfig> {
   return { rolldownOptions: bundlerOptions };
+}
+
+type VinextBuildOutput = Exclude<
+  NonNullable<VinextBuildBundlerOptions["output"]>,
+  readonly unknown[]
+>;
+type VinextCodeSplittingConfig = Exclude<NonNullable<VinextBuildOutput["codeSplitting"]>, boolean>;
+type ChunkFileNames = NonNullable<VinextBuildOutput["chunkFileNames"]>;
+type ChunkFileNameFunction = Exclude<ChunkFileNames, string>;
+
+/**
+ * Keep vinext modules partitioned by the stage entries that actually use them.
+ * Without an entry-aware catch-all, Rolldown may merge a small helper shared by
+ * request/response entries into a response-heavy chunk; importing that helper
+ * then evaluates React and renderer code on a request-stage cache hit.
+ */
+export function createMultiStageCodeSplittingConfig(
+  existing: VinextBuildOutput["codeSplitting"],
+): VinextCodeSplittingConfig & { groups: NonNullable<VinextCodeSplittingConfig["groups"]> } {
+  const base = existing && typeof existing === "object" ? existing : {};
+  return {
+    ...base,
+    groups: [
+      {
+        name: "vinext-stage-runtime",
+        test: /(?:^|[/\\])(?:packages[/\\]vinext[/\\]src|(?:packages[/\\]vinext|node_modules[/\\](?:\.pnpm[/\\][^/\\]+[/\\]node_modules[/\\])?vinext)[/\\]dist)[/\\]/,
+        entriesAware: true,
+      },
+      ...(base.groups ?? []),
+    ],
+  };
+}
+
+/**
+ * Keep router stage chunks beside the server entry so their generated
+ * `./vinext-client-assets.js` external continues to resolve. Other chunks keep
+ * the host's existing output pattern (or vinext's server-assets default).
+ */
+export function createMultiStageChunkFileNames(
+  assetsDir: string,
+  existing: VinextBuildOutput["chunkFileNames"],
+): ChunkFileNameFunction {
+  return (chunk) => {
+    const name = sanitizeRscChunkFileName(chunk.name);
+    if (
+      chunk.moduleIds?.some((id) =>
+        /\/server\/app-ssr-entry\.[cm]?[jt]sx?$/.test(toSlash(id.split("?", 1)[0] ?? "")),
+      ) ||
+      [
+        "app-router-entry",
+        "pages-router-entry",
+        "app-response-stage-entry",
+        "pages-request-stage-entry",
+        "pages-response-stage-entry",
+        "virtual_vinext-rsc-entry",
+        "virtual_vinext-response-stage",
+      ].some((entryName) => name.includes(entryName))
+    ) {
+      return `${name}-[hash].js`;
+    }
+    if (typeof existing === "function") return existing({ ...chunk, name });
+    const pattern = existing ?? joinAssetFileNamePattern(assetsDir, "[name]-[hash].js");
+    return pattern.replaceAll("[name]", name);
+  };
 }

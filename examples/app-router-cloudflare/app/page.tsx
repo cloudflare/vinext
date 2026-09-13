@@ -11,6 +11,7 @@ export default function HomePage() {
         <ul>
           <li><a href="/about">About</a></li>
           <li><a href="/action-revalidate">Action revalidation</a></li>
+          <li><a href="/web-worker">Web Worker</a></li>
           <li><a href="/api/hello">API Route</a></li>
         </ul>
       </nav>

@@ -1,0 +1,33 @@
+---
+"@vinext/cloudflare": patch
+"vinext": minor
+---
+
+- fix(prerender): cache use-cache metadata routes (#2848)
+- fix(cache): delegate CDN header cleanup to adapters (#2797)
+- fix(build): support Pages Router ESM externals (#2877)
+- fix(build): preserve server export conditions (#2918)
+- fix(headers): preserve config Link headers alongside React preload links (#2791)
+- fix(pages): keep charset first in custom document heads (#2909)
+- fix(build): bundle image-size in vinext (#2913)
+- fix(app-router): reject unverified Worker prerender params (#2901)
+- fix(font): not emitting 400 as default value when font weight is omitted (#2796)
+- fix(build): define process.browser per environment (#2899)
+- fix(app-router): preserve request.cf in route handlers (#2886)
+- fix(use-cache): allow literal exports from use-cache files (#2906)
+- fix(router): preserve basePath in Pages Router events (#2888)
+- fix(rsc): preserve BOM bytes in embedded Flight chunks (#2905)
+- fix(cache): preserve binary fetch response bodies (#2907)
+- fix(cache): ISR cache should store the framework preload header (#2900)
+- fix(pages): align middleware rewrite navigation (#2891)
+- fix(build): preserve transitive external versions (#2887)
+- fix(app-router): preserve valued RSC queries through routing (#2883)
+- fix(app-router): bail out static search params rendering (#2882)
+- fix(app-router): expose not-found fallback flight payload (#2349)
+- fix(config): preserve native TypeScript dynamic imports (#2353)
+- fix(app-router): prefetch root-param segment trees (#2856)
+- fix(cache): vary use cache entries by root params (#2847)
+- fix(cache): keep encoded dynamic prefetches learning-only (#2866)
+- fix(prerender): expose the production build phase (#2846)
+- fix(app-router): preserve full prefetch stale windows (#2851)
+- feat(use-cache): support callable cached functions with rsc plugin api (#2156)

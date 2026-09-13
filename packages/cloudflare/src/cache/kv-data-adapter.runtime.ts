@@ -66,8 +66,13 @@ type SerializedIncrementalCacheValue =
 
 // Cloudflare KV namespace interface (matches Workers types)
 type KVNamespace = {
-  get(key: string, options?: { type?: string }): Promise<string | null>;
+  get(key: string, options?: { type?: string; cacheTtl?: number }): Promise<string | null>;
   get(key: string, options: { type: "arrayBuffer" }): Promise<ArrayBuffer | null>;
+  /** Bulk read, capped at 100 keys per call. */
+  get(
+    keys: string[],
+    options?: { type?: string; cacheTtl?: number },
+  ): Promise<Map<string, string | null>>;
   put(
     key: string,
     value: string | ArrayBuffer | ReadableStream,
@@ -99,6 +104,12 @@ const PATH_TAG_PREFIX = "_N_T_";
 
 /** Max tag length to prevent KV key abuse. */
 const MAX_TAG_LENGTH = 256;
+
+/** The runtime rejects a lower `cacheTtl` with "Cache TTL must be at least 30". */
+const MIN_KV_CACHE_TTL_SECONDS = 30;
+
+/** Cloudflare caps a bulk `get()` at 100 keys per call. */
+const KV_BULK_GET_LIMIT = 100;
 
 /** Matches a valid base64 string (standard alphabet with optional padding). */
 const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
@@ -184,9 +195,14 @@ export class KVCacheHandler implements CacheHandler {
   private ttlSeconds: number;
 
   /** Local in-memory cache for tag invalidation timestamps. Avoids redundant KV reads. */
-  private _tagCache = new Map<string, { timestamp: number; fetchedAt: number }>();
+  private _tagCache = new Map<string, { timestamp: number; fetchedAt: number; order: number }>();
+  /** Monotonic ordering for concurrent tag-cache fills and local invalidations. */
+  private _tagCacheOrder = 0;
   /** TTL (ms) for local tag cache entries. After this, re-fetch from KV. */
   private _tagCacheTtl: number;
+
+  /** Read options for entry keys only. `undefined` keeps the KV default cacheTtl. */
+  private _entryReadOptions: { cacheTtl: number } | undefined;
 
   constructor(
     kvNamespace: KVNamespace,
@@ -196,6 +212,8 @@ export class KVCacheHandler implements CacheHandler {
       ttlSeconds?: number;
       /** TTL in milliseconds for the local tag cache. Defaults to 5000ms. */
       tagCacheTtlMs?: number;
+      /** KV `cacheTtl` in seconds for entry reads. Off by default, never used for tag markers. */
+      entryCacheTtlSeconds?: number;
     },
   ) {
     this.kv = kvNamespace;
@@ -203,6 +221,11 @@ export class KVCacheHandler implements CacheHandler {
     this.ctx = options?.ctx;
     this.ttlSeconds = options?.ttlSeconds ?? 30 * 24 * 3600;
     this._tagCacheTtl = options?.tagCacheTtlMs ?? 5_000;
+    const entryCacheTtl = options?.entryCacheTtlSeconds;
+    this._entryReadOptions =
+      typeof entryCacheTtl === "number" && Number.isFinite(entryCacheTtl)
+        ? { cacheTtl: Math.max(MIN_KV_CACHE_TTL_SECONDS, Math.floor(entryCacheTtl)) }
+        : undefined;
   }
 
   private _entryKey(key: string): string {
@@ -215,16 +238,34 @@ export class KVCacheHandler implements CacheHandler {
 
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const kvKey = this._entryKey(key);
-    const raw = await this.kv.get(kvKey);
+    const softTags = validUniqueTags(readStringArrayField(_ctx, "softTags"));
+    // Soft tags are known before the entry arrives, so their markers ride the
+    // same hop instead of costing a round trip after it.
+    const entryRead = this._entryReadOptions
+      ? this.kv.get(kvKey, this._entryReadOptions)
+      : this.kv.get(kvKey);
+    let softTagCache = this._tagCache;
+    const softTagPrime = this._primeTagCache(softTags);
+    if (softTags.length > 0) {
+      // A miss read no marker before this change, so a marker failure must not
+      // reject it. Keep the speculative work alive, while a hit still awaits
+      // the original promise below and propagates its failure.
+      const backgroundPrime = softTagPrime.catch(() => {});
+      const ctx = getRequestExecutionContext() ?? this.ctx;
+      if (ctx) ctx.waitUntil(backgroundPrime);
+      else void backgroundPrime;
+    }
+
+    const raw = await entryRead;
     if (!raw) return null;
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      // Corrupted JSON — fire cleanup delete in the background and treat as miss.
+      // Corrupted JSON — clean up when safe and treat as a miss.
       // Using waitUntil ensures the delete isn't killed when the Response is returned.
-      this._deleteInBackground(kvKey);
+      this._deleteEntryReadInBackground(kvKey);
       return null;
     }
 
@@ -232,7 +273,7 @@ export class KVCacheHandler implements CacheHandler {
     const entry = validateCacheEntry(parsed);
     if (!entry) {
       console.error("[vinext] Invalid cache entry shape for key:", key);
-      this._deleteInBackground(kvKey);
+      this._deleteEntryReadInBackground(kvKey);
       return null;
     }
 
@@ -242,23 +283,52 @@ export class KVCacheHandler implements CacheHandler {
       restoredValue = restoreArrayBuffers(entry.value);
       if (!restoredValue) {
         // base64 decode failed — corrupted entry, treat as miss
-        this._deleteInBackground(kvKey);
+        this._deleteEntryReadInBackground(kvKey);
         return null;
       }
     }
 
-    if (await this._hasRevalidatedTag(validUniqueTags(entry.tags), entry.lastModified)) {
-      this._deleteInBackground(kvKey);
+    const entryTags = validUniqueTags(entry.tags);
+
+    // A marker an earlier read already cached settles the entry on its own, so
+    // check before awaiting reads whose failure would otherwise mask it.
+    if (this._hasRevalidatedTag(entryTags, entry.lastModified, true)) {
+      this._deleteEntryReadInBackground(kvKey);
       return null;
     }
 
-    const softTags = validUniqueTags(readStringArrayField(_ctx, "softTags"));
-    if (await this._hasRevalidatedTag(softTags, entry.lastModified)) {
+    await softTagPrime;
+    // resetRequestCache() may have replaced the Map while the first read was
+    // in flight. Prime each newer generation before consulting its markers.
+    while (softTagCache !== this._tagCache) {
+      softTagCache = this._tagCache;
+      await this._primeTagCache(softTags);
+    }
+
+    // The soft-tag batch may have covered an entry tag too, which spares the
+    // second hop. Only the post-prime check trusts an entry past its TTL.
+    let invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified, true);
+    if (!invalidated) {
+      await this._primeTagCache(entryTags);
+      // The entry-tag hop can race a reset too. Re-prime the complete
+      // validation set until one cache generation survives the whole read.
+      while (softTagCache !== this._tagCache) {
+        softTagCache = this._tagCache;
+        await this._primeTagCache([...new Set([...softTags, ...entryTags])]);
+      }
+      invalidated = this._hasRevalidatedTag(entryTags, entry.lastModified);
+    }
+    if (invalidated) {
+      this._deleteEntryReadInBackground(kvKey);
+      return null;
+    }
+
+    if (this._hasRevalidatedTag(softTags, entry.lastModified)) {
       return null;
     }
 
     if (entry.expireAt !== undefined && entry.expireAt !== null && Date.now() > entry.expireAt) {
-      this._deleteInBackground(kvKey);
+      this._deleteEntryReadInBackground(kvKey);
       return null;
     }
 
@@ -288,54 +358,82 @@ export class KVCacheHandler implements CacheHandler {
   }
 
   /**
-   * Check tag invalidation markers for stored tags or read-time soft tags.
-   * Uses a local in-memory cache to avoid redundant KV reads for recently-seen tags.
+   * Load the invalidation markers these tags still need into the local cache.
+   * Tags a recent read already cached cost nothing, so the entry-tag batch only
+   * pays for what the soft-tag batch did not already fetch.
    */
-  private async _hasRevalidatedTag(tags: string[], lastModified: number): Promise<boolean> {
-    if (tags.length === 0) return false;
+  private async _primeTagCache(tags: string[]): Promise<void> {
+    if (tags.length === 0) return;
 
+    // Keep fills on the cache generation they started against. resetRequestCache()
+    // swaps the Map so an older detached fill cannot repopulate the cleared cache.
+    const tagCache = this._tagCache;
     const now = Date.now();
-    const uncachedTags: string[] = [];
+    // Drop expired entries to prevent unbounded Map growth in long-lived isolates.
+    const missing = tags.filter((tag) => {
+      const cached = tagCache.get(tag);
+      if (cached && now - cached.fetchedAt < this._tagCacheTtl) return false;
+      if (cached) tagCache.delete(tag);
+      return true;
+    });
+    if (missing.length === 0) return;
 
-    // First pass: check local cache for each tag.
-    // Delete expired entries to prevent unbounded Map growth in long-lived isolates.
+    const order = ++this._tagCacheOrder;
+    const markers = await this._readTagMarkers(missing.map((tag) => this._tagKey(tag)));
+    for (const tag of missing) {
+      // A revalidateTag() landed while this read was in flight. Its marker is
+      // newer than anything this read can report, so leave it in place. The
+      // order also distinguishes concurrent reads started in the same millisecond.
+      const current = tagCache.get(tag);
+      if (current && current.order >= order) continue;
+      const marker = markers.get(this._tagKey(tag));
+      tagCache.set(tag, { timestamp: marker ? Number(marker) : 0, fetchedAt: now, order });
+    }
+  }
+
+  /**
+   * Read every marker key, one round trip per 100-key chunk.
+   *
+   * Markers never take the entry `cacheTtl`: `revalidateTag()` writes them, so
+   * a longer colo cache would hide a publish from that colo for its span. They
+   * keep KV's own default cacheTtl of 60 s.
+   */
+  private async _readTagMarkers(keys: string[]): Promise<Map<string, string | null>> {
+    if (keys.length === 1) {
+      return new Map([[keys[0], await this.kv.get(keys[0])]]);
+    }
+
+    const chunks: string[][] = [];
+    for (let i = 0; i < keys.length; i += KV_BULK_GET_LIMIT) {
+      chunks.push(keys.slice(i, i + KV_BULK_GET_LIMIT));
+    }
+    const results = await Promise.all(chunks.map((chunk) => this.kv.get(chunk)));
+
+    const markers = new Map<string, string | null>();
+    for (const result of results) {
+      for (const [key, value] of result) {
+        markers.set(key, value);
+      }
+    }
+    return markers;
+  }
+
+  /**
+   * Report whether any tag has an invalidation marker at or after `lastModified`.
+   * Call `_primeTagCache` for the same tags first — a tag with no cache entry
+   * counts as never invalidated. Pass `requireFresh` to call it before a prime,
+   * so an entry past `tagCacheTtlMs` does not answer for a tag it never re-read.
+   */
+  private _hasRevalidatedTag(tags: string[], lastModified: number, requireFresh = false): boolean {
+    const now = requireFresh ? Date.now() : 0;
     for (const tag of tags) {
       const cached = this._tagCache.get(tag);
-      if (cached && now - cached.fetchedAt < this._tagCacheTtl) {
-        // Local cache hit — check invalidation inline
-        if (Number.isNaN(cached.timestamp) || cached.timestamp >= lastModified) {
-          return true;
-        }
-      } else {
-        // Expired or absent — evict stale entry and re-fetch from KV
-        if (cached) this._tagCache.delete(tag);
-        uncachedTags.push(tag);
+      if (!cached || cached.timestamp === 0) continue;
+      if (requireFresh && now - cached.fetchedAt >= this._tagCacheTtl) continue;
+      if (Number.isNaN(cached.timestamp) || cached.timestamp >= lastModified) {
+        return true;
       }
     }
-
-    // Second pass: fetch uncached tags from KV in parallel.
-    // Populate the local cache for ALL fetched tags before checking invalidation,
-    // so subsequent get() calls benefit from the already-fetched results.
-    if (uncachedTags.length > 0) {
-      const tagResults = await Promise.all(
-        uncachedTags.map((tag) => this.kv.get(this._tagKey(tag))),
-      );
-
-      for (let i = 0; i < uncachedTags.length; i++) {
-        const tagTime = tagResults[i];
-        const tagTimestamp = tagTime ? Number(tagTime) : 0;
-        this._tagCache.set(uncachedTags[i], { timestamp: tagTimestamp, fetchedAt: now });
-      }
-
-      for (const tag of uncachedTags) {
-        const cached = this._tagCache.get(tag);
-        if (!cached || cached.timestamp === 0) continue;
-        if (Number.isNaN(cached.timestamp) || cached.timestamp >= lastModified) {
-          return true;
-        }
-      }
-    }
-
     return false;
   }
 
@@ -446,10 +544,11 @@ export class KVCacheHandler implements CacheHandler {
         }),
       ),
     );
+    const order = ++this._tagCacheOrder;
     // Update local tag cache immediately so invalidations are reflected
     // without waiting for the TTL to expire
     for (const tag of validTags) {
-      this._tagCache.set(tag, { timestamp: now, fetchedAt: now });
+      this._tagCache.set(tag, { timestamp: now, fetchedAt: now, order });
     }
   }
 
@@ -513,7 +612,16 @@ export class KVCacheHandler implements CacheHandler {
    * fresh KVCacheHandler per request or invoke this method explicitly.
    */
   resetRequestCache(): void {
-    this._tagCache.clear();
+    this._tagCache = new Map();
+  }
+
+  /**
+   * Clean up a bad entry only when this read cannot be an explicitly cached
+   * older version of the shared KV value. KV has no conditional delete, so a
+   * cached read must remain a non-destructive miss.
+   */
+  private _deleteEntryReadInBackground(kvKey: string): void {
+    if (!this._entryReadOptions) this._deleteInBackground(kvKey);
   }
 
   /**
@@ -709,6 +817,7 @@ const createKvDataCacheAdapter = ({
     appPrefix: options?.appPrefix,
     ttlSeconds: options?.ttlSeconds,
     tagCacheTtlMs: options?.tagCacheTtlMs,
+    entryCacheTtlSeconds: options?.entryCacheTtlSeconds,
   });
 };
 

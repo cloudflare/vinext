@@ -17,6 +17,7 @@ export function formatDeployHelp(): string {
     --config <path>          Wrangler config path (default: wrangler.jsonc/json/toml)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
+    --verbose                Print raw output from internal Wrangler commands
     --prerender-all          Pre-render discovered routes after building (future
                              releases will auto-populate the remote cache)
     --prerender-concurrency <count>
@@ -24,11 +25,44 @@ export function formatDeployHelp(): string {
     --experimental-warm-cdn-cache
                              Upload a Worker version, warm build-discovered paths
                              through the production URL, then promote it (experimental)
+    --warm-cdn-target <origin>
+                             HTTPS origin to use for discovery, probing, and warming
+                             (overrides URLs inferred from Wrangler output)
     --warm-cdn-concurrency <count>
-                             Maximum number of CDN warmup requests in parallel
-    --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 5000)
-    --warm-cdn-retries <n>   Retries for transient CDN warmup failures (default: 1)
-    --warm-cdn-strict        Fail deploy when any CDN warmup request fails
+                             Maximum number of CDN warmup requests in parallel (default: 25)
+    --warm-cdn-timeout <ms>  Per-request CDN warmup timeout (default: 10000)
+    --warm-cdn-retries <n>   Retries per failed CDN warmup request (default: 1;
+                             staged-version propagation default: 60)
+    --warm-cdn-discovery-timeout <ms>
+                             Total staged path-discovery deadline (default: 120000)
+    --warm-cdn-discovery-retries <n>
+                             Optional staged path-discovery retry limit
+                             (default: derived from the discovery deadline)
+    --warm-cdn-probe-timeout <ms>
+                             Abort when cacheability probing makes no progress for
+                             this duration (default: 120000)
+    --warm-cdn-probe-retries <n>
+                             Cacheability-probe retries (default: 2)
+    --warm-cdn-certify      With --experimental-warm-cdn-cache, re-request warmed
+                             entries using headers only and require every planned
+                             entry to be reusable before promotion
+    --warm-cdn-readiness-timeout <ms>
+                             Explicit total staged-readiness deadline (default:
+                             120000)
+    --warm-cdn-readiness-retries <n>
+                             Staged-readiness retries (default: 60)
+    --warm-cdn-readiness-probes <count>
+                             Consecutive successful staged-readiness probes
+                             required before warming (default: 6)
+    --warm-cdn-readiness-probe-delay <ms>
+                             Delay between staged-readiness probes (default: 1000)
+    --dangerously-promote-on-cdn-warm-error
+                             Promote even when ordinary staged warmup cannot be
+                             verified (never bypasses --warm-cdn-certify)
+    --warm-cdn-no-promote    Leave the warmed Worker version staged at 0% traffic;
+                             production triggers are still applied before warming
+    --warm-cdn-promotion-delay <ms>
+                             Delay before promotion after warmup (default: 15000)
     --warm-cdn-include-fallbacks
                              Also warm PPR fallback-shell placeholder paths
     -h, --help               Show this help
@@ -45,8 +79,9 @@ export function formatDeployHelp(): string {
   a custom domain (zone analytics are unavailable on *.workers.dev) and the
   CLOUDFLARE_API_TOKEN environment variable with Zone.Analytics read permission.
 
-  CDN warmup requests populate the edge cache only in the Cloudflare data centers
-  reached by the warmup run; they do not globally prefill every edge location.
+  Workers Cache automatically uses tiered caching. Warmed entries can therefore
+  be reused outside the data center reached by the warmup request after cache
+  propagation, but the deploy does not wait for every edge location to fill.
 
   Examples:
     npx @vinext/cloudflare deploy                                      Build and deploy to production
@@ -58,6 +93,8 @@ export function formatDeployHelp(): string {
     vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
     vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name
     vinext-cloudflare deploy --experimental-warm-cdn-cache              Warm build-discovered paths during version deploy (experimental)
+    vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://example.com
+                                                                          Warm an explicit production origin
     vinext-cloudflare deploy --experimental-tpr                        Enable TPR during deploy
     vinext-cloudflare deploy --experimental-tpr --tpr-coverage 95      Cover 95% of traffic
     vinext-cloudflare deploy --experimental-tpr --tpr-limit 500        Cap at 500 pages

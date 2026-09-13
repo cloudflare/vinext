@@ -246,17 +246,6 @@ declare global {
   var __VINEXT_RSC_PARAMS__: Record<string, string | string[]> | undefined;
 
   /**
-   * Navigation context embedded by `generateSsrEntry()` for hydration
-   * snapshot consistency. Contains the pathname and searchParams used
-   * during SSR so `useSyncExternalStore` `getServerSnapshot` matches the
-   * SSR-rendered HTML.
-   * `searchParams` is serialised as an array of `[key, value]` pairs to
-   * preserve duplicate keys (e.g. `?tag=a&tag=b`).
-   */
-  // oxlint-disable-next-line no-var
-  var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
-
-  /**
    * Maps emitted CSS asset hrefs to file contents when next.config enables
    * `experimental.inlineCss`. Injected into edge bundles at build time and
    * populated by the Node.js production server at startup.
@@ -378,12 +367,24 @@ declare global {
       __VINEXT_RSC_COMPATIBILITY_ID?: string;
 
       /**
+       * Opaque identity minted for every production build and emitted on RSC
+       * responses so deploy tooling can prove which build handled a request.
+       */
+      __VINEXT_RSC_BUILD_IDENTITY?: string;
+
+      /** Enable stable deploy-warmed RSC request identities for a shared cache. */
+      __VINEXT_CANONICAL_RSC_REQUESTS?: string;
+
+      /**
        * Build-only coordination variable set by the `vinext build` CLI so that
        * every vinext() plugin instance in a single build resolves the same RSC
        * compatibility token (companion to `__VINEXT_SHARED_BUILD_ID`). Never read
        * by dev or standalone createRscCompatibilityId() resolution.
        */
       __VINEXT_SHARED_RSC_COMPATIBILITY_ID?: string;
+
+      /** Build-only coordination value for __VINEXT_RSC_BUILD_IDENTITY. */
+      __VINEXT_SHARED_RSC_BUILD_IDENTITY?: string;
 
       /**
        * Build-time secret that authenticates on-demand ISR revalidation
@@ -407,6 +408,13 @@ declare global {
        * standalone code paths.
        */
       __VINEXT_SHARED_REVALIDATE_SECRET?: string;
+
+      /**
+       * Build-only coordination variable for the capability that authorizes
+       * remote prerender path discovery. Hybrid App + Pages builds must embed
+       * the same value in both Worker entries and vinext-server.json.
+       */
+      __VINEXT_SHARED_PRERENDER_SECRET?: string;
       __VINEXT_PREVIEW_MODE_ID?: string;
       __VINEXT_PREVIEW_MODE_SIGNING_KEY?: string;
       __VINEXT_PREVIEW_MODE_ENCRYPTION_KEY?: string;
@@ -499,6 +507,11 @@ declare module "node:http" {
 // configured. See `cache/cache-adapters-virtual.ts` for the generator.
 
 declare module "virtual:vinext-cache-adapters" {
+  export function registerConfiguredCacheAdapters(env?: Record<string, unknown>): void;
+}
+
+declare module "virtual:vinext-cdn-cache-adapter" {
+  export const hasConfiguredDataCache: boolean;
   export function registerConfiguredCacheAdapters(env?: Record<string, unknown>): void;
 }
 

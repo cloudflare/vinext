@@ -49,6 +49,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import { OgAssetOwnership } from "./og-asset-ownership.js";
+import { magicStringTransformResult } from "./transform-result.js";
 
 // ── Plugin factories ──────────────────────────────────────────────────────────
 
@@ -194,7 +195,7 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
         }
 
         if (!didReplace) return null;
-        return { code: s.toString(), map: s.generateMap({ hires: "boundary" }) };
+        return magicStringTransformResult(s);
       },
     },
   } satisfies Plugin;

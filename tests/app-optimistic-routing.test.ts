@@ -6,11 +6,13 @@ import {
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
+  canCommitOptimisticRouteTemplate,
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
+  resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
@@ -20,6 +22,10 @@ import type {
   RouteManifestRoute,
   RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
+import {
+  createNestedBfcacheSlotSegmentId,
+  deriveBfcacheSegmentIdentity,
+} from "../packages/vinext/src/server/bfcache-identity.js";
 
 function route(input: {
   id: string;
@@ -48,6 +54,13 @@ function route(input: {
 function manifest(
   routes: readonly RouteManifestRoute[],
   slotBindings: readonly RouteManifestSlotBinding[] = [],
+  layouts: readonly {
+    id: string;
+    paramNames: readonly string[];
+    patternParts: readonly string[];
+    rootBoundaryId: null;
+    treePath: string;
+  }[] = [],
 ): RouteManifest {
   return {
     graphVersion: "graph:test" as GraphVersion,
@@ -56,7 +69,7 @@ function manifest(
       defaults: new Map(),
       interceptions: new Map(),
       interceptionsBySlotId: new Map(),
-      layouts: new Map(),
+      layouts: new Map(layouts.map((entry) => [entry.id, entry])),
       pages: new Map(),
       rootBoundaries: new Map(),
       routeHandlers: new Map(),
@@ -351,6 +364,17 @@ describe("App Router optimistic routing", () => {
       folder: "other-folder",
       catchAll: ["sub", "other-folder"],
     });
+    expect(
+      resolveOptimisticNavigationParamsForHref({
+        basePath: "",
+        href: "/vercel/sub/other-folder",
+        routeManifest,
+      }),
+    ).toEqual({
+      teamID: "vercel",
+      folder: "other-folder",
+      catchAll: ["sub", "other-folder"],
+    });
   });
 
   it("learns optimistic templates from an implicit children slot", () => {
@@ -516,6 +540,399 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({});
     expect(navigationPayload?.template).toBe(template);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-false-loading/app-prefetch-false-loading.test.ts
+  it("does not commit an ancestor loading shell over a retained layout", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const sharedLayoutId = AppElementsWire.encodeLayoutId("/projects/[projectId]");
+    const currentElements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [rootLayoutId, sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/projects/alpha",
+      }),
+      [rootLayoutId]: createElement("div", null, "root"),
+      [sharedLayoutId]: createElement("section", null, "shared layout"),
+    };
+    const loadingShellElements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [rootLayoutId, sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/projects/alpha/activity",
+      }),
+      [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+      [rootLayoutId]: createElement("div", null, "root"),
+      "page:/projects/:projectId/activity": null,
+      "route:/projects/alpha/activity": createElement("p", null, "Loading"),
+    };
+    const routeManifest = manifest(
+      [
+        route({
+          id: "route:/projects/:projectId/activity",
+          isDynamic: true,
+          paramNames: ["projectId"],
+          pattern: "/projects/:projectId/activity",
+          patternParts: ["projects", ":projectId", "activity"],
+        }),
+      ],
+      [],
+      [
+        {
+          id: sharedLayoutId,
+          paramNames: ["projectId"],
+          patternParts: ["projects", ":projectId"],
+          rootBoundaryId: null,
+          treePath: "/projects/[projectId]",
+        },
+      ],
+    );
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: loadingShellElements,
+      href: "/projects/alpha/activity",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    expect(template.omittedLayoutIds).toEqual([sharedLayoutId]);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId, sharedLayoutId],
+        currentParams: { projectId: "alpha" },
+        routeManifest,
+        targetRouteParams: { projectId: "alpha" },
+        targetUrlParts: ["projects", "alpha", "activity"],
+        template,
+      }),
+    ).toBe(false);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId, sharedLayoutId],
+        currentParams: { projectId: "alpha" },
+        routeManifest,
+        targetRouteParams: { projectId: "beta" },
+        targetUrlParts: ["projects", "beta", "activity"],
+        template,
+      }),
+    ).toBe(true);
+
+    const templates = new Map([
+      [
+        getOptimisticRouteTemplateKey({
+          interceptionContext: null,
+          mountedSlotsHeader: null,
+          routeId: template.routeId,
+        }),
+        template,
+      ],
+    ]);
+    for (const [href, projectId] of [
+      ["/projects/a%2Fb/activity", "a%2Fb"],
+      ["/projects/caf%C3%A9/activity", "caf%C3%A9"],
+      ["/projects/a%252Fb/activity", "a%252Fb"],
+      ["/projects/a%2561/activity", "a%2561"],
+      ["/projects/a%25b/activity", "a%25b"],
+    ]) {
+      const encodedPayload = resolveOptimisticNavigationPayload({
+        basePath: "",
+        href,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates,
+      });
+      expect(encodedPayload?.params).toEqual({ projectId });
+      expect(
+        encodedPayload &&
+          canCommitOptimisticRouteTemplate({
+            currentElements,
+            currentLayoutIds: [rootLayoutId, sharedLayoutId],
+            currentParams: { projectId },
+            routeManifest,
+            targetRouteParams: encodedPayload.routeParams,
+            targetUrlParts: encodedPayload.urlParts,
+            template: encodedPayload.template,
+          }),
+      ).toBe(false);
+    }
+  });
+
+  it("preserves raw encoded catch-all params in optimistic payloads", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const routeManifest = manifest([
+      route({
+        id: "route:/docs/:parts+",
+        isDynamic: true,
+        paramNames: ["parts"],
+        pattern: "/docs/:parts+",
+        patternParts: ["docs", ":parts+"],
+      }),
+    ]);
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [rootLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/docs/source",
+      }),
+      [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+      [rootLayoutId]: createElement("div", null, "root"),
+      "page:/docs/:parts+": null,
+      "route:/docs/source": createElement("p", null, "Loading"),
+    };
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/docs/source",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    const payload = resolveOptimisticNavigationPayload({
+      basePath: "",
+      href: "/docs/a%2561/b%252Fc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+      templates: new Map([
+        [
+          getOptimisticRouteTemplateKey({
+            interceptionContext: null,
+            mountedSlotsHeader: null,
+            routeId: template.routeId,
+          }),
+          template,
+        ],
+      ]),
+    });
+
+    expect(payload?.routeParams).toEqual({ parts: ["a%2561", "b%252Fc"] });
+    expect(payload?.params).toEqual(payload?.routeParams);
+  });
+
+  it("does not commit a slot loading shell over a retained nested slot segment", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const sidebarSlotId = AppElementsWire.encodeSlotId("sidebar", "/");
+    const nestedSegmentId = createNestedBfcacheSlotSegmentId(sidebarSlotId, 1);
+    const routeId = "route:/:slug";
+    const routeManifest = manifest(
+      [
+        route({
+          id: routeId,
+          isDynamic: true,
+          paramNames: ["slug"],
+          pattern: "/:slug",
+          patternParts: [":slug"],
+          slotIds: [sidebarSlotId],
+        }),
+      ],
+      [
+        {
+          defaultId: null,
+          id: `${routeId}::${sidebarSlotId}`,
+          ownerLayoutId: rootLayoutId,
+          routeId,
+          routeSegments: ["[slug]"],
+          slotId: sidebarSlotId,
+          slotParamNames: ["slug"],
+          slotPatternParts: [":slug"],
+          state: "active",
+        },
+      ],
+      [
+        {
+          id: rootLayoutId,
+          paramNames: [],
+          patternParts: [],
+          rootBoundaryId: null,
+          treePath: "/",
+        },
+      ],
+    );
+    const identityFor = (slug: string) =>
+      deriveBfcacheSegmentIdentity({
+        activeRouteGraphId: null,
+        boundSegmentKey: JSON.stringify([`slug|${slug}|d`]),
+        interceptionTargetRouteGraphId: null,
+        kind: "slot",
+        ownerLayoutGraphId: rootLayoutId,
+        slotGraphId: sidebarSlotId,
+        state: "active",
+      });
+    const currentElements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { [nestedSegmentId]: identityFor("alpha") },
+        interceptionContext: null,
+        layoutIds: [rootLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/alpha",
+      }),
+      [nestedSegmentId]: null,
+      [rootLayoutId]: createElement("div", null, "root"),
+    };
+    const createTemplate = (sourceSlug: string, renderedSegment = false) => {
+      const elements: AppElements = {
+        ...AppElementsWire.createMetadataEntries({
+          bfcacheSegmentIdentities: { [nestedSegmentId]: identityFor(sourceSlug) },
+          interceptionContext: null,
+          layoutIds: [rootLayoutId],
+          rootLayoutTreePath: "/",
+          routeId: `route:/${sourceSlug}`,
+        }),
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [nestedSegmentId]: null,
+        [rootLayoutId]: createElement("div", null, "root"),
+        "page:/:slug": null,
+        [`route:/${sourceSlug}`]: createElement(
+          "div",
+          renderedSegment ? { id: nestedSegmentId } : null,
+          "Slot loading",
+        ),
+      };
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements,
+        href: `/${sourceSlug}`,
+        interceptionContext: null,
+        mountedSlotsHeader: "sidebar",
+        routeManifest,
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+
+    // The learned shell came from beta, but the target/current route is alpha.
+    // The commit check must reify the omitted segment identity for alpha rather
+    // than comparing against the stale identity stored in the learned shell.
+    const retainedTemplate = createTemplate("beta");
+    expect(retainedTemplate.omittedBfcacheSegmentIds).toEqual([nestedSegmentId]);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId],
+        currentParams: { slug: "alpha" },
+        routeManifest,
+        targetRouteParams: { slug: "alpha" },
+        targetUrlParts: ["alpha"],
+        template: retainedTemplate,
+      }),
+    ).toBe(false);
+
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId],
+        currentParams: { slug: "alpha" },
+        routeManifest,
+        targetRouteParams: { slug: "gamma" },
+        targetUrlParts: ["gamma"],
+        template: retainedTemplate,
+      }),
+    ).toBe(true);
+    expect(createTemplate("beta", true).omittedBfcacheSegmentIds).toEqual([]);
+  });
+
+  it("reifies omitted empty slot branches", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const sidebarSlotId = AppElementsWire.encodeSlotId("sidebar", "/");
+    const nestedSegmentId = createNestedBfcacheSlotSegmentId(sidebarSlotId, 1);
+    const routeId = "route:/dashboard";
+    const routeManifest = manifest(
+      [
+        route({
+          id: routeId,
+          isDynamic: false,
+          pattern: "/dashboard",
+          patternParts: ["dashboard"],
+          slotIds: [sidebarSlotId],
+        }),
+      ],
+      [
+        {
+          defaultId: "default:sidebar",
+          id: `${routeId}::${sidebarSlotId}`,
+          ownerLayoutId: rootLayoutId,
+          routeId,
+          routeSegments: null,
+          slotId: sidebarSlotId,
+          state: "default",
+        },
+      ],
+      [
+        {
+          id: rootLayoutId,
+          paramNames: [],
+          patternParts: [],
+          rootBoundaryId: null,
+          treePath: "/",
+        },
+      ],
+    );
+    const identity = deriveBfcacheSegmentIdentity({
+      activeRouteGraphId: null,
+      boundSegmentKey: "",
+      interceptionTargetRouteGraphId: null,
+      kind: "slot",
+      ownerLayoutGraphId: rootLayoutId,
+      slotGraphId: sidebarSlotId,
+      state: "default",
+    });
+    const metadata = AppElementsWire.createMetadataEntries({
+      bfcacheSegmentIdentities: { [nestedSegmentId]: identity },
+      interceptionContext: null,
+      layoutIds: [rootLayoutId],
+      rootLayoutTreePath: "/",
+      routeId,
+    });
+    const currentElements: AppElements = {
+      ...metadata,
+      [nestedSegmentId]: null,
+      [rootLayoutId]: createElement("div", null, "root"),
+    };
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: {
+        ...metadata,
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [nestedSegmentId]: null,
+        [rootLayoutId]: createElement("div", null, "root"),
+        "page:/dashboard": null,
+        [routeId]: createElement("p", null, "Loading"),
+      },
+      href: "/dashboard",
+      interceptionContext: null,
+      mountedSlotsHeader: "sidebar",
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId],
+        currentParams: {},
+        routeManifest,
+        targetRouteParams: {},
+        targetUrlParts: ["dashboard"],
+        template,
+      }),
+    ).toBe(false);
   });
 
   it("keeps learned templates distinct across mounted slot headers", () => {

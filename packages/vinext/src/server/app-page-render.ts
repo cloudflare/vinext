@@ -8,6 +8,7 @@ import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.j
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
 import {
+  finalizeAppPageCacheabilityEvaluationResponse,
   finalizeAppPageHtmlCacheResponse,
   finalizeAppPageRscCacheResponse,
 } from "./app-page-cache-finalizer.js";
@@ -100,6 +101,7 @@ type AppPageRequestCacheLife = {
 
 type RenderAppPageLifecycleOptions = {
   basePath?: string;
+  bypassInterceptionContextCache?: boolean;
   /**
    * Allow-list of OpenTelemetry propagation keys to emit as `<meta>` tags in
    * the SSR head. From `experimental.clientTraceMetadata` in `next.config`.
@@ -151,9 +153,11 @@ type RenderAppPageLifecycleOptions = {
     mountedSlotsHeader?: string | null,
     renderMode?: AppRscRenderMode,
     interceptionContext?: string | null,
+    interceptionId?: string | null,
   ) => string;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  interceptionId?: string | null;
   layoutCount: number;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
@@ -713,6 +717,8 @@ export async function renderAppPageLifecycle(
     });
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
+  const shouldBypassRscCache =
+    shouldBypassRscCacheForSkipTransport || options.bypassInterceptionContextCache === true;
   const dynamicStaleTimeSeconds =
     options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
@@ -770,7 +776,7 @@ export async function renderAppPageLifecycle(
     (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
-    !shouldBypassRscCacheForSkipTransport;
+    !shouldBypassRscCache;
   const shouldCaptureRscForCacheMetadata =
     (options.isProduction || options.isPrerender === true) && mayResolveCacheLifeAfterHeaders;
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
@@ -820,7 +826,7 @@ export async function renderAppPageLifecycle(
     // When skip transport is enabled, omit cacheState because the response is a
     // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
     // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
-    const rscResponsePolicy = shouldBypassRscCacheForSkipTransport
+    const rscResponsePolicy = shouldBypassRscCache
       ? { cacheControl: NO_STORE_CACHE_CONTROL }
       : resolveAppPageRscResponsePolicy({
           dynamicUsedDuringBuild,
@@ -832,8 +838,13 @@ export async function renderAppPageLifecycle(
           expireSeconds,
           revalidateSeconds,
         });
-    if (shouldBypassRscCacheForSkipTransport) {
-      options.isrDebug?.("RSC cache write skipped (skip transport payload)", options.cleanPathname);
+    if (shouldBypassRscCache) {
+      options.isrDebug?.(
+        options.bypassInterceptionContextCache === true
+          ? "RSC cache write skipped (unverified interception context)"
+          : "RSC cache write skipped (skip transport payload)",
+        options.cleanPathname,
+      );
     }
     const shouldEmitDynamicStaleTime =
       dynamicStaleTimeSeconds !== undefined &&
@@ -929,6 +940,7 @@ export async function renderAppPageLifecycle(
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
         options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
+      bypassInterceptionContextCache: options.bypassInterceptionContextCache,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,
@@ -955,6 +967,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      interceptionId: options.interceptionId,
       mountedSlotsHeader: options.mountedSlotsHeader,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       renderMode: options.renderMode,
@@ -1015,16 +1028,17 @@ export async function renderAppPageLifecycle(
           // Runs after the RSC embed drains, so this peek observes the
           // completed render's minimum. Peek, not consume — the cache-write
           // closure owns the consuming read.
-          // Prerendering drains the captured RSC stream and consumes the
-          // completed request cache life before the HTML stream reaches this
-          // done-script callback. Reuse that captured value here; peeking the
-          // now-cleared request state would omit the client stale claim from
-          // the prerendered HTML even though the seeded cache entry retains it.
+          // During prerendering the done-script callback can run immediately
+          // after the RSC capture drains, before the outer lifecycle performs
+          // its consuming cacheLife read. Use the live non-destructive peek in
+          // that window, then reuse the captured value after the outer read;
+          // peeking only after consumption would omit the client stale claim
+          // even though the seeded cache entry retains it.
           // Runtime renders have not consumed the state yet and still use the
           // non-destructive peek so the cache-write closure remains its owner.
           const requestCacheLife =
             options.isPrerender === true
-              ? requestCacheLifeForPrerender
+              ? (requestCacheLifeForPrerender ?? options.peekRequestCacheLife?.())
               : options.peekRequestCacheLife?.();
           const staleTimeSeconds = resolveClientStaleTimeSeconds(requestCacheLife);
           return {
@@ -1062,6 +1076,8 @@ export async function renderAppPageLifecycle(
             ? false
             : undefined,
         waitForAllReady: shouldWaitForAllReady,
+        isStaticGeneration: options.isPrerender === true,
+        isForceStatic: options.isForceStatic,
       });
     },
     renderSpecialErrorResponse(specialError) {
@@ -1266,6 +1282,7 @@ export async function renderAppPageLifecycle(
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
+      interceptionId: options.interceptionId,
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,
@@ -1274,13 +1291,14 @@ export async function renderAppPageLifecycle(
         isForceStatic: options.isForceStatic,
         revalidateSeconds,
       }),
+      linkHeader: linkHeader ?? null,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
       },
     });
   }
 
-  return buildAppPageHtmlResponse(safeHtmlStream, {
+  const response = buildAppPageHtmlResponse(safeHtmlStream, {
     cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
     draftCookie,
     linkHeader,
@@ -1289,6 +1307,25 @@ export async function renderAppPageLifecycle(
     policy: htmlResponsePolicy,
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
+  });
+  return finalizeAppPageCacheabilityEvaluationResponse(response, {
+    capturedDynamicUsageBeforeContextCleanup() {
+      return dynamicUsedBeforeContextCleanup;
+    },
+    consumeDynamicUsage: consumeRenderDynamicUsage,
+    consumeRenderObservationState: options.consumeRenderObservationState,
+    getPageTags() {
+      return options.getPageTags();
+    },
+    getRequestCacheLife() {
+      return readRequestCacheLifeForCachePolicy(options);
+    },
+    expireSeconds,
+    revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
+      isDynamicError: options.isDynamicError,
+      isForceStatic: options.isForceStatic,
+      revalidateSeconds,
+    }),
   });
 }
 

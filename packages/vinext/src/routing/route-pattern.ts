@@ -149,6 +149,41 @@ export function matchRoutePatternRaw(
   return matchFrom(0, 0) ? params : null;
 }
 
+/**
+ * Extract params from the original encoded URL parts after route selection has
+ * already succeeded against normalized parts. Static parts are positional and
+ * intentionally not compared because their raw encoding can differ from the
+ * normalized route spelling (for example `%5Fsites` versus `_sites`).
+ */
+export function extractRawRoutePatternParams(
+  patternParts: readonly string[],
+  urlParts: readonly string[],
+): RoutePatternParams {
+  const params: RoutePatternParams = Object.create(null);
+  let urlIndex = 0;
+
+  for (const patternPart of patternParts) {
+    if (!patternPart.startsWith(":")) {
+      urlIndex += 1;
+      continue;
+    }
+
+    const isCatchAll = patternPart.endsWith("+") || patternPart.endsWith("*");
+    const paramName = patternPart.slice(1, isCatchAll ? -1 : undefined);
+    if (isCatchAll) {
+      const remaining = urlParts.slice(urlIndex);
+      if (remaining.length > 0) params[paramName] = [...remaining];
+      break;
+    }
+
+    const value = urlParts[urlIndex];
+    if (value !== undefined) params[paramName] = value;
+    urlIndex += 1;
+  }
+
+  return params;
+}
+
 export function matchRoutePatternPrefix(
   pathParts: readonly string[],
   patternParts: readonly string[],

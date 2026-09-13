@@ -49,6 +49,7 @@ export function isInterceptionMatchedUrlPath(value: string): boolean {
     !value.startsWith("//") &&
     !value.includes("?") &&
     !value.includes("#") &&
+    !value.includes("\\") &&
     !value.includes("\0")
   );
 }

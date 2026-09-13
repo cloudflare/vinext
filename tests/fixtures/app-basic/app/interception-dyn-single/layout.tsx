@@ -9,12 +9,8 @@ export default function Layout({
 }) {
   return (
     <Suspense>
-      <html>
-        <body>
-          <div id="children">{children}</div>
-          <div id="modal">{modal}</div>
-        </body>
-      </html>
+      <div id="children">{children}</div>
+      <div id="modal">{modal}</div>
     </Suspense>
   );
 }

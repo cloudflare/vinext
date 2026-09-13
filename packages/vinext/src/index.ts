@@ -1,6 +1,7 @@
 import type {
   Alias,
   CSSModulesOptions,
+  DevEnvironment,
   HotUpdateOptions,
   Logger,
   Plugin,
@@ -11,14 +12,18 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { createLogger, parseAst, transformWithOxc } from "vite";
+import { createIdResolver, createLogger, parseAst, transformWithOxc } from "vite";
 import {
   pagesRouter,
   apiRouter,
   invalidateRouteCache,
   matchRoute,
 } from "./routing/pages-router.js";
-import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
+import {
+  generatePagesRequestEntry as _generatePagesRequestEntry,
+  generatePagesResponseEntry as _generatePagesResponseEntry,
+  generateServerEntry as _generateServerEntry,
+} from "./entries/pages-server-entry.js";
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import {
   appRouteGraph,
@@ -41,18 +46,29 @@ import {
   isImageOptimizationPath,
   resolveDevImageRedirect,
 } from "./server/image-optimization.js";
+import { CACHEABILITY_MANIFEST_MODULE } from "./server/cacheability-manifest.js";
+import { PREGENERATED_CONCRETE_PATHS_MODULE } from "./server/pregenerated-concrete-paths.js";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
 import { shouldInvalidateAppRouteFile } from "./server/dev-route-files.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
-import { generateRscEntry } from "./entries/app-rsc-entry.js";
-import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import {
+  generateAppRequestRscEntry,
+  generateAppResponseRscEntry,
+  generateRscEntry,
+} from "./entries/app-rsc-entry.js";
+import { generateSsrEntry } from "./entries/app-ssr-entry.js";
+import { resolveRuntimeEntryModule } from "./entries/runtime-entry-module.js";
+import {
+  VIRTUAL_CDN_CACHE_ADAPTER,
   VIRTUAL_CACHE_ADAPTERS,
+  generateCdnCacheAdapterModule,
   generateCacheAdaptersModule,
+  hasVerbatimResponseVary,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
+import type { VinextMultiStageOutput } from "./server/multi-stage.js";
 import {
   VIRTUAL_IMAGE_ADAPTERS,
   generateImageAdaptersModule,
@@ -69,6 +85,7 @@ import {
   hasExportedName,
 } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
+import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import {
@@ -140,14 +157,25 @@ import {
   validateHybridRouteConflicts,
 } from "./server/hybrid-route-priority.js";
 import { matchesRewriteSource, proxyExternalRequest } from "./config/config-matchers.js";
+import { encodeMiddlewareRequestHeaders } from "./utils/middleware-request-headers.js";
 import {
   detectPackageManager,
   formatMissingCloudflarePluginError,
   hasWranglerConfig,
 } from "./utils/project.js";
+import {
+  hasReactCompilerPlugin,
+  isReactCompilerPlugin,
+  isReactCompilerRequested,
+  reactCompilerUnsupportedMessage,
+} from "./utils/react-compiler-support.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
 import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
+import {
+  assertNoPublicDirAssetConflict,
+  assertNoPublicNextRequestConflict,
+} from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
@@ -162,10 +190,12 @@ import {
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
 } from "./client/instrumentation-client-inject.js";
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
+import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
   mergeOptimizeDepsExclude,
@@ -173,6 +203,7 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
 // oxlint-disable-next-line vinext-local/prefer-import-alias
@@ -197,6 +228,7 @@ import {
   takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
+import { readPrerenderSecret, readServerRuntimeOutputDirs } from "./build/server-manifest.js";
 import {
   createPreviewBuildCredentials,
   getPreviewBuildCredentials,
@@ -207,14 +239,18 @@ import { resolvePostcssStringPlugins } from "./plugins/postcss.js";
 import {
   buildSassPreprocessorOptions,
   createSassCssUrlAssetImporter,
+  createSassTsconfigPathImporters,
   createSassTildeImporter,
   createSassAwareFileSystemLoader,
+  type SassTsconfigPathAlias,
 } from "./plugins/sass.js";
 import {
   createClientFileNameConfig,
   createClientManualChunks,
   createClientCodeSplittingConfig,
   createClientAssetFileNames,
+  createMultiStageCodeSplittingConfig,
+  createMultiStageChunkFileNames,
   createRscFrameworkChunkOutputConfig,
   getClientTreeshakeConfig,
   getBuildBundlerOptions,
@@ -236,11 +272,23 @@ import {
   validatePageExports,
 } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
-import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
+import {
+  createImportMetaUrlPlugin,
+  type EmittedModuleFileNameResolver,
+} from "./plugins/import-meta-url.js";
+import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
+import {
+  createRequireConditionResolutionPlugin,
+  isConditionalRequireScriptModuleId,
+} from "./plugins/require-condition-resolution.js";
 import { createExtensionlessDynamicImportPlugin } from "./plugins/extensionless-dynamic-import.js";
 import { createWasmModuleImportPlugin } from "./plugins/wasm-module-import.js";
-import { getTypeofWindowReplacement, replaceTypeofWindow } from "./plugins/typeof-window.js";
+import {
+  consumerEnvironmentConditionFilter,
+  getTypeofWindowReplacement,
+  replaceConsumerEnvironmentConditions,
+} from "./plugins/typeof-window.js";
 import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
@@ -256,7 +304,13 @@ import { getPagesPreviewModeId } from "./server/pages-preview.js";
 import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
-import { stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
+import { isServerEnvironment } from "./plugins/environment.js";
+import {
+  isPathInside,
+  isPathInsideOrEqual,
+  stripJsExtension,
+  stripViteModuleQuery,
+} from "./utils/path.js";
 import {
   assertSupportedViteVersion,
   getDepOptimizeNodeEnvOptions,
@@ -297,113 +351,6 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 installSocketErrorBackstop();
 
 type ASTNode = ReturnType<typeof parseAst>["body"][number]["parent"];
-
-type UseCacheAstNode = Record<string, unknown> & { type: string };
-
-function isUseCacheAstNode(value: unknown): value is UseCacheAstNode {
-  return (
-    typeof value === "object" && value !== null && typeof Reflect.get(value, "type") === "string"
-  );
-}
-
-function hasInlineUseCacheDirective(node: UseCacheAstNode): boolean {
-  const body =
-    isUseCacheAstNode(node.body) && node.body.type === "BlockStatement" ? node.body : null;
-  if (!body || !Array.isArray(body.body)) return false;
-
-  return body.body.some((statement) => {
-    if (!isUseCacheAstNode(statement) || statement.type !== "ExpressionStatement") return false;
-    const expression = isUseCacheAstNode(statement.expression) ? statement.expression : null;
-    return (
-      expression?.type === "Literal" &&
-      typeof expression.value === "string" &&
-      /^use cache(:\s*\w+)?$/.test(expression.value)
-    );
-  });
-}
-
-function functionAcceptsSecondArgument(node: UseCacheAstNode): boolean {
-  const params = Array.isArray(node.params) ? node.params : [];
-  if (params.length >= 2) return true;
-  return params.some((param) => isUseCacheAstNode(param) && param.type === "RestElement");
-}
-
-function collectInlineUseCacheSecondArgumentUsage(value: unknown): boolean[] {
-  const usage: boolean[] = [];
-
-  function walk(node: unknown): void {
-    if (Array.isArray(node)) {
-      for (const child of node) walk(child);
-      return;
-    }
-    if (!isUseCacheAstNode(node)) return;
-
-    if (
-      (node.type === "FunctionDeclaration" ||
-        node.type === "FunctionExpression" ||
-        node.type === "ArrowFunctionExpression") &&
-      hasInlineUseCacheDirective(node)
-    ) {
-      usage.push(functionAcceptsSecondArgument(node));
-    }
-
-    for (const [key, child] of Object.entries(node)) {
-      if (key === "type" || key === "start" || key === "end" || key === "loc" || key === "parent") {
-        continue;
-      }
-      walk(child);
-    }
-  }
-
-  walk(value);
-  return usage;
-}
-
-function collectFileUseCacheSecondArgumentUsage(body: unknown[]): Map<string, boolean> {
-  const localFunctions = new Map<string, boolean>();
-
-  function collectDeclaration(value: unknown): void {
-    if (!isUseCacheAstNode(value)) return;
-    if (value.type === "FunctionDeclaration") {
-      const id = isUseCacheAstNode(value.id) ? value.id : null;
-      if (id?.type === "Identifier" && typeof id.name === "string") {
-        localFunctions.set(id.name, functionAcceptsSecondArgument(value));
-      }
-      return;
-    }
-    if (value.type !== "VariableDeclaration" || !Array.isArray(value.declarations)) return;
-
-    for (const declaration of value.declarations) {
-      if (!isUseCacheAstNode(declaration) || declaration.type !== "VariableDeclarator") continue;
-      const id = isUseCacheAstNode(declaration.id) ? declaration.id : null;
-      const init = isUseCacheAstNode(declaration.init) ? declaration.init : null;
-      if (
-        id?.type === "Identifier" &&
-        typeof id.name === "string" &&
-        init &&
-        (init.type === "FunctionExpression" || init.type === "ArrowFunctionExpression")
-      ) {
-        localFunctions.set(id.name, functionAcceptsSecondArgument(init));
-      }
-    }
-  }
-
-  for (const statement of body) {
-    if (!isUseCacheAstNode(statement)) continue;
-    collectDeclaration(
-      statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration"
-        ? statement.declaration
-        : statement,
-    );
-  }
-
-  return localFunctions;
-}
-
-function isInsideDirectory(dir: string, filePath: string): boolean {
-  const relativePath = path.relative(dir, filePath);
-  return relativePath !== "" && !relativePath.startsWith("..") && !path.isAbsolute(relativePath);
-}
 
 function hasServerOnlyMarkerImport(code: string): boolean {
   if (!code.includes("server-only")) return false;
@@ -618,9 +565,19 @@ function isScriptModuleId(id: string): boolean {
   return SCRIPT_IMPORT_RE.test(stripViteModuleQuery(id).toLowerCase());
 }
 
-function skipCommonjsForLocalCjs(id: string): false | undefined {
+function commonjsTransformFilter(
+  id: string,
+  transformProjectLocalCommonJs = false,
+  transformBundledDependencies = false,
+  isBundledCommonJsDependency: (id: string) => boolean = () => false,
+): boolean | undefined {
   const cleanId = toSlash(stripViteModuleQuery(id));
-  return /\.c[jt]s$/i.test(cleanId) && !cleanId.includes("node_modules") ? false : undefined;
+  if (isConditionalRequireScriptModuleId(cleanId)) return true;
+  if (transformBundledDependencies && isBundledCommonJsDependency(cleanId)) return true;
+  if (/\.c[jt]s$/i.test(cleanId) && !cleanId.includes("node_modules")) {
+    return transformProjectLocalCommonJs;
+  }
+  return undefined;
 }
 
 function hasOnlyTypeSpecifiers(statement: AstStaticDependencyDeclaration): boolean {
@@ -782,20 +739,63 @@ function resolveTsconfigExtends(configPath: string, specifier: string): string |
   return null;
 }
 
+type MaterializedTsconfigPathAliases = {
+  vite: Record<string, string>;
+  sass: SassTsconfigPathAlias[];
+};
+
+function mergeSassTsconfigPathAliases(
+  ...groups: readonly (readonly SassTsconfigPathAlias[])[]
+): SassTsconfigPathAlias[] {
+  const merged = new Map<string, SassTsconfigPathAlias>();
+  for (const group of groups) {
+    for (const alias of group) {
+      merged.set(alias.find, alias);
+    }
+  }
+  return [...merged.values()];
+}
+
+function hasZeroOrOneAsterisk(value: string): boolean {
+  const first = value.indexOf("*");
+  return first < 0 || first === value.lastIndexOf("*");
+}
+
 function materializeTsconfigPathAliases(
   pathsConfig: Record<string, unknown>,
   baseUrl: string,
   projectRoot: string,
-): Record<string, string> {
-  const aliases: Record<string, string> = {};
+): MaterializedTsconfigPathAliases {
+  const vite: Record<string, string> = {};
+  const sass: SassTsconfigPathAlias[] = [];
 
   for (const [find, rawTargets] of Object.entries(pathsConfig)) {
-    const target = Array.isArray(rawTargets)
-      ? rawTargets.find((value): value is string => typeof value === "string")
+    const targets = Array.isArray(rawTargets)
+      ? rawTargets.filter((value): value is string => typeof value === "string")
       : typeof rawTargets === "string"
-        ? rawTargets
-        : null;
-    if (!target) continue;
+        ? [rawTargets]
+        : [];
+    if (targets.length === 0) continue;
+
+    // Sass can preserve the full TypeScript path-mapping contract: exact keys,
+    // one `*` anywhere in a pattern, and ordered replacement fallbacks.
+    if (find.length > 0 && hasZeroOrOneAsterisk(find)) {
+      const findHasStar = find.includes("*");
+      const replacements = targets
+        .filter(
+          (target) =>
+            target.length > 0 &&
+            hasZeroOrOneAsterisk(target) &&
+            (findHasStar || !target.includes("*")),
+        )
+        .map((target) => path.resolve(baseUrl, target));
+      if (replacements.length > 0) sass.push({ find, replacements });
+    }
+
+    // Vite aliases can only represent exact mappings and the common trailing
+    // `/*` prefix form. Keep the existing first-target materialization for JS
+    // transforms; Sass uses the richer representation above.
+    const target = targets[0]!;
 
     if (find.includes("*") || target.includes("*")) {
       if (!find.endsWith("/*") || !target.endsWith("/*")) continue;
@@ -807,14 +807,16 @@ function materializeTsconfigPathAliases(
       const targetDir = target.slice(0, -2);
       if (!aliasKey || !targetDir) continue;
 
-      aliases[aliasKey] = toViteAliasReplacement(path.resolve(baseUrl, targetDir), projectRoot);
+      const replacement = path.resolve(baseUrl, targetDir);
+      vite[aliasKey] = toViteAliasReplacement(replacement, projectRoot);
       continue;
     }
 
-    aliases[find] = toViteAliasReplacement(path.resolve(baseUrl, target), projectRoot);
+    const replacement = path.resolve(baseUrl, target);
+    vite[find] = toViteAliasReplacement(replacement, projectRoot);
   }
 
-  return aliases;
+  return { vite, sass };
 }
 
 function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
@@ -870,26 +872,30 @@ function loadTsconfigPathAliases(
   configPath: string,
   projectRoot: string,
   seen = new Set<string>(),
-): Record<string, string> {
+): MaterializedTsconfigPathAliases {
   const normalizedPath = tryRealpathSync(configPath) ?? configPath;
-  if (seen.has(normalizedPath)) return {};
+  if (seen.has(normalizedPath)) return { vite: {}, sass: [] };
   seen.add(normalizedPath);
 
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = parseStaticObjectLiteral(fs.readFileSync(normalizedPath, "utf-8"));
   } catch {
-    return {};
+    return { vite: {}, sass: [] };
   }
-  if (!parsed) return {};
+  if (!parsed) return { vite: {}, sass: [] };
 
-  let aliases: Record<string, string> = {};
+  let aliases: MaterializedTsconfigPathAliases = { vite: {}, sass: [] };
   // `extends` may be a string or (TypeScript 5.0+) an array; iterate parents in
   // order so later entries override earlier ones (matching Next.js).
   for (const extendsSpecifier of normalizeTsconfigExtends(parsed.extends)) {
     const extendedPath = resolveTsconfigExtends(normalizedPath, extendsSpecifier);
     if (extendedPath) {
-      aliases = { ...aliases, ...loadTsconfigPathAliases(extendedPath, projectRoot, seen) };
+      const parent = loadTsconfigPathAliases(extendedPath, projectRoot, seen);
+      aliases = {
+        vite: { ...aliases.vite, ...parent.vite },
+        sass: mergeSassTsconfigPathAliases(aliases.sass, parent.sass),
+      };
     }
   }
 
@@ -902,9 +908,10 @@ function loadTsconfigPathAliases(
     compilerOptions && typeof compilerOptions.baseUrl === "string" ? compilerOptions.baseUrl : ".";
   const resolvedBaseUrl = path.resolve(path.dirname(normalizedPath), baseUrl);
 
+  const own = materializeTsconfigPathAliases(pathsConfig, resolvedBaseUrl, projectRoot);
   return {
-    ...aliases,
-    ...materializeTsconfigPathAliases(pathsConfig, resolvedBaseUrl, projectRoot),
+    vite: { ...aliases.vite, ...own.vite },
+    sass: mergeSassTsconfigPathAliases(aliases.sass, own.sass),
   };
 }
 
@@ -960,7 +967,12 @@ function suppressOptionalOptimizeDepsWarnings(logger: Logger): void {
 
 // Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
 // transforms can see them via resolve.alias without re-reading config files per env.
-const _tsconfigAliasCache = new Map<string, Record<string, string>>();
+type ResolvedTsconfigPathAliases = {
+  vite: Record<string, string>;
+  sass: SassTsconfigPathAlias[];
+};
+
+const _tsconfigAliasCache = new Map<string, ResolvedTsconfigPathAliases>();
 
 /**
  * Order materialized tsconfig path aliases by descending prefix length.
@@ -978,19 +990,23 @@ function sortTsconfigAliasesBySpecificity(aliases: Record<string, string>): Reco
 function resolveTsconfigAliases(
   projectRoot: string,
   configuredPath?: string,
-): Record<string, string> {
+): ResolvedTsconfigPathAliases {
   const configPath = configuredPath ? path.resolve(projectRoot, configuredPath) : undefined;
   const cacheKey = configPath ?? projectRoot;
   if (_tsconfigAliasCache.has(cacheKey)) {
     return _tsconfigAliasCache.get(cacheKey)!;
   }
 
-  let aliases: Record<string, string> = {};
+  let aliases: ResolvedTsconfigPathAliases = { vite: {}, sass: [] };
   for (const candidate of configPath
     ? [configPath]
     : TSCONFIG_FILES.map((name) => path.join(projectRoot, name))) {
     if (!fs.existsSync(candidate)) continue;
-    aliases = sortTsconfigAliasesBySpecificity(loadTsconfigPathAliases(candidate, projectRoot));
+    const materialized = loadTsconfigPathAliases(candidate, projectRoot);
+    aliases = {
+      vite: sortTsconfigAliasesBySpecificity(materialized.vite),
+      sass: materialized.sass,
+    };
     break;
   }
 
@@ -1091,8 +1107,16 @@ function suppressAliasCustomResolverDeprecationWarning(logger: Logger): Logger {
 // Virtual module IDs for Pages Router production build
 const VIRTUAL_WORKER_ENTRY = "virtual:vinext-worker-entry";
 const RESOLVED_WORKER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_WORKER_ENTRY;
+const VIRTUAL_REQUEST_STAGE = "virtual:vinext-request-stage";
+const RESOLVED_REQUEST_STAGE = VIRTUAL_PREFIX + VIRTUAL_REQUEST_STAGE;
+const VIRTUAL_RESPONSE_STAGE = "virtual:vinext-response-stage";
+const RESOLVED_RESPONSE_STAGE = VIRTUAL_PREFIX + VIRTUAL_RESPONSE_STAGE;
 const VIRTUAL_SERVER_ENTRY = "virtual:vinext-server-entry";
 const RESOLVED_SERVER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_SERVER_ENTRY;
+const VIRTUAL_PAGES_REQUEST_ENTRY = "virtual:vinext-pages-request-entry";
+const RESOLVED_PAGES_REQUEST_ENTRY = VIRTUAL_PREFIX + VIRTUAL_PAGES_REQUEST_ENTRY;
+const VIRTUAL_PAGES_RESPONSE_ENTRY = "virtual:vinext-pages-response-entry";
+const RESOLVED_PAGES_RESPONSE_ENTRY = VIRTUAL_PREFIX + VIRTUAL_PAGES_RESPONSE_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:vinext-client-entry";
 const RESOLVED_CLIENT_ENTRY = VIRTUAL_PREFIX + VIRTUAL_CLIENT_ENTRY;
 const VIRTUAL_PAGES_CLIENT_ASSETS = "virtual:vinext-pages-client-assets";
@@ -1101,6 +1125,14 @@ const RESOLVED_PAGES_CLIENT_ASSETS = VIRTUAL_PREFIX + VIRTUAL_PAGES_CLIENT_ASSET
 // Virtual module IDs for App Router entries
 const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
 const RESOLVED_RSC_ENTRY = VIRTUAL_PREFIX + VIRTUAL_RSC_ENTRY;
+const VIRTUAL_CACHEABILITY_MANIFEST = "virtual:vinext-cacheability-manifest";
+const RESOLVED_CACHEABILITY_MANIFEST = VIRTUAL_PREFIX + VIRTUAL_CACHEABILITY_MANIFEST;
+const VIRTUAL_PREGENERATED_CONCRETE_PATHS = "virtual:vinext-pregenerated-concrete-paths";
+const RESOLVED_PREGENERATED_CONCRETE_PATHS = VIRTUAL_PREFIX + VIRTUAL_PREGENERATED_CONCRETE_PATHS;
+const VIRTUAL_APP_REQUEST_ENTRY = "virtual:vinext-app-request-entry";
+const RESOLVED_APP_REQUEST_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_REQUEST_ENTRY;
+const VIRTUAL_APP_RESPONSE_ENTRY = "virtual:vinext-app-response-entry";
+const RESOLVED_APP_RESPONSE_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_RESPONSE_ENTRY;
 const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
@@ -1109,8 +1141,14 @@ const VIRTUAL_APP_CAPABILITIES = "virtual:vinext-app-capabilities";
 const RESOLVED_APP_CAPABILITIES = VIRTUAL_PREFIX + VIRTUAL_APP_CAPABILITIES;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
+const APP_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("app-request-stage-independent-entry");
+const APP_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("app-response-stage-entry");
+const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage-entry");
+const PAGES_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("pages-response-stage-entry");
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
 const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
+/** CDN-only registrar kept out of the data-cache response graph. */
+const RESOLVED_CDN_CACHE_ADAPTER = VIRTUAL_PREFIX + VIRTUAL_CDN_CACHE_ADAPTER;
 /** Virtual module that registers the config-driven image optimizer (see VinextOptions.images). */
 const RESOLVED_IMAGE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_IMAGE_ADAPTERS;
 /** Virtual module for composed instrumentation-client bootstrap. */
@@ -1145,12 +1183,14 @@ const _appBrowserServerActionClientPath = resolveShimModulePath(
   _serverDir,
   "app-browser-server-action-client",
 );
+const _appRscCombinedHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-combined-handler");
 const _appRscHandlerPath = resolveShimModulePath(_serverDir, "app-rsc-handler");
 const _pagesClientAssetsPath = resolveShimModulePath(_serverDir, "pages-client-assets");
 // Source checkouts resolve to TypeScript and must stay in Vite's graph so tests
 // do not execute a stale dist build. Published packages resolve to emitted JS,
 // which Node can load natively outside the RSC transform graph.
-const _canExternalizeAppRscHandler = _appRscHandlerPath.endsWith(".js");
+const _canExternalizeAppRscHandler =
+  _appRscHandlerPath.endsWith(".js") && _appRscCombinedHandlerPath.endsWith(".js");
 
 function isValidExportIdentifier(name: string): boolean {
   return /^[$A-Z_a-z][$\w]*$/.test(name);
@@ -1337,6 +1377,9 @@ export type VinextOptions = {
    * Enabled by default. Set to `false` to disable (e.g. if you configure
    * @vitejs/plugin-react manually in your vite.config.ts), or pass an options
    * object to customize the Babel transform.
+   *
+   * Pass `{ compiler: true }` to enable the React Compiler. That requires
+   * @vitejs/plugin-react 6.1+ and the optional `oxc-transform-react` package.
    * @default true
    */
   react?: VitePluginReactOptions | boolean;
@@ -1430,10 +1473,34 @@ type NitroSetupContext = {
   };
 };
 
+function createServerEnvironmentFileNameResolver(
+  config: ResolvedConfig,
+  outputRoot: string,
+): EmittedModuleFileNameResolver {
+  const resolvedOutputRoot = path.resolve(config.root, outputRoot);
+  const outputPrefixes = new Map(
+    ["rsc", "ssr"].map((name) => {
+      const outDir = config.environments[name]?.build.outDir;
+      if (!outDir) return [name, ""] as const;
+      const resolvedOutDir = path.resolve(config.root, outDir);
+      if (!isPathInsideOrEqual(resolvedOutputRoot, resolvedOutDir)) return [name, ""] as const;
+      const relative = path.relative(resolvedOutputRoot, resolvedOutDir);
+      return [name, relative === "." ? "" : relative] as const;
+    }),
+  );
+  return (environmentName, fileName) => {
+    const prefix = environmentName ? outputPrefixes.get(environmentName) : undefined;
+    return prefix ? path.join(prefix, fileName) : fileName;
+  };
+}
+
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
     assertSupportedViteVersion();
   const prerenderConfig = normalizeVinextPrerenderConfig(options.prerender);
+  const cacheAdapterBuildOutputs = [options.cache?.data?.output, options.cache?.cdn?.output].filter(
+    (output) => output !== undefined,
+  );
   let root: string;
   let pagesDir: string;
   let canonicalPagesDir: string;
@@ -1454,20 +1521,52 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // initializer guards any unexpected hook ordering.
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
   let hasCloudflarePlugin = false;
+  let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
+  const isMultiStageServerEnvironment = (environment: {
+    config: { build: { ssr?: unknown }; consumer?: string };
+    name: string;
+  }): boolean => {
+    if (environment.name === "client") return Boolean(environment.config.build.ssr);
+    return isServerEnvironment(environment) && (!hasAppDir || environment.name !== "ssr");
+  };
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
-  let nitroTraceDepsFromServerExternals: string[] = [];
+  let resolvedServerExternalPackages: string[] = [];
+  let pagesTsconfigAliases: Record<string, string> = {};
+  let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
+  const importMetaUrlCapability = createImportMetaUrlPlugin({
+    getRoot: () => root,
+    createEmittedModuleFileNameResolver(config) {
+      if (!hasCloudflarePlugin || !hasAppDir) return undefined;
+      // The Cloudflare Worker module registry mounts every emitted server
+      // environment below the RSC output directory. Node and Nitro expose a
+      // readable native import.meta.filename and retain environment-relative
+      // chunk names as the compatibility fallback.
+      const outputRoot =
+        config.environments.rsc?.build.outDir ?? options.rscOutDir ?? "dist/server";
+      return createServerEnvironmentFileNameResolver(config, outputRoot);
+    },
+  });
   const pagesClientAssetsOutputDirs = new Set<string>();
+  const resolvePagesClientAssetsOutputDir = (environmentName: string, outputDir: string): string =>
+    !selectedMultiStageOutput && !hasAppDir && environmentName === "ssr"
+      ? path.dirname(outputDir)
+      : outputDir;
   let pagesClientAssetsModule: string | null = null;
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
   // so request handling can use O(1) membership checks without filesystem I/O.
   // Production builds leave it null and scan the configured public directory
   // once while generating the RSC entry.
   let devPublicFileRoutes: Set<string> | null = null;
+  let publicDirConflictOptions: Parameters<typeof assertNoPublicDirAssetConflict>[0] | null = null;
+  let copyPublicDirIntoStaticExportBasePath = false;
+  let rscBuildIdentity: string | undefined;
   let rscCompatibilityId: string | undefined;
   let draftModeSecret = getPagesPreviewModeId();
+  const prerenderSecret =
+    process.env.__VINEXT_SHARED_PRERENDER_SECRET ?? randomBytes(32).toString("hex");
   let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
@@ -1475,10 +1574,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // one process never preprocess `composes` deps with another build's config.
   const sassComposesLoader = createSassAwareFileSystemLoader();
 
-  // Build-time layout classification manifest, captured in the RSC virtual
-  // module's load hook and consumed in renderChunk to patch the generated
-  // `__VINEXT_CLASS` stub with a real dispatch table.
-  let rscClassificationManifest: RouteClassificationManifest | null = null;
+  // Build-time layout classification manifests, captured for each generated
+  // RSC virtual module and consumed in renderChunk to patch that module's
+  // `__VINEXT_CLASS` stub with a real dispatch table. Multi-stage outputs emit
+  // both the ordinary RSC graph and a response-only graph in the same build,
+  // so one mutable manifest would be consumed by whichever chunk rendered
+  // first and leave the other graph's classifier as the null stub.
+  const rscClassificationManifests = new Map<string, RouteClassificationManifest>();
+  let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let rscActionOwnerSharedRoots: string[] = [];
+  const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
+  const serverRuntimeOutputDirs = new Set<string>();
+
+  function recordServerEntryLoad(environmentName: string | undefined, id: string): void {
+    if (!environmentName) return;
+    let entries = serverEntryKindsByEnvironment.get(environmentName);
+    if (!entries) {
+      entries = new Set();
+      serverEntryKindsByEnvironment.set(environmentName, entries);
+    }
+    entries.add(id);
+  }
 
   // Resolve shim paths - works both from source (.ts) and built (.js).
   const shimsDir = path.resolve(__dirname, "shims");
@@ -1535,6 +1651,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
+      { prerenderSecret },
+    );
+  }
+
+  async function generatePagesRequestEntry(configuredPublicDir: string | false): Promise<string> {
+    const publicFiles =
+      isServeCommand && devPublicFileRoutes
+        ? [...devPublicFileRoutes].sort()
+        : scanPublicFileRoutes(root, configuredPublicDir === "" ? false : configuredPublicDir);
+    return _generatePagesRequestEntry(
+      pagesDir,
+      nextConfig,
+      fileMatcher,
+      middlewarePath,
+      instrumentationPath,
+      publicFiles,
+      prerenderSecret,
+    );
+  }
+
+  function generatePagesResponseEntry(): Promise<string> {
+    return _generatePagesResponseEntry(
+      pagesDir,
+      nextConfig,
+      fileMatcher,
+      middlewarePath,
+      instrumentationPath,
+      prerenderSecret,
     );
   }
 
@@ -1593,26 +1737,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // different class identities. Resolving from the project root ensures a
   // single shared vite instance.
   //
-  // Pre-resolve both the main plugin and the /transforms subpath eagerly
-  // so all import() calls in this module use consistent resolution.
+  // Pre-resolve the plugins eagerly so all import() calls in this module use
+  // consistent resolution.
   let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
-  let resolvedRscTransformsPath: string | null = null;
   let rscPluginModulePromise: Promise<typeof import("@vitejs/plugin-rsc")> | null = null;
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
   resolvedReactPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-react");
   resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
-  resolvedRscTransformsPath = resolveOptionalDependency(
-    earlyBaseDir,
-    "@vitejs/plugin-rsc/transforms",
-  );
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
+  let manualUseCachePluginPromise: Promise<Plugin> | null = null;
   if (earlyAppDirExists && autoRsc) {
     if (!resolvedRscPath) {
       throw new Error(
@@ -1625,21 +1765,43 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
     rscPluginModulePromise = rscImport;
     rscPluginPromise = rscImport
-      .then((mod) => {
+      .then(async (mod) => {
         const rsc = mod.default;
-        return rsc({
+        const plugins: Plugin[] = rsc({
           entries: {
             rsc: VIRTUAL_RSC_ENTRY,
             ssr: VIRTUAL_APP_SSR_ENTRY,
             client: VIRTUAL_APP_BROWSER_ENTRY,
           },
         });
+        const useCachePlugin = await createUseCacheCallablePlugin({
+          projectRoot: earlyBaseDir,
+          cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
+            .href,
+          getAppDir: () => appDir,
+          matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
+        });
+        const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
+        if (useServerIndex === -1) {
+          throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
+        }
+        plugins.splice(useServerIndex, 0, useCachePlugin);
+        return plugins;
       })
       .catch((cause) => {
         throw new Error("vinext: Failed to load @vitejs/plugin-rsc.", {
           cause,
         });
       });
+  } else if (earlyAppDirExists && resolvedRscPath) {
+    rscPluginModulePromise = import(pathToFileURL(resolvedRscPath).href);
+    manualUseCachePluginPromise = createUseCacheCallablePlugin({
+      projectRoot: earlyBaseDir,
+      cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime")).href,
+      getAppDir: () => appDir,
+      matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
+      allowMissingRsc: true,
+    });
   }
 
   async function resolveHasServerActions(
@@ -1650,7 +1812,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const { getPluginApi } = await rscPluginModulePromise;
     const pluginApi = getPluginApi(config);
     if (!pluginApi || pluginApi.manager.isScanBuild) return true;
-    return Object.keys(pluginApi.manager.serverReferenceMetaMap).length > 0;
+    return pluginApi.manager.serverReferences.metaMap.size > 0;
   }
 
   const configuredReactOptions =
@@ -1658,6 +1820,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const reactOptions = configuredReactOptions;
 
   let reactPluginPromise: Promise<PluginOption[]> | null = null;
+  let reactCompilerPluginPromise: Promise<PluginOption[]> | null = null;
   if (options.react !== false) {
     if (!resolvedReactPath) {
       throw new Error(
@@ -1667,43 +1830,58 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           " @vitejs/plugin-react",
       );
     }
-    const reactImport = import(pathToFileURL(resolvedReactPath).href);
-    reactPluginPromise = reactImport
-      .then((mod) => {
-        const react = (mod as VitePluginReactModule).default;
-        const limitToCommand = (plugin: Plugin, command: "serve" | "build"): Plugin => {
-          const originalApply = plugin.apply;
-          return {
-            ...plugin,
-            apply(config, env) {
-              if (env.command !== command) return false;
-              if (!originalApply) return true;
-              if (typeof originalApply === "function") {
-                return originalApply(config, env);
-              }
-              return originalApply === env.command;
-            },
-          };
+    // Wrap only the dynamic import: errors raised while assembling the plugin
+    // list (such as the compiler support check below) carry their own
+    // actionable instructions and must not be relabeled as an import failure.
+    const reactImport = import(pathToFileURL(resolvedReactPath).href).catch((cause) => {
+      throw new Error("vinext: Failed to load @vitejs/plugin-react.", { cause });
+    });
+    const allReactPlugins = reactImport.then((mod) => {
+      const react = (mod as VitePluginReactModule).default;
+      const limitToCommand = (plugin: Plugin, command: "serve" | "build"): Plugin => {
+        const originalApply = plugin.apply;
+        return {
+          ...plugin,
+          apply(config, env) {
+            if (env.command !== command) return false;
+            if (!originalApply) return true;
+            if (typeof originalApply === "function") {
+              return originalApply(config, env);
+            }
+            return originalApply === env.command;
+          },
         };
-        const buildPlugins = react(reactOptions).map((plugin) =>
-          limitToCommand(plugin as Plugin, "build"),
-        );
-        const hasConfiguredReactInclude =
-          configuredReactOptions !== undefined &&
-          Object.prototype.hasOwnProperty.call(configuredReactOptions, "include");
-        const serveOptions = hasConfiguredReactInclude
-          ? reactOptions
-          : { ...reactOptions, include: /\.(?:[tj]sx?|mdx)$/i };
-        const servePlugins = react(serveOptions).map((plugin) =>
-          limitToCommand(plugin as Plugin, "serve"),
-        );
-        return [...buildPlugins, ...servePlugins];
-      })
-      .catch((cause) => {
-        throw new Error("vinext: Failed to load @vitejs/plugin-react.", {
-          cause,
-        });
-      });
+      };
+      const resolvedBuildPlugins = react(reactOptions);
+      if (
+        isReactCompilerRequested(configuredReactOptions) &&
+        !hasReactCompilerPlugin(resolvedBuildPlugins)
+      ) {
+        throw new Error(reactCompilerUnsupportedMessage(detectPackageManager(process.cwd())));
+      }
+      const buildPlugins = resolvedBuildPlugins.map((plugin) =>
+        limitToCommand(plugin as Plugin, "build"),
+      );
+      const hasConfiguredReactInclude =
+        configuredReactOptions !== undefined &&
+        Object.prototype.hasOwnProperty.call(configuredReactOptions, "include");
+      const serveOptions = hasConfiguredReactInclude
+        ? reactOptions
+        : { ...reactOptions, include: /\.(?:[tj]sx?|mdx)$/i };
+      const servePlugins = react(serveOptions).map((plugin) =>
+        limitToCommand(plugin as Plugin, "serve"),
+      );
+      return [...buildPlugins, ...servePlugins];
+    });
+    // The React Compiler plugin is registered separately, after
+    // `vinext:jsx-in-js`. Every other plugin in the group keeps its original
+    // position so user-configured transforms still see the untouched source.
+    reactPluginPromise = allReactPlugins.then((plugins) =>
+      plugins.filter((plugin) => !isReactCompilerPlugin(plugin)),
+    );
+    reactCompilerPluginPromise = allReactPlugins.then((plugins) =>
+      plugins.filter(isReactCompilerPlugin),
+    );
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
@@ -1809,10 +1987,64 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
   };
 
-  const cachedTypeofWindowTransform = createTransformCache<
-    ReturnType<typeof getTypeofWindowReplacement>,
-    ReturnType<typeof replaceTypeofWindow>
+  const cachedConsumerConditionTransform = createTransformCache<
+    string,
+    ReturnType<typeof replaceConsumerEnvironmentConditions>
   >();
+
+  // vite-plugin-commonjs calls its user filter synchronously, before its first
+  // async boundary, but the filter itself receives only an id. Bridge the
+  // current Vite environment into that call without creating per-environment
+  // plugin instances: environment plugins cannot run the configResolved hook
+  // that vite-plugin-commonjs requires to initialize its resolver.
+  let transformProjectLocalCommonJs = false;
+  let transformBundledCommonJsDependencies = false;
+  const commonJsPlugin = commonjs({
+    filter(id: string) {
+      return commonjsTransformFilter(
+        id,
+        transformProjectLocalCommonJs,
+        transformBundledCommonJsDependencies,
+        importMetaUrlCapability.isBundledCommonJsDependencyId,
+      );
+    },
+  });
+  const commonJsTransform = commonJsPlugin.transform;
+  if (typeof commonJsTransform === "function") {
+    commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+      // The independent optimizeDeps Rolldown build already converted these
+      // files to ESM. Running vite-plugin-commonjs over its output would append
+      // a second export facade (including a duplicate default export).
+      if (
+        this.environment.mode === "dev" &&
+        (this.environment as DevEnvironment).depsOptimizer?.isOptimizedDepFile(id)
+      ) {
+        return null;
+      }
+      const isDev = this.environment.mode === "dev";
+      const isServer = this.environment.config.consumer === "server";
+      const bundledDependency =
+        isDev &&
+        isServer &&
+        (code.includes("__filename") || code.includes("__dirname")) &&
+        importMetaUrlCapability.isBundledCommonJsDependencyId(id);
+      const projectLocal =
+        !bundledDependency && !id.includes("/node_modules/") && !id.includes("\\node_modules\\");
+      const previousProjectLocal = transformProjectLocalCommonJs;
+      const previous = transformBundledCommonJsDependencies;
+      transformProjectLocalCommonJs = projectLocal && isDev;
+      transformBundledCommonJsDependencies = bundledDependency;
+      try {
+        // Do not await here: the filter is consulted synchronously while this
+        // environment-scoped flag is set. The remaining async transform work
+        // does not read it, so concurrent module transforms cannot cross-talk.
+        return commonJsTransform.call(this, code, id, ...args);
+      } finally {
+        transformProjectLocalCommonJs = previousProjectLocal;
+        transformBundledCommonJsDependencies = previous;
+      }
+    };
+  }
 
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
@@ -1827,23 +2059,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Next.js ignores requests without any statically known path component
     // during graph analysis and leaves a deterministic runtime failure.
     createIgnoreDynamicRequestsPlugin(() => nextConfig?.turbopackTranspilePackages ?? []),
+    // Preserve the `require` package-export condition before the CommonJS
+    // transform below turns literal require() calls into static imports.
+    createRequireConditionResolutionPlugin(createIdResolver, commonjsTransformFilter),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     //
-    // Skip project-local `.cjs`/`.cts` files. `vinext init` renames CJS config
+    // Skip project-local `.cjs`/`.cts` files during builds. `vinext init` renames CJS config
     // files to `.cjs` (e.g. `tailwind.config.js` → `tailwind.config.cjs`) when
     // it adds `"type": "module"`, and app code imports them extensionlessly
     // (`import cfg from "../tailwind.config"`). If `vite-plugin-commonjs`
     // rewrites their `module.exports` to ESM `export {}`, rolldown still infers
     // `moduleType: "cjs"` from the `.cjs`/`.cts` extension and re-parses the
     // rewritten output as CommonJS, failing with "Cannot use export statement
-    // outside a module". Returning `false` makes vite-plugin-commonjs skip these
-    // project-local files so rolldown's own CJS interop bundles them instead.
-    // For everything else we return `undefined` to preserve the plugin's
-    // defaults — including its existing skip of node_modules `.cjs` files.
-    commonjs({
-      filter: skipCommonjsForLocalCjs,
-    }),
+    // outside a module". Returning `false` during builds makes vite-plugin-commonjs
+    // skip these project-local files so Rolldown's own CJS interop bundles them
+    // instead. Dev has no later CJS lowering pass, so transform them here.
+    // Conditional `require` targets use a synthetic `.js` identity so their
+    // CJS source can be converted before plugin-rsc injects ESM proxy imports.
+    // For dependencies that Node identifies as CommonJS, return true so the
+    // files actually loaded through a bundled SSR graph are converted on
+    // demand instead of requiring Vite's environment-wide dependency crawl.
+    commonJsPlugin,
     {
       name: "vinext:global-not-found-css-isolation",
       apply: "build",
@@ -1909,7 +2146,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // symlinks resolve these files outside node_modules, so skip them
           // explicitly instead of parsing the whole runtime again as possible
           // JSX on every cold request.
-          if (isInsideDirectory(__dirname, cleanId)) return;
+          if (isPathInside(__dirname, cleanId)) return;
 
           // Inside node_modules, restrict the JSX transform to files that carry
           // a React directive. `@vitejs/plugin-rsc` only parses such modules
@@ -1937,6 +2174,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     } satisfies Plugin,
+    // Runs after `vinext:jsx-in-js` so JSX in plain `.js` files has already
+    // been compiled: `vite:react-compiler` infers the source language from the
+    // file extension and cannot parse JSX inside a `.js` file.
+    reactCompilerPluginPromise,
     // Allow `import 'server-only'` from middleware (and any module reachable
     // from it) in non-RSC environments. Registered before `vinext:config` so
     // its `enforce: "pre"` resolveId runs ahead of @vitejs/plugin-rsc's
@@ -1952,6 +2193,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         return isWithinPagesDirectory(canonicalId) && isApiPage(canonicalId);
       },
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
+    }),
+    createPagesNodeExternalsPlugin({
+      getRoot: () => root,
+      getPagesDir: () => (hasPagesDir ? pagesDir : null),
+      getAliases: () => nextConfig?.aliases ?? {},
+      getTsconfigAliases: () => pagesTsconfigAliases,
+      getBundledPackages: () => pagesBundledPackages,
+      // Workers and Nitro need a self-contained server bundle. Their runtime
+      // builds intentionally keep package code inside the graph.
+      isEnabled: () => !hasCloudflarePlugin && !hasNitroPlugin,
     }),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
     // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
@@ -1991,6 +2242,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};
+        let sassTsconfigPathAliases: SassTsconfigPathAlias[] = [];
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
 
         // Load .env files into process.env before anything else.
@@ -2124,7 +2376,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? nextConfig.typescript.tsconfigPath
             : undefined
           : undefined;
-        tsconfigPathAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
+        const resolvedTsconfigAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
+        tsconfigPathAliases = resolvedTsconfigAliases.vite;
+        pagesTsconfigAliases = tsconfigPathAliases;
+        sassTsconfigPathAliases = resolvedTsconfigAliases.sass;
         // Vite's native option discovers tsconfig.json and cannot receive Next's
         // typescript.tsconfigPath. Only auto-enable it for the default config;
         // an explicit user resolve.tsconfigPaths value remains untouched.
@@ -2155,6 +2410,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             sharedRscCompatibilityId && sharedRscCompatibilityId.length > 0
               ? sharedRscCompatibilityId
               : createRscCompatibilityId(nextConfig);
+        }
+        if (env?.command === "build" && rscBuildIdentity === undefined) {
+          const sharedRscBuildIdentity = process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;
+          rscBuildIdentity =
+            sharedRscBuildIdentity && sharedRscBuildIdentity.length > 0
+              ? sharedRscBuildIdentity
+              : randomBytes(16).toString("hex");
         }
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
         globalNotFoundCssIsolationPath =
@@ -2266,6 +2528,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_TRAILING_SLASH"] = JSON.stringify(
           nextConfig.trailingSlash ? "true" : "false",
         );
+        // Next.js uses this compile-time value to switch App Router navigation
+        // from header-selected RSC responses to static `.txt` Flight assets.
+        defines["process.env.__NEXT_CONFIG_OUTPUT"] = JSON.stringify(nextConfig.output ?? "");
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),
@@ -2310,11 +2575,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Also used to namespace ISR cache keys so old cached entries from a
         // previous deploy are never served by the new one.
         defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
+        // Strict-Vary shared caches can use one stable public URL for the
+        // definitive RSC and loading-shell representations. Other adapters
+        // retain Next-compatible contextual `_rsc` digests.
+        defines["process.env.__VINEXT_CANONICAL_RSC_REQUESTS"] = JSON.stringify(
+          env?.command === "build" && hasVerbatimResponseVary(options.cache) ? "1" : "",
+        );
         // Public browser-facing identity for App Router RSC compatibility
         // checks. Prefer Next.js-style deploymentId when configured; otherwise
         // generate a separate token so RSC headers do not expose
         // generateBuildId() verbatim.
         defines["process.env.__VINEXT_RSC_COMPATIBILITY_ID"] = JSON.stringify(rscCompatibilityId);
+        defines["process.env.__VINEXT_RSC_BUILD_IDENTITY"] = JSON.stringify(rscBuildIdentity ?? "");
         // Deployment ID — mirrors Next.js' configured NEXT_DEPLOYMENT_ID.
         // This remains empty when deploymentId is not configured; the separate
         // "use cache" key builder falls back to __VINEXT_BUILD_ID when needed.
@@ -2388,7 +2660,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // packages/next/src/build/define-env.ts.
         // See: https://nextjs.org/docs/app/api-reference/config/next-config-js/compiler#define
         for (const [key, value] of Object.entries(nextConfig.compilerDefine)) {
-          if (key in defines) {
+          if (key in defines || key === "process.browser") {
             throw new Error(
               `The \`compiler.define\` option is configured to replace the \`${key}\` variable. ` +
                 `This variable is either part of a built-in or is already configured.`,
@@ -2403,7 +2675,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // mode predictable: misconfigured projects fail at config resolution
         // instead of producing subtly wrong output.
         for (const key of Object.keys(nextConfig.compilerDefineServer)) {
-          if (key in defines) {
+          if (key in defines || key === "process.browser") {
             throw new Error(
               `The \`compiler.defineServer\` option is configured to replace the \`${key}\` variable. ` +
                 `This variable is either part of a built-in or is already configured.`,
@@ -2490,6 +2762,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/head-state": path.join(shimsDir, "head-state"),
             "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
             "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
+            "vinext/client": path.resolve(__dirname, "client", "index"),
             "vinext/cache": path.resolve(__dirname, "cache"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             "vinext/instrumentation-client": path.resolve(
@@ -2533,6 +2806,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             typeof p.name === "string" &&
             (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
         );
+        const configuredMultiStageOutput = options.cache?.cdn?.output;
+        selectedMultiStageOutput =
+          !isServeCommand &&
+          configuredMultiStageOutput?.type === "multi-stage" &&
+          (configuredMultiStageOutput.matchesBuild?.({
+            plugins: pluginsFlat as { name?: string }[],
+          }) ??
+            true)
+            ? configuredMultiStageOutput
+            : undefined;
         hasNitroPlugin = pluginsFlat.some(
           (p: unknown) =>
             p &&
@@ -2592,11 +2875,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig?.turbopackTranspilePackages ?? []),
           ...(nextConfig?.optimizePackageImports ?? []),
         ];
+        pagesBundledPackages = new Set(serverTranspilePackages);
         const nextServerExternal = mergeServerExternalPackages(
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
         );
-        nitroTraceDepsFromServerExternals = nextServerExternal;
+        resolvedServerExternalPackages = nextServerExternal;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
@@ -2802,6 +3086,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(!isSSR && !isMultiEnv ? { output: getClientOutputConfig(clientAssetsDir) } : {}),
             }),
           },
+          worker: {
+            // Vite creates a fresh plugin container for every worker bundle.
+            // Vite's config merge appends this factory to both current
+            // factories and legacy plugin arrays, so return only vinext's
+            // plugin here rather than copying user plugins and duplicating them.
+            plugins: () => [
+              createWorkerImageImportsPlugin({ deploymentId: nextConfig.deploymentId }),
+            ],
+          },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
           // route handlers so they can set the Allow header and run user-defined
           // OPTIONS handlers. Without this, Vite's CORS middleware responds to
@@ -2939,6 +3232,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       nextConfig.assetPrefix,
                       nextConfig.deploymentId,
                       context.hostType,
+                      context.hostId,
                     ),
                 },
               }
@@ -2984,9 +3278,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // which is appended at the end of `importers[]` by the vite:css
               // plugin (vite/src/node/plugins/css.ts makeScssWorker).
               const tildeImporter = createSassTildeImporter(root);
+              const tsconfigPathImporters =
+                createSassTsconfigPathImporters(sassTsconfigPathAliases);
               const cssUrlAssetImporter =
                 env.command === "build" ? createSassCssUrlAssetImporter() : null;
               const userAdditionalData = sassPreprocessorOptions?.additionalData;
+              const rawUserImporters = sassPreprocessorOptions?.importers as unknown;
+              const userImporters = Array.isArray(rawUserImporters)
+                ? rawUserImporters
+                : rawUserImporters == null
+                  ? []
+                  : [rawUserImporters];
 
               // Base options shared by both .scss and .sass preprocessors.
               const baseOpts: SassPreprocessorOptions = {
@@ -3004,10 +3306,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       },
                     }
                   : {}),
-                // Merge user-supplied importers (from sassOptions) with the
-                // tilde importer. Tilde goes first so it gets first crack at
-                // ~ prefixed URLs; other importers follow; Vite's own internal
-                // importer is appended last by the vite:css plugin.
+                // Preserve user importer precedence over vinext's optional
+                // tsconfig-path extension. Vite's internal importer is appended
+                // last by the vite:css plugin.
                 //
                 // Cast: the tilde importer implements the modern Sass
                 // `FileImporter` shape structurally and user importers are
@@ -3018,7 +3319,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 importers: [
                   tildeImporter,
                   ...(cssUrlAssetImporter ? [cssUrlAssetImporter] : []),
-                  ...((sassPreprocessorOptions?.importers as unknown[]) ?? []),
+                  ...userImporters,
+                  ...tsconfigPathImporters,
                 ] as SassPreprocessorOptions["importers"],
               };
 
@@ -3148,7 +3450,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                               "@resvg/resvg-js",
                               "yoga-wasm-web",
                               ...(env?.command === "serve" && _canExternalizeAppRscHandler
-                                ? ["vinext/server/app-rsc-handler"]
+                                ? [
+                                    "vinext/server/app-rsc-combined-handler",
+                                    "vinext/server/app-rsc-handler",
+                                  ]
                                 : []),
                               ...userSsrExternal,
                             ],
@@ -3381,7 +3686,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // optimizer avoids the "new dependencies optimized" full
                 // reload the first time a Pages Router page renders an
                 // <Image>.
-                exclude: ["ipaddr.js"],
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  ["ipaddr.js"],
+                  Object.keys(nextShimMap),
+                ),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -3408,6 +3718,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configEnvironment(name, config) {
+        if (name === "client" && nextConfig.output === "export" && nextConfig.basePath) {
+          // Vite normally copies publicDir into the client output root. Static
+          // exports are served verbatim, so files requested below basePath must
+          // live in that same on-disk namespace. Defer the copy to writeBundle,
+          // where we can target dist/client/<basePath> instead.
+          config.build ??= {};
+          copyPublicDirIntoStaticExportBasePath = config.build.copyPublicDir !== false;
+          config.build.copyPublicDir = false;
+        }
+
+        if (name !== "client" && config.consumer !== "client") {
+          // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
+          // container. Register only the thin adapter for the same module-
+          // identity capability; parsing, dependency classification, marker
+          // state, and emitted identity finalization stay shared with Vite.
+          config.optimizeDeps ??= {};
+          config.optimizeDeps.rolldownOptions ??= {};
+          const configuredPlugins = config.optimizeDeps.rolldownOptions.plugins;
+          config.optimizeDeps.rolldownOptions.plugins = [
+            ...(Array.isArray(configuredPlugins)
+              ? configuredPlugins
+              : configuredPlugins
+                ? [configuredPlugins]
+                : []),
+            importMetaUrlCapability.optimizeDepsPlugin,
+          ];
+        }
+
         if (
           isServeCommand &&
           hasCloudflarePlugin &&
@@ -3455,6 +3793,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           suppressOptionalOptimizeDepsWarnings(config.logger);
         }
 
+        // Keep worker entries and code-split chunks in a distinct output
+        // directory. This must run after Vite merges config hooks: output arrays
+        // are concatenated during config merging, so returning a mapped array
+        // from config() would retain the original unisolated outputs as well.
+        if (config.worker?.rolldownOptions) {
+          const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[name]-[hash].js`;
+          const workerOutputs = config.worker.rolldownOptions.output;
+          config.worker.rolldownOptions.output = Array.isArray(workerOutputs)
+            ? (workerOutputs.length > 0 ? workerOutputs : [{}]).map((output) => ({
+                ...output,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              }))
+            : {
+                ...workerOutputs,
+                entryFileNames: workerFileNames,
+                chunkFileNames: workerFileNames,
+              };
+        }
+
         // Provide the resolved config to the Sass-aware CSS Modules Loader so
         // it can call Vite's `preprocessCSS` when processing SCSS files
         // referenced by `composes: className from './file.module.scss'`.
@@ -3481,6 +3839,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 sourcePath: path.relative(root, route.pagePath ?? route.routePath!),
               })),
           );
+        }
+
+        if (config.command === "build") {
+          publicDirConflictOptions = {
+            root: config.root,
+            publicDir: config.publicDir === "" ? null : config.publicDir,
+            assetsDir:
+              config.environments?.client?.build?.assetsDir ??
+              config.build?.assetsDir ??
+              resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+          };
+          assertNoPublicDirAssetConflict(publicDirConflictOptions);
         }
 
         // When the user sets `ssr.external: true`, strip React entries from
@@ -3585,13 +3955,62 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
       },
 
+      // Vite copies publicDir during its prepare-out-dir renderStart hook.
+      // Re-check immediately beforehand so files generated during buildStart
+      // cannot appear after configResolved and bypass the namespace guard.
+      renderStart: {
+        order: "pre",
+        handler() {
+          if (this.environment?.name !== "client" || !publicDirConflictOptions) return;
+          assertNoPublicDirAssetConflict(publicDirConflictOptions);
+        },
+      },
+
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(outputOptions) {
+          if (
+            this.environment?.name !== "client" ||
+            nextConfig.output !== "export" ||
+            !nextConfig.basePath ||
+            !copyPublicDirIntoStaticExportBasePath
+          ) {
+            return;
+          }
+
+          const envConfig = this.environment.config;
+          const publicDir = envConfig.publicDir;
+          if (!publicDir || !fs.existsSync(publicDir)) return;
+
+          // Re-check immediately before the deferred copy, including files
+          // generated after renderStart, so public assets cannot overwrite the
+          // framework's reserved asset namespace.
+          if (publicDirConflictOptions) {
+            assertNoPublicDirAssetConflict(publicDirConflictOptions);
+          }
+
+          const buildRoot = envConfig.root ?? process.cwd();
+          const clientOutDir = outputOptions.dir
+            ? path.resolve(buildRoot, outputOptions.dir)
+            : path.resolve(buildRoot, envConfig.build.outDir);
+          const basePathDir = path.join(clientOutDir, nextConfig.basePath.slice(1));
+          fs.mkdirSync(basePathDir, { recursive: true });
+          fs.cpSync(publicDir, basePathDir, {
+            recursive: true,
+            dereference: true,
+            force: true,
+          });
+        },
+      },
+
       resolveId: {
         // Hook filter: only invoke JS for handled compatibility modules.
         // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
         // direct @vercel/og imports in metadata routes, and \0-prefixed
         // re-imports from @vitejs/plugin-rsc.
         filter: {
-          id: /(?:next\/|vinext\/(?:shims\/|server\/app-rsc-handler)|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
+          id: /(?:next\/|vinext\/(?:shims\/|server\/(?:app-rsc-(?:combined-)?handler|app-router-entry|pages-router-entry))|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
         },
         handler(id, importer) {
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
@@ -3605,6 +4024,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // joins the importer dir with a native `\`) arrives as
           // `E:\proj\virtual:vinext-rsc-entry`. toSlash is a no-op on POSIX.
           const cleanId = toSlash(id.startsWith(VIRTUAL_PREFIX) ? id.slice(1) : id);
+
+          if (cleanId === "vinext/server/app-rsc-combined-handler") {
+            if (
+              _canExternalizeAppRscHandler &&
+              this.environment?.name === "rsc" &&
+              this.environment.config?.command === "serve"
+            ) {
+              return { id: _appRscCombinedHandlerPath, external: true };
+            }
+            return _appRscCombinedHandlerPath;
+          }
 
           if (cleanId === "vinext/server/app-rsc-handler") {
             if (
@@ -3631,21 +4061,64 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           // Router-selected Cloudflare Worker entry facade
           if (cleanId === VIRTUAL_WORKER_ENTRY) return RESOLVED_WORKER_ENTRY;
+          if (
+            selectedMultiStageOutput &&
+            (cleanId === "vinext/server/app-router-entry" ||
+              cleanId === "vinext/server/pages-router-entry")
+          ) {
+            return RESOLVED_WORKER_ENTRY;
+          }
           if (cleanId.endsWith("/" + VIRTUAL_WORKER_ENTRY)) {
             return RESOLVED_WORKER_ENTRY;
+          }
+          if (cleanId === VIRTUAL_REQUEST_STAGE) return RESOLVED_REQUEST_STAGE;
+          if (cleanId.endsWith("/" + VIRTUAL_REQUEST_STAGE)) {
+            return RESOLVED_REQUEST_STAGE;
+          }
+          if (cleanId === VIRTUAL_RESPONSE_STAGE) return RESOLVED_RESPONSE_STAGE;
+          if (cleanId.endsWith("/" + VIRTUAL_RESPONSE_STAGE)) {
+            return RESOLVED_RESPONSE_STAGE;
           }
 
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
+          if (cleanId === VIRTUAL_PAGES_REQUEST_ENTRY) return RESOLVED_PAGES_REQUEST_ENTRY;
+          if (cleanId === VIRTUAL_PAGES_RESPONSE_ENTRY) return RESOLVED_PAGES_RESPONSE_ENTRY;
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
           if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY)) {
             return RESOLVED_SERVER_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_PAGES_REQUEST_ENTRY)) {
+            return RESOLVED_PAGES_REQUEST_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_PAGES_RESPONSE_ENTRY)) {
+            return RESOLVED_PAGES_RESPONSE_ENTRY;
           }
           if (cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY)) {
             return RESOLVED_CLIENT_ENTRY;
           }
           // App Router virtual modules
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
+          if (cleanId === VIRTUAL_CACHEABILITY_MANIFEST) {
+            const isWorkerBuildEnvironment = hasAppDir
+              ? this.environment?.name === "rsc"
+              : this.environment !== undefined && isServerEnvironment(this.environment);
+            if (isWorkerBuildEnvironment && this.environment.config?.command === "build") {
+              return { id: `./${CACHEABILITY_MANIFEST_MODULE}`, external: true };
+            }
+            return RESOLVED_CACHEABILITY_MANIFEST;
+          }
+          if (cleanId === VIRTUAL_PREGENERATED_CONCRETE_PATHS) {
+            const isWorkerBuildEnvironment = hasAppDir
+              ? this.environment?.name === "rsc"
+              : this.environment !== undefined && isServerEnvironment(this.environment);
+            if (isWorkerBuildEnvironment && this.environment.config?.command === "build") {
+              return { id: `./${PREGENERATED_CONCRETE_PATHS_MODULE}`, external: true };
+            }
+            return RESOLVED_PREGENERATED_CONCRETE_PATHS;
+          }
+          if (cleanId === VIRTUAL_APP_REQUEST_ENTRY) return RESOLVED_APP_REQUEST_ENTRY;
+          if (cleanId === VIRTUAL_APP_RESPONSE_ENTRY) return RESOLVED_APP_RESPONSE_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
           if (cleanId === VIRTUAL_APP_CAPABILITIES) return RESOLVED_APP_CAPABILITIES;
@@ -3659,6 +4132,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return RESOLVED_CACHE_ADAPTERS;
           }
           if (
+            cleanId === VIRTUAL_CDN_CACHE_ADAPTER ||
+            cleanId.endsWith("/" + VIRTUAL_CDN_CACHE_ADAPTER)
+          ) {
+            return RESOLVED_CDN_CACHE_ADAPTER;
+          }
+          if (
             cleanId === VIRTUAL_IMAGE_ADAPTERS ||
             cleanId.endsWith("/" + VIRTUAL_IMAGE_ADAPTERS)
           ) {
@@ -3669,6 +4148,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
           if (cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY)) {
             return RESOLVED_RSC_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_APP_REQUEST_ENTRY)) {
+            return RESOLVED_APP_REQUEST_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_APP_RESPONSE_ENTRY)) {
+            return RESOLVED_APP_RESPONSE_ENTRY;
           }
           if (cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY)) {
             return RESOLVED_APP_SSR_ENTRY;
@@ -3703,16 +4188,42 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         filter: { id: /virtual:vinext-/ },
         async handler(id) {
           if (id === RESOLVED_WORKER_ENTRY) {
+            if (selectedMultiStageOutput?.type === "multi-stage") {
+              return [
+                `export { default } from ${JSON.stringify(selectedMultiStageOutput.entry)};`,
+                `export * from ${JSON.stringify(selectedMultiStageOutput.entry)};`,
+                "",
+              ].join("\n");
+            }
             const entry = hasAppDir
               ? "vinext/server/app-router-entry"
               : "vinext/server/pages-router-entry";
             return `export { default } from ${JSON.stringify(entry)};`;
           }
+          if (id === RESOLVED_REQUEST_STAGE) {
+            const entry = hasAppDir ? APP_REQUEST_STAGE_ENTRY : PAGES_REQUEST_STAGE_ENTRY;
+            return `export { handleRequestStage } from ${JSON.stringify(entry)};\n`;
+          }
+          if (id === RESOLVED_RESPONSE_STAGE) {
+            const entry = hasAppDir ? APP_RESPONSE_STAGE_ENTRY : PAGES_RESPONSE_STAGE_ENTRY;
+            return `export { handleResponseStage } from ${JSON.stringify(entry)};\n`;
+          }
           // Pages Router virtual modules
           if (id === RESOLVED_SERVER_ENTRY) {
+            recordServerEntryLoad(this.environment?.name, id);
             return await generateServerEntry(
               this.environment.config.publicDir === "" ? false : this.environment.config.publicDir,
             );
+          }
+          if (id === RESOLVED_PAGES_REQUEST_ENTRY) {
+            recordServerEntryLoad(this.environment?.name, id);
+            return await generatePagesRequestEntry(
+              this.environment.config.publicDir === "" ? false : this.environment.config.publicDir,
+            );
+          }
+          if (id === RESOLVED_PAGES_RESPONSE_ENTRY) {
+            recordServerEntryLoad(this.environment?.name, id);
+            return await generatePagesResponseEntry();
           }
           if (id === RESOLVED_CLIENT_ENTRY) {
             return await generateClientEntry();
@@ -3750,7 +4261,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return `export default ${JSON.stringify(metadata)};`;
           }
           // App Router virtual modules
-          if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
+          if (id === RESOLVED_CACHEABILITY_MANIFEST) {
+            return "export default null;";
+          }
+          if (id === RESOLVED_PREGENERATED_CONCRETE_PATHS) {
+            return "export {};";
+          }
+          if (
+            (id === RESOLVED_RSC_ENTRY ||
+              id === RESOLVED_APP_REQUEST_ENTRY ||
+              id === RESOLVED_APP_RESPONSE_ENTRY) &&
+            hasAppDir
+          ) {
+            recordServerEntryLoad(this.environment?.name, id);
             const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
             const metaRoutes = scanMetadataFiles(appDir);
             const hasServerActions = await resolveHasServerActions(this.environment.config);
@@ -3767,12 +4290,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // Collect Layer 1 (segment config) classifications for all layouts.
             // Layer 2 (module graph) runs later in renderChunk once Rollup's
             // module info is available.
-            // Invariant: rscClassificationManifest must be built from the same
-            // `routes` value passed to generateRscEntry below so that layout
-            // indices in the manifest correspond 1:1 to the route.layouts arrays
-            // used during codegen. renderChunk clears this after patching.
-            rscClassificationManifest = collectRouteClassificationManifest(routes);
-            return generateRscEntry(
+            // Invariant: each manifest must be built from the same `routes`
+            // value passed to its generator below so that layout indices in the
+            // manifest correspond 1:1 to the route.layouts arrays used during
+            // codegen. renderChunk consumes the manifest for that virtual module.
+            if (id !== RESOLVED_APP_REQUEST_ENTRY) {
+              rscClassificationManifests.set(id, collectRouteClassificationManifest(routes));
+              rscActionOwnerRoutes =
+                this.environment.config.command === "build" && hasServerActions ? routes : null;
+              rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
+                (path): path is string => path !== null,
+              );
+            }
+            const generateEntry =
+              id === RESOLVED_APP_REQUEST_ENTRY
+                ? generateAppRequestRscEntry
+                : id === RESOLVED_APP_RESPONSE_ENTRY
+                  ? generateAppResponseRscEntry
+                  : generateRscEntry;
+            return generateEntry(
               appDir,
               routes,
               middlewarePath,
@@ -3799,6 +4335,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 cacheComponents: nextConfig?.cacheComponents,
                 prefetchInlining: nextConfig?.prefetchInlining,
                 hasServerActions,
+                actionOwners: this.environment.config.command === "build" ? undefined : null,
                 i18n: nextConfig?.i18n,
                 imageConfig: {
                   deviceSizes: nextConfig?.images?.deviceSizes,
@@ -3821,6 +4358,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       ),
                 globalNotFoundPath,
                 draftModeSecret,
+                prerenderSecret,
               },
               instrumentationPath,
             );
@@ -3834,10 +4372,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (id === RESOLVED_CACHE_ADAPTERS) {
             return generateCacheAdaptersModule(options.cache);
           }
+          if (id === RESOLVED_CDN_CACHE_ADAPTER) {
+            return generateCdnCacheAdapterModule(options.cache);
+          }
           if (id === RESOLVED_IMAGE_ADAPTERS) {
             return generateImageAdaptersModule(options.images);
           }
           if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
+            recordServerEntryLoad(this.environment?.name, id);
             return generateSsrEntry(hasPagesDir);
           }
           if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
@@ -3869,6 +4411,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               graph.routeManifest,
               pagesPrefetchRoutes,
               nextConfig.rewrites,
+              nextConfig.i18n?.locales,
             );
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {
@@ -3920,10 +4463,21 @@ export const loadServerActionClient = ${
           // pulling ModuleInfo from the wrong graph would give nonsense
           // results.
           if (this.environment?.name !== "rsc") return null;
-          if (!rscClassificationManifest) return null;
           // Cheap pre-filter: skip chunks that don't mention the stub at all
           // (e.g. the scan-phase chunk and every non-entry chunk).
-          if (!code.includes("__VINEXT_CLASS")) return null;
+          const hasClassificationStub = code.includes("__VINEXT_CLASS");
+          if (!hasClassificationStub) return null;
+
+          // Both generated App RSC graphs can be present in one multi-entry
+          // build. Associate the chunk with the virtual module that generated
+          // its route table so each graph receives (and consumes) its own
+          // manifest regardless of render order.
+          const rscEntryId = [RESOLVED_RSC_ENTRY, RESOLVED_APP_RESPONSE_ENTRY].find((id) =>
+            chunk.moduleIds.includes(id),
+          );
+          if (!rscEntryId) return null;
+          const rscClassificationManifest = rscClassificationManifests.get(rscEntryId);
+          if (!rscClassificationManifest) return null;
 
           // Patching per-chunk (rather than scanning the whole bundle in
           // generateBundle) assumes the stub body and its per-route call sites
@@ -3957,27 +4511,31 @@ export const loadServerActionClient = ${
             },
           };
 
-          const patchPlan = planRouteClassificationInjection({
-            canonicalizeLayoutPath: canonicalize,
-            chunks: [{ code, fileName: chunk.fileName }],
-            dynamicShimPaths,
-            enableDebugReasons: enableClassificationDebug,
-            manifest: rscClassificationManifest,
-            moduleInfo,
-          });
+          const patchPlan =
+            hasClassificationStub && rscClassificationManifest
+              ? planRouteClassificationInjection({
+                  canonicalizeLayoutPath: canonicalize,
+                  chunks: [{ code, fileName: chunk.fileName }],
+                  dynamicShimPaths,
+                  enableDebugReasons: enableClassificationDebug,
+                  manifest: rscClassificationManifest,
+                  moduleInfo,
+                })
+              : { kind: "skip" as const };
+          const nextCode = patchPlan.kind === "skip" ? code : patchPlan.code;
           if (patchPlan.kind === "skip") return null;
 
-          // Consume the manifest exactly once per RSC entry. Clearing here
-          // prevents a stale manifest from leaking into a subsequent build pass
-          // if the load hook is not re-triggered (e.g., in non-standard rebuild
-          // paths).
-          rscClassificationManifest = null;
+          // Consume the manifest exactly once for this generated RSC module.
+          // Keeping the sibling entry's manifest intact lets a multi-entry
+          // build patch both graphs while still preventing stale state from
+          // leaking into a later non-standard rebuild path.
+          rscClassificationManifests.delete(rscEntryId);
 
           // The patched body is longer than the stub, so any existing source
           // map would be stale. RSC entry source maps are not served or
           // consumed, so nulling the map is safe and prevents stale-map
           // confusion in tooling.
-          return { code: patchPlan.code, map: patchPlan.map };
+          return { code: nextCode, map: null };
         },
       },
     },
@@ -4002,10 +4560,10 @@ export const loadServerActionClient = ${
 
           const buildRoot = this.environment.config.root ?? process.cwd();
           const environmentOutDir = path.resolve(buildRoot, this.environment.config.build.outDir);
-          const sidecarDir =
-            !hasAppDir && this.environment.name === "ssr"
-              ? path.dirname(environmentOutDir)
-              : environmentOutDir;
+          const sidecarDir = resolvePagesClientAssetsOutputDir(
+            this.environment.name,
+            environmentOutDir,
+          );
           let externalId = path.relative(
             environmentOutDir,
             path.join(sidecarDir, PAGES_CLIENT_ASSETS_MODULE),
@@ -4014,6 +4572,22 @@ export const loadServerActionClient = ${
           pagesClientAssetsOutputDirs.add(sidecarDir);
           return { id: externalId, external: true };
         },
+      },
+
+      outputOptions(output) {
+        const environment = this.environment;
+        if (
+          !selectedMultiStageOutput ||
+          !environment ||
+          !isMultiStageServerEnvironment(environment)
+        ) {
+          return;
+        }
+        const buildRoot = environment.config.root ?? process.cwd();
+        const outputDir = path.resolve(buildRoot, output.dir ?? environment.config.build.outDir);
+        pagesClientAssetsOutputDirs.add(
+          resolvePagesClientAssetsOutputDir(environment.name, outputDir),
+        );
       },
     },
     // CSS url() asset parity with Next.js. Build-only: dev CSS is untouched.
@@ -4039,6 +4613,75 @@ export const loadServerActionClient = ${
           // a map over the intermediate marked text carries no useful information.
           return { code: marked, map: null };
         },
+      },
+    },
+    {
+      name: "vinext:multi-stage-host-entry",
+      apply: "build",
+
+      transform: {
+        // The adapter owns entry matching. Do not pre-filter by an import
+        // spelling here: host entries may reach vinext through an alias or an
+        // adapter-owned wrapper, and the callback receives both source and id
+        // specifically so it can recognize those layouts.
+        filter: { id: /virtual:|\.[cm]?[jt]sx?(?:\?|$)/ },
+        handler(code, id) {
+          const transformed = selectedMultiStageOutput?.transformHostEntry?.({ code, id });
+          return transformed == null ? null : { code: transformed, map: null };
+        },
+      },
+    },
+    {
+      name: "vinext:multi-stage-server-output",
+      apply: "build",
+
+      // Vite resolves build.ssr=true for every server environment. The App
+      // Router's named `ssr` environment is still only its HTML renderer; it
+      // must never receive deployable request/response stage entries.
+      // Standalone `vite build --ssr` uses the sole `client` environment.
+      // Pages and adapter-owned server environments retain their own names.
+      buildStart() {
+        const entries = selectedMultiStageOutput?.entries;
+        const environment = this.environment;
+        if (!entries || !environment || !isMultiStageServerEnvironment(environment)) {
+          return;
+        }
+
+        for (const [name, id] of [
+          ["vinext-request-stage", entries.request],
+          ["vinext-response-stage", entries.response],
+        ] as const) {
+          this.emitFile({ id, name, preserveSignature: "strict", type: "chunk" });
+        }
+      },
+
+      outputOptions(output) {
+        const environment = this.environment;
+        if (
+          !selectedMultiStageOutput ||
+          !environment ||
+          !isMultiStageServerEnvironment(environment)
+        ) {
+          return;
+        }
+        if (
+          output.format !== undefined &&
+          output.format !== "es" &&
+          output.format !== "esm" &&
+          output.format !== "module"
+        ) {
+          throw new Error(
+            `[vinext] Multi-stage output requires an ES module format; ${JSON.stringify(output.format)} cannot represent independently deployable request and response entries.`,
+          );
+        }
+        return {
+          ...output,
+          chunkFileNames: createMultiStageChunkFileNames(
+            resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+            output.chunkFileNames,
+          ),
+          codeSplitting: createMultiStageCodeSplittingConfig(output.codeSplitting),
+        };
       },
     },
     {
@@ -4098,6 +4741,54 @@ export const loadServerActionClient = ${
         // Respect any explicit user/plugin minify choice (including `false`).
         if (config.build?.minify !== undefined) return null;
         return { build: { minify: true } };
+      },
+    },
+    {
+      name: "vinext:server-conditions",
+      enforce: "post",
+
+      configEnvironment(name, config) {
+        if (name !== "rsc" && name !== "ssr") return null;
+
+        // Vinext's RSC and SSR environments render Next.js server code, so
+        // selecting a package's browser export here diverges from Next.js and
+        // can execute a client-only implementation during SSR. Preserve every
+        // host-specific condition, but let ESM imports fall through to their
+        // `import` export instead of `browser`.
+        if (config.resolve?.conditions?.includes("browser")) {
+          config.resolve.conditions = config.resolve.conditions.filter(
+            (condition) => condition !== "browser",
+          );
+        }
+        const optimizerConditions = config.optimizeDeps?.rolldownOptions?.resolve?.conditionNames;
+        if (optimizerConditions?.includes("browser")) {
+          config.optimizeDeps!.rolldownOptions!.resolve!.conditionNames =
+            optimizerConditions.filter((condition) => condition !== "browser");
+        }
+        return null;
+      },
+    },
+    {
+      name: "vinext:cacheability-manifest-asset",
+      apply: "build",
+
+      generateBundle() {
+        const isWorkerBuildEnvironment = hasAppDir
+          ? this.environment?.name === "rsc"
+          : this.environment !== undefined && isServerEnvironment(this.environment);
+        if (!isWorkerBuildEnvironment) return;
+        this.emitFile({
+          type: "asset",
+          fileName: CACHEABILITY_MANIFEST_MODULE,
+          source: "export default null;\n",
+        });
+        if (hasAppDir) {
+          this.emitFile({
+            type: "asset",
+            fileName: PREGENERATED_CONCRETE_PATHS_MODULE,
+            source: "delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;\n",
+          });
+        }
       },
     },
     {
@@ -4280,9 +4971,29 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        const devBuildId = nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
+
         server.middlewares.use((req, _res, next) => {
           req.__vinextOriginalEncodedUrl ??= req.url;
           next();
+        });
+
+        // Match Next.js dev behavior: allow the server to start, then reject
+        // /_next requests while public/_next exists. This runs before Vite's
+        // public-file middleware and re-checks the filesystem on every request,
+        // so creating the directory after startup cannot bypass the guard.
+        server.middlewares.use((req, _res, next) => {
+          try {
+            assertNoPublicNextRequestConflict({
+              root: server.config.root,
+              publicDir: server.config.publicDir === "" ? null : server.config.publicDir,
+              basePath: nextConfig.basePath ?? "",
+              requestUrl: req.url ?? "/",
+            });
+            next();
+          } catch (error) {
+            next(error);
+          }
         });
 
         // Watch route files for additions/removals to invalidate route cache.
@@ -5181,8 +5892,6 @@ export const loadServerActionClient = ${
                 // matching the value embedded into the prod entry. Fall back
                 // to the env-var define (set by the plugin) and finally
                 // "development" if the plugin hasn't resolved a config yet.
-                const devBuildId =
-                  nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
                 const dataMatch = parseNextDataPathname(pathname, devBuildId);
                 if (dataMatch) {
                   isDataReq = true;
@@ -5397,6 +6106,19 @@ export const loadServerActionClient = ${
                 nextConfig?.pageExtensions,
                 fileMatcher,
               );
+              let devApiRoutesPromise: ReturnType<typeof apiRouter> | null = null;
+              const getDevApiRoutes = () =>
+                (devApiRoutesPromise ??= apiRouter(
+                  pagesDir,
+                  nextConfig?.pageExtensions,
+                  fileMatcher,
+                ));
+              let devAppRoutesPromise: ReturnType<typeof appRouter> | null = null;
+              const getDevAppRoutes = () =>
+                (devAppRoutesPromise ??=
+                  hasAppDir && appDir
+                    ? appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
+                    : Promise.resolve([]));
               const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
               const classifyDevPageRoute = (
                 route: (typeof devPageRoutes)[number],
@@ -5439,6 +6161,18 @@ export const loadServerActionClient = ${
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 configMatchPathname,
                 runMiddleware: devRunMiddlewareAdapter,
+                // Treat App route handlers as an API filesystem match too. The
+                // pipeline may then emit an API intent instead of continuing
+                // through fallback rewrites. This only answers whether an API
+                // route exists; the adapter's precedence check below still
+                // decides whether Pages or App owns overlapping matches.
+                matchApiRoute: async (apiUrl) => {
+                  const devApiRoutes = await getDevApiRoutes();
+                  const pagesMatch = matchRoute(apiUrl, devApiRoutes);
+                  if (pagesMatch) return pagesMatch;
+                  const devAppRoutes = await getDevAppRoutes();
+                  return matchAppRoute(apiUrl, devAppRoutes);
+                },
                 matchPageRoute: (resolvedPathname, request) => {
                   const routeUrl = nextConfig?.i18n
                     ? resolvePagesI18nRequest(
@@ -5547,14 +6281,18 @@ export const loadServerActionClient = ${
 
               // For render/api intents: flush staged middleware headers and
               // apply request header mutations before calling SSR/API handlers.
-              const flushStagedHeaders = () => {
+              const forEachStagedHeader = (visit: (key: string, value: string) => void) => {
                 for (const [key, value] of Object.entries(pipelineResult.stagedHeaders)) {
                   if (Array.isArray(value)) {
-                    for (const v of value) res.appendHeader(key, v);
+                    for (const item of value) visit(key, item);
                   } else {
-                    res.appendHeader(key, value);
+                    visit(key, value);
                   }
                 }
+              };
+
+              const flushStagedHeaders = () => {
+                forEachStagedHeader((key, value) => res.appendHeader(key, value));
               };
 
               // Apply post-middleware request headers to req.headers so the
@@ -5563,12 +6301,29 @@ export const loadServerActionClient = ${
                 applyRequestHeadersToNodeRequest(pipelineResult.requestHeaders);
               };
 
+              const forwardInternalApiRewriteToApp = (apiUrl: string) => {
+                const responseHeaders: [string, string][] = [];
+                forEachStagedHeader((key, value) => responseHeaders.push([key, value]));
+                const requestHeaders = new Headers();
+                encodeMiddlewareRequestHeaders(requestHeaders, pipelineResult.requestHeaders);
+
+                // The Pages pipeline already ran middleware and evaluated the
+                // fallback rule against its request-header overrides. Carry
+                // both pieces of state into the App RSC plugin: reapplying the
+                // rule from the original request can lose its has/missing
+                // match, while mutating req.url would lose the public URL that
+                // App route handlers expose through request.url.
+                flushRequestHeaders();
+                req.headers[VINEXT_MW_CTX_HEADER] = JSON.stringify({
+                  h: responseHeaders,
+                  q: [...requestHeaders],
+                  s: pipelineResult.middlewareStatus ?? null,
+                  r: apiUrl,
+                });
+              };
+
               if (pipelineResult.type === "api") {
-                const apiRoutes = await apiRouter(
-                  pagesDir,
-                  nextConfig?.pageExtensions,
-                  fileMatcher,
-                );
+                const devApiRoutes = await getDevApiRoutes();
                 // Only flush staged middleware headers / mutate req.headers when a
                 // pages API route actually matches — mirroring the original
                 // `if (apiMatch)` gate. On a miss we must NOT touch res or req.headers
@@ -5576,14 +6331,10 @@ export const loadServerActionClient = ${
                 // deletes all req.headers and repopulates them from the body-less pipeline
                 // request, wiping the hybrid app+pages middleware context
                 // (VINEXT_MW_CTX_HEADER, set on req.headers) that the app RSC plugin reads.
-                const apiMatch = matchRoute(pipelineResult.apiUrl, apiRoutes);
+                const apiMatch = matchRoute(pipelineResult.apiUrl, devApiRoutes);
                 if (apiMatch && hasAppDir && appDir) {
-                  const appRoutes = await appRouter(
-                    appDir,
-                    nextConfig?.pageExtensions,
-                    fileMatcher,
-                  );
-                  const appMatch = matchAppRoute(pipelineResult.apiUrl, appRoutes);
+                  const devAppRoutes = await getDevAppRoutes();
+                  const appMatch = matchAppRoute(pipelineResult.apiUrl, devAppRoutes);
                   if (
                     appMatch &&
                     !pagesRouteHasPriorityOverAppRoute(apiMatch.route, appMatch.route)
@@ -5603,7 +6354,7 @@ export const loadServerActionClient = ${
                   req,
                   res,
                   pipelineResult.apiUrl,
-                  apiRoutes,
+                  devApiRoutes,
                   {
                     basePath: nextConfig?.basePath,
                     i18n: nextConfig?.i18n,
@@ -5616,7 +6367,15 @@ export const loadServerActionClient = ${
 
                 // No API route matched — if app dir exists, let the RSC plugin handle it
                 // (app/api/* route handlers live there). Otherwise hard-404.
-                if (hasAppDir) return next();
+                if (hasAppDir) {
+                  // Only a next.config rewrite should override App's route
+                  // resolution. Locale stripping is API lookup normalization,
+                  // not an internal rewrite to forward to the RSC plugin.
+                  if (pipelineResult.configRewriteFired) {
+                    forwardInternalApiRewriteToApp(pipelineResult.apiUrl);
+                  }
+                  return next();
+                }
 
                 res.statusCode = 404;
                 res.end("404 - API route not found");
@@ -5672,6 +6431,7 @@ export const loadServerActionClient = ${
                       nextConfig?.reactStrictMode === true,
                       nextConfig?.expireTime,
                       nextConfig?.crossOrigin,
+                      devBuildId,
                     ),
                   };
                 }
@@ -5839,13 +6599,29 @@ export const loadServerActionClient = ${
         },
       },
     },
+    // Consumer-scoped built-ins shared by every Vite environment. Next.js
+    // compiles `process.browser` to true for browser code and false for every
+    // server target. Keep it beside the existing `typeof window` define so
+    // RSC, SSR, Workers, and the client cannot drift onto separate policies.
+    // Optimized dependencies use a separate Rolldown pipeline, so mirror
+    // `process.browser` into that pipeline for both client and server deps.
     {
       name: "vinext:typeof-window",
       configEnvironment(_name, environment) {
-        if (!useNativeTypeofWindowFolding) return null;
+        const isClient = environment.consumer === "client";
+        const processBrowser = isClient ? "true" : "false";
+        const define: Record<string, string> = {
+          "process.browser": processBrowser,
+        };
+        if (useNativeTypeofWindowFolding) {
+          define["typeof window"] = isClient ? '"object"' : '"undefined"';
+        }
         return {
-          define: {
-            "typeof window": environment.consumer === "client" ? '"object"' : '"undefined"',
+          define,
+          optimizeDeps: {
+            rolldownOptions: {
+              transform: { define: { "process.browser": processBrowser } },
+            },
           },
         };
       },
@@ -5862,17 +6638,30 @@ export const loadServerActionClient = ${
       },
       enforce: "post",
       transform: {
-        filter: { code: /\btypeof\s+window\b/ },
+        filter: { code: consumerEnvironmentConditionFilter },
         handler(code, id) {
-          if (useNativeTypeofWindowFolding && this.environment.config.build.write !== false) {
-            return null;
-          }
+          const scansImports = this.environment.config.build.write === false;
+          const replaceTypeofWindow = !useNativeTypeofWindowFolding || scansImports;
+          const replaceProcessBrowser = scansImports;
+          if (!replaceTypeofWindow && !replaceProcessBrowser) return null;
           const cacheDir = `${toSlash(this.environment.config.cacheDir).replace(/\/$/, "")}/`;
           if (toSlash(id).startsWith(cacheDir)) return null;
 
-          const replacement = getTypeofWindowReplacement(this.environment);
-          return cachedTypeofWindowTransform(id, code, replacement, () =>
-            replaceTypeofWindow(code, replacement, id),
+          const typeofWindow = getTypeofWindowReplacement(this.environment);
+          const processBrowser = this.environment.config.consumer === "client";
+          const variant = `${replaceTypeofWindow ? typeofWindow : "-"}:${
+            replaceProcessBrowser ? processBrowser : "-"
+          }`;
+          return cachedConsumerConditionTransform(id, code, variant, () =>
+            replaceConsumerEnvironmentConditions(
+              code,
+              {
+                ...(replaceTypeofWindow ? { typeofWindow } : {}),
+                ...(replaceProcessBrowser ? { processBrowser } : {}),
+                pruneUnreachableImports: scansImports,
+              },
+              id,
+            ),
           );
         },
       },
@@ -5912,6 +6701,13 @@ export const loadServerActionClient = ${
         // `process.env.NEXT_RUNTIME` to construct revalidation paths would then
         // compute `'/nodejs'` correctly instead of `''` (issue #1365).
         serverDefines["process.env.NEXT_RUNTIME"] = JSON.stringify("nodejs");
+
+        // Next evaluates App Page prerenders with NEXT_PHASE set to
+        // phase-production-build, then evaluates ISR regeneration in the
+        // production-server phase. A staged probe shares a Worker bundle with
+        // ordinary requests, so defer this one value to the request-scoped
+        // server-global accessor instead of baking one phase into the bundle.
+        serverDefines["process.env.NEXT_PHASE"] = "globalThis.__VINEXT_NEXT_PHASE";
 
         // On-demand ISR revalidation secret — baked SERVER-ONLY (the `client`
         // early-return above guarantees it never reaches the browser bundle) so
@@ -6234,192 +7030,7 @@ export const loadServerActionClient = ${
     // IDs through Vite's build manifest so it can emit boundary-scoped preload
     // hints with the request CSP nonce.
     createDynamicPreloadMetadataPlugin(),
-    // "use cache" directive transform:
-    // Detects "use cache" at file-level or function-level and wraps the
-    // exports/functions with registerCachedFunction() from vinext/cache-runtime.
-    // Runs without enforce so it executes after JSX transform (parseAst needs plain JS).
-    {
-      name: "vinext:use-cache",
-
-      transform: {
-        // Hook filter: only invoke JS when code contains 'use cache'.
-        // The vast majority of files don't use this directive.
-        filter: {
-          id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
-            exclude: [/node_modules/, VIRTUAL_MODULE_ID_RE],
-          },
-          code: "use cache",
-        },
-        async handler(code, id) {
-          // Parse the AST first to check for actual "use cache" directives before
-          // throwing the missing-RSC error. The code filter can
-          // fire on files that contain "use cache" only in comments or string
-          // literals (e.g., in error messages), not as real directives.
-          const ast = parseAst(code);
-
-          // Check for file-level "use cache" directive
-          const cacheDirective = ast.body.find(
-            (node) =>
-              node.type === "ExpressionStatement" &&
-              node.expression?.type === "Literal" &&
-              typeof node.expression.value === "string" &&
-              node.expression.value.startsWith("use cache"),
-          );
-
-          // Keep the declaration shape because Function.length drops default and
-          // rest parameters. Next.js's cache transform likewise records declared
-          // arguments so metadata resolution can decide whether to pass `parent`.
-          const inlineCacheSecondArgumentUsage = cacheDirective
-            ? []
-            : collectInlineUseCacheSecondArgumentUsage(ast.body);
-          const hasInlineCache = inlineCacheSecondArgumentUsage.length > 0;
-
-          if (!cacheDirective && !hasInlineCache) return null;
-
-          if (!resolvedRscTransformsPath) {
-            throw new Error(
-              "vinext: 'use cache' requires @vitejs/plugin-rsc to be installed.\n" +
-                "Run: " +
-                detectPackageManager(process.cwd()) +
-                " @vitejs/plugin-rsc",
-            );
-          }
-          const { transformWrapExport, transformHoistInlineDirective } = await import(
-            pathToFileURL(resolvedRscTransformsPath).href
-          );
-
-          if (cacheDirective) {
-            // File-level "use cache" — wrap function exports with
-            // registerCachedFunction. Page default exports are wrapped directly
-            // (they're leaf components). Layout/template defaults are excluded
-            // because they receive {children} from the framework.
-            // oxlint-disable-next-line typescript/no-explicit-any
-            const directiveValue = (cacheDirective as any).expression.value;
-            const variant =
-              directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").trim();
-
-            // Only skip default export wrapping for layouts and templates —
-            // they receive {children} from the framework which requires
-            // temporary reference handling that registerCachedFunction doesn't
-            // support yet. Pages, not-found, loading, error, and default are
-            // leaf components with no {children} prop and can be cached directly.
-            const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
-            const modulePath = stripViteModuleQuery(id);
-            const moduleFileName = path.basename(modulePath);
-            const isAppPageModule =
-              hasAppDir &&
-              isInsideDirectory(appDir, modulePath) &&
-              path.parse(moduleFileName).name === "page" &&
-              fileMatcher.extensionRegex.test(moduleFileName);
-
-            const runtimeModuleUrl = pathToFileURL(
-              resolveShimModulePath(shimsDir, "cache-runtime"),
-            ).href;
-            const secondArgumentUsage = collectFileUseCacheSecondArgumentUsage(ast.body);
-            const result = transformWrapExport(code, ast, {
-              runtime: (value: string, name: string) => {
-                const runtimeOptions: string[] = [];
-                // A local declaration gives us its exact parameter shape. For
-                // opaque exports (for example `export { fn } from "./impl"`),
-                // match Next.js's unknown-signature behavior and conservatively
-                // treat every argument as used.
-                const acceptsSecondArgument = secondArgumentUsage.get(value) ?? true;
-                runtimeOptions.push(`acceptsSecondArgument: ${acceptsSecondArgument}`);
-                if (name === "default" && isAppPageModule) {
-                  runtimeOptions.push("appPageDefaultExport: true");
-                }
-                const optionsArgument =
-                  runtimeOptions.length > 0 ? `, { ${runtimeOptions.join(", ")} }` : "";
-                return `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${optionsArgument})`;
-              },
-              rejectNonAsyncFunction: false,
-              filter: (name: string, meta: { isFunction?: boolean }) => {
-                // Skip non-functions (constants, types, etc.)
-                if (meta.isFunction === false) return false;
-                // Skip the default export on layout/template files — these
-                // receive {children} from the framework, and caching them
-                // requires temporary reference handling for the children slot.
-                // Named exports (e.g. generateMetadata) are still wrapped.
-                if (isLayoutOrTemplate && name === "default") return false;
-                return true;
-              },
-            });
-
-            if (result.exportNames.length > 0) {
-              // Remove the directive itself so it doesn't cause runtime errors
-              const output = result.output;
-              output.overwrite(
-                cacheDirective.start,
-                cacheDirective.end,
-                `/* "use cache" — wrapped by vinext */`,
-              );
-              return {
-                code: output.toString(),
-                map: output.generateMap({ hires: "boundary" }),
-              };
-            }
-
-            // Even if no exports were wrapped, still strip the directive
-            // (e.g., layout/template file with only a default export)
-            const output = new MagicString(code);
-            output.overwrite(
-              cacheDirective.start,
-              cacheDirective.end,
-              `/* "use cache" — handled by vinext */`,
-            );
-            return {
-              code: output.toString(),
-              map: output.generateMap({ hires: "boundary" }),
-            };
-          }
-
-          // Check for function-level "use cache" directives
-          // (e.g., async function getData() { "use cache"; ... })
-          if (hasInlineCache) {
-            const runtimeModuleUrl2 = pathToFileURL(
-              resolveShimModulePath(shimsDir, "cache-runtime"),
-            ).href;
-
-            try {
-              let transformedFunctionIndex = 0;
-              const result = transformHoistInlineDirective(code, ast, {
-                directive: /^use cache(:\s*\w+)?$/,
-                runtime: (value: string, name: string, meta: { directiveMatch: string[] }) => {
-                  const directiveMatch = meta.directiveMatch[0];
-                  const variant =
-                    directiveMatch === "use cache"
-                      ? ""
-                      : directiveMatch.replace("use cache:", "").trim();
-                  const acceptsSecondArgument =
-                    inlineCacheSecondArgumentUsage[transformedFunctionIndex++];
-                  const optionsArgument =
-                    acceptsSecondArgument === undefined
-                      ? ""
-                      : `, { acceptsSecondArgument: ${acceptsSecondArgument} }`;
-                  return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)}${optionsArgument})`;
-                },
-                rejectNonAsyncFunction: false,
-              });
-
-              if (result.names.length > 0) {
-                return {
-                  code: result.output.toString(),
-                  map: result.output.generateMap({ hires: "boundary" }),
-                };
-              }
-            } catch {
-              // If hoisting fails (e.g., complex closure), fall through
-            }
-          }
-
-          return null;
-        },
-      },
-    },
-    createImportMetaUrlPlugin({
-      getRoot: () => root,
-    }),
+    importMetaUrlCapability.vitePlugin,
     createExtensionlessDynamicImportPlugin(),
     // Expand Webpack's build-time `require.context(...)` into a static module
     // map backed by `import.meta.glob` — see src/plugins/require-context.ts
@@ -6434,6 +7045,13 @@ export const loadServerActionClient = ${
     // standalone/node_modules/ — uses the bundler's own import graph instead of
     // fragile regex scanning of emitted files.
     createServerExternalsManifestPlugin(),
+    // Preserve importer-relative package identity for nested copies of
+    // serverExternalPackages. Next.js refuses to externalize these requests
+    // when their importer and project-root resolutions differ.
+    createTransitiveExternalsPlugin({
+      getRoot: () => root,
+      getExternalPackages: () => resolvedServerExternalPackages,
+    }),
     // Write image config JSON for the App Router production server.
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
@@ -6465,6 +7083,9 @@ export const loadServerActionClient = ${
             const outDir = path.join(root, "dist", "server");
             fs.mkdirSync(outDir, { recursive: true });
             fs.writeFileSync(path.join(outDir, "BUILD_ID"), nextConfig!.buildId);
+            if (rscBuildIdentity) {
+              fs.writeFileSync(path.join(outDir, "RSC_BUILD_ID"), rscBuildIdentity);
+            }
           },
         },
       };
@@ -6487,10 +7108,9 @@ export const loadServerActionClient = ${
     // Note: augmentChunkHash only affects JS chunk hashes. CSS and static asset
     // hashes are not salted, which is a known gap vs Next.js behavior.
     // Write vinext-server.json to dist/server/ with a per-build prerender secret.
-    // The prerender secret is used by prod-server.ts to authenticate requests to
-    // the internal /__vinext/prerender/* endpoints, which are only reachable during
-    // the prerender phase of `vinext build`. A new secret is generated on every
-    // build so it rotates with every deployment.
+    // The prerender secret is used by prod-server.ts and the Worker entries to
+    // authenticate requests to the internal /__vinext/prerender/* endpoints.
+    // A new secret is generated on every build so it rotates with every deployment.
     //
     // The secret is generated once at plugin creation time so that both the rsc
     // and ssr environments write the exact same value (they share the same
@@ -6498,30 +7118,64 @@ export const loadServerActionClient = ${
     // and the second write would silently overwrite the first with a different
     // secret, causing prerender auth to fail for whichever env's server reads
     // the file last.
-    (() => {
-      const prerenderSecret = randomBytes(32).toString("hex");
-      return {
-        name: "vinext:server-manifest",
-        apply: "build" as const,
-        enforce: "post" as const,
-        writeBundle: {
-          sequential: true,
-          order: "post" as const,
-          handler(options: { dir?: string }) {
-            const envName = this.environment?.name;
-            // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
-            // (ssr env). Skip client and other environments.
-            if (envName !== "rsc" && envName !== "ssr") return;
+    {
+      name: "vinext:server-manifest",
+      apply: "build" as const,
+      enforce: "post" as const,
+      writeBundle: {
+        sequential: true,
+        order: "post" as const,
+        handler(options: { dir?: string }) {
+          const environment = this.environment;
+          // App Router metadata belongs to its RSC build. Pages Router may use
+          // Vite's `ssr` environment or a platform-owned server environment
+          // such as the one created by the Cloudflare Vite plugin.
+          if (
+            !environment ||
+            (hasAppDir ? environment.name !== "rsc" : !isServerEnvironment(environment))
+          ) {
+            return;
+          }
 
-            const outDir = options.dir;
-            if (!outDir) return;
+          const outDir = options.dir;
+          if (!outDir) return;
 
-            const manifest = { prerenderSecret };
-            fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
-          },
+          // Post-build discovery deliberately reads metadata from the
+          // platform-independent server directory. An adapter may emit either
+          // router's executable graph elsewhere, so retain an adjacent copy
+          // and also publish the canonical copy.
+          const canonicalServerDir = path.join(root, "dist", "server");
+          if (selectedMultiStageOutput) {
+            if (readPrerenderSecret(canonicalServerDir) === prerenderSecret) {
+              for (const runtimeOutputDir of readServerRuntimeOutputDirs(
+                canonicalServerDir,
+                root,
+              )) {
+                serverRuntimeOutputDirs.add(runtimeOutputDir);
+              }
+            }
+            serverRuntimeOutputDirs.add(path.resolve(outDir));
+          }
+          const manifest = {
+            prerenderSecret,
+            ...(serverRuntimeOutputDirs.size === 0
+              ? {}
+              : {
+                  runtimeOutputDirs: [...serverRuntimeOutputDirs]
+                    .map((runtimeOutputDir) => path.relative(root, runtimeOutputDir) || ".")
+                    .sort(),
+                }),
+          };
+          const source = JSON.stringify(manifest);
+          fs.writeFileSync(path.join(outDir, "vinext-server.json"), source);
+
+          if (path.resolve(outDir) !== canonicalServerDir) {
+            fs.mkdirSync(canonicalServerDir, { recursive: true });
+            fs.writeFileSync(path.join(canonicalServerDir, "vinext-server.json"), source);
+          }
         },
-      };
-    })(),
+      },
+    },
     {
       name: "vinext:nitro-route-rules",
       nitro: {
@@ -6529,12 +7183,9 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
-          if (nitroTraceDepsFromServerExternals.length > 0) {
+          if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [
-              ...new Set([
-                ...(nitro.options.traceDeps ?? []),
-                ...nitroTraceDepsFromServerExternals,
-              ]),
+              ...new Set([...(nitro.options.traceDeps ?? []), ...resolvedServerExternalPackages]),
             ];
           }
 
@@ -7003,11 +7654,71 @@ export const loadServerActionClient = ${
     },
   ];
 
+  if (cacheAdapterBuildOutputs.length > 0) {
+    plugins.push({
+      name: "vinext:cache-adapter-build-output",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        async handler(outputOptions) {
+          if (!outputOptions.dir) return;
+          const config = this.environment?.config;
+          if (!config) return;
+
+          const build = { plugins: config.plugins };
+          const buildRoot = config.root ?? process.cwd();
+          const outDir = path.resolve(buildRoot, outputOptions.dir);
+          const loadedEntries = serverEntryKindsByEnvironment.get(this.environment?.name ?? "");
+          const isPrimaryServerOutput = Boolean(
+            loadedEntries?.has(RESOLVED_RSC_ENTRY) ||
+            loadedEntries?.has(RESOLVED_APP_REQUEST_ENTRY) ||
+            loadedEntries?.has(RESOLVED_APP_RESPONSE_ENTRY) ||
+            loadedEntries?.has(RESOLVED_PAGES_REQUEST_ENTRY) ||
+            loadedEntries?.has(RESOLVED_PAGES_RESPONSE_ENTRY) ||
+            (loadedEntries?.has(RESOLVED_SERVER_ENTRY) &&
+              !loadedEntries.has(RESOLVED_APP_SSR_ENTRY)),
+          );
+          for (const output of cacheAdapterBuildOutputs) {
+            if (output.matchesBuild && !output.matchesBuild(build)) continue;
+            await output.finalizeBuildOutput?.({
+              root: buildRoot,
+              outDir,
+              isPrimaryServerOutput,
+            });
+          }
+        },
+      },
+    });
+  }
+
   // Append auto-injected RSC plugins if applicable
   if (rscPluginPromise) {
     plugins.push(rscPluginPromise);
+  }
+  if (earlyAppDirExists) {
+    plugins.push(
+      createActionOwnerManifestPlugin({
+        canonicalizeModuleId: canonicalize,
+        async getManager(config) {
+          const rscPluginModule = await rscPluginModulePromise;
+          return rscPluginModule?.getPluginApi(config)?.manager;
+        },
+        getRoutes: () => rscActionOwnerRoutes ?? [],
+        getSharedRoots: () => rscActionOwnerSharedRoots,
+        onComplete() {
+          rscActionOwnerRoutes = null;
+          rscActionOwnerSharedRoots = [];
+        },
+      }),
+    );
+  }
+  if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(createRscClientReferenceLoadersPlugin());
+  } else if (manualUseCachePluginPromise) {
+    plugins.push(manualUseCachePluginPromise);
   }
 
   return plugins;
@@ -7086,3 +7797,8 @@ export type {
 // Export NextConfig type so next.config.ts files can import it from "vinext"
 // instead of "next".
 export type { NextConfig } from "./config/next-config.js";
+export type {
+  VinextMultiStageOutput,
+  VinextResponseStageDispatchOptions,
+  VinextResponseStageTransport,
+} from "./server/multi-stage.js";

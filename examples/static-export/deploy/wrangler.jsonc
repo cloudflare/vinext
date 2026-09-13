@@ -1,0 +1,14 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "static-export",
+  // Newest date supported by the repository-pinned Wrangler/workerd.
+  "compatibility_date": "2026-04-08",
+  "preview_urls": true,
+  "assets": {
+    // This is the complete deployable artifact. There is deliberately no
+    // Worker entry point that could hide a missing static route.
+    "directory": "../dist/client",
+    "html_handling": "force-trailing-slash",
+    "not_found_handling": "404-page"
+  }
+}

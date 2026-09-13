@@ -1,5 +1,6 @@
 /** Cloudflare Worker entry point for web-specific APIs and scheduled maintenance. */
 import handler from "vinext/server/fetch-handler";
+import { addPreviewRobotsHeader, getCanonicalRedirect } from "./seo";
 
 type Env = {
   ASSETS: Fetcher;
@@ -151,6 +152,9 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    const canonicalRedirect = getCanonicalRedirect(request);
+    if (canonicalRedirect) return canonicalRedirect;
+
     if (request.method === "PUT" && url.pathname === "/api/benchmarks/profile-upload") {
       return uploadPerformanceProfile(request, env);
     }
@@ -161,7 +165,8 @@ export default {
     // Delegate everything else to vinext, forwarding ctx so that
     // ctx.waitUntil() is available to background cache writes and
     // other deferred work via getRequestExecutionContext().
-    return handler.fetch(request, env, ctx);
+    const response = await handler.fetch(request, env, ctx);
+    return addPreviewRobotsHeader(request, response);
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(sweepPerformanceProfiles(env));

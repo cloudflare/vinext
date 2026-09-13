@@ -1,0 +1,110 @@
+{
+  "buildId": "ppr-impact-demo-cacheability",
+  "routes": {
+    "[\"app-page\",\"/cacheability/config-public-dynamic\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/config-public-dynamic",
+      "state": "runtime-check"
+    },
+    "[\"app-page\",\"/cacheability/config-public-pattern/:slug\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/config-public-pattern/:slug",
+      "state": "runtime-check"
+    },
+    "[\"app-page\",\"/cacheability/config-public-representation\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/config-public-representation",
+      "state": "runtime-check"
+    },
+    "[\"app-page\",\"/cacheability/pattern-runtime-dynamic/:slug\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/pattern-runtime-dynamic/:slug",
+      "runtimePaths": ["/cacheability/pattern-runtime-dynamic/dynamic"],
+      "state": "runtime-check",
+      "staticPaths": {
+        "html": ["/cacheability/pattern-runtime-dynamic/static"]
+      }
+    },
+    "[\"app-page\",\"/cacheability/pattern-runtime-static/:slug\"]": {
+      "allowUnknown": true,
+      "kind": "app-page",
+      "unknownState": "static-candidate",
+      "pattern": "/cacheability/pattern-runtime-static/:slug",
+      "state": "runtime-check",
+      "staticPaths": {
+        "html": ["/cacheability/pattern-runtime-static/generated"]
+      }
+    },
+    "[\"app-page\",\"/cacheability/static\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static",
+      "state": "static-candidate"
+    },
+    "[\"app-page\",\"/cacheability/static-empty/:slug\"]": {
+      "kind": "app-page",
+      "pattern": "/cacheability/static-empty/:slug",
+      "state": "static-candidate"
+    },
+    "[\"app-page\",\"/cacheability/static-to-dynamic/:slug\"]": {
+      "allowUnknown": true,
+      "kind": "app-page",
+      "unknownState": "static-candidate",
+      "pattern": "/cacheability/static-to-dynamic/:slug",
+      "state": "runtime-check",
+      "staticPaths": {
+        "html": ["/cacheability/static-to-dynamic/runtime"]
+      }
+    },
+    "[\"app-route\",\"/cacheability/route-handler-config-public-late-error\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-config-public-late-error",
+      "state": "static-candidate"
+    },
+    "[\"app-route\",\"/cacheability/route-handler-large\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-large",
+      "state": "static-candidate"
+    },
+    "[\"app-route\",\"/cacheability/route-handler-explicit-dynamic\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-explicit-dynamic",
+      "state": "static-candidate"
+    },
+    "[\"app-route\",\"/cacheability/route-handler-static\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-static",
+      "state": "static-candidate"
+    },
+    "[\"app-route\",\"/cacheability/route-handler-static-empty/:slug\"]": {
+      "kind": "app-route",
+      "pattern": "/cacheability/route-handler-static-empty/:slug",
+      "state": "static-candidate"
+    },
+    "[\"pages-page\",\"/cacheability-pages/config-header\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/config-header",
+      "state": "static-candidate"
+    },
+    "[\"pages-page\",\"/cacheability-pages/gssp-public\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/gssp-public",
+      "state": "static-candidate"
+    },
+    "[\"pages-page\",\"/cacheability-pages/isr\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/isr",
+      "state": "static-candidate"
+    },
+    "[\"pages-page\",\"/cacheability-pages/middleware\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/middleware",
+      "state": "static-candidate"
+    },
+    "[\"pages-page\",\"/cacheability-pages/posts/:slug\"]": {
+      "kind": "pages-page",
+      "pattern": "/cacheability-pages/posts/:slug",
+      "state": "static-candidate"
+    }
+  },
+  "version": 1
+}

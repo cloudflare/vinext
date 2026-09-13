@@ -3,9 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
-import { afterAll, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { APP_FIXTURE_DIR } from "./helpers.js";
+import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
+import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
 
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
@@ -32,17 +33,29 @@ function readAllJs(dir: string): string {
 }
 
 describe("App Router Production build", () => {
-  const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
+  let fixtureDir: string;
+  let outDir: string;
+
+  beforeAll(async () => {
+    fixtureDir = await createIsolatedFixture(
+      APP_FIXTURE_DIR,
+      "vinext-app-production-build-",
+      undefined,
+      path.join(APP_FIXTURE_DIR, "node_modules"),
+    );
+    outDir = path.join(fixtureDir, "dist");
+  });
 
   afterAll(() => {
-    fs.rmSync(outDir, { recursive: true, force: true });
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
   it("produces RSC/SSR/client bundles via vite build", async () => {
     const builder = await createBuilder({
-      root: APP_FIXTURE_DIR,
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
       configFile: false,
-      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      plugins: [vinext({ appDir: fixtureDir })],
       logLevel: "silent",
     });
     await builder.buildApp();
@@ -131,6 +144,8 @@ describe("App Router Production build", () => {
     expect(fs.existsSync(buildIdPath)).toBe(true);
     const buildId = fs.readFileSync(buildIdPath, "utf-8").trim();
     expect(buildId.length).toBeGreaterThan(0);
+    const rscBuildId = fs.readFileSync(path.join(outDir, "server", "RSC_BUILD_ID"), "utf-8").trim();
+    expect(rscBuildId).toMatch(/^[0-9a-f]{32}$/);
 
     const warmupManifestPath = path.join(outDir, "server", "vinext-prerender-paths.json");
     expect(fs.existsSync(warmupManifestPath)).toBe(false);
@@ -190,9 +205,10 @@ describe("App Router Production build", () => {
     process.env.__VINEXT_SHARED_BUILD_ID = sharedBuildId;
     try {
       const builder = await createBuilder({
-        root: APP_FIXTURE_DIR,
+        root: fixtureDir,
+        cacheDir: testCacheDir(fixtureDir),
         configFile: false,
-        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        plugins: [vinext({ appDir: fixtureDir })],
         logLevel: "silent",
       });
       await builder.buildApp();
@@ -212,6 +228,34 @@ describe("App Router Production build", () => {
     }
   }, 30000);
 
+  it("adopts the shared prerender discovery secret in the Worker and server manifest", async () => {
+    // Hybrid builds instantiate vinext twice; the CLI-provided value must win
+    // so the later Pages build cannot invalidate the App Worker's capability.
+    const sharedSecret = "ab".repeat(32);
+    const previous = process.env.__VINEXT_SHARED_PRERENDER_SECRET;
+    process.env.__VINEXT_SHARED_PRERENDER_SECRET = sharedSecret;
+    try {
+      const builder = await createBuilder({
+        root: fixtureDir,
+        cacheDir: testCacheDir(fixtureDir),
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      expect(
+        JSON.parse(fs.readFileSync(path.join(outDir, "server", "vinext-server.json"), "utf-8")),
+      ).toEqual({ prerenderSecret: sharedSecret });
+      expect(fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8")).toContain(
+        sharedSecret,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.__VINEXT_SHARED_PRERENDER_SECRET;
+      else process.env.__VINEXT_SHARED_PRERENDER_SECRET = previous;
+    }
+  }, 30000);
+
   it("adopts the shared build ID even when generateBuildId is set", async () => {
     // The shared ID must win over a per-instance generateBuildId, because the
     // CLI already resolved it through the user's generateBuildId once. A
@@ -224,11 +268,12 @@ describe("App Router Production build", () => {
     process.env.__VINEXT_SHARED_BUILD_ID = sharedBuildId;
     try {
       const builder = await createBuilder({
-        root: APP_FIXTURE_DIR,
+        root: fixtureDir,
+        cacheDir: testCacheDir(fixtureDir),
         configFile: false,
         // generateBuildId returning null falls back to a random UUID per
         // instance; the shared ID must still be adopted.
-        plugins: [vinext({ appDir: APP_FIXTURE_DIR, nextConfig: { generateBuildId: () => null } })],
+        plugins: [vinext({ appDir: fixtureDir, nextConfig: { generateBuildId: () => null } })],
         logLevel: "silent",
       });
       await builder.buildApp();
@@ -257,9 +302,10 @@ describe("App Router Production build", () => {
     process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = sharedCompatId;
     try {
       const builder = await createBuilder({
-        root: APP_FIXTURE_DIR,
+        root: fixtureDir,
+        cacheDir: testCacheDir(fixtureDir),
         configFile: false,
-        plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+        plugins: [vinext({ appDir: fixtureDir })],
         logLevel: "silent",
       });
       await builder.buildApp();
@@ -346,7 +392,7 @@ export default function proxy(request: NextRequest) {
         expect(rootResponse).toBeInstanceOf(Response);
         if (!(rootResponse instanceof Response)) return;
         expect(await rootResponse.text()).toContain("hello world");
-        expect(logSpy).toHaveBeenCalledWith(fs.realpathSync.native(path.join(tmpDir, "proxy.ts")));
+        expect(logSpy).toHaveBeenCalledWith(path.join(tmpDir, "dist", "server", "index.js"));
       } finally {
         logSpy.mockRestore();
       }
@@ -476,13 +522,85 @@ export function GET(request) {
     }
   }, 120000);
 
+  // Next.js returns the value decoded from one branch of the callable-cache
+  // Flight stream and saves the other branch, so a serializer error rejects
+  // the call instead of persisting an error row.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it('fails prerendering when a callable "use cache" result cannot be serialized', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-use-cache-serialization-"));
+
+    try {
+      fs.writeFileSync(path.join(tmpDir, "package.json"), `{"type":"module"}`);
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Page() { return <p>hello world</p>; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "opengraph-image.tsx"),
+        `import { ImageResponse } from "next/og";
+
+export const size = { width: 1200, height: 630 };
+
+export default async function OpenGraphImage() {
+  "use cache";
+
+  return new ImageResponse(
+    <div style={{ display: "flex", width: "100%", height: "100%" }}>
+      vinext use-cache serialization regression
+    </div>,
+    size,
+  );
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const built: { default?: unknown } = await import(
+        `${pathToFileURL(path.join(tmpDir, "dist", "server", "index.js")).href}?t=${Date.now()}`
+      );
+      expect(isBuiltAppHandler(built.default)).toBe(true);
+      if (!isBuiltAppHandler(built.default)) return;
+
+      await expect(built.default(new Request("http://localhost/opengraph-image"))).rejects.toThrow(
+        /Only plain objects/,
+      );
+
+      await expect(runPrerender({ root: tmpDir, concurrency: 1 })).rejects.toThrow(
+        /Metadata route returned 500/,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+
   it("serves production build via preview server", async () => {
     const { preview } = await import("vite");
 
     const previewServer = await preview({
-      root: APP_FIXTURE_DIR,
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
       configFile: false,
-      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      plugins: [vinext({ appDir: fixtureDir })],
       preview: { port: 0 },
       logLevel: "silent",
     });

@@ -34,6 +34,7 @@ done
 # expected-text is a simple string that must appear in the response body.
 CHECKS=(
   "app-router-cloudflare         /       vinext"
+  "app-router-cloudflare         /web-worker  start worker"
   "pages-router-cloudflare       /       vinext"
   "app-router-playground         /       Playground"
   "realworld-api-rest            /       vinext"
@@ -41,6 +42,9 @@ CHECKS=(
   "nextra-docs-template          /about  About"
   "benchmarks                    /       Benchmark"
   "hackernews                    /       Hacker News"
+  "static-export                /       Static by design"
+  "static-export                /catalog/pocket-observatory/  Pocket Observatory"
+  "static-export                /products/atlas/              Atlas Field Kit"
   "vinext-web                    /       Run your Next.js app on Vite"
 )
 

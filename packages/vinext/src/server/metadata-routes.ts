@@ -338,7 +338,7 @@ export function robotsToText(config: RobotsConfig): string {
     }
   }
 
-  return lines.join("\n").trim() + "\n";
+  return lines.join("\n") + "\n";
 }
 
 /**

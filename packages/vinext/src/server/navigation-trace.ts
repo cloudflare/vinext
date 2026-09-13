@@ -29,6 +29,7 @@ export const NavigationTraceReasonCodes = {
   rscCompatibilityMismatch: "NC_RSC_COMPAT_MISMATCH",
   rscNavigationError: "NC_RSC_NAV_ERROR",
   sameDocumentScroll: "NC_SAME_DOC_SCROLL",
+  samePageRefresh: "NC_SAME_PAGE_REFRESH",
   samePageSearch: "NC_SAME_PAGE_SEARCH",
   serverActionRedirectCompatibilityMismatch: "NC_SA_REDIRECT_COMPAT",
   serverActionRscCompatibilityMismatch: "NC_SA_RSC_COMPAT",
@@ -62,6 +63,7 @@ export const NavigationTraceReasonCodes = {
   rscCompatibilityMismatch: "NC_RSC_COMPAT_MISMATCH";
   rscNavigationError: "NC_RSC_NAV_ERROR";
   sameDocumentScroll: "NC_SAME_DOC_SCROLL";
+  samePageRefresh: "NC_SAME_PAGE_REFRESH";
   samePageSearch: "NC_SAME_PAGE_SEARCH";
   serverActionRedirectCompatibilityMismatch: "NC_SA_REDIRECT_COMPAT";
   serverActionRscCompatibilityMismatch: "NC_SA_RSC_COMPAT";

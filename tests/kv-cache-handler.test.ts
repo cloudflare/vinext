@@ -27,7 +27,13 @@ function createMockKV(store: Map<string, string> = new Map()) {
   const metadataStore = new Map<string, Record<string, unknown>>();
 
   return {
-    get: vi.fn(async (key: string) => store.get(key) ?? null),
+    // Mirrors Workers KV: an array of keys resolves to a Map, a single key to a string.
+    get: vi.fn(async (key: string | string[]) => {
+      if (Array.isArray(key)) {
+        return new Map(key.map((k) => [k, store.get(k) ?? null]));
+      }
+      return store.get(key) ?? null;
+    }),
     put: vi.fn(
       async (
         key: string,
@@ -65,6 +71,66 @@ function createMockKV(store: Map<string, string> = new Map()) {
       };
     }),
   };
+}
+
+/**
+ * KV double that records every get() in start order, together with the reads
+ * still in flight when it started. `hold(key)` blocks reads of that key until
+ * the returned release() runs, so a test can prove two reads share one hop.
+ */
+function createTracingKV(store: Map<string, string> = new Map()) {
+  const base = createMockKV(store);
+  const calls: Array<{ keys: string[]; options?: unknown; inFlightAtStart: string[] }> = [];
+  const pending = new Map<number, string[]>();
+  const gates = new Map<string, Promise<void>>();
+  const failing = new Set<string>();
+  let nextId = 0;
+
+  const get = vi.fn(async (key: string | string[], options?: unknown) => {
+    const keys = Array.isArray(key) ? key : [key];
+    const id = nextId++;
+    calls.push({ keys, options, inFlightAtStart: [...pending.values()].flat() });
+    pending.set(id, keys);
+    // Snapshot at call time: a real read cannot see a write that lands later.
+    const snapshot = new Map(keys.map((k) => [k, store.get(k) ?? null]));
+    try {
+      await gates.get(keys[0]);
+      const failed = keys.find((k) => failing.has(k));
+      if (failed) throw new Error(`KV read failed: ${failed}`);
+      return Array.isArray(key) ? snapshot : (snapshot.get(key) ?? null);
+    } finally {
+      pending.delete(id);
+    }
+  });
+
+  return {
+    ...base,
+    get,
+    calls,
+    /** Make any read that includes `key` reject. */
+    fail(key: string) {
+      failing.add(key);
+    },
+    /** Block reads of `key` until the returned function runs. */
+    hold(key: string) {
+      let release!: () => void;
+      gates.set(
+        key,
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+      );
+      return () => {
+        gates.delete(key);
+        release();
+      };
+    },
+  };
+}
+
+/** Let every already-scheduled task run, without releasing a held read. */
+function flushTasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +826,16 @@ describe("KVCacheHandler", () => {
   // -------------------------------------------------------------------------
 
   describe("ctx.waitUntil registration", () => {
+    it("registers a speculative soft-tag read with waitUntil", async () => {
+      const ctx = createMockCtx();
+      const handlerWithCtx = new KVCacheHandler(kv as any, { ctx });
+
+      await handlerWithCtx.get("absent", { softTags: ["soft"] });
+
+      expect(ctx.waitUntil).toHaveBeenCalledOnce();
+      await Promise.all(ctx.registered);
+    });
+
     it("registers corrupt-JSON delete with waitUntil when ctx is provided", async () => {
       const ctx = createMockCtx();
       const handlerWithCtx = new KVCacheHandler(kv as any, { ctx });
@@ -876,8 +952,9 @@ describe("KVCacheHandler", () => {
       const result1 = await handler.get("tagged-page");
       expect(result1).not.toBeNull();
 
-      // kv.get calls: 1 for the entry + 2 for the tags = 3
-      expect(kv.get).toHaveBeenCalledTimes(3);
+      // kv.get calls: 1 for the entry + 1 bulk read covering both tags = 2
+      expect(kv.get).toHaveBeenCalledTimes(2);
+      expect(kv.get).toHaveBeenCalledWith(["__tag:t1", "__tag:t2"]);
 
       // Reset call counts
       kv.get.mockClear();
@@ -1060,10 +1137,10 @@ describe("KVCacheHandler", () => {
         }),
       );
 
-      // First get() — populates local tag cache (1 entry + 2 tags = 3 calls)
+      // First get() — populates local tag cache (1 entry + 1 bulk tag read = 2 calls)
       const result1 = await handler.get("reset-page");
       expect(result1).not.toBeNull();
-      expect(kv.get).toHaveBeenCalledTimes(3);
+      expect(kv.get).toHaveBeenCalledTimes(2);
       kv.get.mockClear();
 
       // Second get() without reset — tags served from local cache (1 entry only)
@@ -1075,13 +1152,428 @@ describe("KVCacheHandler", () => {
       // Clear the local cache
       handler.resetRequestCache();
 
-      // Third get() after reset — tags must be re-fetched from KV (1 entry + 2 tags = 3 calls)
+      // Third get() after reset — tags re-fetched (1 entry + 1 bulk tag read = 2 calls)
       const result3 = await handler.get("reset-page");
       expect(result3).not.toBeNull();
-      expect(kv.get).toHaveBeenCalledTimes(3);
+      expect(kv.get).toHaveBeenCalledTimes(2);
       expect(kv.get).toHaveBeenCalledWith("cache:reset-page");
-      expect(kv.get).toHaveBeenCalledWith("__tag:t1");
-      expect(kv.get).toHaveBeenCalledWith("__tag:t2");
+      expect(kv.get).toHaveBeenCalledWith(["__tag:t1", "__tag:t2"]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // KV read options
+  // -------------------------------------------------------------------------
+  describe("entry read options", () => {
+    function seedTaggedEntry(store: Map<string, string>, key: string) {
+      store.set(
+        `cache:${key}`,
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t2"],
+          lastModified: Date.now(),
+          revalidateAt: null,
+        }),
+      );
+    }
+
+    it("passes no options at all when entryCacheTtlSeconds is unset", async () => {
+      const store = new Map<string, string>();
+      const kv = createMockKV(store);
+      seedTaggedEntry(store, "no-ttl");
+
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("no-ttl")).not.toBeNull();
+
+      for (const call of kv.get.mock.calls) {
+        expect(call).toHaveLength(1);
+      }
+    });
+
+    it("passes cacheTtl on the entry read only, never on tag markers", async () => {
+      const store = new Map<string, string>();
+      const kv = createMockKV(store);
+      seedTaggedEntry(store, "ttl");
+
+      const handler = new KVCacheHandler(kv as never, { entryCacheTtlSeconds: 300 });
+      expect(await handler.get("ttl", { softTags: ["soft1"] })).not.toBeNull();
+
+      expect(kv.get).toHaveBeenCalledWith("cache:ttl", { cacheTtl: 300 });
+      // A colo cache on a marker would hide a revalidateTag() for that long.
+      expect(kv.get).toHaveBeenCalledWith("__tag:soft1");
+      expect(kv.get).toHaveBeenCalledWith(["__tag:t1", "__tag:t2"]);
+    });
+
+    it("raises a cacheTtl below the runtime's 30s floor", async () => {
+      const store = new Map<string, string>();
+      const kv = createMockKV(store);
+      seedTaggedEntry(store, "floor");
+
+      const handler = new KVCacheHandler(kv as never, { entryCacheTtlSeconds: 5 });
+      expect(await handler.get("floor")).not.toBeNull();
+
+      expect(kv.get).toHaveBeenCalledWith("cache:floor", { cacheTtl: 30 });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Read round trips
+  // -------------------------------------------------------------------------
+  describe("read round trips", () => {
+    function seedEntry(store: Map<string, string>, key: string, tags: string[]) {
+      store.set(
+        `cache:${key}`,
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags,
+          lastModified: Date.now(),
+          revalidateAt: null,
+        }),
+      );
+    }
+
+    it("reads soft-tag markers while the entry read is still in flight", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      seedEntry(store, "overlap", ["own"]);
+      const release = kv.hold("cache:overlap");
+
+      const handler = new KVCacheHandler(kv as never);
+      const pending = handler.get("overlap", { softTags: ["soft1", "soft2"] });
+      await flushTasks();
+
+      const softCall = kv.calls.find((call) => call.keys[0] === "__tag:soft1");
+      expect(softCall?.keys).toEqual(["__tag:soft1", "__tag:soft2"]);
+      expect(softCall?.inFlightAtStart).toContain("cache:overlap");
+
+      release();
+      expect(await pending).not.toBeNull();
+      // Entry read plus soft markers on hop one, the entry's own tag on hop two.
+      expect(kv.calls.map((call) => call.keys[0])).toEqual([
+        "cache:overlap",
+        "__tag:soft1",
+        "__tag:own",
+      ]);
+    });
+
+    it("reads a tag shared by the soft set and the entry only once", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      seedEntry(store, "dedupe", ["shared", "own"]);
+
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("dedupe", { softTags: ["shared", "soft-only"] })).not.toBeNull();
+
+      const readKeys = kv.calls.flatMap((call) => call.keys);
+      expect(readKeys.filter((key) => key === "__tag:shared")).toHaveLength(1);
+      expect(readKeys).toEqual([
+        "cache:dedupe",
+        "__tag:shared",
+        "__tag:soft-only",
+        // "shared" came from the soft batch, so hop two reads "own" alone.
+        "__tag:own",
+      ]);
+    });
+
+    it("skips the second hop when the entry has no tags of its own", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      seedEntry(store, "untagged", []);
+
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("untagged", { softTags: ["soft1"] })).not.toBeNull();
+
+      expect(kv.calls).toHaveLength(2);
+      expect(kv.calls[1].inFlightAtStart).toContain("cache:untagged");
+    });
+
+    it("reads nothing beyond the entry when there are no tags at all", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      seedEntry(store, "plain", []);
+
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("plain")).not.toBeNull();
+
+      expect(kv.calls.map((call) => call.keys)).toEqual([["cache:plain"]]);
+    });
+
+    it("deletes the entry on entry-tag invalidation but not on soft-tag invalidation", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      seedEntry(store, "soft-hit", ["own"]);
+      store.set("__tag:soft1", String(Date.now() + 1000));
+
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("soft-hit", { softTags: ["soft1"] })).toBeNull();
+      expect(kv.delete).not.toHaveBeenCalled();
+      expect(store.has("cache:soft-hit")).toBe(true);
+
+      seedEntry(store, "own-hit", ["own"]);
+      store.set("__tag:own", String(Date.now() + 1000));
+      handler.resetRequestCache();
+
+      expect(await handler.get("own-hit", { softTags: ["soft1"] })).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:own-hit");
+    });
+
+    it("does not delete a newer stored entry when the configured entry cache is stale", async () => {
+      const store = new Map<string, string>();
+      const kv = createMockKV(store);
+      const value = { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 };
+      const stale = validEntry(value, { tags: ["own"], lastModified: 1000 });
+      const replacement = validEntry(value, { tags: ["own"], lastModified: 3000 });
+      store.set("cache:edge-cached", replacement);
+      store.set("__tag:own", "2000");
+      kv.get.mockImplementation(async (key: string | string[]) => {
+        if (key === "cache:edge-cached") return stale;
+        if (Array.isArray(key)) {
+          return new Map(key.map((item) => [item, store.get(item) ?? null]));
+        }
+        return store.get(key) ?? null;
+      });
+
+      const handler = new KVCacheHandler(kv as never, { entryCacheTtlSeconds: 300 });
+      expect(await handler.get("edge-cached")).toBeNull();
+
+      expect(kv.delete).not.toHaveBeenCalled();
+      expect(store.get("cache:edge-cached")).toBe(replacement);
+    });
+
+    it("a failing soft-tag read leaves an entry miss as an ordinary miss", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      kv.fail("__tag:soft1");
+
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("absent", { softTags: ["soft1"] })).toBeNull();
+    });
+
+    it("a failing soft-tag read still rejects a hit that must validate it", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      seedEntry(store, "hit", ["own"]);
+      kv.fail("__tag:soft1");
+
+      const handler = new KVCacheHandler(kv as never);
+      await expect(handler.get("hit", { softTags: ["soft1"] })).rejects.toThrow(
+        "KV read failed: __tag:soft1",
+      );
+    });
+
+    it("a cached invalidated entry tag skips the second hop for the remaining tags", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      seedEntry(store, "known-bad", ["known", "unrelated"]);
+      store.set("__tag:known", String(Date.now() + 1000));
+      // Prime "known" alone, so the entry read below finds it already invalid.
+      const handler = new KVCacheHandler(kv as never);
+      seedEntry(store, "primer", ["known"]);
+      expect(await handler.get("primer")).toBeNull();
+
+      // An unrelated tag that would break the second hop if it were read.
+      kv.fail("__tag:unrelated");
+      kv.calls.length = 0;
+
+      expect(await handler.get("known-bad")).toBeNull();
+      expect(kv.calls.map((call) => call.keys)).toEqual([["cache:known-bad"]]);
+      expect(kv.delete).toHaveBeenCalledWith("cache:known-bad");
+    });
+
+    it("a miss resolves without waiting for the soft-tag batch", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      const release = kv.hold("__tag:soft1");
+      const handler = new KVCacheHandler(kv as never);
+
+      let settled = false;
+      const pending = handler.get("absent", { softTags: ["soft1"] }).then((v) => {
+        settled = true;
+        return v;
+      });
+      await flushTasks();
+      expect(settled).toBe(true);
+      expect(await pending).toBeNull();
+      release();
+    });
+
+    it("a cached invalid entry tag wins over a failing soft-tag read", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      // Cache the "known" marker with a first read, then break the soft batch.
+      seedEntry(store, "primer", ["known"]);
+      store.set("__tag:known", String(Date.now() + 1000));
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("primer")).toBeNull();
+
+      seedEntry(store, "known-bad", ["known"]);
+      kv.fail("__tag:soft1");
+
+      expect(await handler.get("known-bad", { softTags: ["soft1"] })).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:known-bad");
+    });
+
+    it("re-reads an expired NaN marker instead of trusting it forever", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      store.set("__tag:bad", "not-a-number");
+      seedEntry(store, "nan", ["bad"]);
+
+      const handler = new KVCacheHandler(kv as never, { tagCacheTtlMs: 0 });
+      expect(await handler.get("nan")).toBeNull();
+
+      // The marker is gone and the cached NaN has expired, so the entry is valid.
+      store.delete("__tag:bad");
+      seedEntry(store, "nan", ["bad"]);
+      kv.calls.length = 0;
+
+      expect(await handler.get("nan")).not.toBeNull();
+      expect(kv.calls.map((call) => call.keys)).toEqual([["cache:nan"], ["__tag:bad"]]);
+    });
+
+    it("re-reads an expired positive marker instead of trusting it forever", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      store.set("__tag:gone", String(Date.now() + 1000));
+      seedEntry(store, "expired", ["gone"]);
+
+      const handler = new KVCacheHandler(kv as never, { tagCacheTtlMs: 0 });
+      expect(await handler.get("expired")).toBeNull();
+
+      store.delete("__tag:gone");
+      seedEntry(store, "expired", ["gone"]);
+      expect(await handler.get("expired")).not.toBeNull();
+    });
+
+    it("a detached prime does not overwrite a revalidateTag it raced", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      const release = kv.hold("__tag:soft1");
+      const handler = new KVCacheHandler(kv as never);
+
+      // A miss detaches the soft-tag prime while its read is still held.
+      expect(await handler.get("absent", { softTags: ["soft1"] })).toBeNull();
+      await handler.revalidateTag("soft1");
+      release();
+      await flushTasks();
+
+      // The stale read must not have erased the newer marker, so an entry
+      // older than the invalidation still reads as invalid.
+      store.set(
+        "cache:after",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: [],
+          lastModified: 1000,
+          revalidateAt: null,
+        }),
+      );
+      expect(await handler.get("after", { softTags: ["soft1"] })).toBeNull();
+    });
+
+    it("a newer same-millisecond prime wins over an older detached prime", async () => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(1000);
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      const releaseOld = kv.hold("__tag:soft1");
+      const handler = new KVCacheHandler(kv as never);
+
+      try {
+        // The detached miss snapshots no marker and remains in flight.
+        expect(await handler.get("absent", { softTags: ["soft1"] })).toBeNull();
+
+        // A newer hit snapshots the marker in the same millisecond.
+        store.set("__tag:soft1", "2000");
+        seedEntry(store, "same-millisecond", []);
+        const releaseNew = kv.hold("__tag:soft1");
+        const pending = handler.get("same-millisecond", { softTags: ["soft1"] });
+
+        // Let the older null result populate first, then the newer marker.
+        releaseOld();
+        await flushTasks();
+        releaseNew();
+
+        expect(await pending).toBeNull();
+      } finally {
+        releaseOld();
+        now.mockRestore();
+      }
+    });
+
+    it("a detached prime does not repopulate the tag cache after reset", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      const release = kv.hold("__tag:soft1");
+      const handler = new KVCacheHandler(kv as never);
+
+      expect(await handler.get("absent", { softTags: ["soft1"] })).toBeNull();
+      handler.resetRequestCache();
+      store.set("__tag:soft1", "2000");
+      release();
+      await flushTasks();
+
+      seedEntry(store, "after-reset", []);
+      const raw = JSON.parse(store.get("cache:after-reset")!);
+      raw.lastModified = 1000;
+      store.set("cache:after-reset", JSON.stringify(raw));
+
+      expect(await handler.get("after-reset", { softTags: ["soft1"] })).toBeNull();
+    });
+
+    it("re-primes soft tags when reset races an in-flight cache hit", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      store.set("__tag:soft1", "2000");
+      seedEntry(store, "reset-hit", []);
+      const raw = JSON.parse(store.get("cache:reset-hit")!);
+      raw.lastModified = 1000;
+      store.set("cache:reset-hit", JSON.stringify(raw));
+
+      const release = kv.hold("__tag:soft1");
+      const handler = new KVCacheHandler(kv as never);
+      const pending = handler.get("reset-hit", { softTags: ["soft1"] });
+      await flushTasks();
+
+      handler.resetRequestCache();
+      release();
+
+      expect(await pending).toBeNull();
+      expect(kv.calls.filter((call) => call.keys[0] === "__tag:soft1")).toHaveLength(2);
+    });
+
+    it("re-primes soft tags when reset races the entry-tag hop", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      store.set("__tag:soft1", "2000");
+      seedEntry(store, "reset-entry-tags", ["own"]);
+      const raw = JSON.parse(store.get("cache:reset-entry-tags")!);
+      raw.lastModified = 1000;
+      store.set("cache:reset-entry-tags", JSON.stringify(raw));
+
+      const release = kv.hold("__tag:own");
+      const handler = new KVCacheHandler(kv as never);
+      const pending = handler.get("reset-entry-tags", { softTags: ["soft1"] });
+      await flushTasks();
+
+      handler.resetRequestCache();
+      release();
+
+      expect(await pending).toBeNull();
+      expect(kv.calls.filter((call) => call.keys[0] === "__tag:soft1")).toHaveLength(2);
+    });
+
+    it("chunks tag marker reads at 100 keys per call", async () => {
+      const store = new Map<string, string>();
+      const kv = createTracingKV(store);
+      const tags = Array.from({ length: 150 }, (_, i) => `t${i}`);
+      seedEntry(store, "many-tags", tags);
+
+      const handler = new KVCacheHandler(kv as never);
+      expect(await handler.get("many-tags")).not.toBeNull();
+
+      const markerCalls = kv.calls.filter((call) => call.keys[0].startsWith("__tag:"));
+      expect(markerCalls.map((call) => call.keys.length)).toEqual([100, 50]);
+      expect(markerCalls[1].inFlightAtStart).toContain("__tag:t0");
     });
   });
 

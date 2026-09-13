@@ -1,0 +1,29 @@
+{
+  "name": "fixture-esm-externals",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@vitejs/plugin-rsc": "catalog:",
+    "app-cjs-esm-package": "file:./__test_packages__/app-cjs-esm-package",
+    "app-esm-package1": "file:./__test_packages__/app-esm-package1",
+    "app-esm-package2": "file:./__test_packages__/app-esm-package2",
+    "dynamic-esm-package": "file:./__test_packages__/dynamic-esm-package",
+    "esm-package1": "file:./__test_packages__/esm-package1",
+    "esm-package2": "file:./__test_packages__/esm-package2",
+    "explicit-esm-package": "file:./__test_packages__/explicit-esm-package",
+    "geist": "file:./__test_packages__/geist",
+    "invalid-esm-package": "file:./__test_packages__/invalid-esm-package",
+    "literal-dynamic-esm-package": "file:./__test_packages__/literal-dynamic-esm-package",
+    "mdx-esm-package": "file:./__test_packages__/mdx-esm-package",
+    "optimized-esm-package": "file:./__test_packages__/optimized-esm-package",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "shared-condition-package": "file:./__test_packages__/shared-condition-package",
+    "vinext": "workspace:*",
+    "vite": "catalog:"
+  },
+  "devDependencies": {
+    "vite-plus": "catalog:"
+  }
+}

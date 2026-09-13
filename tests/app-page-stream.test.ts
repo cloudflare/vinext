@@ -8,6 +8,8 @@ import {
   renderAppPageHtmlStreamWithRecovery,
 } from "../packages/vinext/src/server/app-page-stream.js";
 import { deferUntilStreamConsumed } from "../packages/vinext/src/server/defer-until-stream-consumed.js";
+import { hasFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 
 function createStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -68,7 +70,7 @@ describe("app page stream helpers", () => {
     await expect(new Response(htmlStream).text()).resolves.toBe("<html>ok</html>");
   });
 
-  it("forwards waitForAllReady to the SSR handler", async () => {
+  it("forwards static-generation state to the SSR handler", async () => {
     const ssrHandler = vi.fn(async () => createStream(["<html>all-ready</html>"]));
 
     const { htmlStream } = await renderAppPageHtmlStream({
@@ -80,6 +82,8 @@ describe("app page stream helpers", () => {
       navigationContext: null,
       rscStream: createStream(["flight"]),
       waitForAllReady: true,
+      isStaticGeneration: true,
+      isForceStatic: false,
       ssrHandler: { handleSsr: ssrHandler },
     });
 
@@ -89,7 +93,11 @@ describe("app page stream helpers", () => {
       expect.anything(),
       null,
       expect.anything(),
-      expect.objectContaining({ waitForAllReady: true }),
+      expect.objectContaining({
+        waitForAllReady: true,
+        isStaticGeneration: true,
+        isForceStatic: false,
+      }),
     );
   });
 
@@ -290,6 +298,80 @@ describe("app page stream helpers", () => {
 
     // After body is consumed, context must be cleared exactly once.
     expect(clearRequestContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("appends fallback React and font preloads after middleware Link values", async () => {
+    const middlewareHeaders = new Headers({
+      Link: "</middleware.css>; rel=preload; as=style",
+    });
+    const response = await renderAppPageHtmlResponse({
+      clearRequestContext: vi.fn(),
+      fontData: { links: [], preloads: [], styles: [] },
+      fontLinkHeader: "</font.woff2>; rel=preload; as=font",
+      middlewareHeaders,
+      navigationContext: null,
+      rscStream: createStream(["flight"]),
+      ssrHandler: {
+        async handleSsr() {
+          return {
+            htmlStream: createStream(["<html>fallback</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: null,
+            linkHeader: "</react.js>; rel=preload; as=script",
+          };
+        },
+      },
+      status: 404,
+    });
+
+    expect(response.headers.get("link")).toBe(
+      "</middleware.css>; rel=preload; as=style, " +
+        "</react.js>; rel=preload; as=script, </font.woff2>; rel=preload; as=font",
+    );
+    expect(hasFrameworkLinkHeaders(response.headers)).toBe(true);
+  });
+
+  it("preserves config Link values alongside fallback React and font preloads", async () => {
+    const response = await renderAppPageHtmlResponse({
+      clearRequestContext: vi.fn(),
+      fontData: { links: [], preloads: [], styles: [] },
+      fontLinkHeader: "</font.woff2>; rel=preload; as=font",
+      navigationContext: null,
+      rscStream: createStream(["flight"]),
+      ssrHandler: {
+        async handleSsr() {
+          return {
+            htmlStream: createStream(["<html>fallback</html>"]),
+            metadataReady: Promise.resolve(),
+            capturedRscData: null,
+            linkHeader: "</react.js>; rel=preload; as=script",
+          };
+        },
+      },
+      status: 404,
+    });
+
+    await finalizeAppRscResponse(response, new Request("https://example.com/missing"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/missing",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: {
+        cookies: {},
+        headers: new Headers(),
+        host: "example.com",
+        query: new URLSearchParams(),
+      },
+    });
+
+    expect(response.headers.get("link")).toBe(
+      '</config>; rel="describedby", </react.js>; rel=preload; as=script, ' +
+        "</font.woff2>; rel=preload; as=font",
+    );
   });
 
   it("returns the HTML stream and marks shell render completion when SSR succeeds", async () => {

@@ -1,0 +1,756 @@
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { handleResponseStage } from "../packages/vinext/src/server/pages-response-stage-entry.js";
+import {
+  PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
+  PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+} from "../packages/vinext/src/server/worker-stages.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
+import {
+  VINEXT_EXPECTED_WORKER_VERSION_HEADER,
+  VINEXT_PRERENDER_READINESS_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import { finalizePagesPreviewResponse } from "../packages/vinext/src/server/pages-page-handler.js";
+
+const stages = vi.hoisted(() => ({
+  api: vi.fn(),
+  getRuntimePageDataKind: vi.fn(() => "none"),
+  registerCacheAdapters: vi.fn(),
+  registerImageOptimizer: vi.fn(),
+  renderPage: vi.fn(),
+}));
+
+const dispatchRequestStage = async () => new Response("request-stage");
+
+vi.mock("virtual:vinext-cache-adapters", () => ({
+  registerConfiguredCacheAdapters: stages.registerCacheAdapters,
+}));
+
+vi.mock("virtual:vinext-image-adapters", () => ({
+  registerConfiguredImageOptimizer: stages.registerImageOptimizer,
+}));
+
+vi.mock("virtual:vinext-pages-response-entry", () => ({
+  authorizeOnDemandRevalidate: vi.fn(() => false),
+  buildId: "test-build",
+  getRuntimePageDataKind: stages.getRuntimePageDataKind,
+  handleApiRoute: stages.api,
+  hasMiddleware: false,
+  matchPageRoute: null,
+  normalizeDataRequest: vi.fn(),
+  publicFiles: new Set(),
+  renderPage: stages.renderPage,
+  runMiddleware: null,
+  vinextConfig: {},
+}));
+
+vi.mock("virtual:vinext-cacheability-manifest", () => ({ default: null }));
+
+describe("Pages Worker response stage", () => {
+  beforeEach(() => {
+    setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    stages.api.mockReset();
+    stages.getRuntimePageDataKind.mockReset();
+    stages.getRuntimePageDataKind.mockReturnValue("none");
+    stages.registerCacheAdapters.mockReset();
+    stages.registerImageOptimizer.mockReset();
+    stages.renderPage.mockReset();
+  });
+
+  it("stamps trusted request-time policy ownership from loaded Pages modules", async () => {
+    stages.getRuntimePageDataKind.mockReturnValue("initial");
+    stages.renderPage.mockResolvedValue(new Response("gip"));
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/page",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/page",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get(PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER)).toBe("request-time");
+  });
+
+  it("rejects malformed stage descriptions before dispatch", async () => {
+    const response = await handleResponseStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      { kind: "pages-api" } as never,
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.status).toBe(400);
+    expect(stages.api).not.toHaveBeenCalled();
+    expect(stages.renderPage).not.toHaveBeenCalled();
+  });
+
+  it("validates readiness from inside the response stage", async () => {
+    const validateRequest = vi.fn(() => null);
+    const adapter: CdnCacheAdapter = {
+      ownsBackgroundRevalidation: false,
+      async get() {
+        return null;
+      },
+      async set() {},
+      buildResponseHeaders() {
+        return {};
+      },
+      validateRequest,
+      async revalidateTag() {},
+    };
+    stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+    const request = new Request(
+      "https://example.com/__vinext/prerender/readiness?attempt=response-stage",
+      { headers: { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a" } },
+    );
+
+    const response = await handleResponseStage(
+      request,
+      { binding: "value" },
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/__vinext/prerender/readiness",
+        },
+        kind: "pages-prerender-discovery",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
+    expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
+    expect(validateRequest).toHaveBeenCalledWith(request);
+    expect(stages.renderPage).not.toHaveBeenCalled();
+  });
+
+  it("renders a page with no outer middleware response headers", async () => {
+    const request = new Request("https://example.com/original", {
+      headers: { "x-post-middleware": "kept" },
+    });
+    const response = new Response("page");
+    stages.renderPage.mockResolvedValue(response);
+
+    const rendered = await handleResponseStage(
+      request,
+      { binding: "value" },
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/rewritten",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: { isDataReq: true },
+        resolvedUrl: "/rewritten?slug=one",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    await expect(rendered.text()).resolves.toBe("page");
+    expect(rendered.headers.get(PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER)).toBe("static");
+
+    expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
+    expect(stages.registerImageOptimizer).toHaveBeenCalledWith({ binding: "value" });
+    expect(stages.renderPage).toHaveBeenCalledExactlyOnceWith(
+      request,
+      "/rewritten?slug=one",
+      null,
+      expect.any(Object),
+      expect.any(Headers),
+      { isDataReq: true },
+      expect.any(Headers),
+    );
+    const stagedHeaders = stages.renderPage.mock.calls[0]?.[4] as Headers;
+    expect([...stagedHeaders]).toEqual([]);
+  });
+
+  it("strips stale Content-Length before a streamed page crosses the stage transport", async () => {
+    const streamed = new Response("streamed page", {
+      headers: {
+        "Content-Length": "1",
+        "Content-Type": "text/html; charset=utf-8",
+      },
+    }) as Response & { __vinextStreamedHtmlResponse?: boolean };
+    streamed.__vinextStreamedHtmlResponse = true;
+    stages.renderPage.mockResolvedValue(streamed);
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/page",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/page",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.headers.get("Content-Length")).toBeNull();
+    expect(response.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
+    await expect(response.text()).resolves.toBe("streamed page");
+  });
+
+  it("strips stale Content-Length after preview response finalization", async () => {
+    // Next.js preview renders still flow through its normal HTML sender; applying
+    // the preview no-store policy must not turn a streamed body into a fixed-length one.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/send-payload.ts
+    const streamed = new Response("preview page", {
+      headers: { "Content-Length": "1", "Content-Type": "text/html; charset=utf-8" },
+    }) as Response & { __vinextStreamedHtmlResponse?: boolean };
+    streamed.__vinextStreamedHtmlResponse = true;
+    stages.renderPage.mockResolvedValue(
+      finalizePagesPreviewResponse(streamed, { data: { enabled: true }, shouldClear: false }),
+    );
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/page", {
+        headers: { Cookie: "__prerender_bypass=preview" },
+      }),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/page",
+        stagedHeaders: [],
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.headers.get("Content-Length")).toBeNull();
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("preview page");
+  });
+
+  it("preserves the dynamic Pages data short-circuit without an HTML render", async () => {
+    const response = new Response('{"pageProps":{"dynamic":true}}', {
+      headers: { "Content-Type": "application/json" },
+    });
+    stages.renderPage.mockResolvedValue(response);
+
+    await expect(
+      handleResponseStage(
+        new Request("https://example.com/page"),
+        undefined,
+        undefined,
+        {
+          buildId: "test-build",
+          cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
+          kind: "pages-page",
+          protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+          requestHost: "example.com",
+          renderOptions: { isDataReq: true },
+          resolvedUrl: "/page",
+          stagedHeaders: null,
+        },
+        dispatchRequestStage,
+        { cache: "shared" },
+      ).then((result) => result.text()),
+    ).resolves.toBe('{"pageProps":{"dynamic":true}}');
+    expect(stages.renderPage).toHaveBeenCalledExactlyOnceWith(
+      expect.any(Request),
+      "/page",
+      null,
+      expect.any(Object),
+      expect.any(Headers),
+      { isDataReq: true },
+      expect.any(Headers),
+    );
+  });
+
+  it("admits normalized Pages data using its trusted representation", async () => {
+    const adapter: CdnCacheAdapter = {
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    };
+    stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+    stages.renderPage.mockImplementation(async (...args: unknown[]) => {
+      const context = args[3] as Record<PropertyKey, unknown>;
+      const initialHeaders = args[6] as Headers;
+      const state = context[CACHEABILITY_REQUEST_STATE] as RouteCacheabilityState;
+      expect(state.admission?.representation).toBe("pages-data");
+      state.route = { kind: "pages-page", pattern: "/page" };
+      state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+      return new Response('{"pageProps":{"cached":true}}', { headers: initialHeaders });
+    });
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          representation: "pages-data",
+          resolvedRoutePathname: "/page",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: { isDataReq: true },
+        resolvedUrl: "/page",
+        stagedHeaders: [
+          ["set-cookie", "middleware=one; Path=/"],
+          ["set-cookie", "config=two; Path=/"],
+        ],
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("s-maxage=60");
+    expect(response.headers.getSetCookie()).toEqual([]);
+    await expect(response.json()).resolves.toEqual({ pageProps: { cached: true } });
+  });
+
+  it("dispatches a Pages API with its resolved URL and no outer composition", async () => {
+    const request = new Request("https://example.com/original");
+    const response = new Response("api");
+    stages.api.mockResolvedValue(response);
+
+    await expect(
+      handleResponseStage(
+        request,
+        undefined,
+        undefined,
+        {
+          apiUrl: "/api/rewritten?slug=one",
+          buildId: "test-build",
+          cacheability: {
+            policyHeaders: null,
+            probeMode: null,
+            resolvedRoutePathname: "/api/rewritten",
+          },
+          kind: "pages-api",
+          protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+          requestHost: "example.com",
+          stagedHeaders: null,
+        },
+        dispatchRequestStage,
+        { cache: "shared" },
+      ),
+    ).resolves.toBe(response);
+
+    expect(stages.api).toHaveBeenCalledExactlyOnceWith(
+      request,
+      "/api/rewritten?slug=one",
+      expect.any(Object),
+      "https://example.com",
+      "node",
+      expect.any(Headers),
+    );
+    expect(stages.renderPage).not.toHaveBeenCalled();
+  });
+
+  it("installs complete request-stage headers before Pages API user code", async () => {
+    stages.api.mockImplementation(async (...args: unknown[]) => {
+      const initialHeaders = args[5] as Headers;
+      expect(initialHeaders.get("x-config-variant")).toBe("preview");
+      expect(initialHeaders.get("x-from-middleware")).toBe("present");
+      return new Response("api");
+    });
+
+    await handleResponseStage(
+      new Request("https://example.com/api/headers"),
+      undefined,
+      undefined,
+      {
+        apiUrl: "/api/headers",
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: [["Cache-Control", "public, s-maxage=60"]],
+          probeMode: null,
+          resolvedRoutePathname: "/api/headers",
+        },
+        kind: "pages-api",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: [
+          ["cache-control", "public, s-maxage=60"],
+          ["x-config-variant", "preview"],
+          ["x-from-middleware", "present"],
+        ],
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+  });
+
+  it("installs middleware and config headers before a staged GSSP render", async () => {
+    // Ported from Next.js:
+    // test/e2e/middleware-custom-matchers/app/pages/index.js
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers/app/pages/index.js
+    stages.renderPage.mockImplementation(async (...args: unknown[]) => {
+      const initialHeaders = args[6] as Headers;
+      expect(initialHeaders.get("x-config-variant")).toBe("preview");
+      expect(initialHeaders.get("x-from-middleware")).toBe("present");
+      return new Response("page");
+    });
+
+    await handleResponseStage(
+      new Request("https://example.com/gssp"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: [["Cache-Control", "public, s-maxage=60"]],
+          probeMode: null,
+          resolvedRoutePathname: "/gssp",
+        },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/gssp",
+        stagedHeaders: [
+          ["cache-control", "public, s-maxage=60"],
+          ["x-config-variant", "preview"],
+          ["x-from-middleware", "present"],
+        ],
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+  });
+
+  it("returns staged cookies once while preserving handler-authored cookies and lengths", async () => {
+    // Next.js composes middleware/config headers once around the final Pages
+    // response. The response stage may expose them to user code, but must not
+    // replay that inherited snapshot across the stage boundary.
+    stages.renderPage.mockImplementation(async (...args: unknown[]) => {
+      const renderHeaders = args[4] as Headers;
+      const initialHeaders = args[6] as Headers;
+      expect(renderHeaders.get("Content-Length")).toBeNull();
+      expect(initialHeaders.get("Content-Length")).toBeNull();
+      expect(initialHeaders.getSetCookie()).toEqual(["middleware=one; Path=/"]);
+
+      const headers = new Headers(initialHeaders);
+      headers.append("Set-Cookie", "middleware=one; Path=/");
+      headers.append("Set-Cookie", "handler=two; Path=/");
+      headers.set("Content-Length", "4");
+      return new Response("page", { headers });
+    });
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/gssp"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/gssp" },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/gssp",
+        stagedHeaders: [
+          ["content-length", "999"],
+          ["set-cookie", "middleware=one; Path=/"],
+        ],
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.headers.getSetCookie()).toEqual([
+      "middleware=one; Path=/",
+      "handler=two; Path=/",
+    ]);
+    expect(response.headers.get("Content-Length")).toBe("4");
+  });
+
+  it("does not replay inherited staged cookies from Pages API responses", async () => {
+    stages.api.mockImplementation(async (...args: unknown[]) => {
+      const initialHeaders = args[5] as Headers;
+      expect(initialHeaders.get("Content-Length")).toBeNull();
+      return new Response("api", { headers: initialHeaders });
+    });
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/api/headers"),
+      undefined,
+      undefined,
+      {
+        apiUrl: "/api/headers",
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/api/headers",
+        },
+        kind: "pages-api",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: [
+          ["content-length", "999"],
+          ["set-cookie", "middleware=one; Path=/"],
+        ],
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.headers.getSetCookie()).toEqual([]);
+    expect(response.headers.get("Content-Length")).toBeNull();
+  });
+
+  it("admits an explicitly public Pages API response", async () => {
+    const adapter: CdnCacheAdapter = {
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      responseVary: "verbatim",
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    };
+    stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+    stages.api.mockResolvedValue(
+      new Response("public api", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+    );
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/api/public", {
+        headers: { Accept: "text/html" },
+      }),
+      undefined,
+      undefined,
+      {
+        apiUrl: "/api/public",
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/api/public",
+        },
+        kind: "pages-api",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    await expect(response.text()).resolves.toBe("public api");
+  });
+
+  it("does not let config public policy overwrite a Pages API private response", async () => {
+    const adapter: CdnCacheAdapter = {
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      responseVary: "verbatim",
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    };
+    stages.registerCacheAdapters.mockImplementation(() => setCdnCacheAdapter(adapter));
+    stages.api.mockImplementation(async (...args: unknown[]) => {
+      const initialHeaders = args[5] as Headers;
+      expect(initialHeaders.get("Cache-Control")).toBe("public, s-maxage=60");
+      return new Response("private api", {
+        headers: { "Cache-Control": "private, no-store" },
+      });
+    });
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/api/private"),
+      undefined,
+      undefined,
+      {
+        apiUrl: "/api/private",
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: [["Cache-Control", "public, s-maxage=60"]],
+          probeMode: null,
+          resolvedRoutePathname: "/api/private",
+        },
+        kind: "pages-api",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    await expect(response.text()).resolves.toBe("private api");
+  });
+
+  it("preserves an adapter-supplied Worker runtime for Pages API responses", async () => {
+    const request = new Request("https://example.com/original");
+    stages.api.mockResolvedValue(new Response("api"));
+
+    await handleResponseStage(
+      request,
+      undefined,
+      { hostRuntime: "worker", waitUntil() {} },
+      {
+        apiUrl: "/api/worker",
+        buildId: "test-build",
+        cacheability: {
+          policyHeaders: null,
+          probeMode: null,
+          resolvedRoutePathname: "/api/worker",
+        },
+        kind: "pages-api",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(stages.api.mock.calls[0]?.[4]).toBe("worker");
+  });
+
+  it("rejects a response-stage deployment mismatch before rendering", async () => {
+    const response = await handleResponseStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      {
+        buildId: "older-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/page",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.status).toBe(409);
+    expect(stages.api).not.toHaveBeenCalled();
+    expect(stages.renderPage).not.toHaveBeenCalled();
+  });
+
+  it("rejects a response-stage host mismatch before rendering", async () => {
+    const response = await handleResponseStage(
+      new Request("https://second.example/page"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        renderOptions: null,
+        requestHost: "first.example",
+        resolvedUrl: "/page",
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "shared" },
+    );
+
+    expect(response.status).toBe(400);
+    expect(stages.renderPage).not.toHaveBeenCalled();
+  });
+
+  it("reconstructs bypass-stage headers for nonce and cookie-sensitive page renders", async () => {
+    stages.renderPage.mockResolvedValue(new Response("page"));
+    const stagedHeaders: Array<[string, string]> = [
+      ["content-security-policy", "script-src 'nonce-stage'"],
+      ["set-cookie", "first=one; Path=/"],
+      ["set-cookie", "second=two; Path=/"],
+    ];
+
+    await handleResponseStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/page" },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: null,
+        resolvedUrl: "/page",
+        stagedHeaders,
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    const reconstructed = stages.renderPage.mock.calls[0]?.[4] as Headers;
+    expect(reconstructed.get("content-security-policy")).toBe("script-src 'nonce-stage'");
+    expect(reconstructed.getSetCookie()).toEqual(["first=one; Path=/", "second=two; Path=/"]);
+  });
+});

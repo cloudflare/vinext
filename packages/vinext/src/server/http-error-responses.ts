@@ -91,10 +91,15 @@ export function notFoundResponse(init?: ErrorResponseInit): Response {
  *
  * @see packages/next/src/server/lib/router-server.ts in `.nextjs-ref`
  */
-export function notFoundStaticAssetResponse(): Response {
+export function notFoundStaticAssetResponse(headers?: HeadersInit): Response {
+  const responseHeaders = new Headers(headers);
+  responseHeaders.delete("content-encoding");
+  responseHeaders.delete("content-length");
+  responseHeaders.delete("transfer-encoding");
+  responseHeaders.set("Content-Type", "text/plain; charset=utf-8");
   return new Response("Not Found", {
     status: 404,
-    headers: { "Content-Type": "text/plain; charset=utf-8" },
+    headers: responseHeaders,
   });
 }
 

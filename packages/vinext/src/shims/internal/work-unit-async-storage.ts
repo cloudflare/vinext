@@ -24,6 +24,8 @@ export type PrerenderStore = {
   readonly renderSignal: AbortSignal;
   /** Optional route identifier for debugging and error messages. */
   readonly route?: string;
+  /** Interrupts the owning prerender without exposing a catchable error to user code. */
+  readonly signalPrerenderBailout?: (expression: string) => void;
 };
 
 export type CacheStore = {

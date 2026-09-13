@@ -8,6 +8,10 @@
  * body would run after static user imports have already evaluated.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
+
+const CACHEABILITY_REQUEST_STATE = Symbol.for("vinext.cacheabilityRequestState");
+const PHASE_PRODUCTION_BUILD = "phase-production-build";
 
 type BrowserGlobalName = "window" | "document";
 
@@ -48,6 +52,24 @@ export function installServerGlobals(): void {
       configurable: true,
       value: AsyncLocalStorage,
       writable: true,
+    });
+  }
+
+  const nextPhaseDescriptor = Object.getOwnPropertyDescriptor(globalThis, "__VINEXT_NEXT_PHASE");
+  if (!nextPhaseDescriptor || nextPhaseDescriptor.configurable) {
+    Object.defineProperty(globalThis, "__VINEXT_NEXT_PHASE", {
+      configurable: true,
+      get() {
+        const context = getRequestExecutionContext();
+        const state = context ? Reflect.get(context, CACHEABILITY_REQUEST_STATE) : undefined;
+        if (
+          context?.isPrerenderPathDiscovery === true ||
+          Reflect.get(state ?? {}, "mode") === "probe"
+        ) {
+          return PHASE_PRODUCTION_BUILD;
+        }
+        return Reflect.get(process.env, "NEXT_PHASE");
+      },
     });
   }
 }

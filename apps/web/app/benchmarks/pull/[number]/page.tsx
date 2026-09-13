@@ -1,9 +1,35 @@
+import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, permanentRedirect } from "next/navigation";
 import { getPullComparison } from "@/app/lib/benchmarks/server";
 import { PerformanceComparison } from "../../components/performance-comparison";
+import { createBenchmarkMetadata } from "../../metadata";
 
 export const revalidate = 300;
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ number: string }>;
+}): Promise<Metadata> {
+  const { number } = await params;
+  if (!/^\d+$/.test(number) || Number(number) <= 0) {
+    return createBenchmarkMetadata({
+      title: "Pull request performance benchmarks",
+      description: "Exact-head vinext pull request performance measurements.",
+      path: "/benchmarks",
+      index: false,
+    });
+  }
+
+  const canonicalNumber = String(Number(number));
+  return createBenchmarkMetadata({
+    title: `PR #${canonicalNumber} performance benchmarks`,
+    description: `Exact-head build, bundle-size, and development-startup performance measurements for vinext pull request #${canonicalNumber}.`,
+    path: `/benchmarks/pull/${canonicalNumber}`,
+    index: false,
+  });
+}
 
 export default async function PullComparisonPage({
   params,
@@ -11,6 +37,10 @@ export default async function PullComparisonPage({
   params: Promise<{ number: string }>;
 }) {
   const { number } = await params;
+  if (/^\d+$/.test(number) && Number(number) > 0) {
+    const canonicalNumber = String(Number(number));
+    if (number !== canonicalNumber) permanentRedirect(`/benchmarks/pull/${canonicalNumber}`);
+  }
   const comparison = await getPullComparison(number);
   if (!comparison) notFound();
   return (

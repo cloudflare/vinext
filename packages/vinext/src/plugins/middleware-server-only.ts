@@ -1,5 +1,6 @@
 import type { Plugin } from "vite";
 import { toSlash } from "pathslash";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 /**
  * Allow `import 'server-only'` from neutral server targets (and any module
@@ -67,11 +68,10 @@ export function createMiddlewareServerOnlyPlugin(options: {
   // paths can come from `fs.realpathSync`, which is backslash on Windows, so
   // they must be normalized to match the importer ids Rolldown passes in.
   function canonicalizeId(id: string): string {
-    const queryIndex = id.indexOf("?");
     // Strip query string suffix (e.g. ?v=hash, ?rsc, ?used). Rolldown stores
     // module IDs with the query in `importer` strings for HMR / dep optimizer
     // round-trips; the canonical id we tracked doesn't carry one.
-    return toSlash(queryIndex === -1 ? id : id.slice(0, queryIndex));
+    return toSlash(stripViteModuleQuery(id));
   }
 
   function isTainted(id: string | undefined): boolean {

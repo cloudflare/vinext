@@ -1,5 +1,6 @@
 import { LikeButton } from "./like-button";
 import { MessageForm } from "./message-form";
+import { notFoundAction } from "./actions";
 
 export default function ActionsPage() {
   return (
@@ -13,6 +14,9 @@ export default function ActionsPage() {
       <section>
         <h2>Message Form</h2>
         <MessageForm />
+        <form action={notFoundAction}>
+          <button type="submit">Trigger not found</button>
+        </form>
       </section>
     </main>
   );

@@ -4,6 +4,7 @@ import {
   generateAppRouterViteConfig,
   generatePagesRouterViteConfig,
   getWranglerImagesBinding,
+  getWranglerVersionMetadataBinding,
   updateViteConfigForCloudflare,
   updateWranglerConfigForCloudflare,
 } from "../packages/vinext/src/init-cloudflare.js";
@@ -626,6 +627,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       cache: { enabled: true },
       images: { binding: "IMAGES" },
       kv_namespaces: [{ binding: "VINEXT_KV_CACHE" }],
+      version_metadata: { binding: "CF_VERSION_METADATA" },
     });
   });
 
@@ -658,7 +660,68 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       main: "vinext/server/fetch-handler",
       assets: { directory: "dist/client", not_found_handling: "none", binding: "ASSETS" },
       cache: { enabled: true },
+      version_metadata: { binding: "CF_VERSION_METADATA" },
     });
+  });
+
+  it("preserves a custom Wrangler version metadata binding for the CDN adapter", () => {
+    const input = `{ "version_metadata": { "binding": "CUSTOM_VERSION" } }\n`;
+    const output = updateWranglerConfigForCloudflare(input, {
+      dataCache: "none",
+      cdnCache: "workers-cache",
+      imageOptimization: "none",
+    });
+
+    expect(getWranglerVersionMetadataBinding(output)).toBe("CUSTOM_VERSION");
+    expect(
+      generateAppRouterViteConfig(
+        undefined,
+        {
+          dataCache: "none",
+          cdnCache: "workers-cache",
+          imageOptimization: "none",
+        },
+        "IMAGES",
+        false,
+        "CUSTOM_VERSION",
+      ),
+    ).toContain('cdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" })');
+  });
+
+  it("aligns an existing Cloudflare CDN adapter with a custom version metadata binding", () => {
+    const input = `import { defineConfig } from "vite";
+import vinext from "vinext";
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+
+export default defineConfig({
+  plugins: [vinext({ cache: { cdn: cdnAdapter() } })],
+});
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none",
+        cdnCache: "workers-cache",
+        imageOptimization: "none",
+      },
+      versionMetadataBinding: "CUSTOM_VERSION",
+    });
+
+    expectValidConfig(output);
+    expect(output).toContain('cdn: cdnAdapter({ versionMetadataBinding: "CUSTOM_VERSION" })');
+    expect(
+      updateViteConfigForCloudflare("vite.config.ts", output, {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "workers-cache",
+          imageOptimization: "none",
+        },
+        versionMetadataBinding: "CUSTOM_VERSION",
+      }),
+    ).toBe(output);
   });
 
   it("preserves a custom Wrangler Images binding for the Vite adapter", () => {

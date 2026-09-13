@@ -8,6 +8,7 @@ import {
   parseWorkersDevUrl,
   parseWranglerDeploymentStatusOutput,
   parseWranglerVersionUploadOutput,
+  runWranglerDeploymentStatus,
   runWranglerVersionDeploy,
   runWranglerVersionUpload,
 } from "../packages/cloudflare/src/version-deploy.js";
@@ -131,6 +132,37 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     expect(log).toHaveBeenCalledWith("\n  Promoting uploaded Worker version to env: staging...");
   });
 
+  it("hides raw Wrangler upload output by default and shows it in verbose mode", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const output = JSON.stringify({
+      version: { id: "095f00a7-23a7-43b7-a227-e4c97cab5f22" },
+    });
+    const execute = vi.fn(() => output);
+
+    runWranglerVersionUpload("/tmp/app", {}, execute as never);
+    expect(log).not.toHaveBeenCalledWith(`  ${output}`);
+
+    log.mockClear();
+    runWranglerVersionUpload("/tmp/app", { verbose: true }, execute as never);
+    expect(log).toHaveBeenCalledWith(`  ${output}`);
+  });
+
+  it("keeps deployment-status internals quiet unless verbose output is requested", () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const output = JSON.stringify({
+      id: "deployment-1",
+      versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+    });
+    const execute = vi.fn(() => output);
+
+    runWranglerDeploymentStatus("/tmp/app", {}, execute as never);
+    expect(log).not.toHaveBeenCalled();
+
+    runWranglerDeploymentStatus("/tmp/app", { verbose: true }, execute as never);
+    expect(log).toHaveBeenCalledWith("\n  Reading current Worker deployment...");
+    expect(log).toHaveBeenCalledWith(`  ${output}`);
+  });
+
   it("asks for an initial deploy without CDN pre-warm when the Worker does not exist yet", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const execute = vi.fn(() => {
@@ -208,6 +240,21 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
   });
 
+  it("prefers Wrangler's labeled version ID over UUIDs in uploaded asset paths", () => {
+    const output = `
+      + /_next/static/82859cda-4cfe-4924-96da-fe471138612a/_buildManifest.js
+      Uploaded rsc-prewarm-32362416100 (4.16 sec)
+      Worker Version ID: 7283300a-90b0-45d6-ba08-7c4b76797f38
+      Version Preview URL: https://7283300a-rsc-prewarm-32362416100.vinext.workers.dev
+    `;
+
+    expect(parseWranglerVersionUploadOutput(output)).toMatchObject({
+      versionId: "7283300a-90b0-45d6-ba08-7c4b76797f38",
+      workerName: "rsc-prewarm-32362416100",
+      previewUrl: "https://7283300a-rsc-prewarm-32362416100.vinext.workers.dev",
+    });
+  });
+
   it("does not treat unrelated nested JSON IDs and URLs as upload metadata", () => {
     expect(
       parseWranglerVersionUploadOutput(
@@ -243,9 +290,13 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     expect(
       parseWranglerDeploymentStatusOutput(
         JSON.stringify({
+          id: "deployment-1",
           versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
         }),
-      ).versions,
-    ).toEqual([{ versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 }]);
+      ),
+    ).toMatchObject({
+      deploymentId: "deployment-1",
+      versions: [{ versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+    });
   });
 });

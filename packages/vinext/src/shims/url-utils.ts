@@ -202,6 +202,24 @@ export function toBrowserNavigationHref(href: string, currentUrl?: string, baseP
   return withBasePath(resolved, basePath);
 }
 
+/**
+ * Resolve an App Router target into the canonical browser pathname used by
+ * both document URLs and RSC fetches. The trailing-slash pass must happen
+ * after adding basePath so the base-path root (`/` -> `/docs/`) is normalized
+ * consistently with deploy-time CDN warmup.
+ */
+export function toCanonicalBrowserNavigationHref(
+  href: string,
+  currentUrl: string | undefined,
+  basePath: string,
+  trailingSlash: boolean,
+): string {
+  return normalizePathTrailingSlash(
+    toBrowserNavigationHref(href, currentUrl, basePath),
+    trailingSlash,
+  );
+}
+
 export function isHashOnlyBrowserUrlChange(
   href: string,
   currentHref: string,

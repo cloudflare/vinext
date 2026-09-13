@@ -24,6 +24,7 @@ import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
   createPendingNavigationCommit,
   createPendingNavigationCommitFromElements,
+  resolveActiveRoutePaths,
   type AppNavigationPayloadOrigin,
   type AppRouterState,
   type OperationLane,
@@ -62,6 +63,7 @@ type HardNavigationMode = "assign" | "replace";
 type BrowserNavigationCommitEffect = () => void;
 
 type BrowserNavigationCommitEffectFactory = (options: {
+  activeRoutePaths: readonly string[];
   bfcacheIds: Readonly<Record<string, string>>;
   href: string;
   historyUpdateMode: HistoryUpdateMode | undefined;
@@ -99,6 +101,7 @@ type BrowserNavigationPayloadOptions = {
   historyUpdateMode: HistoryUpdateMode | undefined;
   navigationCommitKind?: "authoritative" | "detached";
   navigationInitiationState: AppRouterState;
+  navigationResponseCompletion?: Promise<unknown>;
   navigationSnapshot: ClientNavigationRenderSnapshot;
   navId: number;
   nextElements: Promise<AppElements> | AppElements;
@@ -131,6 +134,7 @@ type BrowserNavigationController = {
   beginPendingBrowserRouterState(): PendingBrowserRouterState;
   finalizeNavigation(navId: number, pending: PendingBrowserRouterState | null | undefined): void;
   restoreHistorySnapshotVisibleState(options: {
+    restoreCopiedExternalHistoryEntry?: boolean;
     beforeCommit?: () => void;
     navId: number;
     state: AppRouterState;
@@ -159,6 +163,7 @@ type BrowserNavigationController = {
    * navigation would otherwise be lost.
    */
   drainPrePaintEffects(renderId: number): void;
+  commitNavigationRender(renderId: number): void;
   clearCommittedNavigationFailureTargets(renderId: number): void;
   NavigationCommitSignal(
     this: void,
@@ -484,6 +489,11 @@ export function createAppBrowserNavigationController(
     }
   }
 
+  function commitNavigationRender(renderId: number): void {
+    drainPrePaintEffects(renderId);
+    settleNavigationCommits(renderId, true);
+  }
+
   function clearCommittedNavigationFailureTargets(renderId: number): void {
     for (const [pendingId, targetHref] of pendingNavigationFailureTargets) {
       if (pendingId > renderId) {
@@ -551,8 +561,7 @@ export function createAppBrowserNavigationController(
     }, [renderId]);
 
     useLayoutEffect(() => {
-      drainPrePaintEffects(renderId);
-      settleNavigationCommits(renderId, true);
+      commitNavigationRender(renderId);
 
       return () => {
         // Settle pending renders without publishing their candidate state when
@@ -677,14 +686,25 @@ export function createAppBrowserNavigationController(
   }
 
   function restoreHistorySnapshotVisibleState(options: {
+    restoreCopiedExternalHistoryEntry?: boolean;
     beforeCommit?: () => void;
     navId: number;
     state: AppRouterState;
     targetHref: string;
   }): boolean {
-    if (!isSnapshotTargetHref(basePath, options.state.navigationSnapshot, options.targetHref)) {
+    if (
+      !options.restoreCopiedExternalHistoryEntry &&
+      !isSnapshotTargetHref(basePath, options.state.navigationSnapshot, options.targetHref)
+    ) {
       return false;
     }
+
+    // A user pushState entry copies the current App Router tree while exposing a
+    // different URL to navigation hooks. Approve restoration against the copied
+    // tree's route, then let commitClientNavigationState publish the browser URL.
+    const approvalTargetHref = options.restoreCopiedExternalHistoryEntry
+      ? createSnapshotPathAndSearch(options.state.navigationSnapshot)
+      : options.targetHref;
 
     const currentState = getBrowserRouterState();
     const pending = createRestoredHistorySnapshotCommit({
@@ -698,7 +718,7 @@ export function createAppBrowserNavigationController(
       pending,
       routeManifest: getRouteManifest(),
       startedNavigationId: options.navId,
-      targetHref: options.targetHref,
+      targetHref: approvalTargetHref,
     });
 
     if (approval.approvedCommit === null) {
@@ -833,11 +853,20 @@ export function createAppBrowserNavigationController(
       if (approvedCommit === null) {
         throw new Error("[vinext] Commit decision did not approve a visible commit");
       }
+      // History metadata describes the tree that will actually become visible,
+      // including planner-approved retained slots and BFCache identities. The
+      // raw response action can mark those slots default/unmatched even though
+      // the reducer preserves their active content.
+      const approvedVisibleState = applyApprovedVisibleCommit(
+        getBrowserRouterState(),
+        approvedCommit,
+      );
 
       queuePrePaintNavigationEffect(
         renderId,
         options.createNavigationCommitEffect({
-          bfcacheIds: approvedCommit.action.bfcacheIds,
+          activeRoutePaths: resolveActiveRoutePaths(approvedVisibleState.slotBindings),
+          bfcacheIds: approvedVisibleState.bfcacheIds,
           href: options.targetHref,
           historyUpdateMode: options.historyUpdateMode,
           navId: options.navId,
@@ -857,6 +886,25 @@ export function createAppBrowserNavigationController(
           ? "synchronous"
           : (options.visibleCommitMode ?? "transition"),
       );
+      if (options.navigationResponseCompletion) {
+        // Keep the live Flight branch streaming. If React commits it normally,
+        // NavigationCommitSignal removes this render from the pending map
+        // before the cache tee reaches EOF. A retained optimistic subtree can
+        // otherwise leave the fully received candidate uncommitted; publish it
+        // synchronously only as that terminal recovery path.
+        void options.navigationResponseCompletion.then(
+          () => {
+            if (!isCurrentNavigation(options.navId) || !hasBrowserRouterState()) return;
+            const pendingCommit = pendingNavigationCommits.get(renderId);
+            const committedState = pendingCommit?.committedState;
+            if (!committedState) return;
+            flushSync(() => {
+              getBrowserRouterStateSetter()(committedState);
+            });
+          },
+          () => {},
+        );
+      }
     } catch (error) {
       pendingNavigationFailureTargets.delete(renderId);
       pendingNavigationPrePaintEffects.delete(renderId);
@@ -998,6 +1046,7 @@ export function createAppBrowserNavigationController(
     commitSameUrlNavigatePayload,
     hmrReplaceTree,
     drainPrePaintEffects,
+    commitNavigationRender,
     clearCommittedNavigationFailureTargets,
     NavigationCommitSignal,
   };

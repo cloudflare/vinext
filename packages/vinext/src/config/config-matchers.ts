@@ -835,6 +835,7 @@ export function matchRedirect(
   redirects: NextRedirect[],
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+  onRuleSourceMatch?: (rule: NextRedirect) => void,
 ): { destination: string; permanent: boolean } | null {
   if (redirects.length === 0) return null;
 
@@ -875,6 +876,7 @@ export function matchRedirect(
         if (entry.originalIndex >= localeMatchIndex) continue; // already have a better match
         const redirect = entry.redirect;
         if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
+        onRuleSourceMatch?.(redirect);
         const conditionParams =
           redirect.has || redirect.missing
             ? collectConditionParams(redirect.has, redirect.missing, ctx)
@@ -906,6 +908,7 @@ export function matchRedirect(
           if (!entry.altRe.test(localePart)) continue;
           const redirect = entry.redirect;
           if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
+          onRuleSourceMatch?.(redirect);
           const conditionParams =
             redirect.has || redirect.missing
               ? collectConditionParams(redirect.has, redirect.missing, ctx)
@@ -936,6 +939,7 @@ export function matchRedirect(
     if (!shouldEvaluateRule(redirect.basePath, basePathState)) continue;
     const params = matchConfigPattern(pathname, redirect.source);
     if (params) {
+      onRuleSourceMatch?.(redirect);
       const conditionParams =
         redirect.has || redirect.missing
           ? collectConditionParams(redirect.has, redirect.missing, ctx)
@@ -968,11 +972,13 @@ export function matchRewrite(
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
   paramsPathname: string = pathname,
+  onRuleSourceMatch?: (rule: NextRewrite) => void,
 ): string | null {
   for (const rewrite of rewrites) {
     if (!shouldEvaluateRule(rewrite.basePath, basePathState)) continue;
     const matchedParams = matchConfigPattern(pathname, rewrite.source);
     if (matchedParams) {
+      onRuleSourceMatch?.(rewrite);
       // App request routing matches against a segment-normalized pathname but
       // Next.js prepareDestination substitutes the encoded source captures.
       // Prefer those captures when the caller retained the encoded pathname.
@@ -1384,6 +1390,7 @@ export function matchHeaders(
   headers: NextHeader[],
   ctx: RequestContext,
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
+  onRuleSourceMatch?: (rule: NextHeader) => void,
 ): Array<{ key: string; value: string }> {
   const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
   pathname = stripTrailingSlashForConfigMatch(pathname);
@@ -1400,6 +1407,7 @@ export function matchHeaders(
       safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
     );
     if (sourceRegex && sourceRegex.test(pathname)) {
+      onRuleSourceMatch?.(rule);
       if (rule.has || rule.missing) {
         if (!checkHasConditions(rule.has, rule.missing, ctx)) {
           continue;

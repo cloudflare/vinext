@@ -296,6 +296,49 @@ describe("app route handler dispatch", () => {
     expect(didClearRequestContext).toBe(true);
   });
 
+  it("keeps mixed-method handlers out of the normal ISR cache path", async () => {
+    const isrGet = vi.fn(async () => buildISRCacheEntry(buildCachedRouteValue("unsafe-hit")));
+    const isrSet = vi.fn();
+    const response = await dispatchAppRouteHandler({
+      cleanPathname: "/api/mixed",
+      clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
+      i18n: null,
+      isDevelopment: false,
+      isProduction: true,
+      isrGet,
+      isrRouteKey(pathname) {
+        return "route:" + pathname;
+      },
+      isrSet,
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: null,
+      request: new Request("https://example.com/api/mixed"),
+      route: {
+        pattern: "/api/mixed",
+        routeHandler: {
+          GET() {
+            return new Response("fresh");
+          },
+          POST() {
+            return new Response(null, { status: 204 });
+          },
+          revalidate: 60,
+        },
+        routeSegments: ["api", "mixed"],
+      },
+      scheduleBackgroundRegeneration() {},
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(response.headers.get("cache-control")).toBeNull();
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("fresh");
+  });
+
   // Matches Next.js behavior: route handlers on non-dynamic routes receive
   // `context.params` as null (not `{}`). User code typically does
   // `const resolved = params ? await params : null`, and the resolved value
@@ -403,6 +446,7 @@ describe("app route handler dispatch", () => {
   it("applies the force-dynamic fetch default before invoking the route handler", async () => {
     const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
     const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
     const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
 
     let forceDynamicDefaultAtHandlerTime: boolean | undefined;
@@ -449,14 +493,17 @@ describe("app route handler dispatch", () => {
     expect(response.status).toBe(200);
     expect(forceDynamicDefaultAtHandlerTime).toBe(true);
     expect(fetchCacheModeAtHandlerTime).toBeNull();
+    expect(revalidateSpy).toHaveBeenCalledWith(null);
 
     modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
 
   it("applies the handler's explicit fetchCache export without the force-dynamic default", async () => {
     const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
     const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
     const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
 
     let forceDynamicDefaultAtHandlerTime: boolean | undefined;
@@ -501,14 +548,17 @@ describe("app route handler dispatch", () => {
     expect(response.status).toBe(200);
     expect(forceDynamicDefaultAtHandlerTime).toBe(false);
     expect(fetchCacheModeAtHandlerTime).toBe("force-cache");
+    expect(revalidateSpy).toHaveBeenCalledWith(null);
 
     modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
 
   it("re-applies the handler's fetch cache mode inside the background regeneration context", async () => {
     const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
     const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
     const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
 
     let scheduledRender: (() => Promise<void>) | undefined;
@@ -566,9 +616,11 @@ describe("app route handler dispatch", () => {
 
     expect(forceDynamicDefaultAtRegenTime).toBe(false);
     expect(fetchCacheModeAtRegenTime).toBe("force-cache");
+    expect(revalidateSpy).toHaveBeenLastCalledWith(60);
     expect(afterRan).toBe(true);
 
     modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
 

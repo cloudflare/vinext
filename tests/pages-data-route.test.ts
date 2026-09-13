@@ -3,7 +3,6 @@ import {
   buildMiddlewarePrefetchSkipResponse,
   isNextDataPathname,
   parseNextDataPathname,
-  buildNextDataJsonResponse,
   buildNextDataNotFoundResponse,
   encodeUrlParserIgnoredCharacters,
   normalizePagesDataRequest,
@@ -11,9 +10,6 @@ import {
   normalizeNextDataPagePathname,
   urlParserCreatesPagesDataPath,
 } from "../packages/vinext/src/server/pages-data-route.js";
-
-// Helper mirroring vinext/html safeJsonStringify behavior for tests.
-const safeJsonStringify = (value: unknown) => JSON.stringify(value);
 
 describe("pages-data-route", () => {
   describe("isNextDataPathname", () => {
@@ -101,15 +97,6 @@ describe("pages-data-route", () => {
 
     it("returns null when buildId is empty", () => {
       expect(parseNextDataPathname(`/_next/data/abc/about.json`, "")).toBeNull();
-    });
-  });
-
-  describe("buildNextDataJsonResponse", () => {
-    it("returns a 200 JSON envelope with pageProps key", async () => {
-      const res = buildNextDataJsonResponse({ message: "hi" }, safeJsonStringify);
-      expect(res.status).toBe(200);
-      expect(res.headers.get("Content-Type")).toBe("application/json");
-      expect(await res.json()).toEqual({ pageProps: { message: "hi" } });
     });
   });
 

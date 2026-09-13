@@ -8,6 +8,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import vm from "node:vm";
+import { parseAst } from "vite";
 import { describe, it, expect } from "vite-plus/test";
 import {
   generateBrowserEntry,
@@ -15,14 +16,23 @@ import {
   toLinkPrefetchRoutes,
 } from "../packages/vinext/src/entries/app-browser-entry.js";
 import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
-import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import {
+  generateAppRequestRscEntry,
+  generateAppResponseRscEntry,
+  generateRscEntry,
+} from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateClientEntry } from "../packages/vinext/src/entries/pages-client-entry.js";
-import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
+import {
+  generatePagesRequestEntry,
+  generatePagesResponseEntry,
+  generateServerEntry,
+} from "../packages/vinext/src/entries/pages-server-entry.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-graph.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
+import { createPagesDevHydrationScript } from "../packages/vinext/src/server/pages-dev-hydration.js";
 
 // ── Minimal App Router route fixtures ─────────────────────────────────
 // Use stable absolute paths so tests don't depend on the machine.
@@ -128,6 +138,19 @@ const minimalAppRoutes: AppRoute[] = [
 // ── App Router manifest construction ─────────────────────────────────
 
 describe("App Router generated manifest construction", () => {
+  it("registers the host React instance before the App Router browser runtime", () => {
+    const code = generateBrowserEntry();
+    const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
+    const navigationRuntimeIndex = code.indexOf("navigation-runtime");
+    const browserRuntimeIndex = code.indexOf("app-browser-entry");
+
+    expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(navigationRuntimeIndex).toBeGreaterThanOrEqual(0);
+    expect(browserRuntimeIndex).toBeGreaterThanOrEqual(0);
+    expect(reactBootstrapIndex).toBeLessThan(navigationRuntimeIndex);
+    expect(reactBootstrapIndex).toBeLessThan(browserRuntimeIndex);
+  });
+
   it("embeds only client-safe rewrite data in the App browser entry", () => {
     const code = generateBrowserEntry([], null, [], {
       afterFiles: [
@@ -172,6 +195,12 @@ describe("App Router generated manifest construction", () => {
     expect(code).not.toContain("header-secret-canary");
     expect(code).not.toContain("cookie-target-canary");
     expect(code).not.toContain("cookie-secret-canary");
+  });
+
+  it("embeds i18n locales used by hybrid App and Pages route ownership", () => {
+    const code = generateBrowserEntry([], null, [], undefined, ["en", "fr"]);
+
+    expect(code).toContain('window.__VINEXT_LOCALES__ = ["en","fr"]');
   });
 
   it("embeds the Link auto-prefetch route manifest in the browser entry", () => {
@@ -333,10 +362,10 @@ describe("App Router generated manifest construction", () => {
       '{"canPrefetchLoadingShell":false,"patternParts":["blog",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
+      '{"canPrefetchLoadingShell":true,"canUseCanonicalLoadingShell":true,"patternParts":["docs",":slug"],"isDynamic":true}',
     );
     expect(code).toContain(
-      '{"canPrefetchLoadingShell":true,"patternParts":["ancestor-loading","slow"],"isDynamic":false}',
+      '{"canPrefetchLoadingShell":true,"canUseCanonicalLoadingShell":true,"patternParts":["ancestor-loading","slow"],"isDynamic":false}',
     );
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["teams",":team","dashboard"],"isDynamic":true,"requiresDynamicNavigationRequest":true}',
@@ -390,6 +419,7 @@ describe("App Router generated manifest construction", () => {
     } satisfies AppRoute;
 
     expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
+    expect(toLinkPrefetchRoute(route).canUseCanonicalLoadingShell).toBeUndefined();
     expect(
       toLinkPrefetchRoute({
         ...route,
@@ -444,6 +474,31 @@ describe("App Router generated manifest construction", () => {
     } satisfies AppRoute;
 
     expect(toLinkPrefetchRoute(route).canPrefetchLoadingShell).toBe(true);
+    expect(toLinkPrefetchRoute(route).canUseCanonicalLoadingShell).toBeUndefined();
+  });
+
+  it("marks root-param routes for concrete route-tree prefetching", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/vary-params/root-params-segment-prefetch.test.ts
+    const route = {
+      ...minimalAppRoutes[0],
+      pattern: "/:rootParam",
+      patternParts: [":rootParam"],
+      routeSegments: [":rootParam"],
+      isDynamic: true,
+      params: ["rootParam"],
+      rootParamNames: ["rootParam"],
+      loadingPath: "/tmp/test/app/[rootParam]/loading.tsx",
+    } satisfies AppRoute;
+
+    expect(toLinkPrefetchRoute(route)).toEqual(
+      expect.objectContaining({
+        canPrefetchLoadingShell: true,
+        canUseCanonicalLoadingShell: true,
+        hasRootParams: true,
+      }),
+    );
   });
 
   it("advertises sibling-intercept loading only on the target route", () => {
@@ -489,6 +544,7 @@ describe("App Router generated manifest construction", () => {
     ]);
     expect(source.canPrefetchLoadingShell).toBe(false);
     expect(target.canPrefetchLoadingShell).toBe(true);
+    expect(target.canUseCanonicalLoadingShell).toBeUndefined();
     expect(unrelated.canPrefetchLoadingShell).toBe(false);
   });
 
@@ -686,6 +742,28 @@ describe("App Router generated manifest construction", () => {
     expect(routeEntry).toContain("loadings: [null, null]");
     expect(routeEntry).toContain("__loadLoadings: [load_");
     expect(routeEntry).toContain("loadingTreePositions: [1,2]");
+  });
+
+  it("wires Route Handler generateStaticParams into staged path discovery", () => {
+    const route = {
+      ...minimalAppRoutes[1],
+      pattern: "/api/items/:slug",
+      patternParts: ["api", "items", ":slug"],
+      pagePath: null,
+      routePath: "/tmp/test/app/api/items/[slug]/route.ts",
+      routeSegments: ["api", "items", "[slug]"],
+      isDynamic: true,
+      params: ["slug"],
+    } satisfies AppRoute;
+
+    const manifest = buildAppRscManifestCode({ routes: [route] });
+
+    expect(manifest.imports).toContain(
+      'const load_0 = () => import("/tmp/test/app/api/items/[slug]/route.ts");',
+    );
+    expect(manifest.generateStaticParamsEntries).toEqual([
+      '  "/api/items/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], []),',
+    ]);
   });
 
   it("emits positional loading modules for named slots and intercepted branches", () => {
@@ -1042,14 +1120,109 @@ describe("App Router generated manifest construction", () => {
 // ── App Router entry template error paths ────────────────────────────
 
 describe("App Router entry templates", () => {
+  it("generates a parseable module-free App request stage", () => {
+    const code = generateAppRequestRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      "/tmp/test/app/global-error.tsx",
+      "",
+      false,
+      { hasPagesDir: true },
+    );
+
+    expect(() => parseAst(code)).not.toThrow();
+    expect(code).not.toContain("/tmp/test/app/page.tsx");
+    expect(code).not.toContain("/tmp/test/app/layout.tsx");
+    expect(code).not.toContain("/tmp/test/app/global-error.tsx");
+    expect(code).toContain(
+      'import * as __pagesRequestEntry from "virtual:vinext-pages-request-entry"',
+    );
+    expect(code).not.toContain("virtual:vinext-rsc-entry");
+    expect(code).toContain(
+      'import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler"',
+    );
+    expect(code).toContain('from "virtual:vinext-cdn-cache-adapter"');
+    expect(code).not.toContain('from "virtual:vinext-cache-adapters"');
+    expect(code).toContain('dispatchPagesResponseStage(stageRequest, "api")');
+    expect(code).toContain(
+      'dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument)',
+    );
+    expect(code).toContain("buildId: process.env.__VINEXT_BUILD_ID ?? null");
+    expect(code).toContain("return __dispatchAppRequestStage(request, ctx, dispatchResponseStage");
+    expect(code).toContain("handleRequest: __requestHandler");
+    expect(code).not.toContain('kind: "app-full-request"');
+    expect(code).not.toContain("crypto.randomUUID()");
+    expect(code).not.toContain('request.headers.get("upgrade")');
+    expect(code).not.toContain("__usesFullRequestGraph");
+    expect(code).not.toContain("|| __isMetadataPath(pathname)");
+  });
+
+  it("preserves exact and generated metadata identities in the App request stage", () => {
+    const code = generateAppRequestRscEntry("/tmp/test/app", minimalAppRoutes, null, [
+      {
+        type: "robots",
+        isDynamic: true,
+        filePath: "/tmp/test/app/robots.ts",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/robots.txt",
+        contentType: "text/plain",
+      },
+      {
+        type: "opengraph-image",
+        isDynamic: true,
+        filePath: "/tmp/test/app/blog/[slug]/opengraph-image.tsx",
+        routePrefix: "/blog/[slug]",
+        routeSegments: ["blog", "[slug]"],
+        servedUrl: "/blog/[slug]/opengraph-image",
+        contentType: "image/png",
+      },
+    ]);
+
+    expect(() => parseAst(code)).not.toThrow();
+    expect(code).toContain('"patternParts":null,"servedUrl":"/robots.txt"');
+    expect(code).toContain('"patternParts":["blog",":slug","opengraph-image"]');
+  });
+
+  it("generates an App response graph without request handling or middleware", () => {
+    const code = generateAppResponseRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      "/tmp/test/middleware.ts",
+      [],
+      null,
+      "",
+      false,
+    );
+
+    expect(() => parseAst(code)).not.toThrow();
+    expect(code).not.toContain("/tmp/test/middleware.ts");
+    expect(code).not.toContain("createAppRscHandler");
+    expect(code).toContain('import "virtual:vinext-pregenerated-concrete-paths";');
+    expect(code).toContain("renderAppWorkerResponseStage as __renderAppWorkerResponseStage");
+    expect(code).toContain("const __responseStageOptions = {");
+    expect(code).toContain("__renderAppWorkerResponseStage(__responseStageOptions");
+  });
+
   it("promotes interception-only RSC targets before not-found dispatch", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname)");
-    expect(code).toContain("const intercept = findIntercept(pathname, sourcePathname)");
+    expect(code).toContain("matchInterceptRoute(pathname, sourcePathname, interceptionId)");
+    expect(code).toContain("hasInterceptionId(interceptionId)");
+    expect(code).toContain("return __routeMatcher.hasInterceptionId(interceptionId)");
+    expect(code).toContain(
+      "const intercept = findIntercept(pathname, sourcePathname, interceptionId)",
+    );
+    expect(code).toContain("interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete");
+    expect(
+      code.match(
+        /findIntercept\(\s*interceptionPathname,\s*interceptionContext,\s*interceptionId,?\s*\)/g,
+      ),
+    ).toHaveLength(3);
     expect(code).toContain("const route = routes[intercept.sourceRouteIndex]");
     expect(code).toContain("intercept.sourceMatchedParams");
-    expect(code).toContain("return { route, params }");
   });
 
   it("installs server globals before App Router user modules are imported", () => {
@@ -1152,8 +1325,11 @@ describe("App Router entry templates", () => {
   it("generateRscEntry delegates App Router request handling to the typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
-    expect(code).toContain('import { createAppRscHandler } from "vinext/server/app-rsc-handler";');
-    expect(code).toContain("export default createAppRscHandler({");
+    expect(code).toMatch(
+      /import \{ createAppRscHandler \} from "[^"]*app-rsc-combined-handler\.[jt]s";/,
+    );
+    expect(code).toContain("const __appRscHandler = createAppRscHandler({");
+    expect(code).toContain("export default __appRscHandler;");
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
@@ -1268,15 +1444,61 @@ describe("App Router entry templates", () => {
 
   it("generateRscEntry defers route-handler and server-action runtimes", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+    const routeCode = generateRscEntry(
+      "/tmp/test/app",
+      [
+        {
+          ...minimalAppRoutes[0],
+          pagePath: null,
+          routePath: "/tmp/test/app/api/route.ts",
+        },
+      ],
+      null,
+      [],
+      null,
+      "",
+      false,
+    );
 
+    expect(code).not.toContain("app-route-request-built-ins.js");
+    expect(routeCode.indexOf("app-route-request-built-ins.js")).toBeLessThan(
+      routeCode.indexOf("/tmp/test/app/api/route.ts"),
+    );
     expect(code).toContain('const __loadAppRouteHandlerDispatch = () => import("');
     expect(code).toContain('const __loadAppServerActionExecution = () => import("');
+    expect(code).toContain("/server/app-server-action-execution.js");
+    expect(code).toContain("/server/app-action-forwarding.js");
+    expect(code).not.toContain('import("vinext/internal/server/');
     expect(code).toContain("await __loadAppRouteHandlerDispatch()");
     expect(code).toContain("await __loadAppServerActionExecution()");
     expect(code).not.toMatch(/import \{\s*dispatchAppRouteHandler as __dispatchAppRouteHandler,/);
     expect(code).not.toMatch(
       /import \{\s*handleProgressiveServerActionRequest as __handleProgressiveServerActionRequest,/,
     );
+  });
+
+  it("generateRscEntry delegates action forwarding to the typed runtime", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
+
+    expect(code).toContain("const __loadAppActionForwarding = () => import(");
+    expect(code).toContain("forwardServerActionIfNeeded: __forwardServerActionIfNeeded");
+    expect(code).toContain("await __forwardServerActionIfNeeded({");
+    expect(code).toContain(
+      'import __vinextActionOwners from "virtual:vinext-action-owner-manifest";',
+    );
+    expect(code).toContain("function __VINEXT_ACTION_OWNERS() { return __vinextActionOwners; }");
+    expect(code).not.toContain("next/dist/server/web/spec-extension/cookies");
+    expect(code).not.toContain("function __mergeActionForwardCookies");
+    expect(code).not.toContain("const __ACTION_FORWARD_FORBIDDEN_HEADERS");
+  });
+
+  it("generateRscEntry disables action forwarding when ownership is unavailable", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, {
+      actionOwners: null,
+    });
+
+    expect(code).toContain("function __VINEXT_ACTION_OWNERS() { return null; }");
+    expect(code).not.toContain("virtual:vinext-action-owner-manifest");
   });
 
   it("generateRscEntry omits server action imports when no server references were found", () => {
@@ -1293,6 +1515,7 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("createTemporaryReferenceSet,");
     expect(code).not.toContain("handleProgressiveActionRequest({");
     expect(code).not.toContain("handleServerActionRequest({");
+    expect(code).not.toContain("app-action-forwarding.js");
   });
 
   it("generateRscEntry passes parallel route segment config into App page dispatch", () => {
@@ -1585,7 +1808,101 @@ describe("Pages Router entry template", () => {
       expect(code).toContain('dataKind: "server"');
       expect(code).toContain('pattern: "/plain",');
       expect(code).toContain('dataKind: "none"');
+      expect(code).toContain("return __getRuntimePagesDataKind(match.route.module, AppComponent);");
       expect(code).not.toContain("typeof page_");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps user page and API modules out of the Pages request-stage entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-request-stage-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const middlewarePath = path.join(tmpDir, "middleware.ts");
+    const instrumentationPath = path.join(tmpDir, "instrumentation.ts");
+
+    try {
+      fs.mkdirSync(path.join(pagesDir, "api"), { recursive: true });
+      const pagePath = path.join(pagesDir, "index.tsx");
+      const apiPath = path.join(pagesDir, "api", "hello.ts");
+      const documentPath = path.join(pagesDir, "_document.tsx");
+      fs.writeFileSync(
+        pagePath,
+        "export function getStaticProps() { return { props: {} }; } export default function Page() { return null; }",
+      );
+      fs.writeFileSync(apiPath, "export default function handler() {};");
+      // Next.js exposes req/res to custom Document getInitialProps for SSG
+      // renders because getStaticProps pages are not automatic exports.
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+      fs.writeFileSync(
+        documentPath,
+        "const Document = Object.assign(() => null, { getInitialProps: async () => ({ html: '' }) }); export default Document;",
+      );
+      fs.writeFileSync(middlewarePath, "export function middleware() {};");
+      fs.writeFileSync(instrumentationPath, "export function register() {};");
+
+      const code = await generatePagesRequestEntry(
+        pagesDir,
+        await resolveNextConfig({ generateBuildId: () => "split-build" }),
+        createValidFileMatcher(),
+        middlewarePath,
+        instrumentationPath,
+        ["/public.txt"],
+      );
+
+      expect(code).toContain('export const buildId = "split-build"');
+      expect(code).toContain("export const hasRequestAwareDocument = true");
+      expect(code).toContain('dataKind: "static"');
+      expect(code).toContain('pattern: "/api/hello"');
+      expect(code).toContain("export function matchApiRoute(url, request)");
+      expect(code).toContain('export const publicFiles = new Set(["/public.txt"])');
+      expect(code).toContain(JSON.stringify(middlewarePath));
+      expect(code).not.toContain(JSON.stringify(pagePath));
+      expect(code).not.toContain(JSON.stringify(apiPath));
+      expect(code).not.toContain(JSON.stringify(documentPath));
+      expect(code).not.toContain("react-dom/server.edge");
+      expect(code).not.toContain("createPagesPageHandler");
+      expect(code).not.toContain("handlePagesApiRoute");
+      expect(code).toContain("await __ensureInstrumentationRegistered(_instrumentation)");
+      expect(code).not.toContain("await _instrumentation.register()");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps middleware out of the Pages response-stage entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-response-stage-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const middlewarePath = path.join(tmpDir, "middleware.ts");
+    const instrumentationPath = path.join(tmpDir, "instrumentation.ts");
+
+    try {
+      fs.mkdirSync(path.join(pagesDir, "api"), { recursive: true });
+      const pagePath = path.join(pagesDir, "index.tsx");
+      const apiPath = path.join(pagesDir, "api", "hello.ts");
+      fs.writeFileSync(pagePath, "export default function Page() { return null; }");
+      fs.writeFileSync(apiPath, "export default function handler() {};");
+      fs.writeFileSync(middlewarePath, "throw new Error('middleware-canary');");
+      fs.writeFileSync(instrumentationPath, "export function register() {};");
+
+      const code = await generatePagesResponseEntry(
+        pagesDir,
+        await resolveNextConfig({ generateBuildId: () => "split-build" }),
+        createValidFileMatcher(),
+        middlewarePath,
+        instrumentationPath,
+      );
+
+      expect(code).toContain(JSON.stringify(pagePath));
+      expect(code).toContain(JSON.stringify(apiPath));
+      expect(code).toContain("createPagesPageHandler");
+      expect(code).toContain("handlePagesApiRoute");
+      expect(code).toContain("export const hasMiddleware = true");
+      expect(code).toContain("await __ensureInstrumentationRegistered(_instrumentation)");
+      expect(code).not.toContain("await _instrumentation.register()");
+      expect(code).not.toContain(JSON.stringify(middlewarePath));
+      expect(code).not.toContain("runGeneratedMiddleware");
+      expect(code).not.toContain("export async function runMiddleware");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1681,14 +1998,37 @@ describe("Pages Router entry template", () => {
       // side-effect import (no `from`, no `as`) so its top-level statements
       // execute when the client entry module is evaluated.
       const userImportIndex = code.indexOf(`import ${JSON.stringify(instrumentationClientPath)}`);
+      const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
       const hydrateRootIndex = code.indexOf("hydrateRoot(");
 
+      expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
       expect(userImportIndex).toBeGreaterThanOrEqual(0);
       expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+      expect(reactBootstrapIndex).toBeLessThan(userImportIndex);
       expect(userImportIndex).toBeLessThan(hydrateRootIndex);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  it("registers the host React instance before Pages Router dev hydration", () => {
+    const code = createPagesDevHydrationScript({
+      appModuleSource: "/tmp/test/pages/_app.tsx",
+      pageModuleSource: "/tmp/test/pages/index.tsx",
+      reactStrictMode: false,
+    });
+    const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
+    const instrumentationIndex = code.indexOf('import "vinext/instrumentation-client"');
+    const pageImportIndex = code.indexOf('await import("/tmp/test/pages/index.tsx")');
+    const hydrateRootIndex = code.indexOf("hydrateRoot(");
+
+    expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
+    expect(instrumentationIndex).toBeGreaterThanOrEqual(0);
+    expect(pageImportIndex).toBeGreaterThanOrEqual(0);
+    expect(hydrateRootIndex).toBeGreaterThanOrEqual(0);
+    expect(reactBootstrapIndex).toBeLessThan(instrumentationIndex);
+    expect(reactBootstrapIndex).toBeLessThan(pageImportIndex);
+    expect(reactBootstrapIndex).toBeLessThan(hydrateRootIndex);
   });
 
   it("omits the user instrumentation-client import when no file is present", async () => {
@@ -1845,12 +2185,19 @@ describe("Pages Router entry template", () => {
       expect(code).not.toContain("pageProps: rawPageProps,");
       expect(code).toContain("element = wrapWithRouterContext(element, resolveHydrationCommit);");
       expect(code).toContain("await hydrationCommitted;");
-      expect(code).toContain("if (nextData.isFallback) {");
-      expect(code).toContain("const routeUrl = nextData.__vinext?.routeUrl;");
+      expect(code).toContain("const shouldHydrateQuery =");
+      expect(code).toContain("const initialMatchesMiddleware =");
+      expect(code).toContain("nextData.__vinext?.hasMiddleware === true");
+      expect(code).toContain("nextData.__vinext?.hasRewrites === true");
+      expect(code).toContain(
+        "const routeUrl = nextData.isFallback ? nextData.__vinext?.routeUrl : undefined;",
+      );
       expect(code).toContain("await Router.replace(");
       expect(code).toContain("routeUrl || currentUrl,");
       expect(code).toContain("routeUrl ? currentUrl : undefined,");
-      expect(code).toContain("{ _h: 1, scroll: false },");
+      expect(code).toContain(
+        "{ _h: 1, scroll: false, shallow: !nextData.isFallback && !initialMatchesMiddleware },",
+      );
       expect(code).not.toContain("function VinextHydrationMarker");
       expect(code).not.toContain("React.createElement(VinextHydrationMarker");
       expect(code).toContain("hydrateRoot(container, element, hydrateRootOptions)");

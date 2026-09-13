@@ -3,8 +3,11 @@ import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
   createVisitedResponseCacheEntry,
+  deleteAllVisitedResponseCacheEntries,
+  deleteInvalidatedHistoryRestoreEntries,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
+  hasNavigationResponseHistoryLifetime,
   isVisitedResponseCacheEntryFresh,
 } from "../packages/vinext/src/server/app-visited-response-cache.js";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
@@ -23,6 +26,73 @@ function createCachedResponse(overrides: Partial<CachedRscResponse> = {}): Cache
 }
 
 describe("visited response cache freshness", () => {
+  it("deletes every cache-busting variant when a visible route response is replaced", () => {
+    const entry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    const cache = new Map([
+      ["/dashboard?_rsc=initial", entry],
+      ["/dashboard?_rsc=state-a", entry],
+      ["/dashboard?_rsc=state-b\0/interception", entry],
+      ["/other?_rsc=state-c", entry],
+    ]);
+
+    expect(deleteAllVisitedResponseCacheEntries(cache, "/dashboard?_rsc=latest", null)).toBe(2);
+    expect([...cache.keys()]).toEqual([
+      "/dashboard?_rsc=state-b\0/interception",
+      "/other?_rsc=state-c",
+    ]);
+  });
+
+  it("recognizes positive server and dynamic history lifetimes", () => {
+    expect(hasNavigationResponseHistoryLifetime(createCachedResponse())).toBe(false);
+    expect(
+      hasNavigationResponseHistoryLifetime(createCachedResponse({ dynamicStaleTimeSeconds: 0 })),
+    ).toBe(false);
+    expect(
+      hasNavigationResponseHistoryLifetime(createCachedResponse({ dynamicStaleTimeSeconds: 30 })),
+    ).toBe(true);
+    expect(
+      hasNavigationResponseHistoryLifetime(
+        createCachedResponse({ serverStaleTime: { kind: "resolved", seconds: 120 } }),
+      ),
+    ).toBe(true);
+  });
+
+  it("retains history-restored entries only when segment-cache reuse is licensed", () => {
+    const createEntry = (response: CachedRscResponse, reuseAfterHistoryRestore = false) =>
+      createVisitedResponseCacheEntry({
+        now: 1_000_000,
+        params: {},
+        response,
+        reuseAfterHistoryRestore,
+      });
+    const cache = new Map([
+      ["/unbounded.rsc", createEntry(createCachedResponse({ url: "/unbounded.rsc" }))],
+      [
+        "/static.rsc",
+        createEntry(
+          createCachedResponse({
+            url: "/static.rsc",
+          }),
+          true,
+        ),
+      ],
+      ["/dynamic.rsc", createEntry(createCachedResponse({ dynamicStaleTimeSeconds: 30 }), true)],
+      [
+        "/expired.rsc",
+        createEntry(createCachedResponse({ dynamicStaleTimeSeconds: 0, url: "/expired.rsc" })),
+      ],
+      ["/intercepted.rsc\0/", createEntry(createCachedResponse({ url: "/intercepted.rsc" }), true)],
+    ]);
+
+    deleteInvalidatedHistoryRestoreEntries(cache);
+
+    expect([...cache.keys()]).toEqual(["/static.rsc", "/dynamic.rsc", "/intercepted.rsc\0/"]);
+  });
+
   it("uses per-response dynamic stale time for regular navigations", () => {
     // Ported from Next.js: test/e2e/app-dir/segment-cache/staleness/segment-cache-per-page-dynamic-stale-time.test.ts
     const now = 1_000_000;

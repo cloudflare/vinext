@@ -11,22 +11,23 @@
  *   traffic and revalidates in the background (the `UPDATING` cache status).
  * - `set` is a no-op: the platform caches the *response* based on its
  *   cache headers, so there is nothing to persist at the origin.
- * - `buildResponseHeaders` emits the SWR policy as `CDN-Cache-Control`
+ * - `buildResponseHeaders` emits the SWR policy as `Cloudflare-CDN-Cache-Control`
  *   (`public, max-age=…, stale-while-revalidate=…`) so the edge caches and
- *   revalidates, while the browser-facing `Cache-Control` is
+ *   revalidates. The inner response's `Cache-Control` is
  *   `public, max-age=0, must-revalidate` so a browser never serves a stored copy
- *   without revalidating against the edge. A `Cache-Tag` header lets entries be
- *   purged by tag. Note the edge directive uses `max-age` (not `s-maxage`):
+ *   without revalidating against the edge; the uncached gateway changes that to
+ *   `private, max-age=0, must-revalidate` before public egress so personalized
+ *   request-stage headers cannot enter another shared cache. A `Cache-Tag`
+ *   header lets entries be purged by tag. Note the edge directive uses `max-age`
+ *   (not `s-maxage`):
  *   the framework computes the policy with `s-maxage` for shared caches, but
- *   `CDN-Cache-Control` is already CDN-scoped so `max-age` is the correct knob
+ *   `Cloudflare-CDN-Cache-Control` is already CDN-scoped so `max-age` is the correct knob
  *   for the edge to honor max-age + stale-while-revalidate.
  * - `revalidateTag` purges the edge via the request context's `cache.purge({ tags })`.
  *
- * Tag alignment: the tags emitted in `Cache-Tag` come from the page's render
- * tags (already canonicalised via `encodeCacheTag`), and the framework's
- * `revalidateTag` / `revalidatePath` pass the same canonical form to this
- * adapter's `revalidateTag`, so a purge targets exactly the responses that
- * carried the tag.
+ * Tags use fixed-size lowercase digests before emission and purge because
+ * Workers Cache tags are case-insensitive printable ASCII, while Next.js tags
+ * are case-sensitive arbitrary strings.
  *
  * The default export is the adapter factory the generated
  * `virtual:vinext-cache-adapters` registration imports; configure it from
@@ -34,17 +35,99 @@
  * `require.resolve`s this file).
  */
 
-import type {
-  CdnCacheAdapter,
-  CdnCacheableHeaderInput,
-  CdnResponseHeaders,
+import {
+  isNonCacheableCacheControl,
+  type CdnCacheAdapter,
+  type CdnCacheableHeaderInput,
+  type CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
 import type { CacheHandlerValue, IncrementalCacheValue } from "vinext/shims/cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { fnv1a64 } from "vinext/internal/utils/hash";
+import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
+import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../version-headers.js";
+
+type WorkersCachePurgeError = {
+  code: number;
+  message: string;
+};
+
+type WorkersCachePurgeResult = {
+  errors: WorkersCachePurgeError[];
+  success: boolean;
+};
+
+const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+const WORKER_VERSION_OVERRIDE_HEADER = "Cloudflare-Workers-Version-Overrides";
+
+type WorkerVersionMetadata = {
+  id: string;
+};
+
+type CdnAdapterOptions = {
+  versionMetadataBinding?: string;
+};
+
+function versionValidationFailure(message: string, status = 500): Response {
+  return Response.json(
+    { error: message },
+    {
+      status,
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    },
+  );
+}
+
+const CACHEABLE_EDGE_DIRECTIVE_RE = /(?:^|,)\s*(?:s-maxage|max-age)\s*=/i;
+const EDGE_POLICY_HEADERS = ["CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"] as const;
+
+function getBuildIdentityResponseHeader(): CdnResponseHeaders {
+  const buildId = getVinextCdnBuildIdentity();
+  return buildId ? { [VINEXT_CDN_BUILD_ID_HEADER]: buildId } : {};
+}
+
+/** Remove every response header whose cache semantics are owned by Cloudflare. */
+function clearCloudflareCdnResponseHeaders(cacheControl: string): CdnResponseHeaders {
+  return {
+    ...getBuildIdentityResponseHeader(),
+    "Cache-Control": cacheControl,
+    "CDN-Cache-Control": null,
+    "Cloudflare-CDN-Cache-Control": null,
+    "Cache-Tag": null,
+  };
+}
+
+/** Interpret Cloudflare's edge policy before core applies a replacement policy. */
+function hasExplicitCloudflareNonCacheableResponsePolicy(headers: Headers): boolean {
+  const edgePolicies = EDGE_POLICY_HEADERS.map((name) => headers.get(name));
+  if (edgePolicies.some((value) => value && isNonCacheableCacheControl(value))) {
+    return true;
+  }
+
+  const hasCacheableEdgePolicy = edgePolicies.some(
+    (value) => value && CACHEABLE_EDGE_DIRECTIVE_RE.test(value),
+  );
+  const browserPolicy = headers.get("Cache-Control");
+  return Boolean(
+    !hasCacheableEdgePolicy && browserPolicy && isNonCacheableCacheControl(browserPolicy),
+  );
+}
+
+function readCloudflareResponseCacheControl(headers: Headers): string | null {
+  return (
+    headers.get("Cloudflare-CDN-Cache-Control") ??
+    headers.get("CDN-Cache-Control") ??
+    headers.get("Cache-Control")
+  );
+}
 
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
 type WorkersCacheLike = {
-  purge(options: { tags: string[] }): Promise<unknown>;
+  // Miniflare currently resolves undefined; production Workers returns the
+  // documented result object.
+  purge(options: { tags: string[] }): Promise<WorkersCachePurgeResult | undefined>;
 };
 
 function getWorkersCache(): WorkersCacheLike | null {
@@ -81,7 +164,7 @@ const UNBOUNDED_SWR_SECONDS = 31_536_000; // 1 year
 /**
  * Convert the framework's shared-cache policy into a CDN-scoped one:
  * `s-maxage=…` → `max-age=…` (the edge honors `max-age` inside
- * `CDN-Cache-Control`), give a value-less `stale-while-revalidate` an explicit
+ * `Cloudflare-CDN-Cache-Control`), give a value-less `stale-while-revalidate` an explicit
  * seconds value (Cloudflare ignores the bare directive), and ensure a leading
  * `public`.
  */
@@ -94,33 +177,91 @@ function toEdgeCacheControl(cacheControl: string): string {
 }
 
 /**
- * Cloudflare's `Cache-Tag` header budget is 16 KB total with each tag capped at
- * 1024 bytes. Keep a conservative ceiling so a page with a large tag set never
- * produces an oversized (silently-dropped) header.
+ * Cloudflare's `Cache-Tag` header budget is 16 KB total. Fixed-size digests let
+ * the full Next.js tag set fit without dropping valid long or Unicode tags.
  */
-const MAX_CACHE_TAG_BYTES = 8 * 1024;
-const MAX_SINGLE_TAG_BYTES = 1024;
+const MAX_CACHE_TAG_BYTES = 16 * 1024;
+const CACHE_TAG_PREFIX = "vinext-";
+
+/** Encode a case-sensitive Next.js tag into a fixed Workers Cache tag. */
+export function encodeCloudflareCacheTag(tag: string): string {
+  // Two domain-separated 64-bit rounds keep accidental collisions negligible
+  // while staying synchronous for the response-header interface.
+  return `${CACHE_TAG_PREFIX}${fnv1a64(`0:${tag}`)}${fnv1a64(`1:${tag}`)}`;
+}
 
 /**
- * Build a `Cache-Tag` header value from canonicalised tags. Tags containing a
- * comma (the header separator) or exceeding the per-tag size are skipped, and
- * the whole value is bounded to stay within Cloudflare's limit.
+ * Build a complete `Cache-Tag` header value from canonicalised tags. Returning
+ * null makes the response uncacheable rather than caching with incomplete
+ * invalidation metadata.
  */
 function formatCacheTag(tags: readonly string[]): string | null {
-  const parts: string[] = [];
-  let total = 0;
-  for (const tag of tags) {
-    if (!tag || tag.includes(",") || tag.length > MAX_SINGLE_TAG_BYTES) continue;
-    // +1 accounts for the joining comma.
-    const next = total + tag.length + (parts.length > 0 ? 1 : 0);
-    if (next > MAX_CACHE_TAG_BYTES) break;
-    parts.push(tag);
-    total = next;
-  }
-  return parts.length > 0 ? parts.join(",") : null;
+  const value = tags.map(encodeCloudflareCacheTag).join(",");
+  return value && value.length <= MAX_CACHE_TAG_BYTES ? value : null;
 }
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
+  readonly requiresCompletedResponseAdmission = true;
+  readonly responseVary = "verbatim" as const;
+  readonly responsePolicy = {
+    isHeader(name: string): boolean {
+      const normalized = name.toLowerCase();
+      return EDGE_POLICY_HEADERS.some((header) => header.toLowerCase() === normalized);
+    },
+    readCacheControl(headers: Headers): string | null {
+      return readCloudflareResponseCacheControl(headers);
+    },
+    hasExplicitNonCacheablePolicy(headers: Headers, baseline?: Headers): boolean {
+      if (baseline) {
+        for (const name of EDGE_POLICY_HEADERS) {
+          const value = headers.get(name);
+          if (value !== baseline.get(name) && value !== null && isNonCacheableCacheControl(value)) {
+            return true;
+          }
+        }
+        const browserPolicy = headers.get("Cache-Control");
+        return Boolean(
+          browserPolicy !== baseline.get("Cache-Control") &&
+          browserPolicy &&
+          isNonCacheableCacheControl(browserPolicy),
+        );
+      }
+      return hasExplicitCloudflareNonCacheableResponsePolicy(headers);
+    },
+  };
+
+  constructor(
+    private readonly versionMetadata?: WorkerVersionMetadata,
+    private readonly versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
+  ) {}
+
+  validateRequest(request: Request): Response | null {
+    const expectedVersionId = request.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER);
+    if (expectedVersionId === null) return null;
+
+    if (!request.headers.has(WORKER_VERSION_OVERRIDE_HEADER)) {
+      return versionValidationFailure(
+        `received ${VINEXT_EXPECTED_WORKER_VERSION_HEADER} without ${WORKER_VERSION_OVERRIDE_HEADER}.`,
+      );
+    }
+
+    if (!this.versionMetadata) {
+      return versionValidationFailure(
+        `Cloudflare CDN prewarming requires the \`${this.versionMetadataBinding}\` version metadata binding. ` +
+          `Add "version_metadata": { "binding": "${this.versionMetadataBinding}" } to the active Wrangler environment. ` +
+          `Named environments do not inherit this binding from the top level.`,
+      );
+    }
+
+    if (expectedVersionId !== this.versionMetadata.id) {
+      return versionValidationFailure(
+        `Cloudflare invoked Worker version ${this.versionMetadata.id}, but vinext warmup expected ${expectedVersionId}.`,
+        503,
+      );
+    }
+    return null;
+  }
+
   // The Cloudflare edge revalidates by re-requesting the origin (UPDATING),
   // so the origin must not also run in-process background regeneration.
   readonly ownsBackgroundRevalidation = false;
@@ -142,37 +283,48 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     // intentionally empty
   }
 
+  buildResponseIdentityHeaders(): CdnResponseHeaders {
+    return getBuildIdentityResponseHeader();
+  }
+
   buildResponseHeaders(input: CdnCacheableHeaderInput): CdnResponseHeaders {
+    // App Page MISS streams may discover request-bound dynamic APIs after the
+    // response object is created. Only the outer Worker admission boundary may
+    // replace this private policy after clean EOF; without that proof, the CDN
+    // must fail closed.
+    if (input.pendingDynamicCheck) {
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
+    }
+
     // No cacheable policy → nobody stores it.
     if (!input.cacheControl) {
-      return { "Cache-Control": NO_STORE };
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
     }
 
     // A non-cacheable policy (no-store / no-cache / private) must never be
     // promoted to an edge cache. Clear any cacheable headers this adapter owns
     // in case middleware stamped them before the final policy was known.
-    if (/\b(?:no-store|no-cache|private)\b/.test(input.cacheControl)) {
-      return {
-        "Cache-Control": input.cacheControl,
-        "CDN-Cache-Control": null,
-        "Cloudflare-CDN-Cache-Control": null,
-        "Cache-Tag": null,
-      };
+    if (isNonCacheableCacheControl(input.cacheControl)) {
+      return clearCloudflareCdnResponseHeaders(input.cacheControl);
     }
 
-    // SWR policy on CDN-Cache-Control (edge caches + revalidates); the browser
-    // is told to revalidate every reuse so it never serves a stale stored copy.
-    const headers: CdnResponseHeaders = {
+    // Use Cloudflare's consumed edge-only header rather than CDN-Cache-Control.
+    // The latter is forwarded to downstream CDNs, where the private inner
+    // cache key and request-stage personalization are no longer available.
+    // The browser is told to revalidate every reuse so it never serves a stale
+    // stored copy.
+    const cacheTag = input.tags?.length ? formatCacheTag(input.tags) : null;
+    if (input.tags?.length && !cacheTag) {
+      return clearCloudflareCdnResponseHeaders(NO_STORE);
+    }
+
+    return {
+      ...getBuildIdentityResponseHeader(),
       "Cache-Control": BROWSER_REVALIDATE,
-      "CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
+      "CDN-Cache-Control": null,
+      "Cloudflare-CDN-Cache-Control": toEdgeCacheControl(input.cacheControl),
+      "Cache-Tag": cacheTag,
     };
-
-    if (input.tags && input.tags.length > 0) {
-      const cacheTag = formatCacheTag(input.tags);
-      if (cacheTag) headers["Cache-Tag"] = cacheTag;
-    }
-
-    return headers;
   }
 
   /** Purge edge-cached responses by tag via the request context's `cache.purge`. */
@@ -181,15 +333,36 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     if (!cache) return; // no host cache in the request context (e.g. Node dev)
 
     const tagList = (Array.isArray(tags) ? tags : [tags]).filter(
-      (t): t is string => typeof t === "string" && t.length > 0,
+      (t): t is string => typeof t === "string",
     );
     if (tagList.length === 0) return;
 
-    await cache.purge({ tags: tagList });
+    const result = await cache.purge({ tags: tagList.map(encodeCloudflareCacheTag) });
+    if (result?.success === false) {
+      const errors = result.errors.map(({ code, message }) => `${code}: ${message}`).join(", ");
+      throw new Error(`[vinext] Workers Cache purge failed${errors ? `: ${errors}` : ""}`);
+    }
   }
 }
 
 // Config-driven adapter factory (default export).
-const createCloudflareCdnCacheAdapter = (): CdnCacheAdapter => new CloudflareCdnCacheAdapter();
+const createCloudflareCdnCacheAdapter = ({
+  env,
+  options,
+}: {
+  env?: Record<string, unknown>;
+  options?: CdnAdapterOptions;
+} = {}): CdnCacheAdapter => {
+  const binding = options?.versionMetadataBinding ?? DEFAULT_VERSION_METADATA_BINDING;
+  const candidate = env?.[binding];
+  const versionMetadata =
+    candidate &&
+    typeof candidate === "object" &&
+    "id" in candidate &&
+    typeof candidate.id === "string"
+      ? { id: candidate.id }
+      : undefined;
+  return new CloudflareCdnCacheAdapter(versionMetadata, binding);
+};
 
 export default createCloudflareCdnCacheAdapter;

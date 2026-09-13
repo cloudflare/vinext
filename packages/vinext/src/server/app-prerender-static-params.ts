@@ -3,6 +3,15 @@ import { isUnknownRecord } from "../utils/record.js";
 
 type GenerateStaticParamsFunction = (input: { params: RootParams }) => unknown;
 
+const PRERENDER_PATH_DISCOVERY_ENV = "__VINEXT_PRERENDER_PATH_DISCOVERY";
+
+function invalidGenerateStaticParamsResult(message: string): [] {
+  if (process.env[PRERENDER_PATH_DISCOVERY_ENV] === "1") {
+    throw new Error(message);
+  }
+  return [];
+}
+
 /**
  * A lazily-loaded `generateStaticParams` source. Page modules are code-split
  * out of the RSC entry (see `entries/app-rsc-manifest.ts`), so the
@@ -26,7 +35,9 @@ function isLazyStaticParamsSource(value: unknown): value is LazyStaticParamsSour
 }
 
 function isRootParams(value: unknown): value is RootParams {
-  return isUnknownRecord(value);
+  if (!isUnknownRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 /**
@@ -103,9 +114,15 @@ export function createAppPrerenderStaticParamsResolver(
       const picked = filterRootParams(input.params);
       return runWithRootParamsScope(picked, async () => {
         const result = await single(input);
-        if (!Array.isArray(result)) return [];
+        if (!Array.isArray(result)) {
+          return invalidGenerateStaticParamsResult("generateStaticParams must return an array");
+        }
         for (const item of result) {
-          if (!isRootParams(item)) return [];
+          if (!isRootParams(item)) {
+            return invalidGenerateStaticParamsResult(
+              "generateStaticParams must return an array of objects",
+            );
+          }
         }
         return result;
       });
@@ -123,10 +140,16 @@ export function createAppPrerenderStaticParamsResolver(
           generateStaticParams({ params: parentParams }),
         );
 
-        if (!Array.isArray(result)) return [];
+        if (!Array.isArray(result)) {
+          return invalidGenerateStaticParamsResult("generateStaticParams must return an array");
+        }
 
         for (const item of result) {
-          if (!isRootParams(item)) return [];
+          if (!isRootParams(item)) {
+            return invalidGenerateStaticParamsResult(
+              "generateStaticParams must return an array of objects",
+            );
+          }
           nextParamSets.push({ ...parentParams, ...item });
         }
       }

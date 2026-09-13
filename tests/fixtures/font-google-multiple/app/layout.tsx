@@ -3,7 +3,12 @@ import { Geist, Geist_Mono } from "next/font/google";
 import localFont from "next/font/local";
 
 const localSans = localFont({
-  src: "./local.woff2",
+  src: [
+    {
+      path: "./noto-sans-wdth-wght.ttf",
+      style: "normal",
+    },
+  ],
   variable: "--font-local-sans",
 });
 
@@ -29,7 +34,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} ${localSans.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${localSans.variable} ${localSans.className} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>

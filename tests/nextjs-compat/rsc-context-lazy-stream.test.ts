@@ -1,5 +1,5 @@
 /**
- * Regression tests: RSC lazy stream context-clear bug + __VINEXT_RSC_NAV__ hydration embedding
+ * Regression tests: RSC lazy stream context-clear bug + navigation hydration bootstrap
  *
  * ── Bug 1: RSC lazy stream context-clear ────────────────────────────────────
  *
@@ -31,7 +31,7 @@
  * and asserts the sentinel value appears in the RSC flight response, proving
  * the layout's headers() call ran successfully during lazy stream consumption.
  *
- * ── Bug 2: __VINEXT_RSC_NAV__ missing from HTML (hydration mismatch) ────────
+ * Bug 2: navigation state missing from HTML (hydration mismatch)
  *
  * useSyncExternalStore requires that the getServerSnapshot callback returns the
  * same value that was rendered by the server. For usePathname() and
@@ -45,25 +45,24 @@
  * React hydration mismatch error #418 whenever any "use client" component
  * called usePathname() or useSearchParams().
  *
- * Fix: generateSsrEntry() embeds __VINEXT_RSC_NAV__ = { pathname, searchParams }
- * (where searchParams is an array of [key, value] pairs to preserve duplicates)
- * and __VINEXT_RSC_PARAMS__ = { ...params } as <script> tags in <head>.
- * generateBrowserEntry() reads self.__VINEXT_RSC_NAV__ before hydrateRoot()
- * and calls setNavigationContext() so the client snapshot matches the server.
+ * Fix: the SSR entry embeds the pathname, searchParams, and params in the
+ * symbol-backed navigation runtime RSC bootstrap in <head>. The browser entry
+ * restores that state before hydrateRoot() so the client snapshot matches the
+ * server.
  *
  * The tests verify:
- *   1. The HTML <head> contains the __VINEXT_RSC_NAV__ script tag
+ *   1. The HTML <head> contains the navigation runtime RSC bootstrap
  *   2. The embedded pathname matches the actual request path
  *   3. The embedded searchParams matches the actual query string
- *   4. __VINEXT_RSC_PARAMS__ carries dynamic segment values
+ *   4. The bootstrap params carry dynamic segment values
  *   5. The SSR-rendered values from usePathname()/useSearchParams() agree with
- *      the __VINEXT_RSC_NAV__ payload — ensuring getServerSnapshot will match
+ *      the navigation bootstrap — ensuring getServerSnapshot will match
  *      the HTML React tries to hydrate
  *
  * Fixture: tests/fixtures/app-basic/app/nextjs-compat/nav-context-hydration/
  *   page.tsx   — RSC page rendering <NavInfo /> (a "use client" component)
  *   nav-info.tsx — "use client": renders usePathname(), useSearchParams()
- *   [id]/page.tsx — dynamic-segment variant for __VINEXT_RSC_PARAMS__ testing
+ *   [id]/page.tsx — dynamic-segment variant for bootstrap params testing
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
@@ -184,9 +183,9 @@ describe("RSC lazy stream: headers() context survives until stream is consumed",
   });
 });
 
-// ── Suite 2: __VINEXT_RSC_NAV__ hydration embedding ──────────────────────────
+// Suite 2: navigation runtime hydration bootstrap
 //
-// These tests verify the server embeds a correct __VINEXT_RSC_NAV__ payload so
+// These tests verify the server embeds the correct navigation bootstrap so
 // useSyncExternalStore's getServerSnapshot agrees with the SSR-rendered HTML.
 //
 // Fixture: tests/fixtures/app-basic/app/nextjs-compat/nav-context-hydration/
@@ -253,8 +252,8 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     const html = await res.text();
 
     // The "use client" NavInfo component renders usePathname() into #nav-pathname.
-    // During SSR this is resolved from the navigation context (same source as
-    // __VINEXT_RSC_NAV__). Both must agree — if getServerSnapshot returns the
+    // During SSR this is resolved from the navigation context (the same source
+    // as the embedded bootstrap). Both must agree — if getServerSnapshot returns the
     // embedded pathname and it matches the SSR-rendered value, React won't detect
     // a mismatch.
     expect(html).toContain(`<span id="nav-pathname">${NAV_ROUTE}</span>`);
@@ -290,12 +289,12 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
 
   // ── 4. searchParams are correct (with query string) ───────────────────────
   //
-  // This is the critical hydration parity test. Without __VINEXT_RSC_NAV__:
+  // This is the critical hydration parity test. Without the navigation bootstrap:
   //   - SSR renders: <span id="nav-search-q">hello</span>
   //   - getServerSnapshot returns: new URLSearchParams() → ""
   //   → React sees "hello" ≠ "" → hydration mismatch error #418
   //
-  // With __VINEXT_RSC_NAV__:
+  // With the navigation bootstrap:
   //   - SSR renders: <span id="nav-search-q">hello</span>
   //   - browser entry calls setNavigationContext with new URLSearchParams([["q","hello"]])
   //   - getServerSnapshot returns: "hello"
@@ -338,7 +337,7 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     // The SSR path: RSC environment sets navigation context from request URL,
     // passes it to SSR environment via handleSsr(rscStream, navContext, ...).
     // The SSR environment's useSearchParams() reads navContext.searchParams.
-    // The __VINEXT_RSC_NAV__ payload comes from the same navContext.
+    // The embedded navigation payload comes from the same navContext.
     // Both should reflect the request query string.
     expect(html).toContain('<span id="nav-search-q">hello</span>');
     expect(html).toContain('<span id="nav-search-page">3</span>');
@@ -367,12 +366,11 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     expect(sp.get("q")).toBe(specialQ);
   });
 
-  // ── 6. __VINEXT_RSC_PARAMS__ for dynamic segment routes ──────────────────
+  // 6. Bootstrap params for dynamic segment routes
   //
   // When the route has a dynamic segment (e.g. /nav-context-hydration/hello),
-  // __VINEXT_RSC_PARAMS__ must carry { id: "hello" }.
-  // The browser entry reads self.__VINEXT_RSC_PARAMS__ and passes it as
-  // params: to setNavigationContext(), so useParams() returns the right value
+  // The bootstrap params must carry { id: "hello" }. The browser entry passes
+  // them to setNavigationContext(), so useParams() returns the right value
   // during client hydration.
 
   it("navigation runtime params contains dynamic segment value for [id] route", async () => {
@@ -401,7 +399,7 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     const html = await res.text();
 
     // The "use client" NavInfo component also renders on the dynamic page.
-    // Its usePathname() output must match __VINEXT_RSC_NAV__.pathname.
+    // Its usePathname() output must match the embedded bootstrap pathname.
     expect(html).toContain(`<span id="nav-pathname">${dynamicPath}</span>`);
 
     const { nav } = extractRscBootstrap(html);
@@ -410,8 +408,8 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
 
   // ── 7. Script tags appear before </head> ─────────────────────────────────
   //
-  // Both __VINEXT_RSC_NAV__ and __VINEXT_RSC_PARAMS__ are injected into <head>
-  // by generateSsrEntry(). They must appear before </head> so they are always
+  // Navigation and params are injected into <head> as one runtime bootstrap.
+  // It must appear before </head> so the state is always
   // available by the time the bootstrap script runs and calls main().
   // If they were injected into the body stream they could arrive after
   // hydrateRoot() is called, making the hydration snapshot stale.
@@ -433,7 +431,7 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
   //
   // The navigation context is built from cleanPathname (the URL pathname with
   // the trailing slash normalised). This must be the value embedded in
-  // __VINEXT_RSC_NAV__, not the raw URL including query string.
+  // the navigation bootstrap, not the raw URL including query string.
 
   it("navigation runtime pathname does not include query string", async () => {
     const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=shouldnotbehere`);

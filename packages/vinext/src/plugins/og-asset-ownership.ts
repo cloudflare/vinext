@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path, { toSlash } from "pathslash";
 import { promisify } from "node:util";
 import type { Alias } from "vite";
+import { packageNameFromSpecifier } from "../utils/package-name.js";
+import { isPathInsideOrEqual, stripViteModuleQuery } from "../utils/path.js";
 
 const promisifiedRealpathNative = promisify(fs.realpath.native);
 // fs.realpath.native reports native separators on Windows; keep results in slash space.
@@ -14,14 +16,6 @@ export type OgAssetModuleBoundary = {
   assetRoot: string;
   moduleDir: string;
 };
-
-function isPathInside(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
-  return (
-    relative === "" ||
-    (!path.isAbsolute(relative) && !relative.startsWith("../") && relative !== "..")
-  );
-}
 
 async function findPackageRoot(
   moduleDir: string,
@@ -46,22 +40,6 @@ async function findPackageRoot(
   }
 }
 
-function getPackageNameFromSpecifier(specifier: string): string | null {
-  if (
-    specifier.startsWith(".") ||
-    specifier.startsWith("/") ||
-    specifier.startsWith("\0") ||
-    specifier.startsWith("#")
-  ) {
-    return null;
-  }
-  const segments = specifier.split("/");
-  if (specifier.startsWith("@")) {
-    return segments.length >= 2 ? `${segments[0]}/${segments[1]}` : null;
-  }
-  return segments[0] || null;
-}
-
 function getAliasedPackageName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const alias = value.match(/^(?:npm:|workspace:)(@[^/]+\/[^@]+|[^@*~^]+)(?:@|$)/);
@@ -84,7 +62,7 @@ function getNodeModulesPackageRoot(
   logicalProjectRoot: string,
   logicalModulePath: string,
 ): string | null {
-  const isProjectPath = isPathInside(logicalProjectRoot, logicalModulePath);
+  const isProjectPath = isPathInsideOrEqual(logicalProjectRoot, logicalModulePath);
   const parsedPath = path.parse(logicalModulePath);
   const baseRoot = isProjectPath ? logicalProjectRoot : parsedPath.root;
   const relativePath = isProjectPath
@@ -148,7 +126,7 @@ async function packageOwnsAliasDirectory(
     return ["main", "module", "source", "browser"].some(
       (field) =>
         typeof manifest[field] === "string" &&
-        isPathInside(aliasDirectory, path.resolve(packageRoot, manifest[field])),
+        isPathInsideOrEqual(aliasDirectory, path.resolve(packageRoot, manifest[field])),
     );
   } catch {
     return false;
@@ -214,13 +192,13 @@ export class OgAssetOwnership {
 
   async recordResolvedImport(source: string, resolvedId: string): Promise<void> {
     const configuredAlias = this.findAlias(source);
-    const sourcePackageName = getPackageNameFromSpecifier(source);
+    const sourcePackageName = packageNameFromSpecifier(source);
     const expectedPackageName = this.getExpectedPackageName(source);
     if (configuredAlias === undefined && expectedPackageName === undefined) return;
 
     let realResolvedPath: string;
     try {
-      realResolvedPath = await realpathNative(path.resolve(resolvedId.split("?")[0]));
+      realResolvedPath = await realpathNative(path.resolve(stripViteModuleQuery(resolvedId)));
     } catch {
       return;
     }
@@ -240,7 +218,7 @@ export class OgAssetOwnership {
   }
 
   async resolveModuleBoundary(moduleId: string): Promise<OgAssetModuleBoundary | null> {
-    const modulePath = path.resolve(moduleId.split("?")[0]);
+    const modulePath = path.resolve(stripViteModuleQuery(moduleId));
     let realProjectRoot: string;
     let realModulePath: string;
     try {
@@ -267,7 +245,7 @@ export class OgAssetOwnership {
       } catch {
         return null;
       }
-      if (isPathInside(realPackageRoot, realModulePath)) {
+      if (isPathInsideOrEqual(realPackageRoot, realModulePath)) {
         return { assetRoot: realPackageRoot, moduleDir };
       }
 
@@ -289,12 +267,12 @@ export class OgAssetOwnership {
       return { assetRoot: canonicalPackageRoot, moduleDir };
     }
 
-    if (isPathInside(realProjectRoot, realModulePath)) {
+    if (isPathInsideOrEqual(realProjectRoot, realModulePath)) {
       return { assetRoot: realProjectRoot, moduleDir };
     }
 
     const linkedPackageRoot = [...this.linkedPackageRoots]
-      .filter((root) => isPathInside(root, realModulePath))
+      .filter((root) => isPathInsideOrEqual(root, realModulePath))
       .sort((a, b) => b.length - a.length)[0];
     if (linkedPackageRoot !== undefined) {
       return { assetRoot: linkedPackageRoot, moduleDir };
@@ -307,7 +285,7 @@ export class OgAssetOwnership {
   async resolveContainedAsset(assetRoot: string, assetPath: string): Promise<string | null> {
     try {
       const realPath = await realpathNative(assetPath);
-      return isPathInside(assetRoot, realPath) ? realPath : null;
+      return isPathInsideOrEqual(assetRoot, realPath) ? realPath : null;
     } catch {
       return null;
     }
@@ -323,7 +301,7 @@ export class OgAssetOwnership {
   }
 
   private getExpectedPackageName(source: string): string | undefined {
-    const packageName = getPackageNameFromSpecifier(source);
+    const packageName = packageNameFromSpecifier(source);
     return packageName === null ? undefined : this.dependencyPackageNames.get(packageName);
   }
 
@@ -350,8 +328,8 @@ export class OgAssetOwnership {
         const packageRoot = await findPackageRoot(path.dirname(realResolvedPath));
         if (
           packageRoot === null ||
-          !isPathInside(aliasBoundary, packageRoot) ||
-          !isPathInside(packageRoot, realResolvedPath)
+          !isPathInsideOrEqual(aliasBoundary, packageRoot) ||
+          !isPathInsideOrEqual(packageRoot, realResolvedPath)
         ) {
           return null;
         }
@@ -362,7 +340,7 @@ export class OgAssetOwnership {
       if (
         packageRoot === null ||
         !(await packageOwnsAliasFile(packageRoot, sourcePackageName, realAliasTarget)) ||
-        !isPathInside(packageRoot, realResolvedPath)
+        !isPathInsideOrEqual(packageRoot, realResolvedPath)
       ) {
         return null;
       }
@@ -374,12 +352,12 @@ export class OgAssetOwnership {
 
   private async resolveConfiguredAliasRoot(realModulePath: string): Promise<string | null> {
     const packageRoot = await findPackageRoot(path.dirname(realModulePath));
-    if (packageRoot === null || !isPathInside(packageRoot, realModulePath)) return null;
+    if (packageRoot === null || !isPathInsideOrEqual(packageRoot, realModulePath)) return null;
 
     for (const alias of this.configuredAliases) {
       if (!path.isAbsolute(alias.replacement)) continue;
       const packageName =
-        typeof alias.find === "string" ? getPackageNameFromSpecifier(alias.find) : null;
+        typeof alias.find === "string" ? packageNameFromSpecifier(alias.find) : null;
 
       const captureIndex = alias.replacement.indexOf("$");
       if (captureIndex !== -1) {
@@ -392,7 +370,8 @@ export class OgAssetOwnership {
           const realAliasTarget = await realpathNative(aliasTarget);
           const aliasTargetStat = await fs.promises.stat(realAliasTarget);
           if (
-            (aliasTargetStat.isDirectory() && isPathInside(realAliasTarget, realModulePath)) ||
+            (aliasTargetStat.isDirectory() &&
+              isPathInsideOrEqual(realAliasTarget, realModulePath)) ||
             (aliasTargetStat.isFile() && realAliasTarget === realModulePath)
           ) {
             return packageRoot;
@@ -406,8 +385,8 @@ export class OgAssetOwnership {
         const replacementStat = await fs.promises.stat(realReplacement);
         if (replacementStat.isDirectory()) {
           if (
-            isPathInside(packageRoot, realReplacement) &&
-            isPathInside(realReplacement, realModulePath) &&
+            isPathInsideOrEqual(packageRoot, realReplacement) &&
+            isPathInsideOrEqual(realReplacement, realModulePath) &&
             (await packageOwnsAliasDirectory(packageRoot, packageName, realReplacement))
           ) {
             return packageRoot;

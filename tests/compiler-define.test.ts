@@ -170,12 +170,14 @@ describe("compiler.define forwarding to Vite", () => {
       expect(rscResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+        "process.env.NEXT_PHASE": "globalThis.__VINEXT_NEXT_PHASE",
         "process.env.NEXT_RUNTIME": '"nodejs"',
         ...previewDefines,
       });
       expect(ssrResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
+        "process.env.NEXT_PHASE": "globalThis.__VINEXT_NEXT_PHASE",
         "process.env.NEXT_RUNTIME": '"nodejs"',
         ...previewDefines,
       });
@@ -262,6 +264,31 @@ describe("compiler.define forwarding to Vite", () => {
     }
   }, 15000);
 
+  it("rejects environment-scoped process.browser compiler overrides", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+
+    for (const option of ["define", "defineServer"] as const) {
+      const plugins = vinext() as VinextPlugin[];
+      const mainPlugin = plugins.find(
+        (p) => p.name === "vinext:config" && typeof p.config === "function",
+      );
+      const tmpDir = await setupTmpProject(
+        `export default { compiler: { ${option}: { "process.browser": "override" } } };`,
+      );
+
+      try {
+        await expect(
+          mainPlugin!.config!(
+            { root: tmpDir, build: {}, plugins: [], optimizeDeps: {} },
+            { command: "build" },
+          ),
+        ).rejects.toThrow(new RegExp(`compiler\\.${option}.*process\\.browser`));
+      } finally {
+        await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  }, 15000);
+
   it("throws when `compiler.defineServer` collides with `compiler.define` or a built-in", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext() as VinextPlugin[];
@@ -320,6 +347,7 @@ describe("compiler.define forwarding to Vite", () => {
       expect(rscResult?.define?.["process.env.NEXT_RUNTIME"]).toBe('"nodejs"');
       expect(Object.keys(rscResult!.define!)).toEqual([
         "process.env.NEXT_RUNTIME",
+        "process.env.NEXT_PHASE",
         ...PREVIEW_DEFINE_NAMES,
       ]);
       getPreviewDefines(rscResult?.define);

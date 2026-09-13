@@ -81,6 +81,7 @@ export type AppPageBuildRoute<
 
 export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModule> = {
   interceptGraphId?: string | null;
+  interceptionId?: string | null;
   interceptionContext?: string | null;
   interceptLayouts?: readonly (TModule | null | undefined)[] | null;
   interceptLayoutSegments?: readonly (readonly string[])[] | null;
@@ -659,6 +660,7 @@ export async function buildPageElements<
     globalErrorModule:
       globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
     isRscRequest,
+    interceptionId: opts?.interceptionId ?? null,
     layoutParamAccess: options.layoutParamAccess,
     mountedSlotIds,
     makeThenableParams,

@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import {
   canonicalizeRequestPathname,
   canonicalizeRequestUrlPathname,
@@ -21,14 +21,28 @@ import {
 import {
   applyConfigHeadersToHeaderRecord,
   applyConfigHeadersToResponse,
+  resolveResponseStageCachePolicy,
 } from "../packages/vinext/src/server/config-headers.js";
 import {
+  VINEXT_CACHEABILITY_PROBE_HEADER,
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
+  VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "../packages/vinext/src/server/headers.js";
-import { buildRequestHeadersFromMiddlewareResponse } from "../packages/vinext/src/utils/middleware-request-headers.js";
+import {
+  buildRequestHeadersFromMiddlewareResponse,
+  hasMiddlewareRequestHeaderOverrides,
+} from "../packages/vinext/src/utils/middleware-request-headers.js";
+import { withResponseStageVary } from "../packages/vinext/src/server/response-stage-policy.js";
+import {
+  readStaticFileSignal,
+  restoreStaticFileSignalFromTransport,
+  serializeStaticFileSignalForTransport,
+} from "../packages/vinext/src/server/static-file-signal.js";
 
 // Ported from the URL boundary used by Next.js request handling: WHATWG URL
 // pathname parsing canonicalizes recognized dot segments before routing.
@@ -247,6 +261,55 @@ describe("applyConfigHeadersToResponse", () => {
   });
 });
 
+describe("response-stage config policy", () => {
+  it("carries only matched positive cache policy and Vary fields", () => {
+    const request = new Request("https://example.com/about", {
+      headers: { "x-enable-cache": "yes" },
+    });
+
+    expect(
+      resolveResponseStageCachePolicy({
+        configHeaders: [
+          {
+            source: "/about",
+            has: [{ type: "header", key: "x-enable-cache", value: "yes" }],
+            headers: [
+              { key: "Cache-Control", value: "s-maxage=60" },
+              { key: "Vary", value: "Accept" },
+              { key: "X-Unrelated", value: "outer-only" },
+            ],
+          },
+        ],
+        pathname: "/about",
+        requestContext: {
+          headers: request.headers,
+          cookies: {},
+          query: new URLSearchParams(),
+          host: "example.com",
+        },
+      }),
+    ).toEqual([
+      ["Cache-Control", "s-maxage=60"],
+      ["Vary", "Accept"],
+    ]);
+  });
+
+  it("replaces transported Vary fields with their merged effective value", () => {
+    expect(
+      withResponseStageVary(
+        [
+          ["Cache-Control", "s-maxage=60"],
+          ["Vary", "Accept"],
+        ],
+        "RSC, Accept",
+      ),
+    ).toEqual([
+      ["Cache-Control", "s-maxage=60"],
+      ["Vary", "Accept, RSC"],
+    ]);
+  });
+});
+
 describe("applyConfigHeadersToHeaderRecord", () => {
   it("adds config headers into the early response header record without overwriting middleware", () => {
     const headers: Record<string, string | string[]> = {
@@ -306,7 +369,8 @@ describe("resolvePublicFileRoute", () => {
 
     expect(response).not.toBeNull();
     expect(response!.status).toBe(203);
-    expect(response!.headers.get("x-vinext-static-file")).toBe("%2Flogo.svg");
+    expect(readStaticFileSignal(response!)).toBe("%2Flogo.svg");
+    expect(response!.headers.get("x-vinext-static-file")).toBeNull();
     expect(response!.headers.get("x-from-middleware")).toBe("1");
   });
 
@@ -372,8 +436,47 @@ describe("resolvePublicFileRoute", () => {
     });
 
     expect(response.status).toBe(202);
-    expect(response.headers.get("x-vinext-static-file")).toBe("%2Frobots.txt");
+    expect(readStaticFileSignal(response)).toBe("%2Frobots.txt");
+    expect(response.headers.get("x-vinext-static-file")).toBeNull();
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("authenticates static file signals across standards-only transports", async () => {
+    const token = "request-stage-token";
+    const serialized = serializeStaticFileSignalForTransport(
+      createStaticFileSignal("/stage asset.txt", {
+        headers: new Headers({
+          "content-encoding": "gzip",
+          "content-length": "999",
+          "content-type": "application/wrong",
+          "transfer-encoding": "chunked",
+          "x-from-middleware": "1",
+        }),
+        status: 203,
+      }),
+      token,
+    );
+    expect(serialized.headers.get("content-encoding")).toBeNull();
+    expect(serialized.headers.get("content-length")).toBeNull();
+    expect(serialized.headers.get("content-type")).toBeNull();
+    expect(serialized.headers.get("transfer-encoding")).toBeNull();
+    const transported = new Response(serialized.body, serialized);
+    const restored = restoreStaticFileSignalFromTransport(transported, token);
+
+    expect(restored.status).toBe(203);
+    expect(restored.headers.get("x-from-middleware")).toBe("1");
+    expect(restored.headers.get("x-vinext-stage-static-file")).toBeNull();
+    expect(readStaticFileSignal(restored)).toBe("%2Fstage%20asset.txt");
+
+    const forged = restoreStaticFileSignalFromTransport(
+      new Response("route handler", {
+        headers: { "x-vinext-stage-static-file": `${token}:subverted` },
+      }),
+      "different-token",
+    );
+    expect(forged.headers.get("x-vinext-stage-static-file")).toBeNull();
+    expect(readStaticFileSignal(forged)).toBeNull();
+    await expect(forged.text()).resolves.toBe("route handler");
   });
 });
 
@@ -866,9 +969,14 @@ describe("filterInternalHeaders", () => {
 
   it("strips vinext-only internal headers without extending Next.js INTERNAL_HEADERS", () => {
     const headers = new Headers({
+      "cloudflare-workers-version-overrides": 'downstream="version-id"',
+      [VINEXT_CACHEABILITY_PROBE_HEADER]: "forged",
+      [VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER]: "forged",
+      [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "expected-version",
       [VINEXT_PRERENDER_CACHE_LIFE_HEADER]: "forged",
       [VINEXT_PRERENDER_ROUTE_PARAMS_HEADER]: "forged",
       [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
+      [VINEXT_REVALIDATED_CACHE_TAG_HEADER]: "forged",
       [VINEXT_REVALIDATE_HOST_HEADER]: "example.fr",
       "user-agent": "test",
     });
@@ -879,18 +987,27 @@ describe("filterInternalHeaders", () => {
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_SPECULATIVE_HEADER);
     expect(INTERNAL_HEADERS).not.toContain(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
     expect(VINEXT_INTERNAL_HEADERS).toEqual([
+      VINEXT_CACHEABILITY_PROBE_HEADER.toLowerCase(),
+      VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER.toLowerCase(),
+      VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
       VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
       VINEXT_PRERENDER_SPECULATIVE_HEADER,
       VINEXT_PRERENDER_CACHE_LIFE_HEADER,
       VINEXT_REVALIDATE_HOST_HEADER,
+      VINEXT_REVALIDATED_CACHE_TAG_HEADER,
     ]);
     for (const name of VINEXT_INTERNAL_HEADERS) {
       expect(name).toBe(name.toLowerCase());
     }
     expect(result.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)).toBe(false);
+    expect(result.has(VINEXT_CACHEABILITY_PROBE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER)).toBe(false);
+    expect(result.has(VINEXT_EXPECTED_WORKER_VERSION_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_SPECULATIVE_HEADER)).toBe(false);
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
     expect(result.has(VINEXT_REVALIDATE_HOST_HEADER)).toBe(false);
+    expect(result.has(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe(false);
+    expect(result.get("cloudflare-workers-version-overrides")).toBe('downstream="version-id"');
     expect(result.get("user-agent")).toBe("test");
   });
 
@@ -953,6 +1070,20 @@ describe("filterInternalHeaders", () => {
 });
 
 describe("buildRequestHeadersFromMiddlewareResponse", () => {
+  it("detects both listed overrides and unconsumed forwarded values", () => {
+    expect(hasMiddlewareRequestHeaderOverrides(null)).toBe(false);
+    expect(
+      hasMiddlewareRequestHeaderOverrides(
+        new Headers({ "x-middleware-override-headers": "x-added" }),
+      ),
+    ).toBe(true);
+    expect(
+      hasMiddlewareRequestHeaderOverrides(
+        new Headers({ "x-middleware-request-x-unlisted": "literal" }),
+      ),
+    ).toBe(true);
+  });
+
   it("does not translate stray forwarded values when the override header is empty", () => {
     // Next.js only applies middleware request-header overrides when this
     // protocol header is truthy, so the empty string emitted for `new Headers()`
@@ -1076,6 +1207,51 @@ describe("cloneRequestWithHeaders", () => {
     expect(cloned.redirect).toBe("manual");
   });
 
+  it("preserves keepalive in the foreign-request fallback", () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost", { keepalive: true });
+      const cloned = cloneRequestWithHeaders(original, new Headers());
+      expect(cloned.keepalive).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps body-bearing requests usable in the keepalive fallback", async () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost", {
+        method: "POST",
+        body: "payload",
+        keepalive: true,
+      });
+      const cloned = cloneRequestWithHeaders(original, new Headers());
+      expect(cloned.keepalive).toBe(false);
+      await expect(cloned.text()).resolves.toBe("payload");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("preserves signal", () => {
     const controller = new AbortController();
     const original = new Request("http://localhost", { signal: controller.signal });
@@ -1108,6 +1284,25 @@ describe("cloneRequestWithHeaders", () => {
     });
     const cloned = cloneRequestWithHeaders(original, new Headers());
     expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+  });
+
+  it("preserves a lazy cf accessor without reading it while cloning headers", () => {
+    const original = new Request("http://localhost");
+    let reads = 0;
+    Object.defineProperty(original, "cf", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return { country: "US" };
+      },
+    });
+
+    const cloned = cloneRequestWithHeaders(original, new Headers());
+
+    expect(reads).toBe(0);
+    expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+    expect(reads).toBe(1);
   });
 
   it("replaces headers while preserving all other metadata", () => {
@@ -1175,6 +1370,25 @@ describe("cloneRequestWithUrl", () => {
     expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
   });
 
+  it("preserves a lazy cf accessor without reading it while cloning URLs", () => {
+    const original = new Request("http://localhost/path?_rsc=abc");
+    let reads = 0;
+    Object.defineProperty(original, "cf", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        reads += 1;
+        return { country: "US" };
+      },
+    });
+
+    const cloned = cloneRequestWithUrl(original, "http://localhost/path");
+
+    expect(reads).toBe(0);
+    expect(Reflect.get(cloned, "cf")).toEqual({ country: "US" });
+    expect(reads).toBe(1);
+  });
+
   it("preserves body readability for streaming requests", async () => {
     const bodyText = "hello world";
     const original = new Request("http://localhost/path?_rsc=abc", {
@@ -1192,5 +1406,50 @@ describe("cloneRequestWithUrl", () => {
     const original = new Request("http://localhost/path?_rsc=abc", { redirect: "manual" });
     const cloned = cloneRequestWithUrl(original, "http://localhost/path");
     expect(cloned.redirect).toBe("manual");
+  });
+
+  it("preserves keepalive in the foreign-request fallback", () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost/path", { keepalive: true });
+      const cloned = cloneRequestWithUrl(original, "http://localhost/other");
+      expect(cloned.keepalive).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps body-bearing requests usable in the keepalive fallback", async () => {
+    const NativeRequest = globalThis.Request;
+    class FallbackRequest extends NativeRequest {
+      constructor(input: URL | RequestInfo, init?: RequestInit) {
+        if (input instanceof NativeRequest || init instanceof NativeRequest) {
+          throw new TypeError("foreign request");
+        }
+        super(input, init);
+      }
+    }
+    vi.stubGlobal("Request", FallbackRequest);
+    try {
+      const original = new NativeRequest("http://localhost/path", {
+        method: "POST",
+        body: "payload",
+        keepalive: true,
+      });
+      const cloned = cloneRequestWithUrl(original, "http://localhost/other");
+      expect(cloned.keepalive).toBe(false);
+      await expect(cloned.text()).resolves.toBe("payload");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

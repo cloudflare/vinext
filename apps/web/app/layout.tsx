@@ -15,9 +15,21 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://vinext.dev"),
   title: "vinext — The Next.js API surface, reimplemented on Vite",
   description:
     "Take any Next.js app and deploy it anywhere with one command. App Router, Pages Router, RSC, ISR — all on Vite.",
+  applicationName: "vinext",
+  creator: "Cloudflare",
+  publisher: "Cloudflare",
+  openGraph: {
+    type: "website",
+    locale: "en_US",
+    siteName: "vinext",
+  },
+  twitter: {
+    card: "summary",
+  },
 };
 
 export default function RootLayout({

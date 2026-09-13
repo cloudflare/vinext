@@ -1,5 +1,12 @@
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
-import { applyCdnResponseHeaders, NO_STORE_CACHE_CONTROL } from "./cache-control.js";
+import {
+  applyCdnResponseHeaders,
+  captureCdnResponsePolicyHeaders,
+  buildRevalidateCacheControl,
+  hasExplicitNonCacheableResponsePolicy,
+  NO_STORE_CACHE_CONTROL,
+  STATIC_CACHE_CONTROL,
+} from "./cache-control.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_CACHE_HEADER } from "./headers.js";
 import {
@@ -11,6 +18,14 @@ import type { CacheControlMetadata } from "vinext/shims/cache-handler";
 import type { RenderObservation } from "./cache-proof.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { readStreamAsText } from "../utils/text-stream.js";
+import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
+import {
+  captureRouteCacheabilityResponsePolicy,
+  deferRouteCacheability,
+  isRouteCacheabilityEvaluation,
+  type RouteCacheabilityOutcome,
+} from "vinext/shims/cacheability-classification";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -18,6 +33,7 @@ type AppPageRscCacheKeyBuilder = (
   mountedSlotsHeader?: string | null,
   renderMode?: AppRscRenderMode,
   interceptionContext?: string | null,
+  interceptionId?: string | null,
 ) => string;
 type AppPageRequestCacheLife = {
   revalidate?: number;
@@ -28,6 +44,16 @@ type BuildAppPageCacheRenderObservation = (input: {
   cacheTags: readonly string[];
   state: AppPageRenderObservationState;
 }) => RenderObservation;
+
+type FinalizeAppPageCacheabilityEvaluationOptions = {
+  capturedDynamicUsageBeforeContextCleanup?: () => boolean;
+  consumeDynamicUsage: () => boolean;
+  consumeRenderObservationState?: () => AppPageRenderObservationState;
+  getPageTags: () => string[];
+  getRequestCacheLife?: () => AppPageRequestCacheLife | null;
+  expireSeconds?: number;
+  revalidateSeconds: number | null;
+};
 
 type FinalizeAppPageHtmlCacheResponseOptions = {
   capturedDynamicUsageBeforeContextCleanup?: () => boolean;
@@ -44,14 +70,17 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  interceptionId?: string | null;
   omitPendingDynamicCacheState?: boolean;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  linkHeader: string | null;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
 type ScheduleAppPageRscCacheWriteOptions = {
+  bypassInterceptionContextCache?: boolean;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
@@ -64,6 +93,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
+  interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
   omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
@@ -78,38 +108,28 @@ function applyPendingDynamicCdnHeaders(
   tags?: readonly string[],
   options: { omitCacheState?: boolean } = {},
 ): void {
-  clearSharedCacheOverrides(headers);
   const cacheable = headers.get("Cache-Control") ?? "";
   applyCdnResponseHeaders(headers, { cacheControl: cacheable, pendingDynamicCheck: true, tags });
   finalizePendingCacheStateHeaders(headers, options);
 }
 
-function applyMountedSlotRscNoStoreHeaders(
+function applyUncacheableRscVariantNoStoreHeaders(
   headers: Headers,
   options: { omitCacheState?: boolean } = {},
 ): void {
-  // Mounted-slot RSC payloads deliberately bypass the slot-blind persistent
-  // cache. Make that same bypass explicit to every CDN adapter: an edge-managed
-  // adapter may intentionally cache pending-dynamic responses, so the generic
-  // pendingDynamicCheck signal is not strong enough for this variant.
-  // Middleware owns ordinary response headers, but provider-specific shared-
-  // cache overrides are cleared before both pending-response adapter calls so
-  // they cannot defeat the adapter's policy. This branch additionally forces
-  // no-store because mounted variants have no persistent admission path at all.
-  clearSharedCacheOverrides(headers);
+  // Request-specific RSC payloads deliberately bypass persistent caches. Make
+  // that bypass explicit to every CDN adapter: an edge-managed adapter may
+  // intentionally cache pending-dynamic responses, so that generic signal is
+  // not strong enough.
+  // The active adapter clears any stale provider-specific headers that it owns.
   applyCdnResponseHeaders(headers, { cacheControl: NO_STORE_CACHE_CONTROL });
   // Dynamic and draft responses intentionally have no cache state. Do not
-  // manufacture a MISS solely because the request carried mounted slots.
+  // manufacture a MISS solely because the request carried an uncacheable
+  // selector variant.
   finalizePendingCacheStateHeaders(headers, {
     ...options,
     preserveMissingCacheState: true,
   });
-}
-
-function clearSharedCacheOverrides(headers: Headers): void {
-  headers.delete("CDN-Cache-Control");
-  headers.delete("Cloudflare-CDN-Cache-Control");
-  headers.delete("Cache-Tag");
 }
 
 function finalizePendingCacheStateHeaders(
@@ -161,10 +181,90 @@ function resolveAppPageCacheControl(options: {
   });
 }
 
+function appPageCacheControlHeader(cacheControl: CacheControlMetadata): string {
+  return cacheControl.revalidate === Infinity
+    ? STATIC_CACHE_CONTROL
+    : buildRevalidateCacheControl(cacheControl.revalidate, cacheControl.expire);
+}
+
+function finalizeEvaluatedAppPageResponse(
+  response: Response,
+  options: FinalizeAppPageCacheabilityEvaluationOptions,
+): Response | null {
+  if (!isRouteCacheabilityEvaluation()) return null;
+  const complete = deferRouteCacheability();
+  if (!complete) return response;
+  captureRouteCacheabilityResponsePolicy(captureCdnResponsePolicyHeaders(response.headers));
+
+  let completed = false;
+  const finish = (): void => {
+    if (completed) return;
+    completed = true;
+
+    let outcome: RouteCacheabilityOutcome;
+    if (
+      options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
+      options.consumeDynamicUsage()
+    ) {
+      outcome = {
+        cacheable: false,
+        dynamicUsage: true,
+        reason: "dynamic API used during render",
+      };
+    } else if (
+      response.headers.has("set-cookie") ||
+      hasExplicitNonCacheableResponsePolicy(response.headers)
+    ) {
+      outcome = { cacheable: false, reason: "response explicitly opts out of shared caching" };
+    } else {
+      const cacheControl = resolveAppPageCacheControl({
+        expireSeconds: options.expireSeconds,
+        requestCacheLife: options.getRequestCacheLife?.(),
+        revalidateSeconds: options.revalidateSeconds,
+      });
+      outcome = cacheControl
+        ? {
+            cacheable: true,
+            cacheControl: appPageCacheControlHeader(cacheControl),
+            tags: options.getPageTags(),
+          }
+        : { cacheable: false, reason: "render did not produce a cache policy" };
+    }
+    options.consumeRenderObservationState?.();
+    complete(outcome);
+  };
+
+  if (!response.body) {
+    finish();
+    return response;
+  }
+  return new Response(deferUntilStreamConsumed(response.body, finish), {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+/**
+ * Complete probe/admission classification for an App Page response that does
+ * not enter the ISR cache-write path. Ordinary requests pass through unchanged.
+ */
+export function finalizeAppPageCacheabilityEvaluationResponse(
+  response: Response,
+  options: FinalizeAppPageCacheabilityEvaluationOptions,
+): Response {
+  return finalizeEvaluatedAppPageResponse(response, options) ?? response;
+}
+
 export function finalizeAppPageHtmlCacheResponse(
   response: Response,
   options: FinalizeAppPageHtmlCacheResponseOptions,
 ): Response {
+  const probeResponse = finalizeEvaluatedAppPageResponse(response, options);
+  if (probeResponse) {
+    void options.capturedRscDataPromise?.catch(() => {});
+    return probeResponse;
+  }
   if (!response.body) {
     return response;
   }
@@ -176,6 +276,7 @@ export function finalizeAppPageHtmlCacheResponse(
     null,
     undefined,
     options.interceptionContext,
+    options.interceptionId,
   );
   const clientHeaders = new Headers(response.headers);
   if (options.preserveClientResponseHeaders !== true) {
@@ -217,7 +318,7 @@ export function finalizeAppPageHtmlCacheResponse(
         cacheTags: pageTags,
         state: observationState,
       });
-      const linkHeader = response.headers.get("link");
+      const linkHeader = options.linkHeader;
       const writes = [
         options.isrSet(
           htmlKey,
@@ -252,33 +353,41 @@ export function finalizeAppPageHtmlCacheResponse(
 
   options.waitUntil?.(cachePromise);
 
-  return new Response(streamForClient, {
+  const clientResponse = new Response(streamForClient, {
     status: response.status,
     statusText: response.statusText,
     headers: clientHeaders,
   });
+  markFrameworkLinkHeaders(clientResponse.headers, options.linkHeader);
+  return clientResponse;
 }
 
 export function finalizeAppPageRscCacheResponse(
   response: Response,
   options: ScheduleAppPageRscCacheWriteOptions,
 ): Response {
+  const probeResponse = finalizeEvaluatedAppPageResponse(response, options);
+  if (probeResponse) {
+    void options.capturedRscDataPromise?.catch(() => {});
+    return probeResponse;
+  }
   // Persisting to the ISR store and finalizing the client-facing headers are
-  // independent decisions. Mounted-slot variants are deliberately never stored
-  // (their RSC key is slot-blind), but a fresh MISS stream can still reach a
+  // independent decisions. Mounted-slot and unverified-interception variants
+  // are deliberately never stored, but a fresh MISS stream can still reach a
   // dynamic API after the cache policy was chosen, so shared caches must not
-  // keep it either way. An explicit no-store policy is required for mounted
-  // slots because edge-managed adapters may cache pending-dynamic responses.
+  // keep it either way. An explicit no-store policy is required because
+  // edge-managed adapters may cache pending-dynamic responses.
   scheduleAppPageRscCacheWrite(options);
 
-  const isMountedSlotVariant = Boolean(options.mountedSlotsHeader);
-  if (options.preserveClientResponseHeaders === true && !isMountedSlotVariant) {
+  const isUncacheableVariant =
+    Boolean(options.mountedSlotsHeader) || options.bypassInterceptionContextCache === true;
+  if (options.preserveClientResponseHeaders === true && !isUncacheableVariant) {
     return response;
   }
 
   const clientHeaders = new Headers(response.headers);
-  if (isMountedSlotVariant) {
-    applyMountedSlotRscNoStoreHeaders(clientHeaders, {
+  if (isUncacheableVariant) {
+    applyUncacheableRscVariantNoStoreHeaders(clientHeaders, {
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
   } else {
@@ -298,7 +407,12 @@ export function scheduleAppPageRscCacheWrite(
   options: ScheduleAppPageRscCacheWriteOptions,
 ): boolean {
   const capturedRscDataPromise = options.capturedRscDataPromise;
-  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild || options.mountedSlotsHeader) {
+  if (
+    !capturedRscDataPromise ||
+    options.dynamicUsedDuringBuild ||
+    options.mountedSlotsHeader ||
+    options.bypassInterceptionContextCache === true
+  ) {
     return false;
   }
 
@@ -307,6 +421,7 @@ export function scheduleAppPageRscCacheWrite(
     null,
     options.renderMode,
     options.interceptionContext,
+    options.interceptionId,
   );
   const cachePromise = (async () => {
     try {

@@ -29,8 +29,28 @@ function entriesFromPackageJson(relativePath: string): string[] {
 export default {
   workspaces: {
     ".": {
-      entry: ["scripts/*.{js,ts,mjs,mts}", "tests/**/*.test.ts", "tests/helpers.ts"],
+      entry: [
+        "scripts/*.{js,ts,mjs,mts}",
+        // Loaded by Oxlint from the string paths in vite.config.ts.
+        "oxlint-plugins/*.ts",
+        "tests/**/*.test.ts",
+        "tests/helpers.ts",
+        // Filesystem route entries in the standalone Vite/Worker fixture.
+        "tests/e2e/cloudflare-workers/fixture/app/**/route.ts",
+        // Started by the package-export Workerd E2E's shell command.
+        "tests/e2e/cloudflare-workers/fixtures/client-module-with-package-type/vite.config.ts",
+        // Isolated E2E fixtures loaded through Playwright server commands and
+        // Vite's filesystem route/worker discovery rather than static imports.
+        "tests/e2e/web-worker/fixtures/**/{vite.config.ts,*.worker.ts}",
+        "tests/e2e/nextjs-worker/fixture/**/*.{js,ts,tsx}",
+        "tests/e2e/cacheability-components/fixture/{next.config.ts,vite.config.ts,app/**/{page,route}.{ts,tsx}}",
+      ],
       project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
+      ignoreDependencies: [
+        // Loaded dynamically by @vitejs/plugin-react when the React Compiler
+        // integration test enables `react: { compiler: true }`.
+        "oxc-transform-react",
+      ],
     },
     "packages/vinext": {
       entry: [
@@ -45,6 +65,7 @@ export default {
         "src/build/prerender-server-entry.ts",
         // Runtime helpers imported by generated virtual entries. The imports
         // are emitted as strings, so knip cannot trace them statically.
+        "src/client/react-instance-bootstrap.ts",
         "src/server/app-middleware.ts",
         "src/server/app-page-dispatch.ts",
         "src/server/app-page-head.ts",
@@ -73,6 +94,9 @@ export default {
         "src/server/app-page-element-builder.ts",
         "src/server/app-hook-warning-suppression.ts",
         "src/server/app-post-middleware-context.ts",
+        "src/server/app-route-handler-middleware-context.ts",
+        "src/server/app-request-stage-context.ts",
+        "src/server/app-request-stage-independent-entry.ts",
         "src/server/app-request-context.ts",
         "src/server/app-rsc-error-handler.ts",
         "src/server/isr-cache.ts",
@@ -125,6 +149,11 @@ export default {
 
     // probed via require.resolve
     "next-intl",
+
+    // Isolated E2E fixtures are not workspace packages. Their Vite configs
+    // resolve these already-locked dependencies from existing workspace installs.
+    "@cloudflare/vite-plugin",
+    "@resvg/resvg-wasm",
 
     // internal module name, not an actual dependency
     "private-next-instrumentation-client",

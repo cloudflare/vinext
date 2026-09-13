@@ -6,10 +6,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { createBuilder } from "vite";
+import { createBuilder, parseAst } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import {
+  consumerEnvironmentConditionFilter,
   getTypeofWindowReplacement,
+  replaceConsumerEnvironmentConditions,
   replaceTypeofWindow,
 } from "../packages/vinext/src/plugins/typeof-window.js";
 import { supportsNativeTypeofWindowFolding } from "../packages/vinext/src/utils/vite-version.js";
@@ -51,6 +53,57 @@ describe("typeof window compilation", () => {
     expect(builder.environments.server?.config.define?.["typeof window"]).toBe(
       usesNativeFolding ? '"undefined"' : undefined,
     );
+  });
+
+  it("filters unrelated process references before invoking JavaScript", () => {
+    const lineContinuation = 'process["brow' + "\\" + '\nser"]';
+    const identityEscape = String.raw`process["brow\ser"]`;
+    expect(consumerEnvironmentConditionFilter.test("process.env.NODE_ENV")).toBe(false);
+    expect(consumerEnvironmentConditionFilter.test("process /* comment */ . browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("process. /* comment */ browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test('process["browser"]')).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test('process?.["browser"]')).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test('process?. ["browser"]')).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test('process?. [("browser")]')).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("(process).browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("browser && process.browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("process.brow\\u0073er")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test("proce\\u0073s.browser")).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test(lineContinuation)).toBe(true);
+    expect(consumerEnvironmentConditionFilter.test(identityEscape)).toBe(true);
+    expect(
+      consumerEnvironmentConditionFilter.test("const process = {}; const browser = true"),
+    ).toBe(false);
+  });
+
+  it("folds computed process.browser escape and optional-chain spellings", () => {
+    for (const member of [
+      'process["brow' + "\\" + '\nser"]',
+      String.raw`process["brow\ser"]`,
+      'process?. [("browser")]',
+    ]) {
+      const result = replaceConsumerEnvironmentConditions(`if (${member}) import("browser-only")`, {
+        processBrowser: false,
+        pruneUnreachableImports: true,
+      });
+
+      expect(result?.code, member).not.toContain("browser-only");
+    }
+  });
+
+  it("filters large one-sided sources in linear time", () => {
+    const sources = [
+      "process.env.NODE_ENV; ".repeat(40_000),
+      "browser; ".repeat(100_000),
+      `process${" ".repeat(1_000_000)}`,
+      `process["${"a".repeat(1_000_000)}`,
+    ];
+    const start = performance.now();
+    const matches = sources.map((source) => consumerEnvironmentConditionFilter.test(source));
+    const elapsed = performance.now() - start;
+
+    expect(matches).toEqual([false, false, false, false]);
+    expect(elapsed).toBeLessThan(500);
   });
 
   it("uses native folding only from the stable Vite 8.1.4 release", () => {
@@ -152,6 +205,89 @@ switch (value) {
     expect(result?.code).toContain(";");
     expect(result?.code).toContain('if (typeof window !== "undefined") localWindowOnly()');
     expect(result?.code.match(/typeof window/g)).toHaveLength(6);
+  });
+
+  it("removes process.browser imports before server dependency analysis", () => {
+    const result = replaceConsumerEnvironmentConditions(
+      `if (process.browser) import("browser-only")
+if (process.browser && enabled) import("compound-browser-only")
+if (enabled && process.browser) import("reversed-browser-only")
+if (process?.browser) import("optional-browser-only")
+if (process["browser"]) import("computed-browser-only")
+if (process.brow\\u0073er) import("escaped-property-browser-only")
+if (process["brow\\u0073er"]) import("escaped-computed-browser-only")
+if (proce\\u0073s.browser) import("escaped-process-browser-only")
+if (process?.["browser"]) import("optional-computed-browser-only")
+if (process /* comment */ . browser) import("commented-browser-only")
+if (!process.browser) serverOnly()
+process.browser && enabled && import("also-browser-only")
+import("preserved-effect") && process.browser && import("effect-browser-only")
+if ((function () {}) && process.browser) import("anonymous-effect-browser-only")
+if (effect() && process.browser) primary(); else if (process.browser) import("nested-browser-only")
+const nested = effect() && process.browser ? primary() : process.browser ? import("nested-expression-browser-only") : fallback()
+const selected = process.browser === false ? "server" : "browser"`,
+      { processBrowser: false, pruneUnreachableImports: true },
+    );
+
+    expect(result?.code).not.toContain("browser-only");
+    expect(result?.code).not.toContain("compound-browser-only");
+    expect(result?.code).not.toContain("reversed-browser-only");
+    expect(result?.code).not.toContain("optional-browser-only");
+    expect(result?.code).not.toContain("computed-browser-only");
+    expect(result?.code).not.toContain("escaped-property-browser-only");
+    expect(result?.code).not.toContain("escaped-computed-browser-only");
+    expect(result?.code).not.toContain("escaped-process-browser-only");
+    expect(result?.code).not.toContain("optional-computed-browser-only");
+    expect(result?.code).not.toContain("commented-browser-only");
+    expect(result?.code).not.toContain("effect-browser-only");
+    expect(result?.code).not.toContain("anonymous-effect-browser-only");
+    expect(result?.code).not.toContain("nested-browser-only");
+    expect(result?.code).not.toContain("nested-expression-browser-only");
+    expect(result?.code).toContain('import("preserved-effect")');
+    expect(result?.code).toContain("function () {}");
+    expect(result?.code).toContain("fallback()");
+    expect(() => parseAst(result?.code ?? "")).not.toThrow();
+    expect(result?.code).not.toContain("also-browser-only");
+    expect(result?.code).toContain("serverOnly()");
+    expect(result?.code).toContain('const selected = ("server")');
+    expect(result?.code).not.toContain("process.browser");
+  });
+
+  it("preserves logical operand values outside import analysis", () => {
+    const source = `const falsy = value && typeof window === "object";
+const truthy = value || typeof window === "undefined";`;
+    const result = replaceTypeofWindow(source, "undefined");
+
+    expect(result?.code).toContain('value && "undefined" === "object"');
+    expect(result?.code).toContain('value || "undefined" === "undefined"');
+  });
+
+  it("skips unrelated process references during import analysis", () => {
+    expect(
+      replaceConsumerEnvironmentConditions(
+        `console.log(process.env.NODE_ENV)`,
+        { processBrowser: false, pruneUnreachableImports: true },
+        "example.js",
+      ),
+    ).toBeNull();
+  });
+
+  it("preserves locally bound process.browser references", () => {
+    const result = replaceConsumerEnvironmentConditions(
+      `if (process.browser) globalBrowserOnly()
+function check(process) {
+  if (process.browser) localBrowserOnly()
+}
+{
+  const process = { browser: true }
+  console.log(process.browser)
+}`,
+      { processBrowser: false },
+    );
+
+    expect(result?.code).not.toContain("globalBrowserOnly");
+    expect(result?.code).toContain("if (process.browser) localBrowserOnly()");
+    expect(result?.code).toContain("console.log(process.browser)");
   });
 
   it("removes nested dead branches in the selected branch", () => {

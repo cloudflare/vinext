@@ -52,6 +52,20 @@ async function findNamedPlugin(plugins: ReturnType<typeof vinext>, name: string)
   return collected.find((plugin) => plugin.name === name);
 }
 
+function expectedServerConsumerDefines(nativeTypeofWindow: boolean) {
+  return {
+    define: {
+      "process.browser": "false",
+      ...(nativeTypeofWindow ? { "typeof window": '"undefined"' } : {}),
+    },
+    optimizeDeps: {
+      rolldownOptions: {
+        transform: { define: { "process.browser": "false" } },
+      },
+    },
+  };
+}
+
 afterEach(() => {
   // Restore the cwd before removing the temp dir: each test chdir's into
   // `root`, and Windows refuses to delete a directory that is a process's
@@ -120,7 +134,7 @@ describe("Vite tsconfig paths support", () => {
         { consumer: "server" },
         {} as never,
       ),
-    ).toBeNull();
+    ).toEqual(expectedServerConsumerDefines(false));
     expect(
       await scanPlugin.transform.handler.call(
         {
@@ -161,7 +175,7 @@ describe("Vite tsconfig paths support", () => {
         { consumer: "server" },
         {} as never,
       ),
-    ).toEqual({ define: { "typeof window": '"undefined"' } });
+    ).toEqual(expectedServerConsumerDefines(true));
     expect(
       await scanPlugin.transform.handler.call(
         {
@@ -204,7 +218,7 @@ describe("Vite tsconfig paths support", () => {
         { consumer: "server" },
         {} as never,
       ),
-    ).toEqual({ define: { "typeof window": '"undefined"' } });
+    ).toEqual(expectedServerConsumerDefines(true));
     expect(
       await scanPlugin.transform.handler.call(
         {
@@ -243,7 +257,7 @@ describe("Vite tsconfig paths support", () => {
         { consumer: "server" },
         {} as never,
       ),
-    ).toBeNull();
+    ).toEqual(expectedServerConsumerDefines(false));
   });
 
   it("materializes simple tsconfig path aliases into resolve.alias on Vite 8", async () => {

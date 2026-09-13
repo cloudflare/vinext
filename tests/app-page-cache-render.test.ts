@@ -16,6 +16,35 @@ function createStream(chunks: string[]): ReadableStream<Uint8Array> {
 }
 
 describe("renderAppPageCacheArtifacts", () => {
+  it("marks regenerated HTML as static generation for client navigation hooks", async () => {
+    let receivedOptions: { isStaticGeneration?: boolean; isForceStatic?: boolean } | undefined;
+
+    await renderAppPageCacheArtifacts({
+      captureRscData: false,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      isForceStatic: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          receivedOptions = options;
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      renderToReadableStream: () => createStream(["flight-data"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(receivedOptions).toEqual(
+      expect.objectContaining({ isStaticGeneration: true, isForceStatic: true }),
+    );
+  });
+
   it("carries the consumed cacheLife stale onto the regenerated cacheControl", async () => {
     // Regression: background regeneration goes through this producer, and its
     // cacheControl feeds resolveRegeneratedAppPageCacheControl. Dropping stale

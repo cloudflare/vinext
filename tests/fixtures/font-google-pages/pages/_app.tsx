@@ -3,7 +3,12 @@ import { Geist } from "next/font/google";
 import localFont from "next/font/local";
 
 const localSans = localFont({
-  src: "./local.woff2",
+  src: [
+    {
+      path: "./noto-sans-wdth-wght.ttf",
+      style: "normal",
+    },
+  ],
   variable: "--font-local-sans",
 });
 
@@ -14,7 +19,7 @@ const geistSans = Geist({
 
 export default function App({ Component, pageProps }: AppProps) {
   return (
-    <div className={`${geistSans.variable} ${localSans.variable}`}>
+    <div className={`${geistSans.variable} ${localSans.variable} ${localSans.className}`}>
       <Component {...pageProps} />
     </div>
   );

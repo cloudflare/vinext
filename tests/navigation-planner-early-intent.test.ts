@@ -14,6 +14,7 @@ function createFacts(
 ): EarlyNavigationIntentFacts {
   return {
     basePath: "",
+    currentUrlSpace: "browser",
     currentHref: "https://example.com/docs?q=1",
     mode: "push",
     scroll: true,
@@ -136,22 +137,89 @@ describe("navigationPlanner early navigation intent classification", () => {
     expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
   });
 
-  it("does not treat an identical URL as a same-document scroll", () => {
+  it("refreshes an identical URL without replaying the current page response", () => {
     const decision = classify({
       currentHref: "https://example.com/docs?q=1",
       targetHref: "https://example.com/docs?q=1",
     });
 
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageRefresh, {
+      targetHref: "https://example.com/docs?q=1",
+    });
+  });
+
+  it("refreshes an exact current URL when the committed snapshot is app-relative", () => {
+    const decision = classify({
+      basePath: "/app",
+      currentUrlSpace: "appRelativeSnapshot",
+      currentHref: "https://example.com/docs?q=1",
+      targetHref: "https://example.com/app/docs?q=1",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageRefresh, {
+      targetHref: "https://example.com/app/docs?q=1",
+    });
+  });
+
+  it("refreshes an identical non-empty hash", () => {
+    const decision = classify({
+      basePath: "/app",
+      currentUrlSpace: "appRelativeSnapshot",
+      currentHref: "https://example.com/docs#section",
+      targetHref: "https://example.com/app/docs#section",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageRefresh, {
+      targetHref: "https://example.com/app/docs#section",
+    });
+  });
+
+  it("does not strip a basePath-like first segment from an app-relative snapshot", () => {
+    const decision = classify({
+      basePath: "/docs",
+      currentUrlSpace: "appRelativeSnapshot",
+      currentHref: "https://example.com/docs/foo",
+      targetHref: "https://example.com/docs/docs/foo",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+    expectSingleTraceEntry(decision, NavigationTraceReasonCodes.samePageRefresh, {
+      targetHref: "https://example.com/docs/docs/foo",
+    });
+  });
+
+  it("refreshes an app-relative exact URL that preserves %20 spelling", () => {
+    const decision = classify({
+      basePath: "/docs",
+      currentUrlSpace: "appRelativeSnapshot",
+      currentHref: "https://example.com/docs/foo?q=%20",
+      targetHref: "https://example.com/docs/docs/foo?q=%20",
+    });
+
+    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: true });
+  });
+
+  it("keeps %20 and + as distinct raw spellings for app-relative exact identity", () => {
+    const decision = classify({
+      basePath: "/docs",
+      currentUrlSpace: "appRelativeSnapshot",
+      currentHref: "https://example.com/docs/foo?q=%20",
+      targetHref: "https://example.com/docs/docs/foo?q=+",
+    });
+
     expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
   });
 
-  it("treats hash removal as a flight navigation, not a same-document scroll", () => {
+  it("treats hash removal as a same-document navigation", () => {
     const decision = classify({
       currentHref: "https://example.com/docs#section",
       targetHref: "https://example.com/docs",
     });
 
-    expect(decision).toMatchObject({ kind: "flightNavigation", bypassNavigationCache: false });
+    expect(decision).toMatchObject({ kind: "sameDocumentScroll", hash: "" });
   });
 
   it("does not treat a cross-origin same-path hash target as a same-document scroll", () => {

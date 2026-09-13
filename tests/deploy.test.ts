@@ -13,6 +13,7 @@ import {
   buildWranglerDeployArgs,
   getZeroPercentStagingTraffic,
   parseDeployArgs,
+  projectRequiresRouteCacheabilityProbeManifest,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runWranglerKVBulkPut,
@@ -47,7 +48,11 @@ import {
   generateAppRouterViteConfig,
   generatePagesRouterViteConfig,
 } from "../packages/vinext/src/init-cloudflare.js";
-import { readPagesRouterEntrySource } from "./worker-entry-source.js";
+import {
+  readPagesResponseStageEntrySource,
+  readPagesRouterEntrySource,
+  readPagesSingleEntrySource,
+} from "./worker-entry-source.js";
 import { scanPublicFileRoutes } from "../packages/vinext/src/utils/public-routes.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
@@ -63,8 +68,13 @@ import {
   mergeHeaders,
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
+import { createStaticFileSignal } from "../packages/vinext/src/server/request-pipeline.js";
 import { domainCandidates, parseWranglerConfig, runTPR } from "../packages/cloudflare/src/tpr.js";
-import { parseWorkerDeploymentUrl } from "../packages/cloudflare/src/worker-deployment-url.js";
+import {
+  parseCdnWarmupDeploymentUrl,
+  parseWorkerDeploymentUrl,
+} from "../packages/cloudflare/src/worker-deployment-url.js";
+import { formatDeployHelp } from "../packages/cloudflare/src/deploy-help.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -561,6 +571,29 @@ describe("parseWorkerDeploymentUrl", () => {
     expect(parseWorkerDeploymentUrl("Deployed app triggers\n  app.example.com/*\n")).toBeNull();
   });
 
+  it.each([
+    ["app.example.com/*", "https://app.example.com"],
+    ["https://app.example.com/*", "https://app.example.com"],
+    ["http://app.example.com/*", "http://app.example.com"],
+  ])("uses a concrete catch-all Worker route for CDN warmup: %s", (route, expected) => {
+    expect(parseCdnWarmupDeploymentUrl(`Deployed app triggers\n  ${route}\n`)).toBe(expected);
+  });
+
+  it("prefers a concrete Worker route over a workers.dev fallback", () => {
+    expect(
+      parseCdnWarmupDeploymentUrl(
+        "Deployed app triggers\n  https://app.account.workers.dev\n  app.example.com/*\n",
+      ),
+    ).toBe("https://app.example.com");
+  });
+
+  it.each(["*.example.com/*", "app.example.com/api/*", "app.example.com/"])(
+    "rejects a non-canonical Worker route for CDN warmup: %s",
+    (route) => {
+      expect(parseCdnWarmupDeploymentUrl(`Deployed app triggers\n  ${route}\n`)).toBeNull();
+    },
+  );
+
   it("does not report a disabled custom domain", () => {
     expect(
       parseWorkerDeploymentUrl(
@@ -670,6 +703,44 @@ describe("runWranglerKVBulkPut", () => {
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
 
 describe("parseDeployArgs", () => {
+  it("forwards the parsed Wrangler config through the deploy CLI", () => {
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+
+    expect(cliSource).toMatch(/config:\s*parsed\.config/);
+  });
+
+  it("forwards phase-specific warmup budgets through the deploy CLI", () => {
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+
+    for (const option of [
+      "warmCdnDiscoveryTimeout",
+      "warmCdnDiscoveryRetries",
+      "warmCdnProbeTimeout",
+      "warmCdnProbeRetries",
+      "warmCdnCertify",
+      "warmCdnReadinessTimeout",
+      "warmCdnReadinessRetries",
+      "warmCdnTarget",
+    ]) {
+      expect(cliSource).toContain(`${option}: parsed.${option}`);
+    }
+  });
+
+  it("forwards verbose output control through the deploy CLI", () => {
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+
+    expect(cliSource).toContain("verbose: parsed.verbose");
+  });
+
   it("defaults to production deploy with no flags", () => {
     const parsed = parseDeployArgs([]);
     expect(parsed.preview).toBe(false);
@@ -677,8 +748,23 @@ describe("parseDeployArgs", () => {
     expect(parsed.name).toBeUndefined();
     expect(parsed.skipBuild).toBe(false);
     expect(parsed.dryRun).toBe(false);
+    expect(parsed.verbose).toBe(false);
     expect(parsed.warmCdnCache).toBe(false);
-    expect(parsed.warmCdnStrict).toBe(false);
+    expect(parsed.warmCdnTarget).toBeUndefined();
+    expect(parsed.warmCdnCertify).toBe(false);
+    expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
+  });
+
+  it("requires CDN warming when certification is requested", () => {
+    expect(() => parseDeployArgs(["--warm-cdn-certify"])).toThrow(
+      "--warm-cdn-certify requires --experimental-warm-cdn-cache.",
+    );
+  });
+
+  it("requires CDN warming when an explicit warm target is requested", () => {
+    expect(() => parseDeployArgs(["--warm-cdn-target", "https://app.example.com"])).toThrow(
+      "--warm-cdn-target requires --experimental-warm-cdn-cache.",
+    );
   });
 
   it("parses --env with space-separated value", () => {
@@ -704,10 +790,17 @@ describe("parseDeployArgs", () => {
   });
 
   it("parses boolean flags", () => {
-    const parsed = parseDeployArgs(["--preview", "--skip-build", "--dry-run"]);
+    const parsed = parseDeployArgs(["--preview", "--skip-build", "--dry-run", "--verbose"]);
     expect(parsed.preview).toBe(true);
     expect(parsed.skipBuild).toBe(true);
     expect(parsed.dryRun).toBe(true);
+    expect(parsed.verbose).toBe(true);
+  });
+
+  it("documents verbose Wrangler output and no-progress probe timeouts", () => {
+    const help = formatDeployHelp();
+    expect(help).toContain("--verbose");
+    expect(help).toContain("Abort when cacheability probing makes no progress");
   });
 
   it("parses numeric TPR flags from string values", () => {
@@ -753,21 +846,73 @@ describe("parseDeployArgs", () => {
   it("parses CDN warmup flags", () => {
     const parsed = parseDeployArgs([
       "--experimental-warm-cdn-cache",
+      "--warm-cdn-target=https://app.example.com/",
       "--warm-cdn-concurrency",
       "6",
       "--warm-cdn-timeout=1500",
       "--warm-cdn-retries",
       "0",
-      "--warm-cdn-strict",
+      "--warm-cdn-discovery-timeout=90000",
+      "--warm-cdn-discovery-retries=7",
+      "--warm-cdn-probe-timeout=60000",
+      "--warm-cdn-probe-retries=4",
+      "--warm-cdn-certify",
+      "--warm-cdn-readiness-timeout=45000",
+      "--warm-cdn-readiness-retries=9",
+      "--warm-cdn-readiness-probes=8",
+      "--warm-cdn-readiness-probe-delay",
+      "750",
+      "--dangerously-promote-on-cdn-warm-error",
+      "--warm-cdn-no-promote",
+      "--warm-cdn-promotion-delay=2500",
       "--warm-cdn-include-fallbacks",
     ]);
 
     expect(parsed.warmCdnCache).toBe(true);
+    expect(parsed.warmCdnTarget).toBe("https://app.example.com");
     expect(parsed.warmCdnConcurrency).toBe(6);
     expect(parsed.warmCdnTimeout).toBe(1500);
     expect(parsed.warmCdnRetries).toBe(0);
-    expect(parsed.warmCdnStrict).toBe(true);
+    expect(parsed.warmCdnDiscoveryTimeout).toBe(90_000);
+    expect(parsed.warmCdnDiscoveryRetries).toBe(7);
+    expect(parsed.warmCdnProbeTimeout).toBe(60_000);
+    expect(parsed.warmCdnProbeRetries).toBe(4);
+    expect(parsed.warmCdnCertify).toBe(true);
+    expect(parsed.warmCdnReadinessTimeout).toBe(45_000);
+    expect(parsed.warmCdnReadinessRetries).toBe(9);
+    expect(parsed.warmCdnReadinessProbes).toBe(8);
+    expect(parsed.warmCdnReadinessProbeDelay).toBe(750);
+    expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(true);
+    expect(parsed.warmCdnPromote).toBe(false);
+    expect(parsed.warmCdnPromotionDelay).toBe(2500);
     expect(parsed.warmCdnIncludeFallbacks).toBe(true);
+  });
+
+  it.each([
+    "http://app.example.com",
+    "https://app.example.com/path",
+    "https://app.example.com?preview=1",
+    "https://user@app.example.com",
+    "https://app.example.com:8443",
+    "not-a-url",
+  ])("rejects invalid CDN warm target %s", (target) => {
+    expect(() =>
+      parseDeployArgs(["--experimental-warm-cdn-cache", "--warm-cdn-target", target]),
+    ).toThrow("--warm-cdn-target expects an HTTPS origin");
+  });
+
+  it("promotes warmed Worker versions by default", () => {
+    expect(parseDeployArgs([]).warmCdnPromote).toBe(true);
+  });
+
+  it("allows the CDN warmup promotion delay to be set to zero", () => {
+    expect(parseDeployArgs(["--warm-cdn-promotion-delay=0"]).warmCdnPromotionDelay).toBe(0);
+  });
+
+  it("allows the staged-readiness probe delay to be set to zero", () => {
+    expect(parseDeployArgs(["--warm-cdn-readiness-probe-delay=0"]).warmCdnReadinessProbeDelay).toBe(
+      0,
+    );
   });
 
   it("throws for invalid CDN warmup numeric flags", () => {
@@ -776,6 +921,42 @@ describe("parseDeployArgs", () => {
     );
     expect(() => parseDeployArgs(["--warm-cdn-retries=-1"])).toThrow(
       '--warm-cdn-retries expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-discovery-timeout=0"])).toThrow(
+      '--warm-cdn-discovery-timeout expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-discovery-retries=-1"])).toThrow(
+      '--warm-cdn-discovery-retries expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-probe-timeout=0"])).toThrow(
+      '--warm-cdn-probe-timeout expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-probe-retries=-1"])).toThrow(
+      '--warm-cdn-probe-retries expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-timeout=0"])).toThrow(
+      '--warm-cdn-readiness-timeout expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-retries=-1"])).toThrow(
+      '--warm-cdn-readiness-retries expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=0"])).toThrow(
+      '--warm-cdn-readiness-probes expects a positive integer, but got "0".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probes=1.5"])).toThrow(
+      '--warm-cdn-readiness-probes expects a positive integer, but got "1.5".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=-1"])).toThrow(
+      '--warm-cdn-readiness-probe-delay expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-readiness-probe-delay=2147483648"])).toThrow(
+      '--warm-cdn-readiness-probe-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=-1"])).toThrow(
+      '--warm-cdn-promotion-delay expects a non-negative integer, but got "-1".',
+    );
+    expect(() => parseDeployArgs(["--warm-cdn-promotion-delay=2147483648"])).toThrow(
+      '--warm-cdn-promotion-delay must not exceed 2147483647 milliseconds, but got "2147483648".',
     );
   });
 
@@ -948,6 +1129,32 @@ describe("detectProject", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "next.config.ts", "export default { cacheComponents: true };");
     expect(detectProject(tmpDir).hasISR).toBe(true);
+  });
+});
+
+describe("route cacheability probe manifest deployment", () => {
+  const cacheConfig = {
+    cdn: {
+      adapter: "cloudflare-cdn-adapter",
+      capabilities: { routeCacheability: "probe-manifest" as const },
+    },
+  };
+
+  it.each([
+    [{ isAppRouter: true, isPagesRouter: false }, true],
+    [{ isAppRouter: false, isPagesRouter: true }, true],
+    [{ isAppRouter: false, isPagesRouter: false }, false],
+  ])("requires the two-stage flow for router project %#", (project, expected) => {
+    expect(projectRequiresRouteCacheabilityProbeManifest(project, cacheConfig)).toBe(expected);
+  });
+
+  it("does not require probing without a manifest-capable CDN adapter", () => {
+    expect(
+      projectRequiresRouteCacheabilityProbeManifest(
+        { isAppRouter: false, isPagesRouter: true },
+        null,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -1276,8 +1483,8 @@ describe("scanPublicFileRoutes", () => {
 
 describe("readPagesRouterEntrySource", () => {
   it("renders without request-level development asset URLs", () => {
-    const content = readPagesRouterEntrySource();
-    expect(content).toContain("renderPage(req, resolvedUrl, null, ctx, stagedHeaders, options)");
+    const content = readPagesResponseStageEntrySource();
+    expect(content).toContain("pagesEntry.renderPage(");
     expect(content).not.toContain("clientEntryUrl");
     expect(content).not.toContain("clientPreambleUrl");
   });
@@ -1298,9 +1505,9 @@ describe("readPagesRouterEntrySource", () => {
   });
 
   it("generates valid TypeScript", () => {
-    const content = readPagesRouterEntrySource();
+    const content = readPagesSingleEntrySource();
     expect(content).toContain("export default");
-    expect(content).toContain("async fetch(");
+    expect(content).toContain("fetch(");
     expect(content).toContain("env?: PagesWorkerEnv");
     expect(content).toContain("ctx?: PagesWorkerExecutionContext");
     expect(content).toContain("Promise<Response>");
@@ -1385,6 +1592,9 @@ describe("readPagesRouterEntrySource", () => {
     // Worker passes configRewrites dep with all three phases.
     expect(content).toContain("configRewrites,");
     expect(content).toContain(
+      'matchApiRoute: typeof matchApiRoute === "function" ? matchApiRoute : null',
+    );
+    expect(content).toContain(
       'matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null',
     );
     expect(content).toContain("runPagesRequest(request, deps)");
@@ -1419,14 +1629,13 @@ describe("readPagesRouterEntrySource", () => {
 
   it("routes /api/ to handleApiRoute using resolved URL and forwards ctx", () => {
     const content = readPagesRouterEntrySource();
+    const responseContent = readPagesResponseStageEntrySource();
     // API routing (including locale prefix stripping) is now inside runPagesRequest.
     // Worker supplies handleApi dep that wraps handleApiRoute with ctx.
     // Locale stripping, /api/ prefix check, and ctx forwarding are all inside the owner.
     expect(content).toContain("handleApi:");
-    expect(content).toContain('typeof handleApiRoute === "function"');
-    expect(content).toContain(
-      'handleApiRoute(req, apiUrl, ctx, new URL(req.url).origin, "worker")',
-    );
+    expect(responseContent).toContain('typeof pagesEntry.handleApiRoute !== "function"');
+    expect(responseContent).toContain("pagesEntry.handleApiRoute(");
     expect(content).toContain("runPagesRequest(request, deps)");
   });
 
@@ -1465,7 +1674,7 @@ describe("readPagesRouterEntrySource", () => {
   it("delegates image transforms to the configured adapter", () => {
     const content = readPagesRouterEntrySource();
     expect(content).toContain("handleConfiguredImageOptimization(");
-    expect(content).toContain("env.ASSETS!.fetch");
+    expect(content).toContain("assets.fetch(");
     expect(content).not.toContain("env.IMAGES");
   });
 
@@ -1473,15 +1682,19 @@ describe("readPagesRouterEntrySource", () => {
     const content = readPagesRouterEntrySource();
     expect(content).toContain("serveFilesystemRoute: async");
     expect(content).toContain("fetchWorkerFilesystemRoute(");
-    expect(content).toContain("env.ASSETS!.fetch(assetRequest)");
+    expect(content).toContain("assets.fetch(assetRequest)");
     expect(content).toContain("publicFiles");
   });
 
   it("exports the built-in fetch handler and router-specific worker entries", () => {
     const exportsMap = readVinextPackageExports();
+    expect(hasPackageExport(exportsMap, "./client")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/fetch-handler")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/app-router-entry")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./server/app-rsc-combined-handler")).toBe(true);
     expect(hasPackageExport(exportsMap, "./server/pages-router-entry")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./server/request-stage")).toBe(true);
+    expect(hasPackageExport(exportsMap, "./server/response-stage")).toBe(true);
   });
 
   it("exports internal deploy dependencies consumed by @vinext/cloudflare", () => {
@@ -1661,7 +1874,7 @@ describe("readPagesRouterEntrySource", () => {
     expect(content).toContain("runPagesRequest(request, deps)");
     expect(content).toContain('result.type === "response"');
     expect(content).toContain(
-      "return finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
+      "finalizeMissingStaticAssetResponse(result.response, missingBuildAsset)",
     );
   });
 
@@ -1676,12 +1889,23 @@ describe("readPagesRouterEntrySource", () => {
           canceled = true;
         },
       }),
-      { status: 404, headers: { "content-type": "text/html" } },
+      {
+        status: 404,
+        headers: {
+          "content-length": "12",
+          "content-type": "text/html",
+          "req-url-path": "/_next/static/build/_devMiddlewareManifest.json?foo=1",
+        },
+      },
     );
 
     const finalized = finalizeMissingStaticAssetResponse(routed404, true);
     expect(finalized.status).toBe(404);
     expect(finalized.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(finalized.headers.get("content-length")).toBeNull();
+    expect(finalized.headers.get("req-url-path")).toBe(
+      "/_next/static/build/_devMiddlewareManifest.json?foo=1",
+    );
     expect(await finalized.text()).toBe("Not Found");
     await vi.waitFor(() => expect(canceled).toBe(true));
 
@@ -1692,14 +1916,23 @@ describe("readPagesRouterEntrySource", () => {
     expect(finalizeMissingStaticAssetResponse(regular404, false)).toBe(regular404);
   });
 
+  it("finalizes missing build-asset 404s in both Node production routers", () => {
+    const content = fs.readFileSync(
+      path.join(import.meta.dirname, "../packages/vinext/src/server/prod-server.ts"),
+      "utf8",
+    );
+
+    expect(content.match(/finalizeMissingStaticAssetResponse\(/g)).toHaveLength(2);
+  });
+
   it("resolveStaticAssetSignal fetches and merges static asset responses with middleware status", async () => {
-    const signalResponse = new Response(null, {
+    const signalResponse = createStaticFileSignal("/logo/logo.svg", {
       status: 403,
-      headers: [
-        ["x-vinext-static-file", encodeURIComponent("/logo/logo.svg")],
+      headers: new Headers([
+        ["x-vinext-static-file", "/application-value.txt"],
         ["x-middleware", "blocked"],
         ["content-type", "text/plain"],
-      ],
+      ]),
     });
 
     const resolved = await resolveStaticAssetSignal(signalResponse, {
@@ -1718,17 +1951,35 @@ describe("readPagesRouterEntrySource", () => {
     expect(resolved!.status).toBe(403);
     expect(resolved!.headers.get("content-type")).toBe("image/svg+xml");
     expect(resolved!.headers.get("x-middleware")).toBe("blocked");
+    expect(resolved!.headers.get("x-vinext-static-file")).toBe("/application-value.txt");
     expect(resolved!.headers.get("x-asset-path")).toBe("/logo/logo.svg");
     expect(await resolved!.text()).toBe("<svg />");
   });
 
-  it("preserves partial asset status over a middleware status override", async () => {
-    const signalResponse = new Response(null, {
-      status: 403,
-      headers: {
-        "x-vinext-static-file": encodeURIComponent("/asset.txt"),
-        "x-middleware": "blocked",
+  it("does not trust an unmarked response carrying a forged static-file header", async () => {
+    const response = new Response("route handler body", {
+      headers: { "x-vinext-static-file": encodeURIComponent("/private.txt") },
+    });
+    let fetched = false;
+
+    const resolved = await resolveStaticAssetSignal(response, {
+      fetchAsset: async () => {
+        fetched = true;
+        return new Response("private asset");
       },
+    });
+
+    expect(resolved).toBeNull();
+    expect(fetched).toBe(false);
+    await expect(response.text()).resolves.toBe("route handler body");
+  });
+
+  it("preserves partial asset status over a middleware status override", async () => {
+    const signalResponse = createStaticFileSignal("/asset.txt", {
+      status: 403,
+      headers: new Headers({
+        "x-middleware": "blocked",
+      }),
     });
 
     const resolved = await resolveStaticAssetSignal(signalResponse, {
@@ -1785,9 +2036,8 @@ describe("readPagesRouterEntrySource", () => {
   });
 
   it("guards renderPage with typeof check", () => {
-    const content = readPagesRouterEntrySource();
-    // The typeof guard is now in the adapter deps wiring.
-    expect(content).toContain('typeof renderPage === "function"');
+    const content = readPagesResponseStageEntrySource();
+    expect(content).toContain('typeof pagesEntry.renderPage !== "function"');
   });
 
   it("does not defer error page rendering for data requests", () => {
@@ -3544,10 +3794,46 @@ describe("resolveWorkerNameForVersionOverride", () => {
 });
 
 describe("getZeroPercentStagingTraffic", () => {
+  it("stages beside the sole 100% version and replaces stale 0% versions", () => {
+    expect(
+      getZeroPercentStagingTraffic(
+        {
+          deploymentId: null,
+          versions: [
+            { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+            { versionId: "33333333-3333-4333-8333-333333333333", percentage: 0 },
+          ],
+          output: "{}",
+        },
+        "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toEqual([
+      { versionId: "11111111-1111-4111-8111-111111111111", percentage: 100 },
+      { versionId: "22222222-2222-4222-8222-222222222222", percentage: 0 },
+    ]);
+  });
+
+  it("does not stage over an active traffic split", () => {
+    expect(
+      getZeroPercentStagingTraffic(
+        {
+          deploymentId: null,
+          versions: [
+            { versionId: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+            { versionId: "33333333-3333-4333-8333-333333333333", percentage: 50 },
+          ],
+          output: "{}",
+        },
+        "22222222-2222-4222-8222-222222222222",
+      ),
+    ).toBeNull();
+  });
+
   it("does not stage the uploaded version when it is already the current deployment", () => {
     expect(
       getZeroPercentStagingTraffic(
         {
+          deploymentId: null,
           versions: [{ versionId: "22222222-2222-4222-8222-222222222222", percentage: 100 }],
           output: "{}",
         },

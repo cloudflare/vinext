@@ -2,10 +2,12 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
+  hasNonStaticAppRouteHandlerMethods,
   isPossibleAppRouteActionRequest,
   resolveAppRouteHandlerMethod,
   resolveAppRouteHandlerSpecialError,
   shouldApplyAppRouteHandlerRevalidateHeader,
+  shouldCompleteAppRouteHandlerResponse,
   shouldReadAppRouteHandlerCache,
   shouldWriteAppRouteHandlerCache,
 } from "../packages/vinext/src/server/app-route-handler-policy.js";
@@ -22,6 +24,22 @@ describe("app route handler policy helpers", () => {
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: Infinity })).toBeNull();
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: Number.NaN })).toBeNull();
     expect(getAppRouteHandlerRevalidateSeconds({ revalidate: false })).toBe(Infinity);
+  });
+
+  // Ported from Next.js:
+  // packages/next/src/server/route-modules/app-route/helpers/is-static-gen-enabled.ts
+  it("recognizes every App Route static-generation opt-in", () => {
+    expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "force-static" })).toBe(Infinity);
+    expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "error" })).toBe(Infinity);
+    expect(
+      getAppRouteHandlerRevalidateSeconds({
+        generateStaticParams() {
+          return [{ slug: "one" }];
+        },
+      }),
+    ).toBe(Infinity);
+    expect(getAppRouteHandlerRevalidateSeconds({ dynamic: "force-dynamic" })).toBeNull();
+    expect(getAppRouteHandlerRevalidateSeconds({})).toBeNull();
   });
 
   it("treats revalidate = 0 as never-cache for route handler ISR read/write gates", () => {
@@ -42,7 +60,7 @@ describe("app route handler policy helpers", () => {
     const writeBase = {
       dynamicConfig: "auto",
       dynamicUsedInHandler: false,
-      handlerSetCacheControl: false,
+      handlerSetCachePolicy: false,
       isAutoHead: false,
       isProduction: true,
       method: "GET",
@@ -58,10 +76,32 @@ describe("app route handler policy helpers", () => {
     expect(shouldApplyAppRouteHandlerRevalidateHeader(writeBase)).toBe(true);
   });
 
+  it("completes GET bodies when the CDN adapter requires response admission", () => {
+    expect(
+      shouldCompleteAppRouteHandlerResponse({
+        dynamicConfig: "auto",
+        dynamicUsedInHandler: false,
+        handlerSetCachePolicy: false,
+        isAutoHead: false,
+        isProduction: true,
+        method: "GET",
+        revalidateSeconds: null,
+        requiresCompletedResponseAdmission: true,
+      }),
+    ).toBe(true);
+  });
+
   it("detects invalid default-export route handlers", () => {
     expect(hasAppRouteHandlerDefaultExport({ default() {} })).toBe(true);
     expect(hasAppRouteHandlerDefaultExport({ default: "nope" })).toBe(false);
     expect(hasAppRouteHandlerDefaultExport({ GET() {} })).toBe(false);
+  });
+
+  it("matches Next.js non-static Route Handler method detection", () => {
+    expect(hasNonStaticAppRouteHandlerMethods({ GET() {} })).toBe(false);
+    for (const method of ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"] as const) {
+      expect(hasNonStaticAppRouteHandlerMethods({ GET() {}, [method]() {} })).toBe(true);
+    }
   });
 
   it("resolves auto-options and auto-head route handler behavior", () => {
@@ -121,7 +161,7 @@ describe("app route handler policy helpers", () => {
     const base = {
       dynamicConfig: "auto",
       dynamicUsedInHandler: false,
-      handlerSetCacheControl: false,
+      handlerSetCachePolicy: false,
       isAutoHead: false,
       isProduction: true,
       method: "GET",
@@ -133,7 +173,7 @@ describe("app route handler policy helpers", () => {
       shouldApplyAppRouteHandlerRevalidateHeader({ ...base, dynamicUsedInHandler: true }),
     ).toBe(false);
     expect(
-      shouldApplyAppRouteHandlerRevalidateHeader({ ...base, handlerSetCacheControl: true }),
+      shouldApplyAppRouteHandlerRevalidateHeader({ ...base, handlerSetCachePolicy: true }),
     ).toBe(false);
     expect(shouldWriteAppRouteHandlerCache(base)).toBe(true);
     expect(shouldWriteAppRouteHandlerCache({ ...base, isProduction: false })).toBe(false);
@@ -148,6 +188,20 @@ describe("app route handler policy helpers", () => {
     // Infinity still emits a revalidate header for the static Cache-Control.
     expect(
       shouldApplyAppRouteHandlerRevalidateHeader({ ...base, revalidateSeconds: Infinity }),
+    ).toBe(true);
+  });
+
+  it("completes explicit public policies even without a static segment config", () => {
+    expect(
+      shouldCompleteAppRouteHandlerResponse({
+        dynamicUsedInHandler: false,
+        handlerSetCachePolicy: true,
+        hasExplicitCacheablePolicy: true,
+        isAutoHead: false,
+        isProduction: true,
+        method: "GET",
+        revalidateSeconds: null,
+      }),
     ).toBe(true);
   });
 

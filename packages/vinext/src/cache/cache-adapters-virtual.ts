@@ -15,6 +15,7 @@
  * request.
  */
 import { flattenPluginOptions } from "../utils/plugin-options.js";
+import type { VinextMultiStageOutput } from "../server/multi-stage.js";
 
 /**
  * A serializable pointer to a cache adapter module — the shape of each `cache`
@@ -23,7 +24,62 @@ import { flattenPluginOptions } from "../utils/plugin-options.js";
  * by hand. `options` must be JSON-serializable: it is inlined into the generated
  * registration module and forwarded to the adapter factory at runtime.
  */
-type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
+export type CdnCacheAdapterCapabilities = {
+  /**
+   * Page responses include the current application build identity in the
+   * framework-owned `X-Vinext-Build-Id` response header, including responses
+   * that are ultimately marked non-cacheable.
+   *
+   * Deploy adapters use this guarantee to distinguish the newly uploaded
+   * Worker from an older version while staged traffic is propagating.
+   */
+  buildIdentity?: "response-header";
+  /**
+   * The shared cache selects response variants using every request header
+   * named by `Vary`, comparing the header values verbatim.
+   *
+   * Vinext only uses the canonical deploy-warmed RSC request shape when this
+   * guarantee is present. URL-only caches retain the contextual `_rsc` digest.
+   */
+  responseVary?: "verbatim";
+  /**
+   * Rewrites and other request routing run before the shared response stage,
+   * and the resolved response-stage invocation participates in cache identity.
+   *
+   * Warm planners may therefore request rewrite source paths: conditional and
+   * default route resolutions cannot reuse one another's cached response.
+   */
+  requestRouting?: "uncached-stage";
+  /**
+   * Cacheable App Page responses require a build-bound probe manifest before
+   * the adapter may emit public shared-cache policy. The adapter's deployment
+   * integration is responsible for carrying that manifest into the runtime
+   * that serves the corresponding application build.
+   */
+  routeCacheability?: "probe-manifest";
+  /**
+   * Whether a provider-specific response header controls the adapter's shared
+   * cache. Prerender discovery calls this to avoid collapsing a dynamic route
+   * pattern when next.config assigns different cache policy to its concrete
+   * pathnames.
+   */
+  isResponsePolicyHeader?: (name: string) => boolean;
+};
+
+export type CacheAdapterBuildOutput = {
+  /** Omitted for finalizer-only outputs; staged outputs use `multi-stage`. */
+  type?: undefined;
+  /** Whether this adapter owns output for the resolved build platform. */
+  matchesBuild?: (build: { plugins: readonly { name?: string }[] }) => boolean;
+  /** Finalize an emitted directory after other platform output hooks. */
+  finalizeBuildOutput?: (output: {
+    root: string;
+    outDir: string;
+    isPrimaryServerOutput: boolean;
+  }) => Promise<void> | void;
+};
+
+export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
   /**
    * Module specifier (or absolute path, e.g. from `require.resolve(...)`) whose
    * default export is a cache adapter factory.
@@ -31,7 +87,39 @@ type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, u
   adapter: string;
   /** JSON-serializable options forwarded to the factory at runtime. */
   options?: O;
+  /** Optional adapter-owned platform finalization or generic staged output. */
+  output?: CacheAdapterBuildOutput | VinextMultiStageOutput;
+  /** Build-time cache semantics used by shared request protocol code. */
+  capabilities?: CdnCacheAdapterCapabilities;
 };
+
+export function hasVerbatimResponseVary(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.responseVary === "verbatim";
+}
+
+export function hasUncachedRequestRouting(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.requestRouting === "uncached-stage";
+}
+
+export function hasBuildIdentityResponseHeader(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.buildIdentity === "response-header";
+}
+
+export function requiresRouteCacheabilityProbeManifest(cache?: VinextCacheConfig | null): boolean {
+  return cache?.cdn?.capabilities?.routeCacheability === "probe-manifest";
+}
+
+/** Whether a response header controls core or the configured CDN adapter. */
+export function isConfiguredCdnResponsePolicyHeader(
+  cache?: VinextCacheConfig | null,
+  name?: string,
+): boolean {
+  if (!name) return false;
+  return (
+    name.trim().toLowerCase() === "cache-control" ||
+    cache?.cdn?.capabilities?.isResponsePolicyHeader?.(name) === true
+  );
+}
 
 /**
  * The `cache` option of the vinext() plugin: declaratively register cache
@@ -47,6 +135,8 @@ export type VinextCacheConfig = {
 
 /** Public virtual module id imported by the server entries. */
 export const VIRTUAL_CACHE_ADAPTERS = "virtual:vinext-cache-adapters";
+/** Request-stage module that cannot retain the data-cache adapter graph. */
+export const VIRTUAL_CDN_CACHE_ADAPTER = "virtual:vinext-cdn-cache-adapter";
 
 // Custom metadata key attached to vinext's config plugin so deploy commands can
 // inspect the normalized cache descriptors after loading the user's Vite config.
@@ -126,11 +216,11 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   if (data?.adapter) {
     lines.push(`import __vinextDataAdapterFactory from ${JSON.stringify(data.adapter)};`);
-    lines.push(`import { setDataCacheHandler } from "vinext/shims/cache-handler";`);
+    lines.push(`import { registerDataCacheHandler } from "vinext/shims/cache-handler";`);
   }
   if (cdn?.adapter) {
     lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);
-    lines.push(`import { setCdnCacheAdapter } from "vinext/shims/cdn-cache";`);
+    lines.push(`import { registerCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`);
   }
 
   lines.push(
@@ -156,7 +246,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (data?.adapter) {
     lines.push(
       "  try {",
-      `    setDataCacheHandler(__vinextDataAdapterFactory({ env, options: ${inlineOptions(
+      `    registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: ${inlineOptions(
         data.adapter,
         data.options,
       )} }));`,
@@ -169,7 +259,7 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (cdn?.adapter) {
     lines.push(
       "  try {",
-      `    setCdnCacheAdapter(__vinextCdnAdapterFactory({ env, options: ${inlineOptions(
+      `    registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: ${inlineOptions(
         cdn.adapter,
         cdn.options,
       )} }));`,
@@ -182,4 +272,9 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   lines.push("}", "");
 
   return lines.join("\n");
+}
+
+/** Generate request-stage registration without importing a configured data adapter. */
+export function generateCdnCacheAdapterModule(cache?: VinextCacheConfig): string {
+  return `${generateCacheAdaptersModule(cache?.cdn ? { cdn: cache.cdn } : undefined)}export const hasConfiguredDataCache = ${Boolean(cache?.data?.adapter)};\n`;
 }

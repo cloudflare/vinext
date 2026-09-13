@@ -26,4 +26,13 @@ describe("cache runtime loading", () => {
     expect(runtimeImports).toContain("./cache-request-state.js");
     expect(runtimeImports).not.toContain("./cache.js");
   });
+
+  it("replays cached RSC payloads without importing server reference modules", () => {
+    const source = fs.readFileSync(
+      path.join(import.meta.dirname, "../packages/vinext/src/shims/cache-runtime.ts"),
+      "utf8",
+    );
+
+    expect(source).toContain("{ preserveServerReferences: true }");
+  });
 });

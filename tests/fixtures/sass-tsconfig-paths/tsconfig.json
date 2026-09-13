@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "paths": {
+      "@tokens": ["./styles/missing.scss", "./styles/_tokens.scss"],
+      "@tokens/*": ["./styles/theme/*"],
+      "@tokens/special/*": ["./styles/special/*"],
+      "@palette-*-tokens": ["./styles/missing/*", "./styles/palettes/*/_tokens.scss"],
+      "dependency-tokens": ["./styles/_tokens.scss"]
+    }
+  }
+}

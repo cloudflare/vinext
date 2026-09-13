@@ -8,7 +8,8 @@
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
+import { pathToFileURL } from "node:url";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 import { createBuilder, parseAst } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
@@ -21,7 +22,10 @@ import {
   createClientManualChunks,
   getClientTreeshakeConfig,
   createRscFrameworkChunkOutputConfig,
+  createMultiStageCodeSplittingConfig,
+  createMultiStageChunkFileNames,
   RSC_FRAMEWORK_CHUNK_TEST,
+  sanitizeRscChunkFileName,
   isRscFrameworkModule,
 } from "../packages/vinext/src/build/client-build-config.js";
 import {
@@ -35,6 +39,7 @@ import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/clien
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { asyncHooksStubPlugin as _asyncHooksStubPlugin } from "../packages/vinext/src/plugins/async-hooks-stub.js";
 import { aliasEntriesToRecord } from "./helpers.js";
+import { injectPregeneratedConcretePaths } from "../packages/vinext/src/build/inject-pregenerated-paths.js";
 
 // `stripServerExports` returns `{ code, map }`; these tests assert on the
 // transformed source, so unwrap to the code string (null is preserved).
@@ -192,6 +197,43 @@ describe("clientManualChunks", () => {
   it("handles scoped package names correctly", () => {
     // Scoped packages should not be grouped into framework
     expect(clientManualChunks("/node_modules/@tanstack/react-query/index.js")).toBeUndefined();
+  });
+});
+
+describe("createClientManualChunks (installed layout)", () => {
+  // The shimsDir MUST contain node_modules — that's the regression: an installed
+  // copy's shims were swallowed by the node_modules early return.
+  const installedShimsDir = "/app/node_modules/vinext/dist/shims/";
+
+  it("groups shims under node_modules into the vinext chunk", () => {
+    const chunks = createClientManualChunks(installedShimsDir);
+    expect(chunks("/app/node_modules/vinext/dist/shims/slot.js")).toBe("vinext");
+    expect(chunks("/app/node_modules/vinext/dist/shims/navigation-context-state.js")).toBe(
+      "vinext",
+    );
+    expect(chunks("/app/node_modules/vinext/dist/shims/slot.js?v=abc")).toBe("vinext");
+  });
+
+  it("still excludes route-owned shims when preserving route boundaries", () => {
+    const chunks = createClientManualChunks(installedShimsDir, true);
+    expect(chunks("/app/node_modules/vinext/dist/shims/link.js")).toBeUndefined();
+    expect(
+      chunks("/app/node_modules/vinext/dist/shims/internal/hybrid-client-route-owner.js"),
+    ).toBeUndefined();
+    expect(chunks("/app/node_modules/vinext/dist/shims/slot.js")).toBe("vinext");
+  });
+
+  it("leaves framework and vendor grouping untouched", () => {
+    const chunks = createClientManualChunks(installedShimsDir);
+    expect(chunks("/app/node_modules/react/index.js")).toBe("framework");
+    expect(chunks("/app/node_modules/scheduler/index.js")).toBe("framework");
+    expect(chunks("/app/node_modules/react-dom/client.js")).toBe("framework");
+    expect(chunks("/app/node_modules/react-dom/server.browser.js")).toBe("react-dom-server");
+    expect(chunks("/app/node_modules/.pnpm/react@19.2.8/node_modules/react/index.js")).toBe(
+      "framework",
+    );
+    expect(chunks("/app/node_modules/lodash/map.js")).toBeUndefined();
+    expect(chunks("/app/src/components/Button.tsx")).toBeUndefined();
   });
 });
 
@@ -715,6 +757,71 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  it("uses server package conditions in RSC and SSR environments", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const conditionsPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:server-conditions" && typeof p.configEnvironment === "function",
+    );
+    expect(conditionsPlugin).toBeDefined();
+
+    for (const environmentName of ["rsc", "ssr"]) {
+      const workerConfig = {
+        resolve: {
+          conditions: ["workerd", "worker", "module", "browser", "development|production"],
+        },
+        optimizeDeps: {
+          rolldownOptions: {
+            resolve: {
+              conditionNames: ["workerd", "worker", "module", "browser", "development"],
+            },
+          },
+        },
+      };
+      (conditionsPlugin as any).configEnvironment(environmentName, workerConfig);
+      expect(workerConfig.resolve.conditions).toEqual([
+        "workerd",
+        "worker",
+        "module",
+        "development|production",
+      ]);
+      expect(workerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+        "workerd",
+        "worker",
+        "module",
+        "development",
+      ]);
+    }
+
+    const clientConfig = {
+      resolve: { conditions: ["module", "browser"] },
+      optimizeDeps: {
+        rolldownOptions: { resolve: { conditionNames: ["module", "browser"] } },
+      },
+    };
+    (conditionsPlugin as any).configEnvironment("client", clientConfig);
+    expect(clientConfig.resolve.conditions).toEqual(["module", "browser"]);
+    expect(clientConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+      "module",
+      "browser",
+    ]);
+
+    const auxiliaryWorkerConfig = {
+      resolve: { conditions: ["workerd", "worker", "module", "browser"] },
+      optimizeDeps: {
+        rolldownOptions: {
+          resolve: { conditionNames: ["workerd", "worker", "module", "browser"] },
+        },
+      },
+    };
+    (conditionsPlugin as any).configEnvironment("auxiliary-worker", auxiliaryWorkerConfig);
+    expect(auxiliaryWorkerConfig.resolve.conditions).toContain("browser");
+    expect(auxiliaryWorkerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toContain(
+      "browser",
+    );
+  }, 15000);
+
   it("suppresses missing optional Cloudflare Pages Router worker optimizer warnings", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
@@ -929,6 +1036,222 @@ describe("process.env.NODE_ENV define", () => {
 });
 
 // ─── Treeshake config applied to Vite builds ──────────────────────────────────
+
+// Ported from Next.js: test/unit/next-babel-loader-prod.test.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/unit/next-babel-loader-prod.test.ts
+describe("process.browser define", () => {
+  it("uses the consumer type across client, RSC, SSR, and Worker environments", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find((candidate: any) => candidate.name === "vinext:typeof-window") as
+      | { configEnvironment: (name: string, environment: { consumer: string }) => any }
+      | undefined;
+    expect(plugin).toBeDefined();
+
+    for (const [name, consumer, expected] of [
+      ["client", "client", "true"],
+      ["rsc", "server", "false"],
+      ["ssr", "server", "false"],
+      ["worker", "server", "false"],
+    ] as const) {
+      const result = plugin!.configEnvironment(name, { consumer });
+      expect(result.define["process.browser"], name).toBe(expected);
+      expect(
+        result.optimizeDeps.rolldownOptions.transform.define["process.browser"],
+        `${name} optimizer`,
+      ).toBe(expected);
+    }
+  });
+
+  it("survives Vite's environment config merge with optimizer defaults", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-process-browser-env-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function Layout({ children }) { return <html><body>{children}</body></html> }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Page() { return <p>home</p> }`,
+    );
+
+    try {
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      for (const [name, expected] of [
+        ["client", "true"],
+        ["rsc", "false"],
+        ["ssr", "false"],
+      ] as const) {
+        const config = builder.environments[name].config;
+        expect(config.define?.["process.browser"], name).toBe(expected);
+        expect(
+          config.optimizeDeps.rolldownOptions?.transform?.define?.["process.browser"],
+          `${name} optimizer`,
+        ).toBe(expected);
+        // The consumer define must merge with, not replace, the shared
+        // optimizer policy assembled by vinext:config.
+        expect(
+          config.optimizeDeps.rolldownOptions?.transform?.define?.["process.env.NODE_ENV"],
+          `${name} NODE_ENV optimizer`,
+        ).toBeDefined();
+        expect(
+          config.optimizeDeps.rolldownOptions?.moduleTypes?.[".js"],
+          `${name} JSX optimizer`,
+        ).toBe("jsx");
+      }
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30_000);
+
+  // Ported from Next.js: test/production/pages-dir/production/test/process-env.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/production/pages-dir/production/test/process-env.ts
+  it("prunes the opposite branch from production RSC, SSR, and client bundles", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-process-browser-build-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const nodeModules = path.join(tmpDir, "node_modules");
+    await fsp.mkdir(nodeModules);
+    for (const entry of await fsp.readdir(rootNodeModules)) {
+      if (
+        entry === ".vite" ||
+        entry === ".cache" ||
+        entry === "process-browser-probe" ||
+        entry === "browser-only-probe" ||
+        entry === "universal-effect-probe"
+      ) {
+        continue;
+      }
+      await fsp.symlink(
+        path.join(rootNodeModules, entry),
+        path.join(nodeModules, entry),
+        "junction",
+      );
+    }
+    const dependency = path.join(nodeModules, "process-browser-probe");
+    await fsp.mkdir(dependency, { recursive: true });
+    await fsp.writeFile(
+      path.join(dependency, "package.json"),
+      JSON.stringify({ name: "process-browser-probe", version: "1.0.0", type: "module" }),
+    );
+    await fsp.writeFile(
+      path.join(dependency, "index.js"),
+      `export const dependencyBranch = process.browser ? "__DEP_BROWSER__" : "__DEP_SERVER__";`,
+    );
+    const browserOnlyDependency = path.join(nodeModules, "browser-only-probe");
+    await fsp.mkdir(browserOnlyDependency);
+    await fsp.writeFile(
+      path.join(browserOnlyDependency, "package.json"),
+      JSON.stringify({
+        name: "browser-only-probe",
+        version: "1.0.0",
+        type: "module",
+        exports: { ".": { browser: "./browser.js", default: null } },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(browserOnlyDependency, "browser.js"),
+      `export const browserOnly = "__BROWSER_ONLY_MODULE__";`,
+    );
+    const universalEffectDependency = path.join(nodeModules, "universal-effect-probe");
+    await fsp.mkdir(universalEffectDependency);
+    await fsp.writeFile(
+      path.join(universalEffectDependency, "package.json"),
+      JSON.stringify({
+        name: "universal-effect-probe",
+        version: "1.0.0",
+        type: "module",
+        exports: "./index.js",
+      }),
+    );
+    await fsp.writeFile(
+      path.join(universalEffectDependency, "index.js"),
+      `globalThis.__UNIVERSAL_EFFECT_MODULE__ = true;
+export const effect = true;`,
+    );
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function Layout({ children }) { return <html><body>{children}</body></html> }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "client.tsx"),
+      `"use client";
+import { dependencyBranch } from "process-browser-probe";
+if (process.browser) void import("browser-only-probe");
+export function ClientProbe() {
+  return <p>{process.browser ? "__CLIENT_BROWSER__" : "__CLIENT_SERVER__"}:{dependencyBranch}</p>;
+}`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `import { ClientProbe } from "./client";
+if (Date.now() > 0 && process?.browser) void import("browser-only-probe");
+if (process["browser"]) void import("browser-only-probe");
+if (process.brow\\u0073er) void import("browser-only-probe");
+if (process["brow\\u0073er"]) void import("browser-only-probe");
+if (proce\\u0073s.browser) void import("browser-only-probe");
+if (process /* comment */ . browser) void import("browser-only-probe");
+import("universal-effect-probe") && process.browser && import("browser-only-probe");
+if (Date.now() > 0 || !process.browser) {
+  if (process.browser) void import("browser-only-probe");
+}
+export default function Page() {
+  return <main>{process.browser ? "__RSC_BROWSER__" : "__RSC_SERVER__"}<ClientProbe /></main>;
+}`,
+    );
+
+    const readJs = async (directory: string, excludedPrefix?: string): Promise<string> => {
+      const chunks: string[] = [];
+      for (const entry of await fsp.readdir(directory, { recursive: true })) {
+        const relative = entry.toString().replaceAll("\\", "/");
+        if (excludedPrefix && relative.startsWith(excludedPrefix)) continue;
+        if (!/\.m?js$/.test(relative)) continue;
+        chunks.push(await fsp.readFile(path.join(directory, relative), "utf8"));
+      }
+      return chunks.join("\n");
+    };
+
+    try {
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const client = await readJs(path.join(tmpDir, "dist", "client"));
+      const rsc = await readJs(path.join(tmpDir, "dist", "server"), "ssr/");
+      const ssr = await readJs(path.join(tmpDir, "dist", "server", "ssr"));
+      expect(client).toContain("__CLIENT_BROWSER__");
+      expect(client).toContain("__DEP_BROWSER__");
+      expect(client).toContain("__BROWSER_ONLY_MODULE__");
+      expect(client).not.toContain("__CLIENT_SERVER__");
+      expect(client).not.toContain("__DEP_SERVER__");
+      expect(rsc).toContain("__RSC_SERVER__");
+      expect(rsc).not.toContain("__RSC_BROWSER__");
+      expect(rsc).not.toContain("__BROWSER_ONLY_MODULE__");
+      expect(rsc).toContain("__UNIVERSAL_EFFECT_MODULE__");
+      expect(ssr).toContain("__CLIENT_SERVER__");
+      expect(ssr).toContain("__DEP_SERVER__");
+      expect(ssr).not.toContain("__CLIENT_BROWSER__");
+      expect(ssr).not.toContain("__DEP_BROWSER__");
+      expect(ssr).not.toContain("__BROWSER_ONLY_MODULE__");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
+});
+
+// ─── Remaining treeshake config integration ─────────────────────────────
 
 describe("treeshake config integration", () => {
   it("plugin config hook applies treeshake to non-SSR builds", async () => {
@@ -3585,6 +3908,7 @@ describe("createRscFrameworkChunkOutputConfig", () => {
     expect(config).not.toHaveProperty("advancedChunks");
     expect(config).not.toHaveProperty("manualChunks");
     expect(config).toEqual({
+      sanitizeFileName: sanitizeRscChunkFileName,
       codeSplitting: {
         groups: [
           {
@@ -3595,6 +3919,635 @@ describe("createRscFrameworkChunkOutputConfig", () => {
         ],
       },
     });
+  });
+
+  it("removes virtual-id markers without changing ordinary chunk names", () => {
+    expect(
+      sanitizeRscChunkFileName(
+        "framework~\\0virtual_vinext-response-stage~\0virtual_vinext-request-stage.js",
+      ),
+    ).toBe("framework~virtual_vinext-response-stage~_virtual_vinext-request-stage.js");
+    expect(sanitizeRscChunkFileName("bad:name\\chunk/part?.js")).toBe("bad_name_chunk_part_.js");
+    expect(sanitizeRscChunkFileName("framework-a1b2c3.js")).toBe("framework-a1b2c3.js");
+  });
+});
+
+describe("createMultiStageChunkFileNames", () => {
+  it("keeps router stage chunks beside the server entry", () => {
+    const fileName = createMultiStageChunkFileNames("_next/static", undefined);
+    expect(fileName({ name: "app-router-entry" } as never)).toBe("app-router-entry-[hash].js");
+    expect(fileName({ name: "pages-router-entry" } as never)).toBe("pages-router-entry-[hash].js");
+    expect(fileName({ name: "app-response-stage-entry" } as never)).toBe(
+      "app-response-stage-entry-[hash].js",
+    );
+    expect(fileName({ name: "pages-request-stage-entry" } as never)).toBe(
+      "pages-request-stage-entry-[hash].js",
+    );
+    expect(fileName({ name: "pages-response-stage-entry" } as never)).toBe(
+      "pages-response-stage-entry-[hash].js",
+    );
+    expect(fileName({ name: "_virtual_vinext-rsc-entry" } as never)).toBe(
+      "_virtual_vinext-rsc-entry-[hash].js",
+    );
+    expect(fileName({ name: "_virtual_vinext-response-stage" } as never)).toBe(
+      "_virtual_vinext-response-stage-[hash].js",
+    );
+    expect(fileName({ name: "vinext-stage-runtime~virtual_vinext-response-stage" } as never)).toBe(
+      "vinext-stage-runtime~virtual_vinext-response-stage-[hash].js",
+    );
+    expect(fileName({ name: "request-runtime" } as never)).toBe(
+      "_next/static/request-runtime-[hash].js",
+    );
+    expect(fileName({ name: "runtime~\\0virtual_stage" } as never)).toBe(
+      "_next/static/runtime~virtual_stage-[hash].js",
+    );
+    expect(
+      fileName({
+        moduleIds: ["/repo/packages/vinext/src/server/app-ssr-entry.ts"],
+        name: "vinext-stage-runtime~index",
+      } as never),
+    ).toBe("vinext-stage-runtime~index-[hash].js");
+  });
+
+  it("preserves a host-provided chunk filename function", () => {
+    let calls = 0;
+    const existing = (chunk: { name: string }) => {
+      calls += 1;
+      return `host/${chunk.name}.js`;
+    };
+    const fileName = createMultiStageChunkFileNames("_next/static", existing as never);
+    expect(fileName({ name: "ordinary" } as never)).toBe("host/ordinary.js");
+    expect(fileName({ name: "runtime~\\0virtual_stage" } as never)).toBe(
+      "host/runtime~virtual_stage.js",
+    );
+    expect(calls).toBe(2);
+  });
+
+  it("emits independent stages without renaming resolved host inputs", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+
+    for (const hostInput of ["virtual:host-main", ["virtual:host-main", "virtual:host-admin"]]) {
+      const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-http-stage-inputs-"));
+      try {
+        await fsp.symlink(
+          path.resolve(import.meta.dirname, "../node_modules"),
+          path.join(root, "node_modules"),
+          "junction",
+        );
+        await fsp.mkdir(path.join(root, "src"), { recursive: true });
+        const files = {
+          "virtual:host-admin": path.join(root, "src/admin.ts"),
+          "virtual:host-main": path.join(root, "src/worker.ts"),
+        };
+        await Promise.all([
+          fsp.writeFile(files["virtual:host-main"], 'export const host = "main";\n'),
+          fsp.writeFile(files["virtual:host-admin"], 'export const host = "admin";\n'),
+          fsp.writeFile(path.join(root, "src/request-stage.ts"), "export default {};\n"),
+          fsp.writeFile(path.join(root, "src/response-stage.ts"), "export default {};\n"),
+        ]);
+        const entries = {
+          request: path.join(root, "src/request-stage.ts"),
+          response: path.join(root, "src/response-stage.ts"),
+        };
+        const builder = await createBuilder({
+          root,
+          configFile: false,
+          plugins: [
+            {
+              name: "resolve-host-inputs",
+              enforce: "pre",
+              resolveId(id) {
+                return files[id as keyof typeof files];
+              },
+            },
+            vinext({
+              disableAppRouter: true,
+              cache: {
+                cdn: {
+                  adapter: "/adapter/cache.js",
+                  output: { entries, entry: entries.request, type: "multi-stage" },
+                },
+              },
+            }),
+          ],
+          build: {
+            outDir: "dist",
+            rolldownOptions: {
+              input: hostInput,
+              output: { entryFileNames: "[name].js" },
+            },
+            ssr: true,
+          },
+          logLevel: "silent",
+        });
+
+        await builder.buildApp();
+
+        const outputFiles = await fsp.readdir(path.join(root, "dist"), { recursive: true });
+        const outputBasenames = outputFiles.map((file) => path.basename(file));
+        expect(outputBasenames).toContain("worker.js");
+        expect(outputBasenames.includes("admin.js")).toBe(Array.isArray(hostInput));
+        expect(
+          outputBasenames.some((file) => /^vinext-request-stage-.+\.[cm]?js$/.test(file)),
+          outputBasenames.join("\n"),
+        ).toBe(true);
+        expect(
+          outputBasenames.some((file) => /^vinext-response-stage-.+\.[cm]?js$/.test(file)),
+        ).toBe(true);
+      } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+      }
+    }
+  }, 30_000);
+
+  it.each(["cjs", "commonjs", "iife", "umd"] as const)(
+    "rejects %s output before emitting independent stages",
+    async (format) => {
+      const vinext = (await import("../packages/vinext/src/index.js")).default;
+      const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-http-stage-format-"));
+      try {
+        await fsp.mkdir(path.join(root, "src"), { recursive: true });
+        const hostEntry = path.join(root, "src/worker.ts");
+        const entries = {
+          request: path.join(root, "src/request-stage.ts"),
+          response: path.join(root, "src/response-stage.ts"),
+        };
+        await Promise.all([
+          fsp.writeFile(hostEntry, 'export const host = "main";\n'),
+          fsp.writeFile(entries.request, "export default {};\n"),
+          fsp.writeFile(entries.response, "export default {};\n"),
+        ]);
+        const builder = await createBuilder({
+          root,
+          configFile: false,
+          plugins: [
+            vinext({
+              disableAppRouter: true,
+              cache: {
+                cdn: {
+                  adapter: "/adapter/cache.js",
+                  output: { entries, entry: entries.request, type: "multi-stage" },
+                },
+              },
+            }),
+          ],
+          build: {
+            outDir: "dist",
+            rolldownOptions: { input: hostEntry, output: { format } },
+            ssr: true,
+          },
+          logLevel: "silent",
+        });
+
+        await expect(builder.buildApp()).rejects.toThrow(
+          `[vinext] Multi-stage output requires an ES module format; ${JSON.stringify(format)} cannot represent independently deployable request and response entries.`,
+        );
+      } finally {
+        await fsp.rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("keeps every App response-stage output self-contained across output arrays", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-array-"));
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
+      await Promise.all([
+        fsp.mkdir(path.join(root, "app"), { recursive: true }),
+        fsp.mkdir(path.join(root, "stage"), { recursive: true }),
+      ]);
+      await Promise.all([
+        fsp.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" })),
+        fsp.writeFile(
+          path.join(root, "app/layout.tsx"),
+          "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "app/page.tsx"),
+          "export default function Page() { return <main>page</main>; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/adapter.ts"),
+          "export default function createAdapter() { return { ownsBackgroundRevalidation: false, async get() { return null; }, async set() {}, buildResponseHeaders() { return {}; }, async revalidateTag() {} }; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/request.ts"),
+          'export const load = () => import("virtual:vinext-request-stage"); export default {};\n',
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/response.ts"),
+          'export const load = () => import("virtual:vinext-response-stage"); export default {};\n',
+        ),
+      ]);
+
+      const requestEntry = path.join(root, "stage/request.ts");
+      const responseEntry = path.join(root, "stage/response.ts");
+      const outputDirs = ["common", "esm", "second"].map((name) => path.join(root, "dist", name));
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        plugins: [
+          vinext({
+            appDir: root,
+            rscOutDir: outputDirs[0],
+            cache: {
+              cdn: {
+                adapter: path.join(root, "stage/adapter.ts"),
+                output: {
+                  entries: { request: requestEntry, response: responseEntry },
+                  entry: requestEntry,
+                  type: "multi-stage",
+                },
+              },
+            },
+          }),
+        ],
+        environments: {
+          rsc: {
+            build: {
+              manifest: true,
+              rolldownOptions: {
+                output: [
+                  { dir: outputDirs[1], format: "es" },
+                  { dir: outputDirs[2], format: "es" },
+                ],
+              },
+            },
+          },
+        },
+        logLevel: "silent",
+      });
+
+      await builder.buildApp();
+
+      for (const [index, outputDir] of outputDirs.entries()) {
+        await expect(
+          fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
+        ).resolves.toContain("export default");
+        const outputFiles = await fsp.readdir(outputDir, { recursive: true });
+        const responseStageFile = outputFiles.find((file) =>
+          /^vinext-response-stage-.+\.js$/.test(path.basename(file)),
+        );
+        expect(responseStageFile).toBeDefined();
+        const responseStage = (await import(
+          `${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`
+        )) as { load(): Promise<unknown> };
+        await expect(responseStage.load()).resolves.toBeDefined();
+      }
+
+      const canonicalServerDir = path.join(root, "dist/server");
+      await fsp.writeFile(
+        path.join(canonicalServerDir, "vinext-prerender.json"),
+        JSON.stringify({
+          buildId: "test",
+          pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
+        }),
+      );
+      injectPregeneratedConcretePaths(
+        root,
+        path.join(outputDirs[0], "index.js"),
+        canonicalServerDir,
+        [outputDirs[0]],
+      );
+      for (const outputDir of outputDirs) {
+        await expect(
+          fsp.readFile(path.join(outputDir, "__vinext_pregenerated_concrete_paths.js"), "utf8"),
+        ).resolves.toContain("/blog/post-a");
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("keeps every Pages response-stage output self-contained across output arrays", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-stage-output-array-"));
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
+      await Promise.all([
+        fsp.mkdir(path.join(root, "pages"), { recursive: true }),
+        fsp.mkdir(path.join(root, "stage"), { recursive: true }),
+      ]);
+      await Promise.all([
+        fsp.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" })),
+        fsp.writeFile(
+          path.join(root, "pages/index.tsx"),
+          "export default function Page() { return <main>page</main>; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/adapter.ts"),
+          "export default function createAdapter() { return { ownsBackgroundRevalidation: false, async get() { return null; }, async set() {}, buildResponseHeaders() { return {}; }, async revalidateTag() {} }; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/request.ts"),
+          'export const load = () => import("virtual:vinext-request-stage"); export default {};\n',
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/response.ts"),
+          'export const load = () => import("virtual:vinext-response-stage"); export default {};\n',
+        ),
+      ]);
+
+      const requestEntry = path.join(root, "stage/request.ts");
+      const responseEntry = path.join(root, "stage/response.ts");
+      const outputDirs = ["esm", "second"].map((name) => path.join(root, "dist", name));
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        plugins: [
+          vinext({
+            disableAppRouter: true,
+            cache: {
+              cdn: {
+                adapter: path.join(root, "stage/adapter.ts"),
+                output: {
+                  entries: { request: requestEntry, response: responseEntry },
+                  entry: requestEntry,
+                  type: "multi-stage",
+                },
+              },
+            },
+          }),
+        ],
+        build: {
+          outDir: path.join(root, "dist/common"),
+          rolldownOptions: {
+            input: requestEntry,
+            output: outputDirs.map((dir) => ({ dir, format: "es" as const })),
+          },
+          ssr: true,
+        },
+        logLevel: "silent",
+      });
+
+      await builder.buildApp();
+
+      for (const [index, outputDir] of outputDirs.entries()) {
+        await expect(
+          fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
+        ).resolves.toContain("export default");
+        const outputFiles = await fsp.readdir(outputDir, { recursive: true });
+        const responseStageFile = outputFiles.find((file) =>
+          /^vinext-response-stage-.+\.js$/.test(path.basename(file)),
+        );
+        expect(responseStageFile).toBeDefined();
+        const responseStage = (await import(
+          `${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`
+        )) as { load(): Promise<unknown> };
+        await expect(responseStage.load()).resolves.toBeDefined();
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("keeps transform-only response-stage outputs self-contained across output arrays", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-host-output-array-"));
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
+      await Promise.all([
+        fsp.mkdir(path.join(root, "app"), { recursive: true }),
+        fsp.mkdir(path.join(root, "stage"), { recursive: true }),
+      ]);
+      const hostEntry = path.join(root, "stage/host.ts");
+      await Promise.all([
+        fsp.writeFile(path.join(root, "package.json"), JSON.stringify({ type: "module" })),
+        fsp.writeFile(
+          path.join(root, "app/layout.tsx"),
+          "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "app/page.tsx"),
+          "export default function Page() { return <main>page</main>; }\n",
+        ),
+        fsp.writeFile(
+          path.join(root, "stage/adapter.ts"),
+          "export default function createAdapter() { return { ownsBackgroundRevalidation: false, async get() { return null; }, async set() {}, buildResponseHeaders() { return {}; }, async revalidateTag() {} }; }\n",
+        ),
+        fsp.writeFile(
+          hostEntry,
+          'export const loadResponse = () => import("virtual:vinext-response-stage"); export default {};\n',
+        ),
+      ]);
+
+      const outputDirs = ["common", "esm", "second"].map((name) => path.join(root, "dist", name));
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        plugins: [
+          vinext({
+            appDir: root,
+            rscOutDir: outputDirs[0],
+            cache: {
+              cdn: {
+                adapter: path.join(root, "stage/adapter.ts"),
+                output: {
+                  entry: hostEntry,
+                  transformHostEntry({ code, id }) {
+                    return id === hostEntry ? code : null;
+                  },
+                  type: "multi-stage",
+                },
+              },
+            },
+          }),
+        ],
+        environments: {
+          rsc: {
+            build: {
+              manifest: true,
+              rolldownOptions: {
+                output: [
+                  { dir: outputDirs[1], format: "es" },
+                  { dir: outputDirs[2], format: "es" },
+                ],
+              },
+            },
+          },
+        },
+        logLevel: "silent",
+      });
+
+      await builder.buildApp();
+
+      for (const [index, outputDir] of outputDirs.entries()) {
+        await expect(
+          fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
+        ).resolves.toContain("export default");
+        const outputFiles = (await fsp.readdir(outputDir, { recursive: true })).filter((file) =>
+          file.endsWith(".js"),
+        );
+        const responseStageFile = (
+          await Promise.all(
+            outputFiles.map(async (file) => [
+              file,
+              await fsp.readFile(path.join(outputDir, file), "utf8"),
+            ]),
+          )
+        ).find(([, source]) => source.includes("vinext-client-assets.js"))?.[0];
+        expect(responseStageFile).toBeDefined();
+        await expect(
+          import(`${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`),
+        ).resolves.toBeDefined();
+      }
+
+      const canonicalServerDir = path.join(root, "dist/server");
+      await fsp.writeFile(
+        path.join(canonicalServerDir, "vinext-prerender.json"),
+        JSON.stringify({
+          buildId: "test",
+          pregeneratedConcretePaths: [["/blog/:slug", ["/blog/post-a"]]],
+        }),
+      );
+      injectPregeneratedConcretePaths(
+        root,
+        path.join(outputDirs[0], "index.js"),
+        canonicalServerDir,
+        [outputDirs[0]],
+      );
+      for (const outputDir of outputDirs) {
+        await expect(
+          fsp.readFile(path.join(outputDir, "__vinext_pregenerated_concrete_paths.js"), "utf8"),
+        ).resolves.toContain("/blog/post-a");
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("applies stage isolation to every server output but not the App SSR renderer", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-hooks-"));
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(root, "app"), { recursive: true });
+      await fsp.writeFile(
+        path.join(root, "app/page.tsx"),
+        "export default function Page() { return <main>page</main>; }\n",
+      );
+      const entries = {
+        request: path.join(root, "request-stage.ts"),
+        response: path.join(root, "response-stage.ts"),
+      };
+      const plugins = vinext({
+        appDir: root,
+        cache: {
+          cdn: {
+            adapter: "/adapter/cache.js",
+            output: { entries, entry: entries.request, type: "multi-stage" },
+          },
+        },
+      });
+      const configPlugin = plugins.find(
+        (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
+      );
+      const outputPlugin = plugins.find(
+        (plugin: any) => plugin.name === "vinext:multi-stage-server-output",
+      );
+      expect(configPlugin).toBeDefined();
+      expect(outputPlugin).toBeDefined();
+      await (configPlugin as any).config(
+        { build: {}, plugins: [], root },
+        { command: "build", mode: "production" },
+      );
+
+      const ssrEmit = vi.fn();
+      const ssrContext = {
+        emitFile: ssrEmit,
+        environment: { config: { build: { ssr: true } }, name: "ssr" },
+      };
+      await (outputPlugin as any).buildStart.call(ssrContext);
+      expect(
+        await (outputPlugin as any).outputOptions.call(ssrContext, {
+          chunkFileNames: "ssr/[name].js",
+        }),
+      ).toBeUndefined();
+      expect(ssrEmit).not.toHaveBeenCalled();
+
+      const customClientEmit = vi.fn();
+      const customClientContext = {
+        emitFile: customClientEmit,
+        environment: {
+          config: { build: { ssr: true }, consumer: "client" },
+          name: "browser-extension",
+        },
+      };
+      await (outputPlugin as any).buildStart.call(customClientContext);
+      expect(
+        await (outputPlugin as any).outputOptions.call(customClientContext, {
+          chunkFileNames: "browser/[name].js",
+        }),
+      ).toBeUndefined();
+      expect(customClientEmit).not.toHaveBeenCalled();
+
+      const rscEmit = vi.fn();
+      const rscContext = {
+        emitFile: rscEmit,
+        environment: { config: { build: { ssr: true } }, name: "rsc" },
+      };
+      await (outputPlugin as any).buildStart.call(rscContext);
+      expect(rscEmit).toHaveBeenCalledTimes(2);
+
+      for (const directory of ["esm", "cjs"]) {
+        const hostGroup = { name: `${directory}-host`, test: /host/ };
+        const output = await (outputPlugin as any).outputOptions.call(rscContext, {
+          chunkFileNames: `${directory}/[name].js`,
+          codeSplitting: { groups: [hostGroup] },
+          entryFileNames: `${directory}/entry-[name].js`,
+        });
+        expect(output.entryFileNames).toBe(`${directory}/entry-[name].js`);
+        expect(output.codeSplitting.groups).toContain(hostGroup);
+        expect(output.chunkFileNames({ name: "ordinary" })).toBe(`${directory}/ordinary.js`);
+        expect(output.chunkFileNames({ name: "app-router-entry" })).toBe(
+          "app-router-entry-[hash].js",
+        );
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("createMultiStageCodeSplittingConfig", () => {
+  it("keeps vinext stage chunks entry-aware without dropping host groups", () => {
+    const existing = { groups: [{ name: "host", test: /host/ }] };
+    const config = createMultiStageCodeSplittingConfig(existing);
+
+    const stageGroup = config.groups[0];
+    expect(stageGroup).toMatchObject({
+      entriesAware: true,
+      name: "vinext-stage-runtime",
+    });
+    expect(stageGroup?.test).toBeInstanceOf(RegExp);
+    const test = stageGroup!.test as RegExp;
+    for (const id of [
+      "/repo/packages/vinext/src/server/app-elements.ts",
+      "/repo/packages/vinext/dist/server/app-elements.js",
+      "/app/node_modules/vinext/dist/server/app-elements.js",
+      "/app/node_modules/.pnpm/vinext@1.0.0/node_modules/vinext/dist/server/app-elements.js",
+    ]) {
+      expect(test.test(id), id).toBe(true);
+    }
+    expect(test.test("/app/node_modules/not-vinext/dist/server/app-elements.js")).toBe(false);
+    expect(config.groups[1]).toBe(existing.groups[0]);
   });
 });
 

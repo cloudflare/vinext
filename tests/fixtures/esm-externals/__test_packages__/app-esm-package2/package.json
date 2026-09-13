@@ -1,0 +1,12 @@
+{
+  "name": "app-esm-package",
+  "version": "2.0.0",
+  "type": "module",
+  "exports": {
+    "./entry": {
+      "browser": "./browser.mjs",
+      "import": "./correct.js",
+      "require": "./wrong.cjs"
+    }
+  }
+}

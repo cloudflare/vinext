@@ -1,15 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  createAppPprFallbackShell,
   createAppPprFallbackShells,
   isAppPprDynamicFallbackShellHtml,
   markAppPprDynamicFallbackShellHtml,
   rewriteAppPprFallbackShellHtmlNavigation,
 } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 
-describe("createAppPprFallbackShell", () => {
+describe("createAppPprFallbackShells", () => {
   it("builds a cacheComponents fallback shell from known root params and missing child params", () => {
-    const shell = createAppPprFallbackShell(
+    const shells = createAppPprFallbackShells(
       {
         params: ["locale", "slug"],
         pattern: "/:locale/blog/:slug",
@@ -18,7 +17,7 @@ describe("createAppPprFallbackShell", () => {
       { locale: "en", slug: "new-post" },
     );
 
-    expect(shell).toEqual({
+    expect(shells).toContainEqual({
       fallbackParamNames: ["slug"],
       pathname: "/en/blog/[slug]",
       params: { locale: "en", slug: "[slug]" },
@@ -26,7 +25,7 @@ describe("createAppPprFallbackShell", () => {
   });
 
   it("preserves catch-all placeholder shape in the shell path and params", () => {
-    const shell = createAppPprFallbackShell(
+    const shells = createAppPprFallbackShells(
       {
         params: ["locale", "slug"],
         pattern: "/:locale/docs/:slug+",
@@ -35,7 +34,7 @@ describe("createAppPprFallbackShell", () => {
       { locale: "fr", slug: ["guides", "intro"] },
     );
 
-    expect(shell).toEqual({
+    expect(shells).toContainEqual({
       fallbackParamNames: ["slug"],
       pathname: "/fr/docs/[...slug]",
       params: { locale: "fr", slug: ["[...slug]"] },
@@ -43,7 +42,7 @@ describe("createAppPprFallbackShell", () => {
   });
 
   it("preserves optional catch-all placeholder shape in the shell path and params", () => {
-    const shell = createAppPprFallbackShell(
+    const shells = createAppPprFallbackShells(
       {
         params: ["locale", "slug"],
         pattern: "/:locale/docs/:slug*",
@@ -52,7 +51,7 @@ describe("createAppPprFallbackShell", () => {
       { locale: "fr", slug: ["guides", "intro"] },
     );
 
-    expect(shell).toEqual({
+    expect(shells).toContainEqual({
       fallbackParamNames: ["slug"],
       pathname: "/fr/docs/[[...slug]]",
       params: { locale: "fr", slug: ["[[...slug]]"] },
@@ -85,7 +84,7 @@ describe("createAppPprFallbackShell", () => {
 
   it("does not create a fallback shell without a known root-param boundary", () => {
     expect(
-      createAppPprFallbackShell(
+      createAppPprFallbackShells(
         {
           params: ["locale", "slug"],
           pattern: "/:locale/blog/:slug",
@@ -93,12 +92,12 @@ describe("createAppPprFallbackShell", () => {
         },
         { locale: "en", slug: "new-post" },
       ),
-    ).toBeNull();
+    ).toEqual([]);
   });
 
   it("does not create a fallback shell when the matched request lacks a root param", () => {
     expect(
-      createAppPprFallbackShell(
+      createAppPprFallbackShells(
         {
           params: ["locale", "slug"],
           pattern: "/:locale/blog/:slug",
@@ -106,7 +105,7 @@ describe("createAppPprFallbackShell", () => {
         },
         { slug: "new-post" },
       ),
-    ).toBeNull();
+    ).toEqual([]);
   });
 });
 
@@ -122,11 +121,26 @@ describe("rewriteAppPprFallbackShellHtmlNavigation", () => {
     expect(html).toContain('params:{"locale":"en","slug":"new-post"}');
     expect(html).toContain('"pathname":"/en/blog/new-post"');
     expect(html).toContain('"searchParams":[["preview","1"]]');
+    expect(html).toContain("searchParamsFromBrowser:true");
     const paramsIndex = html.indexOf('params:{"locale":"en","slug":"new-post"}');
     const headCloseIndex = html.indexOf("</head>");
     expect(paramsIndex).toBeGreaterThanOrEqual(0);
     expect(headCloseIndex).toBeGreaterThanOrEqual(0);
     expect(paramsIndex).toBeLessThan(headCloseIndex);
+  });
+
+  it("keeps force-static fallback-shell search params server-owned", () => {
+    const html = rewriteAppPprFallbackShellHtmlNavigation({
+      html: "<html><head></head><body>shell</body></html>",
+      isForceStatic: true,
+      params: { slug: "new-post" },
+      pathname: "/blog/new-post",
+      searchParams: new URLSearchParams([["preview", "1"]]),
+    });
+
+    expect(html).toContain("searchParamsFromBrowser:false");
+    expect(html).toContain('"searchParams":[]');
+    expect(html).not.toContain('"preview","1"');
   });
 
   it("appends actual request metadata after cached placeholder metadata", () => {

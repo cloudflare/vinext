@@ -13,19 +13,17 @@ export default function Layout({
   const modalSegments = useSelectedLayoutSegments("modal");
 
   return (
-    <html>
-      <body>
-        <div id="children">
-          <div>CHILDREN SLOT:</div>
-          {children}
-        </div>
-        <div id="modal">
-          <div>MODAL SLOT:</div>
-          <div id="modal-segment">modal segment: {modalSegment}</div>
-          <div id="modal-segments">modal segments: {modalSegments.join("|")}</div>
-          {modal}
-        </div>
-      </body>
-    </html>
+    <>
+      <div id="children">
+        <div>CHILDREN SLOT:</div>
+        {children}
+      </div>
+      <div id="modal">
+        <div>MODAL SLOT:</div>
+        <div id="modal-segment">modal segment: {modalSegment}</div>
+        <div id="modal-segments">modal segments: {modalSegments.join("|")}</div>
+        {modal}
+      </div>
+    </>
   );
 }

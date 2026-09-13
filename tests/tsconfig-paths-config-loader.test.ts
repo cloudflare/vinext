@@ -192,8 +192,8 @@ describe("loadTsconfigPathAliasesForRoot", () => {
 
     const aliases = loadTsconfigPathAliasesForRoot(tmpDir);
     expect(Object.keys(aliases)).toEqual(["@/public", "@"]);
-    expect(aliases["@/public"]).toBe(path.join(tmpDir, "public"));
-    expect(aliases["@"]).toBe(path.join(tmpDir, "src"));
+    expect(aliases["@/public"]).toBe(canonical(tmpDir, "public"));
+    expect(aliases["@"]).toBe(canonical(tmpDir, "src"));
   });
 
   it("returns empty object when tsconfig.json is missing", () => {
