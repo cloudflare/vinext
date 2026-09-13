@@ -519,6 +519,19 @@ test("purge supports tags, path prefixes, and purgeEverything", async () => {
   assert.equal((await r2Objects()).objects.length, 0);
 });
 
+test("purge batches more entries than the SQL parameter limit", async () => {
+  await Promise.all(
+    Array.from({ length: 101 }, (_, index) => put(`/large-purge/${index}`, `${index}`)),
+  );
+
+  assert.deepEqual((await purge({ pathPrefixes: ["/large-purge/"] })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.equal((await metadata()).length, 0);
+  assert.equal((await r2Objects()).objects.length, 0);
+});
+
 test("a newer put wins and the superseded candidate is cleaned up", async () => {
   const slow = put("/race", "slow", { bodyDelayMs: 300 });
   await new Promise((resolve) => setTimeout(resolve, 50));

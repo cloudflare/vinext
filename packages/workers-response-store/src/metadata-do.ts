@@ -746,7 +746,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
       }
 
-      for (const batch of batches(matches, MAX_SQL_PARAMETERS)) {
+      for (const batch of batches(matches, MAX_SQL_PARAMETERS - 1)) {
         const keyHashes = batch.map((row) => row.key_hash);
         const placeholders = keyHashes.map(() => "?").join(", ");
         this.ctx.storage.sql.exec(
