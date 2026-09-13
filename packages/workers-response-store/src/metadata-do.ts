@@ -74,6 +74,7 @@ type EntryRow = Record<string, SqlStorageValue> & {
   active_revision: number | null;
   latest_revision: number;
   object_key: string | null;
+  claim_active_revision?: number | null;
   claim_id?: string | null;
   claim_revision?: number | null;
   current_invalidation_sequence?: number;
@@ -359,6 +360,17 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             error: error instanceof Error ? error.message : String(error),
           }),
         );
+        try {
+          await this.ctx.storage.setAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
+          this.cleanupAlarmKnown = true;
+        } catch (alarmError) {
+          console.error(
+            JSON.stringify({
+              message: "Workers Response Store cleanup retry scheduling failed",
+              error: alarmError instanceof Error ? alarmError.message : String(alarmError),
+            }),
+          );
+        }
       }
     }
   }
@@ -382,8 +394,14 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   async sweepExpiredPendingObjects(cutoff = Date.now() - ORPHAN_RETENTION_MS): Promise<number> {
     this.cleanupAlarmKnown = false;
     const rows = this.ctx.storage.sql
-      .exec<{ active: number; created_at: number; object_key: string }>(
+      .exec<{
+        active: number;
+        created_at: number;
+        invalidation_sequence: number;
+        object_key: string;
+      }>(
         `SELECT pending_objects.object_key, pending_objects.created_at,
+          pending_objects.invalidation_sequence,
           entries.object_key IS NOT NULL AS active
         FROM pending_objects
         LEFT JOIN entries
@@ -397,13 +415,30 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     const activeObjectKeys = batch
       .filter(({ active }) => active)
       .map(({ object_key }) => object_key);
-    const expiredObjectKeys = batch
-      .filter(({ active, created_at }) => !active && created_at <= cutoff)
-      .map(({ object_key }) => object_key);
-    this.finishPendingObjects(activeObjectKeys);
-    if (expiredObjectKeys.length) {
-      await this.env.CACHE_BODIES.delete(expiredObjectKeys);
-      this.finishPendingObjects(expiredObjectKeys);
+    const expired = batch.filter(({ active, created_at }) => !active && created_at <= cutoff);
+    const expiredObjectKeys = expired.map(({ object_key }) => object_key);
+    this.finishPendingObjects([...activeObjectKeys, ...expiredObjectKeys]);
+    try {
+      if (expiredObjectKeys.length) {
+        await this.env.CACHE_BODIES.delete(expiredObjectKeys);
+      }
+    } catch (error) {
+      this.ctx.storage.transactionSync(() => {
+        for (const batch of batches(expired, Math.floor(MAX_SQL_PARAMETERS / 3))) {
+          this.ctx.storage.sql.exec(
+            `INSERT OR REPLACE INTO pending_objects
+              (object_key, created_at, invalidation_sequence) VALUES ${batch
+                .map(() => "(?, ?, ?)")
+                .join(", ")}`,
+            ...batch.flatMap(({ object_key, invalidation_sequence }) => [
+              object_key,
+              0,
+              invalidation_sequence,
+            ]),
+          );
+        }
+      });
+      throw error;
     }
 
     const next = batch.find(({ active, created_at }) => !active && created_at > cutoff);
@@ -567,6 +602,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const current = this.ctx.storage.sql
         .exec<EntryRow>(
           `SELECT entries.*,
+            revalidation_claims.active_revision AS claim_active_revision,
             revalidation_claims.claim_id AS claim_id,
             revalidation_claims.revision AS claim_revision,
             pending_objects.invalidation_sequence AS pending_invalidation_sequence,
@@ -587,7 +623,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
         (claimId !== undefined &&
-          (current.claim_id !== claimId || current.claim_revision !== revision)) ||
+          (current.claim_id !== claimId ||
+            current.claim_revision !== revision ||
+            current.claim_active_revision !== current.active_revision)) ||
         (metadata.fenceTags.length > 0 &&
           current.current_invalidation_sequence! > current.pending_invalidation_sequence &&
           this.getTagInvalidationMaximum(metadata.fenceTags, "invalidation_sequence") >

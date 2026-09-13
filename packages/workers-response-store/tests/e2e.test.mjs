@@ -747,6 +747,57 @@ test("an expired revalidation claim cannot publish after its replacement", async
   assert.equal(result.published, false);
 });
 
+test("a revalidation claim cannot replace a newer active revision", async () => {
+  await put("/claim-active-revision", "seed");
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+  const write = await stub.reserveWrite(
+    entry.keyHash,
+    entry.cacheKey,
+    "runtime-cache/poc-v2/claim-active-revision",
+    Date.now(),
+  );
+  const claim = await stub.claimRevalidation(
+    entry.keyHash,
+    entry.activeRevision,
+    entry.cacheKey,
+    "runtime-cache/poc-v2/claim-active-revision",
+    100,
+    100,
+  );
+  assert.ok(claim);
+
+  const candidate = {
+    statusText: "",
+    responseHeaders: [],
+    freshUntil: 1_000,
+    swrUntil: 1_000,
+    revalidator: null,
+    cacheTags: [],
+    fenceTags: [],
+  };
+  assert.equal(
+    (
+      await stub.publish(entry.keyHash, write.revision, {
+        ...candidate,
+        objectKey: write.objectKey,
+      })
+    ).published,
+    true,
+  );
+  assert.equal(
+    (
+      await stub.publish(
+        entry.keyHash,
+        claim.revision,
+        { ...candidate, objectKey: claim.objectKey },
+        claim.claimId,
+      )
+    ).published,
+    false,
+  );
+});
+
 test("a write reserved after a tag purge is not rejected by its timestamp", async () => {
   const createdAt = Date.now();
   await purge({ tags: ["already-purged"] });
