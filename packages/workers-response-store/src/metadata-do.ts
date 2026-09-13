@@ -667,7 +667,14 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     });
 
     if (cleanupObjectKey) {
-      await this.ensureCleanupAlarm(Date.now());
+      await this.ensureCleanupAlarm(Date.now()).catch((error) => {
+        console.error(
+          JSON.stringify({
+            message: "Workers Response Store cleanup alarm update failed",
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      });
       await this.deleteTrackedObjects([cleanupObjectKey]);
     }
     return result;
