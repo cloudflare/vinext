@@ -555,6 +555,7 @@ test("overlapping framework writes can be coalesced", async () => {
   assert.equal(await (await read("/coalesced")).text(), "first");
   assert.equal((await metadata())[0].activeRevision, 1);
   assert.equal((await r2Objects()).objects.length, 1);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
 });
 
 test("a failed coalesced write does not suppress an immediate retry", async () => {
@@ -586,6 +587,54 @@ test("a failed coalesced write preserves an overlapping successful write", async
     edgePurgeAccepted: true,
   });
   assert.equal(await (await read("/coalesced-fallback")).text(), "succeeds");
+});
+
+test("a failed newer write does not discard an overlapping successful write", async () => {
+  const successful = put("/write-fallback", "succeeds", { bodyDelayMs: 300 });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  await assert.rejects(
+    put("/write-fallback", "fails", { bodyFailure: true }),
+    /put fixture returned 500/,
+  );
+  assert.deepEqual((await successful).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  assert.equal(await (await read("/write-fallback")).text(), "succeeds");
+});
+
+test("purge prevents coalesced writes from resurrecting an entry", async () => {
+  await put("/purge-coalesced", "seed");
+  const first = put("/purge-coalesced", "first", { bodyDelayMs: 300, coalesce: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = put("/purge-coalesced", "second", { coalesce: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  await purge({ purgeEverything: true });
+  assert.deepEqual((await first).json, {
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
+  });
+  assert.deepEqual((await second).json, {
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
+  });
+  assert.equal((await read("/purge-coalesced")).status, 404);
+  assert.equal((await r2Objects()).objects.length, 0);
+});
+
+test("purge prevents an initial slow write from creating an entry", async () => {
+  const write = put("/purge-cold-write", "too-late", { bodyDelayMs: 300 });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  await purge({ purgeEverything: true });
+  assert.deepEqual((await write).json, {
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
+  });
+  assert.equal((await read("/purge-cold-write")).status, 404);
+  assert.equal((await r2Objects()).objects.length, 0);
 });
 
 test("retention sweep removes orphaned candidates without deleting active R2 objects", async () => {

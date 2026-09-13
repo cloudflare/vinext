@@ -613,14 +613,17 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const { cacheKey, keyHash } = await this.deriveCacheKey(request);
     const pendingPutKey = `${this.getVersionId()}:${keyHash}`;
+    let reservation: WriteReservation | undefined;
     if (options.coalesce) {
       for (;;) {
         const pending = pendingPuts.get(pendingPutKey);
         if (!pending) break;
 
+        reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey);
         try {
           const result = await pending;
           if (result.backingStoreUpdated) {
+            await metadata.finishPendingObjects([reservation.objectKey]);
             await response.body?.cancel().catch(() => {});
             return result;
           }
@@ -634,7 +637,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     const write = (async (): Promise<ResponseStoreMutationResult> => {
-      const reservation = await this.reserveWrite(metadata, keyHash, cacheKey);
+      reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey);
       const result = await this.storeResponse(
         metadata,
         request,

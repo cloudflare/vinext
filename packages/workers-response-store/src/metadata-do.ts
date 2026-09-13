@@ -206,27 +206,29 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     this.cleanupAlarmKnown = true;
   }
 
-  private findMatchingEntryRows(options: ResponseStorePurgeOptions): EntryRow[] {
+  private findMatchingEntryRows(
+    options: ResponseStorePurgeOptions,
+    includePending = false,
+  ): EntryRow[] {
+    const rows = this.ctx.storage.sql
+      .exec<EntryRow>(
+        includePending
+          ? `SELECT * FROM entries
+            WHERE (tombstoned = 0 AND active_revision IS NOT NULL) OR active_revision IS NULL`
+          : "SELECT * FROM entries WHERE tombstoned = 0 AND active_revision IS NOT NULL",
+      )
+      .toArray();
     if (options.purgeEverything) {
-      return this.ctx.storage.sql
-        .exec<EntryRow>(
-          "SELECT * FROM entries WHERE tombstoned = 0 AND active_revision IS NOT NULL",
-        )
-        .toArray();
+      return rows;
     }
 
     const tags = new Set(normalizeTags(options.tags ?? []));
     const prefixes = options.pathPrefixes ?? [];
-    return this.ctx.storage.sql
-      .exec<EntryRow>("SELECT * FROM entries WHERE tombstoned = 0 AND active_revision IS NOT NULL")
-      .toArray()
-      .filter(
-        (row) =>
-          prefixes.some((prefix) => row.cache_key.startsWith(prefix)) ||
-          normalizeTags(JSON.parse(row.cache_tags ?? "[]") as string[]).some((tag) =>
-            tags.has(tag),
-          ),
-      );
+    return rows.filter(
+      (row) =>
+        prefixes.some((prefix) => row.cache_key.startsWith(prefix)) ||
+        normalizeTags(JSON.parse(row.cache_tags ?? "[]") as string[]).some((tag) => tags.has(tag)),
+    );
   }
 
   async trackPendingObjects(objectKeys: string[], createdAt: number): Promise<void> {
@@ -513,7 +515,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const current = this.ctx.storage.sql
         .exec<EntryRow>("SELECT * FROM entries WHERE key_hash = ?", keyHash)
         .toArray()[0];
-      if (!current || current.latest_revision !== revision) {
+      if (
+        !current ||
+        revision > current.latest_revision ||
+        (current.active_revision !== null && revision <= current.active_revision)
+      ) {
         if (claimId) {
           this.ctx.storage.sql.exec(
             "DELETE FROM revalidation_claims WHERE key_hash = ? AND claim_id = ?",
@@ -533,7 +539,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
           fresh_until = ?, swr_until = ?,
           revalidator_id = ?, revalidator_args = ?, cache_tags = ?, tombstoned = 0
-        WHERE key_hash = ? AND latest_revision = ?`,
+        WHERE key_hash = ? AND latest_revision >= ?
+          AND (active_revision IS NULL OR active_revision < ?)`,
         revision,
         metadata.objectKey,
         metadata.statusText,
@@ -544,6 +551,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
         JSON.stringify(metadata.cacheTags),
         keyHash,
+        revision,
         revision,
       );
 
@@ -573,7 +581,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         keyHash,
         cacheKey: current.cache_key,
         activeRevision: revision,
-        latestRevision: revision,
+        latestRevision: current.latest_revision,
         objectKey: metadata.objectKey,
         statusText: metadata.statusText,
         responseHeaders: metadata.responseHeaders,
@@ -696,7 +704,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   async purgeMatching(options: ResponseStorePurgeOptions): Promise<PurgedEntry[]> {
     const invalidatedAt = Date.now();
     const matches = this.ctx.storage.transactionSync(() => {
-      const matches = this.findMatchingEntryRows(options);
+      const matches = this.findMatchingEntryRows(options, true);
 
       const tags = normalizeTags(options.tags ?? []);
       for (const batch of batches(tags, MAX_SQL_PARAMETERS / 2)) {
@@ -723,7 +731,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         this.ctx.storage.sql.exec(
           `UPDATE entries SET
             latest_revision = latest_revision + 1,
-            active_revision = NULL,
+            active_revision = latest_revision + 1,
             object_key = NULL,
             status_text = NULL,
             response_headers = NULL,
@@ -742,11 +750,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
       }
 
-      return matches.map((row) => ({
-        keyHash: row.key_hash,
-        cacheKey: row.cache_key,
-        objectKey: row.object_key!,
-      }));
+      return matches.flatMap((row) =>
+        row.object_key === null
+          ? []
+          : [{ keyHash: row.key_hash, cacheKey: row.cache_key, objectKey: row.object_key }],
+      );
     });
     if (matches.length) {
       await this.ensureCleanupAlarm(invalidatedAt);
