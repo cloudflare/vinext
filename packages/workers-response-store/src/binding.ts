@@ -633,23 +633,28 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         if (!pending) break;
 
         reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
+        let result: StoreResult;
         try {
-          const result = await pending;
-          if (result.published && result.entry) {
-            const objectKey = reservation.objectKey;
-            await metadata
-              .finishPendingObjects([objectKey])
-              .catch((error) => this.logCleanupFailure(objectKey, error));
-            void response.body?.cancel().catch(() => {});
-            return {
-              backingStoreUpdated: true,
-              edgePurgeAccepted: options.purgeExisting
-                ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
-                : true,
-            };
-          }
+          result = await pending;
         } catch {
           // Preserve this response as the fallback when the leading write fails.
+          if (pendingPuts.get(pendingPutKey) === pending) {
+            pendingPuts.delete(pendingPutKey);
+          }
+          continue;
+        }
+        if (result.published && result.entry) {
+          const objectKey = reservation.objectKey;
+          await metadata
+            .finishPendingObjects([objectKey])
+            .catch((error) => this.logCleanupFailure(objectKey, error));
+          void response.body?.cancel().catch(() => {});
+          return {
+            backingStoreUpdated: true,
+            edgePurgeAccepted: options.purgeExisting
+              ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+              : true,
+          };
         }
         if (pendingPuts.get(pendingPutKey) === pending) {
           pendingPuts.delete(pendingPutKey);

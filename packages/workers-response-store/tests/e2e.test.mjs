@@ -662,7 +662,11 @@ test("purge prevents coalesced writes from resurrecting an entry", async () => {
 
 test("purge prevents an initial slow write from creating an entry", async () => {
   const write = put("/purge-cold-write", "too-late", { bodyDelayMs: 300 });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("pending_objects"), 1);
 
   await purge({ purgeEverything: true });
   assert.deepEqual((await write).json, {
