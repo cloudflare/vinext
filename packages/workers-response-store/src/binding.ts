@@ -69,7 +69,9 @@ type EntryMetadata = {
   cacheTags: string[];
 };
 
-export type CandidateMetadata = EntryMetadata;
+export type CandidateMetadata = EntryMetadata & {
+  fenceTags: string[];
+};
 
 export type StoredEntry = EntryMetadata & {
   keyHash: string;
@@ -95,6 +97,7 @@ type CacheKey = {
 
 type WriteReservation = CacheKey & {
   claimId?: string;
+  fenceTags: string[];
   objectKey: string;
   revision: number;
 };
@@ -251,6 +254,17 @@ function cacheTagHeader(entry: Pick<StoredEntry, "keyHash" | "cacheTags">): stri
   return tags.join(",");
 }
 
+function cacheTagsFromResponse(response: Response): string[] {
+  return [
+    ...new Set(
+      (response.headers.get("Cache-Tag") ?? "")
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 export class ResponseStoreBinding extends WorkerEntrypoint<
   WorkersResponseStoreEnv,
   WorkersResponseStoreProps
@@ -343,6 +357,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     metadata: CacheMetadataStub,
     keyHash: string,
     cacheKey: string,
+    cacheTags: string[],
   ): Promise<WriteReservation> {
     const reservation = await metadata.reserveWrite(
       keyHash,
@@ -350,7 +365,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       this.objectKeyPrefix(keyHash),
       Date.now(),
     );
-    return { cacheKey, keyHash, ...reservation };
+    return { cacheKey, fenceTags: cacheTags, keyHash, ...reservation };
   }
 
   private logCleanupFailure(objectKey: string, error: unknown): void {
@@ -422,10 +437,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     response: Response,
     revalidator: ResponseStorePutOptions["revalidator"],
     reservation?: WriteReservation,
+    cacheTags = cacheTagsFromResponse(response),
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
     const write =
-      reservation ?? (await this.reserveWrite(metadata, cacheKey.keyHash, cacheKey.cacheKey));
+      reservation ??
+      (await this.reserveWrite(metadata, cacheKey.keyHash, cacheKey.cacheKey, cacheTags));
     const { keyHash, objectKey, revision } = write;
 
     let publication: PublicationResult;
@@ -436,22 +453,15 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         const lower = name.toLowerCase();
         return lower !== "age" && lower !== "cf-cache-status" && lower !== "content-length";
       });
-      const responseCacheTags = [
-        ...new Set(
-          (response.headers.get("Cache-Tag") ?? "")
-            .split(",")
-            .map((tag) => tag.trim())
-            .filter(Boolean),
-        ),
-      ];
       const candidate: CandidateMetadata = {
+        fenceTags: [...new Set([...write.fenceTags, ...cacheTags])],
         objectKey,
         statusText: response.statusText,
         responseHeaders,
         freshUntil: policy.freshUntil,
         swrUntil: policy.swrUntil,
         revalidator: revalidator ?? null,
-        cacheTags: responseCacheTags,
+        cacheTags,
       };
 
       // RPC-transferred Response streams do not retain the fixed-length marker
@@ -491,7 +501,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const cacheRequest = new Request(`https://runtime-cache.invalid${entry.cacheKey}`);
     const writeReservation =
-      reservation ?? (await this.reserveWrite(metadata, entry.keyHash, entry.cacheKey));
+      reservation ??
+      (await this.reserveWrite(metadata, entry.keyHash, entry.cacheKey, entry.cacheTags));
 
     let response: Response;
     try {
@@ -547,6 +558,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       await this.regenerateEntry(metadata, entry, "swr", {
         cacheKey: entry.cacheKey,
         claimId: claim.claimId,
+        fenceTags: entry.cacheTags,
         keyHash: entry.keyHash,
         objectKey: claim.objectKey,
         revision: claim.revision,
@@ -612,6 +624,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const metadata = this.getMetadata();
 
     const { cacheKey, keyHash } = await this.deriveCacheKey(request);
+    const cacheTags = cacheTagsFromResponse(response);
     const pendingPutKey = `${this.getVersionId()}:${keyHash}`;
     let reservation: WriteReservation | undefined;
     if (options.coalesce) {
@@ -619,7 +632,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         const pending = pendingPuts.get(pendingPutKey);
         if (!pending) break;
 
-        reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey);
+        reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
         try {
           const result = await pending;
           if (result.backingStoreUpdated) {
@@ -637,13 +650,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     const write = (async (): Promise<ResponseStoreMutationResult> => {
-      reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey);
+      reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
       const result = await this.storeResponse(
         metadata,
         request,
         response,
         options.revalidator,
         reservation,
+        cacheTags,
       );
       if (!result.published || !result.entry) {
         return { backingStoreUpdated: false, edgePurgeAccepted: false };
@@ -687,6 +701,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           reservation
             ? {
                 cacheKey: entry.cacheKey,
+                fenceTags: entry.cacheTags,
                 keyHash: entry.keyHash,
                 ...reservation,
               }

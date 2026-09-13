@@ -31,7 +31,6 @@ type RefreshCandidate = {
 };
 
 export type CacheMetadataStub = DurableObjectStub & {
-  beginWrite(keyHash: string, cacheKey: string): Promise<number>;
   reserveWrite(
     keyHash: string,
     cacheKey: string,
@@ -75,6 +74,7 @@ type EntryRow = Record<string, SqlStorageValue> & {
   active_revision: number | null;
   latest_revision: number;
   object_key: string | null;
+  pending_created_at?: number | null;
   status_text: string | null;
   response_headers: string | null;
   fresh_until: number | null;
@@ -214,7 +214,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       .exec<EntryRow>(
         includePending
           ? `SELECT * FROM entries
-            WHERE (tombstoned = 0 AND active_revision IS NOT NULL) OR active_revision IS NULL`
+            WHERE (tombstoned = 0 AND active_revision IS NOT NULL)
+              OR active_revision IS NULL OR latest_revision > active_revision`
           : "SELECT * FROM entries WHERE tombstoned = 0 AND active_revision IS NOT NULL",
       )
       .toArray();
@@ -466,18 +467,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return revision;
   }
 
-  beginWrite(keyHash: string, cacheKey: string): number {
-    return this.ctx.storage.transactionSync(() => {
-      const current = this.ctx.storage.sql
-        .exec<{ latest_revision: number }>(
-          "SELECT latest_revision FROM entries WHERE key_hash = ?",
-          keyHash,
-        )
-        .toArray()[0];
-      return this.reserveRevision(keyHash, cacheKey, current);
-    });
-  }
-
   async reserveWrite(
     keyHash: string,
     cacheKey: string,
@@ -513,12 +502,23 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   ): Promise<PublicationResult> {
     const { cleanupObjectKey, result } = this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
-        .exec<EntryRow>("SELECT * FROM entries WHERE key_hash = ?", keyHash)
+        .exec<EntryRow>(
+          `SELECT entries.*, pending_objects.created_at AS pending_created_at
+          FROM entries
+          LEFT JOIN pending_objects ON pending_objects.object_key = ?
+          WHERE entries.key_hash = ?`,
+          metadata.objectKey,
+          keyHash,
+        )
         .toArray()[0];
       if (
         !current ||
+        current.pending_created_at === null ||
+        current.pending_created_at === undefined ||
         revision > current.latest_revision ||
-        (current.active_revision !== null && revision <= current.active_revision)
+        (current.active_revision !== null && revision <= current.active_revision) ||
+        (metadata.fenceTags.length > 0 &&
+          this.getTagExpiration(metadata.fenceTags) >= current.pending_created_at)
       ) {
         if (claimId) {
           this.ctx.storage.sql.exec(

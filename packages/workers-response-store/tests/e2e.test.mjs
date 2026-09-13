@@ -637,6 +637,35 @@ test("purge prevents an initial slow write from creating an entry", async () => 
   assert.equal((await r2Objects()).objects.length, 0);
 });
 
+test("repeated purge prevents a post-tombstone write from resurrecting an entry", async () => {
+  await put("/purge-twice", "seed");
+  await purge({ purgeEverything: true });
+  const write = put("/purge-twice", "too-late", { bodyDelayMs: 300 });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  await purge({ purgeEverything: true });
+  assert.deepEqual((await write).json, {
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
+  });
+  assert.equal((await read("/purge-twice")).status, 404);
+});
+
+test("tag purge prevents a pending tagged write from publishing", async () => {
+  const write = put("/purge-pending-tag", "too-late", {
+    bodyDelayMs: 300,
+    tags: ["pending-tag"],
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  await purge({ tags: ["pending-tag"] });
+  assert.deepEqual((await write).json, {
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
+  });
+  assert.equal((await read("/purge-pending-tag")).status, 404);
+});
+
 test("retention sweep removes orphaned candidates without deleting active R2 objects", async () => {
   await put("/active-cleanup", "active");
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
