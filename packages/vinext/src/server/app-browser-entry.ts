@@ -785,6 +785,7 @@ type RenderNavigationPayloadOptions = {
   targetHref: string;
   traversalIntent?: HistoryTraversalIntent | null;
   visibleCommitMode?: NavigationRuntimeVisibleCommitMode;
+  transitionTypes?: readonly string[];
 };
 
 async function renderNavigationPayload(
@@ -813,6 +814,7 @@ async function renderNavigationPayload(
     targetHistoryIndex: options.traversalIntent?.targetHistoryIndex,
     targetHref: options.targetHref,
     visibleCommitMode: options.visibleCommitMode ?? "transition",
+    transitionTypes: options.transitionTypes,
   });
 }
 
@@ -1918,6 +1920,7 @@ function bootstrapHydration(
     scrollIntent?: AppRouterScrollIntent | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
     initialBypassNavigationCache?: boolean,
+    transitionTypes?: readonly string[],
   ): Promise<void> {
     serverActionSupplementalRefreshCoordinator.abortAll();
     const navigationAbortHandle = navigationAbortCoordinator.begin();
@@ -2281,6 +2284,7 @@ function bootstrapHydration(
             targetHref: currentHref,
             traversalIntent: activeTraversalIntent,
             visibleCommitMode,
+            transitionTypes,
           });
           if (cachedRenderOutcome === "no-commit") {
             if (!browserNavigationController.isCurrentNavigation(navId)) return;
@@ -2415,6 +2419,7 @@ function bootstrapHydration(
                 targetHref: currentHref,
                 traversalIntent: activeTraversalIntent,
                 visibleCommitMode,
+                transitionTypes,
               }).catch((error) => {
                 if (browserNavigationController.isCurrentNavigation(navId)) {
                   console.error("[vinext] Optimistic RSC navigation error:", error);
@@ -2655,7 +2660,13 @@ function bootstrapHydration(
           // Only a settled prefetch carrying already-decoded elements can
           // commit within the initiating click task. Missing, in-flight, and
           // preparation-failed entries keep the ordinary transition path.
-          visibleCommitMode: prefetchedElements ? "synchronous" : visibleCommitMode,
+          // View Transitions need React's transition lane even for settled data;
+          // an explicit synchronous gesture commit still keeps its own mode.
+          visibleCommitMode:
+            prefetchedElements && !process.env.__NEXT_VIEW_TRANSITION
+              ? "synchronous"
+              : visibleCommitMode,
+          transitionTypes,
         });
         if (renderOutcome !== "committed") return;
         if (hasSupplementalRefresh) {

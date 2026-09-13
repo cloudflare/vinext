@@ -1131,6 +1131,37 @@ describe("checkConventions", () => {
     expect(vt?.files).toHaveLength(1);
   });
 
+  it.each([
+    ["19.3.0", "19.3.0", true, "supported"],
+    ["19.3.0", "19.2.7", true, "partial"],
+    ["19.3.0", "19.3.0", false, "partial"],
+  ])(
+    "checks installed View Transition capabilities (%s, %s, %s)",
+    (version, rendererVersion, native, status) => {
+      writeFile("app/page.tsx", 'import { ViewTransition } from "react";');
+      for (const name of ["react", "react-dom", "react-server-dom-webpack"]) {
+        writeFile(
+          `node_modules/${name}/package.json`,
+          JSON.stringify({
+            name,
+            version: name === "react" ? version : rendererVersion,
+            main: "index.js",
+          }),
+        );
+      }
+      writeFile(
+        "node_modules/react/index.js",
+        `module.exports = {
+      version: ${JSON.stringify(version)},
+      ${native ? 'ViewTransition: Symbol.for("react.view_transition"), addTransitionType() {}' : ""}
+    };`,
+      );
+      const item = checkConventions(tmpDir).find((item) => item.name === "ViewTransition");
+      expect(item?.status).toBe(status);
+      if (status === "supported") expect(item?.detail).not.toContain("fallback");
+    },
+  );
+
   it("does not flag ViewTransition when not imported", () => {
     writeFile(
       "app/page.tsx",

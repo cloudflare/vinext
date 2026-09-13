@@ -2555,6 +2555,7 @@ export async function navigateClientSide(
   scroll: boolean,
   programmaticTransition = false,
   visibleCommitMode: NavigationRuntimeVisibleCommitMode = "transition",
+  transitionTypes?: readonly string[],
 ): Promise<void> {
   notifyAppNavigationStart(href);
 
@@ -2687,6 +2688,7 @@ export async function navigateClientSide(
         scrollIntent,
         visibleCommitMode,
         earlyIntent.bypassNavigationCache,
+        transitionTypes,
       );
     } else {
       if (mode === "replace") {

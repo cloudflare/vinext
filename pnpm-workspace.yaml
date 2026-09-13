@@ -36,8 +36,8 @@ catalog:
   "@types/mdx": 2.0.13
   "@types/ms": 2.1.0
   "@types/node": ^25.9.2
-  "@types/react": ^19.2.16
-  "@types/react-dom": ^19.2.3
+  "@types/react": 19.3.0
+  "@types/react-dom": 19.3.0
   "@unpic/react": ^1.0.2
   "@vercel/og": ^0.8.6
   "@vitejs/plugin-react": ^6.1.0
@@ -76,9 +76,9 @@ catalog:
   pathslash: ^0.1.0
   playwright: ^1.60.0
   postcss: 8.5.10
-  react: ^19.2.7
-  react-dom: ^19.2.7
-  react-server-dom-webpack: ^19.2.7
+  react: 19.3.0
+  react-dom: 19.3.0
+  react-server-dom-webpack: 19.3.0
   sass: 1.100.0
   server-only: ^0.0.1
   shiki: 4.0.2

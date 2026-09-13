@@ -298,6 +298,7 @@ import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { hasReactViewTransitionRuntime } from "./utils/react-version.js";
 import fs from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { getPagesPreviewModeId } from "./server/pages-preview.js";
@@ -2511,6 +2512,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_GESTURE_TRANSITION"] = JSON.stringify(
           nextConfig.gestureTransition,
         );
+        if (nextConfig.viewTransition && !hasReactViewTransitionRuntime(root)) {
+          throw new Error(
+            "[vinext] experimental.viewTransition requires matching react, react-dom and react-server-dom-webpack versions with ViewTransition and addTransitionType (React 19.3+).",
+          );
+        }
+        defines["process.env.__NEXT_VIEW_TRANSITION"] = JSON.stringify(nextConfig.viewTransition);
         defines["process.env.__NEXT_APP_NAV_FAIL_HANDLING"] = JSON.stringify(
           nextConfig.appNavFailHandling,
         );
@@ -4859,8 +4866,8 @@ export const loadServerActionClient = ${
     // transform itself before React in the transform pipeline.
     mdxConfigProxyPlugin,
     createCssModuleImportCompatibilityPlugin({ compiledMdx: true }),
-    // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
-    // that exist in Next.js's bundled React canary but not in stable React 19.
+    // Preserve native React 19.3+ ViewTransition and addTransitionType exports,
+    // with compatibility fallbacks for applications on older React versions.
     // Provides graceful no-op fallbacks so projects using these APIs degrade
     // instead of crashing with "does not provide an export named 'ViewTransition'".
     {
