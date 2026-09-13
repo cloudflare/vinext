@@ -79,6 +79,7 @@ type EntryRow = Record<string, SqlStorageValue> & {
   claim_revision?: number | null;
   current_invalidation_sequence?: number;
   pending_invalidation_sequence?: number | null;
+  pending_publishable?: number | null;
   status_text: string | null;
   response_headers: string | null;
   fresh_until: number | null;
@@ -203,18 +204,22 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         CREATE TABLE IF NOT EXISTS pending_objects (
           object_key TEXT PRIMARY KEY,
           invalidation_sequence INTEGER NOT NULL DEFAULT 0,
+          publishable INTEGER NOT NULL DEFAULT 1,
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS pending_objects_created_at ON pending_objects(created_at);
       `);
 
       ctx.storage.transactionSync(() => {
-        const migrated = ctx.storage.sql
-          .exec<{ version: number }>(
-            "SELECT version FROM metadata_schema_migrations WHERE version = 2",
-          )
-          .toArray().length;
-        if (migrated) return;
+        const migrations = new Set(
+          ctx.storage.sql
+            .exec<{ version: number }>(
+              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3)",
+            )
+            .toArray()
+            .map(({ version }) => version),
+        );
+        if (migrations.size === 2) return;
 
         const schemas = ctx.storage.sql
           .exec<{ name: string; sql: string }>(
@@ -223,6 +228,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           )
           .toArray();
         if (
+          !migrations.has(2) &&
           !schemas
             .find(({ name }) => name === "tag_invalidations")
             ?.sql.includes("invalidation_sequence")
@@ -232,6 +238,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           );
         }
         if (
+          !migrations.has(2) &&
           !schemas
             .find(({ name }) => name === "pending_objects")
             ?.sql.includes("invalidation_sequence")
@@ -240,7 +247,19 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             "ALTER TABLE pending_objects ADD COLUMN invalidation_sequence INTEGER NOT NULL DEFAULT 0",
           );
         }
-        ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (2)");
+        if (!migrations.has(2)) {
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (2)");
+        }
+        if (!migrations.has(3)) {
+          if (
+            !schemas.find(({ name }) => name === "pending_objects")?.sql.includes("publishable")
+          ) {
+            ctx.storage.sql.exec(
+              "ALTER TABLE pending_objects ADD COLUMN publishable INTEGER NOT NULL DEFAULT 1",
+            );
+          }
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (3)");
+        }
       });
     });
   }
@@ -301,9 +320,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       for (const batch of batches(objectKeys, MAX_SQL_PARAMETERS / 2)) {
         const values = batch.flatMap((objectKey) => [objectKey, createdAt]);
         this.ctx.storage.sql.exec(
-          `INSERT OR REPLACE INTO pending_objects (object_key, created_at) VALUES ${batch
-            .map(() => "(?, ?)")
-            .join(", ")}`,
+          `INSERT OR REPLACE INTO pending_objects
+            (object_key, created_at, publishable) VALUES ${batch
+              .map(() => "(?, ?, 0)")
+              .join(", ")}`,
           ...values,
         );
       }
@@ -319,7 +339,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     // Keep the object registered for cleanup while expiring its overlap lease.
     this.ctx.storage.transactionSync(() => {
       this.ctx.storage.sql.exec(
-        "UPDATE pending_objects SET created_at = 0 WHERE object_key = ?",
+        "UPDATE pending_objects SET created_at = 0, publishable = 0 WHERE object_key = ?",
         objectKey,
       );
       if (claimId) {
@@ -353,6 +373,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         await this.env.CACHE_BODIES.delete(batch);
         this.finishPendingObjects(batch);
       } catch (error) {
+        for (const retryBatch of batches(batch, MAX_SQL_PARAMETERS)) {
+          this.ctx.storage.sql.exec(
+            `INSERT OR REPLACE INTO pending_objects
+              (object_key, created_at, publishable) VALUES ${retryBatch
+                .map(() => "(?, 0, 0)")
+                .join(", ")}`,
+            ...retryBatch,
+          );
+        }
         console.error(
           JSON.stringify({
             message: "Workers Response Store R2 cleanup failed",
@@ -397,11 +426,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       .exec<{
         active: number;
         created_at: number;
-        invalidation_sequence: number;
         object_key: string;
       }>(
         `SELECT pending_objects.object_key, pending_objects.created_at,
-          pending_objects.invalidation_sequence,
           entries.object_key IS NOT NULL AS active
         FROM pending_objects
         LEFT JOIN entries
@@ -417,28 +444,17 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       .map(({ object_key }) => object_key);
     const expired = batch.filter(({ active, created_at }) => !active && created_at <= cutoff);
     const expiredObjectKeys = expired.map(({ object_key }) => object_key);
-    this.finishPendingObjects([...activeObjectKeys, ...expiredObjectKeys]);
-    try {
-      if (expiredObjectKeys.length) {
-        await this.env.CACHE_BODIES.delete(expiredObjectKeys);
-      }
-    } catch (error) {
-      this.ctx.storage.transactionSync(() => {
-        for (const batch of batches(expired, Math.floor(MAX_SQL_PARAMETERS / 3))) {
-          this.ctx.storage.sql.exec(
-            `INSERT OR REPLACE INTO pending_objects
-              (object_key, created_at, invalidation_sequence) VALUES ${batch
-                .map(() => "(?, ?, ?)")
-                .join(", ")}`,
-            ...batch.flatMap(({ object_key, invalidation_sequence }) => [
-              object_key,
-              0,
-              invalidation_sequence,
-            ]),
-          );
-        }
-      });
-      throw error;
+    this.finishPendingObjects(activeObjectKeys);
+    for (const expiredBatch of batches(expiredObjectKeys, MAX_SQL_PARAMETERS)) {
+      this.ctx.storage.sql.exec(
+        `UPDATE pending_objects SET created_at = 0, publishable = 0
+        WHERE object_key IN (${expiredBatch.map(() => "?").join(", ")})`,
+        ...expiredBatch,
+      );
+    }
+    if (expiredObjectKeys.length) {
+      await this.env.CACHE_BODIES.delete(expiredObjectKeys);
+      this.finishPendingObjects(expiredObjectKeys);
     }
 
     const next = batch.find(({ active, created_at }) => !active && created_at > cutoff);
@@ -606,6 +622,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             revalidation_claims.claim_id AS claim_id,
             revalidation_claims.revision AS claim_revision,
             pending_objects.invalidation_sequence AS pending_invalidation_sequence,
+            pending_objects.publishable AS pending_publishable,
             metadata_state.tag_invalidation_sequence AS current_invalidation_sequence
           FROM entries
           CROSS JOIN metadata_state
@@ -620,6 +637,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         !current ||
         current.pending_invalidation_sequence === null ||
         current.pending_invalidation_sequence === undefined ||
+        current.pending_publishable !== 1 ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
         (claimId !== undefined &&
@@ -675,7 +693,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       }
       if (published && current.object_key && current.object_key !== metadata.objectKey) {
         this.ctx.storage.sql.exec(
-          "INSERT OR IGNORE INTO pending_objects (object_key, created_at) VALUES (?, ?)",
+          `INSERT OR IGNORE INTO pending_objects
+            (object_key, created_at, publishable) VALUES (?, ?, 0)`,
           current.object_key,
           Date.now(),
         );
@@ -858,8 +877,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const keyHashes = batch.map((row) => row.key_hash);
         const placeholders = keyHashes.map(() => "?").join(", ");
         this.ctx.storage.sql.exec(
-          `INSERT OR IGNORE INTO pending_objects (object_key, created_at)
-          SELECT object_key, ? FROM entries
+          `INSERT OR IGNORE INTO pending_objects (object_key, created_at, publishable)
+          SELECT object_key, ?, 0 FROM entries
           WHERE key_hash IN (${placeholders}) AND object_key IS NOT NULL`,
           invalidatedAt,
           ...keyHashes,
