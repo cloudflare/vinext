@@ -336,7 +336,7 @@ ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};
-export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation); }`
+export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))}); }`
     : "export function __ensureInstrumentation() {}"
 }
 ${
@@ -417,7 +417,7 @@ const __requestHandler = createAppRscRequestHandler({
   dispatchMatchedRouteHandler() { throw new Error("App request stage attempted to render a route handler inline"); },
   ${
     instrumentationPath
-      ? `ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation); },`
+      ? `ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))}); },`
       : ""
   }
   i18nConfig: ${JSON.stringify(config?.i18n ?? null)},
@@ -658,7 +658,7 @@ ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};
-export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation); }`
+export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))}); }`
     : "export function __ensureInstrumentation() {}"
 }
 ${
@@ -1397,7 +1397,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   ${
     instrumentationPath
       ? `ensureInstrumentation() {
-    return __ensureInstrumentationRegistered(_instrumentation);
+    return __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(
+      instrumentationPath ? toSlash(instrumentationPath) : "",
+    )});
   },`
       : ""
   }

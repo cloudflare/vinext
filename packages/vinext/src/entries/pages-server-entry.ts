@@ -121,7 +121,7 @@ export async function generatePagesRequestEntry(
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};`
     : "";
   const instrumentationInitCode = instrumentationPath
-    ? `await __ensureInstrumentationRegistered(_instrumentation);`
+    ? `await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});`
     : "";
   const middlewareImportCode = middlewarePath
     ? `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
@@ -370,7 +370,7 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
   const instrumentationInitCode = instrumentationPath
     ? `// Both halves of a multi-stage output share this idempotent initializer,
 // so instrumentation still registers exactly once per runtime.
-await __ensureInstrumentationRegistered(_instrumentation);`
+await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});`
     : "";
 
   // Generate middleware code if middleware.ts exists

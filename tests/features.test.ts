@@ -4162,7 +4162,7 @@ describe("instrumentation.ts support", () => {
       }),
     };
 
-    await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
+    await runInstrumentation(mockRunner, "/fake/register-instrumentation.ts");
 
     expect(registerCalled).toBe(true);
     expect(getOnRequestErrorHandler()).toBe(mockOnRequestError);
@@ -4183,7 +4183,7 @@ describe("instrumentation.ts support", () => {
       }),
     };
 
-    await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
+    await runInstrumentation(mockRunner, "/fake/report-error-instrumentation.ts");
 
     const testError = new Error("test error");
     await reportRequestError(
