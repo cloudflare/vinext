@@ -628,7 +628,7 @@ describe("init — basic functionality", () => {
     expect(
       (readPkg(tmpDir) as { scripts: Record<string, string> }).scripts["deploy:response-store"],
     ).toBe("wrangler deploy --config wrangler.response-store.jsonc");
-    expect(output).toContain("npx wrangler deploy --config wrangler.response-store.jsonc");
+    expect(output).toContain("run deploy:response-store");
   });
 
   it("uses an existing Response Store config without rewriting its resource names", async () => {

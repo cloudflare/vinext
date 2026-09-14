@@ -434,6 +434,7 @@ type PlatformSetupContext = {
   root: string;
   isAppRouter: boolean;
   existingViteConfigPath?: string;
+  packageManager?: string;
   viteConfigExists: boolean;
   force: boolean;
   prerender?: boolean;
@@ -599,6 +600,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     root,
     isAppRouter: isApp,
     existingViteConfigPath,
+    packageManager: pmName,
     viteConfigExists,
     force: options.force ?? false,
     prerender: options.prerender,

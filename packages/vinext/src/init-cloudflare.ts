@@ -39,6 +39,7 @@ export type CloudflarePlatformSetupContext = {
   root: string;
   isAppRouter: boolean;
   existingViteConfigPath?: string;
+  packageManager?: string;
   prerender?: boolean;
   today?: string;
 };
@@ -220,7 +221,7 @@ export function setupCloudflarePlatform(
   ) {
     nextSteps.push(
       "Deploy Workers Response Store before deploying the application:",
-      `   npx wrangler deploy --config ${RESPONSE_STORE_WRANGLER_CONFIG}`,
+      `   ${context.packageManager ?? "npm"} run deploy:response-store`,
     );
   }
   if (needsKvNamespaceId) {
