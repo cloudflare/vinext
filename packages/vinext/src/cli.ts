@@ -1033,6 +1033,8 @@ function printHelp(cmd?: string) {
   Examples:
     vinext init                   Prompt for a deployment platform
     vinext init --platform=cloudflare  Configure Cloudflare Workers (default)
+    vinext init --platform=cloudflare --cdn-cache=response-store
+                                Configure Workers Response Store (recommended)
     vinext init --platform=cloudflare --cdn-cache=data-cache
                                 Fall through CDN caching to the data cache
     vinext init --platform=cloudflare --data-cache=kv

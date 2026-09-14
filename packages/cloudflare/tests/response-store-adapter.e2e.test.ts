@@ -170,6 +170,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.deepEqual(cacheConfig.exports, {
       default: { type: "worker", cache: { enabled: false } },
       ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
+      CacheMetadata: { type: "durable-object", storage: "sqlite" },
     });
   });
 
