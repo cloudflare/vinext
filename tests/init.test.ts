@@ -7,6 +7,7 @@ import {
   generateViteConfig,
   addScripts,
   getInitDeps,
+  scanCssModuleFiles,
   isDepInstalled,
   getReactUpgradeDeps,
   updateGitignore,
@@ -259,6 +260,54 @@ describe("generateViteConfig", () => {
     const config = generateViteConfig(true, true);
     expect(config).toContain('vinext({ prerender: { routes: "*" } })');
   });
+
+  it("adds the CSS Modules workaround with Next-compatible default-only exports", () => {
+    const config = generateViteConfig(false, false, true);
+    expect(config).toContain('from "vite-css-modules"');
+    const patchCall = 'patchCssModules({ exportMode: "default" })';
+    expect(config).toContain(patchCall);
+    expect(config.indexOf(patchCall)).toBeLessThan(config.indexOf("vinext()"));
+    expect(config).not.toContain("patchCssModules()");
+    expect(config).toContain("generateScopedName(name: string, filename: string)");
+    expect(config).toContain("import.meta.dirname");
+    expect(config).toContain(".slice(0, 7)");
+  });
+});
+
+describe("scanCssModuleFiles", () => {
+  for (const extension of ["css", "scss", "sass"] as const) {
+    it(`detects nested .module.${extension} files`, () => {
+      writeFile(tmpDir, `src/components/card.module.${extension}`, ".card {}");
+      expect(scanCssModuleFiles(tmpDir)).toBe(true);
+    });
+  }
+
+  it("ignores ordinary styles, generated directories, dependencies, and uppercase suffixes", () => {
+    writeFile(tmpDir, "src/styles.scss", ".card {}");
+    writeFile(tmpDir, "node_modules/pkg/styles.module.css", ".card {}");
+    writeFile(tmpDir, ".next/styles.module.scss", ".card {}");
+    writeFile(tmpDir, "dist/styles.module.sass", ".card {}");
+    writeFile(tmpDir, "src/styles.module.CSS", ".card {}");
+    expect(scanCssModuleFiles(tmpDir)).toBe(false);
+  });
+
+  it("does not treat nested source directories as root build output", () => {
+    writeFile(tmpDir, "app/build/components/card.module.css", ".card {}");
+    expect(scanCssModuleFiles(tmpDir)).toBe(true);
+  });
+
+  it("detects CSS Modules in project-owned hidden source directories", () => {
+    writeFile(tmpDir, "components/.internal/card.module.css", ".card {}");
+    expect(scanCssModuleFiles(tmpDir)).toBe(true);
+  });
+
+  it.each([".card.module.css", "components/.card.module.scss"])(
+    "detects a dot-prefixed CSS Module file at %s",
+    (file) => {
+      writeFile(tmpDir, file, ".card {}");
+      expect(scanCssModuleFiles(tmpDir)).toBe(true);
+    },
+  );
 });
 
 // ─── Unit Tests: addScripts ──────────────────────────────────────────────────
@@ -402,6 +451,13 @@ describe("getInitDeps", () => {
     const deps = getInitDeps(true, "node");
     expect(deps).not.toContain("@cloudflare/vite-plugin");
     expect(deps).not.toContain("wrangler");
+  });
+
+  it("adds vite-css-modules only when CSS Modules are detected", () => {
+    expect(getInitDeps(false, "node", true)).toContain("vite-css-modules");
+    expect(getInitDeps(false, "node", true)).toContain("postcss");
+    expect(getInitDeps(false, "node", false)).not.toContain("vite-css-modules");
+    expect(getInitDeps(false, "node", false)).not.toContain("postcss");
   });
 });
 
@@ -1175,6 +1231,36 @@ describe("init — dependency installation", () => {
     expect(result.installedDeps).toContain("vite");
   });
 
+  it("installs and configures vite-css-modules when the project uses CSS Modules", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "components/card.module.scss", ".card { color: red; }");
+
+    const { result, execCalls, output } = await runInit(tmpDir, { platform: "node" });
+
+    expect(result.installedDeps).toContain("vite-css-modules");
+    expect(result.installedDeps).toContain("postcss");
+    expect(execCalls.some(({ cmd }) => cmd.includes("vite-css-modules"))).toBe(true);
+    const config = readFile(tmpDir, "vite.config.ts");
+    const patchCall = 'patchCssModules({ exportMode: "default" })';
+    expect(config).toContain(patchCall);
+    expect(config.indexOf(patchCall)).toBeLessThan(config.indexOf("vinext()"));
+    expect(config).not.toContain("patchCssModules()");
+    expect(config).toContain("generateScopedName(name: string, filename: string)");
+    expect(output).toContain("Configured vite-css-modules for CSS Modules");
+  });
+
+  it("records vite-css-modules without installing when install is disabled", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "styles.module.sass", ".card\n  color: red");
+
+    const { execCalls } = await runInit(tmpDir, { platform: "node", install: false });
+
+    expect(execCalls).toEqual([]);
+    expect(readPkg(tmpDir)).toMatchObject({
+      devDependencies: { "vite-css-modules": "latest" },
+    });
+  });
+
   it("detects missing @vitejs/plugin-rsc for App Router", async () => {
     setupProject(tmpDir, { router: "app" });
 
@@ -1413,6 +1499,63 @@ describe("init — dependency installation", () => {
 // ─── Guard Rails ─────────────────────────────────────────────────────────────
 
 describe("init — guard rails", () => {
+  it("validates an existing CSS Modules config before mutating the project", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "styles.module.css", ".card {}");
+    writeFile(tmpDir, "vite.config.ts", "export default { plugins: [], css: getCss() };\n");
+    const packageJsonBefore = readFile(tmpDir, "package.json");
+
+    await expect(runInit(tmpDir, { platform: "node" })).rejects.toThrow(
+      "css option must be a static object",
+    );
+
+    expect(readFile(tmpDir, "package.json")).toBe(packageJsonBefore);
+    expect(fs.existsSync(path.join(tmpDir, ".gitignore"))).toBe(false);
+  });
+
+  it("lets --force replace an unsupported existing CSS Modules config", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "styles.module.css", ".card {}");
+    writeFile(tmpDir, "vite.config.ts", "export default { plugins: [], css: getCss() };\n");
+
+    await expect(runInit(tmpDir, { platform: "node", force: true })).resolves.toBeDefined();
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain('patchCssModules({ exportMode: "default" })');
+    expect(config).not.toContain("getCss()");
+  });
+
+  it("lets Cloudflare --force replace unsupported CSS Modules options", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "styles.module.css", ".card {}");
+    writeFile(tmpDir, "vite.config.ts", "export default { plugins: [], css: getCss() };\n");
+
+    await expect(runInit(tmpDir, { force: true })).resolves.toBeDefined();
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain('patchCssModules({ exportMode: "default" })');
+    expect(config).toContain("generateScopedName(name: string, filename: string)");
+    expect(config).not.toContain("getCss()");
+  });
+
+  it("preserves an existing scoped-name strategy and warns for CSS Modules", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "styles.module.css", ".card {}");
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      'export default { plugins: [], css: { modules: { generateScopedName: "custom_[local]" } } };',
+    );
+
+    const { output } = await runInit(tmpDir, { platform: "node" });
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain('generateScopedName: "custom_[local]"');
+    expect(config).toContain('patchCssModules({ exportMode: "default" })');
+    expect(config).not.toContain("patchCssModules()");
+    expect(output).toContain("Preserved existing css.modules.generateScopedName");
+  });
+
   it("skips vite.config.ts when it already exists (without --force)", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.ts", "export default {}");
