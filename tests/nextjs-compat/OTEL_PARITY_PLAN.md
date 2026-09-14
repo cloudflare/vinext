@@ -66,17 +66,17 @@ The following are not required for v1:
 1. Build a generic vinext framework tracer. Do not import or special-case Sentry in the runtime.
 2. Define each logical span once. App/Pages request code must call one framework helper; it must not contain separate OpenTelemetry and Workers instrumentation branches.
 3. Provide two integrations behind that helper:
-   - the application's compatible `@opentelemetry/api`, sharing the provider registered by application instrumentation, with a private bundled no-op-capable fallback following Next.js's model;
+   - the application's compatible `@opentelemetry/api`, sharing the provider registered by application instrumentation through OpenTelemetry's versioned global registry, with a CommonJS public-API fallback when available;
    - `cloudflare:workers` tracing, joining the runtime's active handler or application custom span and therefore its automatic fetch and binding spans.
 4. When both integrations are active, one helper call enters both active contexts around the same callback. This intentionally produces equivalent framework spans in both configured outputs without duplicating framework call sites or business logic.
-5. Preserve exact stable Next.js span names and `next.*` attributes where they are externally observable. Isolate capability differences in the integration: for example, OpenTelemetry can update a span name/status while the current Workers `Span` exposes attributes, exception recording, and completion only.
+5. Preserve exact stable Next.js span names and `next.*` attributes where they are externally observable. Isolate capability differences in the integration: for example, OpenTelemetry can update a span name/status and record an exception while the current Workers `Span` exposes attributes and completion only.
 6. Start with the smallest tracer needed for the stable spans. Do not port Next.js's complete internal tracer or local recorder.
 7. Keep the OpenTelemetry side a cheap no-op when no provider is registered. Workers `enterSpan()` already runs as a non-recording no-op when the invocation is not sampled or tracing is disabled.
 8. Trace each logical request once per active integration. Multi-stage Workers and internal request handoffs must not produce duplicate framework roots.
 9. Instrumentation registration must complete before request spans are created and before packages requiring loader-based auto-instrumentation are evaluated.
 10. Static prerender output must never retain request-specific propagation metadata or trace IDs.
 11. Do not make shared trace IDs across the two integrations a prerequisite. Workers supplies native async parentage inside its trace; the registered OpenTelemetry provider supplies OTel context and propagation inside its output. The shared invariant is the framework span definition and call site, not synthetic identity stitching.
-12. `@opentelemetry/api` must not be a required vinext dependency. Mirror Next.js: prefer an application-provided compatible API, expose it only as an optional peer for compatibility, and package a private compiled fallback so a bare vinext installation never fails module resolution.
+12. `@opentelemetry/api` must not be a vinext dependency. Prefer the compatible provider, context manager, and propagator registered by the application through OpenTelemetry's versioned global registry, and fall back to the public API through `require` where available. This preserves the provider-sharing behavior of Next.js's private compiled fallback without shipping another copy of the package or producing missing-module errors in a bare vinext installation.
 
 ## Backlog
 
@@ -116,15 +116,16 @@ Work:
   - exception recording and error status;
   - incoming propagation extraction;
   - updating the active request span with route and response information.
-- Add an OpenTelemetry integration that follows Next.js's resolution model:
-  - prefer the application's compatible `@opentelemetry/api` when available;
-  - otherwise use a private copy compiled into the vinext package;
-  - keep `@opentelemetry/api` an optional peer plus build/dev input, never a required runtime dependency;
-  - rely on the OTel API's compatible global registration so the framework sees the provider installed by application instrumentation even when the private fallback is selected.
+- Add an OpenTelemetry integration that preserves Next.js's provider-sharing behavior without adding a vinext dependency:
+  - prefer the compatible provider, context manager, and propagator installed by application instrumentation in OpenTelemetry's versioned global registry;
+  - fall back to the application's public API through `require` when available;
+  - do not add `@opentelemetry/api` to vinext's dependencies, peers, or build inputs;
+  - keep a bare installation a synchronous no-op with no missing-module error.
 - Add a Workers integration using `tracing` from `cloudflare:workers`. Select it through build/runtime environment wiring that does not make Node evaluate a Workers-only module and does not make synchronous tracing APIs asynchronous.
 - Compose enabled integrations at the framework helper boundary. The application callback must execute once while both integrations' spans are active, so nested framework calls, user spans, fetches, and bindings inherit the appropriate active parent.
 - Keep backend capability mapping private:
-  - apply common names, attributes, exception recording, and completion to both;
+  - apply common names, attributes, and completion to both, including `error.type` for failures;
+  - record exceptions on OpenTelemetry where that capability exists;
   - use OTel span status and name updates where supported;
   - represent final name/status on Workers with the same stable attributes rather than inventing unsupported APIs.
 - Use the Next.js tracer identity and stable attributes:
@@ -133,7 +134,7 @@ Work:
   - `next.span_type`;
   - `next.route`;
   - `next.rsc`.
-- Measure the packed-package size and Worker bundle delta of the private fallback and Workers integration.
+- Measure the packed-package size and Worker bundle delta of the framework tracer and Workers integration.
 
 Acceptance criteria:
 
@@ -417,5 +418,5 @@ Before implementation, confirm:
 2. Node production parity is part of v1 rather than a Workers-only follow-up.
 3. The shared framework tracer supports both a registered OpenTelemetry provider and Workers tracing; framework call sites and span descriptors are never duplicated per consumer.
 4. When both integrations are available in a Worker, the shared helper emits the logical framework span to both so either consumer can observe it.
-5. `@opentelemetry/api` is not a required vinext dependency. Vinext follows Next.js's optional-peer plus private compiled fallback model.
+5. `@opentelemetry/api` is not a vinext dependency. Vinext joins the application's compatible provider through OpenTelemetry's versioned global registry, with a CommonJS public-API fallback where available.
 6. Vinext exposes no new tracing configuration or runtime API; existing Next.js OTel and Sentry integrations are the public compatibility contract.
