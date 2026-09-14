@@ -87,13 +87,13 @@ export async function finalizeResponseStoreBuildOutput({
   isPrimaryServerOutput,
   serviceName: configuredServiceName,
   r2BucketName,
-  deployService = true,
+  shouldDeployService = true,
 }: {
   outDir: string;
   isPrimaryServerOutput: boolean;
   serviceName?: string;
   r2BucketName?: string;
-  deployService?: boolean;
+  shouldDeployService?: boolean;
 }): Promise<void> {
   if (!isPrimaryServerOutput) return;
 
@@ -111,7 +111,7 @@ export async function finalizeResponseStoreBuildOutput({
       ? fullServiceName
       : `${appConfig.name.slice(0, 25)}-${createHash("sha256").update(appConfig.name).digest("hex").slice(0, 8)}${serviceSuffix}`);
   const serviceDir = path.resolve(outDir, path.dirname(RESPONSE_STORE_SERVICE_CONFIG));
-  if (deployService) {
+  if (shouldDeployService) {
     if (!r2BucketName && serviceName.length > 49) {
       throw new Error(
         "[vinext] A Response Store serviceName longer than 49 characters requires an explicit r2BucketName.",

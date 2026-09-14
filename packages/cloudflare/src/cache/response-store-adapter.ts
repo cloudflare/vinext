@@ -13,7 +13,7 @@ export type ResponseStoreAdapterOptions = {
   /** Existing or desired R2 bucket name for response bodies. */
   r2BucketName?: string;
   /** Set false to bind an existing compatible service without deploying it. */
-  deployService?: boolean;
+  shouldDeployService?: boolean;
 };
 
 /**
@@ -34,25 +34,28 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
       throw new TypeError(`responseStoreAdapter({ ${name} }) must be a non-empty string.`);
     }
   }
-  if (options.deployService !== undefined && typeof options.deployService !== "boolean") {
-    throw new TypeError("responseStoreAdapter({ deployService }) must be a boolean.");
+  if (
+    options.shouldDeployService !== undefined &&
+    typeof options.shouldDeployService !== "boolean"
+  ) {
+    throw new TypeError("responseStoreAdapter({ shouldDeployService }) must be a boolean.");
   }
   if (
     mode === "self-contained" &&
     (options.serviceName !== undefined ||
       options.r2BucketName !== undefined ||
-      options.deployService !== undefined)
+      options.shouldDeployService !== undefined)
   ) {
     throw new TypeError("Response Store service options cannot be used in self-contained mode.");
   }
-  if (options.deployService === false && !options.serviceName) {
+  if (options.shouldDeployService === false && !options.serviceName) {
     throw new TypeError(
-      "responseStoreAdapter({ deployService: false }) requires an existing serviceName.",
+      "responseStoreAdapter({ shouldDeployService: false }) requires an existing serviceName.",
     );
   }
-  if (options.deployService === false && options.r2BucketName) {
+  if (options.shouldDeployService === false && options.r2BucketName) {
     throw new TypeError(
-      "r2BucketName configures a deployed service and cannot be used when deployService is false.",
+      "r2BucketName configures a deployed service and cannot be used when shouldDeployService is false.",
     );
   }
   const workerEntry = fileURLToPath(
@@ -89,7 +92,7 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
                 ...output,
                 serviceName: options.serviceName,
                 r2BucketName: options.r2BucketName,
-                deployService: options.deployService,
+                shouldDeployService: options.shouldDeployService,
               });
         },
         type: "multi-stage" as const,

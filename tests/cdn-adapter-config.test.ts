@@ -219,7 +219,7 @@ describe("Cloudflare CDN adapter generated config", () => {
 
     await responseStoreAdapter({
       serviceName: "managed-response-store",
-      deployService: false,
+      shouldDeployService: false,
     }).cdn.output.finalizeBuildOutput?.({
       outDir: path.dirname(generatedPath),
       isPrimaryServerOutput: true,
@@ -238,22 +238,22 @@ describe("Cloudflare CDN adapter generated config", () => {
   it("rejects invalid Response Store resource options", () => {
     expect(() => responseStoreAdapter({ serviceName: "" })).toThrow("non-empty string");
     expect(() => responseStoreAdapter({ r2BucketName: "" })).toThrow("non-empty string");
-    expect(() => responseStoreAdapter({ deployService: "false" as never })).toThrow(
+    expect(() => responseStoreAdapter({ shouldDeployService: "false" as never })).toThrow(
       "must be a boolean",
     );
     expect(() =>
       responseStoreAdapter({ mode: "self-contained", serviceName: "response-store" }),
     ).toThrow("cannot be used in self-contained mode");
-    expect(() => responseStoreAdapter({ deployService: false })).toThrow(
+    expect(() => responseStoreAdapter({ shouldDeployService: false })).toThrow(
       "requires an existing serviceName",
     );
     expect(() =>
       responseStoreAdapter({
         serviceName: "response-store",
         r2BucketName: "response-store-bodies",
-        deployService: false,
+        shouldDeployService: false,
       }),
-    ).toThrow("cannot be used when deployService is false");
+    ).toThrow("cannot be used when shouldDeployService is false");
   });
 
   it("keeps the provisioned R2 bucket name within Cloudflare's limit", async () => {

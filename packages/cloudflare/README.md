@@ -91,19 +91,19 @@ vinext({
 
 The service name also identifies the service-owned Durable Object namespace.
 Keeping it stable reuses its metadata. To bind a compatible Response Store
-Worker managed outside the vinext deployment, set `deployService: false`:
+Worker managed outside the vinext deployment, set `shouldDeployService: false`:
 
 ```ts
 vinext({
   cache: responseStoreAdapter({
     serviceName: "shared-response-store",
-    deployService: false,
+    shouldDeployService: false,
   }),
 });
 ```
 
 When omitted, names are derived from the application Worker. Setting
-`deployService` to `false` emits only the application service binding; the
+`shouldDeployService` to `false` emits only the application service binding; the
 external Worker and its R2 and Durable Object resources remain independently
 managed.
 
