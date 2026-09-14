@@ -294,14 +294,15 @@ export function generateWranglerConfig(
   }
 
   const code = `${JSON.stringify(config, null, 2)}\n`;
-  return options.cdnCache === "response-store"
-    ? configureResponseStoreWrangler(
-        code,
-        config,
-        options.responseStoreMode ?? "service-binding",
-        info.root,
-      )
-    : code;
+  if (options.cdnCache !== "response-store") return code;
+
+  const configured = configureResponseStoreWrangler(
+    code,
+    config,
+    options.responseStoreMode ?? "service-binding",
+    info.root,
+  );
+  return `${JSON.stringify(JSON.parse(configured), null, 2)}\n`;
 }
 
 function stripJsonComments(code: string): string {

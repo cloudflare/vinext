@@ -4,6 +4,7 @@ import {
   generateAppRouterViteConfig,
   generatePagesRouterViteConfig,
   generateResponseStoreWranglerConfig,
+  generateWranglerConfig,
   getWranglerImagesBinding,
   getWranglerVersionMetadataBinding,
   updateViteConfigForCloudflare,
@@ -19,6 +20,33 @@ function expectValidConfig(output: string): void {
   });
   expect(parsed.errors.filter((diagnostic) => diagnostic.severity === "Error")).toEqual([]);
 }
+
+describe("generateWranglerConfig", () => {
+  it.each(["service-binding", "self-contained"] as const)(
+    "pretty-prints the generated %s Response Store config",
+    (responseStoreMode) => {
+      const output = generateWranglerConfig(
+        {
+          root: "/tmp/my-app",
+          projectName: "my-app",
+          isAppRouter: true,
+          hasISR: true,
+          hasMDX: false,
+          nativeModulesToStub: [],
+        },
+        {
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "cloudflare-images",
+          responseStoreMode,
+        },
+        "2026-09-14",
+      );
+
+      expect(output).toBe(`${JSON.stringify(JSON.parse(output), null, 2)}\n`);
+    },
+  );
+});
 
 describe("updateViteConfigForCloudflare", () => {
   it("does not configure caching by default", () => {
