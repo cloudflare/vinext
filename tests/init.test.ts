@@ -620,6 +620,7 @@ describe("init — basic functionality", () => {
       {
         name: "shared-response-store",
         main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
+        compatibility_date: "2026-09-14",
         cache: { enabled: true },
         exports: { ResponseStoreBinding: { cache: { enabled: true } } },
         r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "shared-cache-bodies" }],
@@ -649,6 +650,59 @@ describe("init — basic functionality", () => {
       service: "shared-response-store",
       entrypoint: "ResponseStoreService",
     });
+  });
+
+  it("rejects a Response Store config without ctx.exports before mutating the project", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.response-store.jsonc",
+      JSON.stringify({
+        name: "shared-response-store",
+        main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
+        compatibility_date: "2025-01-01",
+        cache: { enabled: true },
+        exports: { ResponseStoreBinding: { cache: { enabled: true } } },
+        r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "shared-cache-bodies" }],
+        durable_objects: {
+          bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
+        },
+        migrations: [{ tag: "v1", new_sqlite_classes: ["CacheMetadata"] }],
+      }),
+    );
+    const before = snapshotProject(tmpDir);
+
+    await expect(
+      runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+          responseStoreMode: "service-binding",
+        },
+      }),
+    ).rejects.toThrow("must enable ctx.exports");
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("rejects malformed standalone Response Store config before mutating the project", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "wrangler.response-store.jsonc", `{ "name": "broken",\n`);
+    const before = snapshotProject(tmpDir);
+
+    await expect(
+      runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+          responseStoreMode: "service-binding",
+        },
+      }),
+    ).rejects.toThrow("Could not parse wrangler.response-store.jsonc");
+    expect(snapshotProject(tmpDir)).toBe(before);
   });
 
   it("does not configure prerender unless opted in", async () => {

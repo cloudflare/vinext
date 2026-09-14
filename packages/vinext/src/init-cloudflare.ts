@@ -66,6 +66,14 @@ export function validateCloudflarePlatformSetup(
     .map((fileName) => path.join(context.root, fileName))
     .find((candidate) => fs.existsSync(candidate));
   const wranglerCode = wranglerPath ? fs.readFileSync(wranglerPath, "utf-8") : undefined;
+  if (
+    !wranglerCode &&
+    cloudflare.cdnCache === "response-store" &&
+    (cloudflare.responseStoreMode ?? "service-binding") === "service-binding" &&
+    fs.existsSync(path.join(context.root, RESPONSE_STORE_WRANGLER_CONFIG))
+  ) {
+    readResponseStoreServiceName(context.root, {});
+  }
   const updatedWranglerCode = wranglerCode
     ? updateWranglerConfigForCloudflare(wranglerCode, cloudflare, { root: context.root })
     : undefined;
@@ -531,6 +539,25 @@ function readResponseStoreServiceName(root: string, appConfig: Record<string, un
         `${RESPONSE_STORE_WRANGLER_CONFIG} is missing required Response Store bindings.`,
       );
     }
+    const compatibilityFlags = responseStoreConfig.compatibility_flags;
+    if (
+      compatibilityFlags !== undefined &&
+      (!Array.isArray(compatibilityFlags) ||
+        compatibilityFlags.some((flag) => typeof flag !== "string"))
+    ) {
+      throw new Error(`${RESPONSE_STORE_WRANGLER_CONFIG} has invalid compatibility flags.`);
+    }
+    const flags = (compatibilityFlags ?? []) as string[];
+    if (
+      flags.includes("disable_ctx_exports") ||
+      ((typeof responseStoreConfig.compatibility_date !== "string" ||
+        responseStoreConfig.compatibility_date < CTX_EXPORTS_DEFAULT_DATE) &&
+        !flags.includes("enable_ctx_exports"))
+    ) {
+      throw new Error(
+        `${RESPONSE_STORE_WRANGLER_CONFIG} must enable ctx.exports with a compatibility date on or after ${CTX_EXPORTS_DEFAULT_DATE}, or the enable_ctx_exports compatibility flag.`,
+      );
+    }
     return responseStoreConfig.name;
   }
 
@@ -628,6 +655,41 @@ function configureResponseStoreWrangler(
   }
 
   if (mode === "service-binding") {
+    const responseStoreExport = workerExports.ResponseStoreBinding;
+    const hasSelfContainedResponseStore =
+      isUnknownRecord(responseStoreExport) &&
+      responseStoreExport.type === "worker" &&
+      isUnknownRecord(responseStoreExport.cache) &&
+      responseStoreExport.cache.enabled === true;
+    if (responseStoreExport !== undefined && !hasSelfContainedResponseStore) {
+      throw new Error(
+        "The existing ResponseStoreBinding export conflicts with Workers Response Store.",
+      );
+    }
+    const hasCacheBodies =
+      Array.isArray(config.r2_buckets) &&
+      config.r2_buckets.some(
+        (bucket) => isUnknownRecord(bucket) && bucket.binding === CACHE_BODIES_BINDING,
+      );
+    const durableBindings = isUnknownRecord(config.durable_objects)
+      ? config.durable_objects.bindings
+      : undefined;
+    const hasCacheMetadata =
+      Array.isArray(durableBindings) &&
+      durableBindings.some(
+        (binding) => isUnknownRecord(binding) && binding.name === CACHE_METADATA_BINDING,
+      );
+    if (!hasSelfContainedResponseStore && hasCacheBodies) {
+      throw new Error(
+        `${CACHE_BODIES_BINDING} is already used by an application-owned R2 binding.`,
+      );
+    }
+    if (!hasSelfContainedResponseStore && hasCacheMetadata) {
+      throw new Error(
+        `${CACHE_METADATA_BINDING} is already used by an application-owned Durable Object binding.`,
+      );
+    }
+
     const serviceName = readResponseStoreServiceName(root, config);
     code = setTopLevelJsonProperty(code, "services", [
       ...existingServices.filter(
@@ -998,6 +1060,7 @@ function vinextExpression(
   imagesBinding = "IMAGES",
   prerender = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
+  responseStoreBinding = "responseStoreAdapter",
 ): string {
   const responseStore = options.cdnCache === "response-store";
   const cacheEntries: string[] = [];
@@ -1014,7 +1077,7 @@ function vinextExpression(
   const optionEntries: string[] = [];
   if (responseStore) {
     optionEntries.push(
-      `cache: responseStoreAdapter(${options.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`,
+      `cache: ${responseStoreBinding}(${options.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`,
     );
   } else if (cacheEntries.length > 0) {
     optionEntries.push(`cache: { ${cacheEntries.join(", ")} }`);
@@ -2086,6 +2149,7 @@ export function updateViteConfigForCloudflare(
   }
   const cacheAdditions: Array<{ name: "data" | "cdn"; expression: string }> = [];
   let responseStoreExpression: string | undefined;
+  let responseStoreBinding = "responseStoreAdapter";
   if (configureCaches && cacheOptions.cdnCache === "response-store") {
     const source = "@vinext/cloudflare/cache/response-store-adapter";
     const imported = "responseStoreAdapter";
@@ -2117,6 +2181,7 @@ export function updateViteConfigForCloudflare(
       const binding = commonJs
         ? ensureNamedRequire(program, output, source, imported, local)
         : ensureNamedImport(program, output, source, imported, local);
+      responseStoreBinding = binding;
       responseStoreExpression = `${binding}(${cacheOptions.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`;
       if (alreadyConfigured && cache) {
         const call = cache.value as ESTree.CallExpression & AstNode;
@@ -2258,6 +2323,7 @@ export function updateViteConfigForCloudflare(
                 options.imagesBinding,
                 options.prerender,
                 options.versionMetadataBinding,
+                responseStoreBinding,
               )
             : `${vinextBinding}()`,
         binding: vinextBinding,

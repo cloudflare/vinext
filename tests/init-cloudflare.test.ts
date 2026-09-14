@@ -161,6 +161,36 @@ export default { plugins: [vinext()] };
     ).toThrow("RESPONSE_STORE service binding uses a different entrypoint");
   });
 
+  it.each([
+    [
+      "R2",
+      { r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "application-bucket" }] },
+      "CACHE_BODIES is already used by an application-owned R2 binding",
+    ],
+    [
+      "Durable Object",
+      {
+        durable_objects: {
+          bindings: [{ name: "CACHE_METADATA", class_name: "ApplicationMetadata" }],
+        },
+      },
+      "CACHE_METADATA is already used by an application-owned Durable Object binding",
+    ],
+  ])("does not remove an application-owned %s binding", (_kind, bindings, message) => {
+    expect(() =>
+      updateWranglerConfigForCloudflare(
+        JSON.stringify({ name: "my-app", compatibility_date: "2026-09-14", ...bindings }),
+        {
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+          responseStoreMode: "service-binding",
+        },
+        { root: "/tmp/vinext-missing-response-store-config" },
+      ),
+    ).toThrow(message);
+  });
+
   it("updates the mode of an existing Workers Response Store", () => {
     const input = `import vinext from "vinext";
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
@@ -542,6 +572,28 @@ export default {
     expect(output).toContain("vinext2()");
     expect(output).toContain("cloudflare2()");
     expect(output).toContain('path2.resolve(__dirname, "empty-stub.js")');
+  });
+
+  it("uses the collision-free Response Store adapter binding", () => {
+    const output = updateViteConfigForCloudflare(
+      "vite.config.ts",
+      "const responseStoreAdapter = customFactory; export default { plugins: [] };\n",
+      {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+        },
+      },
+    );
+
+    expectValidConfig(output);
+    expect(output).toContain(
+      'import { responseStoreAdapter as responseStoreAdapter2 } from "@vinext/cloudflare/cache/response-store-adapter"',
+    );
+    expect(output).toContain("cache: responseStoreAdapter2()");
   });
 
   it.each([

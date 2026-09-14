@@ -678,6 +678,7 @@ jobs:
         create-next-app-cloudflare,
         create-vinext-app-cloudflare,
         e2e,
+        response-store-e2e,
       ]
     runs-on: ubuntu-latest
     steps:
