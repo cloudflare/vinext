@@ -16,11 +16,11 @@ if (typesTarballs.length !== 1) {
 }
 
 const responseStoreTarballs = tarballs.filter((entry) =>
-  /^vinext-workers-response-store-.*\.tgz$/.test(entry),
+  /^cloudflare-workers-response-store-.*\.tgz$/.test(entry),
 );
 if (responseStoreTarballs.length > 1) {
   throw new Error(
-    `Expected at most one @vinext/workers-response-store tarball in ${tarballDirectory}, found ${responseStoreTarballs.length}`,
+    `Expected at most one @cloudflare/workers-response-store tarball in ${tarballDirectory}, found ${responseStoreTarballs.length}`,
   );
 }
 
@@ -31,7 +31,7 @@ packageJson.pnpm.overrides ??= {};
 const typesTarballUrl = pathToFileURL(path.resolve(tarballDirectory, typesTarballs[0])).href;
 const localOverrides = { "@vinext/types": typesTarballUrl };
 if (responseStoreTarballs[0]) {
-  localOverrides["@vinext/workers-response-store"] = pathToFileURL(
+  localOverrides["@cloudflare/workers-response-store"] = pathToFileURL(
     path.resolve(tarballDirectory, responseStoreTarballs[0]),
   ).href;
 }

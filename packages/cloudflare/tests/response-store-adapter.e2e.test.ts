@@ -6,7 +6,7 @@ import { Miniflare, type MiniflareOptions } from "miniflare";
 import { afterEach, beforeEach, describe, test } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "../../..");
-const appOutput = path.join(root, "examples/workers-cache/dist/server");
+const appOutput = path.join(root, "examples/response-store-demo/dist/server");
 const cacheOutput = path.join(root, "packages/workers-response-store/dist/service-cache");
 
 let miniflare: Miniflare;

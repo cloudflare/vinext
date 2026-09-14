@@ -3,4 +3,4 @@ export {
   default,
   ResponseStoreBinding,
   ResponseStoreService,
-} from "@vinext/workers-response-store/service";
+} from "@cloudflare/workers-response-store/service";

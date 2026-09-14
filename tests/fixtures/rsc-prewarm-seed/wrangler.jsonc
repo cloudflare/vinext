@@ -5,7 +5,7 @@
   "compatibility_date": "2026-04-08",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
-    "directory": "../../../examples/workers-cache/dist/client",
+    "directory": "../../../examples/response-store-demo/dist/client",
     "not_found_handling": "none",
     "binding": "ASSETS",
   },

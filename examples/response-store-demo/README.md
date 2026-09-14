@@ -1,4 +1,4 @@
-# Workers Response Store adapter POC
+# Workers Response Store adapter demo
 
 This example uses one `responseStoreAdapter()` from `@vinext/cloudflare` in place of both `cdnAdapter()` and `kvDataAdapter()`. The application Worker keeps Workers Cache disabled. Its `RESPONSE_STORE` service binding calls a separately deployed cache Worker that owns Workers Cache, R2 response bodies, SQLite Durable Object metadata and tag invalidation timestamps, and SWR regeneration.
 
@@ -34,21 +34,5 @@ vinext({ cache: responseStoreAdapter() });
 Canonical App Router RSC requests use the same response-stage transport:
 
 ```sh
-curl 'https://workers-cache.vinext.workers.dev/cached/intro.rsc?_rsc=' -H 'Accept: text/x-component' -H 'RSC: 1'
-```
-
-## Build and deploy
-
-Deploy the shared cache Worker only when its implementation or bindings change:
-
-```sh
-pnpm --filter @vinext/workers-response-store run build
-pnpm --filter workers-cache exec wrangler deploy --config ../../packages/workers-response-store/example/service-binding/wrangler.cache.jsonc
-```
-
-Then build and deploy the application once:
-
-```sh
-pnpm --filter workers-cache run build
-pnpm --filter workers-cache exec wrangler deploy
+curl 'https://response-store-demo.vinext.workers.dev/cached/intro.rsc?_rsc=' -H 'Accept: text/x-component' -H 'RSC: 1'
 ```

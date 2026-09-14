@@ -1,5 +1,5 @@
 {
-  "name": "workers-cache",
+  "name": "response-store-demo",
   "type": "module",
   "private": true,
   "scripts": {

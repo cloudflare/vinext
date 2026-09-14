@@ -6,11 +6,17 @@ const base =
   process.env.LIVE_RESPONSE_STORE_SERVICE_BASE ??
   "https://vinext-workers-response-store-service-client-poc.vinext.workers.dev";
 
-function key(label) {
+type PutOptions = {
+  cacheControl?: string;
+  delayMs?: number;
+  regeneratedBody?: string;
+};
+
+function key(label: string): string {
   return `service-${label}-${Date.now()}-${randomUUID().slice(0, 8)}`;
 }
 
-async function put(path, body, options = {}) {
+async function put(path: string, body: BodyInit, options: PutOptions = {}) {
   const response = await fetch(`${base}/admin/put${path}`, {
     method: "PUT",
     headers: {
@@ -27,11 +33,11 @@ async function put(path, body, options = {}) {
   assert.equal(response.status, 200, await response.text());
 }
 
-function read(path) {
+function read(path: string) {
   return fetch(`${base}/cache${path}`);
 }
 
-async function eventually(check, timeoutMs = 30_000) {
+async function eventually(check: () => Promise<any>, timeoutMs = 30_000): Promise<any> {
   const deadline = Date.now() + timeoutMs;
   let last = "condition not checked";
 
@@ -64,7 +70,10 @@ test("the service-bound callback has a stable Workers Cache identity", async () 
 
 test("manual refresh loops back into the user Worker without a reverse binding", async () => {
   const path = `/${key("refresh")}`;
-  await put(path, "seed", { regeneratedBody: "refreshed" });
+  await put(path, "seed", {
+    cacheControl: "public, max-age=2",
+    regeneratedBody: "refreshed",
+  });
   await (await read(path)).arrayBuffer();
 
   const refresh = await fetch(`${base}/admin/refresh`, {
@@ -78,7 +87,13 @@ test("manual refresh loops back into the user Worker without a reverse binding",
     edgePurgeAccepted: true,
   });
 
-  const response = await read(path);
+  const response = await eventually(async () => {
+    const candidate = await read(path);
+    const body = await candidate.clone().text();
+    return body === "refreshed"
+      ? { ok: true, value: candidate }
+      : { ok: false, message: `refresh still returned ${JSON.stringify(body)}` };
+  });
   assert.equal(await response.text(), "refreshed");
   assert.equal(response.headers.get("X-Revalidation-Reason"), "manual");
   assert.notEqual(response.headers.get("X-Revalidation-Version"), null);

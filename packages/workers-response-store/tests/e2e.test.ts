@@ -7,11 +7,35 @@ import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, test } from "vitest";
 
+import type {
+  ResponseStorePurgeOptions,
+  ResponseStoreRefreshOptions,
+  SerializableValue,
+} from "../src/index.js";
+
 const workerScript = fileURLToPath(new URL("../dist/worker/worker.js", import.meta.url));
 const metadataName = "poc-v2";
 
-let mf;
-let worker;
+type PutOptions = {
+  age?: number;
+  bodyDelayMs?: number;
+  bodyFailure?: boolean;
+  cacheControl?: string;
+  cdnCacheControl?: string;
+  cloudflareCacheControl?: string;
+  coalesce?: boolean;
+  contentType?: string;
+  host?: string;
+  noRevalidator?: boolean;
+  purgeExisting?: boolean;
+  revalidator?: Record<string, SerializableValue>;
+  status?: number;
+  tags?: string[];
+  teeBody?: boolean;
+};
+
+let mf: Miniflare;
+let worker: { fetch(...args: any[]): Promise<any> };
 
 beforeEach(async () => {
   mf = new Miniflare({
@@ -47,7 +71,7 @@ afterEach(async () => {
   await mf.dispose();
 });
 
-async function put(path, body, options = {}) {
+async function put(path: string, body: BodyInit | null, options: PutOptions = {}) {
   const headers = new Headers({
     "Content-Type": options.contentType ?? "text/plain; charset=utf-8",
     "X-Response-Cache-Control":
@@ -78,7 +102,7 @@ async function put(path, body, options = {}) {
     body,
   });
   const text = await response.text();
-  let parsed;
+  let parsed: any;
   try {
     parsed = JSON.parse(text);
   } catch {
@@ -87,13 +111,13 @@ async function put(path, body, options = {}) {
   return { response, json: parsed };
 }
 
-async function read(path, options = {}) {
+async function read(path: string, options: { headers?: HeadersInit; host?: string } = {}) {
   const headers = new Headers(options.headers);
   if (options.host) headers.set("X-Cache-Host", options.host);
   return worker.fetch(`https://user.test/cache${path}`, { headers });
 }
 
-async function refreshSelectors(options) {
+async function refreshSelectors(options: ResponseStoreRefreshOptions) {
   const response = await worker.fetch("https://user.test/admin/refresh", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -102,7 +126,7 @@ async function refreshSelectors(options) {
   return { response, json: await response.json() };
 }
 
-async function purge(options) {
+async function purge(options: ResponseStorePurgeOptions) {
   const response = await worker.fetch("https://user.test/admin/purge", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -111,32 +135,32 @@ async function purge(options) {
   return { response, json: await response.json() };
 }
 
-async function tagExpiration(tags) {
+async function tagExpiration(tags: string[]): Promise<number> {
   const response = await worker.fetch("https://user.test/admin/tag-expiration", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ tags }),
   });
-  const body = await response.json();
+  const body = (await response.json()) as { expiration: number };
   assert.equal(response.status, 200, JSON.stringify(body));
   return body.expiration;
 }
 
 async function metadataStub() {
   const namespace = await mf.getDurableObjectNamespace("CACHE_METADATA", "user-worker");
-  return namespace.getByName(metadataName);
+  return namespace.getByName(metadataName) as any;
 }
 
-async function metadata() {
+async function metadata(): Promise<any[]> {
   return (await metadataStub()).inspect();
 }
 
-async function metadataRowCount(table) {
+async function metadataRowCount(table: string): Promise<number> {
   const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
     name: metadataName,
   });
   const [row] = await storage.exec(`SELECT COUNT(*) AS count FROM ${table}`);
-  return row.count;
+  return row.count as number;
 }
 
 async function r2Objects() {
@@ -151,7 +175,7 @@ test("put and fetch use pathname plus query, excluding host", async () => {
   const sameKey = await read("/identity?a=1", { host: "two.example" });
   assert.equal(sameKey.status, 200);
   assert.equal(await sameKey.text(), "first");
-  assert.equal(sameKey.headers.get("X-Workers-Response-Store"), "R2-FRESH");
+  assert.equal(sameKey.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
 
   const differentQuery = await read("/identity?a=2", { host: "one.example" });
   assert.equal(differentQuery.status, 404);
@@ -164,6 +188,8 @@ test("put and fetch use pathname plus query, excluding host", async () => {
   assert.equal(objects.objects.length, 1);
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
   const object = await bucket.head(objects.objects[0].key);
+  assert.ok(object);
+  assert.ok(object.customMetadata);
   assert.deepEqual(Object.keys(object.customMetadata).sort(), [
     "createdAt",
     "initialAge",
@@ -207,13 +233,14 @@ test("a cold refill preserves downstream headers, representation age, and remain
   );
   assert.equal(first.headers.get("Age"), "1");
   const ageBasis = first.headers.get("X-Workers-Response-Store-Age-Basis");
+  assert.ok(ageBasis);
   assert.match(ageBasis, /^\d{13}:1$/);
   await first.arrayBuffer();
 
   await new Promise((resolve) => setTimeout(resolve, 1100));
   const later = await read("/freshness");
   assert.match(
-    later.headers.get("Cloudflare-CDN-Cache-Control"),
+    later.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
     /^max-age=[01], stale-while-revalidate=4$/,
   );
   assert.ok(Number(later.headers.get("Age")) >= 2);
@@ -239,7 +266,7 @@ test("cache policy disables SWR when Workers Cache forbids stale serving", async
     noRevalidator: true,
   });
   const immediatelyStale = await read("/policy/no-cache");
-  assert.equal(immediatelyStale.headers.get("X-Workers-Response-Store"), "R2-STALE");
+  assert.equal(immediatelyStale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
   assert.equal(
     immediatelyStale.headers.get("Cloudflare-CDN-Cache-Control"),
     "max-age=0, stale-while-revalidate=30",
@@ -250,9 +277,9 @@ test("cache policy disables SWR when Workers Cache forbids stale serving", async
     noRevalidator: true,
   });
   const invalidMaxAge = await read("/policy/invalid-max-age");
-  assert.equal(invalidMaxAge.headers.get("X-Workers-Response-Store"), "R2-STALE");
+  assert.equal(invalidMaxAge.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
   assert.match(
-    invalidMaxAge.headers.get("Cloudflare-CDN-Cache-Control"),
+    invalidMaxAge.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
     /^max-age=0, stale-while-revalidate=(29|30)$/,
   );
 
@@ -261,7 +288,7 @@ test("cache policy disables SWR when Workers Cache forbids stale serving", async
   });
   const invalidSwr = await read("/policy/invalid-swr");
   assert.match(
-    invalidSwr.headers.get("Cloudflare-CDN-Cache-Control"),
+    invalidSwr.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
     /^max-age=(59|60), stale-while-revalidate=0$/,
   );
 });
@@ -283,9 +310,9 @@ test("stale R2 content returns immediately and deduplicates background regenerat
     await Promise.all(responses.map((response) => response.text())),
     Array.from({ length: 8 }, () => "stale-body"),
   );
-  assert.equal(responses[0].headers.get("X-Workers-Response-Store"), "R2-STALE");
+  assert.equal(responses[0].headers.get("X-Workers-Response-Store"), "BLOB-STALE");
   assert.match(
-    responses[0].headers.get("Cloudflare-CDN-Cache-Control"),
+    responses[0].headers.get("Cloudflare-CDN-Cache-Control") ?? "",
     /^max-age=0, stale-while-revalidate=(29|30)$/,
   );
 
@@ -294,7 +321,9 @@ test("stale R2 content returns immediately and deduplicates background regenerat
   assert.equal(await fresh.text(), "swr-regenerated");
   assert.equal(fresh.headers.get("X-Revalidation-Reason"), "swr");
   assert.equal(fresh.headers.get("X-Workers-Response-Store-Revision"), "2");
-  const stats = await (await worker.fetch("https://user.test/admin/stats")).json();
+  const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
+    regenerationCount: number;
+  };
   assert.equal(stats.regenerationCount, 1);
   assert.equal(await metadataRowCount("revalidation_claims"), 0);
   assert.equal(await metadataRowCount("pending_objects"), 0);
@@ -317,7 +346,9 @@ test("a failed background regeneration releases its claim for a later retry", as
   await new Promise((resolve) => setTimeout(resolve, 100));
   const fresh = await read("/stale-retry");
   assert.equal(await fresh.text(), "retry-succeeded");
-  const stats = await (await worker.fetch("https://user.test/admin/stats")).json();
+  const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
+    regenerationCount: number;
+  };
   assert.equal(stats.regenerationCount, 2);
 });
 
@@ -405,7 +436,7 @@ test("refresh selects entries by tag and path prefix", async () => {
 test("refresh accepts more tag selectors than one SQLite parameter batch", async () => {
   const tags = Array.from({ length: 101 }, (_, index) => `selector-${index}`);
   await put("/refresh-many-tags", "seed", {
-    tags: [tags.at(-1)],
+    tags: [tags.at(-1)!],
     revalidator: { body: "refreshed", cacheControl: "public, max-age=60" },
   });
 
@@ -488,6 +519,7 @@ test("the internal purge tag is first and large tag sets remain selectable", asy
   await put("/cache-tag-order", "tagged", { tags: ["user-tag"] });
   const taggedResponse = await read("/cache-tag-order");
   const cacheTag = taggedResponse.headers.get("Cache-Tag");
+  assert.ok(cacheTag);
   assert.ok(cacheTag.startsWith("runtime-cache-"));
   await taggedResponse.arrayBuffer();
 
@@ -497,7 +529,7 @@ test("the internal purge tag is first and large tag sets remain selectable", asy
   );
   await put("/many-cache-tags", "tagged", { tags });
 
-  await purge({ tags: [tags.at(-1)] });
+  await purge({ tags: [tags.at(-1)!] });
   assert.equal((await read("/many-cache-tags")).status, 404);
   assert.equal(await (await read("/cache-tag-order")).text(), "tagged");
 });
@@ -873,7 +905,7 @@ test("the previous metadata schema is upgraded in place", async () => {
       "CACHE_METADATA",
       "migration-worker",
     );
-    await legacyNamespace.getByName(metadataName).seed();
+    await (legacyNamespace.getByName(metadataName) as any).seed();
     await legacy.dispose();
     legacy = undefined;
 
@@ -907,7 +939,7 @@ test("the previous metadata schema is upgraded in place", async () => {
       "CACHE_METADATA",
       "migration-worker",
     );
-    const stub = upgradedNamespace.getByName(metadataName);
+    const stub = upgradedNamespace.getByName(metadataName) as any;
     const reservation = await stub.reserveWrite(
       "migrated-write",
       "/migrated-write",

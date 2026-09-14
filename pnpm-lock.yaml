@@ -150,6 +150,9 @@ catalogs:
     ms:
       specifier: 3.0.0-canary.1
       version: 3.0.0-canary.1
+    miniflare:
+      specifier: 5.20260730.0-alpha
+      version: 5.20260730.0-alpha
     msw:
       specifier: ^2.14.6
       version: 2.14.6
@@ -1019,7 +1022,7 @@ importers:
         specifier: 'catalog:'
         version: 0.2.6(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.10(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
 
-  examples/workers-cache:
+  examples/response-store-demo:
     dependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
@@ -1061,7 +1064,7 @@ importers:
 
   packages/cloudflare:
     dependencies:
-      '@vinext/workers-response-store':
+      '@cloudflare/workers-response-store':
         specifier: workspace:*
         version: link:../workers-response-store
     devDependencies:
@@ -1069,7 +1072,7 @@ importers:
         specifier: 'catalog:'
         version: 25.9.2
       miniflare:
-        specifier: 5.20260730.0-alpha
+        specifier: 'catalog:'
         version: 5.20260730.0-alpha
       vinext:
         specifier: workspace:*
@@ -1171,7 +1174,7 @@ importers:
         specifier: 'catalog:'
         version: 25.9.2
       miniflare:
-        specifier: 5.20260730.0-alpha
+        specifier: 'catalog:'
         version: 5.20260730.0-alpha
       typescript:
         specifier: 'catalog:'
@@ -1185,6 +1188,9 @@ importers:
       vitest:
         specifier: 4.1.10
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/browser-preview@4.1.10)(@vitest/coverage-istanbul@4.1.10(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.118.0(@cloudflare/workers-types@4.20260313.1)
 
   tests/fixtures/app-action-ownership: {}
 

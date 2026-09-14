@@ -4,7 +4,7 @@ import { Buffer } from "node:buffer";
 import type {
   ResponseStorePurgeOptions,
   WorkersResponseStore,
-} from "@vinext/workers-response-store";
+} from "@cloudflare/workers-response-store";
 import type {
   CacheControlMetadata,
   CacheHandler,

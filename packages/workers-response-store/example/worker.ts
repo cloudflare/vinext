@@ -5,7 +5,7 @@ import {
   type SerializableValue,
   type WorkersResponseStoreEnv,
   type WorkersResponseStore,
-} from "@vinext/workers-response-store";
+} from "@cloudflare/workers-response-store";
 
 type FixtureRevalidatorOptions = {
   body?: string;
@@ -174,7 +174,7 @@ export default {
     try {
       if (request.method === "GET" && url.pathname === "/") {
         return json({
-          name: "workers-response-store-poc",
+          name: "workers-response-store",
           status: "ready",
           backing: ["Workers Cache", "R2", "SQLite Durable Object"],
           api: ["fetch", "put", "refresh", "purge"],

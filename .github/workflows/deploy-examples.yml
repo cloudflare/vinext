@@ -12,10 +12,117 @@ concurrency:
 permissions: {}
 
 jobs:
+  response_store:
+    # Skip entirely for fork PRs — they don't have access to deploy secrets.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Deploy and test Workers Response Store
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    outputs:
+      service_name: ${{ steps.names.outputs.service_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      - name: Build Workers Response Store
+        run: vp run @cloudflare/workers-response-store#build
+
+      - name: Select per-run Worker names
+        id: names
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            prefix="pr-${{ github.event.pull_request.number }}"
+            service_name="${prefix}-vinext-workers-response-store-service"
+          else
+            prefix="main"
+            service_name="vinext-workers-response-store-service-poc"
+          fi
+          {
+            echo "service_name=$service_name"
+            echo "client_name=${prefix}-workers-response-store-e2e"
+            echo "inline_name=${prefix}-workers-response-store-inline-e2e"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Deploy cache Worker
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: packages/workers-response-store
+          command: deploy --config example/service-binding/wrangler.cache.jsonc --name ${{ steps.names.outputs.service_name }}
+
+      - name: Configure live client Worker
+        working-directory: packages/workers-response-store
+        env:
+          CLIENT_NAME: ${{ steps.names.outputs.client_name }}
+          SERVICE_NAME: ${{ steps.names.outputs.service_name }}
+        run: |
+          # Node reads the values from process.env.
+          # shellcheck disable=SC2016
+          node -e '
+            const fs = require("node:fs");
+            const source = fs.readFileSync("example/service-binding/wrangler.user.jsonc", "utf8");
+            const config = source
+              .replace(/"name": "[^"]+"/, `"name": "${process.env.CLIENT_NAME}"`)
+              .replace(/"main": "user-worker\.ts"/, `"main": "example/service-binding/user-worker.ts"`)
+              .replace(/"service": "[^"]+"/, `"service": "${process.env.SERVICE_NAME}"`);
+            fs.writeFileSync(".wrangler-e2e.user.jsonc", config);
+          '
+
+      - name: Deploy live client Worker
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: packages/workers-response-store
+          command: deploy --config .wrangler-e2e.user.jsonc
+
+      - name: Deploy live self-contained Worker
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: packages/workers-response-store
+          command: deploy --config wrangler.jsonc --name ${{ steps.names.outputs.inline_name }}
+
+      - name: Run live Response Store E2E
+        working-directory: packages/workers-response-store
+        env:
+          LIVE_CACHE_BASE: https://${{ steps.names.outputs.inline_name }}.vinext.workers.dev
+          LIVE_RESPONSE_STORE_SERVICE_BASE: https://${{ steps.names.outputs.client_name }}.vinext.workers.dev
+        run: |
+          for url in "$LIVE_CACHE_BASE" "$LIVE_RESPONSE_STORE_SERVICE_BASE"; do
+            ready=false
+            consecutive=0
+            for _ in {1..60}; do
+              if node -e 'fetch(process.argv[1]).then(async response => process.exit(response.ok && (await response.text()).includes("\"status\":\"ready\"") ? 0 : 1)).catch(() => process.exit(1))' "$url"; then
+                consecutive=$((consecutive + 1))
+                if [[ "$consecutive" -eq 5 ]]; then
+                  ready=true
+                  break
+                fi
+              else
+                consecutive=0
+              fi
+              sleep 2
+            done
+            if [[ "$ready" != true ]]; then
+              echo "$url did not become ready"
+              exit 1
+            fi
+          done
+          vp run test:live
+
   deploy:
     # Skip entirely for fork PRs — they don't have access to deploy secrets.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     name: Deploy ${{ matrix.example.name }}
+    needs: response_store
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,9 +159,9 @@ jobs:
             project: hackernews
             working_directory: examples/hackernews
             wrangler_config: dist/server/wrangler.json
-          - name: workers-cache
-            project: workers-cache
-            working_directory: examples/workers-cache
+          - name: response-store-demo
+            project: response-store-demo
+            working_directory: examples/response-store-demo
             wrangler_config: dist/server/wrangler.json
             warm_cdn_cache: true
           - name: static-export
@@ -81,6 +188,24 @@ jobs:
         if: matrix.example.static_export != true
         run: vp build
         working-directory: ${{ matrix.example.working_directory }}
+
+      - name: Bind Response Store demo to this run's cache Worker
+        if: matrix.example.name == 'response-store-demo'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          RESPONSE_STORE_SERVICE: ${{ needs.response_store.outputs.service_name }}
+        run: |
+          # Node reads the value from process.env.
+          # shellcheck disable=SC2016
+          node -e '
+            const fs = require("node:fs");
+            const path = "dist/server/wrangler.json";
+            const config = JSON.parse(fs.readFileSync(path, "utf8"));
+            const binding = config.services?.find(({ binding }) => binding === "RESPONSE_STORE");
+            if (!binding) throw new Error("Missing RESPONSE_STORE service binding");
+            binding.service = process.env.RESPONSE_STORE_SERVICE;
+            fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+          '
 
       - name: Build static export
         if: matrix.example.static_export == true
@@ -230,7 +355,7 @@ jobs:
               { name: 'nextra-docs-template', project: 'nextra-docs-template' },
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
-              { name: 'workers-cache', project: 'workers-cache' },
+              { name: 'response-store-demo', project: 'response-store-demo' },
               { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];

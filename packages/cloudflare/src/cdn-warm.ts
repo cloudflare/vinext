@@ -1283,6 +1283,8 @@ async function warmOnePath(
       return { path: target.label, ok: false, error: phaseDeadlineError(), retryable: false };
     }
     const attemptTimeoutMs = Math.min(options.timeoutMs, remainingMs);
+    const phaseLimitedAttempt =
+      options.deadlineAt !== undefined && remainingMs <= options.timeoutMs;
     try {
       const response = options.requireCacheHit
         ? await fetchHeadersWithTimeout(
@@ -1400,10 +1402,10 @@ async function warmOnePath(
       lastSkippedReason = null;
       lastRetryable = true;
       if (error instanceof DOMException && error.name === "AbortError") {
-        lastError =
-          options.deadlineAt !== undefined && Date.now() >= options.deadlineAt
-            ? phaseDeadlineError()
-            : `timed out after ${attemptTimeoutMs}ms`;
+        if (phaseLimitedAttempt) {
+          return { path: target.label, ok: false, error: phaseDeadlineError(), retryable: false };
+        }
+        lastError = `timed out after ${attemptTimeoutMs}ms`;
       } else {
         lastError = error instanceof Error ? error.message : String(error);
       }

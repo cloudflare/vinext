@@ -3,7 +3,7 @@ import { expect, test, vi } from "vitest";
 import type {
   ResponseStoreMutationResult,
   WorkersResponseStore,
-} from "@vinext/workers-response-store";
+} from "@cloudflare/workers-response-store";
 import {
   captureResponseStoreRscData,
   deferResponseStoreAdmission,

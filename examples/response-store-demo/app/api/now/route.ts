@@ -1,5 +1,5 @@
 // Cached App Route handler. The response-store adapter persists vinext's
-// binary APP_ROUTE cache value for one second so the POC can exercise SWR.
+// Binary APP_ROUTE cache value for one second so the demo can exercise SWR.
 export const revalidate = 1;
 
 export async function GET(): Promise<Response> {

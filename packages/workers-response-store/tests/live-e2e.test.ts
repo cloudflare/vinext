@@ -4,12 +4,22 @@ import { test } from "vitest";
 
 const base =
   process.env.LIVE_CACHE_BASE ?? "https://vinext-programmatic-cache-poc-user.vinext.workers.dev";
+const PURGE_OBSERVATION_POLICY = "public, max-age=2";
 
-function key(label) {
+type PutOptions = {
+  cacheControl?: string;
+  contentType?: string;
+  host?: string;
+  purgeExisting?: boolean;
+  revalidator?: Record<string, unknown>;
+  tags?: string[];
+};
+
+function key(label: string): string {
   return `live-${label}-${Date.now()}-${randomUUID().slice(0, 8)}`;
 }
 
-async function put(path, body, options = {}) {
+async function put(path: string, body: BodyInit, options: PutOptions = {}): Promise<any> {
   const headers = new Headers({
     "Content-Type": options.contentType ?? "text/plain; charset=utf-8",
     "X-Response-Cache-Control": options.cacheControl ?? "public, max-age=120",
@@ -28,12 +38,12 @@ async function put(path, body, options = {}) {
   return response.json();
 }
 
-function read(path, options = {}) {
+function read(path: string, options: { host?: string } = {}): Promise<Response> {
   const headers = options.host ? { "X-Cache-Host": options.host } : undefined;
   return fetch(`${base}/cache${path}`, { headers });
 }
 
-async function refreshSelectors(options) {
+async function refreshSelectors(options: { pathPrefixes?: string[]; tags?: string[] }) {
   return fetch(`${base}/admin/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -41,7 +51,11 @@ async function refreshSelectors(options) {
   });
 }
 
-async function purge(options) {
+async function purge(options: {
+  pathPrefixes?: string[];
+  purgeEverything?: boolean;
+  tags?: string[];
+}): Promise<any> {
   const response = await fetch(`${base}/admin/purge`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -52,9 +66,9 @@ async function purge(options) {
   return response.json();
 }
 
-async function eventually(check, timeoutMs = 30_000) {
+async function eventually(check: () => Promise<any>, timeoutMs = 30_000): Promise<any> {
   const deadline = Date.now() + timeoutMs;
-  let last;
+  let last: any;
   while (Date.now() < deadline) {
     last = await check();
     if (last.ok) return last.value;
@@ -84,7 +98,7 @@ test("live Workers Cache MISS then HIT bypasses the binding Worker and excludes 
 
 test("live put updates R2 before purging an existing edge response", async () => {
   const id = key("refill");
-  await put(`/${id}`, "old-body");
+  await put(`/${id}`, "old-body", { cacheControl: PURGE_OBSERVATION_POLICY });
   assert.equal(await (await read(`/${id}`)).text(), "old-body");
 
   const mutation = await put(`/${id}`, "new-body", { purgeExisting: true });
@@ -103,6 +117,7 @@ test("live manual refresh calls the named user entrypoint and exposes only the c
   const id = key("refresh");
   const tag = `manual-${id}`;
   await put(`/${id}`, "old-body", {
+    cacheControl: PURGE_OBSERVATION_POLICY,
     tags: [tag],
     revalidator: { bodyPrefix: "live-refreshed", cacheControl: "public, max-age=120" },
   });
@@ -132,6 +147,7 @@ test("live refresh selects and regenerates entries by tag and path prefix", asyn
   const id = key("refresh-selectors");
   const tag = `refresh-${id}`;
   await put(`/${id}/tagged`, "tagged-seed", {
+    cacheControl: PURGE_OBSERVATION_POLICY,
     tags: [tag],
     revalidator: {
       body: "tag-refreshed",
@@ -140,6 +156,7 @@ test("live refresh selects and regenerates entries by tag and path prefix", asyn
     },
   });
   await put(`/${id}/prefix/a`, "prefix-seed", {
+    cacheControl: PURGE_OBSERVATION_POLICY,
     revalidator: { body: "prefix-refreshed", cacheControl: "public, max-age=120" },
   });
   await Promise.all([
@@ -199,11 +216,13 @@ test("live purge applies tag, path-prefix, and purge-everything selectors", asyn
   // Purge acceptance and propagation are separate. Keep these edge entries
   // short-lived so the test can always observe the durable tombstone even if
   // global purge propagation is delayed during repeated canary runs.
-  const purgePolicy = "public, max-age=2";
-  await put(`/${id}/tagged`, "tagged", { tags: [tag], cacheControl: purgePolicy });
+  await put(`/${id}/tagged`, "tagged", {
+    tags: [tag],
+    cacheControl: PURGE_OBSERVATION_POLICY,
+  });
   await put(`/${id}/prefix/a`, "prefix", {
     tags: ["unrelated"],
-    cacheControl: purgePolicy,
+    cacheControl: PURGE_OBSERVATION_POLICY,
   });
   await put(`/${id}/keep`, "keep", { cacheControl: "public, max-age=120" });
   await Promise.all([

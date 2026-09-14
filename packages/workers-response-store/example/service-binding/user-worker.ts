@@ -5,7 +5,7 @@ import {
   type SerializableValue,
   type WorkersResponseStoreClientEnv,
   type WorkersResponseStore,
-} from "@vinext/workers-response-store";
+} from "@cloudflare/workers-response-store";
 
 type RevalidatorOptions = {
   body?: string;

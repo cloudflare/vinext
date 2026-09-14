@@ -415,7 +415,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       edgeCacheControl(entry.freshUntil, entry.swrUntil, now),
     );
     headers.set("Cache-Tag", cacheTagHeader(entry));
-    headers.set("X-Workers-Response-Store", now < entry.freshUntil ? "R2-FRESH" : "R2-STALE");
+    headers.set("X-Workers-Response-Store", now < entry.freshUntil ? "BLOB-FRESH" : "BLOB-STALE");
     headers.set("X-Workers-Response-Store-Revision", String(entry.activeRevision));
     headers.set("X-Workers-Response-Store-Binding-Invocation", crypto.randomUUID());
 

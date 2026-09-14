@@ -1,5 +1,5 @@
 {
-  "name": "@vinext/workers-response-store",
+  "name": "@cloudflare/workers-response-store",
   "version": "0.0.0",
   "description": "An R2-backed programmatic response store for Cloudflare Workers.",
   "homepage": "https://vinext.dev/",
@@ -25,26 +25,26 @@
   },
   "scripts": {
     "build": "vp pack",
-    "build:examples": "npm run build && npx --yes wrangler@4.126.0 deploy --dry-run --outdir dist/worker && npx --yes wrangler@4.126.0 deploy --dry-run --config example/service-binding/wrangler.cache.jsonc --outdir ../../dist/service-cache && npx --yes wrangler@4.126.0 deploy --dry-run --config example/service-binding/wrangler.user.jsonc --outdir ../../dist/service-user",
-    "build:worker": "npm run build && npx --yes wrangler@4.126.0 deploy --dry-run --outdir dist/worker",
-    "build:service-workers": "npm run build && npx --yes wrangler@4.126.0 deploy --dry-run --config example/service-binding/wrangler.cache.jsonc --outdir ../../dist/service-cache && npx --yes wrangler@4.126.0 deploy --dry-run --config example/service-binding/wrangler.user.jsonc --outdir ../../dist/service-user",
+    "build:examples": "npm run build && wrangler deploy --dry-run --outdir dist/worker && wrangler deploy --dry-run --config example/service-binding/wrangler.cache.jsonc --outdir ../../dist/service-cache && wrangler deploy --dry-run --config example/service-binding/wrangler.user.jsonc --outdir ../../dist/service-user",
+    "build:worker": "npm run build && wrangler deploy --dry-run --outdir dist/worker",
+    "build:service-workers": "npm run build && wrangler deploy --dry-run --config example/service-binding/wrangler.cache.jsonc --outdir ../../dist/service-cache && wrangler deploy --dry-run --config example/service-binding/wrangler.user.jsonc --outdir ../../dist/service-user",
     "check": "vp check src example tests README.md package.json tsconfig.json vite.config.ts vitest.config.ts wrangler.jsonc && tsc --noEmit",
-    "deploy": "npm run build && npx --yes wrangler@4.126.0 deploy",
-    "deploy:service": "npm run build && npx --yes wrangler@4.126.0 deploy --config example/service-binding/wrangler.cache.jsonc && npx --yes wrangler@4.126.0 deploy --config example/service-binding/wrangler.user.jsonc",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:service": "npm run build && wrangler deploy --config example/service-binding/wrangler.cache.jsonc && wrangler deploy --config example/service-binding/wrangler.user.jsonc",
     "lint": "vp lint .",
     "prepack": "vp run build",
-    "test": "npm run check && npm run build:examples && vitest run tests/e2e.test.mjs tests/service-binding-e2e.test.mjs",
-    "test:live": "vitest run tests/live-e2e.test.mjs",
-    "test:service-live": "vitest run tests/service-binding-live-e2e.test.mjs"
+    "test": "npm run check && npm run build:examples && vitest run tests/e2e.test.ts tests/service-binding-e2e.test.ts",
+    "test:live": "vitest run tests/live-e2e.test.ts tests/service-binding-live-e2e.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260904.1",
     "@types/node": "catalog:",
-    "miniflare": "5.20260730.0-alpha",
+    "miniflare": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   },
   "engines": {
     "node": ">=22"

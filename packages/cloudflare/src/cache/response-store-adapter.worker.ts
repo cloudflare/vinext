@@ -4,7 +4,7 @@ import {
   type ResponseStoreClientEntrypoint,
   type ResponseStoreRevalidatorEntrypoint,
   type WorkersResponseStoreClientEnv,
-} from "@vinext/workers-response-store";
+} from "@cloudflare/workers-response-store";
 import type {
   VinextCacheFunctionInvocation,
   VinextRequestStageTransport,

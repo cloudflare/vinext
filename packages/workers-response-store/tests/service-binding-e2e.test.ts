@@ -11,8 +11,14 @@ const userWorkerScript = fileURLToPath(
   new URL("../dist/service-user/user-worker.js", import.meta.url),
 );
 
-let mf;
-let worker;
+type PutOptions = {
+  cacheControl?: string;
+  delayMs?: number;
+  regeneratedBody?: string;
+};
+
+let mf: Miniflare;
+let worker: { fetch(...args: any[]): Promise<any> };
 
 beforeEach(async () => {
   mf = new Miniflare({
@@ -60,7 +66,7 @@ afterEach(async () => {
   await mf.dispose();
 });
 
-async function put(path, body, options = {}) {
+async function put(path: string, body: BodyInit, options: PutOptions = {}) {
   const response = await worker.fetch(`https://user.test/admin/put${path}`, {
     method: "PUT",
     headers: {
@@ -77,7 +83,7 @@ async function put(path, body, options = {}) {
   assert.equal(response.status, 200, await response.text());
 }
 
-function read(path) {
+function read(path: string) {
   return worker.fetch(`https://user.test/cache${path}`);
 }
 
@@ -89,7 +95,15 @@ test("a service-bound cache Worker stores and returns responses", async () => {
 
   const response = await read("/stored");
   assert.equal(await response.text(), "stored-body");
-  assert.equal(response.headers.get("X-Workers-Response-Store"), "R2-FRESH");
+  assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+});
+
+test("the cache Worker default entrypoint does not expose service details", async () => {
+  const cacheWorker = await mf.getWorker("cache-worker");
+  const response = await cacheWorker.fetch("https://cache.test/");
+
+  assert.equal(response.status, 404);
+  assert.equal(await response.text(), "Use the ResponseStoreService service binding entrypoint.");
 });
 
 test("a service-bound cache Worker resolves authoritative tag expirations", async () => {

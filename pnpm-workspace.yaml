@@ -67,6 +67,7 @@ catalog:
   am-i-vibing: ^0.5.0
   msw: ^2.14.6
   ms: 3.0.0-canary.1
+  miniflare: 5.20260730.0-alpha
   next: 16.2.7
   next-intl: ^4.9.2
   next-themes: ^0.4.6

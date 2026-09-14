@@ -9,10 +9,8 @@ export { CacheMetadata, ResponseStoreBinding, ResponseStoreService };
 
 export default {
   fetch(): Response {
-    return Response.json({
-      name: "workers-response-store-service",
-      status: "ready",
-      backing: ["Workers Cache", "R2", "SQLite Durable Object"],
+    return new Response("Use the ResponseStoreService service binding entrypoint.", {
+      status: 404,
     });
   },
 } satisfies ExportedHandler<WorkersResponseStoreEnv>;

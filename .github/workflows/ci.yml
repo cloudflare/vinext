@@ -34,6 +34,17 @@ jobs:
       - name: Verify integration shard manifest
         run: node scripts/ci-integration-shard.mjs --check --shard-total=10
 
+  response-store-e2e:
+    name: Workers Response Store E2E
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - run: vp run @cloudflare/workers-response-store#test
+      - run: vp run @vinext/cloudflare#test
+
   test-unit:
     name: Vitest (unit ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
     runs-on: ubuntu-latest
@@ -269,7 +280,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CNA_CLOUDFLARE_WORKER: create-next-app-cloudflare
-      # Public test namespace already used by examples/workers-cache.
+      # Public test namespace already used by examples/response-store-demo.
       CNA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -320,7 +331,7 @@ jobs:
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: |
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
-          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/cloudflare-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Run Cloudflare init
         working-directory: ${{ runner.temp }}/cna-cloudflare
@@ -359,7 +370,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CVA_CLOUDFLARE_WORKER: create-vinext-app-cloudflare
-      # Public test namespace already used by examples/workers-cache.
+      # Public test namespace already used by examples/response-store-demo.
       CVA_CLOUDFLARE_KV_NAMESPACE_ID: b38f84f642aa4bd4ba17a37bb516f0b5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -423,7 +434,7 @@ jobs:
         working-directory: ${{ runner.temp }}/cva-cloudflare
         run: |
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
-          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/vinext-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/cloudflare-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
 
       - name: Configure generated Cloudflare deployment
         working-directory: ${{ runner.temp }}/cva-cloudflare
