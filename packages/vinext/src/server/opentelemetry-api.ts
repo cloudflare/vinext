@@ -113,17 +113,6 @@ type OpenTelemetryRegistry = {
   version?: string;
 };
 
-function isOpenTelemetryApi(value: unknown): value is OpenTelemetryApi {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<OpenTelemetryApi>;
-  return Boolean(
-    typeof candidate.context?.active === "function" &&
-    typeof candidate.propagation?.extract === "function" &&
-    typeof candidate.trace?.getSpan === "function" &&
-    typeof candidate.trace.getTracerProvider === "function",
-  );
-}
-
 function apiFromRegistry(value: unknown): OpenTelemetryApi | undefined {
   if (!value || typeof value !== "object") return undefined;
   const registry = value as OpenTelemetryRegistry;
@@ -156,15 +145,5 @@ function apiFromRegistry(value: unknown): OpenTelemetryApi | undefined {
 /** Resolve the API registered by the application, if any. */
 export function getOpenTelemetryApi(): OpenTelemetryApi | undefined {
   const registered = (globalThis as Record<symbol, unknown>)[OPEN_TELEMETRY_API_SYMBOL];
-  const registeredApi = apiFromRegistry(registered);
-  if (registeredApi) return registeredApi;
-
-  try {
-    const require = (globalThis as { require?: (id: string) => unknown }).require;
-    if (typeof require !== "function") return undefined;
-    const required = require("@opentelemetry/api");
-    return isOpenTelemetryApi(required) ? required : undefined;
-  } catch {
-    return undefined;
-  }
+  return apiFromRegistry(registered);
 }
