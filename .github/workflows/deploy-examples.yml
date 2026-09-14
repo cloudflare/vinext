@@ -225,7 +225,12 @@ jobs:
 
       - name: Build example
         if: matrix.example.static_export != true
-        run: vp build
+        run: |
+          if [[ -f cloudflare.config.ts ]]; then
+            vp run build
+          else
+            vp build
+          fi
         working-directory: ${{ matrix.example.working_directory }}
 
       - name: Build static export
