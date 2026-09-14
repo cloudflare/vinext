@@ -23,6 +23,7 @@ const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   imageOptimization: "cloudflare-images",
 };
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+const REQUIRED_CLOUDFLARE_COMPATIBILITY_FLAGS = ["nodejs_compat", "new_module_registry"];
 
 export type CloudflarePlatformSetupContext = {
   root: string;
@@ -212,7 +213,7 @@ export function generateWranglerConfig(
     $schema: "node_modules/wrangler/config-schema.json",
     name: info.projectName,
     compatibility_date: today,
-    compatibility_flags: ["nodejs_compat"],
+    compatibility_flags: REQUIRED_CLOUDFLARE_COMPATIBILITY_FLAGS,
     main: workerEntry,
     assets: {
       directory: "dist/client",
@@ -414,6 +415,27 @@ export function updateWranglerConfigForCloudflare(
     );
   }
   let output = code;
+  const configuredCompatibilityFlags = config.compatibility_flags;
+  const compatibilityFlags = Array.isArray(configuredCompatibilityFlags)
+    ? configuredCompatibilityFlags.filter((flag): flag is string => typeof flag === "string")
+    : [];
+  const mergedCompatibilityFlags = [
+    ...compatibilityFlags,
+    ...REQUIRED_CLOUDFLARE_COMPATIBILITY_FLAGS.filter((flag) => !compatibilityFlags.includes(flag)),
+  ];
+  const compatibilityFlagsProperty = findTopLevelJsonProperty(output, "compatibility_flags");
+  if (!compatibilityFlagsProperty) {
+    output = appendTopLevelJsonProperty(
+      output,
+      `  "compatibility_flags": ${JSON.stringify(mergedCompatibilityFlags)}`,
+    );
+  } else if (
+    !Array.isArray(configuredCompatibilityFlags) ||
+    configuredCompatibilityFlags.some((flag) => typeof flag !== "string") ||
+    REQUIRED_CLOUDFLARE_COMPATIBILITY_FLAGS.some((flag) => !compatibilityFlags.includes(flag))
+  ) {
+    output = `${output.slice(0, compatibilityFlagsProperty.valueStart)}${JSON.stringify(mergedCompatibilityFlags)}${output.slice(compatibilityFlagsProperty.valueEnd)}`;
+  }
   // Without `main` and `assets` the Cloudflare plugin builds the project as
   // assets-only: the build emits no `dist/server/wrangler.json`, and the deploy
   // reports success while every route 404s. Keep these in sync with

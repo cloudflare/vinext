@@ -46,7 +46,7 @@ describe("Cloudflare CDN adapter build output", () => {
       JSON.stringify({
         name: "cdn-adapter-build",
         compatibility_date: "2026-09-02",
-        compatibility_flags: ["nodejs_compat"],
+        compatibility_flags: ["nodejs_compat", "new_module_registry"],
         main: "vinext/server/fetch-handler",
         assets: { not_found_handling: "none", binding: "ASSETS" },
       }),
@@ -178,7 +178,7 @@ describe("Cloudflare CDN adapter build output", () => {
         JSON.stringify({
           name: "cdn-adapter-pages",
           compatibility_date: "2026-09-02",
-          compatibility_flags: ["nodejs_compat"],
+          compatibility_flags: ["nodejs_compat", "new_module_registry"],
           main: "vinext/server/fetch-handler",
           assets: { not_found_handling: "none", binding: "ASSETS" },
         }),

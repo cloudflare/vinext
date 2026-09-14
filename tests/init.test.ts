@@ -749,7 +749,25 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(wrangler).toContain('"binding": "OTHER"');
     expect(wrangler).toContain('"binding": "VINEXT_KV_CACHE"');
     expect(wrangler).toContain('"images": { "binding": "IMAGES" }');
+    expect(wrangler).toContain('"compatibility_flags": ["nodejs_compat","new_module_registry"]');
     expect(readFile(tmpDir, "worker/index.ts")).toBe("export default { fetch() {} };\n");
+  });
+
+  it("preserves custom Wrangler compatibility flags while adding vinext requirements", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{ "compatibility_flags": ["custom_flag", "nodejs_compat"] }\n`,
+    );
+
+    await runInit(tmpDir);
+
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).compatibility_flags).toEqual([
+      "custom_flag",
+      "nodejs_compat",
+      "new_module_registry",
+    ]);
   });
 
   it("additively fills missing prerender config on rerun", async () => {

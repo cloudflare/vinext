@@ -321,7 +321,7 @@ Define your bindings in `wrangler.jsonc` as usual:
 {
   "name": "my-app",
   "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "new_module_registry"],
   "d1_databases": [{ "binding": "DB", "database_name": "my-db", "database_id": "..." }],
   "kv_namespaces": [{ "binding": "CACHE", "id": "..." }],
 }

@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "response-store-demo",
   "compatibility_date": "2026-04-08",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "new_module_registry"],
   "main": "vinext/server/fetch-handler",
   "preview_urls": true,
   "account_id": "d48e2eb599d9aa075d5e682deaecc518",

@@ -271,10 +271,7 @@ import {
   validatePageExports,
 } from "./plugins/strip-server-exports.js";
 import { removeConsoleCalls } from "./plugins/remove-console.js";
-import {
-  createImportMetaUrlPlugin,
-  type EmittedModuleFileNameResolver,
-} from "./plugins/import-meta-url.js";
+import { createImportMetaUrlPlugin } from "./plugins/import-meta-url.js";
 import { createWorkerImageImportsPlugin } from "./plugins/worker-image-imports.js";
 import { createRequireContextPlugin } from "./plugins/require-context.js";
 import {
@@ -304,12 +301,7 @@ import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
 import { isServerEnvironment } from "./plugins/environment.js";
-import {
-  isPathInside,
-  isPathInsideOrEqual,
-  stripJsExtension,
-  stripViteModuleQuery,
-} from "./utils/path.js";
+import { isPathInside, stripJsExtension, stripViteModuleQuery } from "./utils/path.js";
 import {
   assertSupportedViteVersion,
   getDepOptimizeNodeEnvOptions,
@@ -1472,27 +1464,6 @@ type NitroSetupContext = {
   };
 };
 
-function createServerEnvironmentFileNameResolver(
-  config: ResolvedConfig,
-  outputRoot: string,
-): EmittedModuleFileNameResolver {
-  const resolvedOutputRoot = path.resolve(config.root, outputRoot);
-  const outputPrefixes = new Map(
-    ["rsc", "ssr"].map((name) => {
-      const outDir = config.environments[name]?.build.outDir;
-      if (!outDir) return [name, ""] as const;
-      const resolvedOutDir = path.resolve(config.root, outDir);
-      if (!isPathInsideOrEqual(resolvedOutputRoot, resolvedOutDir)) return [name, ""] as const;
-      const relative = path.relative(resolvedOutputRoot, resolvedOutDir);
-      return [name, relative === "." ? "" : relative] as const;
-    }),
-  );
-  return (environmentName, fileName) => {
-    const prefix = environmentName ? outputPrefixes.get(environmentName) : undefined;
-    return prefix ? path.join(prefix, fileName) : fileName;
-  };
-}
-
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
     assertSupportedViteVersion();
@@ -1535,19 +1506,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let pagesOptimizeEntries: string[] = [];
-  const importMetaUrlCapability = createImportMetaUrlPlugin({
-    getRoot: () => root,
-    createEmittedModuleFileNameResolver(config) {
-      if (!hasCloudflarePlugin || !hasAppDir) return undefined;
-      // The Cloudflare Worker module registry mounts every emitted server
-      // environment below the RSC output directory. Node and Nitro expose a
-      // readable native import.meta.filename and retain environment-relative
-      // chunk names as the compatibility fallback.
-      const outputRoot =
-        config.environments.rsc?.build.outDir ?? options.rscOutDir ?? "dist/server";
-      return createServerEnvironmentFileNameResolver(config, outputRoot);
-    },
-  });
+  const importMetaUrlCapability = createImportMetaUrlPlugin({ getRoot: () => root });
   const pagesClientAssetsOutputDirs = new Set<string>();
   const resolvePagesClientAssetsOutputDir = (environmentName: string, outputDir: string): string =>
     !selectedMultiStageOutput && !hasAppDir && environmentName === "ssr"

@@ -1169,6 +1169,7 @@ describe("generateWranglerConfig", () => {
 
     expect(parsed.name).toBe(info.projectName);
     expect(parsed.compatibility_flags).toContain("nodejs_compat");
+    expect(parsed.compatibility_flags).toContain("new_module_registry");
     expect(parsed.main).toBe("vinext/server/fetch-handler");
     expect(parsed.assets).toEqual({
       directory: "dist/client",

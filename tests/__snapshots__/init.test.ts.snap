@@ -59,7 +59,8 @@ export default defineConfig({
   "name": "test-project",
   "compatibility_date": "2026-06-23",
   "compatibility_flags": [
-    "nodejs_compat"
+    "nodejs_compat",
+    "new_module_registry"
   ],
   "main": "vinext/server/fetch-handler",
   "assets": {
@@ -181,7 +182,8 @@ export default defineConfig({
   "name": "test-project",
   "compatibility_date": "2026-06-23",
   "compatibility_flags": [
-    "nodejs_compat"
+    "nodejs_compat",
+    "new_module_registry"
   ],
   "main": "vinext/server/fetch-handler",
   "assets": {
