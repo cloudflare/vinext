@@ -213,7 +213,7 @@ describe("Cloudflare init choices", () => {
     });
   });
 
-  it("prompts interactively for a missing CDN cache choice before honoring other flags", async () => {
+  it("derives the Data cache CDN choice from an explicit KV data cache", async () => {
     const prompts: string[] = [];
     const output = new PassThrough();
     await expect(
@@ -223,7 +223,7 @@ describe("Cloudflare init choices", () => {
         output,
         question: async (prompt) => {
           prompts.push(prompt);
-          return "3";
+          return "";
         },
       }),
     ).resolves.toEqual({
@@ -231,10 +231,8 @@ describe("Cloudflare init choices", () => {
       cdnCache: "data-cache",
       imageOptimization: "none",
     });
-    expect(prompts).toEqual([
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
-    ]);
-    expect(output.read()?.toString()).toBe("\n");
+    expect(prompts).toEqual([]);
+    expect(output.read()).toBeNull();
   });
 
   it("does not add a section break when repeating an invalid choice", async () => {

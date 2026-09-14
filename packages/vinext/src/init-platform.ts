@@ -420,8 +420,9 @@ export async function resolveCloudflareInitOptions(
       }
     };
 
-    let selectedCdnCache = explicitCdnCache;
-    if (!selectedCdnCache && explicitDataCache !== "kv") {
+    let selectedCdnCache =
+      explicitCdnCache ?? (explicitDataCache === "kv" ? "data-cache" : undefined);
+    if (!selectedCdnCache) {
       while (true) {
         const answer = (await question("  Enable caching? [y/N]: ")).trim().toLowerCase();
         if (answer === "" || answer === "n" || answer === "no") {
