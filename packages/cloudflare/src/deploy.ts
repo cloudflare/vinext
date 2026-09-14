@@ -767,18 +767,20 @@ export async function deployResponseStoreService(
   execute: typeof spawn = spawn,
 ): Promise<boolean> {
   const appConfigs = appConfig ? [path.resolve(root, appConfig)] : [];
-  try {
-    const redirectPath = path.resolve(root, ".wrangler/deploy/config.json");
-    const redirect = JSON.parse(fs.readFileSync(redirectPath, "utf8")) as {
-      configPath?: unknown;
-    };
-    if (typeof redirect.configPath === "string") {
-      appConfigs.push(path.resolve(path.dirname(redirectPath), redirect.configPath));
+  if (!appConfig) {
+    try {
+      const redirectPath = path.resolve(root, ".wrangler/deploy/config.json");
+      const redirect = JSON.parse(fs.readFileSync(redirectPath, "utf8")) as {
+        configPath?: unknown;
+      };
+      if (typeof redirect.configPath === "string") {
+        appConfigs.push(path.resolve(path.dirname(redirectPath), redirect.configPath));
+      }
+    } catch {
+      // The conventional output remains valid without a redirect.
     }
-  } catch {
-    // The explicit config and conventional output remain valid without a redirect.
+    appConfigs.push(path.resolve(root, "dist/server/wrangler.json"));
   }
-  appConfigs.push(path.resolve(root, "dist/server/wrangler.json"));
   const serviceConfig = appConfigs
     .map((config) => path.resolve(path.dirname(config), RESPONSE_STORE_SERVICE_CONFIG))
     .find((config) => fs.existsSync(config));

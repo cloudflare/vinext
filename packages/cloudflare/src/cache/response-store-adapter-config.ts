@@ -280,7 +280,12 @@ export async function finalizeSelfContainedResponseStoreBuildOutput({
           },
         ],
     exports: {
-      ...appConfig.exports,
+      ...Object.fromEntries(
+        Object.entries(appConfig.exports ?? {}).map(([name, value]) => [
+          name,
+          value.cache === undefined ? { ...value, cache: { enabled: false } } : value,
+        ]),
+      ),
       default: { ...appConfig.exports?.default, type: "worker", cache: { enabled: false } },
       ResponseStoreBinding: {
         ...appConfig.exports?.ResponseStoreBinding,

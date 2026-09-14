@@ -256,6 +256,17 @@ describe("deployResponseStoreService", () => {
     ).resolves.toBe(false);
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it("does not discover a stale service beside conventional output for an explicit config", async () => {
+    writeFile(tmpDir, "custom/wrangler.json", "{}");
+    writeFile(tmpDir, "dist/server/vinext-response-store/wrangler.json", "{}");
+    const execute = vi.fn() as unknown as typeof spawn;
+
+    await expect(deployResponseStoreService(tmpDir, "custom/wrangler.json", execute)).resolves.toBe(
+      false,
+    );
+    expect(execute).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildWranglerKVBulkPutArgs", () => {

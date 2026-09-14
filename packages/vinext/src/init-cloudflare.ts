@@ -1614,6 +1614,23 @@ export function updateViteConfigForCloudflare(
   const existingImageOptimizer = getVinextImageOptimizer(existingVinextCall);
   const needsPrerender = Boolean(options.prerender && !hasVinextPrerender(existingVinextCall));
   const configureCaches = options.cache !== undefined;
+  const existingCache = getVinextCacheOption(existingVinextCall);
+  if (configureCaches && existingCache) {
+    const cacheObject =
+      existingCache.value.type === "ObjectExpression"
+        ? (existingCache.value as AstObject)
+        : undefined;
+    if (
+      (!cacheObject && cacheOptions.cdnCache !== "response-store") ||
+      (cacheObject &&
+        (cacheOptions.cdnCache === "none" || cacheOptions.cdnCache === "data-cache") &&
+        findProperty(cacheObject, "cdn"))
+    ) {
+      throw new Error(
+        "The existing vinext() cache configuration does not match the selected cache options. Remove it before rerunning vinext init.",
+      );
+    }
+  }
   const cacheAdditions: Array<{ name: "data" | "cdn"; expression: string }> = [];
   let responseStoreExpression: string | undefined;
   if (configureCaches && cacheOptions.cdnCache === "response-store") {
@@ -1670,11 +1687,19 @@ export function updateViteConfigForCloudflare(
             );
           }
           if (existingMode) {
-            output.overwrite(
-              (existingMode.value as AstNode).start,
-              (existingMode.value as AstNode).end,
-              JSON.stringify(mode),
-            );
+            if (existingMode.shorthand) {
+              output.overwrite(
+                (existingMode as AstNode).start,
+                (existingMode as AstNode).end,
+                `mode: ${JSON.stringify(mode)}`,
+              );
+            } else {
+              output.overwrite(
+                (existingMode.value as AstNode).start,
+                (existingMode.value as AstNode).end,
+                JSON.stringify(mode),
+              );
+            }
           } else if (mode === "self-contained") {
             insertObjectProperty(output, optionsObject, '      mode: "self-contained",', code);
           }

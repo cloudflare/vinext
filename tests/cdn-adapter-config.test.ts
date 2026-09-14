@@ -195,6 +195,29 @@ describe("Cloudflare CDN adapter generated config", () => {
     );
   });
 
+  it("keeps existing entrypoints uncached in self-contained mode", async () => {
+    const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
+      name: "test-worker",
+      main: "index.js",
+      compatibility_date: "2026-09-14",
+      exports: {
+        UncachedEntrypoint: { type: "worker" },
+        CachedEntrypoint: { type: "worker", cache: { enabled: true } },
+      },
+    });
+
+    await responseStoreAdapter({ mode: "self-contained" }).cdn.output.finalizeBuildOutput({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+    });
+
+    expect(JSON.parse(fs.readFileSync(generatedPath, "utf8")).exports).toMatchObject({
+      UncachedEntrypoint: { cache: { enabled: false } },
+      CachedEntrypoint: { cache: { enabled: true } },
+      ResponseStoreBinding: { cache: { enabled: true } },
+    });
+  });
+
   it("uses custom Response Store service and R2 bucket names", async () => {
     const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
       name: "test-worker",

@@ -105,6 +105,47 @@ export default { plugins: [vinext({ cache: responseStoreAdapter({ serviceName: "
     expect(output).toBe(input);
   });
 
+  it("expands a shorthand Response Store mode when updating it", () => {
+    const input = `import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
+const mode = "service-binding";
+export default { plugins: [vinext({ cache: responseStoreAdapter({ mode }) }), cloudflare()] };
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "self-contained",
+      },
+    });
+
+    expectValidConfig(output);
+    expect(output).toContain('responseStoreAdapter({ mode: "self-contained" })');
+  });
+
+  it("rejects disabling an existing cache configuration without removing it", () => {
+    const input = `import vinext from "vinext";
+import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
+export default { plugins: [vinext({ cache: responseStoreAdapter() })] };
+`;
+
+    expect(() =>
+      updateViteConfigForCloudflare("vite.config.ts", input, {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+        },
+      }),
+    ).toThrow("does not match the selected cache options");
+  });
+
   it("rejects replacing an existing cache configuration with Workers Response Store", () => {
     const input = `import vinext from "vinext";
 import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
