@@ -922,7 +922,7 @@ export default function Page() {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain(
-      `<p id="runtime-path">${path.join(cacheDir, "deps_ssr/runtime.js")}</p>`,
+      `<p id="runtime-path">${path.join(canonicalRoot, ".vite-cache/deps_ssr/runtime.js")}</p>`,
     );
     expect(html).toContain(
       `<p id="project-runtime-path">${path.join(canonicalRoot, "lib/project-runtime.js")}</p>`,
@@ -969,7 +969,7 @@ export default function Page() {
     expect(esmClientModule?.code).not.toContain("__VINEXT_EMITTED_MODULE_URL_");
     expectPathAbsent(esmClientModule?.code ?? "", canonicalRoot);
     const optimizedBundle = await readJavaScriptTree(cacheDir);
-    expect(optimizedBundle).toContain("import.meta.dirname");
+    expect(optimizedBundle).toContain("fileURLToPath(import.meta.url)");
     expect(optimizedBundle).not.toMatch(
       /__VINEXT_EMITTED_MODULE_(?:(?:FILE|DIR)NAME|URL)_[a-f0-9]{32}__/,
     );
@@ -1126,7 +1126,7 @@ describe("bundled module identity on the Cloudflare development runtime", () => 
       JSON.stringify({
         name: "vinext-cjs-globals-worker-dev",
         compatibility_date: "2026-04-01",
-        compatibility_flags: ["nodejs_compat"],
+        compatibility_flags: ["nodejs_compat", "new_module_registry"],
         main: "vinext/server/fetch-handler",
         assets: { not_found_handling: "none", binding: "ASSETS" },
       }),
@@ -1224,7 +1224,7 @@ export default handler;
       JSON.stringify({
         name: "vinext-cjs-globals-worker",
         compatibility_date: "2026-04-01",
-        compatibility_flags: ["nodejs_compat"],
+        compatibility_flags: ["nodejs_compat", "new_module_registry"],
         main: "worker.ts",
         assets: { not_found_handling: "none", binding: "ASSETS" },
       }),
@@ -1385,7 +1385,7 @@ describe("bundled module identity on a Pages-only Cloudflare Workers runtime", (
       JSON.stringify({
         name: "vinext-cjs-globals-pages-worker",
         compatibility_date: "2026-04-01",
-        compatibility_flags: ["nodejs_compat"],
+        compatibility_flags: ["nodejs_compat", "new_module_registry"],
         main: "vinext/server/fetch-handler",
         assets: { not_found_handling: "none", binding: "ASSETS" },
       }),

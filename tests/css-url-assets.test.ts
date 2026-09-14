@@ -334,7 +334,7 @@ describe.each(["plain", "cloudflare"] as const)(
           `{
   "name": "vinext-css-url-assets",
   "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "new_module_registry"],
   "main": "./worker/index.ts",
   "assets": { "not_found_handling": "none", "binding": "ASSETS" }
 }\n`,

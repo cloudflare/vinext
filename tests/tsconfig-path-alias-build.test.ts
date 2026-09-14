@@ -72,7 +72,7 @@ function writeCloudflareAppFixture(root: string, name: string) {
     `{
   "name": ${JSON.stringify(name)},
   "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "new_module_registry"],
   "main": "./worker/index.ts",
   "assets": {
     "not_found_handling": "none",

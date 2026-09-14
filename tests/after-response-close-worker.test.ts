@@ -72,7 +72,7 @@ describe("closeAfterResponseWithBody on the Cloudflare Workers runtime", () => {
       JSON.stringify({
         name: "vinext-after-response-close-worker-fixture",
         compatibility_date: "2026-04-01",
-        compatibility_flags: ["nodejs_compat"],
+        compatibility_flags: ["nodejs_compat", "new_module_registry"],
         main: "vinext/server/fetch-handler",
         assets: { not_found_handling: "none", binding: "ASSETS" },
       }),

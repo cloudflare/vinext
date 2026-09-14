@@ -3,7 +3,7 @@
   "name": "vinext-rsc-prewarm-seed",
   "main": "worker.ts",
   "compatibility_date": "2026-04-08",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "new_module_registry"],
   "assets": {
     "directory": "../../../examples/response-store-demo/dist/client",
     "not_found_handling": "none",

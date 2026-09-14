@@ -35,13 +35,14 @@ function expectBundledCjsGlobal(code: string | undefined, name: "__filename" | "
   );
 }
 
-function expectBundledImportMetaUrl(code: string | undefined): void {
-  expect(code).toMatch(
-    /\(\{ get value\(\) \{ return "__VINEXT_EMITTED_MODULE_URL_[a-f0-9]{32}__"; \} \}\)\.value/,
-  );
-}
-
-function expectFinalizedImportMetaUrl(code: string | undefined, fileName = "entry.js"): void {
+function expectFinalizedCjsGlobal(
+  code: string | undefined,
+  name: "__filename" | "__dirname",
+): void {
+  const pathNamespaceBinding = code?.match(
+    /(?:^|\n)import \* as (__vinext_module_path_*) from "node:path";/,
+  )?.[1];
+  expect(pathNamespaceBinding).toBeDefined();
   const urlNamespaceBinding = code?.match(
     /(?:^|\n)import \* as (__vinext_module_url_*) from "node:url";/,
   )?.[1];
@@ -50,48 +51,15 @@ function expectFinalizedImportMetaUrl(code: string | undefined, fileName = "entr
     /(?:^|\n)const (__vinext_module_identity_*) = \(\(\) => \{/,
   )?.[1];
   expect(identityBinding).toBeDefined();
-  expect(code).toContain(
-    `const value = fileURLToPath(({ get value() { return ${identityBinding}.url; } }).value);`,
-  );
-  expect(code).toContain("const runtimeUrl = import.meta.url;");
-  expect(code).toContain("const runtimeFilename = import.meta.filename;");
-  expect(code).toContain(
-    `runtimeUrl.startsWith("file:") ? runtimeUrl : ${urlNamespaceBinding}.pathToFileURL(`,
-  );
-  expect(code).not.toContain('from "node:process"');
-  expect(code).toContain(JSON.stringify(`/${fileName}`));
-  expect(code).not.toMatch(/__VINEXT_EMITTED_MODULE_URL_[a-f0-9]{32}__/);
-}
-
-function expectFinalizedCjsGlobal(
-  code: string | undefined,
-  name: "__filename" | "__dirname",
-  fileName = "entry.js",
-): void {
-  const processNamespaceBinding = code?.match(
-    /(?:^|\n)import \* as (__vinext_module_process_*) from "node:process";/,
-  )?.[1];
-  expect(processNamespaceBinding).toBeDefined();
-  const fsNamespaceBinding = code?.match(
-    /(?:^|\n)import \* as (__vinext_module_fs_*) from "node:fs";/,
-  )?.[1];
-  expect(fsNamespaceBinding).toBeDefined();
-  const identityBinding = code?.match(
-    /(?:^|\n)const (__vinext_module_identity_*) = \(\(\) => \{/,
-  )?.[1];
-  expect(identityBinding).toBeDefined();
   const field = name === "__filename" ? "filename" : "dirname";
-  const dirname = path.posix.dirname(fileName);
   expect(code).toContain(
     `var ${name} = ({ get value() { return ${identityBinding}.${field}; } }).value;`,
   );
-  expect(code).toContain(`${processNamespaceBinding}.cwd()`);
-  expect(code).toContain(`${fsNamespaceBinding}.existsSync(filename)`);
-  if (name === "__filename") {
-    expect(code).toContain(JSON.stringify(`/${fileName}`));
-  } else if (dirname !== ".") {
-    expect(code).toContain(JSON.stringify(`/${dirname}`));
-  }
+  expect(code).toContain(`const filename = ${urlNamespaceBinding}.fileURLToPath(import.meta.url);`);
+  expect(code).toContain(`dirname: ${pathNamespaceBinding}.dirname(filename),`);
+  expect(code).not.toContain('from "node:process"');
+  expect(code).not.toContain('from "node:fs"');
+  expect(code).not.toContain("import.meta.filename");
   expect(code).not.toMatch(/__VINEXT_EMITTED_MODULE_(?:FILE|DIR)NAME_[a-f0-9]{32}__/);
 }
 
@@ -329,143 +297,29 @@ describe("vinext:import-meta-url plugin", () => {
     expect(result).toBeNull();
   });
 
-  it("marks optimized ESM dependency import.meta.url reads for emitted identity", () => {
-    const result = transformOptimizedDependency(
-      `import { fileURLToPath } from "node:url";\nconst value = fileURLToPath(import.meta.url);\nexport { value };\n`,
-      esmDependencyPath,
-    );
-
-    expectBundledImportMetaUrl(result?.code);
-    expect(result?.code).not.toContain(esmDependencyPath);
-  });
-
-  it("marks ESM dependency URL reads separated by comments", () => {
-    const result = transformOptimizedDependency(
-      [
-        'import { createRequire } from "node:module";',
-        'import { fileURLToPath } from "node:url";',
-        "const filename = fileURLToPath(import.meta /* annotated */ .url);",
-        "const require = createRequire(import.meta. /* annotated */ url);",
-        "export { filename, require };",
-      ].join("\n"),
-      esmDependencyPath,
-    );
-
-    expect(result?.code.match(/__VINEXT_EMITTED_MODULE_URL_/g)).toHaveLength(2);
-    expect(result?.code).not.toContain("import.meta /* annotated */ .url");
-    expect(result?.code).not.toContain("import.meta. /* annotated */ url");
-  });
-
-  it("marks escaped URL reads with trivia across the full ImportMeta expression", () => {
-    const source = [
-      'import { createRequire } from "node:module";',
-      'import { fileURLToPath } from "node:url";',
-      "const filename = fileURLToPath(import /* annotated */ . meta . u\\u0072l);",
-      "const require = createRequire(import . meta. \\u0075\\u0072\\u006c);",
-      "const carriageReturn = import.meta// annotated\r.url;",
-      "const lineSeparator = import.meta// annotated\u2028.url;",
-      "export { carriageReturn, filename, lineSeparator, require };",
-    ].join("\n");
-    const optimized = transformOptimizedDependency(source, esmDependencyPath);
-    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
-    const built = unwrapHook(capability.vitePlugin.transform).call(
-      { environment: { mode: "build", config: { consumer: "server" } } },
-      source,
-      esmDependencyPath,
-    );
-
-    for (const result of [optimized, built]) {
-      expect(result?.code.match(/__VINEXT_EMITTED_MODULE_URL_/g)).toHaveLength(4);
-      expect(result?.code).not.toContain("import /* annotated */ . meta");
-      expect(result?.code).not.toContain("import . meta");
-    }
-  });
-
-  it("uses source identity for unbundled ESM dependencies and emitted identity for builds", () => {
-    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
-    const transform = unwrapHook(capability.vitePlugin.transform);
+  it("leaves ESM dependency import.meta.url reads to the runtime", () => {
     const source = [
       'import { createRequire } from "node:module";',
       'import { fileURLToPath } from "node:url";',
       "export const require = createRequire(import.meta.url);",
       "export const filename = fileURLToPath(import.meta.url);",
     ].join("\n");
-
-    const devResult = transform.call(
-      { environment: { mode: "dev", config: { consumer: "server" } } },
-      source,
-      esmDependencyPath,
-    );
-    expect(devResult?.code).toContain(pathToFileURL(fs.realpathSync(esmDependencyPath)).href);
-    expect(devResult?.code).not.toContain("__VINEXT_EMITTED_MODULE_URL_");
-
-    const buildResult = transform.call(
-      { environment: { mode: "build", config: { consumer: "server" } } },
-      source,
-      esmDependencyPath,
-    );
-    expectBundledImportMetaUrl(buildResult?.code);
-
-    const clientResult = transform.call(
-      { environment: { mode: "build", config: { consumer: "client" } } },
-      source,
-      esmDependencyPath,
-    );
-    expect(clientResult).toBeNull();
-  });
-
-  it("finalizes optimized ESM dependency URLs relative to the emitted chunk", () => {
+    const optimized = transformOptimizedDependency(source, esmDependencyPath);
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
-    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
-      {},
-      `import { fileURLToPath } from "node:url";\nconst value = fileURLToPath(import.meta.url);\nexport { value };\n`,
-      esmDependencyPath,
-    );
-    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
-      {},
-      transformed?.code ?? "",
-      { fileName: "deps/esm-identity.js" },
-      { format: "es" },
-    );
-
-    expectFinalizedImportMetaUrl(emitted?.code, "deps/esm-identity.js");
-    expect(emitted?.code).not.toContain('from "node:fs"');
-    expect(emitted?.code).not.toContain("existsSync");
+    const transform = unwrapHook(capability.vitePlugin.transform);
+    expect(optimized).toBeNull();
+    for (const mode of ["dev", "build"]) {
+      expect(
+        transform.call(
+          { environment: { mode, config: { consumer: "server" } } },
+          source,
+          esmDependencyPath,
+        ),
+      ).toBeNull();
+    }
   });
 
-  it("evaluates a URL-only emitted module without cwd when its runtime URL is non-file", async () => {
-    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
-    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
-      {},
-      [
-        'import { fileURLToPath } from "node:url";',
-        "const filename = fileURLToPath(import.meta.url);",
-        "export default { fetch() { return new Response(filename); } };",
-      ].join("\n"),
-      esmDependencyPath,
-    );
-    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
-      {},
-      transformed?.code ?? "",
-      { fileName: "worker.mjs" },
-      { format: "es" },
-    );
-    const code = emitted?.code ?? "";
-    const processImport = code.match(/import \* as (\w+) from "node:process";/);
-    // Workerd exposes the node:process module but not process.cwd(), and its
-    // module-registry URL is not guaranteed to use the file: scheme.
-    const workerdLikeCode = code
-      .replace(processImport?.[0] ?? "", processImport ? `const ${processImport[1]} = {};` : "")
-      .replace("const runtimeUrl = import.meta.url;", 'const runtimeUrl = "worker";');
-    const module = await import(
-      `data:text/javascript;base64,${Buffer.from(workerdLikeCode).toString("base64")}`
-    );
-    const response = await module.default.fetch();
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("/worker.mjs");
-  });
-
-  it("evaluates emitted CJS paths without import.meta.filename or cwd", async () => {
+  it("evaluates emitted CJS paths from native import.meta.url", async () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
       {},
@@ -478,19 +332,14 @@ describe("vinext:import-meta-url plugin", () => {
       { fileName: "chunks/worker.mjs" },
       { format: "es" },
     );
-    const code = emitted?.code ?? "";
-    const processImport = code.match(/import \* as (\w+) from "node:process";/);
-    expect(processImport).not.toBeNull();
-    const workerdLikeCode = code
-      .replace(processImport![0], `const ${processImport![1]} = {};`)
-      .replace("const filename = import.meta.filename;", "const filename = undefined;");
-    const module = await import(
-      `data:text/javascript;base64,${Buffer.from(workerdLikeCode).toString("base64")}`
-    );
-    expect(module.paths).toEqual(["/chunks/worker.mjs", "/chunks"]);
+    const outputPath = path.join(tmpDir, "chunks/worker.mjs");
+    await fsp.mkdir(path.dirname(outputPath), { recursive: true });
+    await fsp.writeFile(outputPath, emitted?.code ?? "");
+    const module = await import(`${pathToFileURL(outputPath).href}?native-identity`);
+    expect(module.paths).toEqual([outputPath, path.dirname(outputPath)]);
   });
 
-  it("preserves dependency new URL asset bases while rewriting direct identity reads", () => {
+  it("leaves dependency asset bases and identity reads untouched", () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const transform = unwrapHook(capability.vitePlugin.transform);
     const result = transform.call(
@@ -499,8 +348,7 @@ describe("vinext:import-meta-url plugin", () => {
       esmDependencyPath,
     );
 
-    expect(result?.code).toContain('new URL("./asset.bin", import.meta.url)');
-    expectBundledImportMetaUrl(result?.code);
+    expect(result).toBeNull();
   });
 
   it("does not inject dependency globals mentioned only in comments and strings", () => {
@@ -619,20 +467,22 @@ describe("vinext:import-meta-url plugin", () => {
     expect(emitted?.code).toContain(
       "var e = ({ get value() { return __vinext_module_identity.dirname; } }).value;",
     );
-    expect(emitted?.code).toContain("__vinext_module_process.cwd()");
+    expect(emitted?.code).toContain(
+      "const filename = __vinext_module_url.fileURLToPath(import.meta.url);",
+    );
+    expect(emitted?.code).toContain("dirname: __vinext_module_path.dirname(filename),");
     expect(emitted?.code).not.toMatch(/__VINEXT_EMITTED_MODULE_DIRNAME_[a-f0-9]{32}__/);
   });
 
-  it("finalizes private markers when CommonJS source shadows process and globalThis", () => {
+  it("finalizes private markers when CommonJS source shadows runtime helper names", () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
       {},
       [
-        'const process = { cwd() { throw new Error("captured process") } };',
-        "const globalThis = {};",
-        "const __vinext_module_process = {};",
+        "const __vinext_module_path = {};",
+        "const __vinext_module_url = {};",
         "exports.dirname = __dirname;",
-        "exports.locals = [process, globalThis, __vinext_module_process];",
+        "exports.locals = [__vinext_module_path, __vinext_module_url];",
       ].join("\n"),
       cjsDependencyPath,
     );
@@ -644,23 +494,20 @@ describe("vinext:import-meta-url plugin", () => {
     );
 
     expectFinalizedCjsGlobal(emitted?.code, "__dirname");
-    expect(emitted?.code).toContain('import * as __vinext_module_process_ from "node:process";');
-    expect(emitted?.code).toContain("const process = {");
-    expect(emitted?.code).toContain("const globalThis = {};");
-    expect(emitted?.code).not.toContain("globalThis.process");
+    expect(emitted?.code).toContain('import * as __vinext_module_path_ from "node:path";');
+    expect(emitted?.code).toContain('import * as __vinext_module_url_ from "node:url";');
     expect(emitted?.code).not.toMatch(/__VINEXT_EMITTED_MODULE_DIRNAME_[a-f0-9]{32}__/);
   });
 
-  it("selects a collision-free process binding with one emitted-code scan", () => {
+  it("selects collision-free runtime bindings with one emitted-code scan", () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
       {},
-      `const __vinext_module_process = 0;
-const __vinext_module_process_ = 1;
-const __vinext_module_fs = 2;
-const __vinext_module_url = 3;
-const __vinext_module_identity = 4;
-const __vinext_module_process_${"_".repeat(4_096)} = 5;
+      `const __vinext_module_path = 0;
+const __vinext_module_path_ = 1;
+const __vinext_module_url = 2;
+const __vinext_module_identity = 3;
+const __vinext_module_path_${"_".repeat(4_096)} = 4;
 exports.dirname = __dirname;`,
       cjsDependencyPath,
     );
@@ -671,33 +518,10 @@ exports.dirname = __dirname;`,
       { format: "es" },
     );
 
-    expect(emitted?.code).toContain('import * as __vinext_module_process__ from "node:process";');
-    expect(emitted?.code).toContain('import * as __vinext_module_fs_ from "node:fs";');
-    expect(emitted?.code).toContain("const __vinext_module_identity_ = (() => {");
-    expectFinalizedCjsGlobal(emitted?.code, "__dirname");
-  });
-
-  it("selects collision-free bindings for emitted ESM dependency URLs", () => {
-    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
-    const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
-      {},
-      `import { fileURLToPath } from "node:url";
-const __vinext_module_url = 1;
-const __vinext_module_identity = 2;
-const value = fileURLToPath(import.meta.url);
-export { value, __vinext_module_url, __vinext_module_identity };`,
-      esmDependencyPath,
-    );
-    const emitted = unwrapHook(capability.optimizeDepsPlugin.renderChunk).call(
-      {},
-      transformed?.code ?? "",
-      { fileName: "entry.js" },
-      { format: "es" },
-    );
-
+    expect(emitted?.code).toContain('import * as __vinext_module_path__ from "node:path";');
     expect(emitted?.code).toContain('import * as __vinext_module_url_ from "node:url";');
     expect(emitted?.code).toContain("const __vinext_module_identity_ = (() => {");
-    expectFinalizedImportMetaUrl(emitted?.code);
+    expectFinalizedCjsGlobal(emitted?.code, "__dirname");
   });
 
   it("keeps concat markers isolated through a real Rolldown generate", async () => {
@@ -734,14 +558,15 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     const chunk = output.find((item) => item.type === "chunk");
 
     expect(chunk?.code).toMatch(
-      /^#!\/usr\/bin\/env node\nimport\s*\*\s*as\s+\w+\s+from\s*["'`]node:process["'`];/,
+      /^#!\/usr\/bin\/env node\nimport\s*\*\s*as\s+\w+\s+from\s*["'`]node:path["'`];/,
     );
     expect(chunk?.code).toContain("/foo");
-    expect(chunk?.code).toMatch(/node:process/);
+    expect(chunk?.code).toMatch(/node:url/);
+    expect(chunk?.code).not.toMatch(/node:(?:process|fs)/);
     expect(chunk?.code).not.toContain("__VINEXT_EMITTED_MODULE_");
   });
 
-  it("quotes nested emitted chunk paths without losing spaces", () => {
+  it("derives identity from import.meta.url instead of baking the chunk path", () => {
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const transformed = unwrapHook(capability.optimizeDepsPlugin.transform).call(
       {},
@@ -755,9 +580,9 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
       { format: "es" },
     );
 
-    expectFinalizedCjsGlobal(emitted?.code, "__filename", "chunks/path with spaces/entry.js");
-    expectFinalizedCjsGlobal(emitted?.code, "__dirname", "chunks/path with spaces/entry.js");
-    expect(emitted?.code.match(/\.existsSync\(/g)).toHaveLength(1);
+    expectFinalizedCjsGlobal(emitted?.code, "__filename");
+    expectFinalizedCjsGlobal(emitted?.code, "__dirname");
+    expect(emitted?.code).not.toContain("chunks/path with spaces/entry.js");
   });
 
   it("finalizes exact private markers without reparsing the emitted chunk", () => {
@@ -815,10 +640,9 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     expect(optimizerFilter.id.test(pagePath)).toBe(true);
     expect(optimizerFilter.id.test(cjsDependencyPath)).toBe(true);
     expect(optimizerFilter.code.test("exports.value = 1")).toBe(false);
+    expect(optimizerFilter.code.test("exports.value = __dirname")).toBe(true);
     expect(optimizerFilter.code.test("export const value = import.meta.env")).toBe(false);
-    expect(optimizerFilter.code.test("export const value = import.meta. /* note */ url")).toBe(
-      true,
-    );
+    expect(optimizerFilter.code.test("export const value = import.meta.url")).toBe(false);
   });
 
   it("keeps unaffected modules on the pre-parse fast path", () => {
@@ -841,7 +665,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     expect(rootReads).toBe(0);
   });
 
-  it("does not backtrack across repeated comment near-matches", () => {
+  it("does not backtrack across repeated comment near-matches", async () => {
     const blockDecoy = `import ${"/*x*/".repeat(30)}.metx.url`;
     const lineDecoy = `import ${"//x\r\n".repeat(30)}.metx.url`;
     const source = [
@@ -851,15 +675,19 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
     ].join("\n");
     const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
     const filter = (
-      capability.optimizeDepsPlugin.transform as {
+      capability.vitePlugin.transform as {
         filter: { code: RegExp };
       }
     ).filter.code;
 
     expect(filter.test(source)).toBe(true);
-    expectBundledImportMetaUrl(
-      unwrapHook(capability.optimizeDepsPlugin.transform).call({}, source, esmDependencyPath)?.code,
-    );
+    expect(
+      unwrapHook(capability.vitePlugin.transform).call(
+        { environment: { mode: "dev", config: { consumer: "server" } } },
+        source,
+        pagePath,
+      )?.code,
+    ).toContain(JSON.stringify(pathToFileURL(await fsp.realpath(pagePath)).href));
   });
 
   it("caches dependency package-format reads within the capability", () => {
@@ -938,105 +766,7 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
       { fileName: "worker/entry.js" },
       { format: "es" },
     );
-    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname", "worker/entry.js");
-  });
-
-  it("delegates deployed filenames to the configured environment resolver", () => {
-    const resolveEmittedModuleFileName = vi.fn(
-      (environmentName: string | undefined, fileName: string) =>
-        environmentName === "ssr" ? path.posix.join("ssr", fileName) : fileName,
-    );
-    const createEmittedModuleFileNameResolver = vi.fn(() => resolveEmittedModuleFileName);
-    const capability = createImportMetaUrlPlugin({
-      getRoot: () => realRoot,
-      createEmittedModuleFileNameResolver,
-    });
-    const config = {
-      root: realRoot,
-      build: { outDir: path.join(realRoot, "dist/server") },
-      environments: {
-        auxiliary: {
-          consumer: "server",
-          build: { outDir: path.join(realRoot, "dist/server/auxiliary") },
-        },
-        client: {
-          consumer: "client",
-          build: { outDir: path.join(realRoot, "dist/client") },
-        },
-        rsc: {
-          consumer: "server",
-          build: { outDir: path.join(realRoot, "dist/server") },
-        },
-        ssr: {
-          consumer: "server",
-          build: { outDir: path.join(realRoot, "dist/server/ssr") },
-        },
-      },
-    };
-    unwrapHook(capability.vitePlugin.configResolved).call({}, config);
-    expect(createEmittedModuleFileNameResolver).toHaveBeenCalledWith(config);
-    const buildResult = unwrapHook(capability.vitePlugin.transform).call(
-      { environment: { name: "ssr", mode: "build", config: { consumer: "server" } } },
-      "exports.path = __filename;",
-      cjsDependencyPath,
-    );
-    const emittedResult = unwrapHook(capability.vitePlugin.renderChunk).call(
-      { environment: { name: "ssr", config: { consumer: "server" } } },
-      buildResult?.code ?? "",
-      { fileName: "_next/static/split.js" },
-      { format: "es" },
-    );
-
-    expectFinalizedCjsGlobal(emittedResult?.code, "__filename", "ssr/_next/static/split.js");
-    expect(resolveEmittedModuleFileName).toHaveBeenCalledWith("ssr", "_next/static/split.js");
-
-    const auxiliaryResult = unwrapHook(capability.vitePlugin.renderChunk).call(
-      { environment: { name: "auxiliary", config: { consumer: "server" } } },
-      buildResult?.code ?? "",
-      { fileName: "worker.js" },
-      { format: "es" },
-    );
-    expectFinalizedCjsGlobal(auxiliaryResult?.code, "__filename", "worker.js");
-    expect(resolveEmittedModuleFileName).toHaveBeenCalledWith("auxiliary", "worker.js");
-  });
-
-  it("keeps emitted filenames unchanged without a deployment resolver", () => {
-    const capability = createImportMetaUrlPlugin({ getRoot: () => realRoot });
-    unwrapHook(capability.vitePlugin.configResolved).call(
-      {},
-      {
-        root: realRoot,
-        build: { outDir: path.join(realRoot, "dist") },
-        environments: {
-          nitro: {
-            consumer: "server",
-            build: { outDir: path.join(realRoot, "dist") },
-          },
-          rsc: {
-            consumer: "server",
-            build: { outDir: path.join(realRoot, "node_modules/.nitro/vite/services/rsc") },
-          },
-          ssr: {
-            consumer: "server",
-            build: { outDir: path.join(realRoot, "node_modules/.nitro/vite/services/ssr") },
-          },
-        },
-      },
-    );
-    const buildResult = unwrapHook(capability.vitePlugin.transform).call(
-      { environment: { name: "ssr", mode: "build", config: { consumer: "server" } } },
-      "exports.path = __filename;",
-      cjsDependencyPath,
-    );
-    const emittedResult = unwrapHook(capability.vitePlugin.renderChunk).call(
-      { environment: { name: "ssr", config: { consumer: "server" } } },
-      buildResult?.code ?? "",
-      { fileName: "_next/static/split.js" },
-      { format: "es" },
-    );
-
-    expectFinalizedCjsGlobal(emittedResult?.code, "__filename", "_next/static/split.js");
-    expect(emittedResult?.code).not.toContain("node_modules/.nitro");
+    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname");
   });
 
   it("keeps explicit project CommonJS parseable before lowering", async () => {
@@ -1066,8 +796,8 @@ export { value, __vinext_module_url, __vinext_module_identity };`,
       { fileName: "server/entry.js" },
       { format: "es" },
     );
-    expectFinalizedCjsGlobal(emittedResult?.code, "__filename", "server/entry.js");
-    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname", "server/entry.js");
+    expectFinalizedCjsGlobal(emittedResult?.code, "__filename");
+    expectFinalizedCjsGlobal(emittedResult?.code, "__dirname");
   });
 
   it("does not inject when __filename or __dirname are declared at top level", () => {
