@@ -1639,6 +1639,14 @@ export function updateViteConfigForCloudflare(
         ? ensureNamedRequire(program, output, source, imported, local)
         : ensureNamedImport(program, output, source, imported, local);
       responseStoreExpression = `${binding}(${cacheOptions.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`;
+      if (alreadyConfigured && cache) {
+        output.overwrite(
+          (cache.value as AstNode).start,
+          (cache.value as AstNode).end,
+          responseStoreExpression,
+        );
+        responseStoreExpression = undefined;
+      }
     }
   }
   if (cacheOptions.dataCache === "kv" && !hasVinextCacheSlot(existingVinextCall, "data")) {

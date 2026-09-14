@@ -60,6 +60,31 @@ export default { plugins: [vinext()] };
     expect(output).toContain('cache: responseStoreAdapter({ mode: "self-contained" })');
   });
 
+  it("updates the mode of an existing Workers Response Store", () => {
+    const input = `import vinext from "vinext";
+import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
+export default { plugins: [vinext({ cache: responseStoreAdapter() })] };
+`;
+    const options = {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none" as const,
+        cdnCache: "response-store" as const,
+        imageOptimization: "none" as const,
+        responseStoreMode: "self-contained" as const,
+      },
+    };
+
+    const selfContained = updateViteConfigForCloudflare("vite.config.ts", input, options);
+    expect(selfContained).toContain('cache: responseStoreAdapter({ mode: "self-contained" })');
+    const serviceBinding = updateViteConfigForCloudflare("vite.config.ts", selfContained, {
+      ...options,
+      cache: { ...options.cache, responseStoreMode: "service-binding" },
+    });
+    expect(serviceBinding).toContain("cache: responseStoreAdapter()");
+  });
+
   it("updates an existing ESM App Router config without replacing user code", () => {
     const input = `import { defineConfig } from "vite";
 import vinext from "vinext";
