@@ -65,7 +65,8 @@ const externalizeBareThirdPartySpecifiers = (
     id === "am-i-vibing" ||
     id === "image-size" ||
     id === "process-ancestry" ||
-    id === "pathslash"
+    id === "pathslash" ||
+    id === "ua-parser-js"
   ) {
     return false;
   }
@@ -77,18 +78,19 @@ export default defineConfig({
     entry: ["src/**/*.ts", "src/**/*.tsx", "!src/**/*.d.ts"],
     clean: true,
     deps: {
-      // Agent detection and image dimension extraction are build-time
+      // Agent detection, user-agent parsing, and image dimension extraction are
       // implementation details, so inline them rather than requiring vinext
       // consumers to install them. Same for pathslash: it is our own ~90-line
       // node:path wrapper (zero deps), so bundling it keeps it out of consumers'
       // install graphs.
-      alwaysBundle: ["am-i-vibing", "image-size", "process-ancestry", "pathslash"],
+      alwaysBundle: ["am-i-vibing", "image-size", "process-ancestry", "pathslash", "ua-parser-js"],
       neverBundle: (id) =>
         id.includes("node_modules") &&
         !id.includes("am-i-vibing") &&
         !id.includes("image-size") &&
         !id.includes("process-ancestry") &&
-        !id.includes("pathslash"),
+        !id.includes("pathslash") &&
+        !id.includes("ua-parser-js"),
     },
     inputOptions: {
       external: externalizeBareThirdPartySpecifiers,
