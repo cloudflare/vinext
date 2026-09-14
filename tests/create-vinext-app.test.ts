@@ -179,6 +179,7 @@ describe("createVinextApp", () => {
       build: "vinext build",
       start: "wrangler dev --config dist/server/wrangler.json",
       deploy: "vinext-cloudflare deploy --config dist/server/wrangler.json",
+      "deploy:response-store": "wrangler deploy --config wrangler.response-store.jsonc",
     });
     expect(pkg.dependencies).toMatchObject({
       react: "latest",
