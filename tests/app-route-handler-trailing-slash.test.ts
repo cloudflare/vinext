@@ -1,6 +1,6 @@
 /**
  * Regression coverage for issue #1827 — `trailingSlash` not applied to App
- * Router route handlers (`app/**​/route.ts`).
+ * Router route handlers (`app/[...]/route.ts`).
  *
  * Mirrors Next.js test/e2e/app-dir/app-routes-trailing-slash:
  *   - With `trailingSlash: true`, a request to `/runtime/edge` returns

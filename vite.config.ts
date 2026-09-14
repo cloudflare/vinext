@@ -71,9 +71,12 @@ export default defineConfig({
       "arrow-body-style": ["error", "as-needed"],
 
       "react/exhaustive-deps": "error",
+      "react/globals": "off",
       "react/no-array-index-key": "error",
+      "react/refs": "off",
       "react/rules-of-hooks": "error",
       "react/self-closing-comp": "error",
+      "react/set-state-in-effect": "off",
       "vinext-utils/prefer-shared-utils": "error",
     },
     overrides: [
