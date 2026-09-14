@@ -5,7 +5,7 @@
  * installed alongside vinext itself.
  */
 
-export type OpenTelemetryContext = {
+type OpenTelemetryContext = {
   deleteValue(key: symbol): OpenTelemetryContext;
   getValue(key: symbol): unknown;
   setValue(key: symbol, value: unknown): OpenTelemetryContext;
@@ -21,7 +21,7 @@ export type OpenTelemetrySpan = {
   updateName(name: string): void;
 };
 
-export type OpenTelemetryAttributeValue =
+type OpenTelemetryAttributeValue =
   | string
   | number
   | boolean

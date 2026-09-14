@@ -1,8 +1,8 @@
 import { isPromiseLike } from "../utils/promise.js";
 
-export type FrameworkSpanAttributeValue = string | number | boolean;
+type FrameworkSpanAttributeValue = string | number | boolean;
 
-export type FrameworkSpanDescriptor = {
+type FrameworkSpanDescriptor = {
   attributes?: Readonly<Record<string, FrameworkSpanAttributeValue | undefined>>;
   kind?: "client" | "internal" | "server";
   name?: string;
@@ -32,7 +32,7 @@ export type FrameworkTracingIntegration = {
   withPropagatedContext?<T>(carrier: Headers, callback: () => T): T;
 };
 
-export type FrameworkSpan = {
+type FrameworkSpan = {
   recordException(error: unknown): void;
   setAttribute(key: string, value: FrameworkSpanAttributeValue | undefined): void;
   setAttributes(
