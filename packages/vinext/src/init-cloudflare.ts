@@ -25,7 +25,7 @@ const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   imageOptimization: "cloudflare-images",
 };
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
-export const RESPONSE_STORE_WRANGLER_CONFIG = "wrangler.response-store.jsonc";
+const RESPONSE_STORE_WRANGLER_CONFIG = "wrangler.response-store.jsonc";
 
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
 const RESPONSE_STORE_ENTRYPOINT = "ResponseStoreService";

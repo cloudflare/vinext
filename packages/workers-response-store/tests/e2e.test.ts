@@ -728,7 +728,11 @@ test("tag purge prevents a pending tagged write from publishing", async () => {
     bodyDelayMs: 300,
     tags: ["pending-tag"],
   });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("pending_objects"), 1);
 
   await purge({ tags: ["pending-tag"] });
   assert.deepEqual((await write).json, {

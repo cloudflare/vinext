@@ -48,14 +48,6 @@ jobs:
             echo "inline_name=${prefix}-rs-inline"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Deploy cache Worker
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: packages/workers-response-store
-          command: deploy --config example/service-binding/wrangler.cache.jsonc --name ${{ steps.names.outputs.service_name }}
-
       - name: Configure live client Worker
         working-directory: packages/workers-response-store
         env:
@@ -74,21 +66,35 @@ jobs:
             fs.writeFileSync(".wrangler-e2e.user.jsonc", config);
           '
 
-      - name: Deploy live client Worker
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: packages/workers-response-store
-          command: deploy --config .wrangler-e2e.user.jsonc
+      - name: Deploy live Response Store Workers
+        working-directory: packages/workers-response-store
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SERVICE_NAME: ${{ steps.names.outputs.service_name }}
+          INLINE_NAME: ${{ steps.names.outputs.inline_name }}
+          NO_COLOR: 1
+        run: |
+          deploy() {
+            for attempt in {1..12}; do
+              if output=$(vp exec wrangler deploy "$@" 2>&1); then
+                echo "$output"
+                return
+              else
+                status=$?
+              fi
+              echo "$output"
+              if [[ "$output" != *"[code: 10007]"* || "$attempt" -eq 12 ]]; then
+                return "$status"
+              fi
+              echo "Worker provisioning has not propagated; retrying in 10 seconds..."
+              sleep 10
+            done
+          }
 
-      - name: Deploy live self-contained Worker
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: packages/workers-response-store
-          command: deploy --config wrangler.jsonc --name ${{ steps.names.outputs.inline_name }}
+          deploy --config example/service-binding/wrangler.cache.jsonc --name "$SERVICE_NAME"
+          deploy --config .wrangler-e2e.user.jsonc
+          deploy --config wrangler.jsonc --name "$INLINE_NAME"
 
       - name: Run live Response Store E2E
         working-directory: packages/workers-response-store

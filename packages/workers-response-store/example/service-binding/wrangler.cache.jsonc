@@ -4,8 +4,8 @@
   "main": "../../dist/service.js",
   "compatibility_date": "2026-09-04",
   "compatibility_flags": ["nodejs_compat"],
-  "workers_dev": true,
-  "preview_urls": true,
+  "workers_dev": false,
+  "preview_urls": false,
   "placement": { "region": "aws:eu-west-2" },
   "cache": { "enabled": true },
   "exports": {

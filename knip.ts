@@ -121,10 +121,15 @@ export default {
     "packages/workers-response-store": {
       entry: [
         ...entriesFromPackageJson("packages/workers-response-store/package.json"),
-        "example/worker.ts",
         "example/service-binding/{cache-worker,user-worker}.ts",
       ],
       project: ["src/**/*.{ts,tsx}", "example/**/*.ts"],
+    },
+    "apps/web": {
+      ignoreDependencies: [
+        // Referenced by path from wrangler.response-store.jsonc.
+        "@cloudflare/workers-response-store",
+      ],
     },
     "packages/create-vinext-app": {
       entry: [...entriesFromPackageJson("packages/create-vinext-app/package.json")],
@@ -182,6 +187,7 @@ export default {
     "jq",
   ],
   ignoreFiles: [
+    "apps/web/dist/**",
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
     "tests/e2e/app-front-redirect-issue/fixture/**/*.{js,ts,tsx}",
     // stub module loaded via `path.resolve()` as a Vite alias target
