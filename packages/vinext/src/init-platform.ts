@@ -225,6 +225,7 @@ export async function resolveInitOptions(
   const platform = await resolveInitPlatform(args, options);
   const platformOptions = await INIT_PLATFORMS[platform].options(args, options);
   const explicitWarmCdnCache = parseWarmCdnCacheArg(args);
+  const explicitPrerender = parsePrerenderArg(args);
   const supportsWarmCdnCache =
     platformOptions?.cdnCache === "response-store" || platformOptions?.cdnCache === "workers-cache";
   if (platform === "cloudflare" && !supportsWarmCdnCache) {
@@ -235,7 +236,11 @@ export async function resolveInitOptions(
     }
   }
 
-  const prerender = await resolveInitPrerender(args, options);
+  const prerender =
+    explicitPrerender ??
+    (platformOptions?.cdnCache === "response-store"
+      ? false
+      : await resolveInitPrerender(args, options));
   const warmCdnCache =
     platform === "cloudflare" && supportsWarmCdnCache
       ? await resolveInitWarmCdnCache(args, options)
@@ -352,9 +357,15 @@ export async function resolveCloudflareInitOptions(
   ) {
     throw new Error(`--cdn-cache=${explicitCdnCache} cannot be combined with --data-cache=kv.`);
   }
+  if (explicitCdnCache === "data-cache" && explicitDataCache === "none") {
+    throw new Error("--cdn-cache=data-cache requires --data-cache=kv.");
+  }
   if (
     explicitCdnCache &&
-    (explicitCdnCache === "response-store" || explicitCdnCache === "none" || explicitDataCache) &&
+    (explicitCdnCache === "response-store" ||
+      explicitCdnCache === "none" ||
+      explicitCdnCache === "data-cache" ||
+      explicitDataCache) &&
     explicitImageOptimization
   ) {
     return {
@@ -456,6 +467,9 @@ export async function resolveCloudflareInitOptions(
     if ((cdnCache === "response-store" || cdnCache === "none") && explicitDataCache === "kv") {
       throw new Error(`--cdn-cache=${cdnCache} cannot be combined with --data-cache=kv.`);
     }
+    if (cdnCache === "data-cache" && explicitDataCache === "none") {
+      throw new Error("--cdn-cache=data-cache requires --data-cache=kv.");
+    }
     const responseStoreMode =
       cdnCache === "response-store"
         ? await promptChoice(
@@ -476,13 +490,15 @@ export async function resolveCloudflareInitOptions(
     const dataCache =
       cdnCache === "response-store" || cdnCache === "none"
         ? "none"
-        : await promptChoice(
-            explicitDataCache,
-            "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
-            { "1": "kv", kv: "kv", "2": "none", none: "none" },
-            "kv",
-            "Please choose Cloudflare KV (1) or None (2).",
-          );
+        : cdnCache === "data-cache"
+          ? "kv"
+          : await promptChoice(
+              explicitDataCache,
+              "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
+              { "1": "kv", kv: "kv", "2": "none", none: "none" },
+              "kv",
+              "Please choose Cloudflare KV (1) or None (2).",
+            );
     const imageOptimization = await promptChoice(
       explicitImageOptimization,
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
