@@ -116,12 +116,10 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 vinext({ cache: responseStoreAdapter({ mode: "self-contained" }) });
 ```
 
-Self-contained Workers must bind `CACHE_BODIES` to R2, bind the SQLite
-`CacheMetadata` Durable Object as `CACHE_METADATA`, export
-`ResponseStoreBinding` with Workers Cache enabled, and include the
-`CF_VERSION_METADATA` version-metadata binding. The default Worker entrypoint
-must keep Workers Cache disabled. This removes the cache Worker and service
-binding without changing cache behavior or the application API.
+The build adds the required R2, SQLite Durable Object, Workers Cache entrypoint,
+and version-metadata bindings to the application Worker. This removes the cache
+Worker and service binding without changing cache behavior or the application
+API.
 
 ## Deploy
 

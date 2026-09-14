@@ -199,14 +199,6 @@ jobs:
       - name: Build vinext plugin
         run: vp run build
 
-      - name: Use a dedicated web preview Worker
-        if: matrix.example.name == 'web' && github.event_name == 'pull_request'
-        working-directory: apps/web
-        env:
-          WORKER_NAME: pr-${{ github.event.pull_request.number }}-vinext-web
-        run: |
-          node -e 'const fs = require("node:fs"); const file = "wrangler.jsonc"; fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(/"name": "vinext-web"/, "\"name\": " + JSON.stringify(process.env.WORKER_NAME)))'
-
       - name: Build example
         if: matrix.example.static_export != true
         run: vp build
@@ -271,21 +263,13 @@ jobs:
           vp exec vinext-cloudflare deploy "${args[@]}"
 
       - name: Deploy Preview Version
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name != 'web'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
-
-      - name: Deploy Web Preview
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'web'
-        working-directory: apps/web
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: vp exec vinext-cloudflare deploy --skip-build --config dist/server/wrangler.json
 
       # `versions upload` does not apply non-versioned workers.dev/preview URL
       # settings. A newly added assets-only Worker has no routes until this runs.

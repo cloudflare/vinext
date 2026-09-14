@@ -6,11 +6,13 @@ export type InitPlatform = "cloudflare" | "node";
 export type InitDataCache = "kv" | "none";
 export type InitCdnCache = "data-cache" | "none" | "response-store" | "workers-cache";
 export type InitImageOptimization = "cloudflare-images" | "none";
+export type InitResponseStoreMode = "self-contained" | "service-binding";
 
 export type CloudflareInitOptions = {
   dataCache: InitDataCache;
   cdnCache: InitCdnCache;
   imageOptimization: InitImageOptimization;
+  responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
 };
 
@@ -121,6 +123,10 @@ export function parseCdnCacheArg(args: string[]): InitCdnCache | undefined {
 
 export function parseImageOptimizationArg(args: string[]): InitImageOptimization | undefined {
   return parseChoiceArg(args, "--image-optimization", ["cloudflare-images", "none"]);
+}
+
+export function parseResponseStoreModeArg(args: string[]): InitResponseStoreMode | undefined {
+  return parseChoiceArg(args, "--response-store-mode", ["service-binding", "self-contained"]);
 }
 
 export function parsePrerenderArg(args: string[]): boolean | undefined {
@@ -332,7 +338,13 @@ export async function resolveCloudflareInitOptions(
   options: PlatformPromptOptions = {},
 ): Promise<CloudflareInitOptions> {
   const explicitDataCache = parseDataCacheArg(args);
-  const explicitCdnCache = parseCdnCacheArg(args);
+  const requestedCdnCache = parseCdnCacheArg(args);
+  const explicitResponseStoreMode = parseResponseStoreModeArg(args);
+  if (explicitResponseStoreMode && requestedCdnCache && requestedCdnCache !== "response-store") {
+    throw new Error("--response-store-mode can only be used with --cdn-cache=response-store.");
+  }
+  const explicitCdnCache =
+    requestedCdnCache ?? (explicitResponseStoreMode ? "response-store" : undefined);
   const explicitImageOptimization = parseImageOptimizationArg(args);
   if (
     (explicitCdnCache === "response-store" || explicitCdnCache === "none") &&
@@ -352,13 +364,16 @@ export async function resolveCloudflareInitOptions(
           : (explicitDataCache ?? "kv"),
       cdnCache: explicitCdnCache,
       imageOptimization: explicitImageOptimization,
+      ...(explicitCdnCache === "response-store"
+        ? { responseStoreMode: explicitResponseStoreMode ?? "service-binding" }
+        : {}),
     };
   }
 
   const env = options.env ?? process.env;
   if (isAgentEnvironment(env)) {
     throw new Error(
-      "vinext init needs Cloudflare cache and image choices. Ask the user whether they want no cache or which CDN cache (response-store, workers-cache, or data-cache), data cache (kv or none), and image optimization (cloudflare-images or none) they want, then re-run with --cdn-cache=..., --data-cache=..., and --image-optimization=....",
+      "vinext init needs Cloudflare cache and image choices. Ask the user whether they want no cache or which CDN cache (response-store, workers-cache, or data-cache), the Response Store mode when selected (service-binding or self-contained), data cache (kv or none), and image optimization (cloudflare-images or none) they want, then re-run with --cdn-cache=..., --response-store-mode=..., --data-cache=..., and --image-optimization=....",
     );
   }
 
@@ -373,6 +388,9 @@ export async function resolveCloudflareInitOptions(
         cdnCache === "response-store" || cdnCache === "none" ? "none" : (explicitDataCache ?? "kv"),
       cdnCache,
       imageOptimization: explicitImageOptimization ?? "cloudflare-images",
+      ...(cdnCache === "response-store"
+        ? { responseStoreMode: explicitResponseStoreMode ?? "service-binding" }
+        : {}),
     };
   }
 
@@ -437,6 +455,23 @@ export async function resolveCloudflareInitOptions(
     if ((cdnCache === "response-store" || cdnCache === "none") && explicitDataCache === "kv") {
       throw new Error(`--cdn-cache=${cdnCache} cannot be combined with --data-cache=kv.`);
     }
+    const responseStoreMode =
+      cdnCache === "response-store"
+        ? await promptChoice(
+            explicitResponseStoreMode,
+            "  Choose a Workers Response Store mode:\n    1. Service binding (default)\n    2. Self-contained\n  Response Store mode [1]: ",
+            {
+              "1": "service-binding",
+              "service-binding": "service-binding",
+              service: "service-binding",
+              "2": "self-contained",
+              "self-contained": "self-contained",
+              self: "self-contained",
+            },
+            "service-binding",
+            "Please choose Service binding (1) or Self-contained (2).",
+          )
+        : undefined;
     const dataCache =
       cdnCache === "response-store" || cdnCache === "none"
         ? "none"
@@ -460,7 +495,12 @@ export async function resolveCloudflareInitOptions(
       "cloudflare-images",
       "Please choose Cloudflare Images (1) or None (2).",
     );
-    return { dataCache, cdnCache, imageOptimization };
+    return {
+      dataCache,
+      cdnCache,
+      imageOptimization,
+      ...(responseStoreMode ? { responseStoreMode } : {}),
+    };
   } finally {
     readline?.close();
   }

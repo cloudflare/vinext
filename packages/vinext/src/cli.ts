@@ -1023,6 +1023,8 @@ function printHelp(cmd?: string) {
                          (Response Store or Workers Cache, default: prompt with No)
     --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache, or data-cache
                          (default: none; response-store is the default cache choice)
+    --response-store-mode <type>
+                         Workers Response Store mode: service-binding or self-contained
     --data-cache <type>  Cloudflare data cache: kv or none
     --image-optimization <type>
                          Cloudflare image optimization: cloudflare-images or none

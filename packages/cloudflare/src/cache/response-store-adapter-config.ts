@@ -7,6 +7,9 @@ export const RESPONSE_STORE_SERVICE_CONFIG = "vinext-response-store/wrangler.jso
 
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
 const VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+const CACHE_BODIES_BINDING = "CACHE_BODIES";
+const CACHE_METADATA_BINDING = "CACHE_METADATA";
+const CACHE_METADATA_CLASS = "CacheMetadata";
 const CTX_EXPORTS_DEFAULT_DATE = "2025-11-17";
 
 type WranglerOutputConfig = Record<string, unknown> & {
@@ -43,6 +46,41 @@ function withCtxExports(config: WranglerOutputConfig): WranglerOutputConfig {
   };
 }
 
+async function readAppConfig(outDir: string): Promise<{
+  appConfig: WranglerOutputConfig;
+  appConfigPath: string;
+}> {
+  const appConfigPath = path.resolve(outDir, "wrangler.json");
+  try {
+    const parsed: unknown = JSON.parse(await fs.readFile(appConfigPath, "utf8"));
+    if (!isRecord(parsed)) throw new TypeError("the root value must be an object");
+    return { appConfig: parsed, appConfigPath };
+  } catch (cause) {
+    throw new Error(`[vinext] Could not read the generated Wrangler config at ${appConfigPath}.`, {
+      cause,
+    });
+  }
+}
+
+function assertResponseStoreAppConfig(
+  appConfig: WranglerOutputConfig,
+): asserts appConfig is WranglerOutputConfig & { name: string; compatibility_date: string } {
+  if (!appConfig.name || !appConfig.compatibility_date) {
+    throw new Error(
+      "[vinext] responseStoreAdapter() requires the generated Wrangler config to contain a Worker name and compatibility date.",
+    );
+  }
+  if (
+    appConfig.version_metadata !== undefined &&
+    (!isRecord(appConfig.version_metadata) ||
+      appConfig.version_metadata.binding !== VERSION_METADATA_BINDING)
+  ) {
+    throw new Error(
+      `[vinext] responseStoreAdapter() requires version_metadata.binding to be ${JSON.stringify(VERSION_METADATA_BINDING)}.`,
+    );
+  }
+}
+
 /** Emit the service Worker and connect the application Worker to it. */
 export async function finalizeResponseStoreBuildOutput({
   outDir,
@@ -59,32 +97,8 @@ export async function finalizeResponseStoreBuildOutput({
 }): Promise<void> {
   if (!isPrimaryServerOutput) return;
 
-  const appConfigPath = path.resolve(outDir, "wrangler.json");
-  let appConfig: WranglerOutputConfig;
-  try {
-    const parsed: unknown = JSON.parse(await fs.readFile(appConfigPath, "utf8"));
-    if (!isRecord(parsed)) throw new TypeError("the root value must be an object");
-    appConfig = parsed;
-  } catch (cause) {
-    throw new Error(`[vinext] Could not read the generated Wrangler config at ${appConfigPath}.`, {
-      cause,
-    });
-  }
-
-  if (!appConfig.name || !appConfig.compatibility_date) {
-    throw new Error(
-      "[vinext] responseStoreAdapter() requires the generated Wrangler config to contain a Worker name and compatibility date.",
-    );
-  }
-  if (
-    appConfig.version_metadata !== undefined &&
-    (!isRecord(appConfig.version_metadata) ||
-      appConfig.version_metadata.binding !== VERSION_METADATA_BINDING)
-  ) {
-    throw new Error(
-      `[vinext] responseStoreAdapter() requires version_metadata.binding to be ${JSON.stringify(VERSION_METADATA_BINDING)}.`,
-    );
-  }
+  const { appConfig, appConfigPath } = await readAppConfig(outDir);
+  assertResponseStoreAppConfig(appConfig);
   if (appConfig.services !== undefined && !Array.isArray(appConfig.services)) {
     throw new Error("[vinext] The generated Wrangler config has an invalid services value.");
   }
@@ -129,12 +143,12 @@ export async function finalizeResponseStoreBuildOutput({
         ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
       },
       r2_buckets: [
-        { binding: "CACHE_BODIES", ...(r2BucketName ? { bucket_name: r2BucketName } : {}) },
+        { binding: CACHE_BODIES_BINDING, ...(r2BucketName ? { bucket_name: r2BucketName } : {}) },
       ],
       durable_objects: {
-        bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
+        bindings: [{ name: CACHE_METADATA_BINDING, class_name: CACHE_METADATA_CLASS }],
       },
-      migrations: [{ tag: "v1", new_sqlite_classes: ["CacheMetadata"] }],
+      migrations: [{ tag: "v1", new_sqlite_classes: [CACHE_METADATA_CLASS] }],
       ...(typeof appConfig.account_id === "string" ? { account_id: appConfig.account_id } : {}),
     });
     await fs.writeFile(
@@ -164,6 +178,107 @@ export async function finalizeResponseStoreBuildOutput({
     exports: {
       ...appConfig.exports,
       default: { ...appConfig.exports?.default, type: "worker", cache: { enabled: false } },
+    },
+  });
+  await fs.writeFile(appConfigPath, `${JSON.stringify(configuredApp, null, 2)}\n`);
+}
+
+/** Add Response Store resources to a self-contained application Worker. */
+export async function finalizeSelfContainedResponseStoreBuildOutput({
+  outDir,
+  isPrimaryServerOutput,
+}: {
+  outDir: string;
+  isPrimaryServerOutput: boolean;
+}): Promise<void> {
+  if (!isPrimaryServerOutput) return;
+
+  const { appConfig, appConfigPath } = await readAppConfig(outDir);
+  assertResponseStoreAppConfig(appConfig);
+
+  const cache = appConfig.cache;
+  const r2Buckets = appConfig.r2_buckets;
+  const durableObjects = appConfig.durable_objects;
+  const migrations = appConfig.migrations;
+  if (cache !== undefined && !isRecord(cache)) {
+    throw new Error("[vinext] The generated Wrangler config has an invalid cache value.");
+  }
+  if (r2Buckets !== undefined && !Array.isArray(r2Buckets)) {
+    throw new Error("[vinext] The generated Wrangler config has an invalid r2_buckets value.");
+  }
+  if (durableObjects !== undefined && !isRecord(durableObjects)) {
+    throw new Error("[vinext] The generated Wrangler config has an invalid durable_objects value.");
+  }
+  const durableBindings = durableObjects?.bindings;
+  if (durableBindings !== undefined && !Array.isArray(durableBindings)) {
+    throw new Error(
+      "[vinext] The generated Wrangler config has an invalid durable_objects.bindings value.",
+    );
+  }
+  if (migrations !== undefined && !Array.isArray(migrations)) {
+    throw new Error("[vinext] The generated Wrangler config has an invalid migrations value.");
+  }
+
+  if (
+    (r2Buckets ?? []).some((value) => !isRecord(value)) ||
+    (durableBindings ?? []).some((value) => !isRecord(value)) ||
+    (migrations ?? []).some((value) => !isRecord(value))
+  ) {
+    throw new Error("[vinext] The generated Wrangler config contains an invalid binding.");
+  }
+  const existingR2Buckets = (r2Buckets ?? []) as Record<string, unknown>[];
+  const existingDurableBindings = (durableBindings ?? []) as Record<string, unknown>[];
+  const existingMigrations = (migrations ?? []) as Record<string, unknown>[];
+  const hasCacheMetadataMigration = existingMigrations.some(
+    (migration) =>
+      Array.isArray(migration.new_sqlite_classes) &&
+      migration.new_sqlite_classes.includes(CACHE_METADATA_CLASS),
+  );
+  let migrationNumber = existingMigrations.length + 1;
+  while (
+    existingMigrations.some(
+      (migration) => migration.tag === `vinext-response-store-v${migrationNumber}`,
+    )
+  ) {
+    migrationNumber++;
+  }
+  const configuredApp = withCtxExports({
+    ...appConfig,
+    cache: { ...cache, enabled: true },
+    version_metadata: { binding: VERSION_METADATA_BINDING },
+    r2_buckets: existingR2Buckets.some((binding) => binding.binding === CACHE_BODIES_BINDING)
+      ? existingR2Buckets
+      : [...existingR2Buckets, { binding: CACHE_BODIES_BINDING }],
+    durable_objects: {
+      ...durableObjects,
+      bindings: existingDurableBindings.some((binding) => binding.name === CACHE_METADATA_BINDING)
+        ? existingDurableBindings.map((binding) =>
+            binding.name === CACHE_METADATA_BINDING
+              ? { ...binding, class_name: CACHE_METADATA_CLASS }
+              : binding,
+          )
+        : [
+            ...existingDurableBindings,
+            { name: CACHE_METADATA_BINDING, class_name: CACHE_METADATA_CLASS },
+          ],
+    },
+    migrations: hasCacheMetadataMigration
+      ? existingMigrations
+      : [
+          ...existingMigrations,
+          {
+            tag: `vinext-response-store-v${migrationNumber}`,
+            new_sqlite_classes: [CACHE_METADATA_CLASS],
+          },
+        ],
+    exports: {
+      ...appConfig.exports,
+      default: { ...appConfig.exports?.default, type: "worker", cache: { enabled: false } },
+      ResponseStoreBinding: {
+        ...appConfig.exports?.ResponseStoreBinding,
+        type: "worker",
+        cache: { enabled: true },
+      },
     },
   });
   await fs.writeFile(appConfigPath, `${JSON.stringify(configuredApp, null, 2)}\n`);

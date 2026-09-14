@@ -134,11 +134,45 @@ describe("Cloudflare CDN adapter generated config", () => {
     expect(fs.existsSync(path.join(path.dirname(serviceConfigPath), "service.js"))).toBe(true);
   });
 
-  it("does not emit a Response Store service for self-contained mode", () => {
-    expect(responseStoreAdapter({ mode: "self-contained" }).cdn.output.finalizeBuildOutput).toBe(
-      undefined,
-    );
-    expect(responseStoreAdapter().cdn.output.finalizeBuildOutput).toEqual(expect.any(Function));
+  it("configures self-contained Response Store resources on the application Worker", async () => {
+    const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
+      name: "test-worker",
+      main: "index.js",
+      compatibility_date: "2026-09-14",
+    });
+    const adapter = responseStoreAdapter({ mode: "self-contained" });
+
+    await adapter.cdn.output.finalizeBuildOutput({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+    });
+    await adapter.cdn.output.finalizeBuildOutput({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+    });
+
+    const appConfig = JSON.parse(fs.readFileSync(generatedPath, "utf8"));
+    expect(appConfig).toMatchObject({
+      cache: { enabled: true },
+      version_metadata: { binding: "CF_VERSION_METADATA" },
+      r2_buckets: [{ binding: "CACHE_BODIES" }],
+      durable_objects: {
+        bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
+      },
+      migrations: [
+        {
+          tag: "vinext-response-store-v1",
+          new_sqlite_classes: ["CacheMetadata"],
+        },
+      ],
+      exports: {
+        default: { type: "worker", cache: { enabled: false } },
+        ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
+      },
+    });
+    expect(
+      fs.existsSync(path.join(path.dirname(generatedPath), RESPONSE_STORE_SERVICE_CONFIG)),
+    ).toBe(false);
   });
 
   it("uses custom Response Store service and R2 bucket names", async () => {

@@ -12,11 +12,13 @@ type InitPlatform = "cloudflare" | "node";
 type InitDataCache = "kv" | "none";
 type InitCdnCache = "data-cache" | "none" | "response-store" | "workers-cache";
 type InitImageOptimization = "cloudflare-images" | "none";
+type InitResponseStoreMode = "self-contained" | "service-binding";
 
 type CloudflareInitOptions = {
   dataCache: InitDataCache;
   cdnCache: InitCdnCache;
   imageOptimization: InitImageOptimization;
+  responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
 };
 

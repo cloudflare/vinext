@@ -561,7 +561,9 @@ function vinextExpression(
   }
   const optionEntries: string[] = [];
   if (responseStore) {
-    optionEntries.push("cache: responseStoreAdapter()");
+    optionEntries.push(
+      `cache: responseStoreAdapter(${options.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`,
+    );
   } else if (cacheEntries.length > 0) {
     optionEntries.push(`cache: { ${cacheEntries.join(", ")} }`);
   }
@@ -1636,7 +1638,7 @@ export function updateViteConfigForCloudflare(
       const binding = commonJs
         ? ensureNamedRequire(program, output, source, imported, local)
         : ensureNamedImport(program, output, source, imported, local);
-      responseStoreExpression = `${binding}()`;
+      responseStoreExpression = `${binding}(${cacheOptions.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`;
     }
   }
   if (cacheOptions.dataCache === "kv" && !hasVinextCacheSlot(existingVinextCall, "data")) {

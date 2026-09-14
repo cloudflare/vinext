@@ -1,5 +1,8 @@
 import { fileURLToPath } from "node:url";
-import { finalizeResponseStoreBuildOutput } from "./response-store-adapter-config.js";
+import {
+  finalizeResponseStoreBuildOutput,
+  finalizeSelfContainedResponseStoreBuildOutput,
+} from "./response-store-adapter-config.js";
 
 const CLOUDFLARE_WORKER_ENTRY_ID = "virtual:cloudflare/worker-entry";
 
@@ -79,18 +82,16 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
           if (cleanId !== CLOUDFLARE_WORKER_ENTRY_ID) return null;
           return `${code}\nexport { ${entrypoints} } from ${JSON.stringify(workerEntry)};\n`;
         },
-        ...(mode === "service-binding"
-          ? {
-              finalizeBuildOutput(output: { outDir: string; isPrimaryServerOutput: boolean }) {
-                return finalizeResponseStoreBuildOutput({
-                  ...output,
-                  serviceName: options.serviceName,
-                  r2BucketName: options.r2BucketName,
-                  deployService: options.deployService,
-                });
-              },
-            }
-          : {}),
+        finalizeBuildOutput(output: { outDir: string; isPrimaryServerOutput: boolean }) {
+          return mode === "self-contained"
+            ? finalizeSelfContainedResponseStoreBuildOutput(output)
+            : finalizeResponseStoreBuildOutput({
+                ...output,
+                serviceName: options.serviceName,
+                r2BucketName: options.r2BucketName,
+                deployService: options.deployService,
+              });
+        },
         type: "multi-stage" as const,
       },
       capabilities: {

@@ -48,6 +48,18 @@ export default { plugins: [vinext()] };
     expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
   });
 
+  it("configures a self-contained Workers Response Store", () => {
+    const output = generateAppRouterViteConfig(undefined, {
+      dataCache: "none",
+      cdnCache: "response-store",
+      imageOptimization: "none",
+      responseStoreMode: "self-contained",
+    });
+
+    expectValidConfig(output);
+    expect(output).toContain('cache: responseStoreAdapter({ mode: "self-contained" })');
+  });
+
   it("updates an existing ESM App Router config without replacing user code", () => {
     const input = `import { defineConfig } from "vite";
 import vinext from "vinext";
