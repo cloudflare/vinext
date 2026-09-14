@@ -83,6 +83,13 @@ afterEach(() => {
 });
 
 describe("framework tracer", () => {
+  it("exposes the process-wide tracer as a no-op without a provider", async () => {
+    delete (globalThis as Record<symbol, unknown>)[apiSymbol];
+    const { frameworkTracer } = await import("../packages/vinext/src/server/tracer.js");
+
+    expect(frameworkTracer.trace({ type: "BaseServer.handleRequest" }, () => "ok")).toBe("ok");
+  });
+
   it("sends one logical span and the stable Next.js attributes to every integration", () => {
     const first: RecordedSpan[] = [];
     const second: RecordedSpan[] = [];
