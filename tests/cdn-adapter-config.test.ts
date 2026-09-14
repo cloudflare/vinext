@@ -175,6 +175,26 @@ describe("Cloudflare CDN adapter generated config", () => {
     ).toBe(false);
   });
 
+  it("rejects a conflicting self-contained Response Store Durable Object binding", async () => {
+    const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
+      name: "test-worker",
+      main: "index.js",
+      compatibility_date: "2026-09-14",
+      durable_objects: {
+        bindings: [{ name: "CACHE_METADATA", class_name: "UserCacheMetadata" }],
+      },
+    });
+
+    await expect(
+      responseStoreAdapter({ mode: "self-contained" }).cdn.output.finalizeBuildOutput({
+        outDir: path.dirname(generatedPath),
+        isPrimaryServerOutput: true,
+      }),
+    ).rejects.toThrow(
+      "responseStoreAdapter() cannot use the existing CACHE_METADATA Durable Object binding",
+    );
+  });
+
   it("uses custom Response Store service and R2 bucket names", async () => {
     const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
       name: "test-worker",

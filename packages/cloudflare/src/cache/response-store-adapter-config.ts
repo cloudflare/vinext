@@ -228,6 +228,18 @@ export async function finalizeSelfContainedResponseStoreBuildOutput({
   }
   const existingR2Buckets = (r2Buckets ?? []) as Record<string, unknown>[];
   const existingDurableBindings = (durableBindings ?? []) as Record<string, unknown>[];
+  const existingCacheMetadataBinding = existingDurableBindings.find(
+    (binding) => binding.name === CACHE_METADATA_BINDING,
+  );
+  if (
+    existingCacheMetadataBinding &&
+    (existingCacheMetadataBinding.class_name !== CACHE_METADATA_CLASS ||
+      existingCacheMetadataBinding.script_name !== undefined)
+  ) {
+    throw new Error(
+      `[vinext] responseStoreAdapter() cannot use the existing ${CACHE_METADATA_BINDING} Durable Object binding.`,
+    );
+  }
   const existingMigrations = (migrations ?? []) as Record<string, unknown>[];
   const hasCacheMetadataMigration = existingMigrations.some(
     (migration) =>
@@ -251,12 +263,8 @@ export async function finalizeSelfContainedResponseStoreBuildOutput({
       : [...existingR2Buckets, { binding: CACHE_BODIES_BINDING }],
     durable_objects: {
       ...durableObjects,
-      bindings: existingDurableBindings.some((binding) => binding.name === CACHE_METADATA_BINDING)
-        ? existingDurableBindings.map((binding) =>
-            binding.name === CACHE_METADATA_BINDING
-              ? { ...binding, class_name: CACHE_METADATA_CLASS }
-              : binding,
-          )
+      bindings: existingCacheMetadataBinding
+        ? existingDurableBindings
         : [
             ...existingDurableBindings,
             { name: CACHE_METADATA_BINDING, class_name: CACHE_METADATA_CLASS },

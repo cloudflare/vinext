@@ -85,6 +85,27 @@ export default { plugins: [vinext({ cache: responseStoreAdapter() })] };
     expect(serviceBinding).toContain("cache: responseStoreAdapter()");
   });
 
+  it("rejects replacing an existing cache configuration with Workers Response Store", () => {
+    const input = `import vinext from "vinext";
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+export default { plugins: [vinext({ cache: { cdn: cdnAdapter() } })] };
+`;
+
+    expect(() =>
+      updateViteConfigForCloudflare("vite.config.ts", input, {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+        },
+      }),
+    ).toThrow(
+      "The vinext() cache option is already configured. Remove it before configuring Workers Response Store.",
+    );
+  });
+
   it("updates an existing ESM App Router config without replacing user code", () => {
     const input = `import { defineConfig } from "vite";
 import vinext from "vinext";

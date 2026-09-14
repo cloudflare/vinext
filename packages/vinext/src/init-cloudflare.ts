@@ -1630,6 +1630,15 @@ export function updateViteConfigForCloudflare(
       cache.value.callee.name === existing,
     );
     if (
+      cache &&
+      !alreadyConfigured &&
+      !(cache.value.type === "ObjectExpression" && cache.value.properties.length === 0)
+    ) {
+      throw new Error(
+        "The vinext() cache option is already configured. Remove it before configuring Workers Response Store.",
+      );
+    }
+    if (
       !cache ||
       alreadyConfigured ||
       (cache.value.type === "ObjectExpression" && cache.value.properties.length === 0)
