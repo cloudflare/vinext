@@ -15,6 +15,7 @@ import { serializeWorkerCacheabilityProbeRoute } from "../packages/vinext/src/se
 import type { DispatchWorkerResponseStage } from "../packages/vinext/src/server/worker-stages.js";
 import type { MiddlewareResult } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import {
+  getRequestExecutionContext,
   runWithExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
@@ -199,6 +200,19 @@ describe("Pages Worker request stage", () => {
       { cache: "shared" },
     );
     expect(mocks.renderResponse).not.toHaveBeenCalled();
+  });
+
+  it("keeps multi-stage dispatch inside the Worker execution context", async () => {
+    const ctx = { waitUntil: vi.fn() };
+    let activeContext: ExecutionContextLike | null = null;
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => {
+      activeContext = getRequestExecutionContext();
+      return new Response("remote");
+    });
+
+    await handleRequestStage(new Request("https://example.com/page"), undefined, ctx, dispatch);
+
+    expect(activeContext).toBe(ctx);
   });
 
   it("replays POST bodies across speculative miss and error-page dispatches", async () => {

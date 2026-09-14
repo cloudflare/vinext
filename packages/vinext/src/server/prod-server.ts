@@ -101,6 +101,7 @@ import { parseHttpDate } from "./http-date.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { readTrustedRevalidationHostname } from "./revalidation-host.js";
 import { readStaticFileSignal } from "./static-file-signal.js";
+import { traceFrameworkRequest } from "./request-tracing.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -1237,14 +1238,37 @@ async function sendWebResponse(
     // Use streaming flush modes so progressive HTML remains decodable before the
     // full response completes.
     const compressor = createCompressor(encoding!, "streaming");
-    pipeline(nodeStream, compressor, res, () => {
-      /* ignore pipeline errors on closed connections */
+    await new Promise<void>((resolve) => {
+      pipeline(nodeStream, compressor, res, () => {
+        // A closed connection terminates the request just as a completed body
+        // does, so retain the existing best-effort error handling.
+        resolve();
+      });
     });
   } else {
-    pipeline(nodeStream, res, () => {
-      /* ignore pipeline errors on closed connections */
+    await new Promise<void>((resolve) => {
+      pipeline(nodeStream, res, () => {
+        // A closed connection terminates the request just as a completed body
+        // does, so retain the existing best-effort error handling.
+        resolve();
+      });
     });
   }
+}
+
+function waitForNodeResponseCompletion(res: ServerResponse): Promise<void> {
+  if (res.writableFinished || res.destroyed) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      res.off("finish", done);
+      res.off("close", done);
+      res.off("error", done);
+      resolve();
+    };
+    res.once("finish", done);
+    res.once("close", done);
+    res.once("error", done);
+  });
 }
 
 /**
@@ -1336,6 +1360,7 @@ type AppRouterServerOptions = {
 };
 
 type WorkerAppRouterEntry = {
+  __ensureInstrumentation?(): void | Promise<void>;
   fetch(request: Request, env?: unknown, ctx?: ExecutionContextLike): Promise<Response> | Response;
 };
 
@@ -1576,6 +1601,16 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const rscModule = await importServerEntryModule(rscEntryPath);
   const rscEntryRequire = createServerEntryRequire(rscEntryPath);
   const rscHandler = resolveAppRouterHandler(rscModule.default);
+  const workerEntry =
+    rscModule.default && typeof rscModule.default === "object"
+      ? (rscModule.default as WorkerAppRouterEntry)
+      : undefined;
+  const ensureInstrumentation =
+    typeof workerEntry?.__ensureInstrumentation === "function"
+      ? () => workerEntry.__ensureInstrumentation!()
+      : typeof rscModule.__ensureInstrumentation === "function"
+        ? () => rscModule.__ensureInstrumentation()
+        : () => undefined;
 
   // `assetPrefix` is embedded as a compile-time constant in the generated
   // RSC entry (see `entries/app-rsc-entry.ts`'s `export const __assetPrefix`),
@@ -1648,7 +1683,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // .br/.gz/.zst variants (generated at build time) are detected automatically.
   const staticCache = await StaticFileCache.create(clientDir);
 
-  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleRequestImpl = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
     const rawPathname = rawUrl.split("?")[0];
 
@@ -1852,6 +1887,24 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
   };
 
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    await ensureInstrumentation();
+    const target = req.url ?? "/";
+    const headers = nodeHeadersToWebHeaders(req.headers);
+    return traceFrameworkRequest({
+      callback: async () => {
+        await handleRequestImpl(req, res);
+        await waitForNodeResponseCompletion(res);
+      },
+      getStatus: () => res.statusCode,
+      headers,
+      isRsc:
+        new URL(target, "http://localhost").pathname.endsWith(".rsc") || headers.get("RSC") === "1",
+      method: req.method ?? "GET",
+      target,
+    });
+  };
+
   const server = createServer((req, res) => {
     void runWithServerEntryRequire(rscEntryRequire, () => handleRequest(req, res));
   });
@@ -1990,7 +2043,16 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Build the static file metadata cache at startup (same as App Router).
   const staticCache = await StaticFileCache.create(clientDir);
 
-  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleRequest = (req: IncomingMessage, res: ServerResponse): Promise<void> =>
+    traceFrameworkRequest({
+      callback: () => handleRequestImpl(req, res),
+      getStatus: () => res.statusCode,
+      headers: nodeHeadersToWebHeaders(req.headers),
+      method: req.method ?? "GET",
+      target: req.url ?? "/",
+    });
+
+  const handleRequestImpl = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const rawUrl = req.url ?? "/";
     const rawPagesPathnameBeforeNormalize = rawUrl.split("?")[0];
 
@@ -2421,6 +2483,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 export {
   sendCompressed,
   sendWebResponse,
+  waitForNodeResponseCompletion,
   negotiateEncoding,
   COMPRESSIBLE_TYPES,
   COMPRESS_THRESHOLD,

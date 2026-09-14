@@ -17,8 +17,10 @@
  * ## Why idempotent?
  *
  * The same handler may be invoked concurrently (e.g. on a warm Worker).
- * A module-level `initialized` flag + a shared promise ensure that
- * `register()` is called exactly once even when multiple requests race.
+ * Process-wide state keyed by the imported instrumentation module, plus a
+ * shared promise, ensures that `register()` is called exactly once even when
+ * multiple requests or bundled runtime copies race. Keying by module avoids
+ * suppressing registration for another app loaded in the same process.
  *
  * ## Next.js semantics
  *
@@ -33,8 +35,29 @@
 import type { OnRequestErrorHandler } from "./instrumentation.js";
 import { extendTracerProviderForCacheComponents } from "./otel-tracer-extension.js";
 
-let initialized = false;
-let initPromise: Promise<void> | null = null;
+type InstrumentationState = {
+  initialized: boolean;
+  initPromise: Promise<void> | null;
+};
+
+const INSTRUMENTATION_STATE_KEY = Symbol.for("vinext.instrumentation.state");
+
+function getInstrumentationState(
+  instrumentationModule: Record<string, unknown>,
+): InstrumentationState {
+  const globals = globalThis as typeof globalThis & {
+    [INSTRUMENTATION_STATE_KEY]?: WeakMap<Record<string, unknown>, InstrumentationState>;
+  };
+  const states = (globals[INSTRUMENTATION_STATE_KEY] ??= new WeakMap());
+  const existing = states.get(instrumentationModule);
+  if (existing) return existing;
+  const state = {
+    initialized: false,
+    initPromise: null,
+  };
+  states.set(instrumentationModule, state);
+  return state;
+}
 
 function isOnRequestErrorHandler(value: unknown): value is OnRequestErrorHandler {
   return typeof value === "function";
@@ -58,10 +81,11 @@ export async function ensureInstrumentationRegistered(
   instrumentationModule: Record<string, unknown>,
 ): Promise<void> {
   if (process.env.VINEXT_PRERENDER === "1") return;
-  if (initialized) return;
-  if (initPromise) return initPromise;
+  const state = getInstrumentationState(instrumentationModule);
+  if (state.initialized) return;
+  if (state.initPromise) return state.initPromise;
 
-  initPromise = (async () => {
+  state.initPromise = (async () => {
     if (typeof instrumentationModule.register === "function") {
       await instrumentationModule.register();
     }
@@ -85,8 +109,8 @@ export async function ensureInstrumentationRegistered(
       globalThis.__VINEXT_onRequestErrorHandler__ = instrumentationModule.onRequestError;
     }
 
-    initialized = true;
+    state.initialized = true;
   })();
 
-  return initPromise;
+  return state.initPromise;
 }

@@ -23,6 +23,12 @@ import type {
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
 import { serializeResponseStageLinkProvenance } from "./app-response-header-provenance.js";
+import {
+  attachFrameworkRequestError,
+  attachFrameworkRequestRoute,
+  captureFrameworkRequestRoute,
+  clearFrameworkRequestError,
+} from "./request-tracing.js";
 
 type AppResponseStageEnv = Record<string, unknown>;
 
@@ -116,9 +122,32 @@ export async function handleResponseStage(
             null,
             props.trustedPrerenderState,
           );
-        return serializeStaticFileSignalForTransport(
-          await runWithExecutionContext(cacheabilityContext, render),
+        let route: string | undefined;
+        let result: Response;
+        let failure: unknown;
+        let failed = false;
+        try {
+          ({ result, route } = await captureFrameworkRequestRoute(
+            () => runWithExecutionContext(cacheabilityContext, render),
+            (matchedRoute) => {
+              route = matchedRoute;
+            },
+          ));
+        } catch (error) {
+          console.error("[vinext] App response stage error:", error);
+          failed = true;
+          failure = error;
+          result = new Response("Internal Server Error", { status: 500 });
+        }
+        const serialized = serializeStaticFileSignalForTransport(
+          result,
           props.staticFileSignalToken,
+        );
+        return attachFrameworkRequestRoute(
+          failed
+            ? attachFrameworkRequestError(serialized, failure)
+            : clearFrameworkRequestError(serialized),
+          route,
         );
       }
       const render = () =>
