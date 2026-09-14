@@ -335,8 +335,9 @@ import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appM
 ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
-import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
-    : ""
+import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};
+export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation); }`
+    : "export function __ensureInstrumentation() {}"
 }
 ${
   hasPagesDir
@@ -656,8 +657,9 @@ import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appM
 ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
-import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
-    : ""
+import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};
+export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation); }`
+    : "export function __ensureInstrumentation() {}"
 }
 ${
   responseStageOnly

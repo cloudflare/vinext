@@ -361,6 +361,74 @@ describe("OpenTelemetry integration", () => {
     expect(extractions).toBe(2);
   });
 
+  it("extracts a valid W3C traceparent with the registered propagator", () => {
+    type TestContext = {
+      deleteValue(key: symbol): TestContext;
+      getValue(key: symbol): unknown;
+      setValue(key: symbol, value: unknown): TestContext;
+    };
+    type TestSpanContext = {
+      isRemote?: boolean;
+      spanId: string;
+      traceFlags: number;
+      traceId: string;
+    };
+    const requireFromSentry = createRequire(import.meta.resolve("@sentry/nextjs/package.json"));
+    const { ROOT_CONTEXT } = requireFromSentry("@opentelemetry/api") as {
+      ROOT_CONTEXT: TestContext;
+    };
+    const { W3CTraceContextPropagator } = requireFromSentry("@opentelemetry/core") as {
+      W3CTraceContextPropagator: new () => {
+        extract(
+          context: TestContext,
+          carrier: Headers,
+          getter: {
+            get(carrier: Headers, key: string): string | undefined;
+            keys(carrier: Headers): string[];
+          },
+        ): TestContext;
+      };
+    };
+    const propagator = new W3CTraceContextPropagator();
+    const spanKey = Symbol.for("OpenTelemetry Context Key SPAN");
+    let activeContext = ROOT_CONTEXT;
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      context: {
+        active: () => activeContext,
+        with<T>(context: TestContext, callback: () => T): T {
+          const previous = activeContext;
+          activeContext = context;
+          try {
+            return callback();
+          } finally {
+            activeContext = previous;
+          }
+        },
+      },
+      propagation: {
+        extract: (
+          context: TestContext,
+          carrier: Headers,
+          getter: Parameters<typeof propagator.extract>[2],
+        ) => propagator.extract(context, carrier, getter),
+      },
+      trace: {
+        getDelegate: () => ({ constructor: { name: "ApplicationTracerProvider" } }),
+        getTracer: () => ({ startActiveSpan: () => undefined }),
+      },
+    };
+    const tracer = createFrameworkTracer([openTelemetryTracingIntegration]);
+    const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const spanId = "00f067aa0ba902b7";
+
+    const extracted = tracer.withPropagatedContext(
+      new Headers({ traceparent: `00-${traceId}-${spanId}-01` }),
+      () => (activeContext.getValue(spanKey) as { spanContext(): TestSpanContext }).spanContext(),
+    );
+
+    expect(extracted).toMatchObject({ isRemote: true, spanId, traceFlags: 1, traceId });
+  });
+
   it("does not extract propagation when the registered provider is disabled", () => {
     const context = {
       deleteValue: () => context,

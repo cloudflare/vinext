@@ -20,6 +20,7 @@ import {
 } from "./headers.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { validateCdnRequest } from "./cache-control.js";
+import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -104,6 +105,9 @@ export default {
     env?: PagesWorkerEnv,
     ctx?: PagesWorkerExecutionContext,
   ): Promise<Response> {
-    return handleSingleStageRequest(request, env, ctx);
+    const handle = () => handleSingleStageRequest(request, env, ctx);
+    return ctx && typeof ctx.waitUntil === "function"
+      ? runWithExecutionContext(ctx as ExecutionContextLike, handle)
+      : handle();
   },
 };

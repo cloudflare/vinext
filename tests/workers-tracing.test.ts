@@ -1,5 +1,11 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it } from "vite-plus/test";
 import { createFrameworkTracer } from "../packages/vinext/src/server/framework-tracer.js";
+import {
+  setFrameworkRequestRoute,
+  traceFrameworkRequest,
+} from "../packages/vinext/src/server/request-tracing.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import {
   createWorkersTracingIntegration,
   type WorkersTracingException,
@@ -13,20 +19,28 @@ type RecordedSpan = {
   attributes: Record<string, boolean | number | string>;
   exceptions: WorkersTracingException[];
   name: string;
+  parent?: string;
 };
 
 function fakeTracing(spans: RecordedSpan[], isTraced = true) {
+  const active = new AsyncLocalStorage<{ recorded: RecordedSpan; span: WorkersTracingSpan }>();
   return {
     enterSpan<T>(name: string, callback: (span: WorkersTracingSpan) => T): T {
-      const recorded: RecordedSpan = { attributes: {}, exceptions: [], name };
+      const recorded: RecordedSpan = {
+        attributes: {},
+        exceptions: [],
+        name,
+        parent: active.getStore()?.recorded.name,
+      };
       spans.push(recorded);
-      return callback({
+      const span: WorkersTracingSpan = {
         isTraced,
         recordException: (exception) => recorded.exceptions.push(exception),
         setAttribute: (key, value) => {
           recorded.attributes[key] = value;
         },
-      });
+      };
+      return active.run({ recorded, span }, () => callback(span));
     },
   };
 }
@@ -66,6 +80,52 @@ describe("Workers framework tracing integration", () => {
         },
         exceptions: [],
         name: "GET /products/[id]",
+        parent: undefined,
+      },
+    ]);
+  });
+
+  it("keeps the request root beneath the active Worker span", async () => {
+    const spans: RecordedSpan[] = [];
+    const tracing = fakeTracing(spans);
+    registerFrameworkTracingIntegration(createWorkersTracingIntegration(tracing));
+
+    await tracing.enterSpan("worker.handler", () =>
+      traceFrameworkRequest({
+        callback: async () => {
+          setFrameworkRequestRoute("/products/[id]");
+          return new Response("failed", { status: 500 });
+        },
+        getStatus: (response) => response?.status,
+        headers: new Headers(),
+        method: "GET",
+        target: "/products/42",
+      }),
+    );
+
+    expect(spans).toEqual([
+      {
+        attributes: {},
+        exceptions: [],
+        name: "worker.handler",
+        parent: undefined,
+      },
+      {
+        attributes: {
+          "error.type": "500",
+          "http.method": "GET",
+          "http.route": "/products/[id]",
+          "http.status_code": 500,
+          "http.target": "/products/42",
+          "next.route": "/products/[id]",
+          "next.rsc": false,
+          "next.span_category": "nextjs",
+          "next.span_name": "GET /products/[id]",
+          "next.span_type": "BaseServer.handleRequest",
+        },
+        exceptions: [],
+        name: "GET",
+        parent: "worker.handler",
       },
     ]);
   });

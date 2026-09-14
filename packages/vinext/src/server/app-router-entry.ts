@@ -27,6 +27,7 @@ import rscHandler, {
   __assetPrefix as __rscAssetPrefix,
   __basePath as __rscBasePath,
   __cacheabilityManifest as __rscCacheabilityManifest,
+  __ensureInstrumentation,
   __imageAllowedWidths as __rscImageAllowedWidths,
   __imageConfig as __rscImageConfig,
   __prerenderSecret as __rscPrerenderSecret,
@@ -56,6 +57,7 @@ import {
 import {
   NEXT_ACTION_HEADER,
   RSC_ACTION_HEADER,
+  RSC_HEADER,
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -77,6 +79,7 @@ import {
   createWorkerPrerenderDiscoveryContext,
   createWorkerPrerenderReadinessResponse,
 } from "./worker-prerender-discovery.js";
+import { traceFrameworkRequest } from "./request-tracing.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
@@ -100,12 +103,26 @@ function isPotentialCompletedAdmissionRequest(request: Request): boolean {
 }
 
 export default {
+  __ensureInstrumentation,
   async fetch(
     request: Request,
     env?: WorkerAssetEnv,
     ctx?: ExecutionContextLike,
   ): Promise<Response> {
-    return applyCdnResponseIdentityHeaders(await handleRequest(request, env, ctx), request);
+    const handleFetch = async () => {
+      await __ensureInstrumentation();
+      const url = new URL(request.url);
+      return traceFrameworkRequest({
+        callback: async () =>
+          applyCdnResponseIdentityHeaders(await handleRequest(request, env, ctx), request),
+        getStatus: (response) => response?.status,
+        headers: request.headers,
+        isRsc: url.pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1",
+        method: request.method,
+        target: url.pathname + url.search,
+      });
+    };
+    return ctx ? runWithExecutionContext(ctx, handleFetch) : handleFetch();
   },
 };
 

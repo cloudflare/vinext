@@ -130,6 +130,9 @@ describe("App Router Production build", () => {
     // RSC bundle should contain route handling code
     const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
     expect(rscEntry).toContain("handler");
+    // The Node production host starts the request root outside the bundled
+    // Worker handler, so the default export must retain its registration hook.
+    expect(rscEntry).toContain("__ensureInstrumentation");
     expect(readAllJs(path.join(outDir, "server"))).not.toContain("cloudflare:workers");
     expect(readAllJs(path.join(outDir, "server"))).not.toContain("cloudflare-workers");
 

@@ -28,6 +28,7 @@ function workerEntryVirtualModules(): Plugin {
       `
 export const __assetPrefix = "";
 export const __basePath = "";
+export function __ensureInstrumentation() {}
 export const __imageAllowedWidths = [];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
@@ -42,6 +43,7 @@ export default async function rscHandler(request) {
       `
 export const __assetPrefix = "";
 export const __basePath = "";
+export function __ensureInstrumentation() {}
 export const __imageAllowedWidths = [];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
@@ -378,7 +380,11 @@ describe("App Router Production server worker entry compatibility", () => {
         async () =>
           new Response(null, {
             status: 204,
-            headers: { "Cache-Control": "no-store", "X-Vinext-Prerender-Readiness": "1" },
+            headers: {
+              "Cache-Control": "no-store",
+              "X-Vinext-Prerender-Readiness": "1",
+              "X-Vinext-Trace-Route": "/application-owned",
+            },
           }),
       );
       const readiness = await entry.handleRequestStage(
@@ -399,6 +405,7 @@ describe("App Router Production server worker entry compatibility", () => {
       expect(await accepted.text()).toBe("ok");
       expect(accepted.headers.get("X-Test-Build-Identity")).toBe("build-a");
       expect(readiness.status).toBe(204);
+      expect(readiness.headers.get("X-Vinext-Trace-Route")).toBe("/application-owned");
       expect(readinessDispatch).toHaveBeenCalledWith(
         expect.any(Request),
         { kind: "readiness-test" },
