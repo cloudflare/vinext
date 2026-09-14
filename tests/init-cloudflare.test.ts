@@ -146,6 +146,24 @@ export default { plugins: [vinext({ cache: responseStoreAdapter() })] };
     ).toThrow("does not match the selected cache options");
   });
 
+  it("rejects disabling an existing data cache without removing it", () => {
+    const input = `import vinext from "vinext";
+export default { plugins: [vinext({ cache: { data: customData() } })] };
+`;
+
+    expect(() =>
+      updateViteConfigForCloudflare("vite.config.ts", input, {
+        isAppRouter: false,
+        nativeModulesToStub: [],
+        cache: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+        },
+      }),
+    ).toThrow("does not match the selected cache options");
+  });
+
   it("rejects replacing an existing cache configuration with Workers Response Store", () => {
     const input = `import vinext from "vinext";
 import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
@@ -536,7 +554,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
       {
         isAppRouter: false,
         nativeModulesToStub: [],
-        cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
+        cache: { dataCache: "kv", cdnCache: "data-cache", imageOptimization: "none" },
         prerender: true,
       },
     );

@@ -92,6 +92,16 @@ const nodeInitOptions: ResolvedInitOptions = {
   prerender: false,
 };
 
+const noCacheCloudflareInitOptions: ResolvedInitOptions = {
+  platform: "cloudflare",
+  prerender: false,
+  cloudflare: {
+    dataCache: "none",
+    cdnCache: "none",
+    imageOptimization: "cloudflare-images",
+  },
+};
+
 async function withQuietConsole<T>(task: () => Promise<T>): Promise<T> {
   const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
   try {
@@ -110,6 +120,22 @@ afterEach(() => {
 });
 
 describe("createVinextApp", () => {
+  it("does not enable ISR when Cloudflare caching is declined", async () => {
+    const appPath = path.join(tmpDir, "no-cache-app");
+
+    await withQuietConsole(() =>
+      createVinextApp({
+        appPath,
+        packageManager: "npm",
+        install: false,
+        git: false,
+        initOptions: noCacheCloudflareInitOptions,
+      }),
+    );
+
+    expect(readFile(appPath, "app/page.tsx")).not.toContain("export const revalidate");
+  });
+
   it("creates a fixed App Router TypeScript Tailwind template and applies Cloudflare init", async () => {
     const appPath = path.join(tmpDir, "fresh-app");
 

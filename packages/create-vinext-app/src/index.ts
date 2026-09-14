@@ -68,8 +68,13 @@ const packageManagerFlags: Record<string, PackageManagerName> = {
   "--use-bun": "bun",
 };
 
-function getTemplateFiles(platform: InitPlatform): Record<string, string> {
+function getTemplateFiles(initOptions: ResolvedInitOptions): Record<string, string> {
+  const { platform } = initOptions;
   const isCloudflare = platform === "cloudflare";
+  const revalidate =
+    !isCloudflare || initOptions.cloudflare?.cdnCache !== "none"
+      ? "export const revalidate = 300;\n\n"
+      : "";
   const apiMessage = isCloudflare ? "Hello from vinext on Cloudflare Workers" : "Hello from vinext";
   const title = isCloudflare ? "vinext on Cloudflare Workers" : "vinext app";
   const secondaryLink = isCloudflare
@@ -150,9 +155,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
 ${secondaryLink}
 ];
 
-export const revalidate = 300;
-
-export default function Home() {
+${revalidate}export default function Home() {
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-10 text-slate-950">
       <section className="mx-auto flex max-w-4xl flex-col gap-8">
@@ -434,7 +437,7 @@ function writeTemplate(
 ): void {
   fs.mkdirSync(root, { recursive: true });
   writePackageJson(root, appName, packageManager);
-  for (const [relativePath, content] of Object.entries(getTemplateFiles(initOptions.platform))) {
+  for (const [relativePath, content] of Object.entries(getTemplateFiles(initOptions))) {
     writeFile(root, relativePath, content);
   }
 }

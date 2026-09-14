@@ -1624,7 +1624,8 @@ export function updateViteConfigForCloudflare(
       (!cacheObject && cacheOptions.cdnCache !== "response-store") ||
       (cacheObject &&
         (cacheOptions.cdnCache === "none" || cacheOptions.cdnCache === "data-cache") &&
-        findProperty(cacheObject, "cdn"))
+        findProperty(cacheObject, "cdn")) ||
+      (cacheObject && cacheOptions.dataCache === "none" && findProperty(cacheObject, "data"))
     ) {
       throw new Error(
         "The existing vinext() cache configuration does not match the selected cache options. Remove it before rerunning vinext init.",
