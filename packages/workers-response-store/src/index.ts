@@ -22,16 +22,17 @@ export type ResponseStoreRevalidatorEntrypoint<Env = WorkersResponseStoreEnv> = 
   env: Env,
 ) => WorkerEntrypoint<Env> & RevalidationService;
 
-type WorkersResponseStoreDefinition<Env extends WorkersResponseStoreEnv = WorkersResponseStoreEnv> =
-  WorkersResponseStore & {
-    entrypoints: {
-      CacheMetadata: typeof CacheMetadata;
-      ResponseStoreRevalidator: ResponseStoreRevalidatorEntrypoint<Env>;
-      ResponseStoreBinding: typeof ResponseStoreBinding;
-    };
+type SelfContainedWorkersResponseStoreDefinition<
+  Env extends WorkersResponseStoreEnv = WorkersResponseStoreEnv,
+> = WorkersResponseStore & {
+  entrypoints: {
+    CacheMetadata: typeof CacheMetadata;
+    ResponseStoreRevalidator: ResponseStoreRevalidatorEntrypoint<Env>;
+    ResponseStoreBinding: typeof ResponseStoreBinding;
   };
+};
 
-type WorkersResponseStoreClientDefinition<Env> = WorkersResponseStore & {
+type ServiceBindingWorkersResponseStoreDefinition<Env> = WorkersResponseStore & {
   entrypoints: {
     ResponseStoreRevalidator: ResponseStoreRevalidatorEntrypoint<Env>;
     ResponseStoreClient: new (
@@ -71,9 +72,9 @@ function createStoreFacade(getStore: () => WorkersResponseStore): WorkersRespons
   };
 }
 
-export function createWorkersResponseStore<
+export function createSelfContainedWorkersResponseStore<
   Env extends WorkersResponseStoreEnv = WorkersResponseStoreEnv,
->(options: WorkersResponseStoreOptions<Env>): WorkersResponseStoreDefinition<Env> {
+>(options: WorkersResponseStoreOptions<Env>): SelfContainedWorkersResponseStoreDefinition<Env> {
   const ResponseStoreRevalidator = createRevalidatorEntrypoint(options);
 
   const getStore = () => getWorkersResponseStore({ exports: workerExports });
@@ -91,9 +92,9 @@ export type WorkersResponseStoreClientEnv = {
   CF_VERSION_METADATA: WorkerVersionMetadata;
 };
 
-export function createWorkersResponseStoreClient<
+export function createServiceBindingWorkersResponseStore<
   Env extends WorkersResponseStoreClientEnv = WorkersResponseStoreClientEnv,
->(options: WorkersResponseStoreOptions<Env>): WorkersResponseStoreClientDefinition<Env> {
+>(options: WorkersResponseStoreOptions<Env>): ServiceBindingWorkersResponseStoreDefinition<Env> {
   const ResponseStoreRevalidator = createRevalidatorEntrypoint(options);
 
   class ResponseStoreClient extends WorkerEntrypoint<Env> implements WorkersResponseStore {
@@ -166,6 +167,12 @@ export function createWorkersResponseStoreClient<
     ...createStoreFacade(getClient),
   };
 }
+
+/** @deprecated Use `createSelfContainedWorkersResponseStore`. */
+export const createWorkersResponseStore = createSelfContainedWorkersResponseStore;
+
+/** @deprecated Use `createServiceBindingWorkersResponseStore`. */
+export const createWorkersResponseStoreClient = createServiceBindingWorkersResponseStore;
 
 export type {
   ResponseStoreMutationResult,

@@ -1,5 +1,5 @@
 import {
-  createWorkersResponseStore,
+  createSelfContainedWorkersResponseStore,
   type ResponseStoreRevalidatorEntrypoint,
   type WorkersResponseStoreEnv,
 } from "@cloudflare/workers-response-store";
@@ -13,7 +13,7 @@ import {
   createVinextResponseStoreOptions,
 } from "./response-store-adapter.worker.js";
 
-const responseStore = createWorkersResponseStore<WorkersResponseStoreEnv>(
+const responseStore = createSelfContainedWorkersResponseStore<WorkersResponseStoreEnv>(
   createVinextResponseStoreOptions(),
 );
 

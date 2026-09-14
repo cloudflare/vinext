@@ -139,6 +139,12 @@ plugin v2 path and deploy their generated Build Output with `cf`. Existing
 Wrangler-configured projects continue to use Wrangler. A normal typed-config
 deploy does not need `wrangler.jsonc`.
 
+Named auxiliary Workers in Build Output are deployed with `cf` before the entry
+Worker. This currently requires vinext to project each auxiliary Worker as the
+default Build Output for a separate `cf deploy --prebuilt`, because `cf@0.10.0`
+only deploys the default Worker. The generated `cloudflare.config.ts` remains
+the source of truth; no auxiliary Wrangler config is required.
+
 Experimental staged CDN warming is currently a hybrid flow: `cf` builds and
 uploads the Worker version, while Wrangler reads deployment status, stages and
 promotes traffic, and applies triggers when needed. Until `cf` supports those

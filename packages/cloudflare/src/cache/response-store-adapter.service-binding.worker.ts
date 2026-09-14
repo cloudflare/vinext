@@ -1,5 +1,5 @@
 import {
-  createWorkersResponseStoreClient,
+  createServiceBindingWorkersResponseStore,
   type ResponseStoreClientEntrypoint,
   type ResponseStoreRevalidatorEntrypoint,
   type WorkersResponseStoreClientEnv,
@@ -10,7 +10,7 @@ import {
   createVinextResponseStoreOptions,
 } from "./response-store-adapter.worker.js";
 
-const responseStore = createWorkersResponseStoreClient<WorkersResponseStoreClientEnv>(
+const responseStore = createServiceBindingWorkersResponseStore<WorkersResponseStoreClientEnv>(
   createVinextResponseStoreOptions(),
 );
 

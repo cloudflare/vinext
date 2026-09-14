@@ -177,6 +177,7 @@ jobs:
             project: vinext-web
             working_directory: apps/web
             wrangler_config: wrangler.jsonc
+            response_store_worker: vinext-web-response-store
             warm_cdn_cache: true
             warm_cdn_target: https://vinext.dev
     steps:
@@ -216,7 +217,7 @@ jobs:
           '
 
       - name: Deploy configured Response Store service
-        if: matrix.example.name == 'response-store-demo' || (matrix.example.name == 'web' && github.event_name == 'push' && github.ref == 'refs/heads/main')
+        if: matrix.example.name == 'response-store-demo'
         working-directory: ${{ matrix.example.working_directory }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -225,6 +226,8 @@ jobs:
 
       - name: Build example
         if: matrix.example.static_export != true
+        env:
+          VINEXT_RESPONSE_STORE_WORKER_NAME: ${{ matrix.example.response_store_worker && github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, matrix.example.response_store_worker) || '' }}
         run: |
           if [[ -f cloudflare.config.ts ]]; then
             vp run build
@@ -301,7 +304,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: vp exec cf versions upload --prebuilt --preview-alias pr-${{ github.event.pull_request.number }}
+        run: |
+          vp exec node --input-type=module -e '
+            import { runCfAuxiliaryWorkerDeploys } from "@vinext/cloudflare/internal/deploy";
+            await runCfAuxiliaryWorkerDeploys(process.cwd());
+          '
+          vp exec cf versions upload --prebuilt --preview-alias pr-${{ github.event.pull_request.number }}
 
       # `versions upload` does not apply non-versioned workers.dev/preview URL
       # settings. A newly added assets-only Worker has no routes until this runs.
@@ -389,10 +397,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SERVICE_NAME: ${{ needs.response_store.outputs.service_name }}
           DEMO_SERVICE_NAME: pr-${{ github.event.pull_request.number }}-response-store-demo-response-store
+          WEB_SERVICE_NAME: pr-${{ github.event.pull_request.number }}-vinext-web-response-store
           PR_ACTION: ${{ github.event.action }}
         run: |
           if [[ "$PR_ACTION" == "closed" ]]; then
             vp exec wrangler delete "$DEMO_SERVICE_NAME" --force
+            vp exec wrangler delete "$WEB_SERVICE_NAME" --force
           elif [[ -n "$SERVICE_NAME" ]]; then
             vp exec wrangler delete "$SERVICE_NAME" --force
           fi

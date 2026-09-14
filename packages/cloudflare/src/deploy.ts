@@ -823,6 +823,7 @@ export async function runCfDeploy(
   options: Pick<DeployOptions, "preview" | "env">,
   execute: typeof spawn = spawn,
 ): Promise<string> {
+  await runCfAuxiliaryWorkerDeploys(root, options, execute);
   const { args, mode } = buildCfDeployArgs(options);
   console.log(
     mode ? `\n  Deploying Build Output in mode: ${mode}...` : "\n  Deploying Build Output...",
@@ -857,6 +858,68 @@ export async function runCfDeploy(
     });
   });
   return parseWorkerDeploymentUrl(output) ?? "(URL not detected in cf output)";
+}
+
+export async function runCfAuxiliaryWorkerDeploys(
+  root: string,
+  options: Pick<DeployOptions, "preview" | "env"> = {},
+  execute: typeof spawn = spawn,
+): Promise<void> {
+  const workersDir = path.join(root, ".cloudflare", "output", "v0", "workers");
+  if (!fs.existsSync(workersDir)) return;
+
+  const auxiliaryWorkers = fs
+    .readdirSync(workersDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name !== "default")
+    .map((entry) => entry.name)
+    .sort();
+  const { args } = buildCfDeployArgs(options);
+  const settings = path.join(root, ".cloudflare", "output", "v0", "config.json");
+  const accountId = fs.existsSync(settings)
+    ? (JSON.parse(fs.readFileSync(settings, "utf8")) as { accountId?: unknown }).accountId
+    : undefined;
+
+  for (const worker of auxiliaryWorkers) {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-auxiliary-"));
+    try {
+      const projectedOutput = path.join(tempRoot, ".cloudflare", "output", "v0");
+      const projectedWorkers = path.join(projectedOutput, "workers");
+      fs.mkdirSync(projectedWorkers, { recursive: true });
+      fs.symlinkSync(
+        path.join(workersDir, worker),
+        path.join(projectedWorkers, "default"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      if (fs.existsSync(settings))
+        fs.copyFileSync(settings, path.join(projectedOutput, "config.json"));
+
+      console.log(`\n  Deploying auxiliary Build Output Worker: ${worker}...`);
+      const child = execute(process.execPath, [resolveCfBin(root), ...args], {
+        cwd: tempRoot,
+        env: {
+          ...process.env,
+          ...(typeof accountId === "string" ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {}),
+        },
+        stdio: "inherit",
+        shell: false,
+      });
+      await new Promise<void>((resolve, reject) => {
+        child.once("error", reject);
+        child.once("close", (code, signal) => {
+          if (code === 0) resolve();
+          else {
+            reject(
+              new Error(
+                `cf deploy failed for auxiliary Worker ${worker} with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}.`,
+              ),
+            );
+          }
+        });
+      });
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }
 }
 
 export function hasCdnWarmRequests(
@@ -2231,6 +2294,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
   let url: string;
 
   if (options.warmCdnCache) {
+    if (deploymentTool === "cf") {
+      await runCfAuxiliaryWorkerDeploys(root, wranglerOptions);
+    }
     url = await deployWithCdnWarmup(root, [], {
       ...wranglerOptions,
       deploymentTool,

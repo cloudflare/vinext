@@ -2,7 +2,7 @@
 
 `@cloudflare/workers-response-store` is an R2-backed programmatic response store for Cloudflare Workers. The core package has no vinext dependency; the optional vinext adapter lives in `@vinext/cloudflare`.
 
-## Single-Worker mode
+## Self-contained mode
 
 A user Worker can define a Response Store once, export its generated entrypoints, and call its methods directly. All of those entrypoints and bindings are deployed together from one Wrangler configuration.
 
@@ -23,9 +23,9 @@ request ──► user Worker default entrypoint
 The fixture in `example/worker.ts` demonstrates the integration:
 
 ```ts
-import { createWorkersResponseStore } from "@cloudflare/workers-response-store";
+import { createSelfContainedWorkersResponseStore } from "@cloudflare/workers-response-store";
 
-const responseStore = createWorkersResponseStore<Env>({
+const responseStore = createSelfContainedWorkersResponseStore<Env>({
   regenerate(input, { env, ctx }) {
     return renderer.fetch(input.request, env, ctx);
   },
@@ -43,6 +43,26 @@ export default {
 
 The Worker configuration enables Workers Cache only for `ResponseStoreBinding`, binds R2 and the SQLite Durable Object to the same Worker, and includes a version-metadata binding so backing data is automatically scoped to the deployed Worker version. `wrangler.jsonc` is the complete fixture configuration.
 
+Typed Cloudflare configs can use the matching self-contained config helper:
+
+```ts
+import { bindings, defineWorker, exports } from "@cloudflare/vite-plugin/experimental-config";
+import { createSelfContainedWorkersResponseStoreConfig } from "@cloudflare/workers-response-store/config";
+
+const responseStore = createSelfContainedWorkersResponseStoreConfig({
+  worker: "example",
+  bucket: "example-response-store-cache-bodies",
+  bindings,
+  exports,
+});
+
+export default defineWorker({
+  ...responseStore,
+  name: "example",
+  entrypoint: "./worker.ts",
+});
+```
+
 ## Service-binding mode
 
 The library can instead run R2, SQLite, and Workers Cache in a reusable cache Worker. Point that Worker's Wrangler `main` directly at the installed implementation:
@@ -58,26 +78,33 @@ The user Worker has one `RESPONSE_STORE` service binding to the uncached `Respon
 Typed Cloudflare configs can delegate those conventions to the package's Node-safe `config` subpath while retaining their config library's inferred binding types:
 
 ```ts
-import { bindings, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
-import { createWorkersResponseStoreClientConfig } from "@cloudflare/workers-response-store/config";
+import { bindings, defineWorker, exports } from "@cloudflare/vite-plugin/experimental-config";
+import { createServiceBindingWorkersResponseStoreConfig } from "@cloudflare/workers-response-store/config";
 
-const responseStore = createWorkersResponseStoreClientConfig({
-  worker: "example-response-store",
+const responseStore = createServiceBindingWorkersResponseStoreConfig({
+  worker: {
+    name: "example-response-store",
+    compatibilityDate: "2026-09-14",
+    compatibilityFlags: ["nodejs_compat"],
+  },
+  bucket: "example-response-store-cache-bodies",
   bindings,
+  exports,
 });
 
+export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
+
 export default defineWorker({
-  ...responseStore,
+  ...responseStore.applicationWorker,
   name: "example",
   entrypoint: "./worker.ts",
-  env: { ...responseStore.env },
 });
 ```
 
 The user Worker passes its version-pinned `ctx.exports.ResponseStoreRevalidator` binding over RPC with each operation. The cache Worker places that binding in the local cache entrypoint's `ctx.props`, allowing misses, expiry, manual refresh, and background SWR to call the user Worker without a configured reverse service binding. Consequently there is no circular deployment or bootstrap: deploy the cache Worker once, then deploy or update the user Worker once.
 
 ```ts
-const responseStore = createWorkersResponseStoreClient<Env>({
+const responseStore = createServiceBindingWorkersResponseStore<Env>({
   regenerate(input, { env, ctx }) {
     return renderer.fetch(input.request, env, ctx);
   },

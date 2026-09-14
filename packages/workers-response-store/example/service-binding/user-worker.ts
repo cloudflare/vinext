@@ -1,5 +1,5 @@
 import {
-  createWorkersResponseStoreClient,
+  createServiceBindingWorkersResponseStore,
   type ResponseStorePurgeOptions,
   type ResponseStoreRefreshOptions,
   type SerializableValue,
@@ -53,7 +53,7 @@ async function put(request: Request, store: WorkersResponseStore): Promise<Respo
   return json(result);
 }
 
-const responseStore = createWorkersResponseStoreClient({
+const responseStore = createServiceBindingWorkersResponseStore({
   async regenerate(input, { env }): Promise<Response> {
     const options = (input.args[0] ?? {}) as RevalidatorOptions;
     if (options.delayMs) {

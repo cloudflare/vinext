@@ -2,21 +2,33 @@ import {
   bindings,
   defineSettings,
   defineWorker,
+  exports,
   triggers,
 } from "@cloudflare/vite-plugin/experimental-config";
-import { createWorkersResponseStoreClientConfig } from "@cloudflare/workers-response-store/config";
+import { createServiceBindingWorkersResponseStoreConfig } from "@cloudflare/workers-response-store/config";
 
 export const settings = defineSettings({
   accountId: "d48e2eb599d9aa075d5e682deaecc518",
 });
 
-const responseStore = createWorkersResponseStoreClientConfig({
-  worker: "vinext-web-response-store",
+const responseStoreWorkerName =
+  process.env.VINEXT_RESPONSE_STORE_WORKER_NAME || "vinext-web-response-store";
+const responseStore = createServiceBindingWorkersResponseStoreConfig({
+  worker: {
+    name: responseStoreWorkerName,
+    compatibilityDate: "2026-04-08",
+    compatibilityFlags: ["nodejs_compat"],
+    observability: { enabled: true },
+  },
+  bucket: "vinext-web-response-store-cache-bodies",
   bindings,
+  exports,
 });
 
+export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
+
 export default defineWorker({
-  ...responseStore,
+  ...responseStore.applicationWorker,
   name: "vinext-web",
   entrypoint: "./worker/index.ts",
   compatibilityDate: "2026-04-08",
@@ -24,7 +36,7 @@ export default defineWorker({
   previewUrls: true,
   assets: { notFoundHandling: "none" },
   env: {
-    ...responseStore.env,
+    ...responseStore.applicationWorker.env,
     ASSETS: bindings.assets(),
     IMAGES: bindings.images(),
     DB: bindings.d1({
