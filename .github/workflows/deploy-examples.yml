@@ -204,12 +204,17 @@ jobs:
         run: vp build
         working-directory: ${{ matrix.example.working_directory }}
         env:
-          VINEXT_RESPONSE_STORE_SERVICE_NAME: ${{ matrix.example.name == 'response-store-demo' && needs.response_store.outputs.service_name || '' }}
+          VINEXT_RESPONSE_STORE_SERVICE_NAME: ${{ (matrix.example.name == 'response-store-demo' || (matrix.example.name == 'web' && github.event_name == 'pull_request')) && needs.response_store.outputs.service_name || '' }}
 
       - name: Build static export
         if: matrix.example.static_export == true
         run: vp exec vinext build
         working-directory: ${{ matrix.example.working_directory }}
+
+      - name: Verify generated Response Store Worker
+        if: matrix.example.name == 'response-store-demo' || matrix.example.name == 'web'
+        working-directory: ${{ matrix.example.working_directory }}
+        run: test -f dist/server/vinext-response-store/wrangler.json
 
       - name: Verify static export artifact
         if: matrix.example.static_export == true

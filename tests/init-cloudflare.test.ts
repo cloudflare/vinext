@@ -20,15 +20,13 @@ function expectValidConfig(output: string): void {
 }
 
 describe("updateViteConfigForCloudflare", () => {
-  it("configures Workers Response Store as the generated default", () => {
+  it("does not configure caching by default", () => {
     const output = generateAppRouterViteConfig();
     expectValidConfig(output);
-    expect(output).toContain(
-      'import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";',
-    );
-    expect(output).toContain("cache: responseStoreAdapter()");
+    expect(output).not.toContain("responseStoreAdapter");
     expect(output).not.toContain("kvDataAdapter");
     expect(output).not.toContain("cdnAdapter");
+    expect(output).not.toContain("cache:");
   });
 
   it("adds Workers Response Store to an existing bare vinext config", () => {

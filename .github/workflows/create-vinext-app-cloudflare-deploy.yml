@@ -54,6 +54,7 @@ jobs:
           --skip-install
           --disable-git
           --platform=cloudflare
+          --cdn-cache=response-store
           --image-optimization=cloudflare-images
 
       - name: Pin pnpm in scaffolded project to vinext's version

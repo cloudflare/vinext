@@ -19,7 +19,7 @@ export type CloudflareProjectInfo = {
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   dataCache: "none",
-  cdnCache: "response-store",
+  cdnCache: "none",
   imageOptimization: "cloudflare-images",
 };
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
