@@ -227,6 +227,11 @@ export async function finalizeSelfContainedResponseStoreBuildOutput({
     throw new Error("[vinext] The generated Wrangler config contains an invalid binding.");
   }
   const existingR2Buckets = (r2Buckets ?? []) as Record<string, unknown>[];
+  const automaticBucketName = `${appConfig.name}-cache-bodies`;
+  const bucketName =
+    automaticBucketName.length <= 63
+      ? undefined
+      : `${appConfig.name.slice(0, 41)}-${createHash("sha256").update(appConfig.name).digest("hex").slice(0, 8)}-cache-bodies`;
   const existingDurableBindings = (durableBindings ?? []) as Record<string, unknown>[];
   const existingCacheMetadataBinding = existingDurableBindings.find(
     (binding) => binding.name === CACHE_METADATA_BINDING,
@@ -260,7 +265,10 @@ export async function finalizeSelfContainedResponseStoreBuildOutput({
     version_metadata: { binding: VERSION_METADATA_BINDING },
     r2_buckets: existingR2Buckets.some((binding) => binding.binding === CACHE_BODIES_BINDING)
       ? existingR2Buckets
-      : [...existingR2Buckets, { binding: CACHE_BODIES_BINDING }],
+      : [
+          ...existingR2Buckets,
+          { binding: CACHE_BODIES_BINDING, ...(bucketName ? { bucket_name: bucketName } : {}) },
+        ],
     durable_objects: {
       ...durableObjects,
       bindings: existingCacheMetadataBinding

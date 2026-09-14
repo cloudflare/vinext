@@ -267,6 +267,23 @@ describe("deployResponseStoreService", () => {
     );
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it("does not discover conventional output when a valid deploy redirect exists", async () => {
+    const redirectedConfig = path.join(tmpDir, "custom/wrangler.json");
+    writeFile(tmpDir, "custom/wrangler.json", "{}");
+    writeFile(
+      tmpDir,
+      ".wrangler/deploy/config.json",
+      JSON.stringify({
+        configPath: path.relative(path.join(tmpDir, ".wrangler/deploy"), redirectedConfig),
+      }),
+    );
+    writeFile(tmpDir, "dist/server/vinext-response-store/wrangler.json", "{}");
+    const execute = vi.fn() as unknown as typeof spawn;
+
+    await expect(deployResponseStoreService(tmpDir, undefined, execute)).resolves.toBe(false);
+    expect(execute).not.toHaveBeenCalled();
+  });
 });
 
 describe("buildWranglerKVBulkPutArgs", () => {

@@ -218,6 +218,23 @@ describe("Cloudflare CDN adapter generated config", () => {
     });
   });
 
+  it("bounds the self-contained Response Store bucket name", async () => {
+    const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
+      name: "a".repeat(60),
+      main: "index.js",
+      compatibility_date: "2026-09-14",
+    });
+
+    await responseStoreAdapter({ mode: "self-contained" }).cdn.output.finalizeBuildOutput({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+    });
+
+    const [bucket] = JSON.parse(fs.readFileSync(generatedPath, "utf8")).r2_buckets;
+    expect(bucket.bucket_name).toHaveLength(63);
+    expect(bucket.bucket_name).toMatch(/-[a-f0-9]{8}-cache-bodies$/);
+  });
+
   it("uses custom Response Store service and R2 bucket names", async () => {
     const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
       name: "test-worker",
