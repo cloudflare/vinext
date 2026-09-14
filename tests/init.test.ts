@@ -767,7 +767,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
       platform: "cloudflare",
       prerender: true,
       cloudflare: {
-        dataCache: "none",
+        dataCache: "kv",
         cdnCache: "data-cache",
         imageOptimization: "none",
       },
