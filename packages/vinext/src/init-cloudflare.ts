@@ -1649,11 +1649,40 @@ export function updateViteConfigForCloudflare(
         : ensureNamedImport(program, output, source, imported, local);
       responseStoreExpression = `${binding}(${cacheOptions.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`;
       if (alreadyConfigured && cache) {
-        output.overwrite(
-          (cache.value as AstNode).start,
-          (cache.value as AstNode).end,
-          responseStoreExpression,
-        );
+        const call = cache.value as ESTree.CallExpression & AstNode;
+        const argument = call.arguments[0];
+        const mode = cacheOptions.responseStoreMode ?? "service-binding";
+        if (!argument) {
+          if (mode === "self-contained") {
+            output.appendLeft(call.end - 1, '{ mode: "self-contained" }');
+          }
+        } else if (argument.type === "ObjectExpression") {
+          const optionsObject = argument as AstObject;
+          const existingMode = findProperty(optionsObject, "mode");
+          if (
+            mode === "self-contained" &&
+            ["serviceName", "r2BucketName", "shouldDeployService"].some((name) =>
+              findProperty(optionsObject, name),
+            )
+          ) {
+            throw new Error(
+              "Remove Workers Response Store service options before switching to self-contained mode.",
+            );
+          }
+          if (existingMode) {
+            output.overwrite(
+              (existingMode.value as AstNode).start,
+              (existingMode.value as AstNode).end,
+              JSON.stringify(mode),
+            );
+          } else if (mode === "self-contained") {
+            insertObjectProperty(output, optionsObject, '      mode: "self-contained",', code);
+          }
+        } else {
+          throw new Error(
+            "responseStoreAdapter() options must be a static object for vinext init to update its mode.",
+          );
+        }
         responseStoreExpression = undefined;
       }
     }

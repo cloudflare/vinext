@@ -82,7 +82,27 @@ export default { plugins: [vinext({ cache: responseStoreAdapter() })] };
       ...options,
       cache: { ...options.cache, responseStoreMode: "service-binding" },
     });
-    expect(serviceBinding).toContain("cache: responseStoreAdapter()");
+    expect(serviceBinding).toContain('cache: responseStoreAdapter({ mode: "service-binding" })');
+  });
+
+  it("preserves existing Workers Response Store service options", () => {
+    const input = `import vinext from "vinext";
+import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default { plugins: [vinext({ cache: responseStoreAdapter({ serviceName: "shared", shouldDeployService: false }) }), cloudflare()] };
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "service-binding",
+      },
+    });
+
+    expect(output).toBe(input);
   });
 
   it("rejects replacing an existing cache configuration with Workers Response Store", () => {
