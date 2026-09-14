@@ -124,12 +124,15 @@ export default { plugins: [vinext()] };
       name: "my-app-response-store",
       main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
       cache: { enabled: true },
+      exports: {
+        CacheMetadata: { type: "durable-object", storage: "sqlite" },
+      },
       r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "my-app-response-store-cache-bodies" }],
       durable_objects: {
         bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
       },
-      migrations: [{ tag: "v1", new_sqlite_classes: ["CacheMetadata"] }],
     });
+    expect(service.migrations).toBeUndefined();
   });
 
   it("puts Response Store resources on the application only in self-contained mode", () => {
@@ -148,6 +151,7 @@ export default { plugins: [vinext()] };
       exports: {
         Other: { type: "worker", cache: { enabled: false } },
         ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
+        CacheMetadata: { type: "durable-object", storage: "sqlite" },
       },
       r2_buckets: [{ binding: "CACHE_BODIES" }],
       durable_objects: {
@@ -169,9 +173,33 @@ export default { plugins: [vinext()] };
     );
     expect(serviceBinding.cache).toEqual({ enabled: false });
     expect(serviceBinding.exports.ResponseStoreBinding).toBeUndefined();
+    expect(serviceBinding.exports.CacheMetadata).toBeUndefined();
+    expect(serviceBinding.exports.Other).toEqual({
+      type: "worker",
+      cache: { enabled: false },
+    });
     expect(serviceBinding.r2_buckets).toEqual([]);
     expect(serviceBinding.durable_objects.bindings).toEqual([]);
-    expect(serviceBinding.migrations).toEqual([]);
+    expect(serviceBinding.migrations).toBeUndefined();
+  });
+
+  it("rejects self-contained mode alongside unrelated Durable Object migrations", () => {
+    expect(() =>
+      updateWranglerConfigForCloudflare(
+        JSON.stringify({
+          name: "my-app",
+          compatibility_date: "2026-09-14",
+          migrations: [{ tag: "v1", new_classes: ["OtherDurableObject"] }],
+        }),
+        {
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+          responseStoreMode: "self-contained",
+        },
+        { root: "/tmp/vinext-missing-response-store-config" },
+      ),
+    ).toThrow("cannot be combined with migration-based Durable Objects");
   });
 
   it("rejects a conflicting Response Store service binding", () => {

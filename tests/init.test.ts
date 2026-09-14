@@ -618,8 +618,14 @@ describe("init — basic functionality", () => {
     expect(JSON.parse(readFile(tmpDir, "wrangler.response-store.jsonc"))).toMatchObject({
       name: "test-project-response-store",
       main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
+      exports: {
+        CacheMetadata: { type: "durable-object", storage: "sqlite" },
+      },
       r2_buckets: [{ binding: "CACHE_BODIES" }],
     });
+    expect(
+      JSON.parse(readFile(tmpDir, "wrangler.response-store.jsonc")).migrations,
+    ).toBeUndefined();
     expect(
       (readPkg(tmpDir) as { dependencies: Record<string, string> }).dependencies[
         "@cloudflare/workers-response-store"
@@ -639,12 +645,14 @@ describe("init — basic functionality", () => {
         main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
         compatibility_date: "2026-09-14",
         cache: { enabled: true },
-        exports: { ResponseStoreBinding: { cache: { enabled: true } } },
+        exports: {
+          ResponseStoreBinding: { cache: { enabled: true } },
+          CacheMetadata: { type: "durable-object", storage: "sqlite" },
+        },
         r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "shared-cache-bodies" }],
         durable_objects: {
           bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
         },
-        migrations: [{ tag: "v1", new_sqlite_classes: ["CacheMetadata"] }],
       },
       null,
       2,
@@ -679,12 +687,14 @@ describe("init — basic functionality", () => {
         main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
         compatibility_date: "2025-01-01",
         cache: { enabled: true },
-        exports: { ResponseStoreBinding: { cache: { enabled: true } } },
+        exports: {
+          ResponseStoreBinding: { cache: { enabled: true } },
+          CacheMetadata: { type: "durable-object", storage: "sqlite" },
+        },
         r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "shared-cache-bodies" }],
         durable_objects: {
           bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
         },
-        migrations: [{ tag: "v1", new_sqlite_classes: ["CacheMetadata"] }],
       }),
     );
     const before = snapshotProject(tmpDir);

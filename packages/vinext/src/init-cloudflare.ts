@@ -33,6 +33,7 @@ const RESPONSE_STORE_MAIN = "./node_modules/@cloudflare/workers-response-store/d
 const CACHE_BODIES_BINDING = "CACHE_BODIES";
 const CACHE_METADATA_BINDING = "CACHE_METADATA";
 const CACHE_METADATA_CLASS = "CacheMetadata";
+const CACHE_METADATA_EXPORT = { type: "durable-object", storage: "sqlite" } as const;
 const CTX_EXPORTS_DEFAULT_DATE = "2025-11-17";
 
 export type CloudflarePlatformSetupContext = {
@@ -476,6 +477,14 @@ function compactResourceName(name: string, suffix: string, maxLength: number): s
   return `${name.slice(0, maxLength - suffix.length - hash.length - 1)}-${hash}${suffix}`;
 }
 
+function isCacheMetadataExport(value: unknown): boolean {
+  return (
+    isUnknownRecord(value) &&
+    value.type === CACHE_METADATA_EXPORT.type &&
+    value.storage === CACHE_METADATA_EXPORT.storage
+  );
+}
+
 function readResponseStoreServiceName(root: string, appConfig: Record<string, unknown>): string {
   const responseStorePath = path.join(root, RESPONSE_STORE_WRANGLER_CONFIG);
   if (fs.existsSync(responseStorePath)) {
@@ -502,6 +511,9 @@ function readResponseStoreServiceName(root: string, appConfig: Record<string, un
     const responseStoreExport = isUnknownRecord(responseStoreConfig.exports)
       ? responseStoreConfig.exports.ResponseStoreBinding
       : undefined;
+    const cacheMetadataExport = isUnknownRecord(responseStoreConfig.exports)
+      ? responseStoreConfig.exports[CACHE_METADATA_CLASS]
+      : undefined;
     const hasCacheBodies =
       Array.isArray(responseStoreConfig.r2_buckets) &&
       responseStoreConfig.r2_buckets.some(
@@ -519,14 +531,10 @@ function readResponseStoreServiceName(root: string, appConfig: Record<string, un
           binding.class_name === CACHE_METADATA_CLASS &&
           binding.script_name === undefined,
       );
-    const hasCacheMetadataMigration =
-      Array.isArray(responseStoreConfig.migrations) &&
-      responseStoreConfig.migrations.some(
-        (migration) =>
-          isUnknownRecord(migration) &&
-          Array.isArray(migration.new_sqlite_classes) &&
-          migration.new_sqlite_classes.includes(CACHE_METADATA_CLASS),
-      );
+    const hasNoMigrations =
+      responseStoreConfig.migrations === undefined ||
+      (Array.isArray(responseStoreConfig.migrations) &&
+        responseStoreConfig.migrations.length === 0);
     if (
       !isUnknownRecord(responseStoreConfig.cache) ||
       responseStoreConfig.cache.enabled !== true ||
@@ -535,7 +543,8 @@ function readResponseStoreServiceName(root: string, appConfig: Record<string, un
       responseStoreExport.cache.enabled !== true ||
       !hasCacheBodies ||
       !hasCacheMetadata ||
-      !hasCacheMetadataMigration
+      !isCacheMetadataExport(cacheMetadataExport) ||
+      !hasNoMigrations
     ) {
       throw new Error(
         `${RESPONSE_STORE_WRANGLER_CONFIG} is missing required Response Store bindings.`,
@@ -631,6 +640,8 @@ function configureResponseStoreWrangler(
     throw new Error("The existing Wrangler config has an invalid exports value.");
   }
   const workerExports = { ...exportsConfig } as Record<string, unknown>;
+  const cacheMetadataExport = workerExports[CACHE_METADATA_CLASS];
+  const hasCacheMetadataExport = isCacheMetadataExport(cacheMetadataExport);
   let updateWorkerExports = mode === "self-contained";
 
   const services = config.services;
@@ -658,6 +669,15 @@ function configureResponseStoreWrangler(
     if (responseStoreExport !== undefined && !hasSelfContainedResponseStore) {
       throw new Error(
         "The existing ResponseStoreBinding export conflicts with Workers Response Store.",
+      );
+    }
+    if (
+      hasSelfContainedResponseStore &&
+      cacheMetadataExport !== undefined &&
+      !hasCacheMetadataExport
+    ) {
+      throw new Error(
+        `The existing ${CACHE_METADATA_CLASS} export conflicts with Workers Response Store.`,
       );
     }
     const hasCacheBodies =
@@ -698,6 +718,7 @@ function configureResponseStoreWrangler(
     ]);
     updateWorkerExports = hasSelfContainedResponseStore;
     delete workerExports.ResponseStoreBinding;
+    if (hasSelfContainedResponseStore) delete workerExports[CACHE_METADATA_CLASS];
 
     if (Array.isArray(config.r2_buckets)) {
       code = setTopLevelJsonProperty(
@@ -715,20 +736,6 @@ function configureResponseStoreWrangler(
           (binding) => !isUnknownRecord(binding) || binding.name !== CACHE_METADATA_BINDING,
         ),
       });
-    }
-    if (Array.isArray(config.migrations)) {
-      code = setTopLevelJsonProperty(
-        code,
-        "migrations",
-        config.migrations.filter(
-          (migration) =>
-            !isUnknownRecord(migration) ||
-            !(
-              typeof migration.tag === "string" &&
-              migration.tag.startsWith("vinext-response-store-")
-            ),
-        ),
-      );
     }
   } else {
     const defaultExport = workerExports.default;
@@ -753,7 +760,7 @@ function configureResponseStoreWrangler(
       if (!isUnknownRecord(value)) {
         throw new Error(`The existing Wrangler config has an invalid ${name} export.`);
       }
-      if (value.cache === undefined) {
+      if (value.type === "worker" && value.cache === undefined) {
         workerExports[name] = { ...value, cache: { enabled: false } };
       }
     }
@@ -766,6 +773,12 @@ function configureResponseStoreWrangler(
       type: "worker",
       cache: { enabled: true },
     };
+    if (cacheMetadataExport !== undefined && !hasCacheMetadataExport) {
+      throw new Error(
+        `The existing ${CACHE_METADATA_CLASS} export conflicts with Workers Response Store.`,
+      );
+    }
+    workerExports[CACHE_METADATA_CLASS] = CACHE_METADATA_EXPORT;
 
     const r2Buckets = config.r2_buckets;
     if (r2Buckets !== undefined && !Array.isArray(r2Buckets)) {
@@ -833,32 +846,10 @@ function configureResponseStoreWrangler(
     if (existingMigrations.some((migration) => !isUnknownRecord(migration))) {
       throw new Error("The existing Wrangler config has an invalid Durable Object migration.");
     }
-    if (
-      !existingMigrations.some(
-        (migration) =>
-          Array.isArray((migration as Record<string, unknown>).new_sqlite_classes) &&
-          ((migration as Record<string, unknown>).new_sqlite_classes as unknown[]).includes(
-            CACHE_METADATA_CLASS,
-          ),
-      )
-    ) {
-      let migrationNumber = existingMigrations.length + 1;
-      while (
-        existingMigrations.some(
-          (migration) =>
-            (migration as Record<string, unknown>).tag ===
-            `vinext-response-store-v${migrationNumber}`,
-        )
-      ) {
-        migrationNumber++;
-      }
-      code = setTopLevelJsonProperty(code, "migrations", [
-        ...existingMigrations,
-        {
-          tag: `vinext-response-store-v${migrationNumber}`,
-          new_sqlite_classes: [CACHE_METADATA_CLASS],
-        },
-      ]);
+    if (existingMigrations.length > 0) {
+      throw new Error(
+        "Self-contained Workers Response Store cannot be combined with migration-based Durable Objects. Convert the existing Durable Objects to declarative exports or use service-binding mode.",
+      );
     }
   }
 
@@ -889,6 +880,7 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
       exports: {
         default: { type: "worker", cache: { enabled: false } },
         ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
+        [CACHE_METADATA_CLASS]: CACHE_METADATA_EXPORT,
       },
       r2_buckets: [
         {
@@ -899,7 +891,6 @@ export function generateResponseStoreWranglerConfig(appWranglerCode: string, roo
       durable_objects: {
         bindings: [{ name: CACHE_METADATA_BINDING, class_name: CACHE_METADATA_CLASS }],
       },
-      migrations: [{ tag: "v1", new_sqlite_classes: [CACHE_METADATA_CLASS] }],
       ...(typeof appConfig.account_id === "string" ? { account_id: appConfig.account_id } : {}),
     },
     null,

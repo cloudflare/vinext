@@ -11,6 +11,7 @@
   "exports": {
     "default": { "type": "worker", "cache": { "enabled": false } },
     "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },
+    "CacheMetadata": { "type": "durable-object", "storage": "sqlite" },
   },
   "r2_buckets": [
     {
@@ -21,6 +22,5 @@
   "durable_objects": {
     "bindings": [{ "name": "CACHE_METADATA", "class_name": "CacheMetadata" }],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CacheMetadata"] }],
   "account_id": "d48e2eb599d9aa075d5e682deaecc518",
 }
