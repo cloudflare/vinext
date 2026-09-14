@@ -223,6 +223,7 @@ describe("Cloudflare CDN adapter generated config", () => {
       name: "a".repeat(60),
       main: "index.js",
       compatibility_date: "2026-09-14",
+      r2_buckets: [{ binding: "CACHE_BODIES" }],
     });
 
     await responseStoreAdapter({ mode: "self-contained" }).cdn.output.finalizeBuildOutput({

@@ -776,7 +776,7 @@ export async function deployResponseStoreService(
       };
       if (typeof redirect.configPath === "string") {
         const redirectedConfig = path.resolve(path.dirname(redirectPath), redirect.configPath);
-        if (fs.existsSync(redirectedConfig)) {
+        if (fs.statSync(redirectedConfig).isFile()) {
           appConfigs.push(redirectedConfig);
           hasRedirect = true;
         }

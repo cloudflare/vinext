@@ -284,6 +284,16 @@ describe("deployResponseStoreService", () => {
     await expect(deployResponseStoreService(tmpDir, undefined, execute)).resolves.toBe(false);
     expect(execute).not.toHaveBeenCalled();
   });
+
+  it("falls back to conventional output when a deploy redirect targets a directory", async () => {
+    writeWranglerPackageForTest(tmpDir);
+    writeFile(tmpDir, ".wrangler/deploy/config.json", JSON.stringify({ configPath: "." }));
+    writeFile(tmpDir, "dist/server/wrangler.json", "{}");
+    writeFile(tmpDir, "dist/server/vinext-response-store/wrangler.json", "{}");
+    const execute = (() => createMockChildProcess("Deployed\n")) as typeof spawn;
+
+    await expect(deployResponseStoreService(tmpDir, undefined, execute)).resolves.toBe(true);
+  });
 });
 
 describe("buildWranglerKVBulkPutArgs", () => {

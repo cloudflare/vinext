@@ -264,7 +264,13 @@ export async function finalizeSelfContainedResponseStoreBuildOutput({
     cache: { ...cache, enabled: true },
     version_metadata: { binding: VERSION_METADATA_BINDING },
     r2_buckets: existingR2Buckets.some((binding) => binding.binding === CACHE_BODIES_BINDING)
-      ? existingR2Buckets
+      ? existingR2Buckets.map((binding) =>
+          binding.binding === CACHE_BODIES_BINDING &&
+          binding.bucket_name === undefined &&
+          bucketName
+            ? { ...binding, bucket_name: bucketName }
+            : binding,
+        )
       : [
           ...existingR2Buckets,
           { binding: CACHE_BODIES_BINDING, ...(bucketName ? { bucket_name: bucketName } : {}) },
