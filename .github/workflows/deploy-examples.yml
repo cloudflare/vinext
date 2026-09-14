@@ -40,7 +40,7 @@ jobs:
             service_name="pr-${{ github.event.pull_request.number }}-response-store-demo-response-store"
           else
             prefix="main"
-            service_name="response-store-demo-response-store"
+            service_name="vinext-workers-response-store-service-poc"
           fi
           {
             echo "service_name=$service_name"
@@ -204,7 +204,7 @@ jobs:
         run: vp build
         working-directory: ${{ matrix.example.working_directory }}
         env:
-          VINEXT_RESPONSE_STORE_SERVICE_NAME: ${{ matrix.example.name == 'response-store-demo' && needs.response_store.outputs.service_name || '' }}
+          VINEXT_RESPONSE_STORE_SERVICE_NAME: ${{ matrix.example.name == 'response-store-demo' && github.event_name == 'pull_request' && needs.response_store.outputs.service_name || '' }}
 
       - name: Build static export
         if: matrix.example.static_export == true
