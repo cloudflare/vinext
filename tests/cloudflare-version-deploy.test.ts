@@ -126,10 +126,14 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     );
 
     expect(log).toHaveBeenCalledWith(
-      "\n  Staging uploaded Worker version at 0% for CDN warmup in production...",
+      "\n  Staging uploaded application Worker version at 0% for CDN warmup in production...",
     );
-    expect(log).toHaveBeenCalledWith("\n  Promoting warmed Worker version to production...");
-    expect(log).toHaveBeenCalledWith("\n  Promoting uploaded Worker version to env: staging...");
+    expect(log).toHaveBeenCalledWith(
+      "\n  Promoting warmed application Worker version to production...",
+    );
+    expect(log).toHaveBeenCalledWith(
+      "\n  Promoting uploaded application Worker version to env: staging...",
+    );
   });
 
   it("hides raw Wrangler upload output by default and shows it in verbose mode", () => {

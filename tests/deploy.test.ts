@@ -231,6 +231,7 @@ describe("deployResponseStoreService", () => {
     writeWranglerPackageForTest(tmpDir);
     writeFile(tmpDir, "dist/server/wrangler.json", "{}");
     writeFile(tmpDir, "dist/server/vinext-response-store/wrangler.json", "{}");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
     let observed: Parameters<typeof spawn> | undefined;
     const execute = ((...args: Parameters<typeof spawn>) => {
       observed = args;
@@ -247,6 +248,9 @@ describe("deployResponseStoreService", () => {
       "--config",
       path.join("dist", "server", "vinext-response-store", "wrangler.json"),
     ]);
+    expect(log).toHaveBeenCalledWith(
+      "\n  Deploying Workers Response Store service to production...",
+    );
   });
 
   it("is a no-op when the build has no generated service", async () => {

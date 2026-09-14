@@ -279,9 +279,9 @@ export function runWranglerVersionUpload(
 ): WranglerVersionUploadResult {
   const { args, env } = buildWranglerVersionUploadArgs(options);
   if (env) {
-    console.log(`\n  Uploading Worker version for env: ${env}...`);
+    console.log(`\n  Uploading application Worker version for env: ${env}...`);
   } else {
-    console.log("\n  Uploading Worker version for production...");
+    console.log("\n  Uploading application Worker version for production...");
   }
   try {
     return parseWranglerVersionUploadOutput(
@@ -305,11 +305,13 @@ export function runWranglerVersionDeploy(
   const { args, env } = buildWranglerVersionDeployArgs(versionTraffic, options);
   const target = env ? `env: ${env}` : "production";
   if (phase === "stage") {
-    console.log(`\n  Staging uploaded Worker version at 0% for CDN warmup in ${target}...`);
+    console.log(
+      `\n  Staging uploaded application Worker version at 0% for CDN warmup in ${target}...`,
+    );
   } else if (phase === "promote-warmed") {
-    console.log(`\n  Promoting warmed Worker version to ${target}...`);
+    console.log(`\n  Promoting warmed application Worker version to ${target}...`);
   } else {
-    console.log(`\n  Promoting uploaded Worker version to ${target}...`);
+    console.log(`\n  Promoting uploaded application Worker version to ${target}...`);
   }
   const output = runWranglerCommand(root, args, execute, options.verbose === true);
   return { deployedUrl: parseWorkersDevUrl(output), output };

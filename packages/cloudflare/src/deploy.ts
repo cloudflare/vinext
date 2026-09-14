@@ -711,7 +711,9 @@ export async function runWranglerKVBulkPut(
 
 export async function runWranglerDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config"> & {
+    displayName?: string;
+  },
   execute: typeof spawn = spawn,
 ): Promise<string> {
   const spawnOptions: SpawnOptions = {
@@ -721,11 +723,12 @@ export async function runWranglerDeploy(
   };
 
   const { file, args, env } = buildWranglerInvocation(root, options);
+  const displayName = options.displayName ?? "application Worker";
 
   if (env) {
-    console.log(`\n  Deploying to env: ${env}...`);
+    console.log(`\n  Deploying ${displayName} to env: ${env}...`);
   } else {
-    console.log("\n  Deploying to production...");
+    console.log(`\n  Deploying ${displayName} to production...`);
   }
 
   const child = execute(file, args, spawnOptions);
@@ -791,8 +794,14 @@ export async function deployResponseStoreService(
     .find((config) => fs.existsSync(config));
   if (!serviceConfig) return false;
 
-  console.log("\n  Deploying Workers Response Store...");
-  await runWranglerDeploy(root, { config: path.relative(root, serviceConfig) }, execute);
+  await runWranglerDeploy(
+    root,
+    {
+      config: path.relative(root, serviceConfig),
+      displayName: "Workers Response Store service",
+    },
+    execute,
+  );
   return true;
 }
 
