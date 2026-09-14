@@ -37,10 +37,10 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             prefix="pr-${{ github.event.pull_request.number }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            service_name="${prefix}-rs-service"
+            service_name="pr-${{ github.event.pull_request.number }}-response-store-demo-response-store"
           else
             prefix="main"
-            service_name="vinext-workers-response-store-service-poc"
+            service_name="response-store-demo-response-store"
           fi
           {
             echo "service_name=$service_name"
@@ -335,30 +335,6 @@ jobs:
           vp exec playwright test
           tests/e2e/cloudflare-workers/web-worker.spec.ts
           tests/e2e/cloudflare-workers/optimistic-search-navigation.spec.ts
-
-  cleanup-response-store:
-    name: Clean up Workers Response Store service
-    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    needs: [response_store, deploy, smoke-test, deployed-e2e]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-
-      - name: Delete cache Worker
-        working-directory: packages/workers-response-store
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          SERVICE_NAME: ${{ needs.response_store.outputs.service_name }}
-        run: |
-          if [[ -n "$SERVICE_NAME" ]]; then
-            vp exec wrangler delete "$SERVICE_NAME" --force
-          fi
 
   comment:
     name: Comment Preview URLs
