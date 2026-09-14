@@ -240,7 +240,7 @@ function handleRequest(
     });
   return platformCtx &&
     typeof platformCtx.waitUntil === "function" &&
-    !Reflect.has(platformCtx, CACHEABILITY_REQUEST_STATE)
+    (!forceCacheBypass || !Reflect.has(platformCtx, CACHEABILITY_REQUEST_STATE))
     ? runWithExecutionContext(platformCtx as ExecutionContextLike, trace)
     : trace();
 }

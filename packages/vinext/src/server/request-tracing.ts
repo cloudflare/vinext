@@ -4,7 +4,7 @@ import { frameworkTracer } from "./tracer.js";
 
 type ActiveRequestTrace = {
   recordError(error: Error): void;
-  setRoute(route: string | undefined, isRsc: boolean): void;
+  setRoute(route: string | undefined, isRsc?: boolean): void;
 };
 
 type RequestTraceInput<T> = {
@@ -18,7 +18,7 @@ type RequestTraceInput<T> = {
 
 const activeRequestTrace = getOrCreateAls<ActiveRequestTrace>("vinext.requestTracing.als");
 
-export function setFrameworkRequestRoute(route: string | undefined, isRsc = false): void {
+export function setFrameworkRequestRoute(route: string | undefined, isRsc?: boolean): void {
   activeRequestTrace.getStore()?.setRoute(route, isRsc);
 }
 
@@ -155,7 +155,7 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
               },
               setRoute(nextRoute, nextIsRsc) {
                 if (nextRoute !== undefined) route = nextRoute;
-                isRsc = nextIsRsc;
+                if (nextIsRsc !== undefined) isRsc = nextIsRsc;
               },
             },
             input.callback,

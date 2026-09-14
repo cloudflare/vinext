@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { handleRequestStage } from "../packages/vinext/src/server/pages-request-stage-entry.js";
+import {
+  handleRequestStage,
+  handleRequestStageLocally,
+} from "../packages/vinext/src/server/pages-request-stage-entry.js";
 import worker from "../packages/vinext/src/server/pages-router-entry.js";
 import {
   PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER,
@@ -200,6 +203,52 @@ describe("Pages Worker request stage", () => {
       { cache: "shared" },
     );
     expect(mocks.renderResponse).not.toHaveBeenCalled();
+  });
+
+  it("activates a derived cacheability context inside an outer Worker context", async () => {
+    const outerContext: ExecutionContextLike = { waitUntil() {} };
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    };
+    const derivedContext = cacheabilityContext(state);
+    mocks.runMiddleware.mockImplementation(async () => {
+      expect(getRequestExecutionContext()).toBe(derivedContext);
+      return { continue: true };
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("remote"));
+
+    await runWithExecutionContext(outerContext, () =>
+      handleRequestStage(
+        new Request("https://example.com/page"),
+        undefined,
+        derivedContext,
+        dispatch,
+      ),
+    );
+
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps single-stage cacheability classification outside the request pipeline", async () => {
+    const outerContext: ExecutionContextLike = { waitUntil() {} };
+    const derivedContext = cacheabilityContext({
+      captureDeadlineAt: Date.now() + 1_000,
+      mode: "admit",
+    });
+    mocks.runMiddleware.mockImplementation(async () => {
+      expect(getRequestExecutionContext()).toBe(outerContext);
+      return { continue: true };
+    });
+
+    await runWithExecutionContext(outerContext, () =>
+      handleRequestStageLocally(
+        new Request("https://example.com/page"),
+        undefined,
+        derivedContext,
+        async () => new Response("local"),
+      ),
+    );
   });
 
   it("keeps multi-stage dispatch inside the Worker execution context", async () => {

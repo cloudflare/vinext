@@ -40,22 +40,34 @@ type InstrumentationState = {
   initPromise: Promise<void> | null;
 };
 
+type InstrumentationStates = {
+  byId: Map<string, InstrumentationState>;
+  byModule: WeakMap<Record<string, unknown>, InstrumentationState>;
+};
+
 const INSTRUMENTATION_STATE_KEY = Symbol.for("vinext.instrumentation.state");
 
 function getInstrumentationState(
   instrumentationModule: Record<string, unknown>,
+  instrumentationId: string | undefined,
 ): InstrumentationState {
   const globals = globalThis as typeof globalThis & {
-    [INSTRUMENTATION_STATE_KEY]?: WeakMap<Record<string, unknown>, InstrumentationState>;
+    [INSTRUMENTATION_STATE_KEY]?: InstrumentationStates;
   };
-  const states = (globals[INSTRUMENTATION_STATE_KEY] ??= new WeakMap());
-  const existing = states.get(instrumentationModule);
+  const states = (globals[INSTRUMENTATION_STATE_KEY] ??= {
+    byId: new Map(),
+    byModule: new WeakMap(),
+  });
+  const existing = instrumentationId
+    ? states.byId.get(instrumentationId)
+    : states.byModule.get(instrumentationModule);
   if (existing) return existing;
   const state = {
     initialized: false,
     initPromise: null,
   };
-  states.set(instrumentationModule, state);
+  if (instrumentationId) states.byId.set(instrumentationId, state);
+  else states.byModule.set(instrumentationModule, state);
   return state;
 }
 
@@ -76,12 +88,15 @@ function isOnRequestErrorHandler(value: unknown): value is OnRequestErrorHandler
  * @param instrumentationModule - The imported `instrumentation.ts` module.
  *   Passed as an argument so the generated entry can import it normally
  *   without this helper needing to know the module path.
+ * @param instrumentationId - Stable source path used to deduplicate the same
+ *   instrumentation file when Vite evaluates it in separate environments.
  */
 export async function ensureInstrumentationRegistered(
   instrumentationModule: Record<string, unknown>,
+  instrumentationId?: string,
 ): Promise<void> {
   if (process.env.VINEXT_PRERENDER === "1") return;
-  const state = getInstrumentationState(instrumentationModule);
+  const state = getInstrumentationState(instrumentationModule, instrumentationId);
   if (state.initialized) return;
   if (state.initPromise) return state.initPromise;
 

@@ -40,6 +40,7 @@ import fs from "node:fs";
 import path from "pathslash";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
+import { ensureInstrumentationRegistered } from "./instrumentation-runtime.js";
 /**
  * Minimal duck-typed interface for the module runner passed to
  * `runInstrumentation`. Only `.import()` is used — this avoids requiring
@@ -162,16 +163,7 @@ export async function runInstrumentation(
   try {
     const mod = (await runner.import(instrumentationPath)) as Record<string, unknown>;
 
-    // Call register() if exported
-    if (typeof mod.register === "function") {
-      await mod.register();
-    }
-
-    // Store onRequestError handler on globalThis so environments can reach the
-    // same handler.
-    if (typeof mod.onRequestError === "function") {
-      globalThis.__VINEXT_onRequestErrorHandler__ = mod.onRequestError as OnRequestErrorHandler;
-    }
+    await ensureInstrumentationRegistered(mod, instrumentationPath);
   } catch (err) {
     console.error(
       "[vinext] Failed to load instrumentation:",

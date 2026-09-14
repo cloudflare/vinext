@@ -148,6 +148,31 @@ describe("framework request tracing", () => {
     });
   });
 
+  it("preserves RSC classification when a response stage returns only the route", async () => {
+    spans.length = 0;
+
+    await traceFrameworkRequest({
+      callback: async () => {
+        const { result, route } = await captureFrameworkRequestRoute(async () => {
+          setFrameworkRequestRoute("/products/[id]");
+          return new Response("ok");
+        });
+        return consumeFrameworkRequestRoute(attachFrameworkRequestRoute(result, route));
+      },
+      getStatus: (response) => response?.status,
+      headers: new Headers({ RSC: "1" }),
+      isRsc: true,
+      method: "GET",
+      target: "/products/42.rsc",
+    });
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]).toMatchObject({
+      attributes: { "next.rsc": true },
+      name: "RSC GET /products/[id]",
+    });
+  });
+
   it("preserves a WebSocket response while transferring its route", () => {
     const webSocket = {};
     const response = {

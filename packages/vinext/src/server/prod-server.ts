@@ -1888,7 +1888,16 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   };
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    await ensureInstrumentation();
+    try {
+      await ensureInstrumentation();
+    } catch (error) {
+      console.error("[vinext] Instrumentation error:", error);
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end("Internal Server Error");
+      }
+      return;
+    }
     const target = req.url ?? "/";
     const headers = nodeHeadersToWebHeaders(req.headers);
     return traceFrameworkRequest({
@@ -2045,7 +2054,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   const handleRequest = (req: IncomingMessage, res: ServerResponse): Promise<void> =>
     traceFrameworkRequest({
-      callback: () => handleRequestImpl(req, res),
+      callback: async () => {
+        await handleRequestImpl(req, res);
+        await waitForNodeResponseCompletion(res);
+      },
       getStatus: () => res.statusCode,
       headers: nodeHeadersToWebHeaders(req.headers),
       method: req.method ?? "GET",

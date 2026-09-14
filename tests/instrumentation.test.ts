@@ -373,6 +373,17 @@ describe("ensureInstrumentationRegistered", () => {
     expect(register).toHaveBeenCalledOnce();
   });
 
+  it("deduplicates separate environment module instances by instrumentation path", async () => {
+    const firstRegister = vi.fn();
+    const secondRegister = vi.fn();
+
+    await ensureInstrumentationRegistered({ register: firstRegister }, "/app/instrumentation.ts");
+    await ensureInstrumentationRegistered({ register: secondRegister }, "/app/instrumentation.ts");
+
+    expect(firstRegister).toHaveBeenCalledOnce();
+    expect(secondRegister).not.toHaveBeenCalled();
+  });
+
   it("registers distinct instrumentation modules independently", async () => {
     const firstRegister = vi.fn();
     const secondRegister = vi.fn();
@@ -415,6 +426,7 @@ describe("reportRequestError", () => {
 
   beforeEach(async () => {
     vi.resetModules();
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.instrumentation.state")];
     const mod = await import("../packages/vinext/src/server/instrumentation.js");
     runInstrumentation = mod.runInstrumentation;
     reportRequestError = mod.reportRequestError;
@@ -423,6 +435,7 @@ describe("reportRequestError", () => {
   });
 
   afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.instrumentation.state")];
     delete globalThis.__VINEXT_onRequestErrorHandler__;
   });
 
