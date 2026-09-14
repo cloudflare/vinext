@@ -88,11 +88,32 @@ describe("Next.js deploy harness", () => {
       fs.mkdirSync(path.join(workspaceRoot, "packages/vinext/dist"), { recursive: true });
       fs.mkdirSync(path.join(workspaceRoot, "packages/cloudflare/dist"), { recursive: true });
       fs.mkdirSync(path.join(workspaceRoot, "packages/types/next"), { recursive: true });
+      for (const packageName of ["react", "react-dom", "react-server-dom-webpack"]) {
+        const packageRoot = path.join(
+          workspaceRoot,
+          packageName === "react-server-dom-webpack"
+            ? "packages/vinext/node_modules"
+            : "node_modules",
+          packageName,
+        );
+        fs.mkdirSync(packageRoot, { recursive: true });
+        fs.writeFileSync(
+          path.join(packageRoot, "package.json"),
+          JSON.stringify({ name: packageName, version: "19.2.7" }),
+        );
+      }
       fs.writeFileSync(
         path.join(workspaceRoot, "packages/types/next/index.d.ts"),
         'declare module "next" {}\n',
       );
-      fs.writeFileSync(path.join(appRoot, "package.json"), '{"name":"fixture"}\n');
+      fs.mkdirSync(path.join(appRoot, "app"));
+      fs.writeFileSync(
+        path.join(appRoot, "package.json"),
+        JSON.stringify({
+          name: "fixture",
+          dependencies: { react: "latest", "react-dom": "^19.0.0" },
+        }),
+      );
 
       execFileSync(process.execPath, ["-e", injection!], {
         cwd: appRoot,
@@ -112,9 +133,13 @@ describe("Next.js deploy harness", () => {
       const localTypes = JSON.parse(
         fs.readFileSync(path.join(appRoot, ".vinext-local-types-package/package.json"), "utf8"),
       );
+      const fixture = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
       expect(localVinext.dependencies["@vinext/types"]).toBe("file:../.vinext-local-types-package");
       expect(localCloudflare.peerDependencies.vinext).toBe("file:../.vinext-local-package");
       expect(localTypes.name).toBe("@vinext/types");
+      expect(fixture.dependencies.react).toBe("19.2.7");
+      expect(fixture.dependencies["react-dom"]).toBe("19.2.7");
+      expect(fixture.devDependencies["react-server-dom-webpack"]).toBe("19.2.7");
       expect(fs.existsSync(path.join(appRoot, ".vinext-local-types-package/next/index.d.ts"))).toBe(
         true,
       );

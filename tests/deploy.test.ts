@@ -1339,7 +1339,7 @@ describe("generateWranglerConfig", () => {
     expect(parsed.compatibility_date).toBe(today);
   });
 
-  it("includes the default KV namespace", () => {
+  it("does not require a KV namespace for the default Response Store", () => {
     mkdir(tmpDir, "app");
     writeFile(
       tmpDir,
@@ -1350,8 +1350,9 @@ describe("generateWranglerConfig", () => {
     const config = generateWranglerConfig(info);
     const parsed = JSON.parse(config);
 
-    expect(parsed.kv_namespaces).toBeDefined();
-    expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_KV_CACHE");
+    expect(parsed.kv_namespaces).toBeUndefined();
+    expect(parsed.cache).toBeUndefined();
+    expect(parsed.version_metadata).toBeUndefined();
   });
 
   it("omits KV namespace when KV caches are disabled", () => {
@@ -1417,6 +1418,15 @@ describe("viteConfigHasCacheAdapter", () => {
       `export default {
          plugins: [vinext({ cache: { data: { adapter: "./x.js", options: {} } } })],
        };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it("detects a cache config returned by an adapter factory", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ cache: responseStoreAdapter() })] };`,
     );
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
   });

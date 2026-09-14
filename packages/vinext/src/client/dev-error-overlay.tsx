@@ -501,7 +501,13 @@ function DevErrorOverlay({
         : [],
     [error.stack, error.ignoredStackFrames, error.projectRoot, isBuildError],
   );
+  const [previousErrorId, setPreviousErrorId] = useState(error.id);
   const [showIgnoredFrames, setShowIgnoredFrames] = useState(false);
+  // Reset only frame visibility so pagination buttons retain their DOM nodes and focus.
+  if (previousErrorId !== error.id) {
+    setPreviousErrorId(error.id);
+    setShowIgnoredFrames(false);
+  }
   const hasVisibleFrame = frames.some((frame) => !frame.ignored);
   const ignoredFramesTally = hasVisibleFrame
     ? frames.reduce((tally, frame) => tally + (frame.ignored ? 1 : 0), 0)
@@ -510,10 +516,6 @@ function DevErrorOverlay({
     showIgnoredFrames || ignoredFramesTally === 0
       ? frames
       : frames.filter((frame) => !frame.ignored);
-
-  useEffect(() => {
-    setShowIgnoredFrames(false);
-  }, [error.id]);
 
   // Esc minimizes, ←/→ navigate between errors. Esc no longer dismisses
   // outright — once a developer wants the overlay gone they can hit the ×

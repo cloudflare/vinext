@@ -294,6 +294,18 @@ describe("addScripts", () => {
     );
   });
 
+  it("adds a separate Response Store deploy script when requested", () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const added = addScripts(tmpDir, 3001, "cloudflare", { deployResponseStore: true });
+
+    expect(added).toContain("deploy:response-store");
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["deploy:response-store"]).toBe(
+      "wrangler deploy --config wrangler.response-store.jsonc",
+    );
+  });
+
   it("supports standard script names without a dev port for fresh scaffolds", () => {
     setupProject(tmpDir, { router: "app" });
 
@@ -337,11 +349,12 @@ describe("addScripts", () => {
         scripts: {
           "dev:vinext": "custom-command",
           "deploy:vinext": "custom-deploy",
+          "deploy:response-store": "custom-response-store-deploy",
         },
       },
     });
 
-    const added = addScripts(tmpDir, 3001, "cloudflare");
+    const added = addScripts(tmpDir, 3001, "cloudflare", { deployResponseStore: true });
 
     expect(added).not.toContain("dev:vinext");
     expect(added).not.toContain("deploy:vinext");
@@ -352,6 +365,7 @@ describe("addScripts", () => {
     expect(pkg.scripts["dev:vinext"]).toBe("custom-command");
     expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
     expect(pkg.scripts["deploy:vinext"]).toBe("custom-deploy");
+    expect(pkg.scripts["deploy:response-store"]).toBe("custom-response-store-deploy");
   });
 
   it("creates scripts object if missing", () => {
@@ -396,6 +410,24 @@ describe("getInitDeps", () => {
     expect(deps).toContain("@cloudflare/vite-plugin");
     expect(deps).toContain("wrangler");
     expect(deps).toContain("@vinext/cloudflare");
+  });
+
+  it("adds the deployable Response Store package for service-binding mode", () => {
+    const deps = getInitDeps(true, "cloudflare", {
+      dataCache: "none",
+      cdnCache: "response-store",
+      imageOptimization: "none",
+      responseStoreMode: "service-binding",
+    });
+    expect(deps).toContain("@cloudflare/workers-response-store");
+    expect(
+      getInitDeps(true, "cloudflare", {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "self-contained",
+      }),
+    ).not.toContain("@cloudflare/workers-response-store");
   });
 
   it("does not add Cloudflare dependencies for the Node platform", () => {
@@ -554,6 +586,140 @@ describe("init — basic functionality", () => {
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
       main: "vinext/server/fetch-handler",
     });
+  });
+
+  it("generates a collocated Response Store Wrangler config", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { result, output } = await runInit(tmpDir, {
+      install: false,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "service-binding",
+      },
+    });
+
+    expect(result.generatedPlatformFiles).toEqual([
+      "wrangler.jsonc",
+      "wrangler.response-store.jsonc",
+    ]);
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+      cache: { enabled: false },
+      services: [
+        {
+          binding: "RESPONSE_STORE",
+          service: "test-project-response-store",
+          entrypoint: "ResponseStoreService",
+        },
+      ],
+    });
+    expect(JSON.parse(readFile(tmpDir, "wrangler.response-store.jsonc"))).toMatchObject({
+      name: "test-project-response-store",
+      main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
+      r2_buckets: [{ binding: "CACHE_BODIES" }],
+    });
+    expect(
+      (readPkg(tmpDir) as { dependencies: Record<string, string> }).dependencies[
+        "@cloudflare/workers-response-store"
+      ],
+    ).toBe("latest");
+    expect(
+      (readPkg(tmpDir) as { scripts: Record<string, string> }).scripts["deploy:response-store"],
+    ).toBe("wrangler deploy --config wrangler.response-store.jsonc");
+    expect(output).toContain("run deploy:response-store");
+  });
+
+  it("uses an existing Response Store config without rewriting its resource names", async () => {
+    setupProject(tmpDir, { router: "app" });
+    const responseStoreConfig = `${JSON.stringify(
+      {
+        name: "shared-response-store",
+        main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
+        compatibility_date: "2026-09-14",
+        cache: { enabled: true },
+        exports: { ResponseStoreBinding: { cache: { enabled: true } } },
+        r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "shared-cache-bodies" }],
+        durable_objects: {
+          bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
+        },
+        migrations: [{ tag: "v1", new_sqlite_classes: ["CacheMetadata"] }],
+      },
+      null,
+      2,
+    )}\n`;
+    writeFile(tmpDir, "wrangler.response-store.jsonc", responseStoreConfig);
+
+    await runInit(tmpDir, {
+      install: false,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "service-binding",
+      },
+    });
+
+    expect(readFile(tmpDir, "wrangler.response-store.jsonc")).toBe(responseStoreConfig);
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).services).toContainEqual({
+      binding: "RESPONSE_STORE",
+      service: "shared-response-store",
+      entrypoint: "ResponseStoreService",
+    });
+  });
+
+  it("rejects a Response Store config without ctx.exports before mutating the project", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "wrangler.response-store.jsonc",
+      JSON.stringify({
+        name: "shared-response-store",
+        main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
+        compatibility_date: "2025-01-01",
+        cache: { enabled: true },
+        exports: { ResponseStoreBinding: { cache: { enabled: true } } },
+        r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "shared-cache-bodies" }],
+        durable_objects: {
+          bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
+        },
+        migrations: [{ tag: "v1", new_sqlite_classes: ["CacheMetadata"] }],
+      }),
+    );
+    const before = snapshotProject(tmpDir);
+
+    await expect(
+      runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+          responseStoreMode: "service-binding",
+        },
+      }),
+    ).rejects.toThrow("must enable ctx.exports");
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("rejects malformed standalone Response Store config before mutating the project", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "wrangler.response-store.jsonc", `{ "name": "broken",\n`);
+    const before = snapshotProject(tmpDir);
+
+    await expect(
+      runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "response-store",
+          imageOptimization: "none",
+          responseStoreMode: "service-binding",
+        },
+      }),
+    ).rejects.toThrow("Could not parse wrangler.response-store.jsonc");
+    expect(snapshotProject(tmpDir)).toBe(before);
   });
 
   it("does not configure prerender unless opted in", async () => {
@@ -767,7 +933,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
       platform: "cloudflare",
       prerender: true,
       cloudflare: {
-        dataCache: "none",
+        dataCache: "kv",
         cdnCache: "data-cache",
         imageOptimization: "none",
       },

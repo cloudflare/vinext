@@ -1020,10 +1020,12 @@ function printHelp(cmd?: string) {
                          (default: prompt, with No selected by default)
     --experimental-warm-cdn-cache
                          Add experimental CDN pre-warming to the Cloudflare deploy script
-                         (Workers Cache CDN only, default: prompt with No)
-    --cdn-cache <type>   Cloudflare CDN cache: workers-cache or data-cache
-                         (default: workers-cache)
-    --data-cache <type>  Cloudflare data cache: kv or none (default: kv)
+                         (Response Store or Workers Cache, default: prompt with No)
+    --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache, or data-cache
+                         (default: none; response-store is the default cache choice)
+    --response-store-mode <type>
+                         Workers Response Store mode: service-binding or self-contained
+    --data-cache <type>  Cloudflare data cache: kv or none
     --image-optimization <type>
                          Cloudflare image optimization: cloudflare-images or none
     -h, --help           Show this help

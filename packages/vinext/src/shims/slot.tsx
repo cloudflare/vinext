@@ -297,11 +297,11 @@ function useBfcacheSlotEntries(activeEntry: BfcacheSlotEntry): BfcacheSlotEntry[
   const snapshotsByStateKey = React.useRef(new Map<string, BfcacheSlotEntry>());
   const [entryOrder, setEntryOrder] = React.useState<string[]>(() => [activeEntry.stateKey]);
 
-  const staged = stageBfcacheSlotEntryForRender(
-    snapshotsByStateKey.current,
-    entryOrder,
-    activeEntry,
-  );
+  // The cache contains only committed snapshots. Reading it here lets a new
+  // Activity render preserve entries without publishing speculative writes.
+  // oxlint-disable-next-line react/refs -- this read is the committed input to a staged render
+  const committedSnapshots = snapshotsByStateKey.current;
+  const staged = stageBfcacheSlotEntryForRender(committedSnapshots, entryOrder, activeEntry);
   const nextOrder = staged.order;
   const orderChanged = !haveSameBfcacheSlotEntryOrder(entryOrder, nextOrder);
 

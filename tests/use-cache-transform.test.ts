@@ -289,6 +289,13 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).toContain("$$VinextReactServer.registerServerReference");
     expect(result!.code).toContain("registerCachedFunction");
     expect(result!.code).toContain(JSON.stringify(expectedKey));
+    expect(result!.code).toContain(
+      JSON.stringify({
+        acceptsSecondArgument: false,
+        argumentCount: 0,
+        serverReferenceId: `${expectedKey}#$$hoist_0_getData`,
+      }),
+    );
     expect(manager.serverReferences.metaMap.get(moduleId)).toEqual({
       importId: moduleId,
       referenceKey: expectedKey,

@@ -178,7 +178,7 @@ describe("unified Worker fetch handler", () => {
           `export { handleRequestStage } from ${JSON.stringify(resolveRuntimeEntryModule(requestEntry))};\n`,
         );
         await expect(loadVirtualModule(root, "virtual:vinext-response-stage")).resolves.toBe(
-          `export { handleResponseStage } from ${JSON.stringify(resolveRuntimeEntryModule(responseEntry))};\n`,
+          `export * from ${JSON.stringify(resolveRuntimeEntryModule(responseEntry))};\n`,
         );
       } finally {
         fs.rmSync(root, { recursive: true, force: true });

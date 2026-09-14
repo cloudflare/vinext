@@ -204,9 +204,8 @@ describe("prefetch cache eviction", () => {
     );
   });
 
-  it("full router.prefetch uses the canonical warmed path with trailingSlash enabled", async () => {
+  it("full router.prefetch uses the contextual trailing-slash path", async () => {
     vi.stubEnv("__VINEXT_TRAILING_SLASH", "true");
-    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
     vi.resetModules();
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
     const fetch = vi.fn(
@@ -225,7 +224,7 @@ describe("prefetch cache eviction", () => {
     navigation.appRouterInstance.push("/dashboard");
     await waitForPrefetchSetup(() => navigate.mock.calls.length === 1);
 
-    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard/?_rsc");
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toMatch(/^\/dashboard\/\?_rsc=.+$/);
     expect(navigate.mock.calls[0]?.[0]).toBe("/dashboard/");
     const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
     expect(headers.get("rsc")).toBe("1");
@@ -233,10 +232,9 @@ describe("prefetch cache eviction", () => {
     expect(headers.get("next-router-prefetch")).toBeNull();
   });
 
-  it("uses the same canonical basePath root for router.prefetch and router.push", async () => {
+  it("uses the same contextual basePath root for router.prefetch and router.push", async () => {
     vi.stubEnv("__NEXT_ROUTER_BASEPATH", "/docs");
     vi.stubEnv("__VINEXT_TRAILING_SLASH", "false");
-    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
     vi.resetModules();
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
     const fetch = vi.fn(
@@ -255,16 +253,14 @@ describe("prefetch cache eviction", () => {
     navigation.appRouterInstance.push("/");
     await waitForPrefetchSetup(() => navigate.mock.calls.length === 1);
 
-    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/docs?_rsc");
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toMatch(/^\/docs\?_rsc=.+$/);
     expect(navigate.mock.calls[0]?.[0]).toBe("/docs");
   });
 
-  it("automatic router.prefetch uses the canonical loading-shell variant", async () => {
-    vi.stubEnv("__VINEXT_CANONICAL_RSC_REQUESTS", "1");
+  it("automatic router.prefetch sends a contextual loading-shell request", async () => {
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       {
         canPrefetchLoadingShell: true,
-        canUseCanonicalLoadingShell: true,
         patternParts: ["dashboard"],
         isDynamic: false,
       },
@@ -284,7 +280,7 @@ describe("prefetch cache eviction", () => {
     navigation.appRouterInstance.prefetch("/dashboard");
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
 
-    expect(toRscUrlString(fetch.mock.calls[0]![0])).toBe("/dashboard?_rsc=9qLBDIU2NgN178cB");
+    expect(toRscUrlString(fetch.mock.calls[0]![0])).toMatch(/^\/dashboard\?_rsc=.+$/);
     const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
     expect(headers.get("next-router-prefetch")).toBe("1");
     expect(headers.get("next-router-segment-prefetch")).toBe("1");

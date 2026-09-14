@@ -71,8 +71,8 @@ const cloudflareInitOptions: ResolvedInitOptions = {
   platform: "cloudflare",
   prerender: false,
   cloudflare: {
-    dataCache: "kv",
-    cdnCache: "data-cache",
+    dataCache: "none",
+    cdnCache: "response-store",
     imageOptimization: "cloudflare-images",
   },
 };
@@ -90,6 +90,16 @@ const warmCloudflareInitOptions: ResolvedInitOptions = {
 const nodeInitOptions: ResolvedInitOptions = {
   platform: "node",
   prerender: false,
+};
+
+const noCacheCloudflareInitOptions: ResolvedInitOptions = {
+  platform: "cloudflare",
+  prerender: false,
+  cloudflare: {
+    dataCache: "none",
+    cdnCache: "none",
+    imageOptimization: "cloudflare-images",
+  },
 };
 
 async function withQuietConsole<T>(task: () => Promise<T>): Promise<T> {
@@ -110,6 +120,22 @@ afterEach(() => {
 });
 
 describe("createVinextApp", () => {
+  it("does not enable ISR when Cloudflare caching is declined", async () => {
+    const appPath = path.join(tmpDir, "no-cache-app");
+
+    await withQuietConsole(() =>
+      createVinextApp({
+        appPath,
+        packageManager: "npm",
+        install: false,
+        git: false,
+        initOptions: noCacheCloudflareInitOptions,
+      }),
+    );
+
+    expect(readFile(appPath, "app/page.tsx")).not.toContain("export const revalidate");
+  });
+
   it("creates a fixed App Router TypeScript Tailwind template and applies Cloudflare init", async () => {
     const appPath = path.join(tmpDir, "fresh-app");
 
@@ -133,7 +159,11 @@ describe("createVinextApp", () => {
     expect(readFile(appPath, "README.md")).not.toMatch(/\bnpm\b|\bnpx\b/);
     expect(readFile(appPath, "app/globals.css")).toContain('@import "tailwindcss"');
     expect(readFile(appPath, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
+    expect(readFile(appPath, "vite.config.ts")).toContain("cache: responseStoreAdapter()");
     expect(readFile(appPath, "wrangler.jsonc")).toContain('"main": "vinext/server/fetch-handler"');
+    expect(readFile(appPath, "wrangler.response-store.jsonc")).toContain(
+      '"main": "./node_modules/@cloudflare/workers-response-store/dist/service.js"',
+    );
     expect(readFile(appPath, ".gitignore")).toContain(".wrangler/");
     expect(readFile(appPath, ".gitignore")).toContain("next-env.d.ts");
     expect(fs.existsSync(path.join(appPath, "next-env.d.ts"))).toBe(false);
@@ -149,6 +179,7 @@ describe("createVinextApp", () => {
       build: "vinext build",
       start: "wrangler dev --config dist/server/wrangler.json",
       deploy: "vinext-cloudflare deploy --config dist/server/wrangler.json",
+      "deploy:response-store": "wrangler deploy --config wrangler.response-store.jsonc",
     });
     expect(pkg.dependencies).toMatchObject({
       react: "latest",
@@ -208,7 +239,9 @@ describe("createVinextApp", () => {
     );
 
     expect(readPkg(appPath).packageManager).toMatch(/^pnpm(?:@|$)/);
-    expect(calls).toContain("pnpm add vinext react-server-dom-webpack @vinext/cloudflare");
+    expect(calls).toContain(
+      "pnpm add vinext react-server-dom-webpack @vinext/cloudflare @cloudflare/workers-response-store",
+    );
     expect(calls).toContain(
       "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
     );
@@ -373,5 +406,28 @@ describe("create-vinext-app CLI", () => {
     } finally {
       logSpy.mockRestore();
     }
+  });
+
+  it("accepts a space-separated Response Store mode before the app directory", async () => {
+    const appPath = path.join(tmpDir, "self-contained-app");
+
+    await withQuietConsole(() =>
+      runCreateVinextAppCli([
+        "--response-store-mode",
+        "self-contained",
+        appPath,
+        "--platform=cloudflare",
+        "--image-optimization=none",
+        "--skip-install",
+        "--disable-git",
+        "--use-pnpm",
+        "--yes",
+      ]),
+    );
+
+    expect(readFile(appPath, "vite.config.ts")).toContain(
+      'cache: responseStoreAdapter({ mode: "self-contained" })',
+    );
+    expect(fs.existsSync(path.join(appPath, "wrangler.response-store.jsonc"))).toBe(false);
   });
 });

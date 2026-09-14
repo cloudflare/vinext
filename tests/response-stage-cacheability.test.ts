@@ -128,6 +128,104 @@ describe("response-stage cacheability", () => {
     await expect(rendered.text()).resolves.toBe("private");
   });
 
+  it("lets an adapter stream a miss while completed-response admission continues", async () => {
+    let closeBody!: () => void;
+    let admittedResponse!: Promise<Response>;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("shell"));
+        closeBody = () => controller.close();
+      },
+    });
+    const adapter = admissionAdapter();
+    setCdnCacheAdapter({
+      ...adapter,
+      deferCompletedPageResponseAdmission(response, complete) {
+        const [foreground, candidate] = response.body!.tee();
+        admittedResponse = complete(new Response(candidate, response));
+        return new Response(foreground, response);
+      },
+    });
+
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: baseContext(),
+        rawManifest: null,
+        registerCacheAdapters() {},
+        request: new Request("https://example.com/page", {
+          headers: { Accept: "text/html" },
+        }),
+      },
+      async (context) => {
+        const state = contextState(context)!;
+        state.route = { kind: "app-page", pattern: "/page" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
+        return new Response(body, { headers: { "Cache-Control": "no-store" } });
+      },
+    );
+
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    let admissionSettled = false;
+    void admittedResponse.finally(() => {
+      admissionSettled = true;
+    });
+    await Promise.resolve();
+    expect(admissionSettled).toBe(false);
+
+    closeBody();
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    const admitted = await admittedResponse;
+    expect(admitted.headers.get("Cache-Control")).toBe("s-maxage=60");
+    await expect(admitted.text()).resolves.toBe("shell");
+  });
+
+  it("completes manifest-certified pages before returning static-to-dynamic failures", async () => {
+    const route = { kind: "app-page" as const, pattern: "/page", state: "static-candidate" };
+    const rawManifest = JSON.stringify({
+      buildId: "build-a",
+      routes: { [cacheabilityManifestRouteKey(route.kind, route.pattern)]: route },
+      version: 1,
+    });
+    const adapter = admissionAdapter();
+    let deferred = false;
+    setCdnCacheAdapter({
+      ...adapter,
+      deferCompletedPageResponseAdmission() {
+        deferred = true;
+        return null;
+      },
+    });
+
+    // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "shared",
+        context: baseContext(),
+        rawManifest,
+        registerCacheAdapters() {},
+        request: new Request("https://example.com/page", {
+          headers: { Accept: "text/html" },
+        }),
+      },
+      async (context) => {
+        const state = contextState(context)!;
+        state.route = { kind: "app-page", pattern: "/page" };
+        state.outcome = { cacheable: false, dynamicUsage: true };
+        return new Response("dynamic");
+      },
+    );
+
+    expect(deferred).toBe(false);
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toContain("changed from static to dynamic");
+  });
+
   it("runs authenticated probes even when the response transport bypasses caching", async () => {
     let closeBody!: () => void;
     let markRenderStarted!: () => void;

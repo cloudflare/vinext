@@ -25,6 +25,7 @@ type CacheWrapperOptions = {
   acceptsSecondArgument: boolean;
   appPageDefaultExport?: boolean;
   argumentCount?: number;
+  serverReferenceId?: string;
 };
 
 const PLUGIN_NAME = "vinext:server-function-directives";
@@ -297,7 +298,10 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           isModuleDirective: boolean,
         ) => {
           const variant = directiveMatch[1] ?? "";
-          const wrapperOptions = getCacheWrapperOptions(options, id, name, isModuleDirective, meta);
+          const wrapperOptions = {
+            ...getCacheWrapperOptions(options, id, name, isModuleDirective, meta),
+            serverReferenceId: `${reference.referenceKey}#${name}`,
+          };
           return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;
         };
         let needsReactServer = false;

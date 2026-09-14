@@ -41,6 +41,8 @@ export type RouteCacheabilityState = {
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   preserveResponseCachePolicy?: boolean;
+  /** Whether an API request carried credentials that must not enter shared caching. */
+  credentialedRequest?: boolean;
   /** Cache-key behavior declared by the active CDN adapter. */
   responseVary?: "verbatim";
   /** Concrete pathname resolved by the trusted request stage before rendering. */

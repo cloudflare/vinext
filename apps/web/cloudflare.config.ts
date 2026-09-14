@@ -2,15 +2,21 @@ import {
   bindings,
   defineSettings,
   defineWorker,
-  exports as workerExports,
   triggers,
 } from "@cloudflare/vite-plugin/experimental-config";
+import { createWorkersResponseStoreClientConfig } from "@cloudflare/workers-response-store/config";
 
 export const settings = defineSettings({
   accountId: "d48e2eb599d9aa075d5e682deaecc518",
 });
 
+const responseStore = createWorkersResponseStoreClientConfig({
+  worker: "vinext-web-response-store",
+  bindings,
+});
+
 export default defineWorker({
+  ...responseStore,
   name: "vinext-web",
   entrypoint: "./worker/index.ts",
   compatibilityDate: "2026-04-08",
@@ -18,6 +24,7 @@ export default defineWorker({
   previewUrls: true,
   assets: { notFoundHandling: "none" },
   env: {
+    ...responseStore.env,
     ASSETS: bindings.assets(),
     IMAGES: bindings.images(),
     DB: bindings.d1({
@@ -31,14 +38,8 @@ export default defineWorker({
       name: "vinext-performance-profiles",
     }),
     COMPAT_INGEST_SECRET: bindings.secret(),
-    CF_VERSION_METADATA: bindings.versionMetadata(),
   },
   triggers: [triggers.scheduled({ schedule: "17 * * * *" })],
-  cache: { enabled: false },
-  exports: {
-    VinextCachedResponse: workerExports.worker({ cache: { enabled: true } }),
-    VinextUncachedResponse: workerExports.worker({ cache: { enabled: false } }),
-  },
   observability: {
     enabled: true,
     headSamplingRate: 1,

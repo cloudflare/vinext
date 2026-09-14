@@ -94,7 +94,7 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     expect(draftFirst.cacheTag).toBeUndefined();
     expect(anonymousAfterDraft.payload.draftMode).toBe(false);
     expect(anonymousAfterDraft.payload.token).not.toBe(draftFirst.payload.token);
-    expect(anonymousAfterDraft.cacheControl).toContain("no-store");
+    expect(anonymousAfterDraft.cacheControl).toBe("private, max-age=0, must-revalidate");
     expect(anonymousAfterDraft.cacheState).toBeUndefined();
 
     const publicFirstScenario = `public-first-${Date.now()}`;

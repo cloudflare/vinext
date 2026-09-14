@@ -254,13 +254,11 @@ describe("Link repeated-slash warning", () => {
 
 describe("useLinkStatus", () => {
   it("returns { pending: false } by default", () => {
-    let status: { pending: boolean } | undefined;
     function TestComponent() {
-      status = useLinkStatus();
+      expect(useLinkStatus()).toEqual({ pending: false });
       return null;
     }
     ReactDOMServer.renderToString(React.createElement(TestComponent));
-    expect(status).toEqual({ pending: false });
   });
 });
 

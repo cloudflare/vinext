@@ -26,6 +26,7 @@ import {
   isRouteCacheabilityEvaluation,
   type RouteCacheabilityOutcome,
 } from "vinext/shims/cacheability-classification";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -262,7 +263,14 @@ export function finalizeAppPageHtmlCacheResponse(
 ): Response {
   const probeResponse = finalizeEvaluatedAppPageResponse(response, options);
   if (probeResponse) {
-    void options.capturedRscDataPromise?.catch(() => {});
+    if (options.capturedRscDataPromise) {
+      const adapter = getCdnCacheAdapter();
+      if (adapter.captureAppPageRscData) {
+        adapter.captureAppPageRscData(options.capturedRscDataPromise);
+      } else {
+        void options.capturedRscDataPromise.catch(() => {});
+      }
+    }
     return probeResponse;
   }
   if (!response.body) {

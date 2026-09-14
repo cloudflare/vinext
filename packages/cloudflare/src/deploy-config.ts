@@ -111,7 +111,10 @@ export function viteConfigHasCacheAdapter(root: string): boolean {
     return true;
   }
   const block = extractCacheBlock(content);
-  if (!block) return false; // no cache config at all
+  if (!block) {
+    const assigned = /\bcache\s*:\s*([^,}\n]+)/.exec(content)?.[1].trim();
+    return Boolean(assigned && assigned !== "undefined" && assigned !== "null");
+  }
   return cacheFieldAssigned(block, "cdn") || cacheFieldAssigned(block, "data");
 }
 
@@ -127,14 +130,17 @@ export type ResolvedCdnAdapterConfig = {
 
 function isCloudflareCdnAdapterPath(adapter: string): boolean {
   const normalized = adapter.replace(/\\/g, "/");
-  const bundledRuntime = fileURLToPath(
-    new URL("./cache/cdn-adapter.runtime.js", import.meta.url),
-  ).replace(/\\/g, "/");
-  return (
-    normalized === "@vinext/cloudflare/cache/cdn-adapter.runtime" ||
-    normalized === "@vinext/cloudflare/cache/cdn-adapter.runtime.js" ||
-    normalized === bundledRuntime
-  );
+  return ["cdn-adapter.runtime", "response-store-cdn.runtime"].some((runtime) => {
+    const bundledRuntime = fileURLToPath(new URL(`./cache/${runtime}.js`, import.meta.url)).replace(
+      /\\/g,
+      "/",
+    );
+    return (
+      normalized === `@vinext/cloudflare/cache/${runtime}` ||
+      normalized === `@vinext/cloudflare/cache/${runtime}.js` ||
+      normalized === bundledRuntime
+    );
+  });
 }
 
 export function resolveCdnAdapterConfig(
