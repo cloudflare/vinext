@@ -277,6 +277,7 @@ function printHelp(): void {
     --platform <target>          Deployment target: cloudflare or node
     --data-cache <type>          Cloudflare data cache: kv or none
     --cdn-cache <type>           Cloudflare CDN cache: none, response-store, workers-cache, or data-cache
+    --response-store-mode <type> Workers Response Store mode: service-binding or self-contained
     --image-optimization <type>  Cloudflare image optimization: cloudflare-images or none
     --prerender                  Configure vinext to pre-render static routes
     --no-prerender               Do not configure pre-rendering
@@ -336,6 +337,7 @@ function parseArgs(args: string[]): ParsedArgs {
         arg === "--platform" ||
         arg === "--data-cache" ||
         arg === "--cdn-cache" ||
+        arg === "--response-store-mode" ||
         arg === "--image-optimization"
       ) {
         index++;

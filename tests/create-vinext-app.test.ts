@@ -375,4 +375,26 @@ describe("create-vinext-app CLI", () => {
       logSpy.mockRestore();
     }
   });
+
+  it("accepts a space-separated Response Store mode before the app directory", async () => {
+    const appPath = path.join(tmpDir, "self-contained-app");
+
+    await withQuietConsole(() =>
+      runCreateVinextAppCli([
+        "--response-store-mode",
+        "self-contained",
+        appPath,
+        "--platform=cloudflare",
+        "--image-optimization=none",
+        "--skip-install",
+        "--disable-git",
+        "--use-pnpm",
+        "--yes",
+      ]),
+    );
+
+    expect(readFile(appPath, "vite.config.ts")).toContain(
+      'cache: responseStoreAdapter({ mode: "self-contained" })',
+    );
+  });
 });
