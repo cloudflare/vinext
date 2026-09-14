@@ -398,6 +398,24 @@ describe("getInitDeps", () => {
     expect(deps).toContain("@vinext/cloudflare");
   });
 
+  it("adds the deployable Response Store package for service-binding mode", () => {
+    const deps = getInitDeps(true, "cloudflare", {
+      dataCache: "none",
+      cdnCache: "response-store",
+      imageOptimization: "none",
+      responseStoreMode: "service-binding",
+    });
+    expect(deps).toContain("@cloudflare/workers-response-store");
+    expect(
+      getInitDeps(true, "cloudflare", {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "self-contained",
+      }),
+    ).not.toContain("@cloudflare/workers-response-store");
+  });
+
   it("does not add Cloudflare dependencies for the Node platform", () => {
     const deps = getInitDeps(true, "node");
     expect(deps).not.toContain("@cloudflare/vite-plugin");
@@ -553,6 +571,83 @@ describe("init — basic functionality", () => {
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
       main: "vinext/server/fetch-handler",
+    });
+  });
+
+  it("generates a collocated Response Store Wrangler config", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { result, output } = await runInit(tmpDir, {
+      install: false,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "service-binding",
+      },
+    });
+
+    expect(result.generatedPlatformFiles).toEqual([
+      "wrangler.jsonc",
+      "wrangler.response-store.jsonc",
+    ]);
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+      cache: { enabled: false },
+      services: [
+        {
+          binding: "RESPONSE_STORE",
+          service: "test-project-response-store",
+          entrypoint: "ResponseStoreService",
+        },
+      ],
+    });
+    expect(JSON.parse(readFile(tmpDir, "wrangler.response-store.jsonc"))).toMatchObject({
+      name: "test-project-response-store",
+      main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
+      r2_buckets: [{ binding: "CACHE_BODIES" }],
+    });
+    expect(
+      (readPkg(tmpDir) as { dependencies: Record<string, string> }).dependencies[
+        "@cloudflare/workers-response-store"
+      ],
+    ).toBe("latest");
+    expect(output).toContain("npx wrangler deploy --config wrangler.response-store.jsonc");
+  });
+
+  it("uses an existing Response Store config without rewriting its resource names", async () => {
+    setupProject(tmpDir, { router: "app" });
+    const responseStoreConfig = `${JSON.stringify(
+      {
+        name: "shared-response-store",
+        main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
+        cache: { enabled: true },
+        exports: { ResponseStoreBinding: { cache: { enabled: true } } },
+        r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "shared-cache-bodies" }],
+        durable_objects: {
+          bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
+        },
+        migrations: [{ tag: "v1", new_sqlite_classes: ["CacheMetadata"] }],
+      },
+      null,
+      2,
+    )}\n`;
+    writeFile(tmpDir, "wrangler.response-store.jsonc", responseStoreConfig);
+
+    await runInit(tmpDir, {
+      install: false,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "service-binding",
+      },
+    });
+
+    expect(readFile(tmpDir, "wrangler.response-store.jsonc")).toBe(responseStoreConfig);
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc")).services).toContainEqual({
+      binding: "RESPONSE_STORE",
+      service: "shared-response-store",
+      entrypoint: "ResponseStoreService",
     });
   });
 
@@ -767,7 +862,7 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
       platform: "cloudflare",
       prerender: true,
       cloudflare: {
-        dataCache: "none",
+        dataCache: "kv",
         cdnCache: "data-cache",
         imageOptimization: "none",
       },

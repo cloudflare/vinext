@@ -341,6 +341,9 @@ importers:
       '@cloudflare/kumo':
         specifier: 'catalog:'
         version: 2.2.0(@date-fns/tz@1.4.1)(@phosphor-icons/react@2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(@types/react@19.2.16)(date-fns@4.1.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zod@4.3.6)
+      '@cloudflare/workers-response-store':
+        specifier: workspace:*
+        version: link:../../packages/workers-response-store
       '@phosphor-icons/react':
         specifier: 'catalog:'
         version: 2.1.10(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -1027,6 +1030,9 @@ importers:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
         version: 1.50.0(@voidzero-dev/vite-plus-core@0.2.6(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(wrangler@4.118.0)
+      '@cloudflare/workers-response-store':
+        specifier: workspace:*
+        version: link:../../packages/workers-response-store
       '@vinext/cloudflare':
         specifier: workspace:*
         version: link:../../packages/cloudflare

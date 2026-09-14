@@ -17,6 +17,7 @@
     "@vitejs/plugin-rsc": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "@cloudflare/vite-plugin": "catalog:",
+    "@cloudflare/workers-response-store": "workspace:*",
     "wrangler": "catalog:"
   },
   "devDependencies": {

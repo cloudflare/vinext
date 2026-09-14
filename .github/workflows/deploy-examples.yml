@@ -199,28 +199,46 @@ jobs:
       - name: Build vinext plugin
         run: vp run build
 
-      - name: Build example
-        if: matrix.example.static_export != true
-        run: vp build
-        working-directory: ${{ matrix.example.working_directory }}
-
-      - name: Bind Response Store demo to this run's cache Worker
-        if: matrix.example.name == 'response-store-demo'
+      - name: Configure Response Store demo preview
+        if: matrix.example.name == 'response-store-demo' && github.event_name == 'pull_request'
         working-directory: ${{ matrix.example.working_directory }}
         env:
-          RESPONSE_STORE_SERVICE: ${{ needs.response_store.outputs.service_name }}
+          SERVICE_NAME: pr-${{ github.event.pull_request.number }}-response-store-demo-response-store
         run: |
           # Node reads the value from process.env.
           # shellcheck disable=SC2016
           node -e '
             const fs = require("node:fs");
-            const path = "dist/server/wrangler.json";
-            const config = JSON.parse(fs.readFileSync(path, "utf8"));
-            const binding = config.services?.find(({ binding }) => binding === "RESPONSE_STORE");
-            if (!binding) throw new Error("Missing RESPONSE_STORE service binding");
-            binding.service = process.env.RESPONSE_STORE_SERVICE;
-            fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+            const appPath = "wrangler.jsonc";
+            const servicePath = "wrangler.response-store.jsonc";
+            const app = fs.readFileSync(appPath, "utf8").replace(
+              `"service": "response-store-demo-response-store"`,
+              `"service": "${process.env.SERVICE_NAME}"`,
+            );
+            const service = fs.readFileSync(servicePath, "utf8").replace(
+              `"name": "response-store-demo-response-store"`,
+              `"name": "${process.env.SERVICE_NAME}"`,
+            );
+            if (!app.includes(process.env.SERVICE_NAME) || !service.includes(process.env.SERVICE_NAME)) {
+              throw new Error("Could not configure the Response Store preview Worker name");
+            }
+            fs.writeFileSync(appPath, app);
+            fs.writeFileSync(servicePath, service);
           '
+
+      - name: Deploy configured Response Store service
+        if: matrix.example.name == 'response-store-demo' || (matrix.example.name == 'web' && github.event_name == 'push' && github.ref == 'refs/heads/main')
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: ${{ matrix.example.working_directory }}
+          command: deploy --config wrangler.response-store.jsonc
+
+      - name: Build example
+        if: matrix.example.static_export != true
+        run: vp build
+        working-directory: ${{ matrix.example.working_directory }}
 
       - name: Build static export
         if: matrix.example.static_export == true

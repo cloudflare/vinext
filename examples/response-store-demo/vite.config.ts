@@ -15,6 +15,7 @@ export default defineConfig({
       ssrOutDir: `${outputRoot}/server/ssr`,
     }),
     cloudflare({
+      configPath: selfContained ? "./wrangler.self-contained.jsonc" : "./wrangler.jsonc",
       viteEnvironment: {
         name: "rsc",
         childEnvironments: ["ssr"],

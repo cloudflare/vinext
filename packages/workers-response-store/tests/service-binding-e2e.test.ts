@@ -5,7 +5,7 @@ import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, test } from "vitest";
 
 const cacheWorkerScript = fileURLToPath(
-  new URL("../dist/service-cache/cache-worker.js", import.meta.url),
+  new URL("../dist/service-cache/service.js", import.meta.url),
 );
 const userWorkerScript = fileURLToPath(
   new URL("../dist/service-user/user-worker.js", import.meta.url),

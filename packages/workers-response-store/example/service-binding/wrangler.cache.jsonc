@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
   "name": "vinext-workers-response-store-service-poc",
-  "main": "cache-worker.ts",
+  "main": "../../dist/service.js",
   "compatibility_date": "2026-09-04",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,

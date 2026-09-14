@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import path from "pathslash";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import type { ESTree } from "vite";
 import type { CloudflareInitOptions } from "./init-platform.js";
 import { detectProject } from "./utils/project.js";
+import { isUnknownRecord } from "./utils/record.js";
 
 const require = createRequire(import.meta.url);
 
@@ -18,11 +20,20 @@ export type CloudflareProjectInfo = {
 };
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
-  dataCache: "kv",
-  cdnCache: "workers-cache",
+  dataCache: "none",
+  cdnCache: "none",
   imageOptimization: "cloudflare-images",
 };
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+export const RESPONSE_STORE_WRANGLER_CONFIG = "wrangler.response-store.jsonc";
+
+const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
+const RESPONSE_STORE_ENTRYPOINT = "ResponseStoreService";
+const RESPONSE_STORE_MAIN = "./node_modules/@cloudflare/workers-response-store/dist/service.js";
+const CACHE_BODIES_BINDING = "CACHE_BODIES";
+const CACHE_METADATA_BINDING = "CACHE_METADATA";
+const CACHE_METADATA_CLASS = "CacheMetadata";
+const CTX_EXPORTS_DEFAULT_DATE = "2025-11-17";
 
 export type CloudflarePlatformSetupContext = {
   root: string;
@@ -159,6 +170,28 @@ export function setupCloudflarePlatform(
 
   const finalWranglerPath = wranglerPath ?? path.join(context.root, "wrangler.jsonc");
   const finalWranglerFileName = path.basename(finalWranglerPath);
+  if (
+    cloudflare.cdnCache === "response-store" &&
+    (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
+  ) {
+    const responseStorePath = path.join(
+      path.dirname(finalWranglerPath),
+      RESPONSE_STORE_WRANGLER_CONFIG,
+    );
+    if (!fs.existsSync(responseStorePath)) {
+      fs.writeFileSync(
+        responseStorePath,
+        generateResponseStoreWranglerConfig(
+          fs.readFileSync(finalWranglerPath, "utf-8"),
+          context.root,
+        ),
+        "utf-8",
+      );
+      generatedPlatformFiles.push(
+        path.relative(context.root, responseStorePath) || RESPONSE_STORE_WRANGLER_CONFIG,
+      );
+    }
+  }
   const finalWranglerConfig = JSON.parse(
     stripJsonComments(fs.readFileSync(finalWranglerPath, "utf-8")),
   ) as { kv_namespaces?: Array<{ binding?: unknown; id?: unknown }> };
@@ -172,19 +205,31 @@ export function setupCloudflarePlatform(
       kvBinding.id.length === 0 ||
       kvBinding.id === "<your-kv-namespace-id>");
 
+  const nextSteps: string[] = [];
+  if (
+    cloudflare.cdnCache === "response-store" &&
+    (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
+  ) {
+    nextSteps.push(
+      "Deploy Workers Response Store before deploying the application:",
+      `   npx wrangler deploy --config ${RESPONSE_STORE_WRANGLER_CONFIG}`,
+    );
+  }
+  if (needsKvNamespaceId) {
+    nextSteps.push(
+      "Cloudflare setup is incomplete until you finish KV configuration:",
+      "1. Create the KV namespace:",
+      "   npx wrangler kv namespace create VINEXT_KV_CACHE",
+      `2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in ${finalWranglerFileName}:`,
+      '   Set its "id" value, replacing "<your-kv-namespace-id>" if present.',
+    );
+  }
+
   return {
     generatedViteConfig,
     skippedViteConfig,
     generatedPlatformFiles,
-    nextSteps: needsKvNamespaceId
-      ? [
-          "Cloudflare setup is incomplete until you finish KV configuration:",
-          "1. Create the KV namespace:",
-          "   npx wrangler kv namespace create VINEXT_KV_CACHE",
-          `2. Copy the returned namespace ID into the VINEXT_KV_CACHE entry in ${finalWranglerFileName}:`,
-          '   Set its "id" value, replacing "<your-kv-namespace-id>" if present.',
-        ]
-      : [],
+    nextSteps,
   };
 }
 
@@ -239,7 +284,15 @@ export function generateWranglerConfig(
     ];
   }
 
-  return JSON.stringify(config, null, 2) + "\n";
+  const code = `${JSON.stringify(config, null, 2)}\n`;
+  return options.cdnCache === "response-store"
+    ? configureResponseStoreWrangler(
+        code,
+        config,
+        options.responseStoreMode ?? "service-binding",
+        info.root,
+      )
+    : code;
 }
 
 function stripJsonComments(code: string): string {
@@ -397,6 +450,397 @@ function appendTopLevelJsonProperty(code: string, property: string): string {
   return `${before}${needsComma ? "," : ""}\n${property}\n${code.slice(closing)}`;
 }
 
+function setTopLevelJsonProperty(code: string, name: string, value: unknown): string {
+  const property = findTopLevelJsonProperty(code, name);
+  const serialized = JSON.stringify(value);
+  if (!property) {
+    return appendTopLevelJsonProperty(code, `  ${JSON.stringify(name)}: ${serialized}`);
+  }
+  return `${code.slice(0, property.valueStart)}${serialized}${code.slice(property.valueEnd)}`;
+}
+
+function compactResourceName(name: string, suffix: string, maxLength: number): string {
+  const fullName = `${name}${suffix}`;
+  if (fullName.length <= maxLength) return fullName;
+  const hash = createHash("sha256").update(name).digest("hex").slice(0, 8);
+  return `${name.slice(0, maxLength - suffix.length - hash.length - 1)}-${hash}${suffix}`;
+}
+
+function readResponseStoreServiceName(root: string, appConfig: Record<string, unknown>): string {
+  const responseStorePath = path.join(root, RESPONSE_STORE_WRANGLER_CONFIG);
+  if (fs.existsSync(responseStorePath)) {
+    let responseStoreConfig: unknown;
+    try {
+      responseStoreConfig = JSON.parse(
+        stripJsonComments(fs.readFileSync(responseStorePath, "utf8")),
+      );
+    } catch (cause) {
+      throw new Error(`Could not parse ${RESPONSE_STORE_WRANGLER_CONFIG}.`, { cause });
+    }
+    if (
+      !isUnknownRecord(responseStoreConfig) ||
+      typeof responseStoreConfig.name !== "string" ||
+      responseStoreConfig.name.length === 0
+    ) {
+      throw new Error(`${RESPONSE_STORE_WRANGLER_CONFIG} must contain a Worker name.`);
+    }
+    if (responseStoreConfig.main !== RESPONSE_STORE_MAIN) {
+      throw new Error(
+        `${RESPONSE_STORE_WRANGLER_CONFIG} already exists but does not use @cloudflare/workers-response-store.`,
+      );
+    }
+    const responseStoreExport = isUnknownRecord(responseStoreConfig.exports)
+      ? responseStoreConfig.exports.ResponseStoreBinding
+      : undefined;
+    const hasCacheBodies =
+      Array.isArray(responseStoreConfig.r2_buckets) &&
+      responseStoreConfig.r2_buckets.some(
+        (binding) => isUnknownRecord(binding) && binding.binding === CACHE_BODIES_BINDING,
+      );
+    const durableBindings = isUnknownRecord(responseStoreConfig.durable_objects)
+      ? responseStoreConfig.durable_objects.bindings
+      : undefined;
+    const hasCacheMetadata =
+      Array.isArray(durableBindings) &&
+      durableBindings.some(
+        (binding) =>
+          isUnknownRecord(binding) &&
+          binding.name === CACHE_METADATA_BINDING &&
+          binding.class_name === CACHE_METADATA_CLASS &&
+          binding.script_name === undefined,
+      );
+    const hasCacheMetadataMigration =
+      Array.isArray(responseStoreConfig.migrations) &&
+      responseStoreConfig.migrations.some(
+        (migration) =>
+          isUnknownRecord(migration) &&
+          Array.isArray(migration.new_sqlite_classes) &&
+          migration.new_sqlite_classes.includes(CACHE_METADATA_CLASS),
+      );
+    if (
+      !isUnknownRecord(responseStoreConfig.cache) ||
+      responseStoreConfig.cache.enabled !== true ||
+      !isUnknownRecord(responseStoreExport) ||
+      !isUnknownRecord(responseStoreExport.cache) ||
+      responseStoreExport.cache.enabled !== true ||
+      !hasCacheBodies ||
+      !hasCacheMetadata ||
+      !hasCacheMetadataMigration
+    ) {
+      throw new Error(
+        `${RESPONSE_STORE_WRANGLER_CONFIG} is missing required Response Store bindings.`,
+      );
+    }
+    return responseStoreConfig.name;
+  }
+
+  if (Array.isArray(appConfig.services)) {
+    const binding = appConfig.services.find(
+      (service) => isUnknownRecord(service) && service.binding === RESPONSE_STORE_BINDING,
+    );
+    if (
+      isUnknownRecord(binding) &&
+      typeof binding.service === "string" &&
+      binding.service.length > 0
+    ) {
+      return binding.service;
+    }
+  }
+
+  const appName =
+    typeof appConfig.name === "string" && appConfig.name.length > 0
+      ? appConfig.name
+      : detectProject(root).projectName;
+  return compactResourceName(appName, "-response-store", 63);
+}
+
+function configureResponseStoreWrangler(
+  code: string,
+  config: Record<string, unknown>,
+  mode: "self-contained" | "service-binding",
+  root: string,
+): string {
+  const flags = Array.isArray(config.compatibility_flags)
+    ? config.compatibility_flags.filter((flag): flag is string => typeof flag === "string")
+    : [];
+  if (flags.includes("disable_ctx_exports")) {
+    throw new Error("Workers Response Store requires ctx.exports to be enabled.");
+  }
+  if (
+    (typeof config.compatibility_date !== "string" ||
+      config.compatibility_date < CTX_EXPORTS_DEFAULT_DATE) &&
+    !flags.includes("enable_ctx_exports")
+  ) {
+    code = setTopLevelJsonProperty(code, "compatibility_flags", [...flags, "enable_ctx_exports"]);
+  }
+
+  const versionMetadata = config.version_metadata;
+  if (
+    versionMetadata !== undefined &&
+    (!isUnknownRecord(versionMetadata) ||
+      versionMetadata.binding !== DEFAULT_VERSION_METADATA_BINDING)
+  ) {
+    throw new Error(
+      `Workers Response Store requires version_metadata.binding to be ${JSON.stringify(DEFAULT_VERSION_METADATA_BINDING)}.`,
+    );
+  }
+  code = setTopLevelJsonProperty(code, "version_metadata", {
+    binding: DEFAULT_VERSION_METADATA_BINDING,
+  });
+
+  const cache = config.cache;
+  if (cache !== undefined && !isUnknownRecord(cache)) {
+    throw new Error("The existing Wrangler config has an invalid cache value.");
+  }
+  code = setTopLevelJsonProperty(code, "cache", {
+    ...cache,
+    enabled: mode === "self-contained",
+  });
+
+  const exportsConfig = config.exports;
+  if (exportsConfig !== undefined && !isUnknownRecord(exportsConfig)) {
+    throw new Error("The existing Wrangler config has an invalid exports value.");
+  }
+  const workerExports = { ...exportsConfig } as Record<string, unknown>;
+  const defaultExport = workerExports.default;
+  if (defaultExport !== undefined && !isUnknownRecord(defaultExport)) {
+    throw new Error("The existing Wrangler config has an invalid default export.");
+  }
+  workerExports.default = {
+    ...defaultExport,
+    type: "worker",
+    cache: { enabled: false },
+  };
+
+  const services = config.services;
+  if (services !== undefined && !Array.isArray(services)) {
+    throw new Error("The existing Wrangler config has an invalid services value.");
+  }
+  const existingServices = (services ?? []) as unknown[];
+  if (existingServices.some((service) => !isUnknownRecord(service))) {
+    throw new Error("The existing Wrangler config has an invalid service binding.");
+  }
+  const responseStoreService = existingServices.find(
+    (service) => (service as Record<string, unknown>).binding === RESPONSE_STORE_BINDING,
+  ) as Record<string, unknown> | undefined;
+  if (responseStoreService && responseStoreService.entrypoint !== RESPONSE_STORE_ENTRYPOINT) {
+    throw new Error(`The ${RESPONSE_STORE_BINDING} service binding uses a different entrypoint.`);
+  }
+
+  if (mode === "service-binding") {
+    const serviceName = readResponseStoreServiceName(root, config);
+    code = setTopLevelJsonProperty(code, "services", [
+      ...existingServices.filter(
+        (service) => (service as Record<string, unknown>).binding !== RESPONSE_STORE_BINDING,
+      ),
+      {
+        ...responseStoreService,
+        binding: RESPONSE_STORE_BINDING,
+        service: serviceName,
+        entrypoint: RESPONSE_STORE_ENTRYPOINT,
+      },
+    ]);
+    delete workerExports.ResponseStoreBinding;
+
+    if (Array.isArray(config.r2_buckets)) {
+      code = setTopLevelJsonProperty(
+        code,
+        "r2_buckets",
+        config.r2_buckets.filter(
+          (bucket) => !isUnknownRecord(bucket) || bucket.binding !== CACHE_BODIES_BINDING,
+        ),
+      );
+    }
+    if (isUnknownRecord(config.durable_objects) && Array.isArray(config.durable_objects.bindings)) {
+      code = setTopLevelJsonProperty(code, "durable_objects", {
+        ...config.durable_objects,
+        bindings: config.durable_objects.bindings.filter(
+          (binding) => !isUnknownRecord(binding) || binding.name !== CACHE_METADATA_BINDING,
+        ),
+      });
+    }
+    if (Array.isArray(config.migrations)) {
+      code = setTopLevelJsonProperty(
+        code,
+        "migrations",
+        config.migrations.filter(
+          (migration) =>
+            !isUnknownRecord(migration) ||
+            !(
+              typeof migration.tag === "string" &&
+              migration.tag.startsWith("vinext-response-store-")
+            ),
+        ),
+      );
+    }
+  } else {
+    if (responseStoreService) {
+      code = setTopLevelJsonProperty(
+        code,
+        "services",
+        existingServices.filter(
+          (service) => (service as Record<string, unknown>).binding !== RESPONSE_STORE_BINDING,
+        ),
+      );
+    }
+    for (const [name, value] of Object.entries(workerExports)) {
+      if (!isUnknownRecord(value)) {
+        throw new Error(`The existing Wrangler config has an invalid ${name} export.`);
+      }
+      if (value.cache === undefined) {
+        workerExports[name] = { ...value, cache: { enabled: false } };
+      }
+    }
+    const responseStoreExport = workerExports.ResponseStoreBinding;
+    if (responseStoreExport !== undefined && !isUnknownRecord(responseStoreExport)) {
+      throw new Error("The existing Wrangler config has an invalid ResponseStoreBinding export.");
+    }
+    workerExports.ResponseStoreBinding = {
+      ...responseStoreExport,
+      type: "worker",
+      cache: { enabled: true },
+    };
+
+    const r2Buckets = config.r2_buckets;
+    if (r2Buckets !== undefined && !Array.isArray(r2Buckets)) {
+      throw new Error("The existing Wrangler config has an invalid r2_buckets value.");
+    }
+    const existingBuckets = (r2Buckets ?? []) as unknown[];
+    if (existingBuckets.some((bucket) => !isUnknownRecord(bucket))) {
+      throw new Error("The existing Wrangler config has an invalid R2 binding.");
+    }
+    if (
+      !existingBuckets.some(
+        (bucket) => (bucket as Record<string, unknown>).binding === CACHE_BODIES_BINDING,
+      )
+    ) {
+      const appName =
+        typeof config.name === "string" && config.name.length > 0
+          ? config.name
+          : detectProject(root).projectName;
+      code = setTopLevelJsonProperty(code, "r2_buckets", [
+        ...existingBuckets,
+        {
+          binding: CACHE_BODIES_BINDING,
+          bucket_name: compactResourceName(appName, "-response-store-cache-bodies", 63),
+        },
+      ]);
+    }
+
+    const durableObjects = config.durable_objects;
+    if (durableObjects !== undefined && !isUnknownRecord(durableObjects)) {
+      throw new Error("The existing Wrangler config has an invalid durable_objects value.");
+    }
+    const durableBindings = durableObjects?.bindings;
+    if (durableBindings !== undefined && !Array.isArray(durableBindings)) {
+      throw new Error("The existing Wrangler config has invalid Durable Object bindings.");
+    }
+    const existingDurableBindings = (durableBindings ?? []) as unknown[];
+    if (existingDurableBindings.some((binding) => !isUnknownRecord(binding))) {
+      throw new Error("The existing Wrangler config has an invalid Durable Object binding.");
+    }
+    const existingMetadataBinding = existingDurableBindings.find(
+      (binding) => (binding as Record<string, unknown>).name === CACHE_METADATA_BINDING,
+    ) as Record<string, unknown> | undefined;
+    if (
+      existingMetadataBinding &&
+      (existingMetadataBinding.class_name !== CACHE_METADATA_CLASS ||
+        existingMetadataBinding.script_name !== undefined)
+    ) {
+      throw new Error(`The ${CACHE_METADATA_BINDING} Durable Object binding is incompatible.`);
+    }
+    code = setTopLevelJsonProperty(code, "durable_objects", {
+      ...durableObjects,
+      bindings: existingMetadataBinding
+        ? existingDurableBindings
+        : [
+            ...existingDurableBindings,
+            { name: CACHE_METADATA_BINDING, class_name: CACHE_METADATA_CLASS },
+          ],
+    });
+
+    const migrations = config.migrations;
+    if (migrations !== undefined && !Array.isArray(migrations)) {
+      throw new Error("The existing Wrangler config has an invalid migrations value.");
+    }
+    const existingMigrations = (migrations ?? []) as unknown[];
+    if (existingMigrations.some((migration) => !isUnknownRecord(migration))) {
+      throw new Error("The existing Wrangler config has an invalid Durable Object migration.");
+    }
+    if (
+      !existingMigrations.some(
+        (migration) =>
+          Array.isArray((migration as Record<string, unknown>).new_sqlite_classes) &&
+          ((migration as Record<string, unknown>).new_sqlite_classes as unknown[]).includes(
+            CACHE_METADATA_CLASS,
+          ),
+      )
+    ) {
+      let migrationNumber = existingMigrations.length + 1;
+      while (
+        existingMigrations.some(
+          (migration) =>
+            (migration as Record<string, unknown>).tag ===
+            `vinext-response-store-v${migrationNumber}`,
+        )
+      ) {
+        migrationNumber++;
+      }
+      code = setTopLevelJsonProperty(code, "migrations", [
+        ...existingMigrations,
+        {
+          tag: `vinext-response-store-v${migrationNumber}`,
+          new_sqlite_classes: [CACHE_METADATA_CLASS],
+        },
+      ]);
+    }
+  }
+
+  return setTopLevelJsonProperty(code, "exports", workerExports);
+}
+
+export function generateResponseStoreWranglerConfig(appWranglerCode: string, root: string): string {
+  const appConfig = JSON.parse(stripJsonComments(appWranglerCode)) as Record<string, unknown>;
+  const serviceName = readResponseStoreServiceName(root, appConfig);
+  const compatibilityDate =
+    typeof appConfig.compatibility_date === "string"
+      ? appConfig.compatibility_date
+      : new Date().toISOString().split("T")[0];
+  const compatibilityFlags = ["nodejs_compat"];
+  if (compatibilityDate < CTX_EXPORTS_DEFAULT_DATE) {
+    compatibilityFlags.push("enable_ctx_exports");
+  }
+  return `${JSON.stringify(
+    {
+      $schema: "node_modules/wrangler/config-schema.json",
+      name: serviceName,
+      main: RESPONSE_STORE_MAIN,
+      compatibility_date: compatibilityDate,
+      compatibility_flags: compatibilityFlags,
+      workers_dev: false,
+      preview_urls: false,
+      cache: { enabled: true },
+      exports: {
+        default: { type: "worker", cache: { enabled: false } },
+        ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
+      },
+      r2_buckets: [
+        {
+          binding: CACHE_BODIES_BINDING,
+          bucket_name: compactResourceName(serviceName, "-cache-bodies", 63),
+        },
+      ],
+      durable_objects: {
+        bindings: [{ name: CACHE_METADATA_BINDING, class_name: CACHE_METADATA_CLASS }],
+      },
+      migrations: [{ tag: "v1", new_sqlite_classes: [CACHE_METADATA_CLASS] }],
+      ...(typeof appConfig.account_id === "string" ? { account_id: appConfig.account_id } : {}),
+    },
+    null,
+    2,
+  )}\n`;
+}
+
 export function updateWranglerConfigForCloudflare(
   code: string,
   options: CloudflareInitOptions,
@@ -493,6 +937,14 @@ export function updateWranglerConfigForCloudflare(
       }
     }
   }
+  if (options.cdnCache === "response-store") {
+    output = configureResponseStoreWrangler(
+      output,
+      config,
+      options.responseStoreMode ?? "service-binding",
+      context.root ?? process.cwd(),
+    );
+  }
   return output;
 }
 
@@ -528,6 +980,11 @@ function cacheImports(options: CloudflareInitOptions): string[] {
   if (options.cdnCache === "workers-cache") {
     imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
   }
+  if (options.cdnCache === "response-store") {
+    imports.push(
+      'import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";',
+    );
+  }
   if (options.imageOptimization === "cloudflare-images") {
     imports.push('import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";');
   }
@@ -542,6 +999,7 @@ function vinextExpression(
   prerender = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
 ): string {
+  const responseStore = options.cdnCache === "response-store";
   const cacheEntries: string[] = [];
   if (options.dataCache === "kv") {
     cacheEntries.push("data: kvDataAdapter()");
@@ -554,7 +1012,11 @@ function vinextExpression(
     cacheEntries.push(`cdn: cdnAdapter(${adapterOptions})`);
   }
   const optionEntries: string[] = [];
-  if (cacheEntries.length > 0) {
+  if (responseStore) {
+    optionEntries.push(
+      `cache: responseStoreAdapter(${options.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`,
+    );
+  } else if (cacheEntries.length > 0) {
     optionEntries.push(`cache: { ${cacheEntries.join(", ")} }`);
   }
   if (options.imageOptimization === "cloudflare-images") {
@@ -1203,6 +1665,20 @@ function getVinextCacheSlot(
   return findProperty(cache.value as AstObject, name);
 }
 
+function getVinextCacheOption(
+  call: (ESTree.CallExpression & AstNode) | undefined,
+): AstProperty | undefined {
+  const firstArgument = call?.arguments[0];
+  if (
+    !firstArgument ||
+    firstArgument.type === "SpreadElement" ||
+    firstArgument.type !== "ObjectExpression"
+  ) {
+    return undefined;
+  }
+  return findProperty(firstArgument as AstObject, "cache");
+}
+
 function hasVinextCacheSlot(
   call: (ESTree.CallExpression & AstNode) | undefined,
   name: "data" | "cdn",
@@ -1308,6 +1784,31 @@ function ensureVinextCache(
       missing.map(({ name, expression }) => `      ${name}: ${expression},`).join("\n"),
       code,
     );
+  }
+}
+
+function ensureVinextResponseStore(
+  output: MagicString,
+  config: AstObject,
+  vinextBinding: string,
+  expression: string | undefined,
+  code: string,
+): void {
+  if (!expression) return;
+  const call = findPluginCall(config, vinextBinding);
+  const firstArgument = call?.arguments[0];
+  if (!call || !firstArgument || firstArgument.type === "SpreadElement") return;
+  if (firstArgument.type !== "ObjectExpression") {
+    throw new Error(
+      "The vinext() plugin options must be a static object for vinext init to configure Workers Response Store.",
+    );
+  }
+  const optionsObject = firstArgument as AstObject;
+  const cache = findProperty(optionsObject, "cache");
+  if (!cache) {
+    insertObjectProperty(output, optionsObject, `    cache: ${expression},`, code);
+  } else if (cache.value.type === "ObjectExpression" && cache.value.properties.length === 0) {
+    output.overwrite((cache.value as AstNode).start, (cache.value as AstNode).end, expression);
   }
 }
 
@@ -1534,11 +2035,7 @@ export function updateViteConfigForCloudflare(
   },
 ): string {
   const program = parseViteConfig(filePath, code);
-  const cacheOptions = options.cache ?? {
-    dataCache: "none",
-    cdnCache: "workers-cache",
-    imageOptimization: "cloudflare-images",
-  };
+  const cacheOptions = options.cache ?? DEFAULT_CLOUDFLARE_INIT_OPTIONS;
   const config = findConfigObject(program);
   if (!config) {
     throw new Error(
@@ -1569,7 +2066,95 @@ export function updateViteConfigForCloudflare(
   const existingImageOptimizer = getVinextImageOptimizer(existingVinextCall);
   const needsPrerender = Boolean(options.prerender && !hasVinextPrerender(existingVinextCall));
   const configureCaches = options.cache !== undefined;
+  const existingCache = getVinextCacheOption(existingVinextCall);
+  if (configureCaches && existingCache) {
+    const cacheObject =
+      existingCache.value.type === "ObjectExpression"
+        ? (existingCache.value as AstObject)
+        : undefined;
+    if (
+      (!cacheObject && cacheOptions.cdnCache !== "response-store") ||
+      (cacheObject &&
+        (cacheOptions.cdnCache === "none" || cacheOptions.cdnCache === "data-cache") &&
+        findProperty(cacheObject, "cdn")) ||
+      (cacheObject && cacheOptions.dataCache === "none" && findProperty(cacheObject, "data"))
+    ) {
+      throw new Error(
+        "The existing vinext() cache configuration does not match the selected cache options. Remove it before rerunning vinext init.",
+      );
+    }
+  }
   const cacheAdditions: Array<{ name: "data" | "cdn"; expression: string }> = [];
+  let responseStoreExpression: string | undefined;
+  if (configureCaches && cacheOptions.cdnCache === "response-store") {
+    const source = "@vinext/cloudflare/cache/response-store-adapter";
+    const imported = "responseStoreAdapter";
+    const existing = commonJs
+      ? findRequiredBinding(program, source, imported)
+      : findImportedBinding(program, source, imported);
+    const cache = getVinextCacheOption(existingVinextCall);
+    const alreadyConfigured = Boolean(
+      existing &&
+      cache?.value.type === "CallExpression" &&
+      cache.value.callee.type === "Identifier" &&
+      cache.value.callee.name === existing,
+    );
+    if (
+      cache &&
+      !alreadyConfigured &&
+      !(cache.value.type === "ObjectExpression" && cache.value.properties.length === 0)
+    ) {
+      throw new Error(
+        "The vinext() cache option is already configured. Remove it before configuring Workers Response Store.",
+      );
+    }
+    if (
+      !cache ||
+      alreadyConfigured ||
+      (cache.value.type === "ObjectExpression" && cache.value.properties.length === 0)
+    ) {
+      const local = existing ?? allocateBinding(bindings, imported);
+      const binding = commonJs
+        ? ensureNamedRequire(program, output, source, imported, local)
+        : ensureNamedImport(program, output, source, imported, local);
+      responseStoreExpression = `${binding}(${cacheOptions.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`;
+      if (alreadyConfigured && cache) {
+        const call = cache.value as ESTree.CallExpression & AstNode;
+        const argument = call.arguments[0];
+        const mode = cacheOptions.responseStoreMode ?? "service-binding";
+        if (!argument) {
+          if (mode === "self-contained") {
+            output.appendLeft(call.end - 1, '{ mode: "self-contained" }');
+          }
+        } else if (argument.type === "ObjectExpression") {
+          const optionsObject = argument as AstObject;
+          const existingMode = findProperty(optionsObject, "mode");
+          if (existingMode) {
+            if (existingMode.shorthand) {
+              output.overwrite(
+                (existingMode as AstNode).start,
+                (existingMode as AstNode).end,
+                `mode: ${JSON.stringify(mode)}`,
+              );
+            } else {
+              output.overwrite(
+                (existingMode.value as AstNode).start,
+                (existingMode.value as AstNode).end,
+                JSON.stringify(mode),
+              );
+            }
+          } else if (mode === "self-contained") {
+            insertObjectProperty(output, optionsObject, '      mode: "self-contained",', code);
+          }
+        } else {
+          throw new Error(
+            "responseStoreAdapter() options must be a static object for vinext init to update its mode.",
+          );
+        }
+        responseStoreExpression = undefined;
+      }
+    }
+  }
   if (cacheOptions.dataCache === "kv" && !hasVinextCacheSlot(existingVinextCall, "data")) {
     const existing = commonJs
       ? findRequiredBinding(program, "@vinext/cloudflare/cache/kv-data-adapter", "kvDataAdapter")
@@ -1688,10 +2273,15 @@ export function updateViteConfigForCloudflare(
   if (existingVinextCall) {
     if (
       existingVinextCall.arguments.length === 0 &&
-      (cacheAdditions.length > 0 || imageOptimizerExpression || needsPrerender)
+      (responseStoreExpression ||
+        cacheAdditions.length > 0 ||
+        imageOptimizerExpression ||
+        needsPrerender)
     ) {
       const properties: string[] = [];
-      if (cacheAdditions.length > 0) {
+      if (responseStoreExpression) {
+        properties.push(`cache: ${responseStoreExpression}`);
+      } else if (cacheAdditions.length > 0) {
         properties.push(
           `cache: { ${cacheAdditions.map(({ name, expression }) => `${name}: ${expression}`).join(", ")} }`,
         );
@@ -1717,6 +2307,7 @@ export function updateViteConfigForCloudflare(
         `{\n${propertyEntryIndent}${properties.join(`,\n${propertyEntryIndent}`)},\n${closingIndent}}`,
       );
     } else {
+      ensureVinextResponseStore(output, config, vinextBinding, responseStoreExpression, code);
       ensureVinextCache(output, config, vinextBinding, cacheAdditions, code);
       ensureVinextImageOptimizer(output, config, vinextBinding, imageOptimizerExpression, code);
       ensureVinextPrerender(output, config, vinextBinding, options.prerender, code);

@@ -219,6 +219,7 @@ export type InitDependencyGroups = {
 export function getInitDependencyGroups(
   isAppRouter: boolean,
   platform: InitPlatform,
+  cloudflare?: CloudflareInitOptions,
 ): InitDependencyGroups {
   const dependencies = ["vinext"];
   const devDependencies = ["vite", "@vitejs/plugin-react"];
@@ -228,13 +229,23 @@ export function getInitDependencyGroups(
   }
   if (platform === "cloudflare") {
     dependencies.push("@vinext/cloudflare");
+    if (
+      cloudflare?.cdnCache === "response-store" &&
+      (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
+    ) {
+      dependencies.push("@cloudflare/workers-response-store");
+    }
     devDependencies.push("@cloudflare/vite-plugin", "wrangler");
   }
   return { dependencies, devDependencies };
 }
 
-export function getInitDeps(isAppRouter: boolean, platform: InitPlatform): string[] {
-  const groups = getInitDependencyGroups(isAppRouter, platform);
+export function getInitDeps(
+  isAppRouter: boolean,
+  platform: InitPlatform,
+  cloudflare?: CloudflareInitOptions,
+): string[] {
+  const groups = getInitDependencyGroups(isAppRouter, platform, cloudflare);
   return [...groups.dependencies, ...groups.devDependencies];
 }
 
@@ -593,7 +604,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
-  const neededDeps = getInitDependencyGroups(isApp, platform);
+  const neededDeps = getInitDependencyGroups(isApp, platform, options.cloudflare);
   const missingDependencies = neededDeps.dependencies.filter((dep) => !isDepInstalled(root, dep));
   const missingDevDependencies = neededDeps.devDependencies.filter(
     (dep) => !isDepInstalled(root, dep),

@@ -10,13 +10,15 @@ import { resolveInitOptions } from "../../vinext/src/init-platform";
 type PackageManagerName = "npm" | "pnpm" | "yarn" | "bun";
 type InitPlatform = "cloudflare" | "node";
 type InitDataCache = "kv" | "none";
-type InitCdnCache = "data-cache" | "workers-cache";
+type InitCdnCache = "data-cache" | "none" | "response-store" | "workers-cache";
 type InitImageOptimization = "cloudflare-images" | "none";
+type InitResponseStoreMode = "self-contained" | "service-binding";
 
 type CloudflareInitOptions = {
   dataCache: InitDataCache;
   cdnCache: InitCdnCache;
   imageOptimization: InitImageOptimization;
+  responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
 };
 
@@ -66,8 +68,13 @@ const packageManagerFlags: Record<string, PackageManagerName> = {
   "--use-bun": "bun",
 };
 
-function getTemplateFiles(platform: InitPlatform): Record<string, string> {
+function getTemplateFiles(initOptions: ResolvedInitOptions): Record<string, string> {
+  const { platform } = initOptions;
   const isCloudflare = platform === "cloudflare";
+  const revalidate =
+    !isCloudflare || initOptions.cloudflare?.cdnCache !== "none"
+      ? "export const revalidate = 300;\n\n"
+      : "";
   const apiMessage = isCloudflare ? "Hello from vinext on Cloudflare Workers" : "Hello from vinext";
   const title = isCloudflare ? "vinext on Cloudflare Workers" : "vinext app";
   const secondaryLink = isCloudflare
@@ -148,9 +155,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
 ${secondaryLink}
 ];
 
-export const revalidate = 300;
-
-export default function Home() {
+${revalidate}export default function Home() {
   return (
     <main className="min-h-screen bg-slate-50 px-6 py-10 text-slate-950">
       <section className="mx-auto flex max-w-4xl flex-col gap-8">
@@ -274,7 +279,8 @@ function printHelp(): void {
   Options:
     --platform <target>          Deployment target: cloudflare or node
     --data-cache <type>          Cloudflare data cache: kv or none
-    --cdn-cache <type>           Cloudflare CDN cache: data-cache or workers-cache
+    --cdn-cache <type>           Cloudflare CDN cache: none, response-store, workers-cache, or data-cache
+    --response-store-mode <type> Workers Response Store mode: service-binding or self-contained
     --image-optimization <type>  Cloudflare image optimization: cloudflare-images or none
     --prerender                  Configure vinext to pre-render static routes
     --no-prerender               Do not configure pre-rendering
@@ -334,6 +340,7 @@ function parseArgs(args: string[]): ParsedArgs {
         arg === "--platform" ||
         arg === "--data-cache" ||
         arg === "--cdn-cache" ||
+        arg === "--response-store-mode" ||
         arg === "--image-optimization"
       ) {
         index++;
@@ -430,7 +437,7 @@ function writeTemplate(
 ): void {
   fs.mkdirSync(root, { recursive: true });
   writePackageJson(root, appName, packageManager);
-  for (const [relativePath, content] of Object.entries(getTemplateFiles(initOptions.platform))) {
+  for (const [relativePath, content] of Object.entries(getTemplateFiles(initOptions))) {
     writeFile(root, relativePath, content);
   }
 }

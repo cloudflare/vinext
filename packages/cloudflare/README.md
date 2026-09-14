@@ -72,8 +72,27 @@ representation variants cannot collide.
 
 `responseStoreAdapter()` replaces both `cdnAdapter()` and `kvDataAdapter()`.
 It defaults to a separate cache Worker reached through the `RESPONSE_STORE`
-service binding. To deploy storage and cache entrypoints with the application
-instead, select self-contained mode:
+service binding. `vinext init` writes two collocated source configs:
+`wrangler.jsonc` for the application and `wrangler.response-store.jsonc` for the
+cache Worker. The latter points directly at the installed
+`@cloudflare/workers-response-store` implementation and owns its R2 bucket,
+SQLite Durable Object, Worker name, and cache settings. Edit those configs to
+choose or reuse names, keeping the application service binding aligned with the
+cache Worker name.
+
+The two Workers are deliberately deployed separately. Deploy the Response Store
+when its package or config changes, then deploy the application normally:
+
+```sh
+npx wrangler deploy --config wrangler.response-store.jsonc
+npx @vinext/cloudflare deploy
+```
+
+`vinext-cloudflare deploy` never creates, rewrites, or deploys the Response
+Store Worker.
+
+To deploy storage and cache entrypoints with the application instead, select
+self-contained mode:
 
 ```ts
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
@@ -81,12 +100,9 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 vinext({ cache: responseStoreAdapter({ mode: "self-contained" }) });
 ```
 
-Self-contained Workers must bind `CACHE_BODIES` to R2, bind the SQLite
-`CacheMetadata` Durable Object as `CACHE_METADATA`, export
-`ResponseStoreBinding` with Workers Cache enabled, and include the
-`CF_VERSION_METADATA` version-metadata binding. The default Worker entrypoint
-must keep Workers Cache disabled. This removes the cache Worker and service
-binding without changing cache behavior or the application API.
+In this mode `vinext init` places the required R2, SQLite Durable Object,
+Workers Cache entrypoint, and version-metadata configuration in
+`wrangler.jsonc`; no second Wrangler config is required.
 
 ## Deploy
 

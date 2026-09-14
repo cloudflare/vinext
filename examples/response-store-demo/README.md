@@ -20,7 +20,7 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 vinext({ cache: responseStoreAdapter() });
 ```
 
-`wrangler.jsonc` supplies only the `RESPONSE_STORE` service binding and `CF_VERSION_METADATA` metadata binding. It does not bind KV, R2, a Durable Object, or Workers Cache to the application Worker. The adapter-generated Worker entry runs vinext's request stage, performs Response Store lookups, admits completed non-dynamic renders, and exports the loopback revalidator entrypoint.
+`wrangler.jsonc` is the application config. It supplies the `RESPONSE_STORE` service binding and `CF_VERSION_METADATA` metadata binding, but no KV, R2, Durable Object, or application-level Workers Cache. `wrangler.response-store.jsonc` is the independently deployable cache Worker config; it points directly at `@cloudflare/workers-response-store` and owns Workers Cache, R2, and SQLite Durable Object configuration. The two files are the source of truth and can use different names in each application, provided the service Worker name and application binding stay aligned.
 
 ## Routes
 
