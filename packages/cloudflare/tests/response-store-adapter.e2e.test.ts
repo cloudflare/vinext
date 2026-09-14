@@ -7,6 +7,10 @@ import { afterEach, beforeEach, describe, test } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const appOutput = path.join(root, "examples/response-store-demo/dist/server");
+const selfContainedAppOutput = path.join(
+  root,
+  "examples/response-store-demo/.vinext/response-store-self-contained/server",
+);
 const cacheOutput = path.join(root, "packages/workers-response-store/dist/service-cache");
 
 let miniflare: Miniflare;
@@ -84,6 +88,50 @@ afterEach(async () => {
 });
 
 describe("Cloudflare Workers Response Store adapter", () => {
+  test("runs cold fills, hits, and SWR loopback in one Worker", async () => {
+    const inline = new Miniflare({
+      unsafeEphemeralDurableObjects: true,
+      workers: [
+        {
+          bindings: {
+            CF_VERSION_METADATA: {
+              id: crypto.randomUUID(),
+              tag: "test",
+              timestamp: new Date().toISOString(),
+            },
+          },
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          durableObjects: {
+            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+          },
+          modules: await modules(selfContainedAppOutput, "index.js"),
+          name: "app",
+          r2Buckets: { CACHE_BODIES: crypto.randomUUID() },
+          serviceBindings: { ASSETS: async () => new Response(null, { status: 404 }) },
+        },
+      ],
+    } satisfies MiniflareOptions);
+
+    try {
+      const fetch = () => inline.dispatchFetch("https://app.test/api/now");
+      const first = await fetch();
+      const firstBody = await first.text();
+      const hit = await fetch();
+      assert.equal(first.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await hit.text(), firstBody);
+
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      const stale = await fetch();
+      assert.equal(await stale.text(), firstBody);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      assert.notEqual(await (await fetch()).text(), firstBody);
+    } finally {
+      await inline.dispose();
+    }
+  });
+
   test("the application build owns no cache storage", async () => {
     const config = JSON.parse(
       await readFile(path.join(appOutput, "wrangler.json"), "utf8"),

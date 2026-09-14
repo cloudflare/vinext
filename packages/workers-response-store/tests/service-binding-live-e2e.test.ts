@@ -94,7 +94,6 @@ test("manual refresh loops back into the user Worker without a reverse binding",
       ? { ok: true, value: candidate }
       : { ok: false, message: `refresh still returned ${JSON.stringify(body)}` };
   });
-  assert.equal(await response.text(), "refreshed");
   assert.equal(response.headers.get("X-Revalidation-Reason"), "manual");
   assert.notEqual(response.headers.get("X-Revalidation-Version"), null);
 });

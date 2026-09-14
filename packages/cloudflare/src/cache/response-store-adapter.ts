@@ -2,13 +2,31 @@ import { fileURLToPath } from "node:url";
 
 const CLOUDFLARE_WORKER_ENTRY_ID = "virtual:cloudflare/worker-entry";
 
+export type ResponseStoreAdapterOptions = {
+  mode?: "self-contained" | "service-binding";
+};
+
 /**
  * Use Workers Response Store for both vinext response-stage and data caching.
- * The application Worker remains uncached; its bound cache Worker owns Workers
- * Cache, R2, SQLite metadata, and loopback regeneration.
+ * Service-binding mode keeps storage in a separate cache Worker. Self-contained
+ * mode keeps the same API and loopback in the application Worker.
  */
-export function responseStoreAdapter() {
-  const workerEntry = fileURLToPath(import.meta.resolve("./response-store-adapter.worker.js"));
+export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) {
+  const mode = options.mode ?? "service-binding";
+  if (mode !== "service-binding" && mode !== "self-contained") {
+    throw new Error(`Unknown Workers Response Store mode: ${String(mode)}`);
+  }
+  const workerEntry = fileURLToPath(
+    import.meta.resolve(
+      mode === "self-contained"
+        ? "./response-store-adapter.self-contained.worker.js"
+        : "./response-store-adapter.service-binding.worker.js",
+    ),
+  );
+  const entrypoints =
+    mode === "self-contained"
+      ? "CacheMetadata, ResponseStoreBinding, ResponseStoreRevalidator"
+      : "ResponseStoreClient, ResponseStoreRevalidator";
   return {
     cdn: {
       adapter: fileURLToPath(import.meta.resolve("./response-store-cdn.runtime.js")),
@@ -23,7 +41,7 @@ export function responseStoreAdapter() {
         transformHostEntry({ code, id }: { code: string; id: string }) {
           const cleanId = id.charCodeAt(0) === 0 ? id.slice(1) : id;
           if (cleanId !== CLOUDFLARE_WORKER_ENTRY_ID) return null;
-          return `${code}\nexport { ResponseStoreClient, ResponseStoreRevalidator } from ${JSON.stringify(workerEntry)};\n`;
+          return `${code}\nexport { ${entrypoints} } from ${JSON.stringify(workerEntry)};\n`;
         },
         type: "multi-stage" as const,
       },

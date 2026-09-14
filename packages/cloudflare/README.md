@@ -11,6 +11,9 @@ This package provides Cloudflare-specific cache and image backends for vinext:
 - **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — delegates
   page-level ISR serving and revalidation to Cloudflare Workers Cache through
   an automatically generated cache-enabled response entrypoint.
+- **`responseStoreAdapter()`** (`@vinext/cloudflare/cache/response-store-adapter`) —
+  uses Workers Response Store for both response and data caching, either in a
+  separate cache Worker or inside the application Worker.
 - **`imagesOptimizer()`** (`@vinext/cloudflare/images/images-optimizer`) — backs
   `next/image` transformations with a Cloudflare Images binding.
 
@@ -64,6 +67,26 @@ planned entry reusable before promotion.
 The response entrypoint hashes the complete transport identity into its
 Workers Cache URL, independently of zone Cache Rules, so distinct query and
 representation variants cannot collide.
+
+### Workers Response Store
+
+`responseStoreAdapter()` replaces both `cdnAdapter()` and `kvDataAdapter()`.
+It defaults to a separate cache Worker reached through the `RESPONSE_STORE`
+service binding. To deploy storage and cache entrypoints with the application
+instead, select self-contained mode:
+
+```ts
+import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
+
+vinext({ cache: responseStoreAdapter({ mode: "self-contained" }) });
+```
+
+Self-contained Workers must bind `CACHE_BODIES` to R2, bind the SQLite
+`CacheMetadata` Durable Object as `CACHE_METADATA`, export
+`ResponseStoreBinding` with Workers Cache enabled, and include the
+`CF_VERSION_METADATA` version-metadata binding. The default Worker entrypoint
+must keep Workers Cache disabled. This removes the cache Worker and service
+binding without changing cache behavior or the application API.
 
 ## Deploy
 

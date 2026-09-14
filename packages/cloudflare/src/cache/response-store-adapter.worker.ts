@@ -1,9 +1,9 @@
-import {
-  createWorkersResponseStoreClient,
-  type RevalidationInput,
-  type ResponseStoreClientEntrypoint,
-  type ResponseStoreRevalidatorEntrypoint,
-  type WorkersResponseStoreClientEnv,
+import type {
+  RevalidationInput,
+  WorkersResponseStore,
+  WorkersResponseStoreClientEnv,
+  WorkersResponseStoreEnv,
+  WorkersResponseStoreOptions,
 } from "@cloudflare/workers-response-store";
 import type {
   VinextCacheFunctionInvocation,
@@ -51,6 +51,8 @@ type StoredInvocation = {
   };
 };
 
+export type VinextResponseStoreEnv = WorkersResponseStoreClientEnv | WorkersResponseStoreEnv;
+
 const ROUTE_REVALIDATOR_ID = "vinext:response";
 const RESPONSE_STORE_KEY_PARAM = "__vinext_response_store";
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
@@ -59,10 +61,7 @@ const REPLAY_REQUEST_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
   name.trim().toLowerCase(),
 );
 
-function stageContext(
-  ctx: WorkerExecutionContext,
-  env: WorkersResponseStoreClientEnv,
-): StageContext {
+function stageContext(ctx: WorkerExecutionContext, env: VinextResponseStoreEnv): StageContext {
   const assets = Reflect.get(env, "ASSETS");
   return Object.assign(Object.create(Object.getPrototypeOf(ctx)), ctx, {
     ...(assets && typeof assets === "object" && typeof Reflect.get(assets, "fetch") === "function"
@@ -141,11 +140,11 @@ function restoreRequest(invocation: StoredInvocation): Request {
 
 async function invokeRequestStage(
   request: Request,
-  env: WorkersResponseStoreClientEnv,
+  env: VinextResponseStoreEnv,
   ctx: WorkerExecutionContext,
 ): Promise<Response> {
   const { handleRequestStage } = await loadVinextRequestStage<
-    WorkersResponseStoreClientEnv,
+    VinextResponseStoreEnv,
     StageContext
   >();
   return handleRequestStage(request, env, stageContext(ctx, env), (request, props, options) =>
@@ -156,7 +155,7 @@ async function invokeRequestStage(
 async function invokeResponseStage(
   request: Request,
   props: unknown,
-  env: WorkersResponseStoreClientEnv,
+  env: VinextResponseStoreEnv,
   ctx: WorkerExecutionContext,
   cache: VinextResponseStageDispatchOptions["cache"],
   capture?: ResponseStoreInvocationCapture,
@@ -165,7 +164,7 @@ async function invokeResponseStage(
   const dispatchRequestStage: VinextRequestStageTransport = (request) =>
     invokeRequestStage(request, env, ctx);
   const { handleResponseStage } = await loadVinextResponseStage<
-    WorkersResponseStoreClientEnv,
+    VinextResponseStoreEnv,
     StageContext
   >();
   const serialized = serializeInvocation(request, props);
@@ -177,77 +176,75 @@ async function invokeResponseStage(
   );
 }
 
-const responseStore = createWorkersResponseStoreClient({
-  async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
-    if (input.id === ROUTE_REVALIDATOR_ID) {
-      const invocation = parseInvocation(input.args.at(-1));
-      const response = await invokeResponseStage(
-        restoreRequest(invocation),
-        invocation.props,
-        env,
-        ctx,
-        "shared",
-      );
-      if (!isCacheable(response)) {
-        await response.body?.cancel().catch(() => {});
-        throw new Error("Vinext response-stage regeneration was not cacheable");
-      }
-      return response;
-    }
-    if (
-      input.id === CACHE_FUNCTION_REVALIDATOR_ID &&
-      typeof input.args[0] === "string" &&
-      typeof input.args[1] === "string"
-    ) {
-      const invocation = JSON.parse(input.args[1]) as VinextCacheFunctionInvocation;
-      if (
-        !invocation ||
-        typeof invocation.referenceId !== "string" ||
-        typeof invocation.encryptedArgs !== "string" ||
-        !invocation.rootParams ||
-        typeof invocation.rootParams !== "object" ||
-        !Array.isArray(invocation.softTags)
-      ) {
-        throw new TypeError("Invalid vinext cache function invocation");
-      }
-      return captureResponseStoreDataRegeneration(input.args[0], async () => {
-        const responseStage = await loadVinextResponseStage<
-          WorkersResponseStoreClientEnv,
-          StageContext
-        >();
-        if (!responseStage.invokeCacheFunction) {
-          throw new Error("The vinext response stage cannot invoke cache functions");
-        }
-        await responseStage.invokeCacheFunction(
-          invocation,
-          env,
-          stageContext(ctx, env),
-          (request) => invokeRequestStage(request, env, ctx),
-        );
-      });
-    }
-    if (input.id === DATA_REVALIDATOR_ID && typeof input.args[0] === "string") {
-      const invocation = parseInvocation(input.args.at(-1));
-      return captureResponseStoreDataRegeneration(input.args[0], async () => {
+export function createVinextResponseStoreOptions<
+  Env extends VinextResponseStoreEnv,
+>(): WorkersResponseStoreOptions<Env> {
+  return {
+    async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
+      if (input.id === ROUTE_REVALIDATOR_ID) {
+        const invocation = parseInvocation(input.args.at(-1));
         const response = await invokeResponseStage(
           restoreRequest(invocation),
           invocation.props,
           env,
           ctx,
-          "bypass",
+          "shared",
         );
-        await response.body?.pipeTo(new WritableStream());
-      });
-    }
-    throw new Error(`Unknown vinext response-store revalidator ${input.id}`);
-  },
-});
-
-setResponseStore(responseStore);
-export const ResponseStoreClient: ResponseStoreClientEntrypoint =
-  responseStore.entrypoints.ResponseStoreClient;
-export const ResponseStoreRevalidator: ResponseStoreRevalidatorEntrypoint<WorkersResponseStoreClientEnv> =
-  responseStore.entrypoints.ResponseStoreRevalidator;
+        if (!isCacheable(response)) {
+          await response.body?.cancel().catch(() => {});
+          throw new Error("Vinext response-stage regeneration was not cacheable");
+        }
+        return response;
+      }
+      if (
+        input.id === CACHE_FUNCTION_REVALIDATOR_ID &&
+        typeof input.args[0] === "string" &&
+        typeof input.args[1] === "string"
+      ) {
+        const invocation = JSON.parse(input.args[1]) as VinextCacheFunctionInvocation;
+        if (
+          !invocation ||
+          typeof invocation.referenceId !== "string" ||
+          typeof invocation.encryptedArgs !== "string" ||
+          !invocation.rootParams ||
+          typeof invocation.rootParams !== "object" ||
+          !Array.isArray(invocation.softTags)
+        ) {
+          throw new TypeError("Invalid vinext cache function invocation");
+        }
+        return captureResponseStoreDataRegeneration(input.args[0], async () => {
+          const responseStage = await loadVinextResponseStage<
+            VinextResponseStoreEnv,
+            StageContext
+          >();
+          if (!responseStage.invokeCacheFunction) {
+            throw new Error("The vinext response stage cannot invoke cache functions");
+          }
+          await responseStage.invokeCacheFunction(
+            invocation,
+            env,
+            stageContext(ctx, env),
+            (request) => invokeRequestStage(request, env, ctx),
+          );
+        });
+      }
+      if (input.id === DATA_REVALIDATOR_ID && typeof input.args[0] === "string") {
+        const invocation = parseInvocation(input.args.at(-1));
+        return captureResponseStoreDataRegeneration(input.args[0], async () => {
+          const response = await invokeResponseStage(
+            restoreRequest(invocation),
+            invocation.props,
+            env,
+            ctx,
+            "bypass",
+          );
+          await response.body?.pipeTo(new WritableStream());
+        });
+      }
+      throw new Error(`Unknown vinext response-store revalidator ${input.id}`);
+    },
+  };
+}
 
 async function cacheRequest(request: Request, props: unknown): Promise<Request> {
   // The stored loopback request includes transport headers that change on every
@@ -324,10 +321,18 @@ function publicResponse(response: Response, cacheStatus?: string): Response {
   });
 }
 
-export default {
+let responseStore: WorkersResponseStore;
+
+export function createVinextResponseStoreHandler(store: WorkersResponseStore) {
+  responseStore = store;
+  setResponseStore(store);
+  return handler;
+}
+
+const handler = {
   async fetch(
     request: Request,
-    env: WorkersResponseStoreClientEnv,
+    env: VinextResponseStoreEnv,
     ctx: WorkerExecutionContext,
   ): Promise<Response> {
     const context = stageContext(ctx, env);
@@ -458,7 +463,7 @@ export default {
     };
 
     const { handleRequestStage } = await loadVinextRequestStage<
-      WorkersResponseStoreClientEnv,
+      VinextResponseStoreEnv,
       StageContext
     >();
     return handleRequestStage(request, env, context, dispatchResponseStage);

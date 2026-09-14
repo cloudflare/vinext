@@ -439,4 +439,19 @@ describe("responseStoreAdapter builder", () => {
     expect(hasVerbatimResponseVary(descriptor)).toBe(false);
     expect(supportsCanonicalRscWarmup(descriptor)).toBe(false);
   });
+
+  it("can keep Response Store inside the application Worker", () => {
+    const descriptor = responseStoreAdapter({ mode: "self-contained" });
+    expect(descriptor.cdn.output.entry).toMatch(
+      /response-store-adapter\.self-contained\.worker\.js$/,
+    );
+    expect(
+      descriptor.cdn.output.transformHostEntry({
+        code: "export default {};",
+        id: "virtual:cloudflare/worker-entry",
+      }),
+    ).toBe(
+      `export default {};\nexport { CacheMetadata, ResponseStoreBinding, ResponseStoreRevalidator } from ${JSON.stringify(descriptor.cdn.output.entry)};\n`,
+    );
+  });
 });
