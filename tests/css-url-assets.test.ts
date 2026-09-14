@@ -50,7 +50,7 @@ type CloudflarePluginFactory = (options?: {
 }) => import("vite").Plugin;
 
 const MEDIA_SVG_RE = (name: string) =>
-  new RegExp(`^/_next/static/media/${name}\\.[A-Za-z0-9_-]+\\.svg$`);
+  new RegExp(`^/_next/static/media/${name}\\.[A-Za-z0-9_-]+\\.svg(?:\\?dpl=[^#]+)?$`);
 
 async function listFiles(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -65,7 +65,7 @@ async function listFiles(dir: string): Promise<string[]> {
 
 function extractStylesheetHrefs(html: string): string[] {
   const hrefs: string[] = [];
-  const hrefRe = /<link\s+rel="stylesheet"[^>]*\shref="([^"]+\.css)"/g;
+  const hrefRe = /<link\s+rel="stylesheet"[^>]*\shref="([^"]+\.css(?:\?[^"]*)?)"/g;
   for (const match of html.matchAll(hrefRe)) {
     if (match[1]) hrefs.push(match[1]);
   }
@@ -326,6 +326,10 @@ describe.each(["plain", "cloudflare"] as const)(
         undefined,
         path.join(CLOUDFLARE_FIXTURE_DIR, "node_modules"),
       );
+      await fs.writeFile(
+        path.join(tmpDir, "next.config.mjs"),
+        `export default { deploymentId: "css-url-assets-test" };\n`,
+      );
       const plugins: import("vite").PluginOption[] = [vinext({ appDir: tmpDir })];
       if (buildTarget === "cloudflare") {
         await fs.mkdir(path.join(tmpDir, "worker"), { recursive: true });
@@ -387,7 +391,9 @@ describe.each(["plain", "cloudflare"] as const)(
 
       // Each referenced media file must exist on disk in the client output.
       for (const assetUrl of assetUrls) {
-        const stat = await fs.stat(path.join(clientDir, assetUrl));
+        const stat = await fs.stat(
+          path.join(clientDir, new URL(assetUrl, "http://vinext.local").pathname),
+        );
         expect(stat.isFile(), `expected emitted asset ${assetUrl}`).toBe(true);
       }
     });
@@ -427,7 +433,9 @@ describe.each(["plain", "cloudflare"] as const)(
       const clientAssetUrls = svgUrls(clientCss);
       expect(serverAssetUrls).toEqual(clientAssetUrls);
       for (const assetUrl of serverAssetUrls) {
-        const stat = await fs.stat(path.join(clientDir, assetUrl));
+        const stat = await fs.stat(
+          path.join(clientDir, new URL(assetUrl, "http://vinext.local").pathname),
+        );
         expect(stat.isFile(), `expected SSR CSS asset ${assetUrl} in client output`).toBe(true);
       }
     });
