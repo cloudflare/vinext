@@ -7,6 +7,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
   deploy,
+  deployResponseStoreService,
   buildNodeCliInvocation,
   buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
@@ -222,6 +223,38 @@ describe("buildWranglerDeployArgs", () => {
   it("rejects null bytes without imposing an artificial length limit", () => {
     expect(() => validateWranglerEnvName("preview\0prod")).toThrow("null bytes");
     expect(validateWranglerEnvName("a".repeat(1024))).toBe("a".repeat(1024));
+  });
+});
+
+describe("deployResponseStoreService", () => {
+  it("deploys a generated service config before the application deploy", async () => {
+    writeWranglerPackageForTest(tmpDir);
+    writeFile(tmpDir, "dist/server/wrangler.json", "{}");
+    writeFile(tmpDir, "dist/server/vinext-response-store/wrangler.json", "{}");
+    let observed: Parameters<typeof spawn> | undefined;
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      observed = args;
+      return createMockChildProcess("Deployed\n");
+    }) as typeof spawn;
+
+    await expect(
+      deployResponseStoreService(tmpDir, "dist/server/wrangler.json", execute),
+    ).resolves.toBe(true);
+
+    expect(observed?.[1]).toEqual([
+      expectedWranglerBinForTest(tmpDir),
+      "deploy",
+      "--config",
+      path.join("dist", "server", "vinext-response-store", "wrangler.json"),
+    ]);
+  });
+
+  it("is a no-op when the build has no generated service", async () => {
+    const execute = vi.fn() as unknown as typeof spawn;
+    await expect(
+      deployResponseStoreService(tmpDir, "dist/server/wrangler.json", execute),
+    ).resolves.toBe(false);
+    expect(execute).not.toHaveBeenCalled();
   });
 });
 
@@ -1198,7 +1231,7 @@ describe("generateWranglerConfig", () => {
     expect(parsed.compatibility_date).toBe(today);
   });
 
-  it("includes the default KV namespace", () => {
+  it("does not require a KV namespace for the default Response Store", () => {
     mkdir(tmpDir, "app");
     writeFile(
       tmpDir,
@@ -1209,8 +1242,9 @@ describe("generateWranglerConfig", () => {
     const config = generateWranglerConfig(info);
     const parsed = JSON.parse(config);
 
-    expect(parsed.kv_namespaces).toBeDefined();
-    expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_KV_CACHE");
+    expect(parsed.kv_namespaces).toBeUndefined();
+    expect(parsed.cache).toBeUndefined();
+    expect(parsed.version_metadata).toBeUndefined();
   });
 
   it("omits KV namespace when KV caches are disabled", () => {

@@ -1,9 +1,16 @@
 import { fileURLToPath } from "node:url";
+import { finalizeResponseStoreBuildOutput } from "./response-store-adapter-config.js";
 
 const CLOUDFLARE_WORKER_ENTRY_ID = "virtual:cloudflare/worker-entry";
 
 export type ResponseStoreAdapterOptions = {
   mode?: "self-contained" | "service-binding";
+  /** Existing or desired Response Store service Worker name. */
+  serviceName?: string;
+  /** Existing or desired R2 bucket name for response bodies. */
+  r2BucketName?: string;
+  /** Set false to bind an existing compatible service without deploying it. */
+  deployService?: boolean;
 };
 
 /**
@@ -15,6 +22,35 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
   const mode = options.mode ?? "service-binding";
   if (mode !== "service-binding" && mode !== "self-contained") {
     throw new Error(`Unknown Workers Response Store mode: ${String(mode)}`);
+  }
+  for (const [name, value] of [
+    ["serviceName", options.serviceName],
+    ["r2BucketName", options.r2BucketName],
+  ] as const) {
+    if (value !== undefined && (typeof value !== "string" || value.length === 0)) {
+      throw new TypeError(`responseStoreAdapter({ ${name} }) must be a non-empty string.`);
+    }
+  }
+  if (options.deployService !== undefined && typeof options.deployService !== "boolean") {
+    throw new TypeError("responseStoreAdapter({ deployService }) must be a boolean.");
+  }
+  if (
+    mode === "self-contained" &&
+    (options.serviceName !== undefined ||
+      options.r2BucketName !== undefined ||
+      options.deployService !== undefined)
+  ) {
+    throw new TypeError("Response Store service options cannot be used in self-contained mode.");
+  }
+  if (options.deployService === false && !options.serviceName) {
+    throw new TypeError(
+      "responseStoreAdapter({ deployService: false }) requires an existing serviceName.",
+    );
+  }
+  if (options.deployService === false && options.r2BucketName) {
+    throw new TypeError(
+      "r2BucketName configures a deployed service and cannot be used when deployService is false.",
+    );
   }
   const workerEntry = fileURLToPath(
     import.meta.resolve(
@@ -43,6 +79,18 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
           if (cleanId !== CLOUDFLARE_WORKER_ENTRY_ID) return null;
           return `${code}\nexport { ${entrypoints} } from ${JSON.stringify(workerEntry)};\n`;
         },
+        ...(mode === "service-binding"
+          ? {
+              finalizeBuildOutput(output: { outDir: string; isPrimaryServerOutput: boolean }) {
+                return finalizeResponseStoreBuildOutput({
+                  ...output,
+                  serviceName: options.serviceName,
+                  r2BucketName: options.r2BucketName,
+                  deployService: options.deployService,
+                });
+              },
+            }
+          : {}),
         type: "multi-stage" as const,
       },
       capabilities: {

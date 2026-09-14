@@ -18,8 +18,8 @@ export type CloudflareProjectInfo = {
 };
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
-  dataCache: "kv",
-  cdnCache: "workers-cache",
+  dataCache: "none",
+  cdnCache: "response-store",
   imageOptimization: "cloudflare-images",
 };
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
@@ -528,6 +528,11 @@ function cacheImports(options: CloudflareInitOptions): string[] {
   if (options.cdnCache === "workers-cache") {
     imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
   }
+  if (options.cdnCache === "response-store") {
+    imports.push(
+      'import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";',
+    );
+  }
   if (options.imageOptimization === "cloudflare-images") {
     imports.push('import { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";');
   }
@@ -542,6 +547,7 @@ function vinextExpression(
   prerender = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
 ): string {
+  const responseStore = options.cdnCache === "response-store";
   const cacheEntries: string[] = [];
   if (options.dataCache === "kv") {
     cacheEntries.push("data: kvDataAdapter()");
@@ -554,7 +560,9 @@ function vinextExpression(
     cacheEntries.push(`cdn: cdnAdapter(${adapterOptions})`);
   }
   const optionEntries: string[] = [];
-  if (cacheEntries.length > 0) {
+  if (responseStore) {
+    optionEntries.push("cache: responseStoreAdapter()");
+  } else if (cacheEntries.length > 0) {
     optionEntries.push(`cache: { ${cacheEntries.join(", ")} }`);
   }
   if (options.imageOptimization === "cloudflare-images") {
@@ -1203,6 +1211,20 @@ function getVinextCacheSlot(
   return findProperty(cache.value as AstObject, name);
 }
 
+function getVinextCacheOption(
+  call: (ESTree.CallExpression & AstNode) | undefined,
+): AstProperty | undefined {
+  const firstArgument = call?.arguments[0];
+  if (
+    !firstArgument ||
+    firstArgument.type === "SpreadElement" ||
+    firstArgument.type !== "ObjectExpression"
+  ) {
+    return undefined;
+  }
+  return findProperty(firstArgument as AstObject, "cache");
+}
+
 function hasVinextCacheSlot(
   call: (ESTree.CallExpression & AstNode) | undefined,
   name: "data" | "cdn",
@@ -1308,6 +1330,31 @@ function ensureVinextCache(
       missing.map(({ name, expression }) => `      ${name}: ${expression},`).join("\n"),
       code,
     );
+  }
+}
+
+function ensureVinextResponseStore(
+  output: MagicString,
+  config: AstObject,
+  vinextBinding: string,
+  expression: string | undefined,
+  code: string,
+): void {
+  if (!expression) return;
+  const call = findPluginCall(config, vinextBinding);
+  const firstArgument = call?.arguments[0];
+  if (!call || !firstArgument || firstArgument.type === "SpreadElement") return;
+  if (firstArgument.type !== "ObjectExpression") {
+    throw new Error(
+      "The vinext() plugin options must be a static object for vinext init to configure Workers Response Store.",
+    );
+  }
+  const optionsObject = firstArgument as AstObject;
+  const cache = findProperty(optionsObject, "cache");
+  if (!cache) {
+    insertObjectProperty(output, optionsObject, `    cache: ${expression},`, code);
+  } else if (cache.value.type === "ObjectExpression" && cache.value.properties.length === 0) {
+    output.overwrite((cache.value as AstNode).start, (cache.value as AstNode).end, expression);
   }
 }
 
@@ -1534,11 +1581,7 @@ export function updateViteConfigForCloudflare(
   },
 ): string {
   const program = parseViteConfig(filePath, code);
-  const cacheOptions = options.cache ?? {
-    dataCache: "none",
-    cdnCache: "workers-cache",
-    imageOptimization: "cloudflare-images",
-  };
+  const cacheOptions = options.cache ?? DEFAULT_CLOUDFLARE_INIT_OPTIONS;
   const config = findConfigObject(program);
   if (!config) {
     throw new Error(
@@ -1570,6 +1613,32 @@ export function updateViteConfigForCloudflare(
   const needsPrerender = Boolean(options.prerender && !hasVinextPrerender(existingVinextCall));
   const configureCaches = options.cache !== undefined;
   const cacheAdditions: Array<{ name: "data" | "cdn"; expression: string }> = [];
+  let responseStoreExpression: string | undefined;
+  if (configureCaches && cacheOptions.cdnCache === "response-store") {
+    const source = "@vinext/cloudflare/cache/response-store-adapter";
+    const imported = "responseStoreAdapter";
+    const existing = commonJs
+      ? findRequiredBinding(program, source, imported)
+      : findImportedBinding(program, source, imported);
+    const cache = getVinextCacheOption(existingVinextCall);
+    const alreadyConfigured = Boolean(
+      existing &&
+      cache?.value.type === "CallExpression" &&
+      cache.value.callee.type === "Identifier" &&
+      cache.value.callee.name === existing,
+    );
+    if (
+      !cache ||
+      alreadyConfigured ||
+      (cache.value.type === "ObjectExpression" && cache.value.properties.length === 0)
+    ) {
+      const local = existing ?? allocateBinding(bindings, imported);
+      const binding = commonJs
+        ? ensureNamedRequire(program, output, source, imported, local)
+        : ensureNamedImport(program, output, source, imported, local);
+      responseStoreExpression = `${binding}()`;
+    }
+  }
   if (cacheOptions.dataCache === "kv" && !hasVinextCacheSlot(existingVinextCall, "data")) {
     const existing = commonJs
       ? findRequiredBinding(program, "@vinext/cloudflare/cache/kv-data-adapter", "kvDataAdapter")
@@ -1688,10 +1757,15 @@ export function updateViteConfigForCloudflare(
   if (existingVinextCall) {
     if (
       existingVinextCall.arguments.length === 0 &&
-      (cacheAdditions.length > 0 || imageOptimizerExpression || needsPrerender)
+      (responseStoreExpression ||
+        cacheAdditions.length > 0 ||
+        imageOptimizerExpression ||
+        needsPrerender)
     ) {
       const properties: string[] = [];
-      if (cacheAdditions.length > 0) {
+      if (responseStoreExpression) {
+        properties.push(`cache: ${responseStoreExpression}`);
+      } else if (cacheAdditions.length > 0) {
         properties.push(
           `cache: { ${cacheAdditions.map(({ name, expression }) => `${name}: ${expression}`).join(", ")} }`,
         );
@@ -1717,6 +1791,7 @@ export function updateViteConfigForCloudflare(
         `{\n${propertyEntryIndent}${properties.join(`,\n${propertyEntryIndent}`)},\n${closingIndent}}`,
       );
     } else {
+      ensureVinextResponseStore(output, config, vinextBinding, responseStoreExpression, code);
       ensureVinextCache(output, config, vinextBinding, cacheAdditions, code);
       ensureVinextImageOptimizer(output, config, vinextBinding, imageOptimizerExpression, code);
       ensureVinextPrerender(output, config, vinextBinding, options.prerender, code);

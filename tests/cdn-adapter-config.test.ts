@@ -12,6 +12,10 @@ import {
   DEFAULT_CDN_VERSION_METADATA_BINDING,
 } from "../packages/cloudflare/src/cache/cdn-adapter.js";
 import { responseStoreAdapter } from "../packages/cloudflare/src/cache/response-store-adapter.js";
+import {
+  finalizeResponseStoreBuildOutput,
+  RESPONSE_STORE_SERVICE_CONFIG,
+} from "../packages/cloudflare/src/cache/response-store-adapter-config.js";
 import { resolveCdnAdapterConfig } from "../packages/cloudflare/src/deploy-config.js";
 import { assertCdnVersionMetadataConfig } from "../packages/cloudflare/src/wrangler-version-metadata.js";
 
@@ -77,6 +81,167 @@ describe("Cloudflare CDN adapter generated config", () => {
     expect(auxiliaryConfig.version_metadata).toBeUndefined();
     expect(auxiliaryConfig.exports).toBeUndefined();
     expect(fs.readFileSync(sourcePath, "utf8")).toBe('{"name":"source-worker"}');
+  });
+
+  it("emits and connects the Response Store service Worker", async () => {
+    const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
+      name: "test-worker",
+      main: "index.js",
+      compatibility_date: "2026-09-14",
+      compatibility_flags: ["nodejs_compat"],
+      services: [{ binding: "OTHER", service: "other-worker" }],
+    });
+
+    await finalizeResponseStoreBuildOutput({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+    });
+
+    const appConfig = JSON.parse(fs.readFileSync(generatedPath, "utf8"));
+    expect(appConfig.cache).toEqual({ enabled: false });
+    expect(appConfig.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+    expect(appConfig.services).toEqual([
+      { binding: "OTHER", service: "other-worker" },
+      {
+        binding: "RESPONSE_STORE",
+        service: "test-worker-response-store",
+        entrypoint: "ResponseStoreService",
+      },
+    ]);
+    expect(appConfig.exports).toMatchObject({
+      default: { type: "worker", cache: { enabled: false } },
+    });
+
+    const serviceConfigPath = path.join(path.dirname(generatedPath), RESPONSE_STORE_SERVICE_CONFIG);
+    const serviceConfig = JSON.parse(fs.readFileSync(serviceConfigPath, "utf8"));
+    expect(serviceConfig).toMatchObject({
+      name: "test-worker-response-store",
+      main: "service.js",
+      compatibility_date: "2026-09-14",
+      workers_dev: false,
+      preview_urls: false,
+      cache: { enabled: true },
+      r2_buckets: [{ binding: "CACHE_BODIES" }],
+      durable_objects: {
+        bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
+      },
+      migrations: [{ tag: "v1", new_sqlite_classes: ["CacheMetadata"] }],
+      exports: {
+        default: { type: "worker", cache: { enabled: false } },
+        ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
+      },
+    });
+    expect(fs.existsSync(path.join(path.dirname(serviceConfigPath), "service.js"))).toBe(true);
+  });
+
+  it("does not emit a Response Store service for self-contained mode", () => {
+    expect(responseStoreAdapter({ mode: "self-contained" }).cdn.output.finalizeBuildOutput).toBe(
+      undefined,
+    );
+    expect(responseStoreAdapter().cdn.output.finalizeBuildOutput).toEqual(expect.any(Function));
+  });
+
+  it("uses custom Response Store service and R2 bucket names", async () => {
+    const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
+      name: "test-worker",
+      main: "index.js",
+      compatibility_date: "2026-09-14",
+    });
+
+    await responseStoreAdapter({
+      serviceName: "shared-response-store",
+      r2BucketName: "shared-response-store-bodies",
+    }).cdn.output.finalizeBuildOutput?.({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+    });
+
+    const appConfig = JSON.parse(fs.readFileSync(generatedPath, "utf8"));
+    expect(appConfig.services).toContainEqual({
+      binding: "RESPONSE_STORE",
+      service: "shared-response-store",
+      entrypoint: "ResponseStoreService",
+    });
+    const serviceConfig = JSON.parse(
+      fs.readFileSync(
+        path.join(path.dirname(generatedPath), RESPONSE_STORE_SERVICE_CONFIG),
+        "utf8",
+      ),
+    );
+    expect(serviceConfig.name).toBe("shared-response-store");
+    expect(serviceConfig.r2_buckets).toEqual([
+      { binding: "CACHE_BODIES", bucket_name: "shared-response-store-bodies" },
+    ]);
+  });
+
+  it("can bind an existing Response Store service without emitting it", async () => {
+    const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
+      name: "test-worker",
+      main: "index.js",
+      compatibility_date: "2026-09-14",
+    });
+    const serviceConfigPath = path.join(path.dirname(generatedPath), RESPONSE_STORE_SERVICE_CONFIG);
+    writeJson(path.relative(root, serviceConfigPath), { name: "stale-generated-response-store" });
+
+    await responseStoreAdapter({
+      serviceName: "managed-response-store",
+      deployService: false,
+    }).cdn.output.finalizeBuildOutput?.({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+    });
+
+    expect(fs.existsSync(serviceConfigPath)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(generatedPath, "utf8")).services).toEqual([
+      {
+        binding: "RESPONSE_STORE",
+        service: "managed-response-store",
+        entrypoint: "ResponseStoreService",
+      },
+    ]);
+  });
+
+  it("rejects invalid Response Store resource options", () => {
+    expect(() => responseStoreAdapter({ serviceName: "" })).toThrow("non-empty string");
+    expect(() => responseStoreAdapter({ r2BucketName: "" })).toThrow("non-empty string");
+    expect(() => responseStoreAdapter({ deployService: "false" as never })).toThrow(
+      "must be a boolean",
+    );
+    expect(() =>
+      responseStoreAdapter({ mode: "self-contained", serviceName: "response-store" }),
+    ).toThrow("cannot be used in self-contained mode");
+    expect(() => responseStoreAdapter({ deployService: false })).toThrow(
+      "requires an existing serviceName",
+    );
+    expect(() =>
+      responseStoreAdapter({
+        serviceName: "response-store",
+        r2BucketName: "response-store-bodies",
+        deployService: false,
+      }),
+    ).toThrow("cannot be used when deployService is false");
+  });
+
+  it("keeps the provisioned R2 bucket name within Cloudflare's limit", async () => {
+    const generatedPath = writeGeneratedConfig("dist/server/wrangler.json", {
+      name: "a-very-long-worker-name-that-nearly-reaches-the-worker-name-limit",
+      main: "index.js",
+      compatibility_date: "2026-09-14",
+    });
+    await finalizeResponseStoreBuildOutput({
+      outDir: path.dirname(generatedPath),
+      isPrimaryServerOutput: true,
+    });
+    const serviceConfig = JSON.parse(
+      fs.readFileSync(
+        path.join(path.dirname(generatedPath), RESPONSE_STORE_SERVICE_CONFIG),
+        "utf8",
+      ),
+    );
+    expect(`${serviceConfig.name}-cache-bodies`.length).toBeLessThanOrEqual(63);
+    expect(JSON.parse(fs.readFileSync(generatedPath, "utf8")).services[0].service).toBe(
+      serviceConfig.name,
+    );
   });
 
   it("uses the primary vinext server output when the deploy redirect is absent", async () => {

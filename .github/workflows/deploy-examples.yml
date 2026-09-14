@@ -203,24 +203,8 @@ jobs:
         if: matrix.example.static_export != true
         run: vp build
         working-directory: ${{ matrix.example.working_directory }}
-
-      - name: Bind Response Store demo to this run's cache Worker
-        if: matrix.example.name == 'response-store-demo'
-        working-directory: ${{ matrix.example.working_directory }}
         env:
-          RESPONSE_STORE_SERVICE: ${{ needs.response_store.outputs.service_name }}
-        run: |
-          # Node reads the value from process.env.
-          # shellcheck disable=SC2016
-          node -e '
-            const fs = require("node:fs");
-            const path = "dist/server/wrangler.json";
-            const config = JSON.parse(fs.readFileSync(path, "utf8"));
-            const binding = config.services?.find(({ binding }) => binding === "RESPONSE_STORE");
-            if (!binding) throw new Error("Missing RESPONSE_STORE service binding");
-            binding.service = process.env.RESPONSE_STORE_SERVICE;
-            fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
-          '
+          VINEXT_RESPONSE_STORE_SERVICE_NAME: ${{ matrix.example.name == 'response-store-demo' && needs.response_store.outputs.service_name || '' }}
 
       - name: Build static export
         if: matrix.example.static_export == true

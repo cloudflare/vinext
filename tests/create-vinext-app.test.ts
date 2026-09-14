@@ -71,8 +71,8 @@ const cloudflareInitOptions: ResolvedInitOptions = {
   platform: "cloudflare",
   prerender: false,
   cloudflare: {
-    dataCache: "kv",
-    cdnCache: "data-cache",
+    dataCache: "none",
+    cdnCache: "response-store",
     imageOptimization: "cloudflare-images",
   },
 };
@@ -133,6 +133,7 @@ describe("createVinextApp", () => {
     expect(readFile(appPath, "README.md")).not.toMatch(/\bnpm\b|\bnpx\b/);
     expect(readFile(appPath, "app/globals.css")).toContain('@import "tailwindcss"');
     expect(readFile(appPath, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
+    expect(readFile(appPath, "vite.config.ts")).toContain("cache: responseStoreAdapter()");
     expect(readFile(appPath, "wrangler.jsonc")).toContain('"main": "vinext/server/fetch-handler"');
     expect(readFile(appPath, ".gitignore")).toContain(".wrangler/");
     expect(readFile(appPath, ".gitignore")).toContain("next-env.d.ts");

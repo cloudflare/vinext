@@ -20,6 +20,36 @@ function expectValidConfig(output: string): void {
 }
 
 describe("updateViteConfigForCloudflare", () => {
+  it("configures Workers Response Store as the generated default", () => {
+    const output = generateAppRouterViteConfig();
+    expectValidConfig(output);
+    expect(output).toContain(
+      'import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";',
+    );
+    expect(output).toContain("cache: responseStoreAdapter()");
+    expect(output).not.toContain("kvDataAdapter");
+    expect(output).not.toContain("cdnAdapter");
+  });
+
+  it("adds Workers Response Store to an existing bare vinext config", () => {
+    const input = `import vinext from "vinext";
+export default { plugins: [vinext()] };
+`;
+    const options = {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none" as const,
+        cdnCache: "response-store" as const,
+        imageOptimization: "none" as const,
+      },
+    };
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, options);
+    expectValidConfig(output);
+    expect(output).toContain("vinext({\n    cache: responseStoreAdapter(),\n  })");
+    expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
+  });
+
   it("updates an existing ESM App Router config without replacing user code", () => {
     const input = `import { defineConfig } from "vite";
 import vinext from "vinext";

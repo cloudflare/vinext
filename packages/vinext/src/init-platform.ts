@@ -4,7 +4,7 @@ import { isAgent } from "am-i-vibing";
 
 export type InitPlatform = "cloudflare" | "node";
 export type InitDataCache = "kv" | "none";
-export type InitCdnCache = "data-cache" | "workers-cache";
+export type InitCdnCache = "data-cache" | "response-store" | "workers-cache";
 export type InitImageOptimization = "cloudflare-images" | "none";
 
 export type CloudflareInitOptions = {
@@ -111,7 +111,7 @@ export function parseDataCacheArg(args: string[]): InitDataCache | undefined {
 }
 
 export function parseCdnCacheArg(args: string[]): InitCdnCache | undefined {
-  return parseChoiceArg(args, "--cdn-cache", ["workers-cache", "data-cache"]);
+  return parseChoiceArg(args, "--cdn-cache", ["response-store", "workers-cache", "data-cache"]);
 }
 
 export function parseImageOptimizationArg(args: string[]): InitImageOptimization | undefined {
@@ -214,15 +214,17 @@ export async function resolveInitOptions(
   const platform = await resolveInitPlatform(args, options);
   const platformOptions = await INIT_PLATFORMS[platform].options(args, options);
   const explicitWarmCdnCache = parseWarmCdnCacheArg(args);
-  if (platform === "cloudflare" && platformOptions?.cdnCache !== "workers-cache") {
+  if (platform === "cloudflare" && platformOptions?.cdnCache === "data-cache") {
     if (explicitWarmCdnCache === true) {
-      throw new Error("--experimental-warm-cdn-cache requires --cdn-cache=workers-cache.");
+      throw new Error(
+        "--experimental-warm-cdn-cache requires --cdn-cache=response-store or workers-cache.",
+      );
     }
   }
 
   const prerender = await resolveInitPrerender(args, options);
   const warmCdnCache =
-    platform === "cloudflare" && platformOptions?.cdnCache === "workers-cache"
+    platform === "cloudflare" && platformOptions?.cdnCache !== "data-cache"
       ? await resolveInitWarmCdnCache(args, options)
       : false;
 
@@ -296,9 +298,7 @@ export async function resolveInitWarmCdnCache(
 
   try {
     while (true) {
-      const answer = (
-        await question("  Enable Workers Cache experimental pre-warm during deploy? [y/N]: ")
-      )
+      const answer = (await question("  Enable experimental cache pre-warm during deploy? [y/N]: "))
         .trim()
         .toLowerCase();
       if (answer === "") {
@@ -327,9 +327,18 @@ export async function resolveCloudflareInitOptions(
   const explicitDataCache = parseDataCacheArg(args);
   const explicitCdnCache = parseCdnCacheArg(args);
   const explicitImageOptimization = parseImageOptimizationArg(args);
-  if (explicitCdnCache && explicitDataCache && explicitImageOptimization) {
+  if (explicitCdnCache === "response-store" && explicitDataCache === "kv") {
+    throw new Error(
+      "--cdn-cache=response-store provides the data cache and cannot be combined with --data-cache=kv.",
+    );
+  }
+  if (
+    explicitCdnCache &&
+    (explicitCdnCache === "response-store" || explicitDataCache) &&
+    explicitImageOptimization
+  ) {
     return {
-      dataCache: explicitDataCache,
+      dataCache: explicitCdnCache === "response-store" ? "none" : (explicitDataCache ?? "kv"),
       cdnCache: explicitCdnCache,
       imageOptimization: explicitImageOptimization,
     };
@@ -338,7 +347,7 @@ export async function resolveCloudflareInitOptions(
   const env = options.env ?? process.env;
   if (isAgentEnvironment(env)) {
     throw new Error(
-      "vinext init needs Cloudflare cache and image choices. Ask the user which CDN cache (workers-cache or data-cache), data cache (kv or none), and image optimization (cloudflare-images or none) they want, then re-run with --cdn-cache=..., --data-cache=..., and --image-optimization=....",
+      "vinext init needs Cloudflare cache and image choices. Ask the user which CDN cache (response-store, workers-cache, or data-cache), data cache (kv or none), and image optimization (cloudflare-images or none) they want, then re-run with --cdn-cache=..., --data-cache=..., and --image-optimization=....",
     );
   }
 
@@ -347,9 +356,10 @@ export async function resolveCloudflareInitOptions(
   const isInteractive =
     options.isInteractive ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
   if (!isInteractive) {
+    const cdnCache = explicitCdnCache ?? (explicitDataCache ? "data-cache" : "response-store");
     return {
-      dataCache: explicitDataCache ?? "kv",
-      cdnCache: explicitCdnCache ?? "workers-cache",
+      dataCache: cdnCache === "response-store" ? "none" : (explicitDataCache ?? "kv"),
+      cdnCache,
       imageOptimization: explicitImageOptimization ?? "cloudflare-images",
     };
   }
@@ -382,25 +392,35 @@ export async function resolveCloudflareInitOptions(
 
     const cdnCache = await promptChoice(
       explicitCdnCache,
-      "  Choose a CDN cache:\n    1. Workers Cache (default)\n    2. Data cache\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
       {
-        "1": "workers-cache",
+        "1": "response-store",
+        "response-store": "response-store",
+        "2": "workers-cache",
         "workers-cache": "workers-cache",
         workers: "workers-cache",
-        "2": "data-cache",
+        "3": "data-cache",
         "data-cache": "data-cache",
         data: "data-cache",
       },
-      "workers-cache",
-      "Please choose Workers Cache (1) or Data cache (2).",
+      "response-store",
+      "Please choose Workers Response Store (1), Workers Cache (2), or Data cache (3).",
     );
-    const dataCache = await promptChoice(
-      explicitDataCache,
-      "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
-      { "1": "kv", kv: "kv", "2": "none", none: "none" },
-      "kv",
-      "Please choose Cloudflare KV (1) or None (2).",
-    );
+    if (cdnCache === "response-store" && explicitDataCache === "kv") {
+      throw new Error(
+        "--cdn-cache=response-store provides the data cache and cannot be combined with --data-cache=kv.",
+      );
+    }
+    const dataCache =
+      cdnCache === "response-store"
+        ? "none"
+        : await promptChoice(
+            explicitDataCache,
+            "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
+            { "1": "kv", kv: "kv", "2": "none", none: "none" },
+            "kv",
+            "Please choose Cloudflare KV (1) or None (2).",
+          );
     const imageOptimization = await promptChoice(
       explicitImageOptimization,
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",

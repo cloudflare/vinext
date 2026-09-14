@@ -72,8 +72,43 @@ representation variants cannot collide.
 
 `responseStoreAdapter()` replaces both `cdnAdapter()` and `kvDataAdapter()`.
 It defaults to a separate cache Worker reached through the `RESPONSE_STORE`
-service binding. To deploy storage and cache entrypoints with the application
-instead, select self-contained mode:
+service binding. The Cloudflare build emits that Worker and its binding, and
+`vinext-cloudflare deploy` deploys it before the application Worker. Wrangler
+provisions the R2 bucket and SQLite Durable Object automatically, so the app
+does not need storage IDs or a separate deployment command.
+
+Resource names can be fixed explicitly when they need to match existing
+infrastructure:
+
+```ts
+vinext({
+  cache: responseStoreAdapter({
+    serviceName: "my-response-store",
+    r2BucketName: "my-response-store-bodies",
+  }),
+});
+```
+
+The service name also identifies the service-owned Durable Object namespace.
+Keeping it stable reuses its metadata. To bind a compatible Response Store
+Worker managed outside the vinext deployment, set `deployService: false`:
+
+```ts
+vinext({
+  cache: responseStoreAdapter({
+    serviceName: "shared-response-store",
+    deployService: false,
+  }),
+});
+```
+
+When omitted, names are derived from the application Worker. Setting
+`deployService` to `false` emits only the application service binding; the
+external Worker and its R2 and Durable Object resources remain independently
+managed.
+
+To deploy storage and cache entrypoints with the application instead, select
+self-contained mode:
 
 ```ts
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";

@@ -93,6 +93,7 @@ import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { cacheabilityRoutePathname } from "vinext/internal/server/cacheability-manifest";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 import { writeCacheabilityManifestArtifact } from "./cacheability-artifact.js";
+import { RESPONSE_STORE_SERVICE_CONFIG } from "./cache/response-store-adapter-config.js";
 import {
   DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
   DEFAULT_CACHEABILITY_PROBE_RETRIES,
@@ -757,6 +758,35 @@ export async function runWranglerDeploy(
   const deployedUrl = parseWorkerDeploymentUrl(output);
 
   return deployedUrl ?? "(URL not detected in wrangler output)";
+}
+
+/** Deploy a generated Response Store service before its application Worker. */
+export async function deployResponseStoreService(
+  root: string,
+  appConfig: string | undefined,
+  execute: typeof spawn = spawn,
+): Promise<boolean> {
+  const appConfigs = appConfig ? [path.resolve(root, appConfig)] : [];
+  try {
+    const redirectPath = path.resolve(root, ".wrangler/deploy/config.json");
+    const redirect = JSON.parse(fs.readFileSync(redirectPath, "utf8")) as {
+      configPath?: unknown;
+    };
+    if (typeof redirect.configPath === "string") {
+      appConfigs.push(path.resolve(path.dirname(redirectPath), redirect.configPath));
+    }
+  } catch {
+    // The explicit config and conventional output remain valid without a redirect.
+  }
+  appConfigs.push(path.resolve(root, "dist/server/wrangler.json"));
+  const serviceConfig = appConfigs
+    .map((config) => path.resolve(path.dirname(config), RESPONSE_STORE_SERVICE_CONFIG))
+    .find((config) => fs.existsSync(config));
+  if (!serviceConfig) return false;
+
+  console.log("\n  Deploying Workers Response Store...");
+  await runWranglerDeploy(root, { config: path.relative(root, serviceConfig) }, execute);
+  return true;
 }
 
 export function hasCdnWarmRequests(
@@ -2063,6 +2093,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   // Step 7: Deploy via wrangler
+  await deployResponseStoreService(root, options.config);
+
   const wranglerOptions = {
     env: deployEnv === "production" && !options.env ? undefined : deployEnv,
     name: options.name,

@@ -31,16 +31,17 @@ describe("Cloudflare init choices", () => {
   it("parses cache and image flags", () => {
     expect(parseDataCacheArg(["--data-cache=none"])).toBe("none");
     expect(parseCdnCacheArg(["--cdn-cache", "data-cache"])).toBe("data-cache");
+    expect(parseCdnCacheArg(["--cdn-cache=response-store"])).toBe("response-store");
     expect(parseCdnCacheArg(["--cdn-cache=workers-cache"])).toBe("workers-cache");
     expect(parseImageOptimizationArg(["--image-optimization=none"])).toBe("none");
   });
 
-  it("defaults to KV data, Workers Cache CDN, and Cloudflare Images", async () => {
+  it("defaults to Workers Response Store and Cloudflare Images", async () => {
     await expect(
       resolveCloudflareInitOptions([], { env: {}, isInteractive: false }),
     ).resolves.toEqual({
-      dataCache: "kv",
-      cdnCache: "workers-cache",
+      dataCache: "none",
+      cdnCache: "response-store",
       imageOptimization: "cloudflare-images",
     });
   });
@@ -76,16 +77,16 @@ describe("Cloudflare init choices", () => {
 
   it("rejects legacy CDN cache choices", () => {
     expect(() => parseCdnCacheArg(["--cdn-cache=kv"])).toThrow(
-      "Expected workers-cache or data-cache",
+      "Expected response-store or workers-cache or data-cache",
     );
     expect(() => parseCdnCacheArg(["--cdn-cache=none"])).toThrow(
-      "Expected workers-cache or data-cache",
+      "Expected response-store or workers-cache or data-cache",
     );
   });
 
   it("prompts for CDN cache before the other Cloudflare choices", async () => {
     const prompts: string[] = [];
-    const answers = ["2", "2", "2"];
+    const answers = ["3", "2", "2"];
     const output = new PassThrough();
     await expect(
       resolveCloudflareInitOptions([], {
@@ -103,7 +104,7 @@ describe("Cloudflare init choices", () => {
       imageOptimization: "none",
     });
     expect(prompts).toEqual([
-      "  Choose a CDN cache:\n    1. Workers Cache (default)\n    2. Data cache\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
       "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
     ]);
@@ -135,7 +136,7 @@ describe("Cloudflare init choices", () => {
         output,
         question: async (prompt) => {
           prompts.push(prompt);
-          return "2";
+          return "3";
         },
       }),
     ).resolves.toEqual({
@@ -144,14 +145,14 @@ describe("Cloudflare init choices", () => {
       imageOptimization: "none",
     });
     expect(prompts).toEqual([
-      "  Choose a CDN cache:\n    1. Workers Cache (default)\n    2. Data cache\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
     ]);
     expect(output.read()?.toString()).toBe("\n");
   });
 
   it("does not add a section break when repeating an invalid choice", async () => {
     const prompts: string[] = [];
-    const answers = ["invalid", "2", "2", "2"];
+    const answers = ["invalid", "3", "2", "2"];
     const output = new PassThrough();
     await resolveCloudflareInitOptions([], {
       env: {},
@@ -168,7 +169,7 @@ describe("Cloudflare init choices", () => {
     expect(prompts[2]).toMatch(/^  Choose a data cache:/);
     expect(prompts[3]).toMatch(/^  Choose image optimization:/);
     expect(output.read()?.toString()).toBe(
-      "  Please choose Workers Cache (1) or Data cache (2).\n\n\n\n",
+      "  Please choose Workers Response Store (1), Workers Cache (2), or Data cache (3).\n\n\n\n",
     );
   });
 });
@@ -260,9 +261,7 @@ describe("warm CDN cache init choice", () => {
         },
       }),
     ).resolves.toBe(false);
-    expect(prompts).toEqual([
-      "  Enable Workers Cache experimental pre-warm during deploy? [y/N]: ",
-    ]);
+    expect(prompts).toEqual(["  Enable experimental cache pre-warm during deploy? [y/N]: "]);
     expect(output.read()?.toString()).toBe("\n");
   });
 });
@@ -326,13 +325,13 @@ describe("resolveInitPlatform", () => {
 });
 
 describe("resolveInitOptions", () => {
-  it("defaults Cloudflare Workers Cache init away from CDN pre-warming", async () => {
+  it("defaults Cloudflare Workers Response Store init away from pre-warming", async () => {
     await expect(resolveInitOptions([], { env: {}, isInteractive: false })).resolves.toEqual({
       platform: "cloudflare",
       prerender: false,
       cloudflare: {
-        dataCache: "kv",
-        cdnCache: "workers-cache",
+        dataCache: "none",
+        cdnCache: "response-store",
         imageOptimization: "cloudflare-images",
         warmCdnCache: false,
       },
@@ -363,9 +362,9 @@ describe("resolveInitOptions", () => {
     });
   });
 
-  it("asks whether to pre-warm Workers Cache after the prerender prompt", async () => {
+  it("asks whether to pre-warm Workers Response Store after the prerender prompt", async () => {
     const prompts: string[] = [];
-    const answers = ["", "", "", "n", ""];
+    const answers = ["", "", "n", ""];
 
     await expect(
       resolveInitOptions(["--platform=cloudflare"], {
@@ -380,25 +379,24 @@ describe("resolveInitOptions", () => {
       platform: "cloudflare",
       prerender: false,
       cloudflare: {
-        dataCache: "kv",
-        cdnCache: "workers-cache",
+        dataCache: "none",
+        cdnCache: "response-store",
         imageOptimization: "cloudflare-images",
         warmCdnCache: false,
       },
     });
 
     expect(prompts).toEqual([
-      "  Choose a CDN cache:\n    1. Workers Cache (default)\n    2. Data cache\n  CDN cache [1]: ",
-      "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
       "  Pre-render all static routes after build? [y/N]: ",
-      "  Enable Workers Cache experimental pre-warm during deploy? [y/N]: ",
+      "  Enable experimental cache pre-warm during deploy? [y/N]: ",
     ]);
   });
 
   it("does not ask about pre-warming when Data cache is selected for CDN cache", async () => {
     const prompts: string[] = [];
-    const answers = ["2", "", "", ""];
+    const answers = ["3", "", "", ""];
 
     await expect(
       resolveInitOptions(["--platform=cloudflare"], {
@@ -421,7 +419,7 @@ describe("resolveInitOptions", () => {
     });
 
     expect(prompts).toEqual([
-      "  Choose a CDN cache:\n    1. Workers Cache (default)\n    2. Data cache\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
       "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
       "  Pre-render all static routes after build? [y/N]: ",
@@ -440,6 +438,8 @@ describe("resolveInitOptions", () => {
         ],
         { env: {}, isInteractive: false },
       ),
-    ).rejects.toThrow("--experimental-warm-cdn-cache requires --cdn-cache=workers-cache");
+    ).rejects.toThrow(
+      "--experimental-warm-cdn-cache requires --cdn-cache=response-store or workers-cache",
+    );
   });
 });

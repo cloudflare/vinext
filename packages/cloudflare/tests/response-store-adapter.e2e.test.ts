@@ -11,7 +11,7 @@ const selfContainedAppOutput = path.join(
   root,
   "examples/response-store-demo/.vinext/response-store-self-contained/server",
 );
-const cacheOutput = path.join(root, "packages/workers-response-store/dist/service-cache");
+const cacheOutput = path.join(appOutput, "vinext-response-store");
 
 let miniflare: Miniflare;
 let workerVersionId: string;
@@ -75,7 +75,7 @@ beforeEach(async () => {
         durableObjects: {
           CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
         },
-        modules: await modules(cacheOutput, "cache-worker.js"),
+        modules: await modules(cacheOutput, "service.js"),
         name: "cache",
         r2Buckets: { CACHE_BODIES: crypto.randomUUID() },
       },
@@ -132,16 +132,37 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
-  test("the application build owns no cache storage", async () => {
+  test("the generated application and cache Workers own only their required bindings", async () => {
     const config = JSON.parse(
       await readFile(path.join(appOutput, "wrangler.json"), "utf8"),
     ) as Record<string, unknown>;
-    assert.deepEqual(config.exports, {});
+    assert.deepEqual(config.exports, {
+      default: { type: "worker", cache: { enabled: false } },
+    });
     assert.deepEqual(config.kv_namespaces, []);
     assert.deepEqual(config.r2_buckets, []);
     assert.deepEqual(config.durable_objects, { bindings: [] });
-    assert.equal(config.cache, undefined);
+    assert.deepEqual(config.cache, { enabled: false });
     assert.deepEqual(config.version_metadata, { binding: "CF_VERSION_METADATA" });
+    assert.deepEqual(config.services, [
+      {
+        binding: "RESPONSE_STORE",
+        service: "response-store-demo-response-store",
+        entrypoint: "ResponseStoreService",
+      },
+    ]);
+
+    const cacheConfig = JSON.parse(
+      await readFile(path.join(cacheOutput, "wrangler.json"), "utf8"),
+    ) as Record<string, unknown>;
+    assert.deepEqual(cacheConfig.r2_buckets, [{ binding: "CACHE_BODIES" }]);
+    assert.deepEqual(cacheConfig.durable_objects, {
+      bindings: [{ name: "CACHE_METADATA", class_name: "CacheMetadata" }],
+    });
+    assert.deepEqual(cacheConfig.exports, {
+      default: { type: "worker", cache: { enabled: false } },
+      ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
+    });
   });
 
   test("validates staged-version warmup requests and exposes build identity", async () => {
