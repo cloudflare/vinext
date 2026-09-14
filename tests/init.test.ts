@@ -294,6 +294,18 @@ describe("addScripts", () => {
     );
   });
 
+  it("adds a separate Response Store deploy script when requested", () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const added = addScripts(tmpDir, 3001, "cloudflare", { deployResponseStore: true });
+
+    expect(added).toContain("deploy:response-store");
+    const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
+    expect(pkg.scripts["deploy:response-store"]).toBe(
+      "wrangler deploy --config wrangler.response-store.jsonc",
+    );
+  });
+
   it("supports standard script names without a dev port for fresh scaffolds", () => {
     setupProject(tmpDir, { router: "app" });
 
@@ -337,11 +349,12 @@ describe("addScripts", () => {
         scripts: {
           "dev:vinext": "custom-command",
           "deploy:vinext": "custom-deploy",
+          "deploy:response-store": "custom-response-store-deploy",
         },
       },
     });
 
-    const added = addScripts(tmpDir, 3001, "cloudflare");
+    const added = addScripts(tmpDir, 3001, "cloudflare", { deployResponseStore: true });
 
     expect(added).not.toContain("dev:vinext");
     expect(added).not.toContain("deploy:vinext");
@@ -352,6 +365,7 @@ describe("addScripts", () => {
     expect(pkg.scripts["dev:vinext"]).toBe("custom-command");
     expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
     expect(pkg.scripts["deploy:vinext"]).toBe("custom-deploy");
+    expect(pkg.scripts["deploy:response-store"]).toBe("custom-response-store-deploy");
   });
 
   it("creates scripts object if missing", () => {
@@ -611,6 +625,9 @@ describe("init — basic functionality", () => {
         "@cloudflare/workers-response-store"
       ],
     ).toBe("latest");
+    expect(
+      (readPkg(tmpDir) as { scripts: Record<string, string> }).scripts["deploy:response-store"],
+    ).toBe("wrangler deploy --config wrangler.response-store.jsonc");
     expect(output).toContain("npx wrangler deploy --config wrangler.response-store.jsonc");
   });
 

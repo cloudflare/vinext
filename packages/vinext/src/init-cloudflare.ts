@@ -629,15 +629,7 @@ function configureResponseStoreWrangler(
     throw new Error("The existing Wrangler config has an invalid exports value.");
   }
   const workerExports = { ...exportsConfig } as Record<string, unknown>;
-  const defaultExport = workerExports.default;
-  if (defaultExport !== undefined && !isUnknownRecord(defaultExport)) {
-    throw new Error("The existing Wrangler config has an invalid default export.");
-  }
-  workerExports.default = {
-    ...defaultExport,
-    type: "worker",
-    cache: { enabled: false },
-  };
+  let updateWorkerExports = mode === "self-contained";
 
   const services = config.services;
   if (services !== undefined && !Array.isArray(services)) {
@@ -702,6 +694,7 @@ function configureResponseStoreWrangler(
         entrypoint: RESPONSE_STORE_ENTRYPOINT,
       },
     ]);
+    updateWorkerExports = hasSelfContainedResponseStore;
     delete workerExports.ResponseStoreBinding;
 
     if (Array.isArray(config.r2_buckets)) {
@@ -736,6 +729,15 @@ function configureResponseStoreWrangler(
       );
     }
   } else {
+    const defaultExport = workerExports.default;
+    if (defaultExport !== undefined && !isUnknownRecord(defaultExport)) {
+      throw new Error("The existing Wrangler config has an invalid default export.");
+    }
+    workerExports.default = {
+      ...defaultExport,
+      type: "worker",
+      cache: { enabled: false },
+    };
     if (responseStoreService) {
       code = setTopLevelJsonProperty(
         code,
@@ -858,7 +860,7 @@ function configureResponseStoreWrangler(
     }
   }
 
-  return setTopLevelJsonProperty(code, "exports", workerExports);
+  return updateWorkerExports ? setTopLevelJsonProperty(code, "exports", workerExports) : code;
 }
 
 export function generateResponseStoreWranglerConfig(appWranglerCode: string, root: string): string {

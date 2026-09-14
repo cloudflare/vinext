@@ -76,7 +76,6 @@ export default { plugins: [vinext()] };
     const appConfig = JSON.parse(app);
     expect(appConfig).toMatchObject({
       cache: { enabled: false },
-      exports: { default: { type: "worker", cache: { enabled: false } } },
       services: [
         {
           binding: "RESPONSE_STORE",
@@ -86,6 +85,7 @@ export default { plugins: [vinext()] };
       ],
       version_metadata: { binding: "CF_VERSION_METADATA" },
     });
+    expect(appConfig.exports).toEqual({ Other: { type: "worker" } });
     expect(appConfig.r2_buckets).toBeUndefined();
     expect(appConfig.durable_objects).toBeUndefined();
 

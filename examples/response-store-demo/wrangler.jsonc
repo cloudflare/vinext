@@ -23,9 +23,6 @@
     },
   },
   "cache": { "enabled": false },
-  "exports": {
-    "default": { "type": "worker", "cache": { "enabled": false } },
-  },
   "services": [
     {
       "binding": "RESPONSE_STORE",

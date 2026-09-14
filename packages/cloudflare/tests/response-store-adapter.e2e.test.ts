@@ -140,9 +140,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const config = JSON.parse(
       await readFile(path.join(appOutput, "wrangler.json"), "utf8"),
     ) as Record<string, unknown>;
-    assert.deepEqual(config.exports, {
-      default: { type: "worker", cache: { enabled: false } },
-    });
+    assert.deepEqual(config.exports, {});
     assert.deepEqual(config.kv_namespaces, []);
     assert.deepEqual(config.r2_buckets, []);
     assert.deepEqual(config.durable_objects, { bindings: [] });
@@ -159,6 +157,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const cacheConfig = JSON.parse(
       (await readFile(cacheConfigPath, "utf8")).replace(/,\s*([}\]])/g, "$1"),
     ) as Record<string, unknown>;
+    assert.deepEqual(cacheConfig.observability, { enabled: true });
     assert.deepEqual(cacheConfig.r2_buckets, [
       {
         binding: "CACHE_BODIES",
