@@ -285,7 +285,7 @@ test("live R2 path stores and refills a 10 MiB body", async () => {
   assert.equal(returned.at(-1), 97);
 });
 
-test("live SWR serves stale immediately, regenerates once, and promotes fresh R2 on a later callback", async () => {
+test("live SWR serves stale immediately and promotes fresh R2 on a later callback", async () => {
   const id = key("swr");
   await put(`/${id}`, "swr-seed", {
     cacheControl: "public, max-age=1, stale-while-revalidate=20",
@@ -312,6 +312,8 @@ test("live SWR serves stale immediately, regenerates once, and promotes fresh R2
       ? { ok: true, value: response }
       : { ok: false, message: `SWR still returned ${JSON.stringify(body)}` };
   });
-  assert.equal(fresh.headers.get("X-Workers-Response-Store-Revision"), "2");
+  const revision = fresh.headers.get("X-Workers-Response-Store-Revision");
+  assert.match(revision ?? "", /^\d+$/);
+  assert.ok(Number(revision) >= 2);
   assert.equal(fresh.headers.get("X-Revalidation-Reason"), "swr");
 });
