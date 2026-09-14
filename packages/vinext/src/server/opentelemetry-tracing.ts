@@ -84,6 +84,7 @@ export const openTelemetryTracingIntegration: FrameworkTracingIntegration = {
     if (!api) return callback();
 
     const active = api.context.active();
+    if (!isEnabled(api) && !api.trace.getSpanContext(active)) return callback();
     if (api.trace.getSpanContext(active)) return callback();
     const extracted = api.propagation.extract(active, carrier, headersGetter);
     return api.context.with(extracted, callback);

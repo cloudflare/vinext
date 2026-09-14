@@ -346,12 +346,34 @@ describe("OpenTelemetry integration", () => {
       voidCalls++;
     });
     expect(voidCalls).toBe(1);
-    const activeSpan = { spanContext: () => ({}) };
+    const activeSpan = { isRecording: () => true, spanContext: () => ({}) };
     activeContext = createContext(undefined, activeSpan);
     expect(tracer.withPropagatedContext(new Headers(), () => activeContext.getValue(spanKey))).toBe(
       activeSpan,
     );
     expect(extractions).toBe(2);
+  });
+
+  it("does not extract propagation when the registered provider is disabled", () => {
+    const context = {
+      deleteValue: () => context,
+      getValue: () => undefined,
+      setValue: () => context,
+    };
+    const extract = () => {
+      throw new Error("disabled propagation must not run");
+    };
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      context: { active: () => context, with: () => undefined },
+      propagation: { extract },
+      trace: {
+        getDelegate: () => ({ constructor: { name: "NoopTracerProvider" } }),
+        getTracer: () => ({ startActiveSpan: () => undefined }),
+      },
+    };
+    const tracer = createFrameworkTracer([openTelemetryTracingIntegration]);
+
+    expect(tracer.withPropagatedContext(new Headers(), () => "ok")).toBe("ok");
   });
 
   it("is a cheap no-op when no API or provider is registered", () => {
