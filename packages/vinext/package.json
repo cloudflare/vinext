@@ -120,6 +120,10 @@
       "types": "./dist/server/cacheability-manifest.d.ts",
       "import": "./dist/server/cacheability-manifest.js"
     },
+    "./internal/server/cloudflare-workers-tracing": {
+      "types": "./dist/server/cloudflare-workers-tracing.d.ts",
+      "import": "./dist/server/cloudflare-workers-tracing.js"
+    },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"

@@ -69,7 +69,7 @@ The following are not required for v1:
    - the application's compatible `@opentelemetry/api`, sharing the provider registered by application instrumentation through OpenTelemetry's versioned global registry, with a CommonJS public-API fallback when available;
    - `cloudflare:workers` tracing, joining the runtime's active handler or application custom span and therefore its automatic fetch and binding spans.
 4. When both integrations are active, one helper call enters both active contexts around the same callback. This intentionally produces equivalent framework spans in both configured outputs without duplicating framework call sites or business logic.
-5. Preserve exact stable Next.js span names and `next.*` attributes where they are externally observable. Isolate capability differences in the integration: for example, OpenTelemetry can update a span name/status and record an exception while the current Workers `Span` exposes attributes and completion only.
+5. Preserve exact stable Next.js span names and `next.*` attributes where they are externally observable. Isolate capability differences in the integration: for example, OpenTelemetry can update a span name/status while the current Workers `Span` exposes attributes, exception recording, and completion but cannot rename a span.
 6. Start with the smallest tracer needed for the stable spans. Do not port Next.js's complete internal tracer or local recorder.
 7. Keep the OpenTelemetry side a cheap no-op when no provider is registered. Workers `enterSpan()` already runs as a non-recording no-op when the invocation is not sampled or tracing is disabled.
 8. Trace each logical request once per active integration. Multi-stage Workers and internal request handoffs must not produce duplicate framework roots.
@@ -125,7 +125,7 @@ Work:
 - Compose enabled integrations at the framework helper boundary. The application callback must execute once while both integrations' spans are active, so nested framework calls, user spans, fetches, and bindings inherit the appropriate active parent.
 - Keep backend capability mapping private:
   - apply common names, attributes, and completion to both, including `error.type` for failures;
-  - record exceptions on OpenTelemetry where that capability exists;
+  - record exceptions on both integrations where the runtime exposes that capability;
   - use OTel span status and name updates where supported;
   - represent final name/status on Workers with the same stable attributes rather than inventing unsupported APIs.
 - Use the Next.js tracer identity and stable attributes:

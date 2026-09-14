@@ -1,3 +1,4 @@
+import "vinext/internal/server/cloudflare-workers-tracing";
 import {
   createWorkersResponseStore,
   type ResponseStoreRevalidatorEntrypoint,

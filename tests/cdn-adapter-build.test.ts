@@ -17,6 +17,16 @@ const CLOUDFLARE_PLUGIN_PATH = path.join(
   "@cloudflare/vite-plugin/dist/index.mjs",
 );
 
+async function readAllJs(dir: string): Promise<string> {
+  let source = "";
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) source += await readAllJs(file);
+    else if (entry.name.endsWith(".js")) source += await fs.readFile(file, "utf8");
+  }
+  return source;
+}
+
 describe("Cloudflare CDN adapter build output", () => {
   let root: string;
 
@@ -81,6 +91,12 @@ describe("Cloudflare CDN adapter build output", () => {
 
     expect(source.version_metadata).toBeUndefined();
     expect(generated.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+  });
+
+  it("registers the native Workers tracing integration in the Worker entry", async () => {
+    const workerOutput = await readAllJs(path.join(root, "dist/server"));
+    expect(workerOutput).toContain("cloudflare-workers");
+    expect(workerOutput).toContain("enterSpan");
   });
 
   it("emits the pregenerated-paths sidecar only in the response-stage closure", async () => {

@@ -21,6 +21,7 @@ const stages = vi.hoisted(() => ({
 }));
 
 vi.mock("cloudflare:workers", () => ({
+  tracing: undefined,
   WorkerEntrypoint: class<Env, Props> {
     protected ctx: { props: Props };
     protected env: Env;
