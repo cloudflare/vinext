@@ -23,6 +23,8 @@ import { Buffer } from "node:buffer";
 
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
+import { traceAppFetch } from "../server/app-fetch-tracing.js";
+import type { FrameworkSpan } from "../server/framework-tracer.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
@@ -497,6 +499,8 @@ type NextFetchOptions = {
   tags?: string[];
 };
 
+type InternalNextFetchOptions = NextFetchOptions & { internal?: boolean };
+
 type FetchDedupeEntry = {
   key: string;
   promise: Promise<Response>;
@@ -561,6 +565,7 @@ export type FetchCacheState = {
   refreshStaleFetchesInForeground: boolean;
   isFetchDedupeActive: boolean;
   currentFetchDedupeEntries: Map<string, FetchDedupeEntry[]>;
+  nextFetchId: number;
 };
 
 export type FetchCacheMode =
@@ -599,6 +604,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   refreshStaleFetchesInForeground: false,
   isFetchDedupeActive: false,
   currentFetchDedupeEntries: new Map(),
+  nextFetchId: 1,
 } satisfies FetchCacheState) as FetchCacheState;
 
 function _getState(): FetchCacheState {
@@ -623,6 +629,7 @@ function _resetFallbackState(isFetchDedupeActive: boolean): void {
   _fallbackState.refreshStaleFetchesInForeground = false;
   _fallbackState.isFetchDedupeActive = isFetchDedupeActive;
   _fallbackState.currentFetchDedupeEntries = new Map();
+  _fallbackState.nextFetchId = 1;
 }
 
 function getFetchObservationUrl(input: string | URL | Request): string {
@@ -1123,19 +1130,50 @@ function dedupeFetch(
  * 5. Respects `next.tags` for tag-based invalidation via revalidateTag()
  */
 function createPatchedFetch(): typeof globalThis.fetch {
-  return async function patchedFetch(
+  const patchedFetch = async function patchedFetch(
     input: string | URL | Request,
     init?: RequestInit,
+    span?: FrameworkSpan,
   ): Promise<Response> {
     const nextOpts = (init as ExtendedRequestInit | undefined)?.next as
       | NextFetchOptions
       | undefined;
+    const state = _getState();
+    const hasWorkContext =
+      isInsideUnifiedScope() || _als.getStore() !== undefined || _fallbackState.isFetchDedupeActive;
+    const fetchIdx = hasWorkContext ? (state.nextFetchId ?? 1) + 1 : undefined;
+    if (fetchIdx !== undefined) state.nextFetchId = fetchIdx;
+    const recordFetchOutcome = (
+      response: Response,
+      cacheStatus: "hit" | "miss" | "skip",
+      cacheReason: string,
+    ): Response => {
+      if (fetchIdx !== undefined) {
+        span?.setAttributes({
+          "next.fetch.idx": fetchIdx,
+          "next.fetch.cache_status": cacheStatus,
+          "next.fetch.cache_reason": cacheReason,
+        });
+      }
+      return response;
+    };
+    const fetchCacheMode = state.currentFetchCacheMode;
     const cacheDirective = resolveSegmentCacheDirective(
       getFetchCacheDirective(input, init),
       nextOpts,
-      _getState().currentFetchCacheMode,
-      _getState().currentForceDynamicFetchDefault,
+      fetchCacheMode,
+      state.currentForceDynamicFetchDefault,
     );
+    const skipReason =
+      fetchCacheMode === "force-no-store" ||
+      fetchCacheMode === "only-no-store" ||
+      fetchCacheMode === "default-no-store"
+        ? `fetchCache = ${fetchCacheMode}`
+        : cacheDirective === "no-store" || cacheDirective === "no-cache"
+          ? `cache: ${cacheDirective}`
+          : nextOpts?.revalidate === 0
+            ? "revalidate: 0"
+            : "auto no cache";
 
     // Determine caching behavior:
     // - cache: 'no-store' → skip cache entirely
@@ -1148,7 +1186,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // If no caching options at all, just pass through to original fetch
     if (!nextOpts && !cacheDirective) {
       recordDynamicFetchObservation(input);
-      return dedupeFetch(input, init);
+      return recordFetchOutcome(await dedupeFetch(input, init), "skip", "auto no cache");
     }
 
     // Explicit no-store or no-cache — bypass cache entirely
@@ -1164,7 +1202,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // Strip the `next` property before passing to real fetch
       const cleanInit = stripNextFromInit(init, cacheDirective);
       markUncachedFetchForPageOutput(input);
-      return dedupeFetch(input, cleanInit);
+      return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", skipReason);
     }
 
     // Safety: when per-user auth headers are present and the developer hasn't
@@ -1188,7 +1226,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
       const cleanInit = stripNextFromInit(init, cacheDirective);
       recordDynamicFetchObservation(input);
-      return dedupeFetch(input, cleanInit);
+      return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "auto no cache");
     }
 
     // Determine revalidation period
@@ -1213,7 +1251,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         if (routeRevalidate === 0) {
           const cleanInit = stripNextFromInit(init, cacheDirective);
           markUncachedFetchForPageOutput(input);
-          return dedupeFetch(input, cleanInit);
+          return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "revalidate: 0");
         }
         revalidateSeconds =
           routeRevalidate === null || routeRevalidate === Infinity
@@ -1223,9 +1261,13 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // next: {} with no revalidate or tags — pass through
         const cleanInit = stripNextFromInit(init, cacheDirective);
         recordDynamicFetchObservation(input);
-        return dedupeFetch(input, cleanInit);
+        return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "auto no cache");
       }
     }
+    const cacheReason =
+      fetchCacheMode === "force-cache" || fetchCacheMode === "default-cache"
+        ? `fetchCache = ${fetchCacheMode}`
+        : `revalidate: ${nextOpts?.revalidate === false || cacheDirective === "force-cache" ? 0xfffffffe : revalidateSeconds}`;
 
     // Record cacheable-fetch observation synchronously, before the first await,
     // so that probe-based skip-eligibility checks (e.g. runLayoutProbe) can
@@ -1272,7 +1314,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // the observation (downgrading the page output to fresh render)
         // without marking the whole page dynamic.
         recordDynamicFetchObservation(input);
-        return dedupeFetch(input, fetchInit);
+        return recordFetchOutcome(await dedupeFetch(input, fetchInit), "miss", cacheReason);
       }
       throw err;
     }
@@ -1305,7 +1347,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           revalidateSeconds,
         );
         const cachedData = cached.value.data;
-        return buildCachedFetchResponse(cachedData, input);
+        return recordFetchOutcome(buildCachedFetchResponse(cachedData, input), "hit", cacheReason);
       }
 
       // Stale entry — we could do stale-while-revalidate here, but for fetch()
@@ -1315,7 +1357,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         if (shouldRefreshStaleFetchInForeground()) {
           const freshResponse = await dedupeFetch(input, fetchInit);
           await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds);
-          return freshResponse;
+          return recordFetchOutcome(freshResponse, "miss", cacheReason);
         }
 
         const staleData = cached.value.data;
@@ -1365,7 +1407,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         }
 
         // Return stale data immediately
-        return buildCachedFetchResponse(staleData, input);
+        return recordFetchOutcome(buildCachedFetchResponse(staleData, input), "hit", cacheReason);
       }
     } catch (cacheErr) {
       // Cache read failed — fall through to network
@@ -1390,8 +1432,15 @@ function createPatchedFetch(): typeof globalThis.fetch {
         });
     }
 
-    return response;
-  } as typeof globalThis.fetch;
+    return recordFetchOutcome(response, "miss", cacheReason);
+  };
+
+  return ((input: string | URL | Request, init?: RequestInit) => {
+    if ((init?.next as InternalNextFetchOptions | undefined)?.internal === true) {
+      return originalFetch(input, init);
+    }
+    return traceAppFetch(input, init, (span) => patchedFetch(input, init, span));
+  }) as typeof globalThis.fetch;
 }
 
 /**
@@ -1474,6 +1523,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       uCtx.refreshStaleFetchesInForeground = false;
       uCtx.isFetchDedupeActive = true;
       uCtx.currentFetchDedupeEntries = new Map();
+      uCtx.nextFetchId = 1;
     }, fn);
   }
   return _als.run(
@@ -1488,6 +1538,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       refreshStaleFetchesInForeground: false,
       isFetchDedupeActive: true,
       currentFetchDedupeEntries: new Map(),
+      nextFetchId: 1,
     },
     fn,
   );
