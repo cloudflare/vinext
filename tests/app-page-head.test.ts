@@ -222,6 +222,38 @@ describe("app page head resolution", () => {
     expect(pageParentImages).toEqual(["/root-og.png", "/nested-og.png"]);
   });
 
+  it("does not apply a leaf layout title template to its same-layer page", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+    // https://github.com/vercel/next.js/blob/v16.3.2/test/e2e/app-dir/metadata/metadata.test.ts#L37-L47
+    const leafLayout = {
+      async generateMetadata() {
+        return {
+          title: {
+            default: "My Website",
+            template: "%s | My Website",
+          },
+        };
+      },
+    };
+    const page = {
+      async generateMetadata() {
+        return { title: "Hello World" };
+      },
+    };
+
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [{}, leafLayout],
+      layoutTreePositions: [0, 1],
+      metadataRoutes: [],
+      pageModule: page,
+      params: { lang: "en" },
+      routePath: "/[lang]",
+      routeSegments: ["[lang]"],
+    });
+
+    expect(result.metadata?.title).toBe("Hello World"); // instead of `"Hello World | My Website"`
+  });
+
   it("resolves viewport descriptors with parent chaining", async () => {
     // Matches Next.js's sequential parent resolution in accumulateViewport:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
@@ -1094,6 +1126,53 @@ describe("app page head resolution", () => {
     });
 
     expect(result.metadata?.title).toBe("first page - @bar");
+  });
+
+  it("does not apply a parallel leaf layout title template to its same-layer page", async () => {
+    // Matches Next.js's leaf layout/page title-template handling inside an active slot:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      layoutTreePositions: [],
+      metadataRoutes: [],
+      pageModule: {},
+      parallelRoutes: [
+        {
+          layoutModules: [{ metadata: { title: { default: "Slot", template: "%s | Slot" } } }],
+          layoutTreePositions: [1],
+          pageModule: { metadata: { title: "Slot page" } },
+          routeSegments: ["foo"],
+        },
+      ],
+      params: {},
+      routePath: "/foo",
+      routeSegments: ["foo"],
+    });
+
+    expect(result.metadata?.title).toBe("Slot page");
+  });
+
+  it("retains a primary leaf template when later parallel metadata items follow it", async () => {
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [
+        {},
+        { metadata: { title: { default: "Dashboard", template: "%s | Dashboard" } } },
+      ],
+      layoutTreePositions: [0, 1],
+      metadataRoutes: [],
+      pageModule: {},
+      parallelRoutes: [
+        {
+          pageModule: { metadata: { title: "Modal" } },
+          routeSegments: ["foo"],
+        },
+      ],
+      params: {},
+      routePath: "/foo",
+      routeSegments: ["foo"],
+    });
+
+    expect(result.metadata?.title).toBe("Modal | Dashboard");
   });
 
   it("uses parallel layout title when neither primary page nor slot page set a title", async () => {
