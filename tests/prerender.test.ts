@@ -919,7 +919,11 @@ describe("prerenderPages — default mode (pages-basic)", () => {
       expect(html).toContain('<p id="identity-consistent">true</p>');
       expect(html).toContain('<p id="shadowed-global-this">local-globalThis</p>');
       expect(html).toContain('<p id="filename-readable">true</p>');
-      expect(html).toMatch(/<p id="concatenated-path">.*\/server\/concatenated\.js<\/p>/);
+      // instrumentation.ts completes before the lazy user-module graph loads,
+      // and bundled CommonJS globals retain that emitted chunk identity.
+      expect(html).toMatch(
+        /<p id="concatenated-path">.*\/server\/_next\/static\/concatenated\.js<\/p>/,
+      );
     }
   });
 
