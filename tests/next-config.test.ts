@@ -1353,6 +1353,164 @@ module.exports = function withManifest(config = {}) {
     }
   });
 
+  it("serializes sibling config loads nested by a wrapper", async () => {
+    const originalCwd = process.cwd();
+    const outerRoot = makeTempDir();
+    const firstRoot = makeTempDir();
+    const secondRoot = makeTempDir();
+    tmpDir = outerRoot;
+    const processWithConfigLoader = process as NodeJS.Process & {
+      __vinextTestLoadNextConfig?: typeof loadNextConfig;
+    };
+    processWithConfigLoader.__vinextTestLoadNextConfig = loadNextConfig;
+
+    for (const [root, delay] of [
+      [firstRoot, 0],
+      [secondRoot, 20],
+    ] as const) {
+      fs.writeFileSync(
+        path.join(root, "next.config.mjs"),
+        `export default async () => {
+  await new Promise(resolve => setTimeout(resolve, ${delay}));
+  return { assetPrefix: process.cwd() };
+};
+`,
+      );
+    }
+    fs.writeFileSync(
+      path.join(outerRoot, "next.config.mjs"),
+      `export default async () => {
+  const [first, second] = await Promise.all([
+    process.__vinextTestLoadNextConfig(${JSON.stringify(firstRoot)}),
+    process.__vinextTestLoadNextConfig(${JSON.stringify(secondRoot)}),
+  ]);
+  return { env: { first: first.assetPrefix, second: second.assetPrefix, outer: process.cwd() } };
+};
+`,
+    );
+
+    try {
+      const config = await loadNextConfig(outerRoot);
+
+      expect(config?.env).toEqual({
+        first: fs.realpathSync(firstRoot),
+        second: fs.realpathSync(secondRoot),
+        outer: fs.realpathSync(outerRoot),
+      });
+      expect(process.cwd()).toBe(originalCwd);
+    } finally {
+      delete processWithConfigLoader.__vinextTestLoadNextConfig;
+      fs.rmSync(firstRoot, { recursive: true, force: true });
+      fs.rmSync(secondRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("requeues an escaped config load after its wrapper completes", async () => {
+    const originalCwd = process.cwd();
+    const outerRoot = makeTempDir();
+    const competingRoot = makeTempDir();
+    const escapedRoot = makeTempDir();
+    tmpDir = outerRoot;
+    const processWithEscapedLoad = process as NodeJS.Process & {
+      __vinextEscapedConfigLoad?: Promise<{ assetPrefix?: string } | null>;
+      __vinextTestLoadNextConfig?: typeof loadNextConfig;
+    };
+    processWithEscapedLoad.__vinextTestLoadNextConfig = loadNextConfig;
+
+    fs.writeFileSync(
+      path.join(outerRoot, "next.config.mjs"),
+      `export default () => {
+  process.__vinextEscapedConfigLoad = new Promise((resolve, reject) => {
+    setTimeout(() => process.__vinextTestLoadNextConfig(${JSON.stringify(escapedRoot)}).then(resolve, reject), 20);
+  });
+  return { assetPrefix: process.cwd() };
+};
+`,
+    );
+    for (const [root, delay] of [
+      [competingRoot, 50],
+      [escapedRoot, 0],
+    ] as const) {
+      fs.writeFileSync(
+        path.join(root, "next.config.mjs"),
+        `export default async () => {
+  await new Promise(resolve => setTimeout(resolve, ${delay}));
+  return { assetPrefix: process.cwd() };
+};
+`,
+      );
+    }
+
+    try {
+      const outer = await loadNextConfig(outerRoot);
+      const competingPromise = loadNextConfig(competingRoot);
+      const escapedPromise = processWithEscapedLoad.__vinextEscapedConfigLoad!;
+      const [competing, escaped] = await Promise.all([competingPromise, escapedPromise]);
+
+      expect(outer?.assetPrefix).toBe(fs.realpathSync(outerRoot));
+      expect(competing?.assetPrefix).toBe(fs.realpathSync(competingRoot));
+      expect(escaped?.assetPrefix).toBe(fs.realpathSync(escapedRoot));
+      expect(process.cwd()).toBe(originalCwd);
+    } finally {
+      delete processWithEscapedLoad.__vinextEscapedConfigLoad;
+      delete processWithEscapedLoad.__vinextTestLoadNextConfig;
+      fs.rmSync(competingRoot, { recursive: true, force: true });
+      fs.rmSync(escapedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("drains unawaited nested config loads before releasing the root", async () => {
+    const originalCwd = process.cwd();
+    const outerRoot = makeTempDir();
+    const escapedRoot = makeTempDir();
+    const competingRoot = makeTempDir();
+    tmpDir = outerRoot;
+    const processWithEscapedLoad = process as NodeJS.Process & {
+      __vinextEscapedConfigLoad?: Promise<{ assetPrefix?: string } | null>;
+      __vinextTestLoadNextConfig?: typeof loadNextConfig;
+    };
+    processWithEscapedLoad.__vinextTestLoadNextConfig = loadNextConfig;
+
+    fs.writeFileSync(
+      path.join(outerRoot, "next.config.mjs"),
+      `export default () => {
+  process.__vinextEscapedConfigLoad = process.__vinextTestLoadNextConfig(${JSON.stringify(escapedRoot)});
+  return { assetPrefix: process.cwd() };
+};
+`,
+    );
+    for (const [root, delay] of [
+      [escapedRoot, 50],
+      [competingRoot, 0],
+    ] as const) {
+      fs.writeFileSync(
+        path.join(root, "next.config.mjs"),
+        `export default async () => {
+  await new Promise(resolve => setTimeout(resolve, ${delay}));
+  return { assetPrefix: process.cwd() };
+};
+`,
+      );
+    }
+
+    try {
+      const outer = await loadNextConfig(outerRoot);
+      const competingPromise = loadNextConfig(competingRoot);
+      const escapedPromise = processWithEscapedLoad.__vinextEscapedConfigLoad!;
+      const [competing, escaped] = await Promise.all([competingPromise, escapedPromise]);
+
+      expect(outer?.assetPrefix).toBe(fs.realpathSync(outerRoot));
+      expect(escaped?.assetPrefix).toBe(fs.realpathSync(escapedRoot));
+      expect(competing?.assetPrefix).toBe(fs.realpathSync(competingRoot));
+      expect(process.cwd()).toBe(originalCwd);
+    } finally {
+      delete processWithEscapedLoad.__vinextEscapedConfigLoad;
+      delete processWithEscapedLoad.__vinextTestLoadNextConfig;
+      fs.rmSync(escapedRoot, { recursive: true, force: true });
+      fs.rmSync(competingRoot, { recursive: true, force: true });
+    }
+  });
+
   it("captures turbopack aliases from wrapped config plugins", async () => {
     tmpDir = makeTempDir();
     fs.writeFileSync(
