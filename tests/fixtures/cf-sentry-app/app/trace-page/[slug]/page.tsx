@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
+import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +13,12 @@ export default async function TracePage({ params }: { params: Promise<{ slug: st
     },
     async () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
-      return <main>Traced App Page: {slug}</main>;
+      return (
+        <main>
+          Traced App Page: {slug}
+          <Link href={`/trace-page/${slug}-next`}>Navigate within trace fixture</Link>
+        </main>
+      );
     },
   );
 }

@@ -90,6 +90,7 @@ import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js"
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
 import { traceResponseStartWithCompletion } from "./response-start-tracing.js";
+import { recordRouteCacheabilityClientTraceMetadataMarker } from "vinext/shims/cacheability-classification";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -1087,6 +1088,16 @@ async function renderAppPageLifecycleImpl(
     getStyles: options.getFontStyles,
   });
   const fontLinkHeader = buildAppPageFontLinkHeader(fontData.preloads);
+  const clientTraceMetadataMarker =
+    options.isProduction &&
+    options.isPrerender !== true &&
+    options.clientTraceMetadata &&
+    options.clientTraceMetadata.length > 0
+      ? crypto.randomUUID()
+      : undefined;
+  if (clientTraceMetadataMarker) {
+    recordRouteCacheabilityClientTraceMetadataMarker(clientTraceMetadataMarker);
+  }
   let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
@@ -1172,6 +1183,7 @@ async function renderAppPageLifecycleImpl(
         navigationContext: options.getNavigationContext(),
         basePath: options.basePath,
         clientTraceMetadata: options.clientTraceMetadata,
+        clientTraceMetadataMarker,
         reactMaxHeadersLength: options.reactMaxHeadersLength,
         rootParams: options.rootParams,
         pprFallbackShellSignal: options.pprFallbackShellSignal,
@@ -1356,6 +1368,7 @@ async function renderAppPageLifecycleImpl(
       },
       capturedRscDataPromise: capturedRscDataRef.value,
       cleanPathname: options.cleanPathname,
+      clientTraceMetadataMarker,
       consumeDynamicUsage: consumeRenderDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,
       createHtmlRenderObservation(input) {

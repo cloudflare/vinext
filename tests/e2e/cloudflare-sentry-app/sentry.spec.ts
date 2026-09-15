@@ -3,7 +3,7 @@ import type {
   ReportedSentryError as ReportedError,
   ReportedSentryTransaction as ReportedTransaction,
 } from "../../fixtures/sentry-test-state";
-import { waitForAppRouterHydration } from "../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 async function expectReportedError(request: APIRequestContext, message: string) {
   const state: { errors: ReportedError[] } = { errors: [] };
@@ -62,6 +62,26 @@ async function expectReportedTransaction(
     .toBe(true);
 
   if (!transaction) throw new Error(`Sentry transaction was not reported: ${name}`);
+  return transaction;
+}
+
+async function expectReportedTransactionMatching(
+  request: APIRequestContext,
+  predicate: (transaction: ReportedTransaction) => boolean,
+): Promise<ReportedTransaction> {
+  let transaction: ReportedTransaction | undefined;
+
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      transaction = state.transactions.find(predicate);
+      return transaction !== undefined;
+    })
+    .toBe(true);
+
+  if (!transaction) throw new Error("Matching Sentry transaction was not reported");
   return transaction;
 }
 
@@ -440,13 +460,13 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
     );
   });
 
-  test("uses the render span when an auto-dynamic App Page reads request data", async ({
-    request,
-  }) => {
-    const traceRes = await request.get(`/trace-auto/product-${Date.now()}`, {
-      headers: { Cookie: "fixture=present" },
-    });
-    expect(traceRes.status()).toBe(200);
+  test("continues an auto-dynamic App Page trace into the browser", async ({ page, request }) => {
+    await page
+      .context()
+      .addCookies([{ domain: "localhost", name: "fixture", path: "/", value: "present" }]);
+    await page.goto(`/trace-auto/product-${Date.now()}`);
+    await waitForAppRouterHydration(page);
+    await expect(page.getByText(/Traced auto-dynamic App Page: .* \(present\)/)).toBeVisible();
 
     const transaction = await expectReportedTransaction(request, "GET /trace-auto/[slug]");
     const renderSpan = transaction.spans.find(
@@ -458,6 +478,11 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
       }),
       name: "render route (app) /trace-auto/[slug]",
     });
+    await expectReportedTransactionMatching(
+      request,
+      (candidate) =>
+        candidate.operation === "pageload" && candidate.traceId === transaction.traceId,
+    );
   });
 
   test("keeps Route Handler control responses successful inside the framework span", async ({
@@ -577,6 +602,85 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
       sdkName: "sentry.javascript.nextjs",
     });
     await expectErrorTraceCorrelation(request, error);
+  });
+
+  test("continues dynamic server traces into browser pageloads", async ({ page, request }) => {
+    const firstSlug = `browser-first-${Date.now()}`;
+    await page.goto(`/trace-page/${firstSlug}`);
+    await waitForAppRouterHydration(page);
+
+    const firstMetadata = await page.locator('meta[name="sentry-trace"]').getAttribute("content");
+    expect(firstMetadata).toMatch(/^[0-9a-f]{32}-[0-9a-f]{16}-[01]$/);
+    await expect(page.locator('meta[name="baggage"]')).toHaveCount(1);
+
+    const firstServer = await expectReportedTransaction(
+      request,
+      "GET /trace-page/[slug]",
+      ({ spans }) => spans.some(({ attributes }) => attributes["fixture.slug"] === firstSlug),
+    );
+    const firstPageload = await expectReportedTransactionMatching(
+      request,
+      (transaction) =>
+        transaction.operation === "pageload" && transaction.traceId === firstServer.traceId,
+    );
+    expect(firstPageload.traceId).toBe(firstServer.traceId);
+
+    const initialTraceMetadata = await page
+      .locator('meta[name="sentry-trace"], meta[name="baggage"]')
+      .evaluateAll((elements) => elements.map((element) => element.getAttribute("content")));
+    const navigatedPath = `/trace-page/${firstSlug}-next`;
+    const navigationResponse = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), navigatedPath),
+    );
+    await page.getByRole("link", { name: "Navigate within trace fixture" }).click();
+    await navigationResponse;
+    await expect(page.getByText(`Traced App Page: ${firstSlug}-next`)).toBeVisible();
+    const readTraceMetadata = () =>
+      page
+        .locator('meta[name="sentry-trace"], meta[name="baggage"]')
+        .evaluateAll((elements) => elements.map((element) => element.getAttribute("content")));
+    await expect(readTraceMetadata()).resolves.toEqual(initialTraceMetadata);
+    await page.waitForTimeout(250);
+    await expect(readTraceMetadata()).resolves.toEqual(initialTraceMetadata);
+
+    const secondSlug = `browser-second-${Date.now()}`;
+    await page.goto(`/trace-page/${secondSlug}`);
+    await waitForAppRouterHydration(page);
+    const secondServer = await expectReportedTransaction(
+      request,
+      "GET /trace-page/[slug]",
+      ({ spans }) => spans.some(({ attributes }) => attributes["fixture.slug"] === secondSlug),
+    );
+    await expectReportedTransactionMatching(
+      request,
+      (transaction) =>
+        transaction.operation === "pageload" && transaction.traceId === secondServer.traceId,
+    );
+
+    expect(secondServer.spanId).not.toBe(firstServer.spanId);
+    expect(secondServer.traceId).not.toBe(firstServer.traceId);
+  });
+
+  test("does not replay trace metadata from static HTML", async ({ request }) => {
+    const slug = `metadata-cache-${Date.now()}`;
+    const path = `/trace-static/${slug}`;
+    const firstResponse = await request.get(path);
+    expect(firstResponse.status()).toBe(200);
+    expect(firstResponse.headers()["x-vinext-cache"]).toBe("MISS");
+    const firstHtml = await firstResponse.text();
+    expect(firstHtml).toContain('<meta name="sentry-trace"');
+    expect(firstHtml).toContain('<meta name="baggage"');
+
+    const secondResponse = await request.get(path);
+    expect(secondResponse.status()).toBe(200);
+    expect(secondResponse.headers()["x-vinext-cache"]).toBe("HIT");
+    const secondHtml = await secondResponse.text();
+    expect(secondHtml).not.toContain('<meta name="sentry-trace"');
+    expect(secondHtml).not.toContain('<meta name="baggage"');
+
+    await expectReportedTransaction(request, "GET /trace-static/[slug]", ({ spans }) =>
+      spans.some(({ attributes }) => attributes["fixture.slug"] === slug),
+    );
   });
 
   test("reports a browser error through instrumentation-client Sentry.init", async ({
