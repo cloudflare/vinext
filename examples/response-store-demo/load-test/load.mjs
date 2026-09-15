@@ -4,10 +4,10 @@ import { dirname, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
 
-const FRESH_SECONDS = 5;
+const FRESH_SECONDS = 15;
 const SWR_SECONDS = 15;
 const ADMISSION_SETTLE_MS = 6_000;
-const DEFAULT_CONCURRENCY = [25, 50, 100, 200];
+const DEFAULT_CONCURRENCY = [50, 100, 200, 400, 800];
 const TOKEN_PATTERN = /data-render-token="([^"]+)"/;
 const ID_PATTERN = /data-id="([^"]+)"/;
 
@@ -41,9 +41,7 @@ function parseArgs(argv) {
     else if (name === "--output") options.output = value;
     else if (name === "--timeout-ms") options.timeoutMs = parsePositiveInteger(value, name);
     else if (name === "--concurrency") {
-      options.concurrency = value
-        .split(",")
-        .map((item) => parsePositiveInteger(item, name));
+      options.concurrency = value.split(",").map((item) => parsePositiveInteger(item, name));
     } else {
       throw new TypeError(`Unknown argument ${name}`);
     }
@@ -78,9 +76,7 @@ function allocate(total, levels) {
   let allocated = 0;
   return levels.map((_value, index) => {
     const count =
-      index === levels.length - 1
-        ? total - allocated
-        : Math.floor((total * (index + 1)) / weight);
+      index === levels.length - 1 ? total - allocated : Math.floor((total * (index + 1)) / weight);
     allocated += count;
     return count;
   });
@@ -169,9 +165,7 @@ async function request(path, scenario, phase, concurrency) {
     age: Number(response?.headers.get("Age") ?? 0),
     cacheControl: response?.headers.get("Cache-Control") ?? null,
     cacheState:
-      response?.headers.get("X-Vinext-Cache") ??
-      response?.headers.get("X-Nextjs-Cache") ??
-      null,
+      response?.headers.get("X-Vinext-Cache") ?? response?.headers.get("X-Nextjs-Cache") ?? null,
     cfCacheStatus: response?.headers.get("CF-Cache-Status") ?? null,
     completedAt,
     concurrency,
@@ -310,9 +304,8 @@ await runScenario("dynamic", options.dynamic, runDynamicLifecycle);
 
 const finishedAt = new Date();
 const summaries = [];
-const summaryGroups = Map.groupBy(
-  allSamples,
-  (sample) => [sample.scenario, sample.phase, sample.concurrency].join(":"),
+const summaryGroups = Map.groupBy(allSamples, (sample) =>
+  [sample.scenario, sample.phase, sample.concurrency].join(":"),
 );
 for (const samples of summaryGroups.values()) {
   const first = samples[0];
@@ -346,6 +339,7 @@ const result = {
     },
     durationSeconds: (performance.now() - started) / 1_000,
     finishedAt: finishedAt.toISOString(),
+    gitDirty: process.env.GIT_DIRTY === "1",
     gitSha: process.env.GIT_SHA ?? null,
     runId,
     startedAt: startedAt.toISOString(),
@@ -360,6 +354,7 @@ const result = {
     concurrency: options.concurrency,
     dynamicLifecycles: options.dynamic,
     freshnessSeconds: FRESH_SECONDS,
+    router: "app",
     swrSeconds: SWR_SECONDS,
     timeoutMs: options.timeoutMs,
   },
