@@ -130,6 +130,8 @@ export type AppPageSsrHandler = {
        * in the SSR head. Sourced from `experimental.clientTraceMetadata`.
        */
       clientTraceMetadata?: readonly string[];
+      /** Private marker used to identify only this render's injected trace tags. */
+      clientTraceMetadataMarker?: string;
       /**
        * Maximum total length (in characters) of the preload `Link` header
        * emitted during SSR. `0` disables emission. From `reactMaxHeadersLength`
@@ -178,6 +180,8 @@ type RenderAppPageHtmlStreamOptions = {
    * the SSR head. Undefined or empty disables emission.
    */
   clientTraceMetadata?: readonly string[];
+  /** Private marker used to identify only this render's injected trace tags. */
+  clientTraceMetadataMarker?: string;
   /**
    * Maximum total length (in characters) of the preload `Link` header emitted
    * during SSR. `0` disables emission. From `reactMaxHeadersLength` in
@@ -280,6 +284,7 @@ export async function renderAppPageHtmlStream(
     scriptNonce: options.scriptNonce,
     basePath: options.basePath,
     clientTraceMetadata: options.clientTraceMetadata,
+    clientTraceMetadataMarker: options.clientTraceMetadataMarker,
     reactMaxHeadersLength: options.reactMaxHeadersLength,
     rootParams: options.rootParams,
     sideStream: options.sideStream,

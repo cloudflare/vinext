@@ -176,6 +176,32 @@ export function renderClientTraceMetadataTags(
   return html;
 }
 
+function clientTraceMetadataBlockStart(marker: string): string {
+  return `<!--vinext-client-trace-metadata:${marker}:start-->`;
+}
+
+function clientTraceMetadataBlockEnd(marker: string): string {
+  return `<!--vinext-client-trace-metadata:${marker}:end-->`;
+}
+
+/** Mark only vinext-injected trace metadata for removal from a shared cache copy. */
+export function markClientTraceMetadataBlock(html: string, marker: string | undefined): string {
+  if (!html || !marker) return html;
+  return `${clientTraceMetadataBlockStart(marker)}${html}${clientTraceMetadataBlockEnd(marker)}`;
+}
+
+/** Remove the trace metadata block carrying this render's private marker. */
+export function stripClientTraceMetadataBlock(html: string, marker: string | undefined): string {
+  if (!marker) return html;
+  const start = clientTraceMetadataBlockStart(marker);
+  const end = clientTraceMetadataBlockEnd(marker);
+  const startIndex = html.indexOf(start);
+  if (startIndex === -1) return html;
+  const endIndex = html.indexOf(end, startIndex + start.length);
+  if (endIndex === -1) return html;
+  return html.slice(0, startIndex) + html.slice(endIndex + end.length);
+}
+
 /**
  * Convenience helper: read OTel propagation data, filter against the
  * configured allow-list, and render the resulting `<meta>` tags. Returns an
@@ -186,9 +212,17 @@ export function renderClientTraceMetadataTags(
  * configured/active this is a few `try/catch`-bounded operations and returns
  * `""`.
  */
-export function getClientTraceMetadataHTML(allowList: readonly string[] | undefined): string {
+export function getClientTraceMetadataHTML(
+  allowList: readonly string[] | undefined,
+  isStaticGeneration = false,
+): string {
   if (!allowList || allowList.length === 0) return "";
-  if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") return "";
+  if (
+    isStaticGeneration ||
+    (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1")
+  ) {
+    return "";
+  }
   const entries = getOpenTelemetryTraceData();
   const filtered = filterClientTraceMetadata(entries, allowList);
   return renderClientTraceMetadataTags(filtered);
