@@ -384,11 +384,12 @@ The cumulative stack audit found eight remaining gaps that fit the v1 contract. 
 separate, router- or behavior-scoped PRs so each layer has an independently reviewable Next.js
 reference and regression test:
 
-1. Await App Router `onRequestError` hooks before completing Route Handler and Server Action
-   failures. Track render-callback reports through the request lifecycle where the renderer cannot
-   await its `onError` callback directly.
-2. Await Pages Router `onRequestError` hooks before completing page and API failures, including the
-   response-first API-handler path, in both Node and Workers.
+1. Await App Route Handler `onRequestError` hooks before completing foreground failures and inside
+   background-regeneration promises. Keep App Page and Server Action React `onError` callbacks
+   non-blocking, matching Next.js; Workers retain their reporting promises through `waitUntil`.
+2. Await Pages Router `onRequestError` hooks before completing page and pre-commit API failures in
+   both Node and Workers. Keep API errors after the response commits non-blocking, matching Node's
+   response lifecycle, while retaining their reporting promises through Workers `waitUntil`.
 3. Propagate Pages-development instrumentation import and `register()` failures instead of serving
    requests without instrumentation.
 4. Preserve Next.js's handled App-500 request-root semantics: `error.type` remains `"500"`, and the
