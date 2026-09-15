@@ -121,6 +121,8 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
     await expectErrorTraceCorrelation(request, error);
   });
 
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
   test("parents Route Handler application spans beneath the framework span", async ({
     request,
   }) => {
@@ -165,6 +167,17 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
         }),
       }),
     );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.span_name": "start response",
+          "next.span_type": "NextNodeServer.startResponse",
+        }),
+        name: "start response",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
   });
 
   test("retains application spans created while streaming the response", async ({ request }) => {
@@ -186,6 +199,8 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
     );
   });
 
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
   test("parents App Page application spans beneath the render framework span", async ({
     request,
   }) => {
@@ -240,6 +255,17 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
         }),
         name: "fixture.app.page.child",
         operation: "fixture.page",
+        parentSpanId: renderSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.span_name": "start response",
+          "next.span_type": "NextNodeServer.startResponse",
+        }),
+        name: "start response",
         parentSpanId: renderSpan?.spanId,
         traceId: transaction.traceId,
       }),
@@ -321,18 +347,39 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
     );
   });
 
-  test("does not emit an App render span for an RSC payload request", async ({ request }) => {
-    const traceRes = await request.get("/trace-page/product-42?_rsc", {
+  test("does not emit App render or response spans for a cached RSC payload", async ({
+    request,
+  }) => {
+    const slug = `cached-rsc-${Date.now()}`;
+    const path = `/trace-static/${slug}?_rsc`;
+    const traceRes = await request.get(path, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     expect(traceRes.status()).toBe(200);
+    expect(traceRes.headers()["x-vinext-cache"]).toBe("MISS");
+    await expectReportedTransaction(request, "GET /trace-static/[slug]");
 
-    const transaction = await expectReportedTransaction(request, "GET /trace-page/[slug]");
-    expect(transaction.attributes["next.span_name"]).toBe("RSC GET /trace-page/[slug]");
+    const clearRes = await request.delete("/api/sentry-test-state");
+    expect(clearRes.status()).toBe(200);
+    const cachedRes = await request.get(path, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(cachedRes.status()).toBe(200);
+    expect(cachedRes.headers()["x-vinext-cache"]).toBe("HIT");
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-static/[slug]");
+    expect(transaction.attributes["next.span_name"]).toBe("RSC GET /trace-static/[slug]");
     expect(transaction.spans).not.toContainEqual(
       expect.objectContaining({
         attributes: expect.objectContaining({
           "next.span_type": "AppRender.getBodyResult",
+        }),
+      }),
+    );
+    expect(transaction.spans).not.toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.span_type": "NextNodeServer.startResponse",
         }),
       }),
     );
@@ -354,6 +401,43 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
       name: "prerender route (app) /trace-static/[slug]",
       parentSpanId: transaction.spanId,
     });
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  test("reports response start for an App Page cache hit", async ({ request }) => {
+    const slug = `cached-${Date.now()}`;
+    const name = "GET /trace-static/[slug]";
+    const first = await request.get(`/trace-static/${slug}`);
+    expect(first.status()).toBe(200);
+    await expectReportedTransaction(request, name, ({ spans }) =>
+      spans.some(({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult"),
+    );
+
+    const second = await request.get(`/trace-static/${slug}`);
+    expect(second.status()).toBe(200);
+    const transaction = await expectReportedTransaction(
+      request,
+      name,
+      ({ spans }) =>
+        !spans.some(
+          ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+        ) &&
+        spans.some(
+          ({ attributes }) => attributes["next.span_type"] === "NextNodeServer.startResponse",
+        ),
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.span_name": "start response",
+          "next.span_type": "NextNodeServer.startResponse",
+        }),
+        name: "start response",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
   });
 
   test("uses the render span when an auto-dynamic App Page reads request data", async ({

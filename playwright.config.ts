@@ -196,6 +196,20 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "cloudflare-sentry-app-workers-cache": {
+    testDir: "./tests/e2e",
+    testMatch: ["**/cloudflare-sentry-app/**/*.spec.ts"],
+    grep: /cached RSC payload|response start for an App Page cache hit/,
+    use: { baseURL: "http://localhost:4210" },
+    server: {
+      command:
+        "VINEXT_SENTRY_CACHE=workers NEXT_PUBLIC_VINEXT_TEST_SENTRY_DSN=http://public@localhost:4210/1 npx vp build && npx wrangler dev --config .vinext/workers-cache/server/wrangler.json --port 4210",
+      cwd: "./tests/fixtures/cf-sentry-app",
+      port: 4210,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "cloudflare-sentry-pages": {
     testDir: "./tests/e2e",
     testMatch: ["**/cloudflare-sentry-pages/**/*.spec.ts"],
@@ -522,6 +536,7 @@ export default defineConfig({
       testDir: p.testDir,
       ...("testMatch" in p ? { testMatch: p.testMatch } : {}),
       ...("testIgnore" in p ? { testIgnore: p.testIgnore } : {}),
+      ...("grep" in p ? { grep: p.grep } : {}),
       ...("use" in p ? { use: p.use } : {}),
     };
   }),

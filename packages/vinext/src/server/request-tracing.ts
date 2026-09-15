@@ -11,6 +11,7 @@ import {
   VINEXT_TRACE_ROUTE_HEADER,
 } from "./headers.js";
 import { frameworkTracer } from "./tracer.js";
+import { getResponseStartCompletion } from "./response-start-tracing.js";
 
 type ActiveRequestTrace = {
   recordError(error: Error): void;
@@ -217,6 +218,9 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
             return result;
           }
           resolveResult(result);
+          if (result instanceof Response) {
+            await getResponseStartCompletion(result);
+          }
           return result;
         } catch (error) {
           finalizeSpan();

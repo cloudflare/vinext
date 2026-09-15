@@ -15,6 +15,7 @@ import {
   createAppPageRenderSpanDescriptor,
   resolveAppPageTraceOperation,
 } from "../packages/vinext/src/server/app-page-tracing.js";
+import { traceResponseStart } from "../packages/vinext/src/server/response-start-tracing.js";
 
 // Cloudflare Workers custom spans API:
 // https://developers.cloudflare.com/workers/observability/traces/custom-spans/
@@ -115,11 +116,11 @@ describe("Workers framework tracing integration", () => {
     const tracing = fakeTracing(spans);
     registerFrameworkTracingIntegration(createWorkersTracingIntegration(tracing));
 
-    await tracing.enterSpan("worker.handler", () =>
+    const response = await tracing.enterSpan("worker.handler", () =>
       traceFrameworkRequest({
         callback: async () => {
           setFrameworkRequestRoute("/products/[id]");
-          return new Response("failed", { status: 500 });
+          return traceResponseStart(new Response("failed", { status: 500 }));
         },
         getStatus: (response) => response?.status,
         headers: new Headers(),
@@ -127,6 +128,7 @@ describe("Workers framework tracing integration", () => {
         target: "/products/42",
       }),
     );
+    await response.text();
 
     expect(spans).toEqual([
       {
@@ -151,6 +153,16 @@ describe("Workers framework tracing integration", () => {
         exceptions: [],
         name: "GET",
         parent: "worker.handler",
+      },
+      {
+        attributes: {
+          "next.span_category": "nextjs",
+          "next.span_name": "start response",
+          "next.span_type": "NextNodeServer.startResponse",
+        },
+        exceptions: [],
+        name: "start response",
+        parent: "GET",
       },
     ]);
   });
