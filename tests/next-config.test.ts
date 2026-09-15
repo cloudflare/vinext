@@ -1316,6 +1316,40 @@ module.exports = function withManifest(config = {}) {
     });
   });
 
+  it("serializes project roots across concurrent async config loads", async () => {
+    const originalCwd = process.cwd();
+    const firstRoot = makeTempDir();
+    const secondRoot = makeTempDir();
+    tmpDir = firstRoot;
+
+    for (const [root, delay] of [
+      [firstRoot, 20],
+      [secondRoot, 0],
+    ] as const) {
+      fs.writeFileSync(
+        path.join(root, "next.config.mjs"),
+        `export default async () => {
+  await new Promise(resolve => setTimeout(resolve, ${delay}));
+  return { assetPrefix: process.cwd() };
+};
+`,
+      );
+    }
+
+    try {
+      const [first, second] = await Promise.all([
+        loadNextConfig(firstRoot),
+        loadNextConfig(secondRoot),
+      ]);
+
+      expect(first?.assetPrefix).toBe(fs.realpathSync(firstRoot));
+      expect(second?.assetPrefix).toBe(fs.realpathSync(secondRoot));
+      expect(process.cwd()).toBe(originalCwd);
+    } finally {
+      fs.rmSync(secondRoot, { recursive: true, force: true });
+    }
+  });
+
   it("captures turbopack aliases from wrapped config plugins", async () => {
     tmpDir = makeTempDir();
     fs.writeFileSync(
