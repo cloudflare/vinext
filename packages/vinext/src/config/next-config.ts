@@ -34,45 +34,51 @@ const vinextNextPackageJson = fileURLToPath(new URL("../../next-package.json", i
 let nextPackageIdentityUsers = 0;
 let originalResolveFilename: ResolveFilename | undefined;
 type ConfigRootState = {
-  storage: AsyncLocalStorage<boolean>;
+  storage: AsyncLocalStorage<ConfigRootLease>;
+  queue: Promise<void>;
+};
+type ConfigRootLease = {
+  active: boolean;
   queue: Promise<void>;
 };
 const processWithConfigRootState = process as NodeJS.Process & {
   __vinextConfigRootState?: ConfigRootState;
 };
 const configRootState = (processWithConfigRootState.__vinextConfigRootState ??= {
-  storage: new AsyncLocalStorage<boolean>(),
+  storage: new AsyncLocalStorage<ConfigRootLease>(),
   queue: Promise.resolve(),
 });
 
 // Next.js config wrappers commonly scan with relative fs/glob calls, so changing
 // process.cwd itself is required; overriding process.cwd() would not root those
-// operations. Serialize top-level loads because cwd is process-wide. The ALS
-// marker keeps a nested load reentrant and restores the outer root afterward.
+// operations. Serialize top-level loads because cwd is process-wide. Each ALS
+// lease owns a child queue so nested sibling loads are serialized, while an
+// escaped descendant of a completed load falls back to the process queue.
 async function withConfigRoot<T>(root: string, callback: () => T | Promise<T>): Promise<T> {
+  const inheritedLease = configRootState.storage.getStore();
+  const lock = inheritedLease?.active ? inheritedLease : configRootState;
+  const waitForTurn = lock.queue;
+  let release = () => {};
+  lock.queue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await waitForTurn;
+
+  const lease: ConfigRootLease = { active: true, queue: Promise.resolve() };
   const run = async () => {
     const previousCwd = process.cwd();
     process.chdir(root);
     try {
       return await callback();
     } finally {
+      lease.active = false;
+      await lease.queue;
       process.chdir(previousCwd);
     }
   };
 
-  if (configRootState.storage.getStore()) {
-    return run();
-  }
-
-  const waitForTurn = configRootState.queue;
-  let release = () => {};
-  configRootState.queue = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await waitForTurn;
-
   try {
-    return await configRootState.storage.run(true, run);
+    return await configRootState.storage.run(lease, run);
   } finally {
     release();
   }
