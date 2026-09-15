@@ -1,5 +1,5 @@
 import test, { expect } from '@playwright/test';
-import { waitForTransaction } from '@sentry-internal/test-utils';
+import { waitForTransaction } from './test-utils';
 
 // The queue E2E test only runs in production mode.
 // In development mode the @vercel/queue SDK uses an in-memory dispatch that

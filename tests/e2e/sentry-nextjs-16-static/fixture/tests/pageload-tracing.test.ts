@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForTransaction } from '@sentry-internal/test-utils';
+import { waitForTransaction } from './test-utils';
 
 test('App router transactions should be attached to the pageload request span', async ({ page }) => {
   const serverTransactionPromise = waitForTransaction('nextjs-16-static', async transactionEvent => {
@@ -43,12 +43,12 @@ test('extracts HTTP request headers as span attributes', async ({ baseURL }) => 
 
   expect(serverTransaction.contexts?.trace?.data).toEqual(
     expect.objectContaining({
-      'http.request.header.user-agent': 'Custom-NextJS-Agent/15.0',
-      'http.request.header.content-type': 'text/html',
-      'http.request.header.x-nextjs-test': 'nextjs-header-value',
+      'http.request.header.user_agent': 'Custom-NextJS-Agent/15.0',
+      'http.request.header.content_type': 'text/html',
+      'http.request.header.x_nextjs_test': 'nextjs-header-value',
       'http.request.header.accept': 'text/html, application/xhtml+xml',
-      'http.request.header.x-framework': 'Next.js',
-      'http.request.header.x-request-id': 'nextjs-789',
+      'http.request.header.x_framework': 'Next.js',
+      'http.request.header.x_request_id': 'nextjs-789',
     }),
   );
 });

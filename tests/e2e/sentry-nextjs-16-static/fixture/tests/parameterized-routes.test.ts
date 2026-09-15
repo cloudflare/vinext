@@ -19,6 +19,7 @@ test('should create a parameterized transaction when the `app` directory is used
         data: {
           'sentry.op': 'pageload',
           'sentry.origin': 'auto.pageload.nextjs.app_router_instrumentation',
+          'sentry.segment.name.source': 'route',
           'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/parameterized\/cappuccino$/),
           'url.path': '/parameterized/cappuccino',
           'url.template': '/parameterized/:one',
@@ -102,6 +103,7 @@ test('should create a partially parameterized transaction when the `app` directo
         data: {
           'sentry.op': 'pageload',
           'sentry.origin': 'auto.pageload.nextjs.app_router_instrumentation',
+          'sentry.segment.name.source': 'route',
           'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/parameterized\/cappuccino\/beep$/),
           'url.path': '/parameterized/cappuccino/beep',
           'url.template': '/parameterized/:one/beep',
@@ -144,6 +146,7 @@ test('should create a nested parameterized transaction when the `app` directory 
         data: {
           'sentry.op': 'pageload',
           'sentry.origin': 'auto.pageload.nextjs.app_router_instrumentation',
+          'sentry.segment.name.source': 'route',
           'url.full': expect.stringMatching(/^https?:\/\/localhost:\d+\/parameterized\/cappuccino\/beep\/espresso$/),
           'url.path': '/parameterized/cappuccino/beep/espresso',
           'url.template': '/parameterized/:one/beep/:two',

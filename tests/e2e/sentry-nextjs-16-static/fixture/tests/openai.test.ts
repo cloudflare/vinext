@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForStreamedSpans } from '@sentry-internal/test-utils';
+import { waitForStreamedSpans } from './test-utils';
 
 // gen_ai spans are emitted as a separate span-v2 envelope item (not inline on the transaction), so we
 // assert on the streamed spans. Attribute values are wrapped as `{ value, type }` in the v2 format.

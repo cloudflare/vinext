@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForError } from '@sentry-internal/test-utils';
+import { waitForError } from './test-utils';
 
 const isWebpackDev = process.env.TEST_ENV === 'development-webpack';
 
