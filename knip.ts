@@ -139,6 +139,8 @@ export default {
     },
     "apps/web": {
       entry: ["cloudflare.config.ts", "worker/index.ts"],
+      // Resolved by the Vite plugin from the auxiliary Worker's config entrypoint.
+      ignoreDependencies: ["@cloudflare/workers-response-store"],
     },
   },
   ignoreWorkspaces: ["examples/**", "tests/fixtures/**", "benchmarks/**"],
@@ -184,7 +186,6 @@ export default {
     "jq",
   ],
   ignoreFiles: [
-    "apps/web/dist/**",
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
     "tests/e2e/app-front-redirect-issue/fixture/**/*.{js,ts,tsx}",
     // stub module loaded via `path.resolve()` as a Vite alias target

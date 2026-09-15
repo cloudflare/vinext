@@ -21,10 +21,6 @@
     "./service": {
       "types": "./dist/service.d.ts",
       "import": "./dist/service.js"
-    },
-    "./config": {
-      "types": "./dist/config.d.ts",
-      "import": "./dist/config.js"
     }
   },
   "scripts": {
@@ -37,7 +33,7 @@
     "deploy:service": "npm run build && wrangler deploy --config example/service-binding/wrangler.cache.jsonc && wrangler deploy --config example/service-binding/wrangler.user.jsonc",
     "lint": "vp lint .",
     "prepack": "vp run build",
-    "test": "npm run check && npm run build:examples && vitest run tests/config.test.ts tests/e2e.test.ts tests/service-binding-e2e.test.ts",
+    "test": "npm run check && npm run build:examples && vitest run tests/e2e.test.ts tests/service-binding-e2e.test.ts",
     "test:live": "vitest run tests/live-e2e.test.ts tests/service-binding-live-e2e.test.ts"
   },
   "devDependencies": {

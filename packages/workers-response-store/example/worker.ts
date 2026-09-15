@@ -1,5 +1,5 @@
 import {
-  createSelfContainedWorkersResponseStore,
+  createWorkersResponseStore,
   type ResponseStorePurgeOptions,
   type ResponseStoreRefreshOptions,
   type SerializableValue,
@@ -119,7 +119,7 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
   return json(result);
 }
 
-const responseStore = createSelfContainedWorkersResponseStore({
+const responseStore = createWorkersResponseStore({
   async regenerate(input, { env, ctx }): Promise<Response> {
     if (typeof Reflect.get(ctx.exports, "ResponseStoreBinding") !== "function") {
       throw new Error("ResponseStoreBinding is missing from the revalidation context");

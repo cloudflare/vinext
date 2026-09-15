@@ -62,24 +62,28 @@ import {
   defineWorker,
   exports as workerExports,
 } from "@cloudflare/vite-plugin/experimental-config";
+import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
+
+const workersCache = createWorkersCacheConfig({
+  bindings,
+  exports: workerExports,
+});
 
 export default defineWorker({
   // ...
-  cache: { enabled: false },
+  ...workersCache,
   env: {
-    CF_VERSION_METADATA: bindings.versionMetadata(),
-  },
-  exports: {
-    VinextCachedResponse: workerExports.worker({ cache: { enabled: true } }),
-    VinextUncachedResponse: workerExports.worker({ cache: { enabled: false } }),
+    ...workersCache.env,
+    // Other application bindings...
   },
 });
 ```
 
 The generated version metadata binding lets staged warmup prove that every
 discovery, probe, and fill request reached the uploaded Worker version. Pass
-`versionMetadataBinding` to `cdnAdapter()` only when the deployment needs a
-custom binding name.
+the same `versionMetadataBinding` to `cdnAdapter()` and
+`createWorkersCacheConfig()` only when the deployment needs a custom binding
+name.
 
 Use `--experimental-warm-cdn-cache` for the two-stage deploy. The default flow
 makes one final fill request per admitted identity. Add `--warm-cdn-certify`
@@ -113,6 +117,33 @@ npx @vinext/cloudflare deploy
 `vinext-cloudflare deploy` never creates, rewrites, or deploys the Response
 Store Worker.
 
+Cloudflare Vite plugin v2 projects can define the same service-binding setup in
+`cloudflare.config.ts` without a second Wrangler config:
+
+```ts
+import { bindings, defineWorker, exports } from "@cloudflare/vite-plugin/experimental-config";
+import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
+
+const responseStore = createWorkersResponseStoreServiceBindingConfig({
+  worker: {
+    name: "example-response-store",
+    compatibilityDate: "2026-09-15",
+    compatibilityFlags: ["nodejs_compat"],
+  },
+  bucket: "example-response-store-cache-bodies",
+  bindings,
+  exports,
+});
+
+export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
+
+export default defineWorker({
+  ...responseStore.applicationWorker,
+  name: "example",
+  entrypoint: "./worker.ts",
+});
+```
+
 To deploy storage and cache entrypoints with the application instead, select
 self-contained mode:
 
@@ -121,6 +152,9 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 
 vinext({ cache: responseStoreAdapter({ mode: "self-contained" }) });
 ```
+
+The corresponding typed config helper is
+`createWorkersResponseStoreSelfContainedConfig`.
 
 In this mode `vinext init` places the required R2, SQLite Durable Object,
 Workers Cache entrypoint, and version-metadata configuration in

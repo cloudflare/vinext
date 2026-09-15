@@ -5,7 +5,7 @@ import {
   exports,
   triggers,
 } from "@cloudflare/vite-plugin/experimental-config";
-import { createServiceBindingWorkersResponseStoreConfig } from "@cloudflare/workers-response-store/config";
+import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
 export const settings = defineSettings({
   accountId: "d48e2eb599d9aa075d5e682deaecc518",
@@ -13,7 +13,7 @@ export const settings = defineSettings({
 
 const responseStoreWorkerName =
   process.env.VINEXT_RESPONSE_STORE_WORKER_NAME || "vinext-web-response-store";
-const responseStore = createServiceBindingWorkersResponseStoreConfig({
+const responseStore = createWorkersResponseStoreServiceBindingConfig({
   worker: {
     name: responseStoreWorkerName,
     compatibilityDate: "2026-04-08",

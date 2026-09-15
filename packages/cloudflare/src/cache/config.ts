@@ -1,12 +1,15 @@
-export const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
-export const RESPONSE_STORE_ENTRYPOINT = "ResponseStoreService";
-export const RESPONSE_STORE_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
-
+const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
+const RESPONSE_STORE_ENTRYPOINT = "ResponseStoreService";
+const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
 const CACHE_BODIES_BINDING = "CACHE_BODIES";
 const CACHE_METADATA_BINDING = "CACHE_METADATA";
 const CACHE_METADATA_CLASS = "CacheMetadata";
 const RESPONSE_STORE_CACHE_ENTRYPOINT = "ResponseStoreBinding";
 const RESPONSE_STORE_SERVICE_ENTRYPOINT = "@cloudflare/workers-response-store/service";
+
+type WorkerExportFactory<WorkerExport> = {
+  worker(options: { cache: { enabled: boolean } }): WorkerExport;
+};
 
 type ServiceBindingWorkerConfig<
   R2Binding,
@@ -59,10 +62,10 @@ type ResponseStoreConfigBindings<
   versionMetadata(): VersionMetadataBinding;
 };
 
-type ResponseStoreConfigExports<WorkerExport, DurableObjectExport> = {
-  worker(options: { cache: { enabled: boolean } }): WorkerExport;
-  durableObject(options: { storage: "sqlite" }): DurableObjectExport;
-};
+type ResponseStoreConfigExports<WorkerExport, DurableObjectExport> =
+  WorkerExportFactory<WorkerExport> & {
+    durableObject(options: { storage: "sqlite" }): DurableObjectExport;
+  };
 
 type ResponseStoreStorageOptions<
   R2Binding,
@@ -119,7 +122,7 @@ function createResponseStoreWorkerConfig<
   };
 }
 
-export function createSelfContainedWorkersResponseStoreConfig<
+export function createWorkersResponseStoreSelfContainedConfig<
   R2Binding,
   DurableObjectBinding,
   VersionMetadataBinding,
@@ -139,12 +142,12 @@ export function createSelfContainedWorkersResponseStoreConfig<
     ...storage,
     env: {
       ...storage.env,
-      [RESPONSE_STORE_VERSION_METADATA_BINDING]: options.bindings.versionMetadata(),
+      [DEFAULT_VERSION_METADATA_BINDING]: options.bindings.versionMetadata(),
     },
   };
 }
 
-export function createServiceBindingWorkersResponseStoreConfig<
+export function createWorkersResponseStoreServiceBindingConfig<
   WorkerBinding,
   R2Binding,
   DurableObjectBinding,
@@ -193,16 +196,32 @@ export function createServiceBindingWorkersResponseStoreConfig<
           worker: serviceBindingWorker,
           exportName: RESPONSE_STORE_ENTRYPOINT,
         }),
-        [RESPONSE_STORE_VERSION_METADATA_BINDING]: options.bindings.versionMetadata(),
+        [DEFAULT_VERSION_METADATA_BINDING]: options.bindings.versionMetadata(),
       },
     },
   };
 }
 
-/** @deprecated Use `createSelfContainedWorkersResponseStoreConfig`. */
-export const createWorkersResponseStoreSelfContainedConfig =
-  createSelfContainedWorkersResponseStoreConfig;
-
-/** @deprecated Use `createServiceBindingWorkersResponseStoreConfig`. */
-export const createWorkersResponseStoreServiceBindingConfig =
-  createServiceBindingWorkersResponseStoreConfig;
+export function createWorkersCacheConfig<VersionMetadataBinding, WorkerExport>({
+  bindings,
+  exports,
+  versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
+}: {
+  bindings: { versionMetadata(): VersionMetadataBinding };
+  exports: WorkerExportFactory<WorkerExport>;
+  versionMetadataBinding?: string;
+}) {
+  if (versionMetadataBinding.length === 0) {
+    throw new TypeError("versionMetadataBinding must be a non-empty string");
+  }
+  return {
+    cache: { enabled: false as const },
+    env: {
+      [versionMetadataBinding]: bindings.versionMetadata(),
+    },
+    exports: {
+      VinextCachedResponse: exports.worker({ cache: { enabled: true } }),
+      VinextUncachedResponse: exports.worker({ cache: { enabled: false } }),
+    },
+  };
+}
