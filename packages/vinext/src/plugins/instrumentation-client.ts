@@ -20,6 +20,9 @@ export function createInstrumentationServerTransformPlugin(
 ): Plugin {
   return {
     name: "vinext:instrumentation-server-values",
+    applyToEnvironment(environment) {
+      return environment.name !== "client";
+    },
     transform(code, id) {
       const instrumentationPath = getInstrumentationPath();
       if (!instrumentationPath) return null;
