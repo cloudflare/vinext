@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as Sentry from "@sentry/nextjs";
-import { createServer } from "vite-plus";
+import { createServer, parseAst } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 import {
   findInstrumentationClientFile,
@@ -226,6 +226,25 @@ describe("instrumentation-client transform", () => {
     const code = getLoadedCode(await getTransformHandler(plugin).call({} as never, source, path));
     expect(code).toContain(`globalThis["_sentryRouteManifest"] = ${JSON.stringify(manifest)};`);
     expect(code).toContain("__vinextInstrumentationClientStart");
+  });
+
+  it("injects before executable statements without breaking directives", async () => {
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => "manifest",
+    );
+    const sourceWithLateImport = '"use strict";\ninitialize();\nimport "./setup.js";\n';
+    const code = getLoadedCode(
+      await getTransformHandler(plugin).call({} as never, sourceWithLateImport, path),
+    );
+
+    expect(parseAst(code).body[0]).toMatchObject({ directive: "use strict" });
+    expect(code.indexOf('globalThis["_sentryRouteManifest"]')).toBeGreaterThan(
+      code.indexOf('"use strict"'),
+    );
+    expect(code.indexOf('globalThis["_sentryRouteManifest"]')).toBeLessThan(
+      code.indexOf("initialize()"),
+    );
   });
 
   it("keeps route manifest injection disabled when a wrapped config omits it", async () => {

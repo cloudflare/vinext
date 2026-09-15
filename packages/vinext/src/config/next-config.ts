@@ -1049,7 +1049,13 @@ export async function loadNextConfig(
   root: string,
   phase: string = DEFAULT_PHASE,
 ): Promise<NextConfig | null> {
-  return withNextPackageIdentity(() => loadNextConfigWithPackageIdentity(root, phase));
+  const previousCwd = process.cwd();
+  process.chdir(root);
+  try {
+    return await withNextPackageIdentity(() => loadNextConfigWithPackageIdentity(root, phase));
+  } finally {
+    process.chdir(previousCwd);
+  }
 }
 
 async function loadNextConfigWithPackageIdentity(
@@ -2325,10 +2331,7 @@ async function runWebpackConfigProbe(
     defaultLoaders: { babel: { loader: "next-babel-loader" } },
     ...options,
     dir: root,
-    webpack: {
-      DefinePlugin: WebpackPluginStub,
-      ProvidePlugin: WebpackPluginStub,
-    },
+    webpack: new Proxy({}, { get: () => WebpackPluginStub }),
   });
   const finalConfig = result ?? mockConfig;
   // oxlint-disable-next-line typescript/no-explicit-any

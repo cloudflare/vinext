@@ -4,11 +4,12 @@ import MagicString from "magic-string";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
-function insertionPositionAfterImports(code: string): number {
+function insertionPositionAfterDirectives(code: string): number {
   const ast = parseAst(code);
   let insertPos = 0;
   for (const node of ast.body) {
-    if (node.type === "ImportDeclaration") insertPos = node.end;
+    if (node.type !== "ExpressionStatement" || node.directive === undefined) break;
+    insertPos = node.end;
   }
   return insertPos;
 }
@@ -34,7 +35,7 @@ export function createInstrumentationServerTransformPlugin(
         .join("\n");
       const s = new MagicString(code);
       s.appendLeft(
-        insertionPositionAfterImports(code),
+        insertionPositionAfterDirectives(code),
         `\n/* __vinextInstrumentationServerValues */\n${assignments}\n`,
       );
       return magicStringTransformResult(s, { hires: true });
@@ -67,9 +68,7 @@ export function createInstrumentationClientTransformPlugin(
       const shouldInjectDevTimer = isDev && !code.includes("__vinextInstrumentationClientStart");
       if (!shouldInjectManifest && !shouldInjectDevTimer) return null;
 
-      // When the module has no imports, inject the timer at the top so the
-      // measurement still wraps the full module body execution.
-      const insertPos = insertionPositionAfterImports(code);
+      const insertPos = insertionPositionAfterDirectives(code);
 
       const s = new MagicString(code);
       const preamble = [

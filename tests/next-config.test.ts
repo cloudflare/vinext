@@ -1273,6 +1273,49 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "config/request.ts"));
   });
 
+  it("evaluates wrapped configs from the configured project root", async () => {
+    tmpDir = makeTempDir();
+    fs.mkdirSync(path.join(tmpDir, "app", "products"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "node_modules", "fake-manifest-wrapper"), {
+      recursive: true,
+    });
+    fs.writeFileSync(path.join(tmpDir, "app", "products", "page.tsx"), "export default null;\n");
+    fs.writeFileSync(
+      path.join(tmpDir, "node_modules", "fake-manifest-wrapper", "index.js"),
+      `const fs = require("node:fs");
+module.exports = function withManifest(config = {}) {
+  const manifest = JSON.stringify({ hasProducts: fs.existsSync("app/products/page.tsx") });
+  return {
+    ...config,
+    webpack(webpackConfig, options) {
+      if (!options.isServer) {
+        webpackConfig.module.rules.push({
+          use: { options: { values: { _sentryRouteManifest: manifest } } },
+        });
+      }
+      return webpackConfig;
+    },
+  };
+};
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "node_modules", "fake-manifest-wrapper", "package.json"),
+      JSON.stringify({ name: "fake-manifest-wrapper", version: "1.0.0", main: "index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      'module.exports = require("fake-manifest-wrapper")({});\n',
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    expect(JSON.parse(config.instrumentationClientRouteManifest!)).toEqual({
+      hasProducts: true,
+    });
+  });
+
   it("captures turbopack aliases from wrapped config plugins", async () => {
     tmpDir = makeTempDir();
     fs.writeFileSync(
@@ -1590,11 +1633,14 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
   it("provides Next.js webpack plugin constructors to wrapped config callbacks", async () => {
     const config = await resolveNextConfig({
       webpack: (webpackConfig: any, options: any) => {
+        webpackConfig.resolve.alias["wrapped/config"] = "./config/request.ts";
         webpackConfig.plugins.push(new options.webpack.DefinePlugin({ TEST: true }));
         webpackConfig.plugins.push(new options.webpack.ProvidePlugin({ TEST: "test" }));
+        webpackConfig.plugins.push(new options.webpack.IgnorePlugin({ resourceRegExp: /test/ }));
         return webpackConfig;
       },
     });
+    expect(config.aliases["wrapped/config"]).toBe(canonical(process.cwd(), "config/request.ts"));
     expect(config.instrumentationClientRouteManifest).toBeUndefined();
     expect(config.instrumentationServerValueInjections).toEqual({});
   });
