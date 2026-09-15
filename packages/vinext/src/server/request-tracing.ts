@@ -1,5 +1,15 @@
 import { getOrCreateAls } from "vinext/shims/internal/als-registry";
-import { VINEXT_TRACE_ERROR_HEADER, VINEXT_TRACE_ROUTE_HEADER } from "./headers.js";
+import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
+import {
+  isFullyBufferedBody,
+  markFullyBufferedBody,
+  preserveFullyBufferedBodyMetadata,
+} from "./fully-buffered-response.js";
+import {
+  VINEXT_TRACE_BUFFERED_BODY_HEADER,
+  VINEXT_TRACE_ERROR_HEADER,
+  VINEXT_TRACE_ROUTE_HEADER,
+} from "./headers.js";
 import { frameworkTracer } from "./tracer.js";
 
 type ActiveRequestTrace = {
@@ -27,9 +37,6 @@ function updateResponseHeader(
   name: string,
   value: string | undefined,
 ): Response {
-  const headers = new Headers(response.headers);
-  if (value === undefined) headers.delete(name);
-  else headers.set(name, value);
   try {
     if (value === undefined) response.headers.delete(name);
     else response.headers.set(name, value);
@@ -37,13 +44,13 @@ function updateResponseHeader(
   } catch {
     // Fetch/service-binding responses may have immutable headers.
   }
-  const webSocket = Reflect.get(response, "webSocket");
-  return new Response(response.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-    ...(webSocket === undefined ? {} : { webSocket }),
-  } as ResponseInit);
+  const rebuilt = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, response as ResponseInit),
+  );
+  if (value === undefined) rebuilt.headers.delete(name);
+  else rebuilt.headers.set(name, value);
+  return rebuilt;
 }
 
 export async function captureFrameworkRequestRoute<T>(
@@ -71,7 +78,11 @@ export function attachFrameworkRequestRoute(
   route: string | undefined,
 ): Response {
   return updateResponseHeader(
-    response,
+    updateResponseHeader(
+      response,
+      VINEXT_TRACE_BUFFERED_BODY_HEADER,
+      isFullyBufferedBody(response) ? "1" : undefined,
+    ),
     VINEXT_TRACE_ROUTE_HEADER,
     route ? encodeURIComponent(route) : undefined,
   );
@@ -94,6 +105,7 @@ export function attachFrameworkRequestError(response: Response, error: unknown):
 }
 
 export function consumeFrameworkRequestRoute(response: Response): Response {
+  const fullyBuffered = response.headers.get(VINEXT_TRACE_BUFFERED_BODY_HEADER) === "1";
   const encodedRoute = response.headers.get(VINEXT_TRACE_ROUTE_HEADER);
   if (encodedRoute !== null) {
     try {
@@ -119,11 +131,16 @@ export function consumeFrameworkRequestRoute(response: Response): Response {
       // Treat malformed internal exception metadata as absent.
     }
   }
-  return updateResponseHeader(
-    attachFrameworkRequestRoute(response, undefined),
+  const cleaned = updateResponseHeader(
+    updateResponseHeader(
+      updateResponseHeader(response, VINEXT_TRACE_BUFFERED_BODY_HEADER, undefined),
+      VINEXT_TRACE_ROUTE_HEADER,
+      undefined,
+    ),
     VINEXT_TRACE_ERROR_HEADER,
     undefined,
   );
+  return fullyBuffered ? markFullyBufferedBody(cleaned) : cleaned;
 }
 
 export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T> {
@@ -132,7 +149,13 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
   const method = input.method.toUpperCase();
   return frameworkTracer.withPropagatedContext(input.headers, () => {
     const parentSpan = frameworkTracer.getActiveScopeSpan();
-    return frameworkTracer.trace(
+    let resolveResult!: (result: T) => void;
+    let rejectResult!: (error: unknown) => void;
+    const resultPromise = new Promise<T>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    const tracedRequest = frameworkTracer.trace(
       {
         attributes: {
           "http.method": method,
@@ -147,6 +170,21 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
         let route: string | undefined;
         let isRsc = input.isRsc ?? false;
         let result: T | undefined;
+        let spanFinalized = false;
+        const finalizeSpan = () => {
+          if (spanFinalized) return;
+          spanFinalized = true;
+          finalizeFrameworkRequestSpan({
+            carriedError,
+            input,
+            isRsc,
+            method,
+            parentSpan,
+            result,
+            route,
+            span,
+          });
+        };
         try {
           result = await activeRequestTrace.run(
             {
@@ -160,29 +198,80 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
             },
             input.callback,
           );
+          finalizeSpan();
+          if (
+            result instanceof Response &&
+            result.body &&
+            !result.body.locked &&
+            !isFullyBufferedBody(result)
+          ) {
+            let finishBody!: () => void;
+            let failBody!: (error: unknown) => void;
+            const bodyCompletion = new Promise<void>((resolve, reject) => {
+              finishBody = resolve;
+              failBody = reject;
+            });
+            result = wrapResponseBody(result, finishBody, failBody) as T;
+            resolveResult(result);
+            await bodyCompletion;
+            return result;
+          }
+          resolveResult(result);
           return result;
-        } finally {
-          const status = input.getStatus(result);
-          span.setAttributes({ "http.status_code": status, "next.rsc": isRsc });
-          if (status !== undefined && status >= 500) {
-            span.setErrorStatus();
-            span.setAttribute("error.type", String(status));
-          }
-          if (carriedError) {
-            span.recordException(carriedError);
-            span.setAttribute("error.type", carriedError.name);
-            span.setErrorStatus(carriedError.message);
-          }
-          const name = route
-            ? `${isRsc ? "RSC " : ""}${method} ${route}`
-            : `${isRsc ? "RSC " : ""}${method}`;
-          if (route) {
-            span.setAttributes({ "http.route": route, "next.route": route });
-            parentSpan?.setAttribute("http.route", route);
-          }
-          span.updateName(name);
+        } catch (error) {
+          finalizeSpan();
+          rejectResult(error);
+          throw error;
         }
       },
     );
+    void tracedRequest.catch(() => {});
+    return resultPromise;
   });
+}
+
+function finalizeFrameworkRequestSpan<T>(options: {
+  carriedError: Error | undefined;
+  input: RequestTraceInput<T>;
+  isRsc: boolean;
+  method: string;
+  parentSpan: ReturnType<typeof frameworkTracer.getActiveScopeSpan>;
+  result: T | undefined;
+  route: string | undefined;
+  span: NonNullable<ReturnType<typeof frameworkTracer.getActiveScopeSpan>>;
+}): void {
+  const { carriedError, input, isRsc, method, parentSpan, result, route, span } = options;
+  const status = input.getStatus(result);
+  span.setAttributes({ "http.status_code": status, "next.rsc": isRsc });
+  if (status !== undefined && status >= 500) {
+    span.setErrorStatus();
+    span.setAttribute("error.type", String(status));
+  }
+  if (carriedError) {
+    span.recordException(carriedError);
+    span.setAttribute("error.type", carriedError.name);
+    span.setErrorStatus(carriedError.message);
+  }
+  const name = route
+    ? `${isRsc ? "RSC " : ""}${method} ${route}`
+    : `${isRsc ? "RSC " : ""}${method}`;
+  if (route) {
+    span.setAttributes({ "http.route": route, "next.route": route });
+    parentSpan?.setAttribute("http.route", route);
+  }
+  span.updateName(name);
+}
+
+function wrapResponseBody(
+  response: Response,
+  onConsumed: () => void,
+  onError: (error: unknown) => void,
+): Response {
+  // Workerd accepts a Response as ResponseInit and copies its host-only state,
+  // including cf, WebSocket, and encodeBody. A plain init object would reset
+  // encodeBody to "automatic" and could double-encode an already encoded body.
+  return new Response(
+    deferUntilStreamConsumed(response.body!, onConsumed, onError),
+    response as ResponseInit,
+  );
 }
