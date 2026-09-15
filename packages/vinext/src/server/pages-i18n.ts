@@ -370,3 +370,20 @@ export function resolvePagesI18nRequest(
     redirectUrl,
   };
 }
+
+export function resolvePagesI18nRouteUrl(
+  url: string,
+  request: Request | undefined,
+  i18nConfig: NextI18nConfig | null,
+  config: { basePath?: string; trailingSlash?: boolean },
+): string {
+  if (!i18nConfig || !request) return url;
+  return resolvePagesI18nRequest(
+    url,
+    i18nConfig,
+    request.headers,
+    new URL(request.url).hostname,
+    config.basePath,
+    config.trailingSlash,
+  ).url;
+}

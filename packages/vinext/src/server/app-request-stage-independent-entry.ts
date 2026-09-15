@@ -9,12 +9,7 @@ import requestRscHandler, {
   __prerenderSecret,
 } from "virtual:vinext-app-request-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
-// @ts-expect-error -- virtual module resolved by vinext
-import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
-import { registerLazyDataCacheHandler } from "vinext/shims/cache-handler";
-import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
-// @ts-expect-error -- virtual module resolved by vinext
-import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
+import { applyCdnResponseIdentityHeaders } from "./cache-control.js";
 import type { DispatchAppWorkerResponseStage } from "./app-worker-stages.js";
 import {
   getImageOptimizer,
@@ -26,32 +21,18 @@ import {
   finalizeMissingStaticAssetResponse,
   resolveStaticAssetSignal,
 } from "./worker-utils.js";
-import {
-  cloneRequestWithHeaders,
-  filterInternalHeaders,
-  isOpenRedirectShaped,
-} from "./request-pipeline.js";
-import {
-  VINEXT_CACHEABILITY_PROBE_HEADER,
-  VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
-  VINEXT_EXPECTED_WORKER_VERSION_HEADER,
-  VINEXT_PRERENDER_SECRET_HEADER,
-  VINEXT_REVALIDATE_HOST_HEADER,
-} from "./headers.js";
+import { isOpenRedirectShaped } from "./request-pipeline.js";
 import { readTrustedPrerenderStateFromHeaders } from "./prerender-route-params.js";
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
+import type { VinextAssetFetcher, VinextRequestStageContext } from "./multi-stage.js";
 import {
-  createWorkerPrerenderDiscoveryContext,
-  createWorkerPrerenderReadinessResponse,
-} from "./worker-prerender-discovery.js";
-import type {
-  VinextAssetFetcher,
-  VinextCacheabilityProbeMode,
-  VinextRequestStageContext,
-} from "./multi-stage.js";
-import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
+  filterWorkerRequestStageHeaders,
+  finalizeWorkerRequestStageResponse,
+  prepareWorkerRequestStage,
+  registerWorkerRequestStageAdapters,
+} from "./worker-request-stage.js";
 
 export type AppRequestStageEnv = Record<string, unknown>;
 type AppRequestStageContext = ExecutionContextLike & VinextRequestStageContext;
@@ -89,47 +70,11 @@ async function handleRequest(
         "node",
       );
 
-  configuredCdnCacheAdapters.registerConfiguredCacheAdapters(env);
-  if (configuredCdnCacheAdapters.hasConfiguredDataCache) {
-    registerLazyDataCacheHandler(async () => {
-      // @ts-expect-error -- virtual module resolved by vinext
-      const adapters = await import("virtual:vinext-cache-adapters");
-      adapters.registerConfiguredCacheAdapters(env);
-    });
-  }
-  registerConfiguredImageOptimizer(env);
-
-  ctx = createWorkerPrerenderDiscoveryContext(ctx, request, __prerenderSecret);
-  const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
-  let didValidateCdnRequest = false;
-  if (readinessResponse) {
-    const validationResponse = await validateCdnRequest(request);
-    if (validationResponse) return validationResponse;
-    didValidateCdnRequest = true;
-    // An authenticated readiness request must continue through the response
-    // dispatcher so independently hosted stages are proven ready as a unit.
-    // Failed capability checks stay inside the framework-owned namespace.
-    if (readinessResponse.status !== 204) return readinessResponse;
-  }
-
-  let probeMode: VinextCacheabilityProbeMode | null = null;
-  let probeRoute: WorkerCacheabilityProbeRoute | null = null;
-  if (request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {
-    const { readWorkerCacheabilityProbeMode, readWorkerCacheabilityProbeRoute } =
-      await import("./cacheability-request.js");
-    probeMode = readWorkerCacheabilityProbeMode(request, __prerenderSecret);
-    if (probeMode) {
-      probeRoute = readWorkerCacheabilityProbeRoute(request);
-      const probeUrl = new URL(request.url);
-      probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
-      request = new Request(probeUrl, request);
-    }
-  }
-
-  if (!didValidateCdnRequest) {
-    const cdnValidationResponse = await validateCdnRequest(request);
-    if (cdnValidationResponse) return cdnValidationResponse;
-  }
+  registerWorkerRequestStageAdapters(env);
+  const prepared = await prepareWorkerRequestStage(request, ctx, __prerenderSecret);
+  if (prepared.response) return prepared.response;
+  ({ context: ctx, request } = prepared);
+  const { probeMode, probeRoute, readinessResponse } = prepared;
 
   const url = new URL(request.url);
   if (isImageOptimizationPath(url.pathname) && assets && getImageOptimizer()) {
@@ -152,21 +97,7 @@ async function handleRequest(
     request.headers,
     __prerenderSecret,
   );
-  const filteredHeaders = ctx.isInternalPagesRevalidation
-    ? new Headers(request.headers)
-    : filterInternalHeaders(request.headers);
-  filteredHeaders.delete(VINEXT_PRERENDER_SECRET_HEADER);
-  filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
-  if (readinessResponse?.status === 204) {
-    const expectedWorkerVersion = request.headers.get(VINEXT_EXPECTED_WORKER_VERSION_HEADER);
-    if (expectedWorkerVersion) {
-      // The request stage already authenticated the build capability. Preserve
-      // only the version assertion needed by the independently hosted response
-      // stage; the prerender secret remains confined to this gateway.
-      filteredHeaders.set(VINEXT_EXPECTED_WORKER_VERSION_HEADER, expectedWorkerVersion);
-    }
-  }
-  request = cloneRequestWithHeaders(request, filteredHeaders);
+  request = filterWorkerRequestStageHeaders(request, ctx, readinessResponse).request;
 
   let responseStageDispatched = false;
   const trackedDispatchResponseStage: DispatchAppWorkerResponseStage = (
@@ -195,14 +126,10 @@ async function handleRequest(
     });
     if (assetResponse) response = assetResponse;
   }
-  response = finalizeMissingStaticAssetResponse(response, missingBuildAsset);
-  if (probeMode && probeRoute && !responseStageDispatched) {
-    const { finalizeRequestStageCacheabilityProbe } = await import("./cacheability-request.js");
-    response = finalizeRequestStageCacheabilityProbe(response, {
-      mode: probeMode,
-      responseStageDispatched,
-      route: probeRoute,
-    });
-  }
-  return response;
+  return finalizeWorkerRequestStageResponse(
+    finalizeMissingStaticAssetResponse(response, missingBuildAsset),
+    probeMode,
+    probeRoute,
+    responseStageDispatched,
+  );
 }

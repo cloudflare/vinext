@@ -5,6 +5,7 @@ import {
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
   encodeUrlParserIgnoredCharacters,
+  normalizePagesEntryDataRequest,
   normalizePagesDataRequest,
   shouldAddTrailingSlashToPagesDataPath,
   normalizeNextDataPagePathname,
@@ -122,6 +123,16 @@ describe("pages-data-route", () => {
       expect(shouldAddTrailingSlashToPagesDataPath(true, true, true)).toBe(false);
       expect(shouldAddTrailingSlashToPagesDataPath(true, true, false)).toBe(true);
       expect(shouldAddTrailingSlashToPagesDataPath(false, true, false)).toBe(false);
+
+      const buildId = "abc123";
+      const request = new Request(`http://localhost/_next/data/${buildId}/about.json`);
+      const result = normalizePagesEntryDataRequest(
+        request,
+        buildId,
+        { skipProxyUrlNormalize: true, trailingSlash: true },
+        true,
+      );
+      expect(result.normalizedPathname).toBe("/about");
     });
 
     it("applies trailingSlash to the page URL before middleware sees data requests", () => {

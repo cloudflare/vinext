@@ -272,3 +272,17 @@ export function normalizePagesDataRequest(
     notFoundResponse: null,
   };
 }
+
+export function normalizePagesEntryDataRequest(
+  request: Request,
+  buildId: string | null,
+  config: { basePath?: string; skipProxyUrlNormalize?: boolean; trailingSlash?: boolean },
+  hasMiddleware: boolean,
+): NormalizePagesDataRequestResult {
+  const trailingSlash = shouldAddTrailingSlashToPagesDataPath(
+    hasMiddleware,
+    config.trailingSlash === true,
+    config.skipProxyUrlNormalize === true,
+  );
+  return normalizePagesDataRequest(request, buildId, config.basePath, trailingSlash);
+}
