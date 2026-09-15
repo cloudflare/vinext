@@ -1,8 +1,11 @@
 type TransactionEvent = {
+  environment?: string;
   transaction?: string;
   contexts?: {
+    react?: { version?: string };
     trace?: {
       data?: Record<string, unknown>;
+      description?: string;
       op?: string;
       origin?: string;
       span_id?: string;
@@ -11,7 +14,17 @@ type TransactionEvent = {
     };
   };
   request?: { headers?: Record<string, string>; method?: string; url?: string };
-  spans?: Array<{ description?: string }>;
+  spans?: Array<{
+    data?: Record<string, unknown>;
+    description?: string;
+    op?: string;
+    origin?: string;
+    status?: string;
+  }>;
+  start_timestamp?: number;
+  timestamp?: number;
+  transaction_info?: { source?: string };
+  type?: string;
 };
 
 type ErrorEvent = {

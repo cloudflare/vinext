@@ -226,15 +226,19 @@ const projectServers = {
   "sentry-nextjs-16-static": {
     testDir: "./tests/e2e/sentry-nextjs-16-static/fixture/tests",
     testMatch: [
+      "parameterized-routes.test.ts",
+      "prefetch-spans.test.ts",
       "server-components.test.ts",
       "route-handler.test.ts",
       "nested-rsc-error.test.ts",
       "streaming-rsc-error.test.ts",
     ],
     // The transaction-shape test targets unreleased Sentry SDK attribute
-    // renames. Keep it in the imported file for comparison, but run the two
-    // framework-span tests requested by Sentry against their published SDK.
-    grep: /server component and metadata generation functions|node route handlers|throwing route handler|captureMessage event|captureException event|nested server components|crashing streaming promises/,
+    // renames. Keep it in the imported file for comparison while running the
+    // portable framework tracing cases against their published SDK.
+    // The static route case relies on an SDK change newer than the published
+    // 10.67.0 package used here, so keep that exact copy for comparison only.
+    grep: /server component and metadata generation functions|node route handlers|throwing route handler|captureMessage event|captureException event|nested server components|crashing streaming promises|parameterized transaction|partially parameterized transaction|nested parameterized transaction|Prefetch client spans/,
     use: { baseURL: "http://localhost:4211" },
     server: {
       command:
