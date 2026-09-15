@@ -2,8 +2,9 @@ import http from "node:http";
 import { gunzipSync } from "node:zlib";
 
 const transactions = [];
+const errors = [];
 
-function readTransactions(envelope) {
+function readEnvelopeItems(envelope) {
   let cursor = envelope.indexOf("\n") + 1;
   const events = [];
 
@@ -23,8 +24,11 @@ function readTransactions(envelope) {
           : payloadLineEnd;
     if (payloadEnd < cursor) break;
 
-    if (header.type === "transaction") {
-      events.push(JSON.parse(envelope.slice(cursor, payloadEnd)));
+    if (header.type === "transaction" || header.type === "event") {
+      events.push({
+        type: header.type,
+        event: JSON.parse(envelope.slice(cursor, payloadEnd)),
+      });
     }
 
     cursor = payloadEnd + (envelope[payloadEnd] === "\n" ? 1 : 0);
@@ -35,11 +39,15 @@ function readTransactions(envelope) {
 
 http
   .createServer((request, response) => {
-    if (request.method === "GET" && request.url?.startsWith("/transactions")) {
+    if (
+      request.method === "GET" &&
+      (request.url?.startsWith("/transactions") || request.url?.startsWith("/errors"))
+    ) {
       const after = Number(new URL(request.url, "http://localhost").searchParams.get("after"));
+      const storedEvents = request.url.startsWith("/transactions") ? transactions : errors;
       response
         .writeHead(200, { "content-type": "application/json" })
-        .end(JSON.stringify(transactions.filter(({ receivedAt }) => receivedAt >= after)));
+        .end(JSON.stringify(storedEvents.filter(({ receivedAt }) => receivedAt >= after)));
       return;
     }
 
@@ -52,8 +60,11 @@ http
           ? gunzipSync(body).toString("utf8")
           : body.toString("utf8");
       const receivedAt = Date.now();
-      transactions.push(...readTransactions(envelope).map((event) => ({ event, receivedAt })));
-      transactions.splice(0, Math.max(0, transactions.length - 100));
+      for (const item of readEnvelopeItems(envelope)) {
+        const destination = item.type === "transaction" ? transactions : errors;
+        destination.push({ event: item.event, receivedAt });
+        destination.splice(0, Math.max(0, destination.length - 100));
+      }
       response.writeHead(200, { "access-control-allow-origin": "*" }).end("{}");
     });
   })

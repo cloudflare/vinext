@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForError, waitForTransaction } from '@sentry-internal/test-utils';
+import { waitForError, waitForTransaction } from './test-utils';
 
 test('Should capture errors from nested server components when `Sentry.captureRequestError` is added to the `onRequestError` hook', async ({
   page,
