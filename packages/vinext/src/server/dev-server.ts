@@ -316,8 +316,6 @@ async function streamPageToResponseImpl(
     bufferBodyBeforeHeaders?: boolean;
     /** Keep a response Content-Type set before rendering a notFound page. */
     preserveExistingContentType?: boolean;
-    /** Suppress the legacy Pages span when Next.js uses its built-in App not-found render. */
-    shouldTraceDocument?: boolean;
     onDocumentBody?: (stream: ReadableStream<Uint8Array>) => void;
   },
 ): Promise<void> {
@@ -339,7 +337,6 @@ async function streamPageToResponseImpl(
     crossOrigin,
     bufferBodyBeforeHeaders = false,
     preserveExistingContentType = false,
-    shouldTraceDocument = true,
     onDocumentBody,
   } = options;
 
@@ -389,9 +386,7 @@ async function streamPageToResponseImpl(
       waitForBody: documentRenderPage.status === "skipped",
     };
   };
-  const documentResult = shouldTraceDocument
-    ? await tracePagesDocumentStream(routePattern, renderDocument)
-    : await renderDocument();
+  const documentResult = await tracePagesDocumentStream(routePattern, renderDocument);
   if (documentResult.responseSent) return;
   const { bodyStream, documentRenderPage } = documentResult;
   if (!bodyStream) throw new Error("Pages document render did not produce a body stream");
@@ -2072,13 +2067,9 @@ async function renderErrorPage(
               : undefined,
           crossOrigin: context.crossOrigin,
           preserveExistingContentType: statusCode === 404,
-          shouldTraceDocument: !(context.notFoundSrcPage && !errorAssetPath),
         });
       } else {
-        const bodyHtml =
-          context.notFoundSrcPage && !errorAssetPath
-            ? await renderToStringAsync(element)
-            : await tracePagesDocument(errorPage, () => renderToStringAsync(element));
+        const bodyHtml = await tracePagesDocument(errorPage, () => renderToStringAsync(element));
         const traceMetaHTML = getClientTraceMetadataHTML(context.clientTraceMetadata);
         const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
         const protectAssetTags = (assetHtml: string): string =>

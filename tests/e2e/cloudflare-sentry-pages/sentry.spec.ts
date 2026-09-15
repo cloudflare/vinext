@@ -250,11 +250,10 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
     );
   });
 
-  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
-  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
-  test("does not emit a Pages document span for the built-in production 404", async ({
-    request,
-  }) => {
+  // Next.js resolves the built-in Pages-only 404 through /_error when there is
+  // no app directory: packages/next/src/server/base-server.ts.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+  test("traces the Pages document span for the built-in production 404", async ({ request }) => {
     const traceRes = await request.get("/trace-not-found");
     expect(traceRes.status()).toBe(404);
 
@@ -267,11 +266,18 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         }),
       }),
     );
-    expect(
-      transaction.spans.some(
-        ({ attributes }) => attributes["next.span_type"] === "Render.renderDocument",
-      ),
-    ).toBe(false);
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/_error",
+          "next.span_name": "render route (pages) /_error",
+          "next.span_type": "Render.renderDocument",
+        }),
+        name: "render route (pages) /_error",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
   });
 
   test("continues incoming Sentry traces without leaking parallel request context", async ({

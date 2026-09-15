@@ -90,10 +90,7 @@ import {
 
 export async function renderTracedPagesPageResponse(
   options: Parameters<typeof renderPagesPageResponse>[0],
-  shouldTrace: boolean,
 ): Promise<Response> {
-  if (!shouldTrace) return renderPagesPageResponse(options);
-
   let bodyStream: ReadableStream<Uint8Array> | undefined;
   try {
     return await renderPagesPageResponse({
@@ -1202,10 +1199,7 @@ export function createPagesPageHandler(
           ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
         };
-        let pageResponse = await renderTracedPagesPageResponse(
-          pageResponseOptions,
-          route.filePath != null || renderStatusCodeOverride !== 404,
-        );
+        let pageResponse = await renderTracedPagesPageResponse(pageResponseOptions);
         if (shouldApplyErrorResponsePolicy) {
           pageResponse = applyPagesErrorCachePolicy(
             pageResponse,
