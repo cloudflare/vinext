@@ -10,7 +10,7 @@ import type {
   CacheControlMetadata,
 } from "vinext/shims/cache-handler";
 import { applyCdnResponseHeaders } from "./cache-control.js";
-import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
+import { buildMissIsrCacheControl, decideIsr, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import {
   buildPagesCacheValue,
@@ -43,6 +43,7 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import { assertPagesDataExportCompatibility } from "./pages-data-export-compatibility.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -58,7 +59,6 @@ export type ResolvedPagesRedirect = {
 };
 
 const ALLOWED_PAGES_REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
-
 /** Headers that are part of a cached Pages representation, never request state. */
 function isCachedPagesRepresentationHeader(name: string): boolean {
   const lowerName = name.toLowerCase();
@@ -382,6 +382,11 @@ type ResolvePagesPageDataRenderResult = {
   gsspRes: PagesGsspResponse | null;
   isrRevalidateSeconds: number | false | null;
   isrExpireSeconds?: number;
+  /**
+   * True when a getStaticProps render carries request-derived App props. The
+   * caller must emit a private, no-store policy so no shared cache stores it.
+   */
+  bypassSharedCache: boolean;
   pageProps: Record<string, unknown>;
   props: PagesRenderProps;
   /**
@@ -402,6 +407,8 @@ type ResolvePagesPageDataResponseResult = {
 
 type ResolvePagesPageDataNotFoundResult = {
   kind: "notFound";
+  /** The source getStaticProps route carried request-derived App props. */
+  bypassSharedCache?: boolean;
   /** Headers set by getServerSideProps before it returned notFound. */
   responseHeaders?: Record<string, string | number | boolean | string[]>;
   /** Current getStaticProps cache lifetime, when this is an SSG result. */
@@ -456,6 +463,19 @@ function buildPagesNotFoundResult(
   };
 }
 
+function buildRequestAwarePagesNotFoundResult(
+  options: Pick<ResolvePagesPageDataOptions, "isDataReq" | "deploymentId">,
+): ResolvePagesPageDataResponseResult | ResolvePagesPageDataNotFoundResult {
+  const result = buildPagesNotFoundResult(options);
+  if (result.kind === "response") {
+    applyCdnResponseHeaders(result.response.headers, {
+      cacheControl: ISR_NEVER_CACHE_CONTROL,
+    });
+    return result;
+  }
+  return { ...result, bypassSharedCache: true };
+}
+
 export function mergePagesNotFoundSourceHeaders(
   response: Response,
   sourceHeaders: Record<string, string | number | boolean | string[]> | undefined,
@@ -480,6 +500,16 @@ export function mergePagesNotFoundSourceHeaders(
     status: response.status,
     statusText: response.statusText,
   });
+}
+
+/**
+ * True only when userland overrode App.getInitialProps. The shim's inherited
+ * default (`class MyApp extends App {}`) is request-agnostic and keeps ISR.
+ */
+export function hasCustomAppGetInitialProps(appComponent: unknown): boolean {
+  if (!hasPagesGetInitialProps(appComponent)) return false;
+  const component = appComponent as { getInitialProps?: unknown; origGetInitialProps?: unknown };
+  return component.getInitialProps !== component.origGetInitialProps;
 }
 
 function applyPagesTerminalMissHeaders(
@@ -1190,6 +1220,10 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
 export async function resolvePagesPageData(
   options: ResolvePagesPageDataOptions,
 ): Promise<ResolvePagesPageDataResult> {
+  // Next.js rejects this combination before it can mix request-derived page
+  // props with a shared static representation.
+  assertPagesDataExportCompatibility(options.pageModule, options.routePattern);
+
   // Next.js passes `params: null` (effectively) to gSSP/gSP context for
   // non-dynamic routes — see render.tsx's `...(pageIsDynamic ? { params } : undefined)`.
   // Internal bookkeeping (route param hydration, ISR HTML, getStaticPaths
@@ -1210,6 +1244,10 @@ export async function resolvePagesPageData(
   let shouldPersistFallbackData = false;
   let onDemandPreviousCacheEntry: ISRCacheEntry | null | undefined;
   const previewData = options.isOnDemandRevalidate ? false : (options.previewData ?? false);
+  // A user-defined App.getInitialProps receives the live request. Its result
+  // can contain cookies, headers, or other per-user data and must never enter
+  // (or be read from) the shared ISR cache used by getStaticProps pages.
+  const hasRequestAwareAppProps = hasCustomAppGetInitialProps(options.AppComponent);
 
   if (typeof options.pageModule.getStaticPaths === "function" && options.route.isDynamic) {
     const pathsResult = await options.pageModule.getStaticPaths({
@@ -1234,7 +1272,9 @@ export async function resolvePagesPageData(
       // For data requests (`/_next/data/...json`), return a JSON-shaped 404
       // so the client router can `res.json()` without blowing up — matches
       // Next.js' behavior. HTML navigations still get the configured 404 page.
-      return buildPagesNotFoundResult(options);
+      return hasRequestAwareAppProps
+        ? buildRequestAwarePagesNotFoundResult(options)
+        : buildPagesNotFoundResult(options);
     }
 
     // Render the fallback shell for unlisted paths under `fallback: true`.
@@ -1260,7 +1300,11 @@ export async function resolvePagesPageData(
     options.revalidateOnlyGenerated
   ) {
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
-    onDemandPreviousCacheEntry = await options.isrGet(options.isrCacheKey("pages", pathname));
+    // Request-aware App props never produce a shared entry, so there is
+    // nothing generated to revalidate.
+    onDemandPreviousCacheEntry = hasRequestAwareAppProps
+      ? null
+      : await options.isrGet(options.isrCacheKey("pages", pathname));
     if (!onDemandPreviousCacheEntry) {
       return {
         kind: "response",
@@ -1295,9 +1339,13 @@ export async function resolvePagesPageData(
   async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
     const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);
     if (result.kind === "response") {
+      const response = await result.response;
+      if (hasRequestAwareAppProps && typeof options.pageModule.getStaticProps === "function") {
+        applyCdnResponseHeaders(response.headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
+      }
       return {
         kind: "response",
-        response: await result.response,
+        response,
       };
     }
     renderProps = result.renderProps;
@@ -1307,7 +1355,9 @@ export async function resolvePagesPageData(
 
   if (isFallback) {
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
-    const cached = await options.isrGet(options.isrCacheKey("pages", pathname));
+    const cached = hasRequestAwareAppProps
+      ? null
+      : await options.isrGet(options.isrCacheKey("pages", pathname));
     if (cached?.value.value?.kind !== "PAGES") {
       const appShortCircuit = await loadForegroundAppInitialRenderProps();
       if (appShortCircuit) return appShortCircuit;
@@ -1318,6 +1368,7 @@ export async function resolvePagesPageData(
         documentReqRes: sharedReqRes,
         gsspRes: null,
         isrRevalidateSeconds: null,
+        bypassSharedCache: hasRequestAwareAppProps,
         pageProps,
         props: renderProps,
         isFallback: true,
@@ -1405,8 +1456,9 @@ export async function resolvePagesPageData(
   if (typeof options.pageModule.getStaticProps === "function") {
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
     const cacheKey = options.isrCacheKey("pages", pathname);
-    const cached =
-      onDemandPreviousCacheEntry !== undefined
+    const cached = hasRequestAwareAppProps
+      ? null
+      : onDemandPreviousCacheEntry !== undefined
         ? onDemandPreviousCacheEntry
         : await options.isrGet(cacheKey);
     const cachedValue = cached?.value.value;
@@ -1722,9 +1774,12 @@ export async function resolvePagesPageData(
 
     if (result?.redirect) {
       const response = buildPagesRedirectResponse(result.redirect, options, renderProps);
-      if (previewData === false) {
-        const revalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
-        const expireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
+      // Validate `revalidate` even when the result never enters the cache.
+      const revalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
+      const expireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
+      if (hasRequestAwareAppProps) {
+        applyCdnResponseHeaders(response.headers, { cacheControl: ISR_NEVER_CACHE_CONTROL });
+      } else if (previewData === false) {
         const redirect = resolvePagesRedirect(result.redirect, {
           method: "getStaticProps",
           routeUrl: options.routeUrl,
@@ -1749,6 +1804,11 @@ export async function resolvePagesPageData(
     if (result?.notFound) {
       const revalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
       const expireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
+      // The recursive custom 404 render also runs App.getInitialProps, so
+      // request-aware App props must not receive a shared cache lifetime either.
+      if (hasRequestAwareAppProps) {
+        return buildRequestAwarePagesNotFoundResult(options);
+      }
       if (previewData === false) {
         await options.isrSet(cacheKey, null, {
           cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }),
@@ -1783,10 +1843,13 @@ export async function resolvePagesPageData(
       isSerializableProps(options.routePattern, "getStaticProps", pageProps);
     }
 
-    if (previewData === false && result) {
+    if (previewData === false && result && !hasRequestAwareAppProps) {
       isrRevalidateSeconds = resolvePagesRevalidateSeconds(result, options.routeUrl);
       isrExpireSeconds = resolvePagesExpireSeconds(result, options.expireSeconds);
-    } else if (previewData === false && options.isOnDemandRevalidate) {
+    } else if (result && hasRequestAwareAppProps) {
+      // Still validate `revalidate`; only cache participation is skipped.
+      resolvePagesRevalidateSeconds(result, options.routeUrl);
+    } else if (previewData === false && options.isOnDemandRevalidate && !hasRequestAwareAppProps) {
       // `revalidate: false` (and an omitted `revalidate`) still participates in
       // on-demand regeneration. Persist the current invocation's normalized
       // lifetime instead of inheriting stale metadata from the previous entry.
@@ -1800,7 +1863,7 @@ export async function resolvePagesPageData(
       isrExpireSeconds = cached?.value.cacheControl?.expire;
     }
 
-    if (shouldPersistFallbackData && previewData === false) {
+    if (shouldPersistFallbackData && previewData === false && !hasRequestAwareAppProps) {
       const revalidateSeconds = isrRevalidateSeconds ?? false;
       await options.isrSet(
         cacheKey,
@@ -1866,6 +1929,8 @@ export async function resolvePagesPageData(
     gsspRes,
     isrRevalidateSeconds,
     isrExpireSeconds,
+    bypassSharedCache:
+      hasRequestAwareAppProps && typeof options.pageModule.getStaticProps === "function",
     pageProps,
     props: renderProps,
     isFallback: false,

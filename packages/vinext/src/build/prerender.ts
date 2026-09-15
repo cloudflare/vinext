@@ -44,6 +44,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_PRERENDER_SHARED_CACHE_BYPASS_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -208,6 +209,28 @@ type PrerenderProgressCallback = (update: {
   /** Its final status. */
   status: PrerenderRouteResult["status"];
 }) => void;
+
+function nonCacheablePagesResult(
+  mode: PrerenderOptions["mode"],
+  route: string,
+  path = route,
+): PrerenderRouteResult {
+  if (mode === "export") {
+    return {
+      route,
+      status: "error",
+      error:
+        "Page returned an explicitly non-cacheable response which is not supported with output: 'export'",
+    };
+  }
+
+  return {
+    route,
+    status: "skipped",
+    reason: "dynamic",
+    ...(path !== route ? { path } : {}),
+  };
+}
 
 type PrerenderOptions = {
   /**
@@ -950,40 +973,57 @@ export async function prerenderPages({
           );
           const htmlFullPath = path.join(outDir, htmlOutputPath);
 
-          if (response.status >= 300 && response.status < 400) {
-            // getStaticProps returned a redirect — emit a meta-refresh HTML page
-            // so the static export can represent the redirect without a server.
-            const dest = response.headers.get("location") ?? "/";
-            const escapedDest = dest
-              .replace(/&/g, "&amp;")
-              .replace(/"/g, "&quot;")
-              .replace(/</g, "&lt;")
-              .replace(/>/g, "&gt;");
-            const html = `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${escapedDest}" /></head><body></body></html>`;
-            fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
-            fs.writeFileSync(htmlFullPath, html, "utf-8");
-            outputFiles.push(htmlOutputPath);
+          const isRedirectResponse = response.status >= 300 && response.status < 400;
+          const isDynamicResponse =
+            (response.ok || isRedirectResponse) &&
+            response.headers.get(VINEXT_PRERENDER_SHARED_CACHE_BYPASS_HEADER) === "1";
+          if (isDynamicResponse) {
+            await response.body?.cancel();
+            result = nonCacheablePagesResult(mode, route.pattern, urlPath);
+          } else if (!isRedirectResponse && !response.ok) {
+            const fatal = response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1";
+            await response.body?.cancel();
+            const renderError = new Error(`renderPage returned ${response.status} for ${urlPath}`);
+            result = {
+              route: route.pattern,
+              status: "error",
+              error: config.enablePrerenderSourceMaps
+                ? getErrorMessageWithStack(renderError)
+                : renderError.message,
+              ...(fatal ? { fatal: true as const } : {}),
+            };
           } else {
-            if (!response.ok) {
-              throw new Error(`renderPage returned ${response.status} for ${urlPath}`);
+            if (isRedirectResponse) {
+              // getStaticProps returned a redirect — emit a meta-refresh HTML page
+              // so the static export can represent the redirect without a server.
+              const dest = response.headers.get("location") ?? "/";
+              const escapedDest = dest
+                .replace(/&/g, "&amp;")
+                .replace(/"/g, "&quot;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;");
+              const html = `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${escapedDest}" /></head><body></body></html>`;
+              fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
+              fs.writeFileSync(htmlFullPath, html, "utf-8");
+              outputFiles.push(htmlOutputPath);
+            } else {
+              const html = await response.text();
+              fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
+              fs.writeFileSync(htmlFullPath, html, "utf-8");
+              outputFiles.push(htmlOutputPath);
             }
-            const html = await response.text();
-            fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
-            fs.writeFileSync(htmlFullPath, html, "utf-8");
-            outputFiles.push(htmlOutputPath);
+            result = {
+              route: route.pattern,
+              status: "rendered",
+              outputFiles,
+              revalidate,
+              // Pages Router cache metadata comes only from getStaticProps.revalidate;
+              // Next.js applies expireTime as the fallback when no route expire exists.
+              ...(typeof revalidate === "number" ? { expire: config.expireTime } : {}),
+              router: "pages",
+              ...(urlPath !== route.pattern ? { path: urlPath } : {}),
+            };
           }
-
-          result = {
-            route: route.pattern,
-            status: "rendered",
-            outputFiles,
-            revalidate,
-            // Pages Router cache metadata comes only from getStaticProps.revalidate;
-            // Next.js applies expireTime as the fallback when no route expire exists.
-            ...(typeof revalidate === "number" ? { expire: config.expireTime } : {}),
-            router: "pages",
-            ...(urlPath !== route.pattern ? { path: urlPath } : {}),
-          };
         } catch (e) {
           renderPool?.recordRenderError(e);
           const err = e as Error;
@@ -1016,15 +1056,32 @@ export async function prerenderPages({
       try {
         const notFoundRes = await renderPage(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH);
         const contentType = notFoundRes.headers.get("content-type") ?? "";
-        if (notFoundRes.status === 404 && contentType.includes("text/html")) {
-          const html404 = await notFoundRes.text();
+        if (!notFoundRes.ok && notFoundRes.status !== 404) {
+          const fatal = notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1";
+          await notFoundRes.body?.cancel();
+          const renderError = new Error(`renderPage returned ${notFoundRes.status} for /404`);
           results.push({
             route: "/404",
-            status: "rendered",
-            outputFiles: emitStatic404Files(outDir, html404, config.trailingSlash),
-            revalidate: false,
-            router: "pages",
+            status: "error",
+            error: config.enablePrerenderSourceMaps
+              ? getErrorMessageWithStack(renderError)
+              : renderError.message,
+            ...(fatal ? { fatal: true as const } : {}),
           });
+        } else if (notFoundRes.status === 404 && contentType.includes("text/html")) {
+          if (notFoundRes.headers.get(VINEXT_PRERENDER_SHARED_CACHE_BYPASS_HEADER) === "1") {
+            await notFoundRes.body?.cancel();
+            results.push(nonCacheablePagesResult(mode, "/404"));
+          } else {
+            const html404 = await notFoundRes.text();
+            results.push({
+              route: "/404",
+              status: "rendered",
+              outputFiles: emitStatic404Files(outDir, html404, config.trailingSlash),
+              revalidate: false,
+              router: "pages",
+            });
+          }
         }
       } catch (e) {
         // No custom 404. When the render-worker pool is active, a transport
