@@ -41,7 +41,11 @@ async function expectErrorTraceCorrelation(
     .toBe(true);
 }
 
-async function expectReportedTransaction(request: APIRequestContext, name: string) {
+async function expectReportedTransaction(
+  request: APIRequestContext,
+  name: string,
+  predicate: (transaction: ReportedTransaction) => boolean = () => true,
+) {
   let transaction: ReportedTransaction | undefined;
 
   await expect
@@ -49,12 +53,34 @@ async function expectReportedTransaction(request: APIRequestContext, name: strin
       const stateRes = await request.get("/api/sentry-test-state");
       expect(stateRes.status()).toBe(200);
       const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
-      transaction = state.transactions.find((candidate) => candidate.name === name);
+      transaction = state.transactions.find(
+        (candidate) => candidate.name === name && predicate(candidate),
+      );
       return transaction !== undefined;
     })
     .toBe(true);
 
   if (!transaction) throw new Error(`Sentry transaction was not reported: ${name}`);
+  return transaction;
+}
+
+async function expectReportedTransactionMatching(
+  request: APIRequestContext,
+  predicate: (transaction: ReportedTransaction) => boolean,
+): Promise<ReportedTransaction> {
+  let transaction: ReportedTransaction | undefined;
+
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      transaction = state.transactions.find(predicate);
+      return transaction !== undefined;
+    })
+    .toBe(true);
+
+  if (!transaction) throw new Error("Matching Sentry transaction was not reported");
   return transaction;
 }
 
@@ -380,6 +406,56 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         .map(({ attributes }) => attributes["next.route"])
         .sort((a, b) => String(a).localeCompare(String(b))),
     ).toEqual(["/_error", "/500", "/render-error"]);
+  });
+
+  // Ported from Next.js:
+  // test/e2e/opentelemetry/client-trace-metadata/client-trace-metadata.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/client-trace-metadata/client-trace-metadata.test.ts
+  test("continues dynamic server traces into browser pageloads", async ({ page, request }) => {
+    const firstSlug = `browser-first-${Date.now()}`;
+    await page.goto(`/trace-gssp/${firstSlug}`);
+    await page.waitForFunction(() => window.__VINEXT_HYDRATED_AT !== undefined);
+
+    const firstMetadata = await page.locator('meta[name="sentry-trace"]').getAttribute("content");
+    expect(firstMetadata).toMatch(/^[0-9a-f]{32}-[0-9a-f]{16}-[01]$/);
+    await expect(page.locator('meta[name="baggage"]')).toHaveCount(1);
+
+    const firstServer = await expectReportedTransaction(
+      request,
+      "GET /trace-gssp/[slug]",
+      ({ spans }) => spans.some(({ attributes }) => attributes["fixture.slug"] === firstSlug),
+    );
+    await expectReportedTransactionMatching(
+      request,
+      (transaction) =>
+        transaction.operation === "pageload" && transaction.traceId === firstServer.traceId,
+    );
+
+    const readTraceMetadata = () =>
+      page
+        .locator('meta[name="sentry-trace"], meta[name="baggage"]')
+        .evaluateAll((elements) => elements.map((element) => element.getAttribute("content")));
+    const initialTraceMetadata = await readTraceMetadata();
+    await page.getByRole("link", { name: "Navigate within Pages trace fixture" }).click();
+    await expect(page.getByText(`GSSP trace: ${firstSlug}-next`)).toBeVisible();
+    await expect(readTraceMetadata()).resolves.toEqual(initialTraceMetadata);
+
+    const secondSlug = `browser-second-${Date.now()}`;
+    await page.goto(`/trace-gssp/${secondSlug}`);
+    await page.waitForFunction(() => window.__VINEXT_HYDRATED_AT !== undefined);
+    const secondServer = await expectReportedTransaction(
+      request,
+      "GET /trace-gssp/[slug]",
+      ({ spans }) => spans.some(({ attributes }) => attributes["fixture.slug"] === secondSlug),
+    );
+    await expectReportedTransactionMatching(
+      request,
+      (transaction) =>
+        transaction.operation === "pageload" && transaction.traceId === secondServer.traceId,
+    );
+
+    expect(secondServer.spanId).not.toBe(firstServer.spanId);
+    expect(secondServer.traceId).not.toBe(firstServer.traceId);
   });
 
   test("reports a browser error through instrumentation-client Sentry.init", async ({
