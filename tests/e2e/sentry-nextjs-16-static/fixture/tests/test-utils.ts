@@ -122,6 +122,24 @@ export async function waitForError(
   return waitForEvent("errors", predicate);
 }
 
+export async function expectNoError(
+  _proxyServerName: string,
+  predicate: (event: ErrorEvent) => boolean | Promise<boolean>,
+  duration: number,
+): Promise<void> {
+  const after = getNanosecondTimestamp();
+  const deadline = Date.now() + duration;
+
+  while (Date.now() < deadline) {
+    const response = await fetch(`http://127.0.0.1:3031/errors?after=${after}`);
+    const events = (await response.json()) as Array<{ event: ErrorEvent }>;
+    for (const { event } of events) {
+      if (await predicate(event)) throw new Error("Received an unexpected Sentry error");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function waitForItem(
   predicate: (item: EnvelopeItem) => boolean | Promise<boolean>,
 ): Promise<EnvelopeItem> {
@@ -149,6 +167,29 @@ export function waitForEnvelopeItem(
   predicate: (item: EnvelopeItem) => boolean | Promise<boolean>,
 ): Promise<EnvelopeItem> {
   return waitForItem(predicate);
+}
+
+export async function expectNoEnvelopeItem(
+  _proxyServerName: string,
+  predicate: (item: EnvelopeItem) => boolean | Promise<boolean>,
+  duration: number,
+): Promise<void> {
+  const after = getNanosecondTimestamp();
+  const deadline = Date.now() + duration;
+
+  while (Date.now() < deadline) {
+    const response = await fetch(`http://127.0.0.1:3031/items?after=${after}`);
+    const stored = (await response.json()) as Array<{
+      body: Record<string, unknown>;
+      header: EnvelopeItem[0];
+    }>;
+    for (const { body, header } of stored) {
+      if (await predicate([header, body])) {
+        throw new Error("Received an unexpected Sentry envelope item");
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 }
 
 export async function waitForMetric(

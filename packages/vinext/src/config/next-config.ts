@@ -2258,6 +2258,7 @@ async function probeWebpackConfig(
       ),
       instrumentationServerValueInjections: extractInstrumentationServerValueInjections(
         serverProbe.rules,
+        root,
       ),
     };
   } catch {
@@ -2277,6 +2278,11 @@ async function probeWebpackConfig(
 // same webpack value-injection loader it uses with Next.js. Vinext does not run
 // webpack loaders, so preserve that already-computed value during our existing
 // config probe rather than independently rebuilding the manifest.
+function isValueInjectionLoader(use: unknown): use is { options?: { values?: unknown } } {
+  if (!isUnknownRecord(use) || typeof use.loader !== "string") return false;
+  return /(?:^|[/\\])value-?injection-?loader\.[cm]?[jt]s$/i.test(use.loader);
+}
+
 // oxlint-disable-next-line typescript/no-explicit-any
 function extractInstrumentationClientRouteManifest(rules: any[]): string | undefined {
   let manifest: string | undefined;
@@ -2292,7 +2298,8 @@ function extractInstrumentationClientRouteManifest(rules: any[]): string | undef
     if (Array.isArray(rule.rules)) for (const child of rule.rules) visit(child);
     const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
     for (const use of uses) {
-      const value = use?.options?.values?._sentryRouteManifest;
+      if (!isValueInjectionLoader(use) || !isUnknownRecord(use.options?.values)) continue;
+      const value = use.options.values._sentryRouteManifest;
       if (typeof value === "string") manifest = value;
     }
   };
@@ -2304,9 +2311,29 @@ function extractInstrumentationClientRouteManifest(rules: any[]): string | undef
 // Preserve generic value-injection rules that wrapped Next.js configs target at
 // the standard server instrumentation module. Vinext does not execute webpack
 // loaders, so its Vite transform applies the already-computed JSON values.
-// oxlint-disable-next-line typescript/no-explicit-any
-function extractInstrumentationServerValueInjections(rules: any[]): Record<string, unknown> {
+function matchesWebpackCondition(condition: unknown, value: string): boolean {
+  if (typeof condition === "string") return value.startsWith(condition);
+  if (condition instanceof RegExp) {
+    condition.lastIndex = 0;
+    const matches = condition.test(value);
+    condition.lastIndex = 0;
+    return matches;
+  }
+  if (Array.isArray(condition)) {
+    return condition.some((child) => matchesWebpackCondition(child, value));
+  }
+  return false;
+}
+
+function extractInstrumentationServerValueInjections(
+  rules: unknown[],
+  root: string,
+): Record<string, unknown> {
   const values: Record<string, unknown> = {};
+  const candidates = ["instrumentation.ts", "src/instrumentation.ts"].flatMap((candidate) => [
+    candidate,
+    path.join(root, candidate),
+  ]);
 
   // oxlint-disable-next-line typescript/no-explicit-any
   const visit = (rule: any): void => {
@@ -2318,17 +2345,19 @@ function extractInstrumentationServerValueInjections(rules: any[]): Record<strin
     if (Array.isArray(rule.oneOf)) for (const child of rule.oneOf) visit(child);
     if (Array.isArray(rule.rules)) for (const child of rule.rules) visit(child);
 
-    const test = rule.test;
-    if (!(test instanceof RegExp)) return;
-    test.lastIndex = 0;
-    const matchesInstrumentation = test.test("instrumentation.ts");
-    test.lastIndex = 0;
-    if (!matchesInstrumentation) return;
+    const applies = candidates.some(
+      (candidate) =>
+        matchesWebpackCondition(rule.test, candidate) &&
+        (rule.include === undefined || matchesWebpackCondition(rule.include, candidate)) &&
+        (rule.exclude === undefined || !matchesWebpackCondition(rule.exclude, candidate)),
+    );
+    if (!applies) return;
 
     const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
     for (const use of uses) {
-      const injected = use?.options?.values;
-      if (injected && typeof injected === "object" && !Array.isArray(injected)) {
+      if (!isValueInjectionLoader(use)) continue;
+      const injected = use.options?.values;
+      if (isUnknownRecord(injected)) {
         Object.assign(values, injected);
       }
     }

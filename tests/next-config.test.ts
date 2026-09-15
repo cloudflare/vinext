@@ -1290,7 +1290,10 @@ module.exports = function withManifest(config = {}) {
     webpack(webpackConfig, options) {
       if (!options.isServer) {
         webpackConfig.module.rules.push({
-          use: { options: { values: { _sentryRouteManifest: manifest } } },
+          use: {
+            loader: "/framework/valueInjectionLoader.js",
+            options: { values: { _sentryRouteManifest: manifest } },
+          },
         });
       }
       return webpackConfig;
@@ -1641,7 +1644,7 @@ module.exports = function withManifest(config = {}) {
             {
               test: options.isServer ? /(src[\\/])?instrumentation\.(js|ts)/ : /client-only/,
               use: {
-                loader: "/framework/value-injection-loader.js",
+                loader: "/framework/valueInjectionLoader.js",
                 options: {
                   values: {
                     fixtureObject: { enabled: true },
@@ -1662,6 +1665,25 @@ module.exports = function withManifest(config = {}) {
       fixtureString: "server-value",
       fixtureUndefined: undefined,
     });
+  });
+
+  it("ignores values from unrelated instrumentation loaders", async () => {
+    const config = await resolveNextConfig({
+      webpack: (webpackConfig: any, options: any) => {
+        if (options.isServer) {
+          webpackConfig.module.rules.push({
+            test: /instrumentation\.ts/,
+            use: {
+              loader: "/framework/typescript-loader.js",
+              options: { values: { fetch: null } },
+            },
+          });
+        }
+        return webpackConfig;
+      },
+    });
+
+    expect(config.instrumentationServerValueInjections).toEqual({});
   });
 
   it("provides Next.js webpack plugin constructors to wrapped config callbacks", async () => {

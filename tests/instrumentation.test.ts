@@ -287,6 +287,18 @@ describe("server instrumentation value transform", () => {
     expect(await transform.call({} as never, source, "/project/other.ts")).toBeNull();
     expect(await transform.call({} as never, source, path)).toBeNull();
   });
+
+  it("does not apply server value injection to the client environment", () => {
+    const plugin = createInstrumentationServerTransformPlugin(
+      () => path,
+      () => ({ serverOnly: true }),
+    );
+    const apply = plugin.applyToEnvironment!;
+
+    expect(apply({ name: "client" } as never)).toBe(false);
+    expect(apply({ name: "rsc" } as never)).toBe(true);
+    expect(apply({ name: "ssr" } as never)).toBe(true);
+  });
 });
 
 describe("findInstrumentationClientFile", () => {

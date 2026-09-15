@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForEnvelopeItem } from './test-utils';
+import { expectNoEnvelopeItem, waitForEnvelopeItem } from './test-utils';
 
 test('Sends cron check-in envelope for successful cron job', async ({ request }) => {
   const inProgressEnvelopePromise = waitForEnvelopeItem('nextjs-16-static', envelope => {
@@ -123,25 +123,20 @@ test('Sends cron check-in envelope with error status for failed cron job', async
 test('Does not send cron check-in envelope for regular requests without vercel-cron user agent', async ({
   request,
 }) => {
-  let checkInReceived = false;
-
-  waitForEnvelopeItem('nextjs-16-static', envelope => {
+  const noCheckInPromise = expectNoEnvelopeItem('nextjs-16-static', envelope => {
     if (
       envelope[0].type === 'check_in' && // @ts-expect-error envelope[1] is untyped
       envelope[1]['monitor_slug'] === '/api/cron-test'
     ) {
-      checkInReceived = true;
       return true;
     }
     return false;
-  });
+  }, 2000);
 
   const response = await request.get('/api/cron-test');
 
   expect(response.status()).toBe(200);
   expect(await response.json()).toStrictEqual({ message: 'Cron job executed successfully' });
 
-  await new Promise(resolve => setTimeout(resolve, 2000));
-
-  expect(checkInReceived).toBe(false);
+  await noCheckInPromise;
 });
