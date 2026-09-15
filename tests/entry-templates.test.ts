@@ -1936,6 +1936,8 @@ describe("Pages Router entry template", () => {
       expect(code).toContain(JSON.stringify(apiPath));
       expect(code).toContain("createPagesPageHandler");
       expect(code).toContain("handlePagesApiRoute");
+      expect(code).toContain("return _reportRequestError(");
+      expect(code).not.toContain("void _reportRequestError(");
       expect(code).toContain("export const hasMiddleware = true");
       expect(code).toContain(
         `await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)})`,

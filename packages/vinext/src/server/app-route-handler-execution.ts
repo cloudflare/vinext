@@ -89,7 +89,7 @@ type AppRouteErrorReporter = (
     routeType: "route";
     revalidateReason: "on-demand" | "stale" | undefined;
   },
-) => void;
+) => void | Promise<void>;
 export type AppRouteDebugLogger = (event: string, detail: string) => void;
 
 type RunAppRouteHandlerOptions = {
@@ -606,7 +606,7 @@ async function executeAppRouteHandlerImpl(
     }
 
     console.error("[vinext] Route handler error:", error);
-    options.reportRequestError(
+    await options.reportRequestError(
       error,
       {
         path: options.cleanPathname,

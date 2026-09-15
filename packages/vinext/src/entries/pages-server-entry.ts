@@ -743,7 +743,7 @@ export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin,
     url,
     reportRequestError(error, routePattern) {
       console.error("[vinext] API error:", error);
-      void _reportRequestError(
+      return _reportRequestError(
         error,
         { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         {

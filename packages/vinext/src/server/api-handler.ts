@@ -489,7 +489,7 @@ export async function handleApiRoute(
     // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
     // when using ModuleRunner — no stack trace fixup is needed here.
     console.error(e);
-    void reportRequestError(
+    await reportRequestError(
       e,
       {
         path: url,

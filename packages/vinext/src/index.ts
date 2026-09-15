@@ -5478,7 +5478,7 @@ export const loadServerActionClient = ${
           if (!hasPagesDir || !handlePagesMiddleware || !isUnsupportedDevPublicRequest(req)) {
             return next();
           }
-          void handlePagesMiddleware(req, res, next);
+          void handlePagesMiddleware(req, res, next).catch(next);
         });
 
         installDevStackSourcemapMiddleware(server);
@@ -5605,10 +5605,13 @@ export const loadServerActionClient = ${
           // channel, making it safe with all Vite plugin combinations.
           const pagesInstrumentationReady =
             instrumentationPath && (!hasAppDir || !hasCloudflarePlugin)
-              ? runInstrumentation(getPagesRunner(), instrumentationPath).catch((err) => {
-                  console.error("[vinext] Instrumentation error:", err);
-                })
+              ? runInstrumentation(getPagesRunner(), instrumentationPath)
               : Promise.resolve();
+          // Vite's post-configure hook is synchronous. Attach a rejection
+          // handler immediately, then let every Pages request await the original
+          // promise so startup failures are propagated instead of serving
+          // requests without instrumentation.
+          void pagesInstrumentationReady.catch(() => {});
           // App Router request logging in dev server
           //
           // For App Router, the RSC plugin handles requests internally.
@@ -6577,7 +6580,7 @@ export const loadServerActionClient = ${
           };
 
           server.middlewares.use((req, res, next) => {
-            void handlePagesMiddleware!(req, res, next);
+            void handlePagesMiddleware!(req, res, next).catch(next);
           });
         };
       },

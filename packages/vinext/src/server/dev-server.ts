@@ -1720,7 +1720,7 @@ export function createSSRHandler(
         // when using ModuleRunner — no stack trace fixup is needed here.
         console.error(e);
         // Report error via instrumentation hook if registered
-        reportRequestError(
+        await reportRequestError(
           e,
           {
             path: url,
@@ -1746,9 +1746,7 @@ export function createSSRHandler(
                 ? "stale"
                 : undefined,
           },
-        ).catch(() => {
-          /* ignore reporting errors */
-        });
+        );
         // Try to render custom 500 error page
         try {
           await renderErrorPage(
