@@ -44,6 +44,7 @@ export type RenderAppPageCacheArtifactsOptions = {
   mountedSlotsHeader?: string | null;
   navigationParams: Record<string, unknown>;
   onError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
+  onSsrError?: (error: unknown) => unknown;
   reactMaxHeadersLength?: number;
   renderToReadableStream: (
     element: AppPageRenderableElement,
@@ -97,6 +98,7 @@ export async function renderAppPageCacheArtifacts(
       waitForAllReady: options.waitForAllReady,
       isStaticGeneration: true,
       isForceStatic: options.isForceStatic,
+      onSsrError: options.onSsrError,
       ...(rscCapture.sideStream
         ? {
             sideStream: rscCapture.sideStream,

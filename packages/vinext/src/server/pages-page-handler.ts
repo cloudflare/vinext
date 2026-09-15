@@ -1191,7 +1191,7 @@ export function createPagesPageHandler(
       } catch (e) {
         console.error("[vinext] SSR error:", e);
         reportRequestError(
-          e instanceof Error ? e : new Error(String(e)),
+          e,
           {
             path: url,
             method: request.method,
@@ -1201,6 +1201,13 @@ export function createPagesPageHandler(
             routerKind: "Pages Router",
             routePath: route.pattern,
             routeType: "render",
+            revalidateReason: isOnDemandRevalidateRequest(
+              request.headers.get(PRERENDER_REVALIDATE_HEADER),
+            )
+              ? "on-demand"
+              : typeof pageModule.getStaticProps === "function"
+                ? "stale"
+                : undefined,
           },
         ).catch(() => {
           /* ignore reporting errors */

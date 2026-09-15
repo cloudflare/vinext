@@ -6,6 +6,8 @@ export type ReportedSentryError = {
   routerPath?: string;
   routeType?: string;
   sdkName?: string;
+  spanId?: string;
+  traceId?: string;
 };
 
 export type ReportedSentrySpan = {
@@ -104,6 +106,8 @@ export function recordSentryEnvelope(projectId: string, envelope: string): void 
       routerPath: nextjsContext?.router_path,
       routeType: nextjsContext?.route_type,
       sdkName: event.sdk?.name,
+      spanId: event.contexts?.trace?.span_id,
+      traceId: event.contexts?.trace?.trace_id,
     });
   }
 

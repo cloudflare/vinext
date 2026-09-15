@@ -529,6 +529,145 @@ describe("middleware redirect protocol", () => {
     expect(result.pathnameEligible).toBe(true);
   });
 
+  // Ported from Next.js: packages/next/src/build/templates/middleware.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/middleware.ts
+  it("reports proxy failures with the current Next.js error context", async () => {
+    const onRequestError = vi.fn();
+    const thrown = { reason: "proxy failed" };
+    globalThis.__VINEXT_onRequestErrorHandler__ = onRequestError;
+
+    try {
+      const result = await runGeneratedMiddleware({
+        isProxy: true,
+        module: {
+          proxy() {
+            throw thrown;
+          },
+        },
+        request: new Request("https://example.com/proxy-error?source=test", {
+          headers: { "x-request-id": "request-1" },
+        }),
+      });
+
+      expect(result.response?.status).toBe(500);
+      expect(onRequestError).toHaveBeenCalledWith(
+        thrown,
+        {
+          path: "/proxy-error?source=test",
+          method: "GET",
+          headers: { "x-request-id": "request-1" },
+        },
+        {
+          routerKind: "Pages Router",
+          routePath: "/proxy",
+          routeType: "proxy",
+          revalidateReason: undefined,
+        },
+      );
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+    }
+  });
+
+  it.each(["NEXT_REDIRECT;push;/target;307;", "NEXT_HTTP_ERROR_FALLBACK;404;detail"])(
+    "does not report development proxy navigation signal %s",
+    async (digest) => {
+      vi.stubEnv("NODE_ENV", "development");
+      const onRequestError = vi.fn();
+      const navigationError = Object.assign(new Error("navigation"), { digest });
+      globalThis.__VINEXT_onRequestErrorHandler__ = onRequestError;
+
+      try {
+        const result = await runGeneratedMiddleware({
+          isProxy: true,
+          module: {
+            proxy() {
+              throw navigationError;
+            },
+          },
+          request: new Request("https://example.com/proxy-navigation"),
+        });
+
+        expect(result.response?.status).toBe(500);
+        expect(navigationError.message).toBe(
+          "Next.js navigation API is not allowed to be used in Proxy.",
+        );
+        expect(onRequestError).not.toHaveBeenCalled();
+      } finally {
+        delete globalThis.__VINEXT_onRequestErrorHandler__;
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it.each(["NEXT_HTTP_ERROR_FALLBACK;500", "NEXT_REDIRECT;garbage"])(
+    "reports malformed development proxy navigation digest %s",
+    async (digest) => {
+      vi.stubEnv("NODE_ENV", "development");
+      const onRequestError = vi.fn();
+      const thrown = Object.assign(new Error("user error"), { digest });
+      globalThis.__VINEXT_onRequestErrorHandler__ = onRequestError;
+
+      try {
+        const result = await runGeneratedMiddleware({
+          isProxy: true,
+          module: {
+            proxy() {
+              throw thrown;
+            },
+          },
+          request: new Request("https://example.com/proxy-user-error"),
+        });
+
+        expect(result.response?.status).toBe(500);
+        expect(thrown.message).toBe("user error");
+        expect(onRequestError).toHaveBeenCalledWith(
+          thrown,
+          expect.any(Object),
+          expect.objectContaining({ routeType: "proxy" }),
+        );
+      } finally {
+        delete globalThis.__VINEXT_onRequestErrorHandler__;
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+
+  it("reports development proxy errors with non-string digests", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    const onRequestError = vi.fn();
+    const thrown = Object.assign(new Error("user error"), {
+      digest: {
+        toString() {
+          throw new Error("digest must not be coerced");
+        },
+      },
+    });
+    globalThis.__VINEXT_onRequestErrorHandler__ = onRequestError;
+
+    try {
+      const result = await runGeneratedMiddleware({
+        isProxy: true,
+        module: {
+          proxy() {
+            throw thrown;
+          },
+        },
+        request: new Request("https://example.com/proxy-user-error"),
+      });
+
+      expect(result.response?.status).toBe(500);
+      expect(onRequestError).toHaveBeenCalledWith(
+        thrown,
+        expect.any(Object),
+        expect.objectContaining({ routeType: "proxy" }),
+      );
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("relativizes the Location header for same-host redirects", async () => {
     const module = {
       default: (req: Request) => {

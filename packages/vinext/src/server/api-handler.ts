@@ -487,7 +487,7 @@ export async function handleApiRoute(
     // when using ModuleRunner — no stack trace fixup is needed here.
     console.error(e);
     void reportRequestError(
-      e instanceof Error ? e : new Error(String(e)),
+      e,
       {
         path: url,
         method: req.method ?? "GET",
@@ -495,11 +495,15 @@ export async function handleApiRoute(
           Object.entries(req.headers)
             // Exclude HTTP/2 pseudo-headers (RFC 7540 §8.1.2.1) — they are not
             // real request headers. See: cloudflare/vinext#2013
-            .filter(([k]) => !k.startsWith(":"))
-            .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v ?? "")]),
+            .filter(([k]) => !k.startsWith(":")),
         ),
       },
-      { routerKind: "Pages Router", routePath: match.route.pattern, routeType: "route" },
+      {
+        routerKind: "Pages Router",
+        routePath: match.route.pattern,
+        routeType: "route",
+        revalidateReason: undefined,
+      },
     );
     if (!res.headersSent) {
       res.statusCode = 500;

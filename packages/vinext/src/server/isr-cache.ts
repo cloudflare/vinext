@@ -244,7 +244,8 @@ export function coalesceOnDemandRevalidation<T>(
  *
  * When `errorContext` is provided and the render function fails, the error
  * is reported via `reportRequestError` (instrumentation hook) with
- * `revalidateReason: "stale"`.
+ * `revalidateReason: "stale"`, unless `shouldReport` suppresses an error that
+ * an inner render boundary already reported.
  */
 export function triggerBackgroundRegeneration(
   key: string,
@@ -253,6 +254,7 @@ export function triggerBackgroundRegeneration(
     routerKind: OnRequestErrorContext["routerKind"];
     routePath: string;
     routeType: OnRequestErrorContext["routeType"];
+    shouldReport?: (error: unknown) => boolean;
   },
 ): void {
   // Edge-managed CDN adapters revalidate by re-requesting the origin, so the
@@ -263,9 +265,9 @@ export function triggerBackgroundRegeneration(
   const promise = renderFn()
     .catch((err) => {
       console.error(`[vinext] ISR background regeneration failed for ${key}:`, err);
-      if (errorContext) {
+      if (errorContext && (errorContext.shouldReport?.(err) ?? true)) {
         void reportRequestError(
-          err instanceof Error ? err : new Error(String(err)),
+          err,
           { path: key, method: "GET", headers: {} },
           {
             routerKind: errorContext.routerKind,
