@@ -420,12 +420,13 @@ async function reportPagesIsrCacheWriteError(
   console.error(`[vinext] Pages ISR cache write failed for ${cacheKey}:`, error);
   try {
     await reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
+      error,
       { path: cacheKey, method: "GET", headers: {} },
       {
         routerKind: "Pages Router",
         routePath: routePattern,
         routeType: "render",
+        revalidateReason: undefined,
       },
     );
   } catch {

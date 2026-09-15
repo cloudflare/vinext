@@ -9,6 +9,8 @@ import type { RootParams } from "vinext/shims/root-params";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
+import { getNextErrorDigest } from "./next-error-digest.js";
+import { isAppRenderAbortError } from "./app-rsc-errors.js";
 
 export { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
@@ -146,6 +148,8 @@ export type AppPageSsrHandler = {
       isForceStatic?: boolean;
       /** Dev-only: original server error to surface in the browser overlay. */
       initialDevServerError?: unknown;
+      /** Report an SSR/Fizz render failure through instrumentation. */
+      onSsrError?: (error: unknown) => unknown;
       /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
       mirrorNextFlight?: boolean;
       /** When true, an SSR-phase-only shell render error resolves to the
@@ -198,6 +202,8 @@ type RenderAppPageHtmlStreamOptions = {
   fallbackToErrorDocumentOnShellError?: boolean;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
+  /** Report an SSR/Fizz render failure through instrumentation. */
+  onSsrError?: (error: unknown) => unknown;
   /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
   mirrorNextFlight?: boolean;
   /** True when the app supplies a custom global-error.tsx. Disables the
@@ -241,8 +247,20 @@ type AppPageRscErrorTracker = {
    * synchronously inside a route-level Suspense boundary (loading.tsx).
    */
   getCapturedSpecialError: () => unknown;
+  isCapturedError: (error: unknown) => boolean;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
 };
+
+export function createAppPageSsrErrorHandler(
+  baseOnError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown,
+  isCapturedRscError: (error: unknown) => boolean,
+): (error: unknown) => unknown {
+  return (error) => {
+    if (isAppRenderAbortError(error)) return undefined;
+    if (isCapturedRscError(error)) return getNextErrorDigest(error) ?? undefined;
+    return baseOnError(error, undefined, undefined);
+  };
+}
 
 export function createAppPageFontData(options: CreateAppPageFontDataOptions): AppPageFontData {
   return {
@@ -269,6 +287,7 @@ export async function renderAppPageHtmlStream(
     isStaticGeneration: options.isStaticGeneration,
     isForceStatic: options.isForceStatic,
     initialDevServerError: options.initialDevServerError,
+    onSsrError: options.onSsrError,
     mirrorNextFlight: options.mirrorNextFlight,
     // Only when the caller affirmatively knows there is no custom
     // global-error.tsx; undefined (unknown) keeps reject semantics.
@@ -375,6 +394,8 @@ export function createAppPageRscErrorTracker(
 ): AppPageRscErrorTracker {
   let capturedError: unknown = null;
   let capturedSpecialError: unknown = null;
+  const capturedErrors = new Set<unknown>();
+  const capturedDigests = new Set<string>();
 
   return {
     getCapturedError() {
@@ -382,6 +403,11 @@ export function createAppPageRscErrorTracker(
     },
     getCapturedSpecialError() {
       return capturedSpecialError;
+    },
+    isCapturedError(error) {
+      if (capturedErrors.has(error)) return true;
+      const digest = getNextErrorDigest(error);
+      return digest !== null && capturedDigests.has(digest);
     },
     onRenderError(error, requestInfo, errorContext) {
       if (isNavigationSignalError(error)) {
@@ -397,8 +423,14 @@ export function createAppPageRscErrorTracker(
         }
       } else {
         capturedError = error;
+        capturedErrors.add(error);
       }
-      return baseOnError(error, requestInfo, errorContext);
+      const result = baseOnError(error, requestInfo, errorContext);
+      const digest = typeof result === "string" ? result : getNextErrorDigest(error);
+      if (digest !== null && !isNavigationSignalError(error)) {
+        capturedDigests.add(digest);
+      }
+      return result;
     },
   };
 }

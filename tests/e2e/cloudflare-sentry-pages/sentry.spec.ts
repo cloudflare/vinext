@@ -1,8 +1,11 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
-import type { ReportedSentryTransaction as ReportedTransaction } from "../../fixtures/sentry-test-state";
+import type {
+  ReportedSentryError as ReportedError,
+  ReportedSentryTransaction as ReportedTransaction,
+} from "../../fixtures/sentry-test-state";
 
 async function expectReportedError(request: APIRequestContext, message: string) {
-  const state: { errors: Array<{ message?: string }> } = { errors: [] };
+  const state: { errors: ReportedError[] } = { errors: [] };
 
   await expect
     .poll(async () => {
@@ -14,6 +17,28 @@ async function expectReportedError(request: APIRequestContext, message: string) 
     .toBe(true);
 
   return state;
+}
+
+async function expectErrorTraceCorrelation(
+  request: APIRequestContext,
+  error: ReportedError,
+): Promise<void> {
+  expect(error.traceId).toMatch(/^[0-9a-f]{32}$/);
+  expect(error.spanId).toMatch(/^[0-9a-f]{16}$/);
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      return state.transactions.some(
+        (transaction) =>
+          transaction.traceId === error.traceId &&
+          [transaction.spanId, ...transaction.spans.map(({ spanId }) => spanId)].includes(
+            error.spanId ?? "",
+          ),
+      );
+    })
+    .toBe(true);
 }
 
 async function expectReportedTransaction(request: APIRequestContext, name: string) {
@@ -58,6 +83,29 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         sdkName: "sentry.javascript.nextjs",
       }),
     );
+    await expectErrorTraceCorrelation(
+      request,
+      state.errors.find(({ message }) => message === "Intentional Sentry Pages Router error")!,
+    );
+  });
+
+  test("reports proxy errors with Next.js context and trace correlation", async ({ request }) => {
+    const errorRes = await request.get("/proxy-error");
+    expect(errorRes.status()).toBe(500);
+
+    const state = await expectReportedError(request, "Intentional Sentry Pages Router proxy error");
+    const error = state.errors.find(
+      ({ message }) => message === "Intentional Sentry Pages Router proxy error",
+    )!;
+    expect(error).toMatchObject({
+      projectId: "1",
+      requestPath: "/proxy-error",
+      routerKind: "Pages Router",
+      routerPath: "/proxy",
+      routeType: "proxy",
+      sdkName: "sentry.javascript.nextjs",
+    });
+    await expectErrorTraceCorrelation(request, error);
   });
 
   test("records transaction envelopes and nested application spans", async ({ request }) => {
@@ -145,6 +193,12 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         routeType: "render",
         sdkName: "sentry.javascript.nextjs",
       }),
+    );
+    await expectErrorTraceCorrelation(
+      request,
+      state.errors.find(
+        ({ message }) => message === "Intentional Sentry Pages Router render error",
+      )!,
     );
   });
 

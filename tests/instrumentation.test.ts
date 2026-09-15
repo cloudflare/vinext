@@ -301,6 +301,7 @@ describe("ensureInstrumentationRegistered", () => {
     routerKind: "App Router" as const,
     routePath: "/test",
     routeType: "render" as const,
+    revalidateReason: undefined,
   };
 
   beforeEach(async () => {
@@ -422,6 +423,7 @@ describe("reportRequestError", () => {
     routerKind: "App Router" as const,
     routePath: "/test",
     routeType: "render" as const,
+    revalidateReason: undefined,
   };
 
   beforeEach(async () => {
@@ -537,6 +539,7 @@ describe("reportRequestError", () => {
           routerKind: "App Router" as const,
           routePath: "/error-server-test",
           routeType: "render" as const,
+          revalidateReason: undefined,
         },
       },
       {
@@ -546,6 +549,17 @@ describe("reportRequestError", () => {
           routerKind: "Pages Router" as const,
           routePath: "/api/error-route",
           routeType: "route" as const,
+          revalidateReason: undefined,
+        },
+      },
+      {
+        error: new Error("Proxy error"),
+        request: { path: "/proxy-error", method: "GET", headers: {} },
+        context: {
+          routerKind: "Pages Router" as const,
+          routePath: "/proxy",
+          routeType: "proxy" as const,
+          revalidateReason: undefined,
         },
       },
     ];
@@ -556,13 +570,14 @@ describe("reportRequestError", () => {
       );
     }
 
-    expect(waitUntil).toHaveBeenCalledTimes(4);
+    expect(waitUntil).toHaveBeenCalledTimes(6);
     await Promise.all(waitUntil.mock.calls.map(([promise]) => promise));
 
     const events = envelopes.flatMap(parseSentryEnvelopeEvents);
     expect(events.map((event) => event.exception?.values?.[0]?.value)).toEqual([
       "Server component error",
       "Pages API error",
+      "Proxy error",
     ]);
     expect(events.map((event) => event.contexts?.nextjs)).toEqual([
       {
@@ -576,6 +591,12 @@ describe("reportRequestError", () => {
         router_kind: "Pages Router",
         router_path: "/api/error-route",
         route_type: "route",
+      },
+      {
+        request_path: "/proxy-error",
+        router_kind: "Pages Router",
+        router_path: "/proxy",
+        route_type: "proxy",
       },
     ]);
 

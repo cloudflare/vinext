@@ -265,7 +265,8 @@ describe("app fallback renderer factory", () => {
 
   it("passes request to createRscOnErrorHandler at call time", async () => {
     const createRscOnErrorHandler = vi.fn(
-      (_request: Request, _pathname: string, _routePath: string) => () => null,
+      (_request: Request, _pathname: string, _routePath: string, _overrides?: unknown) => () =>
+        null,
     );
     const { renderer } = createRenderer({ createRscOnErrorHandler });
     const request = new Request("https://example.com/posts/boom");
@@ -285,8 +286,21 @@ describe("app fallback renderer factory", () => {
       { headers: null, status: null },
     );
 
-    expect(createRscOnErrorHandler).toHaveBeenCalledTimes(1);
-    expect(createRscOnErrorHandler).toHaveBeenCalledWith(request, "/posts/boom", "/posts/[slug]");
+    expect(createRscOnErrorHandler).toHaveBeenCalledTimes(2);
+    expect(createRscOnErrorHandler).toHaveBeenNthCalledWith(
+      1,
+      request,
+      "/posts/boom",
+      "/posts/[slug]",
+      undefined,
+    );
+    expect(createRscOnErrorHandler).toHaveBeenNthCalledWith(
+      2,
+      request,
+      "/posts/boom",
+      "/posts/[slug]",
+      { renderSource: "server-rendering" },
+    );
   });
 
   it("uses empty middleware context when none is provided", async () => {

@@ -775,6 +775,7 @@ export function createSSRHandler(
     let query = mergeRouteParamsIntoQuery(parseQuery(url), params);
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
+    let isStaticPropsRender = false;
     const closeRequest = () => void closeAfterResponse(requestContext);
     res.on("finish", closeRequest);
     res.on("close", closeRequest);
@@ -815,7 +816,7 @@ export function createSSRHandler(
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
         const pageModule = await importModule(runner, route.filePath);
-        const isStaticPropsRender =
+        isStaticPropsRender =
           typeof pageModule.getStaticProps === "function" &&
           typeof pageModule.getServerSideProps !== "function";
         if (isStaticPropsRender) {
@@ -1694,7 +1695,7 @@ export function createSSRHandler(
         console.error(e);
         // Report error via instrumentation hook if registered
         reportRequestError(
-          e instanceof Error ? e : new Error(String(e)),
+          e,
           {
             path: url,
             method: req.method ?? "GET",
@@ -1702,14 +1703,22 @@ export function createSSRHandler(
               Object.entries(req.headers)
                 // Exclude HTTP/2 pseudo-headers (RFC 7540 §8.1.2.1) — they are
                 // not real request headers. See: cloudflare/vinext#2013
-                .filter(([k]) => !k.startsWith(":"))
-                .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v ?? "")]),
+                .filter(([k]) => !k.startsWith(":")),
             ),
           },
           {
             routerKind: "Pages Router",
             routePath: route.pattern,
             routeType: "render",
+            revalidateReason: isOnDemandRevalidateRequest(
+              Array.isArray(req.headers[PRERENDER_REVALIDATE_HEADER])
+                ? req.headers[PRERENDER_REVALIDATE_HEADER]?.[0]
+                : req.headers[PRERENDER_REVALIDATE_HEADER],
+            )
+              ? "on-demand"
+              : isStaticPropsRender
+                ? "stale"
+                : undefined,
           },
         ).catch(() => {
           /* ignore reporting errors */

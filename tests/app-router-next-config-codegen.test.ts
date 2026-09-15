@@ -452,9 +452,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     it("keeps request-specific onError wiring in the generated entry", () => {
       const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
 
-      expect(code).toContain("createRscOnErrorHandler(pathname, routePath)");
+      expect(code).toContain("createRscOnErrorHandler(pathname, routePath, overrides)");
       expect(code).toContain(
-        "createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath)",
+        "createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath, overrides)",
       );
       expect(code).not.toContain("function createRscOnErrorHandler(request, pathname, routePath)");
       expect(code).not.toContain("return __createRscOnErrorHandler({");

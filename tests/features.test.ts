@@ -4189,7 +4189,12 @@ describe("instrumentation.ts support", () => {
     await reportRequestError(
       testError,
       { path: "/blog/1", method: "GET", headers: {} },
-      { routerKind: "Pages Router", routePath: "/blog/[slug]", routeType: "render" },
+      {
+        routerKind: "Pages Router",
+        routePath: "/blog/[slug]",
+        routeType: "render",
+        revalidateReason: undefined,
+      },
     );
 
     expect(reportedErrors.length).toBe(1);
@@ -4214,7 +4219,12 @@ describe("instrumentation.ts support", () => {
     await reportRequestError(
       new Error("test"),
       { path: "/", method: "GET", headers: {} },
-      { routerKind: "App Router", routePath: "/", routeType: "render" },
+      {
+        routerKind: "App Router",
+        routePath: "/",
+        routeType: "render",
+        revalidateReason: undefined,
+      },
     );
   });
 
