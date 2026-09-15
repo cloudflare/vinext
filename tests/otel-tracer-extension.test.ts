@@ -9,7 +9,12 @@
  * Modules are reset via vi.resetModules() before each test so the module-level
  * WeakSet starts fresh.
  */
+import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+const apiSymbol = Symbol.for("opentelemetry.js.api.1");
+const originalApi = (globalThis as Record<symbol, unknown>)[apiSymbol];
+const originalRequire = (globalThis as Record<string, unknown>).require;
 
 describe("extendTracerProviderForCacheComponents", () => {
   let extendTracerProviderForCacheComponents: typeof import("../packages/vinext/src/server/otel-tracer-extension.js").extendTracerProviderForCacheComponents;
@@ -24,13 +29,19 @@ describe("extendTracerProviderForCacheComponents", () => {
   });
 
   afterEach(() => {
-    // Restore any globalThis.require mock
-    delete (globalThis as Record<string, unknown>).require;
+    if (originalApi === undefined) delete (globalThis as Record<symbol, unknown>)[apiSymbol];
+    else (globalThis as Record<symbol, unknown>)[apiSymbol] = originalApi;
+    if (originalRequire === undefined) delete (globalThis as Record<string, unknown>).require;
+    else (globalThis as Record<string, unknown>).require = originalRequire;
   });
+
+  function installProvider(provider: object) {
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = { trace: provider };
+  }
 
   function makeProvider() {
     // Cache tracers by name so repeated getTracer("test") calls return the
-    // same object — this lets the wrappedTracers WeakSet do its job correctly.
+    // same object and exercise per-tracer deduplication.
     const tracerCache = new Map<string, ReturnType<typeof makeTracer>>();
     function makeTracer() {
       return {
@@ -56,16 +67,17 @@ describe("extendTracerProviderForCacheComponents", () => {
     return { provider };
   }
 
-  it("no-ops when globalThis.require is absent (ESM Worker environment)", () => {
-    delete (globalThis as Record<string, unknown>).require;
+  it("no-ops without a registered OpenTelemetry API", () => {
     expect(() => extendTracerProviderForCacheComponents()).not.toThrow();
   });
 
-  it("no-ops when @opentelemetry/api throws on require", () => {
-    (globalThis as Record<string, unknown>).require = (_id: string) => {
+  it("does not require an optional OpenTelemetry package", () => {
+    const requireMock = vi.fn(() => {
       throw new Error("MODULE_NOT_FOUND");
-    };
+    });
+    (globalThis as Record<string, unknown>).require = requireMock;
     expect(() => extendTracerProviderForCacheComponents()).not.toThrow();
+    expect(requireMock).not.toHaveBeenCalled();
   });
 
   it("startSpan: original is called once after wrapping", async () => {
@@ -80,9 +92,7 @@ describe("extendTracerProviderForCacheComponents", () => {
       })),
     };
 
-    (globalThis as Record<string, unknown>).require = (_id: string) => ({
-      trace: { getTracerProvider: () => provider },
-    });
+    installProvider(provider);
 
     extendTracerProviderForCacheComponents();
     // The extension wraps getTracer, so call it after extending to get a wrapped tracer.
@@ -101,9 +111,7 @@ describe("extendTracerProviderForCacheComponents", () => {
     let storeSeenInsideSpan: unknown = "not-yet";
     const { provider } = makeProvider();
 
-    (globalThis as Record<string, unknown>).require = (_id: string) => ({
-      trace: { getTracerProvider: () => provider },
-    });
+    installProvider(provider);
 
     // Capture the store seen by the original startSpan before extending
     const origGetTracer = provider.getTracer;
@@ -134,9 +142,7 @@ describe("extendTracerProviderForCacheComponents", () => {
     let storeInsideCallback: unknown = "not-yet";
     const { provider } = makeProvider();
 
-    (globalThis as Record<string, unknown>).require = (_id: string) => ({
-      trace: { getTracerProvider: () => provider },
-    });
+    installProvider(provider);
 
     extendTracerProviderForCacheComponents();
     const tracer = provider.getTracer("test");
@@ -159,9 +165,7 @@ describe("extendTracerProviderForCacheComponents", () => {
 
   it("startActiveSpan: forwards unchanged when no workUnitStore is active", () => {
     const { provider } = makeProvider();
-    (globalThis as Record<string, unknown>).require = (_id: string) => ({
-      trace: { getTracerProvider: () => provider },
-    });
+    installProvider(provider);
 
     extendTracerProviderForCacheComponents();
     const tracer = provider.getTracer("test");
@@ -175,13 +179,85 @@ describe("extendTracerProviderForCacheComponents", () => {
     }).not.toThrow();
   });
 
+  // Ported from Next.js: test/e2e/app-dir/cache-components-allow-otel-spans/
+  // cache-components-allow-otel-spans.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  it("instruments a tracer acquired before provider registration", async () => {
+    let storeSeenInsideSpan: unknown = "not-yet";
+    const delegateTracer = {
+      startSpan: vi.fn((..._args: unknown[]) => {
+        storeSeenInsideSpan = workUnitAsyncStorage.getStore();
+        return { end: vi.fn() };
+      }),
+      startActiveSpan: vi.fn((..._args: unknown[]) => undefined),
+    };
+    const provider = {
+      getDelegateTracer: vi.fn(() => delegateTracer),
+      getTracer: vi.fn(() => earlyTracer),
+    };
+    const earlyTracer = {
+      startSpan: (...args: unknown[]) => provider.getDelegateTracer().startSpan(...args),
+      startActiveSpan: (...args: unknown[]) =>
+        provider.getDelegateTracer().startActiveSpan(...args),
+    };
+    const tracer = provider.getTracer();
+
+    installProvider(provider);
+    extendTracerProviderForCacheComponents();
+
+    const store = { type: "prerender" as const, renderSignal: new AbortController().signal };
+    await workUnitAsyncStorage.run(store, async () => tracer.startSpan("early-span"));
+
+    expect(storeSeenInsideSpan).toBeUndefined();
+  });
+
+  it("patches the proxy used by the real application-owned OpenTelemetry API", async () => {
+    const requireFromSentry = createRequire(import.meta.resolve("@sentry/nextjs/package.json"));
+    const api = requireFromSentry("@opentelemetry/api") as {
+      trace: {
+        disable(): void;
+        getTracer(name: string): { startSpan(name: string): unknown };
+        setGlobalTracerProvider(provider: {
+          getTracer(name: string): {
+            startActiveSpan(...args: unknown[]): unknown;
+            startSpan(name: string): unknown;
+          };
+        }): boolean;
+      };
+    };
+    api.trace.disable();
+    const earlyTracer = api.trace.getTracer("early-cache-component-tracer");
+    let storeSeenInsideSpan: unknown = "not-yet";
+    expect(
+      api.trace.setGlobalTracerProvider({
+        getTracer() {
+          return {
+            startActiveSpan: (..._args: unknown[]) => undefined,
+            startSpan: () => {
+              storeSeenInsideSpan = workUnitAsyncStorage.getStore();
+              return {};
+            },
+          };
+        },
+      }),
+    ).toBe(true);
+
+    try {
+      extendTracerProviderForCacheComponents();
+      const store = { type: "prerender" as const, renderSignal: new AbortController().signal };
+      await workUnitAsyncStorage.run(store, async () => earlyTracer.startSpan("early-span"));
+    } finally {
+      api.trace.disable();
+    }
+
+    expect(storeSeenInsideSpan).toBeUndefined();
+  });
+
   it("emits console.error when a 'use cache' function is passed to startActiveSpan", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const { provider } = makeProvider();
-    (globalThis as Record<string, unknown>).require = (_id: string) => ({
-      trace: { getTracerProvider: () => provider },
-    });
+    installProvider(provider);
 
     extendTracerProviderForCacheComponents();
     const tracer = provider.getTracer("test");
@@ -209,9 +285,7 @@ describe("extendTracerProviderForCacheComponents", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const { provider } = makeProvider();
-    (globalThis as Record<string, unknown>).require = (_id: string) => ({
-      trace: { getTracerProvider: () => provider },
-    });
+    installProvider(provider);
 
     extendTracerProviderForCacheComponents();
     const tracer = provider.getTracer("test");
@@ -231,9 +305,7 @@ describe("extendTracerProviderForCacheComponents", () => {
 
   it("does not double-wrap the same provider", () => {
     const { provider } = makeProvider();
-    (globalThis as Record<string, unknown>).require = (_id: string) => ({
-      trace: { getTracerProvider: () => provider },
-    });
+    installProvider(provider);
 
     extendTracerProviderForCacheComponents();
     const firstGetTracer = provider.getTracer;
@@ -247,28 +319,23 @@ describe("extendTracerProviderForCacheComponents", () => {
   it("wraps a new provider when the registered provider changes (WeakSet per-provider guard)", () => {
     const { provider: provider1 } = makeProvider();
     const { provider: provider2 } = makeProvider();
-    let currentProvider = provider1;
-
-    (globalThis as Record<string, unknown>).require = (_id: string) => ({
-      trace: { getTracerProvider: () => currentProvider },
-    });
+    const originalGetTracer2 = provider2.getTracer;
+    installProvider(provider1);
 
     extendTracerProviderForCacheComponents();
     const wrapped1 = provider1.getTracer;
 
     // Simulate a provider swap and call again — the new provider should get wrapped.
-    currentProvider = provider2;
+    installProvider(provider2);
     extendTracerProviderForCacheComponents();
 
-    expect(provider2.getTracer).not.toBe(provider1.getTracer);
+    expect(provider2.getTracer).not.toBe(originalGetTracer2);
     expect(provider1.getTracer).toBe(wrapped1); // provider1 untouched on second call
   });
 
   it("does not double-wrap individual tracers returned by getTracer", () => {
     const { provider } = makeProvider();
-    (globalThis as Record<string, unknown>).require = (_id: string) => ({
-      trace: { getTracerProvider: () => provider },
-    });
+    installProvider(provider);
 
     extendTracerProviderForCacheComponents();
     const tracer1 = provider.getTracer("test");

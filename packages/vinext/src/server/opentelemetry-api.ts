@@ -21,6 +21,24 @@ export type OpenTelemetrySpan = {
   updateName(name: string): void;
 };
 
+export type OpenTelemetryTracer = {
+  startActiveSpan<T>(
+    name: string,
+    options: {
+      attributes: Record<string, OpenTelemetryAttributeValue>;
+      kind?: number;
+    },
+    callback: (span: OpenTelemetrySpan) => T,
+  ): T;
+  startSpan(...args: unknown[]): OpenTelemetrySpan;
+};
+
+export type OpenTelemetryTracerProvider = {
+  getDelegate?: () => unknown;
+  getDelegateTracer?: (...args: unknown[]) => OpenTelemetryTracer | undefined;
+  getTracer(...args: [name: string, version?: string, options?: unknown]): OpenTelemetryTracer;
+};
+
 type OpenTelemetryAttributeValue =
   | string
   | number
@@ -47,22 +65,8 @@ export type OpenTelemetryApi = {
   trace: {
     getSpan(context: OpenTelemetryContext): OpenTelemetrySpan | undefined;
     getSpanContext(context: OpenTelemetryContext): unknown;
-    getTracer(
-      name: string,
-      version?: string,
-    ): {
-      startActiveSpan<T>(
-        name: string,
-        options: {
-          attributes: Record<string, OpenTelemetryAttributeValue>;
-          kind?: number;
-        },
-        callback: (span: OpenTelemetrySpan) => T,
-      ): T;
-    };
-    getTracerProvider(): {
-      getDelegate?: () => unknown;
-    };
+    getTracer(name: string, version?: string): OpenTelemetryTracer;
+    getTracerProvider(): OpenTelemetryTracerProvider;
   };
 };
 
@@ -108,7 +112,8 @@ type OpenTelemetryRegistry = {
   };
   trace?: {
     getDelegate?: () => unknown;
-    getTracer(name: string, version?: string): ReturnType<OpenTelemetryApi["trace"]["getTracer"]>;
+    getDelegateTracer?: (...args: unknown[]) => OpenTelemetryTracer | undefined;
+    getTracer(...args: [name: string, version?: string, options?: unknown]): OpenTelemetryTracer;
   };
   version?: string;
 };
