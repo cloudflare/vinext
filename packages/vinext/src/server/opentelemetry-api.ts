@@ -33,7 +33,7 @@ export type OpenTelemetryTracer = {
   startSpan(...args: unknown[]): OpenTelemetrySpan;
 };
 
-export type OpenTelemetryTracerProvider = {
+type OpenTelemetryTracerProvider = {
   getDelegate?: () => unknown;
   getDelegateTracer?: (...args: unknown[]) => OpenTelemetryTracer | undefined;
   getTracer(...args: [name: string, version?: string, options?: unknown]): OpenTelemetryTracer;
