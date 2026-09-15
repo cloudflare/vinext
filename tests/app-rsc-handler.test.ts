@@ -73,6 +73,7 @@ import {
 } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+import { workUnitAsyncStorage } from "../packages/vinext/src/shims/internal/work-unit-async-storage.js";
 
 const capturedFindPageComponentsSpans: ResolvedFrameworkSpanDescriptor[] = [];
 let captureFindPageComponentsSpans = false;
@@ -164,6 +165,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
       beforeFiles: [],
       fallback: [],
     },
+    createPprFallbackShells: overrides.createPprFallbackShells,
     draftModeSecret: overrides.draftModeSecret ?? "test-draft-secret",
     dispatchMatchedPage:
       overrides.dispatchMatchedPage ??
@@ -371,6 +373,49 @@ describe("createAppRscHandler", () => {
         type: "NextNodeServer.findPageComponents",
       }),
     ]);
+  });
+
+  it("establishes the Cache Components request work unit in the split response stage", async () => {
+    let workUnitType: string | undefined;
+    const handler = createHandler({
+      createPprFallbackShells: () => [],
+      dispatchMatchedPage: async () => {
+        workUnitType = workUnitAsyncStorage.getStore()?.type;
+        return new Response("page");
+      },
+    });
+
+    const response = await handler.handleResponseStage(
+      new Request("https://example.test/docs/about"),
+      null,
+      {
+        kind: "app-page",
+        buildId: "build-id",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
+        bypassInterceptionContextCache: false,
+        canUseCanonicalLoadingShell: false,
+        canonicalPathname: "/about",
+        cleanPathname: "/about",
+        draftModeCookie: null,
+        interceptionContext: null,
+        interceptionId: null,
+        isRscRequest: false,
+        matchKind: "resolved",
+        middlewareCookieOverlay: null,
+        mountedSlotsHeader: null,
+        params: {},
+        protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: "https://example.test",
+        renderMode: "navigation",
+        resolvedUrl: "/about",
+        routePattern: "/about",
+        routePathname: "/about",
+        scriptNonce: null,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(workUnitType).toBe("request");
   });
 
   it("normalizes a direct contextual RSC request before shared response-stage dispatch", async () => {

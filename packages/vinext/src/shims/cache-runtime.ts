@@ -698,7 +698,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       } catch {
         // Non-serializable arguments — run without caching
-        return fn(...callArgs);
+        return (await executeWithContext(fn, callArgs, cacheVariant)).result;
       }
 
       // "use cache: private" uses per-request in-memory cache
@@ -1145,13 +1145,16 @@ async function runCachedFunctionWithContext<
   };
 
   let collectedResult: TCollected | undefined;
-  const result = await cacheContextStorage.run(ctx, async () => {
-    const value = await fn(...args);
-    if (collectResult) {
-      collectedResult = await collectResult(value, ctx);
-    }
-    return value;
-  });
+  const workUnitType: "cache" | "private-cache" = variant === "private" ? "private-cache" : "cache";
+  const result = await workUnitAsyncStorage.run({ type: workUnitType }, () =>
+    cacheContextStorage.run(ctx, async () => {
+      const value = await fn(...args);
+      if (collectResult) {
+        collectedResult = await collectResult(value, ctx);
+      }
+      return value;
+    }),
+  );
 
   if (ctx.invalidDynamicUsageError) {
     throw ctx.invalidDynamicUsageError;
