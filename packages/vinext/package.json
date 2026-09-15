@@ -12,7 +12,8 @@
     "vinext": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "next-package.json"
   ],
   "type": "module",
   "main": "dist/index.js",
