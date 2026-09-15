@@ -6,6 +6,7 @@ import {
   generatePagesETag,
 } from "../packages/vinext/src/server/pages-page-response.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
+import { renderTracedPagesPageResponse } from "../packages/vinext/src/server/pages-page-handler.js";
 
 function getStartTags(html: string, tagName: string): string[] {
   const tags: string[] = [];
@@ -195,6 +196,30 @@ describe("isPagesStreamingBot", () => {
 });
 
 describe("pages page response", () => {
+  it("cancels a pending traced body when document shell construction fails", async () => {
+    const common = createCommonOptions();
+    let cancelled = false;
+    const bodyStream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    await expect(
+      renderTracedPagesPageResponse(
+        {
+          ...common.options,
+          renderDocumentToString: async () => {
+            throw new Error("document shell failed");
+          },
+          renderToReadableStream: async () => bodyStream,
+        },
+        true,
+      ),
+    ).rejects.toThrow("document shell failed");
+    expect(cancelled).toBe(true);
+  });
+
   it("renders the document shell, merges gSSP headers, and marks streamed HTML responses", async () => {
     const common = createCommonOptions();
 
