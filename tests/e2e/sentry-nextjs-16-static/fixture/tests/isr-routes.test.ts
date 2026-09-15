@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForTransaction } from '@sentry-internal/test-utils';
+import { waitForTransaction } from './test-utils';
 
 test('should remove sentry-trace and baggage meta tags on ISR dynamic route page load', async ({ page }) => {
   // Navigate to ISR page

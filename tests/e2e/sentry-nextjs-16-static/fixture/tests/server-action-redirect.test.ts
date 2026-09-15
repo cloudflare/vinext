@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForError, waitForTransaction } from '@sentry-internal/test-utils';
+import { waitForError, waitForTransaction } from './test-utils';
 
 test('Should handle server action redirect without capturing errors', async ({ page }) => {
   // Wait for the initial page load transaction

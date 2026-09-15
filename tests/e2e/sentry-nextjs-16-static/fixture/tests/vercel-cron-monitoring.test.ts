@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForEnvelopeItem } from '@sentry-internal/test-utils';
+import { waitForEnvelopeItem } from './test-utils';
 
 test('Sends cron check-in envelope for successful cron job', async ({ request }) => {
   const inProgressEnvelopePromise = waitForEnvelopeItem('nextjs-16-static', envelope => {

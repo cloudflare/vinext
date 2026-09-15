@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { getSpanOp, waitForError, waitForStreamedSpans, waitForTransaction } from '@sentry-internal/test-utils';
+import { getSpanOp, waitForError, waitForStreamedSpans, waitForTransaction } from './test-utils';
 
 // FIXME: This app uses `ai@^3`, which the channel-based Vercel AI integration doesn't instrument
 // (it supports v4-v6 via the orchestrion transform and v7 via the native `ai:telemetry` channel).

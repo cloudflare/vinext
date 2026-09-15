@@ -1,4 +1,10 @@
+import fs from "node:fs";
+import path from "node:path";
+
+type Attribute = { type?: string; value?: unknown };
+
 type TransactionEvent = {
+  breadcrumbs?: Array<{ category?: string; data?: Record<string, unknown> }>;
   environment?: string;
   transaction?: string;
   contexts?: {
@@ -24,6 +30,7 @@ type TransactionEvent = {
   start_timestamp?: number;
   timestamp?: number;
   transaction_info?: { source?: string };
+  tags?: Record<string, string>;
   type?: string;
 };
 
@@ -39,12 +46,38 @@ type ErrorEvent = {
   exception?: {
     values?: Array<{
       mechanism?: { handled?: boolean; type?: string };
+      stacktrace?: { frames?: Array<{ filename?: string; in_app?: boolean }> };
       value?: string;
     }>;
   };
   message?: string;
   request?: TransactionEvent["request"];
   transaction?: string;
+  tags?: Record<string, string>;
+};
+
+type EnvelopeItem = [
+  { content_type?: string; item_count?: number; type?: string },
+  Record<string, unknown>,
+];
+
+type Metric = {
+  attributes?: Record<string, Attribute>;
+  name?: string;
+  span_id?: string;
+  timestamp?: number;
+  trace_id?: string;
+  type?: string;
+  value?: number;
+};
+
+type StreamedSpan = {
+  attributes: Record<string, Attribute>;
+  is_segment?: boolean;
+  name?: string;
+  span_id?: string;
+  status?: string;
+  trace_id: string;
 };
 
 async function waitForEvent<T>(
@@ -82,4 +115,103 @@ export async function waitForError(
   predicate: (event: ErrorEvent) => boolean | Promise<boolean>,
 ): Promise<ErrorEvent> {
   return waitForEvent("errors", predicate);
+}
+
+async function waitForItem(
+  predicate: (item: EnvelopeItem) => boolean | Promise<boolean>,
+): Promise<EnvelopeItem> {
+  const after = Date.now();
+  const deadline = after + 15_000;
+
+  while (Date.now() < deadline) {
+    const response = await fetch(`http://127.0.0.1:3031/items?after=${after}`);
+    const stored = (await response.json()) as Array<{
+      body: Record<string, unknown>;
+      header: EnvelopeItem[0];
+    }>;
+    for (const { body, header } of stored) {
+      const item: EnvelopeItem = [header, body];
+      if (await predicate(item)) return item;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  throw new Error("Timed out waiting for a matching Sentry envelope item");
+}
+
+export function waitForEnvelopeItem(
+  _proxyServerName: string,
+  predicate: (item: EnvelopeItem) => boolean | Promise<boolean>,
+): Promise<EnvelopeItem> {
+  return waitForItem(predicate);
+}
+
+export async function waitForMetric(
+  _proxyServerName: string,
+  predicate: (metric: Metric) => boolean | Promise<boolean>,
+): Promise<Metric> {
+  let match: Metric | undefined;
+  await waitForItem(async ([header, body]) => {
+    if (header.type !== "trace_metric" || !Array.isArray(body.items)) return false;
+    for (const metric of body.items as Metric[]) {
+      if (await predicate(metric)) {
+        match = metric;
+        return true;
+      }
+    }
+    return false;
+  });
+  return match!;
+}
+
+export async function waitForStreamedSpans(
+  _proxyServerName: string,
+  predicate?: (spans: StreamedSpan[]) => boolean | Promise<boolean>,
+): Promise<StreamedSpan[]> {
+  let match: StreamedSpan[] | undefined;
+  await waitForItem(async ([header, body]) => {
+    if (
+      header.type !== "span" ||
+      header.content_type !== "application/vnd.sentry.items.span.v2+json" ||
+      !Array.isArray(body.items)
+    ) {
+      return false;
+    }
+    const spans = body.items as StreamedSpan[];
+    if (!predicate || (await predicate(spans))) {
+      match = spans;
+      return true;
+    }
+    return false;
+  });
+  return match!;
+}
+
+export function getSpanOp(span: StreamedSpan): string | undefined {
+  const operation = span.attributes["sentry.op"];
+  return operation?.type === "string" && typeof operation.value === "string"
+    ? operation.value
+    : undefined;
+}
+
+export function findAbsolutePathImports({ outputDir }: { outputDir: string }): string[] {
+  const leaks: string[] = [];
+  const patterns = [
+    /\brequire\(\s*["']([^"']+)["']\s*\)/g,
+    /\bimport\(\s*["']([^"']+)["']\s*\)/g,
+    /\bfrom\s*["']([^"']+)["']/g,
+  ];
+
+  for (const entry of fs.readdirSync(outputDir, { recursive: true, withFileTypes: true })) {
+    if (!entry.isFile() || !/\.[cm]?js$/.test(entry.name)) continue;
+    const file = path.join(entry.parentPath, entry.name);
+    const contents = fs.readFileSync(file, "utf8");
+    for (const pattern of patterns) {
+      for (const match of contents.matchAll(pattern)) {
+        if (path.isAbsolute(match[1]!)) leaks.push(`${path.relative(process.cwd(), file)} -> ${match[1]}`);
+      }
+    }
+  }
+
+  return leaks;
 }

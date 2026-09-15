@@ -1,5 +1,5 @@
 import test, { expect } from '@playwright/test';
-import { waitForError } from '@sentry-internal/test-utils';
+import { waitForError } from './test-utils';
 import { isTurbopackDevMode } from './isDevMode';
 
 // Regression test for https://github.com/getsentry/sentry-javascript/issues/23176

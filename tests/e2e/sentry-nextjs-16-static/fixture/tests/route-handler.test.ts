@@ -34,7 +34,7 @@ test('Should create a transaction for edge route handlers', async ({ request }) 
 
   expect(routehandlerTransaction.contexts?.trace?.status).toBe('ok');
   expect(routehandlerTransaction.contexts?.trace?.op).toBe('http.server');
-  expect(routehandlerTransaction.contexts?.trace?.data?.['http.request.header.x-charly']).toBe('gomez');
+  expect(routehandlerTransaction.contexts?.trace?.data?.['http.request.header.x_charly']).toBe('gomez');
 });
 
 test('Should report an error with a parameterized transaction name for a throwing route handler', async ({

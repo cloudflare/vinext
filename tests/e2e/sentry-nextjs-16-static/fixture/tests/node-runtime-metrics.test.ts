@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForMetric } from '@sentry-internal/test-utils';
+import { waitForMetric } from './test-utils';
 
 const EXPECTED_ATTRIBUTES = {
   'sentry.environment': { value: 'qa', type: 'string' },

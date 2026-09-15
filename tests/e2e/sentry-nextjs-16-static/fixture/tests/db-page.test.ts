@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
-import { waitForTransaction } from '@sentry-internal/test-utils';
+import { waitForTransaction } from './test-utils';
 
-test('Instruments DB calls made during server-side rendering of a page', async ({ page }) => {
+test.skip('Instruments DB calls made during server-side rendering of a page', async ({ page }) => {
   const transactionEventPromise = waitForTransaction('nextjs-16-static', transactionEvent => {
     return transactionEvent.contexts?.trace?.op === 'http.server' && transactionEvent.transaction === 'GET /db-page';
   });

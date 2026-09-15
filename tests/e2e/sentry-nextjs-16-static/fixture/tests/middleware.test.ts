@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForError, waitForTransaction } from '@sentry-internal/test-utils';
+import { waitForError, waitForTransaction } from './test-utils';
 import { isDevMode } from './isDevMode';
 
 test('Should create a transaction for middleware', async ({ request }) => {
