@@ -161,6 +161,25 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
     );
   });
 
+  test("retains application spans created while streaming the response", async ({ request }) => {
+    const traceRes = await request.get("/api/trace-stream");
+    expect(traceRes.status()).toBe(200);
+    expect(await traceRes.text()).toBe("streamed");
+
+    const transaction = await expectReportedTransaction(request, "GET /api/trace-stream");
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRouteRouteHandlers.runHandler",
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        name: "fixture.app.stream.child",
+        operation: "fixture.stream",
+        parentSpanId: handlerSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
   test("parents App Page application spans beneath the render framework span", async ({
     request,
   }) => {

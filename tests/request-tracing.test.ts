@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   attachFrameworkRequestError,
   attachFrameworkRequestRoute,
@@ -21,6 +21,7 @@ type RecordedSpan = {
 };
 
 const spans: RecordedSpan[] = [];
+const finishedSpans = new Set<RecordedSpan>();
 let activeSpan: FrameworkTracingBackendSpan | undefined;
 registerFrameworkTracingIntegration({
   getActiveSpan: () => activeSpan,
@@ -34,7 +35,7 @@ registerFrameworkTracingIntegration({
       name: descriptor.name,
     };
     spans.push(recorded);
-    return callback({
+    const result = callback({
       recordException: (error) => {
         (recorded.exceptions ??= []).push(error);
       },
@@ -48,6 +49,11 @@ registerFrameworkTracingIntegration({
         recorded.name = name;
       },
     });
+    if (result instanceof Promise) {
+      return result.finally(() => finishedSpans.add(recorded)) as T;
+    }
+    finishedSpans.add(recorded);
+    return result;
   },
 });
 
@@ -62,6 +68,75 @@ function traceRequest(callback: () => Promise<Response>): Promise<Response> {
 }
 
 describe("framework request tracing", () => {
+  it("keeps the request span open until the response body is consumed", async () => {
+    spans.length = 0;
+    finishedSpans.clear();
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const response = await traceRequest(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(nextController) {
+              controller = nextController;
+              nextController.enqueue(new TextEncoder().encode("streamed"));
+            },
+          }),
+        ),
+    );
+
+    expect(finishedSpans.has(spans[0])).toBe(false);
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    controller.close();
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    await vi.waitFor(() => expect(finishedSpans.has(spans[0])).toBe(true));
+  });
+
+  it("finishes the request span when the response body is cancelled", async () => {
+    spans.length = 0;
+    finishedSpans.clear();
+    const response = await traceRequest(
+      async () =>
+        new Response(
+          new ReadableStream({
+            pull() {},
+          }),
+        ),
+    );
+
+    expect(finishedSpans.has(spans[0])).toBe(false);
+    await response.body!.cancel();
+    await vi.waitFor(() => expect(finishedSpans.has(spans[0])).toBe(true));
+  });
+
+  it("records a response stream failure on the request span", async () => {
+    spans.length = 0;
+    finishedSpans.clear();
+    const streamError = new Error("response stream failed");
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const response = await traceRequest(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(nextController) {
+              controller = nextController;
+              nextController.enqueue(new TextEncoder().encode("partial"));
+            },
+          }),
+        ),
+    );
+
+    const reader = response.body!.getReader();
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    controller.error(streamError);
+    await expect(reader.read()).rejects.toThrow("response stream failed");
+    await vi.waitFor(() => expect(finishedSpans.has(spans[0])).toBe(true));
+    expect(spans[0]).toMatchObject({
+      exceptions: [streamError],
+      status: "response stream failed",
+    });
+  });
+
   it("finalizes a parameterized RSC route and response status", async () => {
     spans.length = 0;
     const response = await traceRequest(async () => {
@@ -189,6 +264,32 @@ describe("framework request tracing", () => {
     expect(attached).toBe(response);
     expect(consumed).toBe(response);
     expect(Reflect.get(consumed, "webSocket")).toBe(webSocket);
+    expect(consumed.headers.has("X-Vinext-Trace-Route")).toBe(false);
+  });
+
+  it("preserves immutable response state while transferring its route", () => {
+    const response = Response.redirect("https://example.com/destination", 307);
+    const consumed = consumeFrameworkRequestRoute(
+      attachFrameworkRequestRoute(response, "/redirect/[slug]"),
+    );
+
+    expect(consumed.status).toBe(307);
+    expect(consumed.headers.get("location")).toBe("https://example.com/destination");
+    expect(consumed.headers.has("X-Vinext-Trace-Route")).toBe(false);
+  });
+
+  it("transfers fully buffered response metadata without exposing its internal header", async () => {
+    const { isFullyBufferedBody, markFullyBufferedBody } =
+      await import("../packages/vinext/src/server/fully-buffered-response.js");
+    const attached = attachFrameworkRequestRoute(
+      markFullyBufferedBody(new Response("buffered")),
+      "/robots.txt",
+    );
+
+    expect(attached.headers.get("X-Vinext-Trace-Buffered-Body")).toBe("1");
+    const consumed = consumeFrameworkRequestRoute(attached);
+    expect(isFullyBufferedBody(consumed)).toBe(true);
+    expect(consumed.headers.has("X-Vinext-Trace-Buffered-Body")).toBe(false);
     expect(consumed.headers.has("X-Vinext-Trace-Route")).toBe(false);
   });
 

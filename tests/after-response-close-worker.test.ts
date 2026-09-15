@@ -73,9 +73,40 @@ describe("closeAfterResponseWithBody on the Cloudflare Workers runtime", () => {
         name: "vinext-after-response-close-worker-fixture",
         compatibility_date: "2026-04-01",
         compatibility_flags: ["nodejs_compat"],
-        main: "vinext/server/fetch-handler",
+        main: "./worker/index.ts",
         assets: { not_found_handling: "none", binding: "ASSETS" },
       }),
+    );
+    const requestTracingPath = path.resolve(
+      import.meta.dirname,
+      "../packages/vinext/src/server/request-tracing.ts",
+    );
+    await fs.mkdir(path.join(root, "worker"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, "worker/index.ts"),
+      `import handler from "vinext/server/fetch-handler";
+import { traceFrameworkRequest } from ${JSON.stringify(requestTracingPath)};
+
+export default {
+  fetch(request: Request, env: unknown, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname !== "/__trace-manual-gzip") return handler.fetch(request, env, ctx);
+    return traceFrameworkRequest({
+      callback: async () => new Response(
+        new Blob(["manual gzip"]).stream().pipeThrough(new CompressionStream("gzip")),
+        {
+          headers: { "Content-Encoding": "gzip" },
+          encodeBody: "manual",
+        } as ResponseInit,
+      ),
+      getStatus: (response) => response?.status,
+      headers: request.headers,
+      method: request.method,
+      target: url.pathname,
+    });
+  },
+};
+`,
     );
     // Force the metadata response through the middleware header/status rebuild
     // that previously discarded the internal fully-buffered marker.
@@ -158,6 +189,13 @@ export const config = { matcher: ["/robots.txt"] };
     const contentLength = res.headers.get("content-length");
     expect(contentLength).not.toBeNull();
     expect(Number(contentLength)).toBe(expectedLength);
+  });
+
+  it("preserves manual response body encoding while tracing a streamed response", async () => {
+    const res = await fetch(`${baseUrl}/__trace-manual-gzip`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-encoding")).toBe("gzip");
+    expect(await res.text()).toBe("manual gzip");
   });
 
   it("preserves Content-Length on a metadata sitemap.xml response", async () => {
