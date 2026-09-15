@@ -2,10 +2,9 @@
  * OpenTelemetry tracer provider extension for Cache Components.
  *
  * When `cacheComponents: true` is enabled in next.config, component renders
- * go through multiple phases (warmup → resume). During these phases, the
- * `workUnitAsyncStorage` carries a prerender or cache store. Without this
+ * run inside request, prerender, or cache work units. Without this
  * extension, calls to `tracer.startSpan()` / `tracer.startActiveSpan()` from
- * inside user RSC code would inherit that prerender context, causing:
+ * inside user RSC code would inherit that work-unit context, causing:
  *
  *  1. Spans to reuse the same trace ID across requests (the frozen prerender
  *     context bleeds into the runtime resume render).
