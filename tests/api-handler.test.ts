@@ -1496,6 +1496,11 @@ describe("handleApiRoute", () => {
     });
 
     it("returns 500 when handler throws a generic error", async () => {
+      let finishReporting!: () => void;
+      const reportingFinished = new Promise<void>((resolve) => {
+        finishReporting = resolve;
+      });
+      vi.mocked(reportRequestError).mockReturnValueOnce(reportingFinished);
       const handler = vi.fn(() => {
         throw new Error("something broke");
       });
@@ -1503,7 +1508,18 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      const handled = await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+      let requestSettled = false;
+      const handledPromise = handleApiRoute(server, req, res, "/api/users", [
+        route("/api/users"),
+      ]).then((handled) => {
+        requestSettled = true;
+        return handled;
+      });
+
+      await vi.waitFor(() => expect(reportRequestError).toHaveBeenCalledOnce());
+      expect(requestSettled).toBe(false);
+      finishReporting();
+      const handled = await handledPromise;
 
       expect(handled).toBe(true);
       expect(res._statusCode).toBe(500);

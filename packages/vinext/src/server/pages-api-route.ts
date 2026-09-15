@@ -296,9 +296,9 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     // the handler to finish first.
     const firstSettled = await Promise.race([responseReady, handlerCompletion]);
     if (firstSettled.type === "response") {
-      const handlerLifecycle = handlerCompletion.then(completeHandler, (error) => {
-        void options.reportRequestError?.(error, route.pattern);
-      });
+      const handlerLifecycle = handlerCompletion.then(completeHandler, (error) =>
+        options.reportRequestError?.(error, route.pattern),
+      );
       // The body may already be complete (for example, res.end() followed by
       // awaited cleanup), so keeping only a floating promise is not enough on
       // Workers. Register the remaining handler lifecycle before returning;
@@ -319,7 +319,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       });
     }
 
-    void options.reportRequestError?.(
+    await options.reportRequestError?.(
       error instanceof Error ? error : new Error(String(error)),
       route.pattern,
     );

@@ -380,9 +380,7 @@ Cross-consumer parity acceptance criteria:
 
 ### OTel-12: Close the audited v1 parity gaps
 
-The cumulative stack audit found eight remaining gaps that fit the v1 contract. Deliver them as
-separate, router- or behavior-scoped PRs so each layer has an independently reviewable Next.js
-reference and regression test:
+The cumulative stack audit found eight remaining gaps that fit the v1 contract:
 
 1. Await App Route Handler `onRequestError` hooks before completing foreground failures and inside
    background-regeneration promises. Keep App Page and Server Action React `onError` callbacks
@@ -406,6 +404,13 @@ reference and regression test:
 Every layer must keep `@opentelemetry/api` optional, exercise the shared framework descriptors
 rather than add consumer-specific tracing, and add Sentry E2E coverage when the behavior is
 observable through the existing fixtures. Node/Workers differences must be asserted explicitly.
+
+Deliver the closure in three focused PRs:
+
+1. Instrumentation lifecycle: gaps 1-3.
+2. Span shape and status: gaps 4, 5, and 7.
+3. OpenTelemetry context edges: gaps 6 and 8. Split the Cache Components work into a fourth PR only
+   if establishing its ordinary work-unit scope would make this layer materially harder to review.
 
 The following audit findings remain outside this closure track:
 

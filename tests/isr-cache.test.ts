@@ -536,23 +536,45 @@ describe("triggerBackgroundRegeneration", () => {
   });
 
   it("reports error via onRequestError handler when errorContext is provided", async () => {
-    const handler = vi.fn();
+    let finishReporting!: () => void;
+    const reportingFinished = new Promise<void>((resolve) => {
+      finishReporting = resolve;
+    });
+    const handler = vi.fn((..._args: unknown[]) => reportingFinished);
     globalThis.__VINEXT_onRequestErrorHandler__ = handler;
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const waitUntilPromises: Promise<unknown>[] = [];
 
     try {
       const renderFn = vi.fn().mockRejectedValue(new Error("regen failed"));
-      triggerBackgroundRegeneration("regen-report-error", renderFn, {
-        routerKind: "App Router",
-        routePath: "/blog/[slug]",
-        routeType: "render",
-      });
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await runWithExecutionContext(
+        {
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        },
+        async () => {
+          triggerBackgroundRegeneration("regen-report-error", renderFn, {
+            routerKind: "App Router",
+            routePath: "/blog/[slug]",
+            routeType: "render",
+          });
+        },
+      );
 
-      expect(handler).toHaveBeenCalledOnce();
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+      expect(waitUntilPromises).toHaveLength(2);
+      const regeneration = waitUntilPromises[0];
+      let regenerationSettled = false;
+      void regeneration.then(() => {
+        regenerationSettled = true;
+      });
+      await Promise.resolve();
+      expect(regenerationSettled).toBe(false);
+
       const [error, request, context] = handler.mock.calls[0];
       expect(error).toBeInstanceOf(Error);
-      expect(error.message).toBe("regen failed");
+      expect((error as Error).message).toBe("regen failed");
       expect(request).toEqual({ path: "regen-report-error", method: "GET", headers: {} });
       expect(context).toEqual({
         routerKind: "App Router",
@@ -560,7 +582,12 @@ describe("triggerBackgroundRegeneration", () => {
         routeType: "render",
         revalidateReason: "stale",
       });
+
+      finishReporting();
+      await regeneration;
+      expect(regenerationSettled).toBe(true);
     } finally {
+      finishReporting();
       delete globalThis.__VINEXT_onRequestErrorHandler__;
       consoleError.mockRestore();
     }

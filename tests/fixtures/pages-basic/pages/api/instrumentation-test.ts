@@ -2,6 +2,8 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import {
   isRegisterCalled,
   getCapturedErrors,
+  isRequestErrorReportStarted,
+  releaseRequestErrorReport,
   resetInstrumentationState,
 } from "../../instrumentation-state";
 
@@ -21,9 +23,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     resetInstrumentationState();
     return res.status(200).json({ ok: true });
   }
+  if (req.method === "PATCH") {
+    releaseRequestErrorReport();
+    return res.status(200).json({ ok: true });
+  }
 
   return res.status(200).json({
     registerCalled: isRegisterCalled(),
     errors: getCapturedErrors(),
+    errorReportStarted: isRequestErrorReportStarted(),
   });
 }

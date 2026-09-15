@@ -42,11 +42,23 @@ describe("app route handler dispatch", () => {
     { reason: "stale" as const, onDemand: false },
     { reason: "on-demand" as const, onDemand: true },
   ])("reports $reason App Route revalidation errors", async ({ reason, onDemand }) => {
-    const onRequestError = vi.fn();
+    let markReportingStarted!: () => void;
+    const reportingStarted = new Promise<void>((resolve) => {
+      markReportingStarted = resolve;
+    });
+    let releaseReporting!: () => void;
+    const reportingGate = new Promise<void>((resolve) => {
+      releaseReporting = resolve;
+    });
+    const onRequestError = vi.fn(async () => {
+      markReportingStarted();
+      await reportingGate;
+    });
     globalThis.__VINEXT_onRequestErrorHandler__ = onRequestError;
 
     try {
-      const response = await dispatchAppRouteHandler({
+      let dispatchSettled = false;
+      const responsePromise = dispatchAppRouteHandler({
         cleanPathname: "/api/failed/123",
         clearRequestContext() {},
         draftModeSecret: "test-draft-secret",
@@ -78,8 +90,15 @@ describe("app route handler dispatch", () => {
         },
         scheduleBackgroundRegeneration() {},
         searchParams: new URLSearchParams(),
+      }).then((response) => {
+        dispatchSettled = true;
+        return response;
       });
+      await reportingStarted;
+      expect(dispatchSettled).toBe(false);
+      releaseReporting();
 
+      const response = await responsePromise;
       expect(response.status).toBe(500);
       expect(onRequestError).toHaveBeenCalledWith(
         expect.objectContaining({ message: "route revalidation failed" }),
