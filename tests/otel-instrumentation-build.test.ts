@@ -66,12 +66,12 @@ describe("OpenTelemetry production instrumentation", () => {
     );
     fs.writeFileSync(
       path.join(root, "app", "layout.tsx"),
-      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n`,
+      `import "otel-probe-package";
+export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n`,
     );
     fs.writeFileSync(
       path.join(root, "app", "probe", "route.ts"),
       `export async function GET() {
-  await import("otel-probe-package");
   return new Response(globalThis.__OTEL_ESM_INTERCEPTED__ ? "intercepted" : "missed");
 }\n`,
     );
@@ -132,12 +132,55 @@ process.stdout.write(await response.text());\n`,
       env: {
         ...process.env,
         NODE_ENV: "production",
-        NODE_OPTIONS: "--no-warnings --loader=@opentelemetry/instrumentation/hook.mjs",
+        NODE_OPTIONS: "",
       },
       timeout: 30_000,
     });
 
     expect(stderr).toBe("");
     expect(stdout).toBe("intercepted");
+  }, 60_000);
+
+  it("does not require an omitted optional OpenTelemetry package", async () => {
+    const optionalRoot = fs.mkdtempSync(
+      path.join(import.meta.dirname, ".tmp-optional-otel-build-"),
+    );
+    try {
+      fs.mkdirSync(path.join(optionalRoot, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(optionalRoot, "package.json"),
+        JSON.stringify({
+          private: true,
+          type: "module",
+          optionalDependencies: { "@opentelemetry/instrumentation": "0.214.0" },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(optionalRoot, "instrumentation.ts"),
+        "export function register() {}\n",
+      );
+      fs.writeFileSync(
+        path.join(optionalRoot, "app", "layout.tsx"),
+        "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
+      );
+      fs.writeFileSync(
+        path.join(optionalRoot, "app", "page.tsx"),
+        "export default function Page() { return <main>optional</main>; }\n",
+      );
+
+      const builder = await createBuilder({
+        root: optionalRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: optionalRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      expect(
+        fs.readFileSync(path.join(optionalRoot, "dist", "server", "index.js"), "utf8"),
+      ).not.toContain("@opentelemetry/instrumentation/hook.mjs");
+    } finally {
+      fs.rmSync(optionalRoot, { recursive: true, force: true });
+    }
   }, 60_000);
 });

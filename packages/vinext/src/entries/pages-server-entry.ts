@@ -49,6 +49,7 @@ async function getPagesDataKind(filePath: string): Promise<"static" | "server" |
 
 type GeneratePagesServerEntryOptions = {
   includeMiddlewareRuntime?: boolean;
+  nodeOpenTelemetryLoader?: boolean;
   prerenderSecret?: string;
 };
 
@@ -124,7 +125,9 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
     ? `await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});`
     : "";
   const middlewareImportCode = middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
+    ? instrumentationPath
+      ? `const middlewareModule = await import(${JSON.stringify(middlewarePath)});`
+      : `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
     : "";
   const middlewareExportCode = middlewarePath
     ? `export async function runMiddleware(request, ctx, options) {
@@ -152,9 +155,9 @@ import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath } from ${JSON.stringify(_pagesDataRoutePath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_revalidationRequestPath)};
 ${instrumentationImportCode}
-${middlewareImportCode}
 
 ${instrumentationInitCode}
+${middlewareImportCode}
 
 export const authorizeOnDemandRevalidate = __isOnDemandRevalidateRequest;
 export const buildId = ${JSON.stringify(nextConfig?.buildId ?? null)};
@@ -260,12 +263,16 @@ export async function generateServerEntry(
 
   // Generate import statements using absolute paths since virtual
   // modules don't have a real file location for relative resolution.
-  const pageImports = pageRoutes.map(
-    (r: Route, i: number) => `import * as page_${i} from ${JSON.stringify(r.filePath)};`,
+  const pageImports = pageRoutes.map((r: Route, i: number) =>
+    instrumentationPath
+      ? `const page_${i} = await import(${JSON.stringify(r.filePath)});`
+      : `import * as page_${i} from ${JSON.stringify(r.filePath)};`,
   );
 
-  const apiImports = apiRoutes.map(
-    (r: Route, i: number) => `import * as api_${i} from ${JSON.stringify(r.filePath)};`,
+  const apiImports = apiRoutes.map((r: Route, i: number) =>
+    instrumentationPath
+      ? `const api_${i} = await import(${JSON.stringify(r.filePath)});`
+      : `import * as api_${i} from ${JSON.stringify(r.filePath)};`,
   );
 
   // Build the route table — include filePath for SSR manifest lookup
@@ -293,19 +300,27 @@ export async function generateServerEntry(
   const appAssetPathJson = appFilePath !== null ? JSON.stringify(appFilePath) : "null";
   const appImportCode =
     appFilePath !== null
-      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath)};`
+      ? instrumentationPath
+        ? `const { default: AppComponent } = await import(${JSON.stringify(appFilePath)});`
+        : `import { default as AppComponent } from ${JSON.stringify(appFilePath)};`
       : `const AppComponent = null;`;
 
   const docImportCode =
     docFilePath !== null
-      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath)};`
+      ? instrumentationPath
+        ? `const { default: DocumentComponent } = await import(${JSON.stringify(docFilePath)});`
+        : `import { default as DocumentComponent } from ${JSON.stringify(docFilePath)};`
       : `const DocumentComponent = null;`;
 
   const errorAssetPathJson = errorFilePath !== null ? JSON.stringify(errorFilePath) : "null";
   const errorImportCode =
     errorFilePath !== null
-      ? `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
-      : `import * as ErrorPageModule from "next/error";`;
+      ? instrumentationPath
+        ? `const ErrorPageModule = await import(${JSON.stringify(errorFilePath)});`
+        : `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
+      : instrumentationPath
+        ? `const ErrorPageModule = await import("next/error");`
+        : `import * as ErrorPageModule from "next/error";`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -372,11 +387,21 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
 // so instrumentation still registers exactly once per runtime.
 await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});`
     : "";
+  const openTelemetryLoaderCode = options.nodeOpenTelemetryLoader
+    ? `import { register as __registerOpenTelemetryLoader } from "node:module";
+const __openTelemetryLoaderKey = Symbol.for("vinext.openTelemetryLoader");
+if (process.env.VINEXT_PRERENDER !== "1" && !globalThis[__openTelemetryLoaderKey]) {
+  globalThis[__openTelemetryLoaderKey] = true;
+  __registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs", import.meta.url);
+}`
+    : "";
 
   // Generate middleware code if middleware.ts exists
   const middlewareImportCode =
     includeMiddlewareRuntime && middlewarePath
-      ? `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
+      ? instrumentationPath
+        ? `const middlewareModule = await import(${JSON.stringify(middlewarePath)});`
+        : `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
       : "";
   const middlewareRuntimeImportCode = includeMiddlewareRuntime
     ? `import { runGeneratedMiddleware as __runGeneratedMiddleware } from ${JSON.stringify(_middlewareRuntimePath)};`
@@ -447,10 +472,11 @@ import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundRespons
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
 import { getRuntimePagesDataKind as __getRuntimePagesDataKind } from ${JSON.stringify(_pagesRouteDataKindPath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_isrCachePath)};
+${openTelemetryLoaderCode}
 ${instrumentationImportCode}
-${middlewareImportCode}
 
 ${instrumentationInitCode}
+${middlewareImportCode}
 
 // The outer Node production pipeline runs outside this generated bundle, so
 // it cannot safely validate against its own development fallback secret. Give

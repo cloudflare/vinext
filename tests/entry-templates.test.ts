@@ -1330,6 +1330,46 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
+  it("registers Node instrumentation before App Router user modules", () => {
+    const instrumentationPath = "/tmp/test/instrumentation.ts";
+    const code = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+      { nodeOpenTelemetryLoader: true },
+      instrumentationPath,
+    );
+
+    const loaderIndex = code.indexOf(
+      '__registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs"',
+    );
+    const registrationIndex = code.indexOf("await __ensureInstrumentation();");
+    const userModuleIndex = code.indexOf("const mod_0 = await import(");
+
+    expect(loaderIndex).toBeGreaterThanOrEqual(0);
+    expect(registrationIndex).toBeGreaterThan(loaderIndex);
+    expect(userModuleIndex).toBeGreaterThan(registrationIndex);
+    expect(
+      generateRscEntry(
+        "/tmp/test/app",
+        minimalAppRoutes,
+        null,
+        [],
+        null,
+        "",
+        false,
+        {},
+        instrumentationPath,
+      ),
+    ).not.toContain("node:module");
+  });
+
   it("generateRscEntry only includes the App middleware runtime when middleware exists", () => {
     const withoutMiddleware = generateRscEntry(
       "/tmp/test/app",
@@ -1904,6 +1944,44 @@ describe("Pages Router entry template", () => {
       expect(code).not.toContain(JSON.stringify(middlewarePath));
       expect(code).not.toContain("runGeneratedMiddleware");
       expect(code).not.toContain("export async function runMiddleware");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
+  it("registers Node instrumentation before Pages Router user modules", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-instrumentation-order-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const instrumentationPath = path.join(tmpDir, "instrumentation.ts");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      const pagePath = path.join(pagesDir, "index.tsx");
+      fs.writeFileSync(pagePath, "export default function Page() { return null; }");
+      fs.writeFileSync(instrumentationPath, "export function register() {};");
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        instrumentationPath,
+        [],
+        { nodeOpenTelemetryLoader: true },
+      );
+      const loaderIndex = code.indexOf(
+        '__registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs"',
+      );
+      const registrationIndex = code.indexOf("await __ensureInstrumentationRegistered(");
+      const userModuleIndex = code.indexOf(
+        `const page_0 = await import(${JSON.stringify(pagePath)})`,
+      );
+
+      expect(loaderIndex).toBeGreaterThanOrEqual(0);
+      expect(registrationIndex).toBeGreaterThan(loaderIndex);
+      expect(userModuleIndex).toBeGreaterThan(registrationIndex);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
