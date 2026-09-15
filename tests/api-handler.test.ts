@@ -22,6 +22,35 @@ import {
   type ModuleImporter,
 } from "../packages/vinext/src/server/instrumentation.js";
 import type { Route } from "../packages/vinext/src/routing/pages-router.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type {
+  FrameworkTracingBackendSpan,
+  ResolvedFrameworkSpanDescriptor,
+} from "../packages/vinext/src/server/framework-tracer.js";
+
+const recordedDevApiHandlerErrors: unknown[] = [];
+let recordedDevApiHandlerErrorStatus = false;
+let captureDevApiHandlerErrors = false;
+registerFrameworkTracingIntegration({
+  id: "api-handler-dev-error-status-test",
+  enterSpan<T>(
+    descriptor: ResolvedFrameworkSpanDescriptor,
+    callback: (span: FrameworkTracingBackendSpan) => T,
+  ): T {
+    if (!captureDevApiHandlerErrors || descriptor.type !== "Node.runHandler") {
+      return callback({ setAttribute() {} });
+    }
+    return callback({
+      recordException(error) {
+        recordedDevApiHandlerErrors.push(error);
+      },
+      setAttribute() {},
+      setErrorStatus() {
+        recordedDevApiHandlerErrorStatus = true;
+      },
+    });
+  },
+});
 
 vi.mock("../packages/vinext/src/server/instrumentation.js", () => ({
   reportRequestError: vi.fn(() => Promise.resolve()),
@@ -1526,6 +1555,8 @@ describe("handleApiRoute", () => {
       expect(res._body).toBe("Internal Server Error");
     });
 
+    // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
     it("still returns 500 on handler errors (no ssrFixStacktrace needed with Module Runner)", async () => {
       const error = new Error("test error");
       const handler = vi.fn(() => {
@@ -1534,10 +1565,19 @@ describe("handleApiRoute", () => {
       const server = mockServer({ default: handler });
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
+      recordedDevApiHandlerErrors.length = 0;
+      recordedDevApiHandlerErrorStatus = false;
+      captureDevApiHandlerErrors = true;
 
-      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+      try {
+        await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+      } finally {
+        captureDevApiHandlerErrors = false;
+      }
 
       expect(res._statusCode).toBe(500);
+      expect(recordedDevApiHandlerErrors).toEqual([error]);
+      expect(recordedDevApiHandlerErrorStatus).toBe(true);
     });
 
     it("preserves Node header arrays in onRequestError while dropping HTTP/2 pseudo-headers", async () => {

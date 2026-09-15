@@ -190,6 +190,21 @@ describe("framework tracer", () => {
     }
   });
 
+  it("can rethrow a failure without marking the span", async () => {
+    const spans: RecordedSpan[] = [];
+    const tracer = createFrameworkTracer([recordingIntegration(spans)]);
+    const failure = new Error("handled outside the span");
+
+    await expect(
+      tracer.trace({ recordErrors: false, type: "failing" }, async () => {
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+
+    expect(spans[0]).toMatchObject({ errors: [], status: undefined, ended: true });
+    expect(spans[0]?.attributes).not.toHaveProperty("error.type");
+  });
+
   it("runs normally without integrations", async () => {
     const tracer = createFrameworkTracer([]);
     expect(tracer.trace({ type: "sync" }, () => "ok")).toBe("ok");

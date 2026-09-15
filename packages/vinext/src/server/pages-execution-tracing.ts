@@ -83,11 +83,18 @@ export function createPagesApiHandlerSpanDescriptor(routePattern: string) {
   } as const;
 }
 
-export function tracePagesApiHandler<T>(routePattern: string, callback: () => T): T {
-  return frameworkTracer.trace(createPagesApiHandlerSpanDescriptor(routePattern), callback);
+export function tracePagesApiHandler<T>(
+  routePattern: string,
+  callback: () => T,
+  options: { recordErrors?: boolean } = {},
+): T {
+  return frameworkTracer.trace(
+    { ...createPagesApiHandlerSpanDescriptor(routePattern), recordErrors: options.recordErrors },
+    callback,
+  );
 }
 
-export function createPagesFindPageComponentsSpanDescriptor(routePattern: string) {
+export function createFindPageComponentsSpanDescriptor(routePattern: string) {
   return {
     attributes: { "next.route": patternToNextFormat(routePattern) },
     name: "resolve page components",
@@ -95,6 +102,6 @@ export function createPagesFindPageComponentsSpanDescriptor(routePattern: string
   } as const;
 }
 
-export function tracePagesFindPageComponents<T>(routePattern: string, callback: () => T): T {
-  return frameworkTracer.trace(createPagesFindPageComponentsSpanDescriptor(routePattern), callback);
+export function traceFindPageComponents<T>(routePattern: string, callback: () => T): T {
+  return frameworkTracer.trace(createFindPageComponentsSpanDescriptor(routePattern), callback);
 }

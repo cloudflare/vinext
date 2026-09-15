@@ -36,9 +36,11 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
+import { traceAppPageRender } from "./app-page-tracing.js";
 import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { stripInheritedResponseStageCookies } from "./response-stage-policy.js";
+import { traceFindPageComponents } from "./pages-execution-tracing.js";
 import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
@@ -214,7 +216,9 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
 
   const route = match?.route ?? null;
   if (route) {
-    if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
+    if (options.ensureRouteLoaded) {
+      await traceFindPageComponents(route.pattern, () => options.ensureRouteLoaded!(route));
+    }
     if (
       (props.kind === "app-page" && route.routeHandler) ||
       (props.kind === "app-route-handler" && !route.routeHandler)
@@ -279,13 +283,15 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
             params: {},
           });
           setRootParams({});
-          const response = await options.renderNotFound({
-            isRscRequest: normalized.isRscRequest,
-            middlewareContext,
-            request,
-            route: null,
-            scriptNonce: props.scriptNonce ?? undefined,
-          });
+          const response = await traceAppPageRender("/404", "render", () =>
+            options.renderNotFound({
+              isRscRequest: normalized.isRscRequest,
+              middlewareContext,
+              request,
+              route: null,
+              scriptNonce: props.scriptNonce ?? undefined,
+            }),
+          );
           return response ?? new Response("Not Found", { status: 404 });
         }
         if (props.kind === "hybrid-pages") {

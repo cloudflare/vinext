@@ -286,7 +286,11 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     // handlers attached. A synchronous throw may destroy the response bridge,
     // which rejects responsePromise as well as the handler completion.
     const handlerCompletion = Promise.resolve()
-      .then(() => tracePagesApiHandler(route.pattern, () => handler(req, res)))
+      .then(() =>
+        tracePagesApiHandler(route.pattern, () => handler(req, res), {
+          recordErrors: options.edgeRuntime !== "node",
+        }),
+      )
       .then(() => ({ type: "handler" as const }), destroyAfterHandlerError);
 
     // A real Node ServerResponse is consumed by the socket while the API

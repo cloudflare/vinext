@@ -28,10 +28,7 @@ import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-p
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
-import {
-  tracePagesDocumentStream,
-  tracePagesFindPageComponents,
-} from "./pages-execution-tracing.js";
+import { tracePagesDocumentStream, traceFindPageComponents } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
@@ -61,6 +58,7 @@ import {
 } from "./isr-cache.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { reportRequestError } from "./instrumentation.js";
+import { setFrameworkRequestRoute } from "./request-tracing.js";
 import {
   closeAfterResponse,
   closeAfterResponseWithBody,
@@ -613,7 +611,7 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
-    const pageModule = tracePagesFindPageComponents(route.pattern, () => route.module);
+    const pageModule = traceFindPageComponents(route.pattern, () => route.module);
     const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
     const pagesReadiness = buildPagesReadinessNextData({
       pageModule,
@@ -698,6 +696,7 @@ export function createPagesPageHandler(
       ensureFetchPatch();
       try {
         const routePattern = patternToNextFormat(route.pattern);
+        setFrameworkRequestRoute(routePattern);
         const renderStatusCode =
           renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
         // Error pages have their own ISR identity even though they render for
@@ -1247,7 +1246,7 @@ export function createPagesPageHandler(
             }
           }
           if (!errorRoute && errorPageRoute) {
-            tracePagesFindPageComponents("/500", () => undefined);
+            traceFindPageComponents("/500", () => undefined);
             errorRoute = errorPageRoute;
           }
           if (errorRoute) {
