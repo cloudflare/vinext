@@ -113,6 +113,12 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
       request,
       state.errors.find(({ message }) => message === "Intentional Sentry Pages Router error")!,
     );
+    const transaction = await expectReportedTransaction(request, "GET /api/error-route");
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Node.runHandler",
+    );
+    expect(handlerSpan).toMatchObject({ status: expect.any(String) });
+    expect(handlerSpan?.status).not.toBe("ok");
   });
 
   test("reports proxy errors with Next.js context and trace correlation", async ({ request }) => {
@@ -132,6 +138,36 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
       sdkName: "sentry.javascript.nextjs",
     });
     await expectErrorTraceCorrelation(request, error);
+  });
+
+  // Next.js render.ts updates the request root to the selected Pages error route.
+  // This fixture has no pages/404, so an unmatched request renders /_error.
+  // https://github.com/vercel/next.js/blob/b421cadefd31c1b59d117842021ded7c1ebaf5b4/packages/next/src/server/render.tsx
+  test("traces an unmatched Pages request through the internal error route", async ({
+    request,
+  }) => {
+    const response = await request.get("/missing-pages-route");
+    expect(response.status()).toBe(404);
+
+    const transaction = await expectReportedTransaction(request, "GET /_error");
+    expect(transaction).toMatchObject({
+      attributes: expect.objectContaining({
+        "http.route": "/_error",
+        "http.status_code": 404,
+        "next.route": "/_error",
+      }),
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/_error",
+          "next.span_type": "Render.renderDocument",
+        }),
+        name: "render route (pages) /_error",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
   });
 
   test("records transaction envelopes and nested application spans", async ({ request }) => {

@@ -90,7 +90,7 @@ import {
   tracePagesData,
   tracePagesDocument,
   tracePagesDocumentStream,
-  tracePagesFindPageComponents,
+  traceFindPageComponents,
 } from "./pages-execution-tracing.js";
 
 /**
@@ -845,7 +845,7 @@ export function createSSRHandler(
         // Match Next.js loadComponents: resolve the page, _app, and _document
         // beneath one findPageComponents span before data methods run.
         const { pageModule, AppComponent, appFilePath, DocumentComponent } =
-          await tracePagesFindPageComponents(route.pattern, async () => {
+          await traceFindPageComponents(route.pattern, async () => {
             const pageModule = await importModule(runner, route.filePath);
             const appFilePath = findFileWithExts(pagesDir, "_app", matcher);
             const appModule = appFilePath ? await importModule(runner, appFilePath) : null;
@@ -1825,7 +1825,7 @@ async function renderErrorPage(
 
       const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
       const { errorModule, AppComponent, appAssetPath, DocumentComponent } =
-        await tracePagesFindPageComponents(errorPage, async () => {
+        await traceFindPageComponents(errorPage, async () => {
           const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
           const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
           const appModule = appAssetPath ? await importModule(runner, appAssetPath) : null;

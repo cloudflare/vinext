@@ -115,11 +115,28 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
       state.errors.find(({ message }) => message === "Intentional Sentry App Router error")!,
     );
     const transaction = await expectReportedTransaction(request, "GET /api/error-route");
+    expect(transaction).toMatchObject({
+      attributes: expect.objectContaining({ "error.type": "500" }),
+      status: expect.any(String),
+    });
+    expect(transaction.status).not.toBe("Intentional Sentry App Router error");
     const handlerSpan = transaction.spans.find(
       ({ attributes }) => attributes["next.span_type"] === "AppRouteRouteHandlers.runHandler",
     );
     expect(handlerSpan?.status).toEqual(expect.any(String));
     expect(handlerSpan?.status).not.toBe("ok");
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/api/error-route",
+          "next.span_name": "resolve page components",
+          "next.span_type": "NextNodeServer.findPageComponents",
+        }),
+        name: "resolve page components",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
   });
 
   test("reports proxy errors with Next.js context and trace correlation", async ({ request }) => {
@@ -139,6 +156,34 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
       sdkName: "sentry.javascript.nextjs",
     });
     await expectErrorTraceCorrelation(request, error);
+  });
+
+  // Next.js sets route-miss App renders to its internal /404 route.
+  // https://github.com/vercel/next.js/blob/b421cadefd31c1b59d117842021ded7c1ebaf5b4/packages/next/src/server/base-server.ts
+  // https://github.com/vercel/next.js/blob/b421cadefd31c1b59d117842021ded7c1ebaf5b4/packages/next/src/server/app-render/app-render.tsx
+  test("traces an unmatched App request through the internal 404 route", async ({ request }) => {
+    const response = await request.get("/missing-app-route");
+    expect(response.status()).toBe(404);
+
+    const transaction = await expectReportedTransaction(request, "GET /404");
+    expect(transaction).toMatchObject({
+      attributes: expect.objectContaining({
+        "http.route": "/404",
+        "http.status_code": 404,
+        "next.route": "/404",
+      }),
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/404",
+          "next.span_type": "AppRender.getBodyResult",
+        }),
+        name: "render route (app) /404",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
   });
 
   // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
@@ -241,6 +286,18 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
       parentSpanId: transaction.spanId,
       traceId: transaction.traceId,
     });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/trace-page/[slug]",
+          "next.span_name": "resolve page components",
+          "next.span_type": "NextNodeServer.findPageComponents",
+        }),
+        name: "resolve page components",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
     const componentTreeSpan = transaction.spans.find(
       ({ attributes }) => attributes["next.span_type"] === "NextNodeServer.createComponentTree",
     );

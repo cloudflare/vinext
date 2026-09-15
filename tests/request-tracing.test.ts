@@ -181,6 +181,23 @@ describe("framework request tracing", () => {
     ]);
   });
 
+  it("keeps the first matched route when rendering a fallback", async () => {
+    spans.length = 0;
+    await traceRequest(async () => {
+      setFrameworkRequestRoute("/products/[id]");
+      setFrameworkRequestRoute("/_error");
+      return new Response("not found", { status: 404 });
+    });
+
+    expect(spans[0]).toMatchObject({
+      attributes: {
+        "http.route": "/products/[id]",
+        "next.route": "/products/[id]",
+      },
+      name: "GET /products/[id]",
+    });
+  });
+
   it("propagates the parameterized route to a pre-existing platform span", async () => {
     const attributes: Record<string, boolean | number | string> = {};
     activeSpan = {
@@ -326,10 +343,14 @@ describe("framework request tracing", () => {
 
     expect(spans).toHaveLength(1);
     expect(spans[0]).toMatchObject({
-      attributes: { "error.type": "TypeError", "http.route": "/broken/[slug]" },
+      attributes: {
+        "error.type": "500",
+        "http.route": "/broken/[slug]",
+        "http.status_code": 500,
+      },
       exceptions: [expect.objectContaining({ message: "route load failed", name: "TypeError" })],
       name: "GET /broken/[slug]",
-      status: "route load failed",
+      status: "error",
     });
   });
 
