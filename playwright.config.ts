@@ -227,7 +227,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:3030" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/cf-sentry-app/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && node ../../../../packages/vinext/dist/cli.js start --port 3030",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/cf-sentry-app/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && node ../../../../packages/vinext/dist/cli.js start --port 3030 --hostname ::",
       cwd: "./tests/e2e/sentry-nextjs-16-static/fixture",
       port: 3030,
       reuseExistingServer: false,
@@ -541,6 +541,10 @@ if (selected && !(selected in projectServers)) {
 const activeProjects: ProjectName[] = selected
   ? [selected as ProjectName]
   : (Object.keys(projectServers) as ProjectName[]);
+
+if (activeProjects.includes("sentry-nextjs-16-static")) {
+  process.env.TEST_ENV = "production";
+}
 
 export default defineConfig({
   testDir: "./tests/e2e",
