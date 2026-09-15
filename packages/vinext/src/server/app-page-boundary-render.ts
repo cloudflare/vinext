@@ -49,6 +49,7 @@ import {
 import {
   createAppPageFontData,
   createAppPageRscErrorTracker,
+  createAppPageSsrErrorHandler,
   renderAppPageHtmlResponse,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
@@ -59,6 +60,7 @@ import {
   type AppPageRouteWiringRoute,
 } from "./app-page-route-wiring.js";
 import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = ComponentType<any>;
@@ -116,7 +118,11 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   applyFileBasedMetadata?: ApplyAppPageFileBasedMetadata;
   buildFontLinkHeader: (preloads: readonly AppPageFontPreload[] | null | undefined) => string;
   clearRequestContext: () => void;
-  createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
+  createRscOnErrorHandler: (
+    pathname: string,
+    routePath: string,
+    overrides?: AppRenderErrorContextOverrides,
+  ) => AppPageBoundaryOnError;
   getAndClearPendingCookies?: () => string[];
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
@@ -437,6 +443,11 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           getStyles: options.getFontStyles,
         });
         const ssrHandler = await options.loadSsrHandler();
+        const onSsrError = options.createRscOnErrorHandler(
+          pathname,
+          options.routePattern ?? pathname,
+          { renderSource: "server-rendering" },
+        );
         return renderAppPageHtmlResponse({
           clearRequestContext: options.clearRequestContext,
           fontData,
@@ -454,6 +465,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           ssrHandler,
           status: responseStatus,
           initialDevServerError: options.initialDevServerError,
+          onSsrError: createAppPageSsrErrorHandler(onSsrError, rscErrorTracker.isCapturedError),
         });
       },
       createRscOnErrorHandler() {

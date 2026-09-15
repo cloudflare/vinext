@@ -942,8 +942,8 @@ const __loadGlobalNotFoundModule = ${
     globalNotFoundImportSpecifier ? `() => import(${globalNotFoundImportSpecifier})` : "null"
   };
 
-const createRscOnErrorHandler = (request, pathname, routePath) =>
-  createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
+const createRscOnErrorHandler = (request, pathname, routePath, overrides) =>
+  createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath, overrides);
 
 const __fallbackRenderer = __createAppFallbackRenderer({
   ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
@@ -978,8 +978,8 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   clearRequestContext() {
     __clearRequestContext();
   },
-  createRscOnErrorHandler(request, pathname, routePath) {
-    return createRscOnErrorHandler(request, pathname, routePath);
+  createRscOnErrorHandler(request, pathname, routePath, overrides) {
+    return createRscOnErrorHandler(request, pathname, routePath, overrides);
   },
 });
 
@@ -1210,8 +1210,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       clearRequestContext() {
         __clearRequestContext();
       },
-      createRscOnErrorHandler(pathname, routePath) {
-        return createRscOnErrorHandler(request, pathname, routePath);
+      createRscOnErrorHandler(pathname, routePath, overrides) {
+        return createRscOnErrorHandler(request, pathname, routePath, overrides);
       },
       debugClassification: __classDebug,
       draftModeSecret: __draftModeSecret,
@@ -1494,6 +1494,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       readFormDataWithLimit: __readFormDataWithLimit,
       reportRequestError: _reportRequestError,
       request,
+      routePattern: routeMatch?.route.pattern ?? cleanPathname,
       setHeadersAccessPhase,
     });
   },
@@ -1602,8 +1603,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       createPayloadRouteId(pathnameToRender, currentInterceptionContext) {
         return __AppElementsWire.encodeRouteId(pathnameToRender, currentInterceptionContext);
       },
-      createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
-        return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+      createRscOnErrorHandler(actionRequest, actionPathname, routePattern, overrides) {
+        return createRscOnErrorHandler(actionRequest, actionPathname, routePattern, overrides);
       },
       createTemporaryReferenceSet,
       decodeReply,

@@ -34,6 +34,7 @@ import {
   buildAppPageLinkHeader,
   createAppPageFontData,
   createAppPageRscErrorTracker,
+  createAppPageSsrErrorHandler,
   deferUntilStreamConsumed,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
@@ -85,6 +86,7 @@ import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-obse
 import { peekDynamicUsage } from "vinext/shims/headers";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
+import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -121,7 +123,11 @@ type RenderAppPageLifecycleOptions = {
   consumeRenderObservationState?: () => AppPageRenderObservationState;
   /** Read and clear any invalid dynamic usage error recorded during render (dev-only). */
   consumeInvalidDynamicUsageError?: () => unknown;
-  createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
+  createRscOnErrorHandler: (
+    pathname: string,
+    routePath: string,
+    overrides?: AppRenderErrorContextOverrides,
+  ) => AppPageBoundaryOnError;
   getFontLinks: () => string[];
   getFontPreloads: () => AppPageFontPreload[];
   getFontStyles: () => string[];
@@ -734,7 +740,17 @@ export async function renderAppPageLifecycle(
   });
 
   const compileEnd = options.isProduction ? undefined : performance.now();
-  const baseOnError = options.createRscOnErrorHandler(options.cleanPathname, options.routePattern);
+  const errorContextOverrides: AppRenderErrorContextOverrides = {
+    ...(options.isProgressiveActionRender
+      ? { renderSource: "react-server-components-payload", routeType: "action" }
+      : {}),
+    ...(options.isPrerender ? { revalidateReason: "stale" } : {}),
+  };
+  const baseOnError = options.createRscOnErrorHandler(
+    options.cleanPathname,
+    options.routePattern,
+    errorContextOverrides,
+  );
   const rscErrorTracker = createAppPageRscErrorTracker(baseOnError);
   // Defensive wrap for standalone callers. In the normal dispatch path this is
   // a no-op since dispatchAppPage already activated dedupe. Note that
@@ -1009,6 +1025,14 @@ export async function renderAppPageLifecycle(
     },
     async renderHtmlStream() {
       const ssrHandler = await options.loadSsrHandler();
+      const onSsrError = options.createRscOnErrorHandler(
+        options.cleanPathname,
+        options.routePattern,
+        {
+          ...errorContextOverrides,
+          renderSource: "server-rendering",
+        },
+      );
       return renderAppPageHtmlStream({
         capturedRscDataRef,
         getInitialNavigationCacheMetadata: () => {
@@ -1078,6 +1102,7 @@ export async function renderAppPageLifecycle(
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
+        onSsrError: createAppPageSsrErrorHandler(onSsrError, rscErrorTracker.isCapturedError),
       });
     },
     renderSpecialErrorResponse(specialError) {

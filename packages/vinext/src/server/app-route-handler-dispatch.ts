@@ -59,6 +59,10 @@ import { buildPageCacheTags } from "./implicit-tags.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { reportRequestError } from "./instrumentation.js";
 import { applyCdnResponseBuildIdentityHeaders } from "./cache-control.js";
+import {
+  isOnDemandRevalidateRequest,
+  PRERENDER_REVALIDATE_HEADER,
+} from "./revalidation-request.js";
 
 type AppRouteHandlerDispatchRoute = {
   pattern: string;
@@ -242,6 +246,26 @@ export async function dispatchAppRouteHandler(
   }
 
   const resolvedHandlerFn = isAppRouteHandlerFunction(handlerFn) ? handlerFn : undefined;
+  const shouldReadRouteCache =
+    revalidateSeconds !== null &&
+    !getRouteCacheabilityDynamicReason() &&
+    shouldReadAppRouteHandlerCache({
+      dynamicConfig: handler.dynamic,
+      handlerFn: resolvedHandlerFn,
+      isAutoHead,
+      isKnownDynamic: isKnownDynamicAppRoute(route.pattern),
+      isDraftMode: isDraftMode || hasDraftModeTransition,
+      isProduction,
+      method,
+      revalidateSeconds,
+    });
+  const revalidateReason = isOnDemandRevalidateRequest(
+    options.request.headers.get(PRERENDER_REVALIDATE_HEADER),
+  )
+    ? "on-demand"
+    : shouldReadRouteCache
+      ? "stale"
+      : undefined;
 
   // Route handler fetches observe the handler's segment config the same way
   // page fetches do: upstream's app-route module copies `userland.fetchCache`
@@ -255,21 +279,7 @@ export async function dispatchAppRouteHandler(
   setCurrentFetchRevalidate(configuredRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
-  if (
-    revalidateSeconds !== null &&
-    !getRouteCacheabilityDynamicReason() &&
-    shouldReadAppRouteHandlerCache({
-      dynamicConfig: handler.dynamic,
-      handlerFn: resolvedHandlerFn,
-      isAutoHead,
-      isKnownDynamic: isKnownDynamicAppRoute(route.pattern),
-      isDraftMode: isDraftMode || hasDraftModeTransition,
-      isProduction,
-      method,
-      revalidateSeconds,
-    }) &&
-    resolvedHandlerFn
-  ) {
+  if (shouldReadRouteCache && resolvedHandlerFn) {
     const cachedRouteResponse = await readAppRouteHandlerCacheResponse({
       basePath: options.basePath,
       buildPageCacheTags(pathname, extraTags) {
@@ -363,6 +373,7 @@ export async function dispatchAppRouteHandler(
       request: options.request,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,
+      revalidateReason,
       routePattern: route.pattern,
       setHeadersAccessPhase,
     });
