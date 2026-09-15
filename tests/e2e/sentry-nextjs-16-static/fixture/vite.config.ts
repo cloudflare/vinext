@@ -1,4 +1,4 @@
 import { defineConfig } from "vite";
 import vinext from "vinext";
 
-export default defineConfig({ plugins: [vinext()] });
+export default defineConfig({ plugins: [vinext({ appDir: import.meta.dirname })] });

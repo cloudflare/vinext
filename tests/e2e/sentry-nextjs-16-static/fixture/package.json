@@ -1,18 +1,7 @@
 {
   "name": "nextjs-16-static",
-  "version": "0.1.0",
   "private": true,
-  "scripts": {
-    "dev": "next dev",
-    "build": "next build > .tmp_build_stdout 2> .tmp_build_stderr || (cat .tmp_build_stdout && cat .tmp_build_stderr && exit 1)",
-    "clean": "npx rimraf node_modules pnpm-lock.yaml .tmp_dev_server_logs",
-    "start": "next start",
-    "lint": "eslint",
-    "test:prod": "TEST_ENV=production playwright test",
-    "test:dev": "TEST_ENV=development playwright test",
-    "test:build": "pnpm install && pnpm build",
-    "test:assert": "pnpm test:prod && pnpm test:dev"
-  },
+  "type": "module",
   "//": "Pin `ioredis` to 5.10.1: it's the last version before the driver publishes its own native diagnostics channels; orchestrion's config covers `ioredis <5.11.0`.",
   "dependencies": {
     "@sentry/core": "catalog:sentry-nextjs-16-static",
@@ -41,9 +30,5 @@
     "eslint-config-next": "^16",
     "typescript": "^5",
     "vite-plus": "catalog:"
-  },
-  "volta": {
-    "extends": "../../package.json"
-  },
-  "type": "module"
+  }
 }

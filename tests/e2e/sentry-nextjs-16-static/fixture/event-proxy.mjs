@@ -7,6 +7,11 @@ const errors = [];
 const items = [];
 const decoder = new TextDecoder();
 
+function getNanosecondTimestamp() {
+  const [seconds, nanoseconds] = process.hrtime();
+  return seconds * 1e9 + nanoseconds;
+}
+
 function decodePayload(payload) {
   if (!(payload instanceof Uint8Array)) return payload;
   try {
@@ -49,7 +54,7 @@ http
     request.on("end", () => {
       const body = Buffer.concat(chunks);
       const envelope = request.headers["content-encoding"] === "gzip" ? gunzipSync(body) : body;
-      const receivedAt = Date.now();
+      const receivedAt = getNanosecondTimestamp();
       for (const item of readEnvelopeItems(envelope)) {
         items.push({ ...item, receivedAt });
         const destination = item.header.type === "transaction" ? transactions : errors;

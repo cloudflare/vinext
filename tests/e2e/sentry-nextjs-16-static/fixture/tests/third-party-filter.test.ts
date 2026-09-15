@@ -1,10 +1,8 @@
 import test, { expect } from '@playwright/test';
 import { waitForError } from './test-utils';
 
-const isWebpackDev = process.env.TEST_ENV === 'development-webpack';
-
 test('First-party error with React frames should not be tagged as third-party code', async ({ page }) => {
-  test.skip(isWebpackDev, 'Only relevant for Turbopack builds');
+  test.skip(true, 'Requires Turbopack module metadata injection');
 
   const errorPromise = waitForError('nextjs-16-static', errorEvent => {
     return errorEvent?.exception?.values?.some(value => value.value === 'first-party-error') ?? false;

@@ -80,12 +80,17 @@ type StreamedSpan = {
   trace_id: string;
 };
 
+function getNanosecondTimestamp(): number {
+  const [seconds, nanoseconds] = process.hrtime();
+  return seconds * 1e9 + nanoseconds;
+}
+
 async function waitForEvent<T>(
   endpoint: "errors" | "transactions",
   predicate: (event: T) => boolean | Promise<boolean>,
 ): Promise<T> {
-  const after = Date.now();
-  const deadline = after + 10_000;
+  const after = getNanosecondTimestamp();
+  const deadline = Date.now() + 10_000;
   let observed: T[] = [];
 
   while (Date.now() < deadline) {
@@ -120,8 +125,8 @@ export async function waitForError(
 async function waitForItem(
   predicate: (item: EnvelopeItem) => boolean | Promise<boolean>,
 ): Promise<EnvelopeItem> {
-  const after = Date.now();
-  const deadline = after + 15_000;
+  const after = getNanosecondTimestamp();
+  const deadline = Date.now() + 15_000;
 
   while (Date.now() < deadline) {
     const response = await fetch(`http://127.0.0.1:3031/items?after=${after}`);
