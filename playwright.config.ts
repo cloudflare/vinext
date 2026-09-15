@@ -222,6 +222,36 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "sentry-nextjs-16-static": {
+    testDir: "./tests/e2e/sentry-nextjs-16-static/fixture/tests",
+    testMatch: ["server-components.test.ts"],
+    // The transaction-shape test targets unreleased Sentry SDK attribute
+    // renames. Keep it in the imported file for comparison, but run the two
+    // framework-span tests requested by Sentry against their published SDK.
+    grep: /server component and metadata generation functions/,
+    use: { baseURL: "http://localhost:4211" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../fixtures/cf-sentry-app/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && node ../../../../packages/vinext/dist/cli.js start --port 4211",
+      cwd: "./tests/e2e/sentry-nextjs-16-static/fixture",
+      port: 4211,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      env: {
+        NEXT_PUBLIC_E2E_TEST_DSN: "http://public@localhost:3031/1",
+        TEST_ENV: "production",
+      },
+    },
+    additionalServers: [
+      {
+        command: "node event-proxy.mjs",
+        cwd: "./tests/e2e/sentry-nextjs-16-static/fixture",
+        port: 3031,
+        reuseExistingServer: false,
+        timeout: 30_000,
+      },
+    ],
+  },
   "cloudflare-dev": {
     testDir: "./tests/e2e",
     testMatch: [
@@ -541,7 +571,13 @@ export default defineConfig({
   webServer: [
     ...new Map(
       activeProjects
-        .map((name) => projectServers[name].server)
+        .flatMap((name) => {
+          const project = projectServers[name];
+          return [
+            project.server,
+            ...("additionalServers" in project ? project.additionalServers : []),
+          ];
+        })
         .filter(
           (server): server is NonNullable<(typeof projectServers)[ProjectName]["server"]> =>
             server != null,

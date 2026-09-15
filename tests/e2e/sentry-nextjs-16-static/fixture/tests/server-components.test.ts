@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { waitForTransaction } from '@sentry-internal/test-utils';
+import { waitForTransaction } from './test-utils';
 import { isTurbopackDevMode } from './isDevMode';
 
 test('Sends a transaction for a request to app router with URL', async ({ page }) => {

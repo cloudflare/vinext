@@ -1,4 +1,4 @@
-import { withSentryConfig } from '@sentry/nextjs/config';
+import { withSentryConfig } from '@sentry/nextjs';
 import type { NextConfig } from 'next';
 
 // Simulate Vercel environment for cron monitoring tests
