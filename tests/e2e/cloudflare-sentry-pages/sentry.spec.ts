@@ -124,16 +124,91 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
     expect(transaction.traceId).toMatch(/^[0-9a-f]{32}$/);
     expect(transaction.spanId).toMatch(/^[0-9a-f]{16}$/);
 
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Node.runHandler",
+    );
+    expect(handlerSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.span_name": "executing api route (pages) /api/trace/[slug]",
+        "next.span_type": "Node.runHandler",
+      }),
+      name: "executing api route (pages) /api/trace/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
     expect(transaction.spans).toContainEqual(
       expect.objectContaining({
         name: "fixture.pages.child",
         traceId: transaction.traceId,
-        parentSpanId: transaction.spanId,
+        parentSpanId: handlerSpan?.spanId,
         operation: "fixture.child",
         attributes: expect.objectContaining({
           "fixture.router": "pages",
           "fixture.slug": "product-42",
         }),
+      }),
+    );
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  test("parents getServerSideProps application spans beneath the framework span", async ({
+    request,
+  }) => {
+    const traceRes = await request.get("/trace-gssp/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-gssp/[slug]");
+    const dataSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Render.getServerSideProps",
+    );
+    expect(dataSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.route": "/trace-gssp/[slug]",
+        "next.span_name": "getServerSideProps /trace-gssp/[slug]",
+        "next.span_type": "Render.getServerSideProps",
+      }),
+      name: "getServerSideProps /trace-gssp/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({ "fixture.slug": "product-42" }),
+        name: "fixture.pages.gssp.child",
+        operation: "fixture.gssp",
+        parentSpanId: dataSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  test("traces request-time getStaticProps for a blocking fallback", async ({ request }) => {
+    const slug = `runtime-${Date.now()}`;
+    const traceRes = await request.get(`/trace-gsp/${slug}`);
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-gsp/[slug]");
+    const dataSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Render.getStaticProps",
+    );
+    expect(dataSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.route": "/trace-gsp/[slug]",
+        "next.span_name": "getStaticProps /trace-gsp/[slug]",
+        "next.span_type": "Render.getStaticProps",
+      }),
+      name: "getStaticProps /trace-gsp/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({ "fixture.slug": slug }),
+        name: "fixture.pages.gsp.child",
+        operation: "fixture.gsp",
+        parentSpanId: dataSpan?.spanId,
+        traceId: transaction.traceId,
       }),
     );
   });
