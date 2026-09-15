@@ -448,6 +448,23 @@ describe("reportRequestError", () => {
     expect(onRequestError).toHaveBeenCalledWith(error, sampleRequest, sampleContext);
   });
 
+  it("reports route patterns in Next.js format", async () => {
+    const onRequestError = vi.fn();
+    const runner = {
+      import: vi.fn().mockResolvedValue({ onRequestError }),
+    };
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
+
+    await reportRequestError(new Error("boom"), sampleRequest, {
+      ...sampleContext,
+      routePath: "/blog/:slug/:rest+/:optional*",
+    });
+
+    expect(onRequestError.mock.calls[0]?.[2].routePath).toBe(
+      "/blog/[slug]/[...rest]/[[...optional]]",
+    );
+  });
+
   it("no-ops when no handler is registered", async () => {
     // No runInstrumentation called, so _onRequestError is null.
     // Should not throw.
