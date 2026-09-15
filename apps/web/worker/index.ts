@@ -2,26 +2,6 @@
 import handler from "vinext/server/fetch-handler";
 import { addPreviewRobotsHeader, getCanonicalRedirect } from "./seo";
 
-type Env = {
-  ASSETS: Fetcher;
-  IMAGES: {
-    input(stream: ReadableStream): {
-      transform(options: Record<string, unknown>): {
-        output(options: { format: string; quality: number }): Promise<{ response(): Response }>;
-      };
-    };
-  };
-  DB: D1Database;
-  VINEXT_KV_CACHE: KVNamespace;
-  PERFORMANCE_PROFILES: R2Bucket;
-  COMPAT_INGEST_SECRET?: string;
-};
-
-type ExecutionContext = {
-  waitUntil(promise: Promise<unknown>): void;
-  passThroughOnException(): void;
-};
-
 async function sweepPerformanceProfiles(env: Env): Promise<void> {
   const { results } = await env.DB.prepare(`
     SELECT object_key

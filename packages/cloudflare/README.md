@@ -43,10 +43,9 @@ export default defineConfig({
 `cdnAdapter()` is optional. Configuring it asks the Cloudflare build for two
 Worker entrypoints: the default entrypoint runs middleware and request-time
 routing with caching disabled, while `VinextCachedResponse` lazily loads the
-render stage with Workers Cache enabled. These settings are written to the
-generated `dist/server/wrangler.json`; do not enable Workers Cache on the
-default entrypoint in your source config. The generated config also declares
-the version metadata binding used for staged warmup.
+render stage with Workers Cache enabled. Legacy Cloudflare Vite plugin builds
+write these settings and the version metadata binding to the generated
+`dist/server/wrangler.json`.
 
 ```ts
 import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
@@ -54,10 +53,37 @@ import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
 vinext({ cache: { cdn: cdnAdapter() } });
 ```
 
+Cloudflare Vite plugin v2 uses Build Output and treats `cloudflare.config.ts`
+as the deployment source of truth. Declare the equivalent policies there:
+
+```ts
+import {
+  bindings,
+  defineWorker,
+  exports as workerExports,
+} from "@cloudflare/vite-plugin/experimental-config";
+import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
+
+const workersCache = createWorkersCacheConfig({
+  bindings,
+  exports: workerExports,
+});
+
+export default defineWorker({
+  // ...
+  ...workersCache,
+  env: {
+    ...workersCache.env,
+    // Other application bindings...
+  },
+});
+```
+
 The generated version metadata binding lets staged warmup prove that every
 discovery, probe, and fill request reached the uploaded Worker version. Pass
-`versionMetadataBinding` to `cdnAdapter()` only when the deployment needs a
-custom binding name.
+the same `versionMetadataBinding` to `cdnAdapter()` and
+`createWorkersCacheConfig()` only when the deployment needs a custom binding
+name.
 
 Use `--experimental-warm-cdn-cache` for the two-stage deploy. The default flow
 makes one final fill request per admitted identity. Add `--warm-cdn-certify`
@@ -91,6 +117,33 @@ npx @vinext/cloudflare deploy
 `vinext-cloudflare deploy` never creates, rewrites, or deploys the Response
 Store Worker.
 
+Cloudflare Vite plugin v2 projects can define the same service-binding setup in
+`cloudflare.config.ts` without a second Wrangler config:
+
+```ts
+import { bindings, defineWorker, exports } from "@cloudflare/vite-plugin/experimental-config";
+import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
+
+const responseStore = createWorkersResponseStoreServiceBindingConfig({
+  worker: {
+    name: "example-response-store",
+    compatibilityDate: "2026-09-15",
+    compatibilityFlags: ["nodejs_compat"],
+  },
+  bucket: "example-response-store-cache-bodies",
+  bindings,
+  exports,
+});
+
+export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
+
+export default defineWorker({
+  ...responseStore.applicationWorker,
+  name: "example",
+  entrypoint: "./worker.ts",
+});
+```
+
 To deploy storage and cache entrypoints with the application instead, select
 self-contained mode:
 
@@ -99,6 +152,9 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 
 vinext({ cache: responseStoreAdapter({ mode: "self-contained" }) });
 ```
+
+The corresponding typed config helper is
+`createWorkersResponseStoreSelfContainedConfig`.
 
 In this mode `vinext init` places the required R2, SQLite Durable Object,
 Workers Cache entrypoint, and version-metadata configuration in
@@ -111,6 +167,24 @@ Deploy Cloudflare Workers projects with the package CLI:
 ```sh
 npx @vinext/cloudflare deploy
 ```
+
+Projects with `cloudflare.config.ts` opt into the experimental Cloudflare Vite
+plugin v2 path and deploy their generated Build Output with `cf`. Existing
+Wrangler-configured projects continue to use Wrangler. A normal typed-config
+deploy does not need `wrangler.jsonc`.
+
+Named auxiliary Workers in Build Output are deployed with `cf` before the entry
+Worker. This currently requires vinext to project each auxiliary Worker as the
+default Build Output for a separate `cf deploy --prebuilt`, because `cf@0.10.0`
+only deploys the default Worker. The generated `cloudflare.config.ts` remains
+the source of truth; no auxiliary Wrangler config is required.
+
+Experimental staged CDN warming is currently a hybrid flow: `cf` builds and
+uploads the Worker version, while Wrangler reads deployment status, stages and
+promotes traffic, and applies triggers when needed. Until `cf` supports those
+control-plane operations, warming also needs an equivalent Wrangler config for
+trigger and version-metadata configuration. This is an alternative path for
+trying `cf`, not a replacement for vinext's default Wrangler deployment path.
 
 With Vite+, use `vpx @vinext/cloudflare deploy`, or
 `vp exec vinext-cloudflare deploy` when running the locally installed bin.

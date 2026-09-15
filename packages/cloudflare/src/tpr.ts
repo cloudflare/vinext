@@ -290,10 +290,7 @@ function extractEnvConfigs(envs: unknown): Record<string, WranglerEnvironmentCon
   const result: Record<string, WranglerEnvironmentConfig> = {};
   for (const [envName, rawConfig] of Object.entries(envs)) {
     if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) continue;
-    const envConfig = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
-    if (envConfig.name || envConfig.customDomain) {
-      result[envName] = envConfig;
-    }
+    result[envName] = extractEnvironmentConfig(rawConfig as Record<string, unknown>);
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
@@ -425,32 +422,54 @@ function extractEnvConfigsFromTOML(
   const result: Record<string, WranglerEnvironmentConfig> = {};
 
   for (const section of getTomlSections(content)) {
-    const envName = section.header.match(/^env\.([^.]+)$/)?.[1];
-    if (envName) {
-      const envConfig = result[envName] ?? {};
+    const sectionPath = parseTomlDottedKey(section.header);
+    if (sectionPath?.[0] !== "env" || !sectionPath[1]) continue;
+
+    const envName = sectionPath[1];
+    const suffix = sectionPath.slice(2).join(".");
+    const envConfig = result[envName] ?? {};
+    if (suffix === "") {
       const nameMatch = section.body.match(/^name\s*=\s*"([^"]+)"/m);
       if (nameMatch) envConfig.name = nameMatch[1];
       const domain =
         extractTomlScalarRouteDomain(section.body) ?? extractTomlRoutesArrayDomain(section.body);
       if (domain) envConfig.customDomain = domain;
-      if (envConfig.name || envConfig.customDomain) {
-        result[envName] = envConfig;
-      }
-      continue;
-    }
-
-    const routesEnvName = section.header.match(/^env\.([^.]+)\.routes$/)?.[1];
-    if (routesEnvName) {
-      const envConfig = result[routesEnvName] ?? {};
+    } else if (suffix === "routes") {
       const domain = extractTomlRouteBlockDomain(section.body);
       if (domain) envConfig.customDomain = domain;
-      if (envConfig.name || envConfig.customDomain) {
-        result[routesEnvName] = envConfig;
-      }
     }
+    result[envName] = envConfig;
   }
 
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseTomlDottedKey(key: string): string[] | null {
+  const parts: string[] = [];
+  for (let i = 0; i < key.length;) {
+    while (/\s/.test(key[i] ?? "")) i++;
+    const quote = key[i] === '"' || key[i] === "'" ? key[i++] : null;
+    const start = i;
+    let escaped = false;
+    while (i < key.length) {
+      if (quote ? key[i] === quote && !escaped : key[i] === "." || /\s/.test(key[i])) break;
+      escaped = quote === '"' && key[i] === "\\" && !escaped;
+      i++;
+    }
+    if (i === start) return null;
+    try {
+      parts.push(
+        quote === '"' ? (JSON.parse(`"${key.slice(start, i)}"`) as string) : key.slice(start, i),
+      );
+    } catch {
+      return null;
+    }
+    if (quote && key[i++] !== quote) return null;
+    while (/\s/.test(key[i] ?? "")) i++;
+    if (i === key.length) return parts;
+    if (key[i++] !== ".") return null;
+  }
+  return parts.length > 0 ? parts : null;
 }
 
 function getTomlSections(content: string): Array<{ header: string; body: string }> {
@@ -479,13 +498,41 @@ function getTomlSections(content: string): Array<{ header: string; body: string 
 }
 
 function parseTomlSectionHeader(line: string): string | null {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return null;
-  const isArrayHeader = trimmed.startsWith("[[") && trimmed.endsWith("]]");
+  const trimmed = line.trimStart();
+  const isArrayHeader = trimmed.startsWith("[[");
+  if (!isArrayHeader && !trimmed.startsWith("[")) return null;
+
   const start = isArrayHeader ? 2 : 1;
-  const end = isArrayHeader ? trimmed.length - 2 : trimmed.length - 1;
-  const header = trimmed.slice(start, end).trim();
-  return header.length > 0 ? header : null;
+  let basicQuoted = false;
+  let literalQuoted = false;
+  let escaped = false;
+  for (let i = start; i < trimmed.length; i++) {
+    const char = trimmed[i];
+    if (basicQuoted) {
+      if (char === '"' && !escaped) basicQuoted = false;
+      escaped = char === "\\" && !escaped;
+      continue;
+    }
+    if (literalQuoted) {
+      if (char === "'") literalQuoted = false;
+      continue;
+    }
+    if (char === '"') {
+      basicQuoted = true;
+      continue;
+    }
+    if (char === "'") {
+      literalQuoted = true;
+      continue;
+    }
+    if (char !== "]" || (isArrayHeader && trimmed[i + 1] !== "]")) continue;
+
+    const remainder = trimmed.slice(i + (isArrayHeader ? 2 : 1)).trim();
+    if (remainder !== "" && !remainder.startsWith("#")) return null;
+    const header = trimmed.slice(start, i).trim();
+    return header.length > 0 ? header : null;
+  }
+  return null;
 }
 
 function extractTomlScalarRouteDomain(section: string): string | null {

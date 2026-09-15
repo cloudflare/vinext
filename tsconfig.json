@@ -22,5 +22,13 @@
       "@vinext/cloudflare/images/*": ["./packages/cloudflare/src/images/*"]
     }
   },
-  "exclude": ["node_modules", "dist", "fixtures", "tests/fixtures", "benchmarks", "examples"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "fixtures",
+    "tests/fixtures",
+    "benchmarks",
+    "examples",
+    "apps/web/worker-configuration.d.ts"
+  ]
 }

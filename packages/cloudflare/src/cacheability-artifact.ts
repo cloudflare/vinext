@@ -15,6 +15,14 @@ type JavaScriptToken = {
   value: string;
 };
 
+export type CloudflareDeploymentTool = "cf" | "wrangler";
+
+type GeneratedWorkerArtifact = {
+  configPath: string;
+  main: string;
+  serverDirectory: string;
+};
+
 function tokenizeStaticImports(source: string): JavaScriptToken[] {
   const tokens: JavaScriptToken[] = [];
   let index = 0;
@@ -141,7 +149,10 @@ function hasStaticModuleSpecifier(source: string, expected: string): boolean {
   return false;
 }
 
-function resolveGeneratedServerConfig(root: string, configuredPath: string | undefined): string {
+function resolveGeneratedWranglerArtifact(
+  root: string,
+  configuredPath: string | undefined,
+): GeneratedWorkerArtifact {
   const distDirectory = path.join(root, "dist");
   const configPath = path.resolve(root, configuredPath ?? "dist/server/wrangler.json");
   const relativeConfigPath = path.relative(distDirectory, configPath);
@@ -155,11 +166,6 @@ function resolveGeneratedServerConfig(root: string, configuredPath: string | und
       `Two-stage CDN warming requires the generated Wrangler config at ${path.relative(root, configPath)}. Rebuild the app before deploying.`,
     );
   }
-  return configPath;
-}
-
-function assertManifestModuleReachable(configPath: string): void {
-  const serverDirectory = path.dirname(configPath);
   let config: unknown;
   try {
     config = JSON.parse(fs.readFileSync(configPath, "utf8"));
@@ -175,9 +181,51 @@ function assertManifestModuleReachable(configPath: string): void {
   if (typeof main !== "string" || main.length === 0) {
     throw new Error("Two-stage CDN warming requires a generated Wrangler main module.");
   }
+  return { configPath, main, serverDirectory: path.dirname(configPath) };
+}
+
+function resolveBuildOutputArtifact(root: string): GeneratedWorkerArtifact {
+  const outputDirectory = path.join(root, ".cloudflare", "output");
+  const configPaths = fs.existsSync(outputDirectory)
+    ? fs
+        .readdirSync(outputDirectory, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => path.join(outputDirectory, entry.name, "workers", "default", "config.json"))
+        .filter((candidate) => fs.existsSync(candidate) && fs.lstatSync(candidate).isFile())
+    : [];
+  if (configPaths.length !== 1) {
+    throw new Error(
+      "Two-stage CDN warming requires one default Worker Build Output config under .cloudflare/output/. Rebuild the app before deploying.",
+    );
+  }
+  const configPath = configPaths[0]!;
+  let config: unknown;
+  try {
+    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (cause) {
+    throw new Error("Two-stage CDN warming could not parse the generated Build Output config.", {
+      cause,
+    });
+  }
+  const manifest =
+    config && typeof config === "object" && !Array.isArray(config)
+      ? (config as Record<string, unknown>).manifest
+      : undefined;
+  const main =
+    manifest && typeof manifest === "object" && !Array.isArray(manifest)
+      ? (manifest as Record<string, unknown>).mainModule
+      : undefined;
+  if (typeof main !== "string" || main.length === 0) {
+    throw new Error("Two-stage CDN warming requires a generated Build Output main module.");
+  }
+  return { configPath, main, serverDirectory: path.join(path.dirname(configPath), "bundle") };
+}
+
+function assertManifestModuleReachable(artifact: GeneratedWorkerArtifact): void {
+  const { main, serverDirectory } = artifact;
   const mainPath = path.resolve(serverDirectory, main);
   if (!fs.existsSync(mainPath) || !fs.lstatSync(mainPath).isFile()) {
-    throw new Error("Two-stage CDN warming could not find the generated Wrangler main module.");
+    throw new Error("Two-stage CDN warming could not find the generated Worker main module.");
   }
   const viteManifestPath = path.join(serverDirectory, ".vite", "manifest.json");
   let viteManifest: Record<string, { dynamicImports?: unknown; file?: unknown; imports?: unknown }>;
@@ -237,10 +285,14 @@ export function writeCacheabilityManifestArtifact(
   root: string,
   configuredPath: string | undefined,
   manifest: CacheabilityManifest,
+  deploymentTool: CloudflareDeploymentTool = "wrangler",
 ): string {
-  const configPath = resolveGeneratedServerConfig(root, configuredPath);
-  assertManifestModuleReachable(configPath);
-  const serverDirectory = path.dirname(configPath);
+  const artifact =
+    deploymentTool === "cf"
+      ? resolveBuildOutputArtifact(root)
+      : resolveGeneratedWranglerArtifact(root, configuredPath);
+  assertManifestModuleReachable(artifact);
+  const { configPath, serverDirectory } = artifact;
   const manifestPath = path.join(serverDirectory, CACHEABILITY_MANIFEST_MODULE);
   if (!fs.existsSync(manifestPath) || !fs.lstatSync(manifestPath).isFile()) {
     throw new Error(

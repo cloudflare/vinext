@@ -30,6 +30,7 @@ export default defineConfig({
     singleQuote: false,
     trailingComma: "all",
     ignorePatterns: [
+      "apps/web/worker-configuration.d.ts",
       "tests/fixtures/ecosystem/**",
       "examples/**",
       "packages/types/next/upstream/**",
@@ -37,6 +38,7 @@ export default defineConfig({
   },
   lint: {
     ignorePatterns: [
+      "apps/web/worker-configuration.d.ts",
       "fixtures/ecosystem/**",
       "tests/fixtures/**",
       "tests/fixtures/ecosystem/**",
