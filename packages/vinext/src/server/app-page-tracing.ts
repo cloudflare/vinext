@@ -26,6 +26,36 @@ export function createAppPageRenderSpanDescriptor(
   } as const;
 }
 
+export function createGetLayoutOrPageModuleSpanDescriptor(segment: string) {
+  return {
+    attributes: { "next.segment": segment },
+    name: "resolve segment modules",
+    type: "NextNodeServer.getLayoutOrPageModule",
+  } as const;
+}
+
+export function createComponentTreeSpanDescriptor() {
+  return {
+    name: "build component tree",
+    type: "NextNodeServer.createComponentTree",
+  } as const;
+}
+
+export function traceCreateComponentTree<T>(callback: () => T): T {
+  return frameworkTracer.trace(createComponentTreeSpanDescriptor(), callback);
+}
+
+export function traceGetLayoutOrPageModule<T>(segment: string, callback: () => T): T {
+  return frameworkTracer.trace(createGetLayoutOrPageModuleSpanDescriptor(segment), callback);
+}
+
+export function resolveAppPageModuleTraceSegment(
+  routeSegments: readonly string[],
+  treePosition: number,
+): string {
+  return treePosition === 0 ? "" : (routeSegments[treePosition - 1] ?? "");
+}
+
 export function recordAppPageRenderError(span: FrameworkSpan, error: unknown): void {
   if (isAppRenderAbortError(error) || getDigestForWellKnownError(error) !== undefined) return;
   recordFrameworkSpanError(span, error);
