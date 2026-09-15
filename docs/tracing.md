@@ -37,7 +37,8 @@ The stable built-in child span types are:
 | `AppRender.fetch`                      | `Render.getStaticProps`             |
 | `AppRouteRouteHandlers.runHandler`     | `Render.renderDocument`             |
 | `ResolveMetadata.generateMetadata`     | `Node.runHandler`                   |
-| `NextNodeServer.getLayoutOrPageModule` | `NextNodeServer.findPageComponents` |
+| `NextNodeServer.findPageComponents`    | `NextNodeServer.findPageComponents` |
+| `NextNodeServer.getLayoutOrPageModule` |                                     |
 | `NextNodeServer.createComponentTree`   |                                     |
 | `NextNodeServer.startResponse`         |                                     |
 

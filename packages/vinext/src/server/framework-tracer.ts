@@ -6,6 +6,7 @@ type FrameworkSpanDescriptor = {
   attributes?: Readonly<Record<string, FrameworkSpanAttributeValue | undefined>>;
   kind?: "client" | "internal" | "server";
   name?: string;
+  recordErrors?: boolean;
   type: string;
 };
 
@@ -140,6 +141,7 @@ export function createFrameworkTracer(
     trace<T>(descriptor: FrameworkSpanDescriptor, callback: (span: FrameworkSpan) => T): T {
       const resolved = resolveDescriptor(descriptor);
       const backendSpans: FrameworkTracingBackendSpan[] = [];
+      const recordErrors = descriptor.recordErrors !== false;
 
       const enter = (index: number): T => {
         const integration = integrations[index];
@@ -155,11 +157,11 @@ export function createFrameworkTracer(
           const result = callback(span);
           if (!isPromiseLike(result)) return result;
           return Promise.resolve(result).catch((error: unknown) => {
-            recordFrameworkSpanError(span, error);
+            if (recordErrors) recordFrameworkSpanError(span, error);
             throw error;
           }) as T;
         } catch (error) {
-          recordFrameworkSpanError(span, error);
+          if (recordErrors) recordFrameworkSpanError(span, error);
           throw error;
         }
       };

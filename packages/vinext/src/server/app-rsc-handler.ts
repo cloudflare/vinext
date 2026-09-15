@@ -8,6 +8,7 @@ import type { BasePathMatchState } from "../config/config-matchers.js";
 import { requestContextFromRequest } from "../config/request-context.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
+import { traceFindPageComponents } from "./pages-execution-tracing.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
   getEffectiveRequestCookieHeader,
@@ -156,6 +157,7 @@ import {
   consumeResponseStageLinkProvenance,
   copyLinkHeaderProvenance,
 } from "./app-response-header-provenance.js";
+import { traceAppPageRender } from "./app-page-tracing.js";
 import { setFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
@@ -2106,6 +2108,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return new Response("", { status: 404 });
     }
 
+    setFrameworkRequestRoute("/404", isRscRequest);
     const notFoundResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     if (notFoundResponseStage) {
       const response = await notFoundResponseStage(responseStageRequest(), {
@@ -2127,13 +2130,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return composeResponseStageResponse(response);
     }
 
-    const renderedNotFoundResponse = await options.renderNotFound({
-      isRscRequest,
-      middlewareContext,
-      request,
-      route: null,
-      scriptNonce,
-    });
+    const renderedNotFoundResponse = await traceAppPageRender("/404", "render", () =>
+      options.renderNotFound({
+        isRscRequest,
+        middlewareContext,
+        request,
+        route: null,
+        scriptNonce,
+      }),
+    );
     if (renderedNotFoundResponse) return renderedNotFoundResponse;
 
     options.clearRequestContext();
@@ -2146,7 +2151,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
-  if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
+  if (options.ensureRouteLoaded) {
+    await traceFindPageComponents(route.pattern, () => options.ensureRouteLoaded!(route));
+  }
   const resolvedSearchParams = getResolvedSearchParams();
   if (isRouteTreePrefetchRequest(request) && !route.routeHandler) {
     const response = await createRouteTreePrefetchResponse(route, {

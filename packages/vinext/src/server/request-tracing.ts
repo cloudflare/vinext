@@ -63,7 +63,7 @@ export async function captureFrameworkRequestRoute<T>(
     {
       recordError() {},
       setRoute(nextRoute) {
-        if (nextRoute !== undefined) {
+        if (route === undefined && nextRoute !== undefined) {
           route = nextRoute;
           onRoute?.(nextRoute);
         }
@@ -193,7 +193,7 @@ export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T
                 carriedError = error;
               },
               setRoute(nextRoute, nextIsRsc) {
-                if (nextRoute !== undefined) route = nextRoute;
+                if (route === undefined && nextRoute !== undefined) route = nextRoute;
                 if (nextIsRsc !== undefined) isRsc = nextIsRsc;
               },
             },
@@ -253,8 +253,10 @@ function finalizeFrameworkRequestSpan<T>(options: {
   }
   if (carriedError) {
     span.recordException(carriedError);
-    span.setAttribute("error.type", carriedError.name);
-    span.setErrorStatus(carriedError.message);
+    if (status === undefined || status < 500) {
+      span.setAttribute("error.type", carriedError.name);
+      span.setErrorStatus(carriedError.message);
+    }
   }
   const name = route
     ? `${isRsc ? "RSC " : ""}${method} ${route}`
