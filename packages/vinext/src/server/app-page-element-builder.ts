@@ -338,6 +338,12 @@ export async function buildPageElements<
         ...(opts?.interceptNotFound
           ? {
               notFoundModule: opts.interceptNotFound,
+              notFoundModuleRouteSegments: (
+                opts.interceptNotFoundBranchSegments ??
+                opts.interceptSourcePageSegments ??
+                route.routeSegments ??
+                []
+              ).slice(0, opts.interceptNotFoundTreePosition ?? 0),
               notFoundParams: resolveAppPageBranchParams(
                 opts.interceptNotFoundBranchSegments ??
                   opts.interceptBranchSegments ??
@@ -426,6 +432,8 @@ export async function buildPageElements<
     return {
       boundaryModule,
       boundaryParams,
+      boundaryRouteSegments: (route.routeSegments ?? []).slice(0, boundaryTreePosition ?? 0),
+      errorConvention: "not-found" as const,
       layoutModules: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
       parallelBranches: activeParallelRouteHeadInputs,

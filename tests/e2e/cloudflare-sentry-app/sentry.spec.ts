@@ -42,7 +42,11 @@ async function expectErrorTraceCorrelation(
     .toBe(true);
 }
 
-async function expectReportedTransaction(request: APIRequestContext, name: string) {
+async function expectReportedTransaction(
+  request: APIRequestContext,
+  name: string,
+  predicate: (transaction: ReportedTransaction) => boolean = () => true,
+) {
   let transaction: ReportedTransaction | undefined;
 
   await expect
@@ -50,7 +54,9 @@ async function expectReportedTransaction(request: APIRequestContext, name: strin
       const stateRes = await request.get("/api/sentry-test-state");
       expect(stateRes.status()).toBe(200);
       const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
-      transaction = state.transactions.find((candidate) => candidate.name === name);
+      transaction = state.transactions.find(
+        (candidate) => candidate.name === name && predicate(candidate),
+      );
       return transaction !== undefined;
     })
     .toBe(true);
@@ -244,6 +250,49 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
       parentSpanId: renderSpan?.spanId,
       traceId: transaction.traceId,
     });
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  test("reports generated metadata beneath the render framework span", async ({ request }) => {
+    const traceRes = await request.get("/trace-metadata/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(
+      request,
+      "GET /trace-metadata/[slug]",
+      ({ spans }) =>
+        spans.some(
+          ({ attributes }) => attributes["next.span_type"] === "ResolveMetadata.generateMetadata",
+        ),
+    );
+    const renderSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+    );
+    const metadataSpan = transaction.spans.find(
+      ({ attributes }) =>
+        attributes["next.span_type"] === "ResolveMetadata.generateMetadata" &&
+        attributes["next.page"] === "/trace-metadata/[slug]/page",
+    );
+    expect(metadataSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.page": "/trace-metadata/[slug]/page",
+        "next.span_name": "generateMetadata /trace-metadata/[slug]/page",
+        "next.span_type": "ResolveMetadata.generateMetadata",
+      }),
+      name: "generateMetadata /trace-metadata/[slug]/page",
+      parentSpanId: renderSpan?.spanId,
+      traceId: transaction.traceId,
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({ "fixture.slug": "product-42" }),
+        name: "fixture.app.metadata.child",
+        operation: "fixture.metadata",
+        parentSpanId: metadataSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
   });
 
   test("does not emit an App render span for an RSC payload request", async ({ request }) => {
