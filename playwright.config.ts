@@ -222,6 +222,32 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "sentry-nextjs-16-static": {
+    testDir: "./tests/e2e/sentry-nextjs-16-static/fixture/tests",
+    use: { baseURL: "http://localhost:3030" },
+    server: {
+      command:
+        "test -e node_modules && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && node ../../../../packages/vinext/dist/cli.js start --port 3030 --hostname ::",
+      cwd: "./tests/e2e/sentry-nextjs-16-static/fixture",
+      port: 3030,
+      reuseExistingServer: false,
+      timeout: 120_000,
+      env: {
+        NEXT_PUBLIC_E2E_TEST_DSN: "http://public@localhost:3031/1",
+        PORT: "3030",
+        TEST_ENV: "production",
+      },
+    },
+    additionalServers: [
+      {
+        command: "node event-proxy.mjs",
+        cwd: "./tests/e2e/sentry-nextjs-16-static/fixture",
+        port: 3031,
+        reuseExistingServer: false,
+        timeout: 30_000,
+      },
+    ],
+  },
   "cloudflare-dev": {
     testDir: "./tests/e2e",
     testMatch: [
@@ -516,6 +542,10 @@ const activeProjects: ProjectName[] = selected
   ? [selected as ProjectName]
   : (Object.keys(projectServers) as ProjectName[]);
 
+if (activeProjects.includes("sentry-nextjs-16-static")) {
+  process.env.TEST_ENV = "production";
+}
+
 export default defineConfig({
   testDir: "./tests/e2e",
   timeout: 30_000,
@@ -541,7 +571,13 @@ export default defineConfig({
   webServer: [
     ...new Map(
       activeProjects
-        .map((name) => projectServers[name].server)
+        .flatMap((name) => {
+          const project = projectServers[name];
+          return [
+            project.server,
+            ...("additionalServers" in project ? project.additionalServers : []),
+          ];
+        })
         .filter(
           (server): server is NonNullable<(typeof projectServers)[ProjectName]["server"]> =>
             server != null,

@@ -40,6 +40,7 @@ import fs from "node:fs";
 import path from "pathslash";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
+import { patternToNextFormat } from "../routing/route-validation.js";
 import { ensureInstrumentationRegistered } from "./instrumentation-runtime.js";
 /**
  * Minimal duck-typed interface for the module runner passed to
@@ -192,7 +193,10 @@ export function reportRequestError(
 
   const promise = (async () => {
     try {
-      await handler(error, request, context);
+      await handler(error, request, {
+        ...context,
+        routePath: patternToNextFormat(context.routePath),
+      });
     } catch (reportErr) {
       console.error(
         "[vinext] onRequestError handler threw:",

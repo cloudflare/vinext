@@ -1,0 +1,17 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron-test",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron-test-error",
+      "schedule": "30 * * * *"
+    }
+  ],
+  "functions": {
+    "app/api/queues/process-order/route.ts": {
+      "experimentalTriggers": [{ "type": "queue/v2beta", "topic": "orders" }]
+    }
+  }
+}

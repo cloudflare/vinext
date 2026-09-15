@@ -373,7 +373,15 @@ describe("OpenTelemetry integration", () => {
     expect(tracer.withPropagatedContext(new Headers(), () => activeContext.getValue(spanKey))).toBe(
       activeSpan,
     );
-    expect(extractions).toBe(2);
+    expect(
+      tracer.runWithDetachedContext(() =>
+        tracer.withPropagatedContext(new Headers({ traceparent: "00-detached-remote" }), () => ({
+          remote: activeContext.remote,
+          span: activeContext.getValue(spanKey),
+        })),
+      ),
+    ).toEqual({ remote: "00-detached-remote", span: undefined });
+    expect(extractions).toBe(3);
   });
 
   it("extracts a valid W3C traceparent with the registered propagator", () => {

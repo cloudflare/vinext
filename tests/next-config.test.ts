@@ -1273,6 +1273,244 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "config/request.ts"));
   });
 
+  it("evaluates wrapped configs from the configured project root", async () => {
+    tmpDir = makeTempDir();
+    fs.mkdirSync(path.join(tmpDir, "app", "products"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "node_modules", "fake-manifest-wrapper"), {
+      recursive: true,
+    });
+    fs.writeFileSync(path.join(tmpDir, "app", "products", "page.tsx"), "export default null;\n");
+    fs.writeFileSync(
+      path.join(tmpDir, "node_modules", "fake-manifest-wrapper", "index.js"),
+      `const fs = require("node:fs");
+module.exports = function withManifest(config = {}) {
+  const manifest = JSON.stringify({ hasProducts: fs.existsSync("app/products/page.tsx") });
+  return {
+    ...config,
+    webpack(webpackConfig, options) {
+      if (!options.isServer) {
+        webpackConfig.module.rules.push({
+          use: {
+            loader: "/framework/valueInjectionLoader.js",
+            options: { values: { _sentryRouteManifest: manifest } },
+          },
+        });
+      }
+      return webpackConfig;
+    },
+  };
+};
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "node_modules", "fake-manifest-wrapper", "package.json"),
+      JSON.stringify({ name: "fake-manifest-wrapper", version: "1.0.0", main: "index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      'module.exports = require("fake-manifest-wrapper")({});\n',
+    );
+
+    const rawConfig = await loadNextConfig(tmpDir);
+    const config = await resolveNextConfig(rawConfig, tmpDir);
+
+    expect(JSON.parse(config.instrumentationClientRouteManifest!)).toEqual({
+      hasProducts: true,
+    });
+  });
+
+  it("serializes project roots across concurrent async config loads", async () => {
+    const originalCwd = process.cwd();
+    const firstRoot = makeTempDir();
+    const secondRoot = makeTempDir();
+    tmpDir = firstRoot;
+
+    for (const [root, delay] of [
+      [firstRoot, 20],
+      [secondRoot, 0],
+    ] as const) {
+      fs.writeFileSync(
+        path.join(root, "next.config.mjs"),
+        `export default async () => {
+  await new Promise(resolve => setTimeout(resolve, ${delay}));
+  return { assetPrefix: process.cwd() };
+};
+`,
+      );
+    }
+
+    try {
+      const [first, second] = await Promise.all([
+        loadNextConfig(firstRoot),
+        loadNextConfig(secondRoot),
+      ]);
+
+      expect(first?.assetPrefix).toBe(fs.realpathSync(firstRoot));
+      expect(second?.assetPrefix).toBe(fs.realpathSync(secondRoot));
+      expect(process.cwd()).toBe(originalCwd);
+    } finally {
+      fs.rmSync(secondRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes sibling config loads nested by a wrapper", async () => {
+    const originalCwd = process.cwd();
+    const outerRoot = makeTempDir();
+    const firstRoot = makeTempDir();
+    const secondRoot = makeTempDir();
+    tmpDir = outerRoot;
+    const processWithConfigLoader = process as NodeJS.Process & {
+      __vinextTestLoadNextConfig?: typeof loadNextConfig;
+    };
+    processWithConfigLoader.__vinextTestLoadNextConfig = loadNextConfig;
+
+    for (const [root, delay] of [
+      [firstRoot, 0],
+      [secondRoot, 20],
+    ] as const) {
+      fs.writeFileSync(
+        path.join(root, "next.config.mjs"),
+        `export default async () => {
+  await new Promise(resolve => setTimeout(resolve, ${delay}));
+  return { assetPrefix: process.cwd() };
+};
+`,
+      );
+    }
+    fs.writeFileSync(
+      path.join(outerRoot, "next.config.mjs"),
+      `export default async () => {
+  const [first, second] = await Promise.all([
+    process.__vinextTestLoadNextConfig(${JSON.stringify(firstRoot)}),
+    process.__vinextTestLoadNextConfig(${JSON.stringify(secondRoot)}),
+  ]);
+  return { env: { first: first.assetPrefix, second: second.assetPrefix, outer: process.cwd() } };
+};
+`,
+    );
+
+    try {
+      const config = await loadNextConfig(outerRoot);
+
+      expect(config?.env).toEqual({
+        first: fs.realpathSync(firstRoot),
+        second: fs.realpathSync(secondRoot),
+        outer: fs.realpathSync(outerRoot),
+      });
+      expect(process.cwd()).toBe(originalCwd);
+    } finally {
+      delete processWithConfigLoader.__vinextTestLoadNextConfig;
+      fs.rmSync(firstRoot, { recursive: true, force: true });
+      fs.rmSync(secondRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("requeues an escaped config load after its wrapper completes", async () => {
+    const originalCwd = process.cwd();
+    const outerRoot = makeTempDir();
+    const competingRoot = makeTempDir();
+    const escapedRoot = makeTempDir();
+    tmpDir = outerRoot;
+    const processWithEscapedLoad = process as NodeJS.Process & {
+      __vinextEscapedConfigLoad?: Promise<{ assetPrefix?: string } | null>;
+      __vinextTestLoadNextConfig?: typeof loadNextConfig;
+    };
+    processWithEscapedLoad.__vinextTestLoadNextConfig = loadNextConfig;
+
+    fs.writeFileSync(
+      path.join(outerRoot, "next.config.mjs"),
+      `export default () => {
+  process.__vinextEscapedConfigLoad = new Promise((resolve, reject) => {
+    setTimeout(() => process.__vinextTestLoadNextConfig(${JSON.stringify(escapedRoot)}).then(resolve, reject), 20);
+  });
+  return { assetPrefix: process.cwd() };
+};
+`,
+    );
+    for (const [root, delay] of [
+      [competingRoot, 50],
+      [escapedRoot, 0],
+    ] as const) {
+      fs.writeFileSync(
+        path.join(root, "next.config.mjs"),
+        `export default async () => {
+  await new Promise(resolve => setTimeout(resolve, ${delay}));
+  return { assetPrefix: process.cwd() };
+};
+`,
+      );
+    }
+
+    try {
+      const outer = await loadNextConfig(outerRoot);
+      const competingPromise = loadNextConfig(competingRoot);
+      const escapedPromise = processWithEscapedLoad.__vinextEscapedConfigLoad!;
+      const [competing, escaped] = await Promise.all([competingPromise, escapedPromise]);
+
+      expect(outer?.assetPrefix).toBe(fs.realpathSync(outerRoot));
+      expect(competing?.assetPrefix).toBe(fs.realpathSync(competingRoot));
+      expect(escaped?.assetPrefix).toBe(fs.realpathSync(escapedRoot));
+      expect(process.cwd()).toBe(originalCwd);
+    } finally {
+      delete processWithEscapedLoad.__vinextEscapedConfigLoad;
+      delete processWithEscapedLoad.__vinextTestLoadNextConfig;
+      fs.rmSync(competingRoot, { recursive: true, force: true });
+      fs.rmSync(escapedRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("drains unawaited nested config loads before releasing the root", async () => {
+    const originalCwd = process.cwd();
+    const outerRoot = makeTempDir();
+    const escapedRoot = makeTempDir();
+    const competingRoot = makeTempDir();
+    tmpDir = outerRoot;
+    const processWithEscapedLoad = process as NodeJS.Process & {
+      __vinextEscapedConfigLoad?: Promise<{ assetPrefix?: string } | null>;
+      __vinextTestLoadNextConfig?: typeof loadNextConfig;
+    };
+    processWithEscapedLoad.__vinextTestLoadNextConfig = loadNextConfig;
+
+    fs.writeFileSync(
+      path.join(outerRoot, "next.config.mjs"),
+      `export default () => {
+  process.__vinextEscapedConfigLoad = process.__vinextTestLoadNextConfig(${JSON.stringify(escapedRoot)});
+  return { assetPrefix: process.cwd() };
+};
+`,
+    );
+    for (const [root, delay] of [
+      [escapedRoot, 50],
+      [competingRoot, 0],
+    ] as const) {
+      fs.writeFileSync(
+        path.join(root, "next.config.mjs"),
+        `export default async () => {
+  await new Promise(resolve => setTimeout(resolve, ${delay}));
+  return { assetPrefix: process.cwd() };
+};
+`,
+      );
+    }
+
+    try {
+      const outer = await loadNextConfig(outerRoot);
+      const competingPromise = loadNextConfig(competingRoot);
+      const escapedPromise = processWithEscapedLoad.__vinextEscapedConfigLoad!;
+      const [competing, escaped] = await Promise.all([competingPromise, escapedPromise]);
+
+      expect(outer?.assetPrefix).toBe(fs.realpathSync(outerRoot));
+      expect(escaped?.assetPrefix).toBe(fs.realpathSync(escapedRoot));
+      expect(competing?.assetPrefix).toBe(fs.realpathSync(competingRoot));
+      expect(process.cwd()).toBe(originalCwd);
+    } finally {
+      delete processWithEscapedLoad.__vinextEscapedConfigLoad;
+      delete processWithEscapedLoad.__vinextTestLoadNextConfig;
+      fs.rmSync(escapedRoot, { recursive: true, force: true });
+      fs.rmSync(competingRoot, { recursive: true, force: true });
+    }
+  });
+
   it("captures turbopack aliases from wrapped config plugins", async () => {
     tmpDir = makeTempDir();
     fs.writeFileSync(
@@ -1522,6 +1760,108 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(invocations).toEqual([false, true]);
     expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "config/request.ts"));
     expect(config.mdx?.remarkPlugins).toEqual([fakeRemarkPlugin]);
+  });
+
+  it("preserves an instrumentation-client route manifest from a wrapped webpack config", async () => {
+    tmpDir = makeTempDir();
+    const manifest = JSON.stringify({
+      staticRoutes: ["/docs"],
+      dynamicRoutes: ["/docs/:slug", "/docs/:path*"],
+      isrRoutes: ["/docs/isr"],
+      excludedRoutes: ["/docs/private"],
+      basePath: "/base",
+    });
+
+    const config = await resolveNextConfig(
+      {
+        webpack: (webpackConfig: any, options: any) => {
+          if (!options.isServer) {
+            webpackConfig.module.rules.push({
+              use: [
+                {
+                  loader: "/framework/valueInjectionLoader.js",
+                  options: { values: { _sentryRouteManifest: manifest } },
+                },
+              ],
+            });
+          }
+          return webpackConfig;
+        },
+      },
+      tmpDir,
+    );
+
+    expect(config.instrumentationClientRouteManifest).toBe(manifest);
+  });
+
+  it("preserves generic server value injections targeting instrumentation.ts", async () => {
+    const config = await resolveNextConfig({
+      webpack: (webpackConfig: any, options: any) => {
+        webpackConfig.module.rules.push({
+          rules: [
+            {
+              test: options.isServer ? /(src[\\/])?instrumentation\.(js|ts)/ : /client-only/,
+              use: {
+                loader: "/framework/valueInjectionLoader.js",
+                options: {
+                  values: {
+                    fixtureObject: { enabled: true },
+                    fixtureString: "server-value",
+                    fixtureUndefined: undefined,
+                  },
+                },
+              },
+            },
+          ],
+        });
+        return webpackConfig;
+      },
+    });
+
+    expect(config.instrumentationServerValueInjections).toEqual({
+      fixtureObject: { enabled: true },
+      fixtureString: "server-value",
+      fixtureUndefined: undefined,
+    });
+  });
+
+  it("ignores values from unrelated instrumentation loaders", async () => {
+    const config = await resolveNextConfig({
+      webpack: (webpackConfig: any, options: any) => {
+        if (options.isServer) {
+          webpackConfig.module.rules.push({
+            test: /instrumentation\.ts/,
+            use: {
+              loader: "/framework/typescript-loader.js",
+              options: { values: { fetch: null } },
+            },
+          });
+        }
+        return webpackConfig;
+      },
+    });
+
+    expect(config.instrumentationServerValueInjections).toEqual({});
+  });
+
+  it("provides Next.js webpack plugin constructors to wrapped config callbacks", async () => {
+    const config = await resolveNextConfig({
+      webpack: (webpackConfig: any, options: any) => {
+        webpackConfig.resolve.alias["wrapped/config"] = "./config/request.ts";
+        webpackConfig.plugins.push(new options.webpack.DefinePlugin({ TEST: true }));
+        webpackConfig.plugins.push(new options.webpack.ProvidePlugin({ TEST: "test" }));
+        webpackConfig.plugins.push(new options.webpack.IgnorePlugin({ resourceRegExp: /test/ }));
+        return webpackConfig;
+      },
+    });
+    expect(config.aliases["wrapped/config"]).toBe(canonical(process.cwd(), "config/request.ts"));
+    expect(config.instrumentationClientRouteManifest).toBeUndefined();
+    expect(config.instrumentationServerValueInjections).toEqual({});
+  });
+
+  it("leaves instrumentation-client route manifest injection disabled when omitted", async () => {
+    const config = await resolveNextConfig({ webpack: (webpackConfig: any) => webpackConfig });
+    expect(config.instrumentationClientRouteManifest).toBeUndefined();
   });
 });
 
@@ -2268,6 +2608,8 @@ describe("detectNextIntlConfig", () => {
       compilerDefine: {},
       compilerDefineServer: {},
       instrumentationClientInject: [],
+      instrumentationClientRouteManifest: undefined,
+      instrumentationServerValueInjections: {},
       clientTraceMetadata: undefined,
       staleTimes: { dynamic: 0, static: 300 },
       useLightningcss: false,

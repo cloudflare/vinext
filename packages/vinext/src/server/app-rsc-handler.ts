@@ -2550,6 +2550,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
                   dispatchResponseStage,
                   responseStageProbeMode,
                   trustedPrerenderState,
+                  true,
                 ),
               allowInternalRscDocumentFallback,
               dispatchResponseStage,
@@ -2600,6 +2601,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     dispatchResponseStage?: DispatchAppWorkerResponseStage,
     responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
     transportedPrerenderState?: TrustedPrerenderState | null,
+    detachedTrace = false,
   ): Promise<Response> {
     // Register config-driven cache adapters before anything touches the cache.
     // On the Cloudflare worker the entry already registered them with `env` (this
@@ -2619,6 +2621,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
           responseStageProbeMode,
           transportedPrerenderState,
         ),
+      detached: detachedTrace,
       getStatus: (response) => response?.status,
       headers: rawRequest.headers,
       isRsc: traceUrl.pathname.endsWith(".rsc") || rawRequest.headers.get(RSC_HEADER) === "1",

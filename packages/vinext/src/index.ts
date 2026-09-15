@@ -186,7 +186,10 @@ import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
-import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
+import {
+  createInstrumentationClientTransformPlugin,
+  createInstrumentationServerTransformPlugin,
+} from "./plugins/instrumentation-client.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
@@ -4868,7 +4871,14 @@ export const loadServerActionClient = ${
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
-    createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
+    createInstrumentationClientTransformPlugin(
+      () => instrumentationClientPath,
+      () => nextConfig.instrumentationClientRouteManifest,
+    ),
+    createInstrumentationServerTransformPlugin(
+      () => instrumentationPath,
+      () => nextConfig.instrumentationServerValueInjections,
+    ),
     {
       name: "vinext:instrumentation-client-inject",
       enforce: "pre",

@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: always
+    container_name: e2e-tests-nextjs-16-static-postgres
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_PASSWORD: docker
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  redis:
+    image: redis:7
+    restart: always
+    container_name: e2e-tests-nextjs-16-static-redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
