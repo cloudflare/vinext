@@ -194,6 +194,18 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
       parentSpanId: transaction.spanId,
       traceId: transaction.traceId,
     });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/trace-gssp/[slug]",
+          "next.span_name": "resolve page components",
+          "next.span_type": "NextNodeServer.findPageComponents",
+        }),
+        name: "resolve page components",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
   });
 
   test("traces request-time getStaticProps for a blocking fallback", async ({ request }) => {
@@ -278,6 +290,14 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         traceId: transaction.traceId,
       }),
     );
+    expect(
+      transaction.spans
+        .filter(
+          ({ attributes }) => attributes["next.span_type"] === "NextNodeServer.findPageComponents",
+        )
+        .map(({ attributes }) => attributes["next.route"])
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(["/_error", "/trace-not-found"]);
   });
 
   test("continues incoming Sentry traces without leaking parallel request context", async ({
@@ -352,6 +372,14 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         name: "render route (pages) /_error",
       }),
     );
+    expect(
+      transaction.spans
+        .filter(
+          ({ attributes }) => attributes["next.span_type"] === "NextNodeServer.findPageComponents",
+        )
+        .map(({ attributes }) => attributes["next.route"])
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(["/_error", "/500", "/render-error"]);
   });
 
   test("reports a browser error through instrumentation-client Sentry.init", async ({
