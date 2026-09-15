@@ -910,9 +910,14 @@ describe("pages api route", () => {
   });
 
   it("returns a 500 when the response stream is destroyed with an error before any body has been written", async () => {
-    const reportRequestError = vi.fn();
+    let finishReporting!: () => void;
+    const reportingFinished = new Promise<void>((resolve) => {
+      finishReporting = resolve;
+    });
+    const reportRequestError = vi.fn(() => reportingFinished);
+    let responseSettled = false;
 
-    const response = await handlePagesApiRoute({
+    const responsePromise = handlePagesApiRoute({
       match: createMatch(
         (_req, res) => {
           // Simulate a proxy handler where the upstream errors and the
@@ -932,8 +937,17 @@ describe("pages api route", () => {
         body: "some-body",
       }),
       url: "/api/stream-error",
+    }).then((response) => {
+      responseSettled = true;
+      return response;
     });
 
+    // Ported from Next.js: packages/next/src/server/api-utils/node/api-resolver.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/api-utils/node/api-resolver.ts
+    await vi.waitFor(() => expect(reportRequestError).toHaveBeenCalledOnce());
+    expect(responseSettled).toBe(false);
+    finishReporting();
+    const response = await responsePromise;
     expect(response.status).toBe(500);
     await expect(response.text()).resolves.toBe("Internal Server Error");
     expect(reportRequestError).toHaveBeenCalledWith(expect.any(Error), "/api/test");
@@ -1117,11 +1131,21 @@ describe("pages api route", () => {
   });
 
   it("unwinds a parked write when an active streaming handler rejects", async () => {
-    const reportRequestError = vi.fn();
+    let finishReporting!: () => void;
+    const reportingFinished = new Promise<void>((resolve) => {
+      finishReporting = resolve;
+    });
+    const reportRequestError = vi.fn(() => reportingFinished);
     const failure = new Error("handler failed after writing");
     let writeError: Error | null | undefined;
+    const waitUntilPromises: Promise<unknown>[] = [];
 
     const response = await handlePagesApiRoute({
+      ctx: {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      },
       match: createMatch(async (_req, res) => {
         res.write(Buffer.alloc(64 * 1024), (error: Error | null | undefined) => {
           writeError = error;
@@ -1135,8 +1159,20 @@ describe("pages api route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.text()).rejects.toThrow(failure.message);
-    await vi.waitFor(() => expect(writeError).toBe(failure));
-    expect(reportRequestError).toHaveBeenCalledWith(failure, "/api/test");
+    await vi.waitFor(() => {
+      expect(writeError).toBe(failure);
+      expect(reportRequestError).toHaveBeenCalledWith(failure, "/api/test");
+    });
+    expect(waitUntilPromises).toHaveLength(1);
+    let lifecycleSettled = false;
+    void waitUntilPromises[0].then(() => {
+      lifecycleSettled = true;
+    });
+    await Promise.resolve();
+    expect(lifecycleSettled).toBe(false);
+    finishReporting();
+    await waitUntilPromises[0];
+    expect(lifecycleSettled).toBe(true);
   });
 
   it("passes cancellation errors to a parked write callback", async () => {

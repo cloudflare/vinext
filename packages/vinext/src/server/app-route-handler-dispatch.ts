@@ -375,7 +375,7 @@ async function dispatchAppRouteHandlerImpl(
       middlewareRequestHeaders: options.middlewareRequestHeaders,
       params: options.params === null ? null : makeThenableParams(options.params),
       reportRequestError(error, request, context) {
-        void reportRequestError(error, request, context);
+        return reportRequestError(error, request, context);
       },
       request: options.request,
       expireSeconds: options.expireSeconds,

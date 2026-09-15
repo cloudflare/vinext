@@ -275,20 +275,14 @@ describe("runInstrumentation", () => {
     expect(getOnRequestErrorHandler()).toBeNull();
   });
 
-  it("logs error and continues when import fails", async () => {
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("propagates instrumentation import failures", async () => {
     const runner = {
       import: vi.fn().mockRejectedValue(new Error("Module not found")),
     };
 
-    // Should not throw
-    await runInstrumentation(runner, "/fake/instrumentation.ts");
-
-    expect(consoleSpy).toHaveBeenCalledWith(
-      "[vinext] Failed to load instrumentation:",
+    await expect(runInstrumentation(runner, "/fake/instrumentation.ts")).rejects.toThrow(
       "Module not found",
     );
-    consoleSpy.mockRestore();
   });
 });
 

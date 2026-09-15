@@ -166,16 +166,8 @@ export async function runInstrumentation(
   runner: ModuleImporter,
   instrumentationPath: string,
 ): Promise<void> {
-  try {
-    const mod = (await runner.import(instrumentationPath)) as Record<string, unknown>;
-
-    await ensureInstrumentationRegistered(mod, instrumentationPath);
-  } catch (err) {
-    console.error(
-      "[vinext] Failed to load instrumentation:",
-      err instanceof Error ? err.message : String(err),
-    );
-  }
+  const mod = (await runner.import(instrumentationPath)) as Record<string, unknown>;
+  await ensureInstrumentationRegistered(mod, instrumentationPath);
 }
 
 /**
@@ -211,8 +203,8 @@ export function reportRequestError(
 
   // On Cloudflare Workers, register with ctx.waitUntil() so the isolate
   // stays alive until the report completes (e.g. Sentry HTTP request).
-  // On Node.js (dev or vinext start), getRequestExecutionContext() returns
-  // null — fire-and-forget is fine because the process doesn't die.
+  // Awaiting callers get Next.js request-lifecycle parity. Non-blocking
+  // post-commit callers still retain the task through Workers waitUntil().
   getRequestExecutionContext()?.waitUntil(promise);
 
   return promise;

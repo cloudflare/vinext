@@ -1307,10 +1307,15 @@ describe("app route handler execution helpers", () => {
       type: "AppRouteRouteHandlers.runHandler",
     });
 
-    const reportRequestError = vi.fn();
+    let finishReporting!: () => void;
+    const reportingFinished = new Promise<void>((resolve) => {
+      finishReporting = resolve;
+    });
+    const reportRequestError = vi.fn(() => reportingFinished);
     const failure = new Error("boom");
     recordedRouteSpans.length = 0;
-    const errorResponse = await executeAppRouteHandler({
+    let responseSettled = false;
+    const errorResponsePromise = executeAppRouteHandler({
       buildPageCacheTags(pathname, extraTags) {
         return [pathname, ...extraTags];
       },
@@ -1349,7 +1354,17 @@ describe("app route handler execution helpers", () => {
       setHeadersAccessPhase() {
         return "render";
       },
+    }).then((response) => {
+      responseSettled = true;
+      return response;
     });
+
+    // Ported from Next.js: packages/next/src/build/templates/app-route.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/app-route.ts
+    await vi.waitFor(() => expect(reportRequestError).toHaveBeenCalledOnce());
+    expect(responseSettled).toBe(false);
+    finishReporting();
+    const errorResponse = await errorResponsePromise;
 
     expect(errorResponse.status).toBe(500);
     expect(reportRequestError).toHaveBeenCalledWith(

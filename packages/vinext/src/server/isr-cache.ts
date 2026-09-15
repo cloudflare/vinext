@@ -263,10 +263,10 @@ export function triggerBackgroundRegeneration(
   if (pendingRegenerations.has(key)) return;
 
   const promise = renderFn()
-    .catch((err) => {
+    .catch(async (err) => {
       console.error(`[vinext] ISR background regeneration failed for ${key}:`, err);
       if (errorContext && (errorContext.shouldReport?.(err) ?? true)) {
-        void reportRequestError(
+        await reportRequestError(
           err,
           { path: key, method: "GET", headers: {} },
           {

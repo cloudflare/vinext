@@ -378,6 +378,48 @@ Cross-consumer parity acceptance criteria:
 - Do not require the in-process Sentry SDK representation and the Workers runtime representation to share generated IDs. They are two consumers of the same logical framework instrumentation; Workers' own built-in, application custom, fetch/binding, and vinext spans must share one native trace.
 - Remove any test-only endpoint before merge if it has no lasting operational value.
 
+### OTel-12: Close the audited v1 parity gaps
+
+The cumulative stack audit found eight remaining gaps that fit the v1 contract:
+
+1. Await App Route Handler `onRequestError` hooks before completing foreground failures and inside
+   background-regeneration promises. Keep App Page and Server Action React `onError` callbacks
+   non-blocking, matching Next.js; Workers retain their reporting promises through `waitUntil`.
+2. Await Pages Router `onRequestError` hooks before completing page and pre-commit API failures in
+   both Node and Workers. Keep API errors after the response commits non-blocking, matching Node's
+   response lifecycle, while retaining their reporting promises through Workers `waitUntil`.
+3. Propagate Pages-development instrumentation import and `register()` failures instead of serving
+   requests without instrumentation.
+4. Preserve Next.js's handled App-500 request-root semantics: `error.type` remains `"500"`, and the
+   application exception message is not used as the root span status description.
+5. Add the stable App Router `NextNodeServer.findPageComponents` span directly beneath the request
+   root for App Pages and Route Handlers.
+6. Establish Cache Component work-unit context for ordinary request/cache scopes and port the
+   unblocked `/novel/cache` and `/novel/server` cases from Next.js.
+7. Match Next.js's runtime-specific `Node.runHandler` error status for throwing Pages API handlers:
+   successful in Node production, errored in development and Edge/Workers.
+8. Make `experimental.clientTraceMetadata` inject only the active OpenTelemetry context; do not
+   create a disconnected synthetic span when no span is active.
+
+Every layer must keep `@opentelemetry/api` optional, exercise the shared framework descriptors
+rather than add consumer-specific tracing, and add Sentry E2E coverage when the behavior is
+observable through the existing fixtures. Node/Workers differences must be asserted explicitly.
+
+Deliver the closure in three focused PRs:
+
+1. Instrumentation lifecycle: gaps 1-3.
+2. Span shape and status: gaps 4, 5, and 7.
+3. OpenTelemetry context edges: gaps 6 and 8. Split the Cache Components work into a fourth PR only
+   if establishing its ordinary work-unit scope would make this layer materially harder to review.
+
+The following audit findings remain outside this closure track:
+
+- `Instrumentation.loadModule` and `Instrumentation.register` are verbose/internal lifecycle spans,
+  not part of the v1 stable span contract.
+- The Cache Components fallback-resume case remains blocked on vinext's request-time deferred
+  fallback-shell resume path. OTel-12 ports only the ordinary cache cases that the current runtime
+  can execute; it must not grow into that separate rendering feature.
+
 ## Recommended delivery order
 
 1. OTel-1: Sentry trace harness
@@ -388,6 +430,7 @@ Cross-consumer parity acceptance criteria:
 6. OTel-7: browser continuation
 7. OTel-11: deployed shared-trace proof for Workers custom, binding, and vinext built-in spans
 8. OTel-10: final support documentation
+9. OTel-12: focused parity-closure layers in the order listed above
 
 OTel-8 can proceed independently after OTel-1. OTel-9 waits for the Cache Components runtime path. OTel-11 waits for the request root and stable framework spans; its code changes should remain confined to application fixtures or `apps/web` because the shared Workers integration already landed in OTel-2.
 

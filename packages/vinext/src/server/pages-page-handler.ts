@@ -1214,7 +1214,7 @@ export function createPagesPageHandler(
         return finalizePagesPreviewResponse(pageResponse, preview);
       } catch (e) {
         console.error("[vinext] SSR error:", e);
-        reportRequestError(
+        await reportRequestError(
           e,
           {
             path: url,
@@ -1233,9 +1233,7 @@ export function createPagesPageHandler(
                 ? "stale"
                 : undefined,
           },
-        ).catch(() => {
-          /* ignore reporting errors */
-        });
+        );
 
         // Data requests can't render HTML; avoid recursion if already rendering
         // the error page. Mirrors Next.js base-server.ts: render /500 or _error
