@@ -1132,23 +1132,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     discardAppPageRenderState();
   }
 
-  const pageBuildResult = await buildCurrentPageElement();
-  if (pageBuildResult.response) {
-    return pageBuildResult.response;
-  }
-
   const navigationParams = resolveAppPageNavigationParams(
     route,
     options.params,
     options.cleanPathname,
     interceptResult.interceptOpts,
   );
-  options.setNavigationContext({
-    pathname: options.displayPathname ?? options.cleanPathname,
-    searchParams: pageSearchParams,
-    params: navigationParams,
-  });
-
   const layoutClassifications = getEffectiveLayoutClassifications(
     route,
     options.debugClassification,
@@ -1174,7 +1163,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     createRscOnErrorHandler(pathname, routePath, overrides) {
       return options.createRscOnErrorHandler(pathname, routePath, overrides);
     },
-    element: pageBuildResult.element,
+    async prepareElement() {
+      const pageBuildResult = await buildCurrentPageElement();
+      if (pageBuildResult.response) return { response: pageBuildResult.response };
+      options.setNavigationContext({
+        pathname: options.displayPathname ?? options.cleanPathname,
+        searchParams: pageSearchParams,
+        params: navigationParams,
+      });
+      return { element: pageBuildResult.element };
+    },
     clientReuseManifest: options.clientReuseManifest,
     getDraftModeCookieHeader,
     getFontLinks: options.getFontLinks,

@@ -13,6 +13,7 @@ import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
 import type { AppPageParams } from "./app-page-boundary.js";
 import { tagAppPageMetadataError } from "./app-page-execution.js";
+import { createAppMetadataModuleRoute, traceGenerateMetadata } from "./app-metadata-tracing.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 
@@ -29,10 +30,13 @@ import type { MetadataFileRoute } from "./metadata-routes.js";
  * and Next.js test/e2e/app-dir/metadata-streaming.
  */
 async function resolveModuleMetadata(
+  moduleRoute: string,
   ...args: Parameters<typeof _resolveModuleMetadata>
 ): Promise<Metadata | null> {
   try {
-    return await _resolveModuleMetadata(...args);
+    return await (typeof args[0].generateMetadata === "function"
+      ? traceGenerateMetadata(moduleRoute, () => _resolveModuleMetadata(...args))
+      : _resolveModuleMetadata(...args));
   } catch (error) {
     throw tagAppPageMetadataError(error);
   }
@@ -54,6 +58,7 @@ export type OrderedAppPageMetadataSource<TModule extends AppPageHeadModule = App
   /** Preserve an empty result as the most specific file-metadata source. */
   includeWhenEmpty?: boolean;
   module: TModule;
+  moduleRoute: string;
   params: AppPageParams;
   routeSegments: readonly string[];
   searchParams?: AppPageSearchParams;
@@ -70,6 +75,8 @@ export type AppPageHeadParallelRoute<TModule extends AppPageHeadModule = AppPage
   layoutModule?: TModule | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   layoutTreePositions?: readonly number[] | null;
+  moduleRoutePrefixSegments?: readonly string[] | null;
+  moduleRouteSegments?: readonly string[] | null;
   pageModule?: TModule | null;
   params?: AppPageParams | null;
   routeSegments?: readonly string[] | null;
@@ -78,6 +85,7 @@ export type AppPageHeadParallelRoute<TModule extends AppPageHeadModule = AppPage
 export type ActiveParallelRouteHeadInput<TModule extends AppPageHeadModule = AppPageHeadModule> = {
   head: AppPageHeadParallelRoute<TModule>;
   notFoundModule?: TModule | null;
+  notFoundModuleRouteSegments?: readonly string[] | null;
   notFoundParams?: AppPageParams | null;
   ownerTreePosition: number;
 };
@@ -184,6 +192,7 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
 ): ActiveParallelRouteHeadInput<TModule>[] {
   const inputs = Object.entries(options.slots ?? {}).map(([slotKey, slot]) => {
     const ownerTreePosition = options.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0;
+    const ownerRouteSegments = options.routeSegments.slice(0, ownerTreePosition);
     const ownerParams = resolveAppPageSegmentParams(
       options.routeSegments,
       ownerTreePosition,
@@ -209,6 +218,16 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
       const inheritedSlotNotFound =
         slot.notFoundTreePosition === 0 ? (slot.notFound ?? null) : null;
       const interceptNotFound = options.interceptNotFound ?? inheritedSlotNotFound;
+      const interceptRouteSegments = options.interceptSourcePageSegments ?? options.routeSegments;
+      const interceptNotFoundRouteSegments = options.interceptNotFound
+        ? (options.interceptNotFoundBranchSegments ?? interceptRouteSegments).slice(
+            0,
+            options.interceptNotFoundTreePosition ?? 0,
+          )
+        : [
+            ...ownerRouteSegments,
+            ...(slot.routeSegments ?? []).slice(0, slot.notFoundTreePosition ?? 0),
+          ];
       const interceptNotFoundParams = interceptNotFound
         ? {
             ...ownerParams,
@@ -246,15 +265,21 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
           ],
           pageModule: options.interceptPage,
           params: options.interceptParams ?? options.params,
-          routeSegments: options.interceptSourcePageSegments ?? options.routeSegments,
+          routeSegments: interceptRouteSegments,
         },
         ...(interceptNotFound
-          ? { notFoundModule: interceptNotFound, notFoundParams: interceptNotFoundParams }
+          ? {
+              notFoundModule: interceptNotFound,
+              notFoundModuleRouteSegments: interceptNotFoundRouteSegments,
+              notFoundParams: interceptNotFoundParams,
+            }
           : {}),
         ownerTreePosition,
       };
     }
 
+    const slotRouteSegments = slot.routeSegments ?? options.routeSegments;
+    const moduleRouteSegments = slot.routeSegments ?? [];
     return {
       head: {
         layoutModules: [slot.layout, ...(slot.configLayouts ?? [])].filter(isPresent),
@@ -275,9 +300,20 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
         ],
         pageModule: slot.page,
         params: slotParams,
-        routeSegments: slot.routeSegments ?? options.routeSegments,
+        ...(ownerRouteSegments.length > 0 ? { moduleRoutePrefixSegments: ownerRouteSegments } : {}),
+        ...(slot.routeSegments ? {} : { moduleRouteSegments }),
+        routeSegments: slotRouteSegments,
       },
-      ...(slot.notFound ? { notFoundModule: slot.notFound, notFoundParams } : {}),
+      ...(slot.notFound
+        ? {
+            notFoundModule: slot.notFound,
+            notFoundModuleRouteSegments: [
+              ...ownerRouteSegments,
+              ...moduleRouteSegments.slice(0, slot.notFoundTreePosition ?? 0),
+            ],
+            notFoundParams,
+          }
+        : {}),
       ownerTreePosition,
     };
   });
@@ -414,6 +450,7 @@ async function resolveLayoutMetadata<TModule extends AppPageHeadModule>(
       params,
     );
     const metadataPromise = resolveModuleMetadata(
+      createAppMetadataModuleRoute(routeSegments.slice(0, layoutInput.treePosition), "layout"),
       layoutInput.module,
       layoutParams,
       undefined,
@@ -505,6 +542,8 @@ async function resolveParallelRouteMetadata<TModule extends AppPageHeadModule>(
 ): Promise<ResolvedParallelRouteMetadata> {
   const params = parallelRoute.params ?? fallbackParams;
   const routeSegments = parallelRoute.routeSegments ?? fallbackRouteSegments;
+  const moduleRoutePrefixSegments = parallelRoute.moduleRoutePrefixSegments ?? [];
+  const moduleRouteSegments = parallelRoute.moduleRouteSegments ?? routeSegments;
   const metadataResults: (Metadata | null)[] = [];
   const metadataSources: AppPageHeadSource[] = [];
   let accumulatedMetadata = parent;
@@ -517,6 +556,13 @@ async function resolveParallelRouteMetadata<TModule extends AppPageHeadModule>(
       layoutParams[index] ??
       resolveParallelLayoutParams(routeSegments, layoutTreePositions[index] ?? 0, params);
     const layoutMetadata = await resolveModuleMetadata(
+      createAppMetadataModuleRoute(
+        [
+          ...moduleRoutePrefixSegments,
+          ...moduleRouteSegments.slice(0, layoutTreePositions[index] ?? 0),
+        ],
+        "layout",
+      ),
       layoutModule,
       currentLayoutParams,
       undefined,
@@ -537,6 +583,7 @@ async function resolveParallelRouteMetadata<TModule extends AppPageHeadModule>(
 
   if (parallelRoute.pageModule) {
     const pageMetadata = await resolveModuleMetadata(
+      createAppMetadataModuleRoute([...moduleRoutePrefixSegments, ...moduleRouteSegments], "page"),
       parallelRoute.pageModule,
       params,
       pageSearchParams,
@@ -622,6 +669,7 @@ export function resolveOrderedAppPageMetadata<TModule extends AppPageHeadModule>
         entries.length > 0 ? mergeMetadataEntries(entries) : {},
       );
       const metadataPromise = resolveModuleMetadata(
+        source.moduleRoute,
         source.module,
         source.params,
         source.searchParams,
@@ -704,6 +752,7 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
   void pageParentPromise.catch(() => null);
   const pageMetadataPromise = options.pageModule
     ? resolveModuleMetadata(
+        createAppMetadataModuleRoute(routeSegments, "page"),
         options.pageModule,
         options.params,
         pageSearchParams,
