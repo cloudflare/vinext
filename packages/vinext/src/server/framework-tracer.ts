@@ -32,6 +32,7 @@ export type FrameworkTracingIntegration = {
     descriptor: ResolvedFrameworkSpanDescriptor,
     callback: (span: FrameworkTracingBackendSpan) => T,
   ): T;
+  runWithDetachedContext?<T>(callback: () => T): T;
   withPropagatedContext?<T>(carrier: Headers, callback: () => T): T;
 };
 
@@ -48,6 +49,7 @@ export type FrameworkSpan = {
 export type FrameworkTracer = {
   captureActiveContext(): <T>(callback: () => T) => T;
   getActiveScopeSpan(): FrameworkSpan | undefined;
+  runWithDetachedContext<T>(callback: () => T): T;
   trace<T>(descriptor: FrameworkSpanDescriptor, callback: (span: FrameworkSpan) => T): T;
   withPropagatedContext<T>(carrier: Headers, callback: () => T): T;
 };
@@ -136,6 +138,16 @@ export function createFrameworkTracer(
         return span ? [span] : [];
       });
       return spans.length ? createCompositeSpan(spans) : undefined;
+    },
+
+    runWithDetachedContext<T>(callback: () => T): T {
+      const enter = (index: number): T => {
+        const integration = integrations[index];
+        if (!integration) return callback();
+        if (!integration.runWithDetachedContext) return enter(index + 1);
+        return integration.runWithDetachedContext(() => enter(index + 1));
+      };
+      return enter(0);
     },
 
     trace<T>(descriptor: FrameworkSpanDescriptor, callback: (span: FrameworkSpan) => T): T {

@@ -95,6 +95,10 @@ class RootContext implements OpenTelemetryContext {
 
 const ROOT_CONTEXT = new RootContext();
 
+export function getOpenTelemetryRootContext(): OpenTelemetryContext {
+  return ROOT_CONTEXT;
+}
+
 type OpenTelemetryRegistry = {
   context?: {
     active(): OpenTelemetryContext;

@@ -6,6 +6,7 @@ import type {
 } from "./framework-tracer.js";
 import {
   getOpenTelemetryApi,
+  getOpenTelemetryRootContext,
   type OpenTelemetryApi,
   type OpenTelemetrySpan,
 } from "./opentelemetry-api.js";
@@ -88,6 +89,11 @@ export const openTelemetryTracingIntegration: FrameworkTracingIntegration = {
         }
       },
     );
+  },
+
+  runWithDetachedContext(callback) {
+    const api = getOpenTelemetryApi();
+    return api ? api.context.with(getOpenTelemetryRootContext(), callback) : callback();
   },
 
   withPropagatedContext(carrier, callback) {

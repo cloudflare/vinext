@@ -4,6 +4,44 @@ import MagicString from "magic-string";
 import { stripViteModuleQuery } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
+function insertionPositionAfterImports(code: string): number {
+  const ast = parseAst(code);
+  let insertPos = 0;
+  for (const node of ast.body) {
+    if (node.type === "ImportDeclaration") insertPos = node.end;
+  }
+  return insertPos;
+}
+
+export function createInstrumentationServerTransformPlugin(
+  getInstrumentationPath: () => string | null,
+  getValues: () => Record<string, unknown>,
+): Plugin {
+  return {
+    name: "vinext:instrumentation-server-values",
+    transform(code, id) {
+      const instrumentationPath = getInstrumentationPath();
+      if (!instrumentationPath) return null;
+      if (normalizePath(stripViteModuleQuery(id)) !== instrumentationPath) return null;
+
+      const entries = Object.entries(getValues());
+      if (entries.length === 0 || code.includes("__vinextInstrumentationServerValues")) return null;
+      const assignments = entries
+        .map(([key, value]) => {
+          const serialized = JSON.stringify(value);
+          return `globalThis[${JSON.stringify(key)}] = ${serialized ?? "undefined"};`;
+        })
+        .join("\n");
+      const s = new MagicString(code);
+      s.appendLeft(
+        insertionPositionAfterImports(code),
+        `\n/* __vinextInstrumentationServerValues */\n${assignments}\n`,
+      );
+      return magicStringTransformResult(s, { hires: true });
+    },
+  };
+}
+
 export function createInstrumentationClientTransformPlugin(
   getInstrumentationClientPath: () => string | null,
   getRouteManifest: () => string | undefined,
@@ -29,15 +67,9 @@ export function createInstrumentationClientTransformPlugin(
       const shouldInjectDevTimer = isDev && !code.includes("__vinextInstrumentationClientStart");
       if (!shouldInjectManifest && !shouldInjectDevTimer) return null;
 
-      const ast = parseAst(code);
-      let insertPos = 0;
       // When the module has no imports, inject the timer at the top so the
       // measurement still wraps the full module body execution.
-      for (const node of ast.body) {
-        if (node.type === "ImportDeclaration") {
-          insertPos = node.end;
-        }
-      }
+      const insertPos = insertionPositionAfterImports(code);
 
       const s = new MagicString(code);
       const preamble = [

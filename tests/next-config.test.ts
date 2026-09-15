@@ -1556,6 +1556,37 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(config.instrumentationClientRouteManifest).toBe(manifest);
   });
 
+  it("preserves generic server value injections targeting instrumentation.ts", async () => {
+    const config = await resolveNextConfig({
+      webpack: (webpackConfig: any, options: any) => {
+        webpackConfig.module.rules.push({
+          rules: [
+            {
+              test: options.isServer ? /(src[\\/])?instrumentation\.(js|ts)/ : /client-only/,
+              use: {
+                loader: "/framework/value-injection-loader.js",
+                options: {
+                  values: {
+                    fixtureObject: { enabled: true },
+                    fixtureString: "server-value",
+                    fixtureUndefined: undefined,
+                  },
+                },
+              },
+            },
+          ],
+        });
+        return webpackConfig;
+      },
+    });
+
+    expect(config.instrumentationServerValueInjections).toEqual({
+      fixtureObject: { enabled: true },
+      fixtureString: "server-value",
+      fixtureUndefined: undefined,
+    });
+  });
+
   it("provides Next.js webpack plugin constructors to wrapped config callbacks", async () => {
     const config = await resolveNextConfig({
       webpack: (webpackConfig: any, options: any) => {
@@ -1565,6 +1596,7 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
       },
     });
     expect(config.instrumentationClientRouteManifest).toBeUndefined();
+    expect(config.instrumentationServerValueInjections).toEqual({});
   });
 
   it("leaves instrumentation-client route manifest injection disabled when omitted", async () => {
@@ -2317,6 +2349,7 @@ describe("detectNextIntlConfig", () => {
       compilerDefineServer: {},
       instrumentationClientInject: [],
       instrumentationClientRouteManifest: undefined,
+      instrumentationServerValueInjections: {},
       clientTraceMetadata: undefined,
       staleTimes: { dynamic: 0, static: 300 },
       useLightningcss: false,
