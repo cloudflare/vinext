@@ -28,7 +28,10 @@ import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-p
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
-import { tracePagesDocumentStream } from "./pages-execution-tracing.js";
+import {
+  tracePagesDocumentStream,
+  tracePagesFindPageComponents,
+} from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
@@ -610,7 +613,7 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
-    const pageModule = route.module;
+    const pageModule = tracePagesFindPageComponents(route.pattern, () => route.module);
     const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
     const pagesReadiness = buildPagesReadinessNextData({
       pageModule,
@@ -1246,6 +1249,7 @@ export function createPagesPageHandler(
             }
           }
           if (!errorRoute && errorPageRoute) {
+            tracePagesFindPageComponents("/500", () => undefined);
             errorRoute = errorPageRoute;
           }
           if (errorRoute) {
