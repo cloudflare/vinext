@@ -11,7 +11,7 @@ export const getStaticProps: GetStaticProps<{ slug: string }> = async ({ params 
       name: "fixture.pages.gsp.child",
       op: "fixture.gsp",
     },
-    () => ({ props: { slug }, revalidate: 60 }),
+    () => ({ props: { slug }, revalidate: 1 }),
   );
 };
 

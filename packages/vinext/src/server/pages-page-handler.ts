@@ -28,6 +28,7 @@ import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-p
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
+import { tracePagesDocumentStream } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
@@ -86,6 +87,25 @@ import {
   hasPagesGetInitialProps,
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
+
+export async function renderTracedPagesPageResponse(
+  options: Parameters<typeof renderPagesPageResponse>[0],
+): Promise<Response> {
+  let bodyStream: ReadableStream<Uint8Array> | undefined;
+  try {
+    return await renderPagesPageResponse({
+      ...options,
+      traceDocument: async (callback) => {
+        const result = await tracePagesDocumentStream(options.routePattern, callback);
+        bodyStream = result.bodyStream;
+        return result;
+      },
+    });
+  } catch (error) {
+    if (bodyStream && !bodyStream.locked) await bodyStream.cancel(error).catch(() => {});
+    throw error;
+  }
+}
 
 type PagesStreamedHtmlResponse = Response & {
   __vinextStreamedHtmlResponse?: boolean;
@@ -1120,7 +1140,7 @@ export function createPagesPageHandler(
           crossOrigin: vinextConfig.crossOrigin,
         });
 
-        let pageResponse = await renderPagesPageResponse({
+        const pageResponseOptions: Parameters<typeof renderPagesPageResponse>[0] = {
           assetTags,
           buildId,
           clearSsrContext() {
@@ -1178,7 +1198,8 @@ export function createPagesPageHandler(
           userAgent: request.headers.get("user-agent") ?? undefined,
           ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
-        });
+        };
+        let pageResponse = await renderTracedPagesPageResponse(pageResponseOptions);
         if (shouldApplyErrorResponsePolicy) {
           pageResponse = applyPagesErrorCachePolicy(
             pageResponse,
