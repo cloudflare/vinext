@@ -103,7 +103,6 @@ catalogs:
   sentry-nextjs-16-static:
     "@sentry/core": 11.0.0-beta.2
     "@sentry/nextjs": 11.0.0-beta.2
-    next: 16.2.11
     zod: ^3.25.76
 
 overrides:

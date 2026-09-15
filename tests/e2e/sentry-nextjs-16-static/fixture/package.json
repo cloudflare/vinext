@@ -10,7 +10,7 @@
     "ai": "^3.0.0",
     "import-in-the-middle": "^2",
     "ioredis": "5.10.1",
-    "next": "catalog:sentry-nextjs-16-static",
+    "next": "catalog:",
     "openai": "5.18.1",
     "pg": "^8.13.1",
     "react": "catalog:",
