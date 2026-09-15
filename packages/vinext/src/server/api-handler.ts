@@ -35,6 +35,7 @@ import {
   type PagesReqResRequest,
   type PagesReqResResponse,
 } from "./pages-node-compat.js";
+import { tracePagesApiHandler } from "./pages-execution-tracing.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -416,7 +417,9 @@ export async function handleApiRoute(
             }
           : undefined,
       );
-      const handlerResponse = await apiModule.default(nextRequest);
+      const handlerResponse = await tracePagesApiHandler(route.pattern, () =>
+        apiModule.default(nextRequest),
+      );
       if (!(handlerResponse instanceof Response)) {
         throw new Error("Edge API route did not return a Response");
       }
@@ -473,7 +476,7 @@ export async function handleApiRoute(
     );
 
     // Call the handler
-    await handler(apiReq, apiRes);
+    await tracePagesApiHandler(route.pattern, () => handler(apiReq, apiRes));
     return true;
   } catch (e) {
     if (e instanceof PagesBodyParseError) {

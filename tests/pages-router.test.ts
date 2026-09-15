@@ -16,6 +16,18 @@ import {
   PHASE_PRODUCTION_BUILD,
 } from "../packages/vinext/src/shims/constants.js";
 import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+
+let captureFrameworkSpans = false;
+const capturedFrameworkSpans: ResolvedFrameworkSpanDescriptor[] = [];
+registerFrameworkTracingIntegration({
+  id: "pages-router-test",
+  enterSpan(descriptor, callback) {
+    if (captureFrameworkSpans) capturedFrameworkSpans.push(descriptor);
+    return callback({ setAttribute() {} });
+  },
+});
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps }) {
@@ -1310,7 +1322,10 @@ export async function getStaticPaths() {
       const started = await startFixtureServer(tmpDir);
       tempServer = started.server;
 
+      capturedFrameworkSpans.length = 0;
+      captureFrameworkSpans = true;
       const first = await fetch(`${started.baseUrl}/first`);
+      captureFrameworkSpans = false;
       expect(first.status).toBe(404);
       expect(first.headers.get("x-nextjs-cache")).toBe("HIT");
       expect(first.headers.get("x-vinext-cache")).toBeNull();
@@ -1318,6 +1333,11 @@ export async function getStaticPaths() {
       const firstHtml = await first.text();
       expect(firstHtml).toContain('<p id="not-found">404 page 1</p>');
       expect(firstHtml).toContain('"paramsAreUndefined":true');
+      expect(
+        capturedFrameworkSpans
+          .filter(({ type }) => type === "Render.getStaticProps")
+          .map(({ name }) => name),
+      ).toEqual(["getStaticProps /[slug]", "getStaticProps /404"]);
 
       const second = await fetch(`${started.baseUrl}/first`);
       expect(second.status).toBe(404);
@@ -1328,6 +1348,7 @@ export async function getStaticPaths() {
       expect(secondHtml).toContain('<p id="not-found">404 page 2</p>');
       expect(secondHtml).toContain('"paramsAreUndefined":true');
     } finally {
+      captureFrameworkSpans = false;
       await tempServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
