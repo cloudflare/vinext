@@ -34,6 +34,7 @@ import {
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { reportRequestError } from "./instrumentation.js";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
+import { frameworkTracer } from "./tracer.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -508,7 +509,21 @@ export async function executeMiddleware(
 
   let response: Response | undefined | void;
   try {
-    response = await middlewareFn(nextRequest, fetchEvent);
+    response = await frameworkTracer.runWithDetachedContext(() =>
+      frameworkTracer.withPropagatedContext(options.request.headers, () =>
+        frameworkTracer.trace(
+          {
+            attributes: {
+              "http.method": options.request.method,
+              "http.target": nextRequest.nextUrl.pathname,
+            },
+            name: `middleware ${options.request.method}`,
+            type: "Middleware.execute",
+          },
+          () => middlewareFn(nextRequest, fetchEvent),
+        ),
+      ),
+    );
   } catch (e) {
     const isDevelopmentNavigationSignal =
       process.env.NODE_ENV !== "production" && isValidNavigationSignalError(e);

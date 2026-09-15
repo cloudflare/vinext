@@ -13,7 +13,10 @@ import {
 import { toSlash } from "pathslash";
 import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
-import { createInstrumentationClientTransformPlugin } from "../packages/vinext/src/plugins/instrumentation-client.js";
+import {
+  createInstrumentationClientTransformPlugin,
+  createInstrumentationServerTransformPlugin,
+} from "../packages/vinext/src/plugins/instrumentation-client.js";
 
 const RESOLVED_INSTRUMENTATION_CLIENT = "\0private-next-instrumentation-client.mjs";
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "..", "node_modules");
@@ -231,6 +234,38 @@ describe("instrumentation-client transform", () => {
       () => undefined,
     );
     const transform = getTransformHandler(plugin);
+    expect(await transform.call({} as never, source, path)).toBeNull();
+  });
+});
+
+describe("server instrumentation value transform", () => {
+  const path = "/project/instrumentation.ts";
+  const source = 'import "./setup.js";\nexport function register() {}\n';
+
+  it("injects wrapped-config values into the instrumentation module", async () => {
+    const plugin = createInstrumentationServerTransformPlugin(
+      () => path,
+      () => ({ objectValue: { enabled: true }, stringValue: "value", unsetValue: undefined }),
+    );
+    const code = getLoadedCode(await getTransformHandler(plugin).call({} as never, source, path));
+
+    expect(code).toContain('globalThis["objectValue"] = {"enabled":true};');
+    expect(code).toContain('globalThis["stringValue"] = "value";');
+    expect(code).toContain('globalThis["unsetValue"] = undefined;');
+    expect(code.indexOf("__vinextInstrumentationServerValues")).toBeLessThan(
+      code.indexOf("export function register"),
+    );
+  });
+
+  it("ignores unrelated modules and empty value maps", async () => {
+    const values: Record<string, unknown> = {};
+    const plugin = createInstrumentationServerTransformPlugin(
+      () => path,
+      () => values,
+    );
+    const transform = getTransformHandler(plugin);
+
+    expect(await transform.call({} as never, source, "/project/other.ts")).toBeNull();
     expect(await transform.call({} as never, source, path)).toBeNull();
   });
 });

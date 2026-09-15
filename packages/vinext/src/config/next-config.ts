@@ -464,6 +464,8 @@ export type ResolvedNextConfig = {
   instrumentationClientInject: string[];
   /** Route manifest injected by Next.js-compatible instrumentation plugins. */
   instrumentationClientRouteManifest: string | undefined;
+  /** Server globals injected into instrumentation.ts by wrapped webpack configs. */
+  instrumentationServerValueInjections: Record<string, unknown>;
   cacheComponents: boolean;
   appNavFailHandling: boolean;
   /**
@@ -1687,6 +1689,7 @@ export async function resolveNextConfig(
       compilerDefineServer: {},
       instrumentationClientInject: [],
       instrumentationClientRouteManifest: undefined,
+      instrumentationServerValueInjections: {},
       clientTraceMetadata: undefined,
       staleTimes: { ...DEFAULT_STALE_TIMES },
       useLightningcss: false,
@@ -2013,6 +2016,7 @@ export async function resolveNextConfig(
         )
       : [],
     instrumentationClientRouteManifest: webpackProbe.instrumentationClientRouteManifest,
+    instrumentationServerValueInjections: webpackProbe.instrumentationServerValueInjections,
     cacheComponents: config.cacheComponents ?? false,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
@@ -2166,6 +2170,7 @@ async function probeWebpackConfig(
   serverResolveExtensions: string[] | null;
   resolveExtensionsCustomized: boolean;
   instrumentationClientRouteManifest: string | undefined;
+  instrumentationServerValueInjections: Record<string, unknown>;
 }> {
   if (typeof config.webpack !== "function") {
     return {
@@ -2175,6 +2180,7 @@ async function probeWebpackConfig(
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
       instrumentationClientRouteManifest: undefined,
+      instrumentationServerValueInjections: {},
     };
   }
 
@@ -2203,6 +2209,9 @@ async function probeWebpackConfig(
       instrumentationClientRouteManifest: extractInstrumentationClientRouteManifest(
         clientProbe.rules,
       ),
+      instrumentationServerValueInjections: extractInstrumentationServerValueInjections(
+        serverProbe.rules,
+      ),
     };
   } catch {
     return {
@@ -2212,6 +2221,7 @@ async function probeWebpackConfig(
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
       instrumentationClientRouteManifest: undefined,
+      instrumentationServerValueInjections: {},
     };
   }
 }
@@ -2242,6 +2252,43 @@ function extractInstrumentationClientRouteManifest(rules: any[]): string | undef
 
   for (const rule of rules) visit(rule);
   return manifest;
+}
+
+// Preserve generic value-injection rules that wrapped Next.js configs target at
+// the standard server instrumentation module. Vinext does not execute webpack
+// loaders, so its Vite transform applies the already-computed JSON values.
+// oxlint-disable-next-line typescript/no-explicit-any
+function extractInstrumentationServerValueInjections(rules: any[]): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const visit = (rule: any): void => {
+    if (!rule || typeof rule !== "object") return;
+    if (Array.isArray(rule)) {
+      for (const child of rule) visit(child);
+      return;
+    }
+    if (Array.isArray(rule.oneOf)) for (const child of rule.oneOf) visit(child);
+    if (Array.isArray(rule.rules)) for (const child of rule.rules) visit(child);
+
+    const test = rule.test;
+    if (!(test instanceof RegExp)) return;
+    test.lastIndex = 0;
+    const matchesInstrumentation = test.test("instrumentation.ts");
+    test.lastIndex = 0;
+    if (!matchesInstrumentation) return;
+
+    const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
+    for (const use of uses) {
+      const injected = use?.options?.values;
+      if (injected && typeof injected === "object" && !Array.isArray(injected)) {
+        Object.assign(values, injected);
+      }
+    }
+  };
+
+  for (const rule of rules) visit(rule);
+  return values;
 }
 
 const DEFAULT_WEBPACK_RESOLVE_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx", ".json", ".wasm"];
