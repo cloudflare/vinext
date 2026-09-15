@@ -63,6 +63,7 @@ import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
 } from "./revalidation-request.js";
+import { traceResponseStart } from "./response-start-tracing.js";
 
 type AppRouteHandlerDispatchRoute = {
   pattern: string;
@@ -174,6 +175,12 @@ async function runInRouteHandlerRevalidationContext(
 }
 
 export async function dispatchAppRouteHandler(
+  options: DispatchAppRouteHandlerOptions,
+): Promise<Response> {
+  return traceResponseStart(await dispatchAppRouteHandlerImpl(options));
+}
+
+async function dispatchAppRouteHandlerImpl(
   options: DispatchAppRouteHandlerOptions,
 ): Promise<Response> {
   const { route } = options;

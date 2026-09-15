@@ -533,6 +533,10 @@ jobs:
             label: cloudflare-sentry-app
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-sentry-app-workers-cache
+            label: cloudflare-sentry-app-workers-cache
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-sentry-pages
             label: cloudflare-sentry-pages
             shardIndex: 1
