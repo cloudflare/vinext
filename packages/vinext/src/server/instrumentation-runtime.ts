@@ -1,18 +1,11 @@
 /**
- * Lazy, idempotent instrumentation initialisation.
+ * Idempotent instrumentation initialisation.
  *
- * The generated App Router RSC entry calls this on the first request instead
- * of embedding the bookkeeping directly in codegen. This keeps the entry
- * module thin (it only describes the app shape) while the actual runtime
- * behaviour lives in a normal typed module that can be unit-tested.
- *
- * ## Why lazy?
- *
- * A top-level `await` at module evaluation time blocks the entire V8 isolate
- * startup phase. On Cloudflare Workers that latency is added to every cold
- * start. Moving the `register()` call into the first request handler keeps
- * module evaluation synchronous while still guaranteeing that instrumentation
- * runs before any request is handled.
+ * Generated production entries call this before evaluating user route,
+ * middleware, and boundary modules. Request handlers call it again so
+ * development and split-stage entry points keep the same guarantee. Keeping
+ * the shared-promise bookkeeping here leaves generated entries as wiring and
+ * makes concurrent initialization directly testable.
  *
  * ## Why idempotent?
  *
@@ -24,9 +17,9 @@
  *
  * ## Next.js semantics
  *
- * Next.js calls `register()` once when the server process starts, before any
- * request handling. Our lazy init preserves that guarantee because the first
- * request cannot proceed past this call until `register()` has resolved.
+ * Next.js calls `register()` once when the server process starts, before user
+ * server modules are evaluated and before any request handling. Production
+ * entries await this helper before dynamically importing those user modules.
  *
  * References:
  * - https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation

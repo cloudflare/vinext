@@ -1544,6 +1544,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
   let resolvedServerExternalPackages: string[] = [];
+  let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
@@ -1663,7 +1664,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
-      { prerenderSecret },
+      { nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader, prerenderSecret },
     );
   }
 
@@ -2900,10 +2901,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig?.optimizePackageImports ?? []),
         ];
         pagesBundledPackages = new Set(serverTranspilePackages);
+        const openTelemetryPackages = findOpenTelemetryPackages(root);
+        registerNodeOpenTelemetryLoader =
+          env.command === "build" &&
+          !hasCloudflarePlugin &&
+          !hasNitroPlugin &&
+          instrumentationPath !== null &&
+          openTelemetryPackages.includes("@opentelemetry/instrumentation") &&
+          !serverTranspilePackages.includes("@opentelemetry/instrumentation") &&
+          (() => {
+            try {
+              createRequire(path.join(root, "package.json")).resolve(
+                "@opentelemetry/instrumentation/hook.mjs",
+              );
+              return true;
+            } catch {
+              return false;
+            }
+          })();
         const nextServerExternal = mergeServerExternalPackages(
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
-          findOpenTelemetryPackages(root),
+          openTelemetryPackages,
         );
         resolvedServerExternalPackages = nextServerExternal;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
@@ -4363,6 +4382,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 bodySizeLimitLabel: nextConfig?.serverActionsBodySizeLimitLabel,
                 htmlLimitedBots: nextConfig?.htmlLimitedBots,
                 clientTraceMetadata: nextConfig?.clientTraceMetadata,
+                nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
                 assetPrefix: nextConfig?.assetPrefix,
                 expireTime: nextConfig?.expireTime,
                 reactMaxHeadersLength: nextConfig?.reactMaxHeadersLength,
