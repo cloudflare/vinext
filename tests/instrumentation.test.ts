@@ -13,6 +13,7 @@ import {
 import { toSlash } from "pathslash";
 import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
+import { createInstrumentationClientTransformPlugin } from "../packages/vinext/src/plugins/instrumentation-client.js";
 
 const RESOLVED_INSTRUMENTATION_CLIENT = "\0private-next-instrumentation-client.mjs";
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "..", "node_modules");
@@ -57,6 +58,14 @@ function parseSentryEnvelopeEvents(envelope: unknown): SentryEnvelopeEvent[] {
     }
   }
   return events;
+}
+
+function getTransformHandler(
+  plugin: ReturnType<typeof createInstrumentationClientTransformPlugin>,
+) {
+  if (typeof plugin.transform === "function") return plugin.transform;
+  if (plugin.transform?.handler) return plugin.transform.handler;
+  throw new Error("transform hook missing");
 }
 
 function setupInjectProject(options: {
@@ -177,6 +186,52 @@ describe("findInstrumentationFile", () => {
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     expect(result).toBeNull();
+  });
+});
+
+describe("instrumentation-client transform", () => {
+  const path = "/project/instrumentation-client.ts";
+  const source = 'import "./setup.js";\ninitialize();\n';
+
+  it("injects a wrapped config route manifest in production without the dev timer", async () => {
+    const manifest = JSON.stringify({ dynamicRoutes: ["/products/:id"] });
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => manifest,
+    );
+    const transform = getTransformHandler(plugin);
+    const result = await transform.call({} as never, source, path);
+    const code = getLoadedCode(result);
+
+    expect(code).toContain(`globalThis["_sentryRouteManifest"] = ${JSON.stringify(manifest)};`);
+    expect(code.indexOf("_sentryRouteManifest")).toBeLessThan(code.indexOf("initialize()"));
+    expect(code).not.toContain("__vinextInstrumentationClientStart");
+  });
+
+  it("injects the route manifest alongside the timer in development", async () => {
+    const manifest = JSON.stringify({ dynamicRoutes: ["/products/:id"] });
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => manifest,
+    );
+    const configResolved =
+      typeof plugin.configResolved === "function"
+        ? plugin.configResolved
+        : plugin.configResolved?.handler;
+    await configResolved?.call({} as never, { command: "serve" } as never);
+
+    const code = getLoadedCode(await getTransformHandler(plugin).call({} as never, source, path));
+    expect(code).toContain(`globalThis["_sentryRouteManifest"] = ${JSON.stringify(manifest)};`);
+    expect(code).toContain("__vinextInstrumentationClientStart");
+  });
+
+  it("keeps route manifest injection disabled when a wrapped config omits it", async () => {
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => undefined,
+    );
+    const transform = getTransformHandler(plugin);
+    expect(await transform.call({} as never, source, path)).toBeNull();
   });
 });
 

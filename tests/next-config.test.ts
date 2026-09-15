@@ -1523,6 +1523,54 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "config/request.ts"));
     expect(config.mdx?.remarkPlugins).toEqual([fakeRemarkPlugin]);
   });
+
+  it("preserves an instrumentation-client route manifest from a wrapped webpack config", async () => {
+    tmpDir = makeTempDir();
+    const manifest = JSON.stringify({
+      staticRoutes: ["/docs"],
+      dynamicRoutes: ["/docs/:slug", "/docs/:path*"],
+      isrRoutes: ["/docs/isr"],
+      excludedRoutes: ["/docs/private"],
+      basePath: "/base",
+    });
+
+    const config = await resolveNextConfig(
+      {
+        webpack: (webpackConfig: any, options: any) => {
+          if (!options.isServer) {
+            webpackConfig.module.rules.push({
+              use: [
+                {
+                  loader: "/framework/valueInjectionLoader.js",
+                  options: { values: { _sentryRouteManifest: manifest } },
+                },
+              ],
+            });
+          }
+          return webpackConfig;
+        },
+      },
+      tmpDir,
+    );
+
+    expect(config.instrumentationClientRouteManifest).toBe(manifest);
+  });
+
+  it("provides Next.js webpack plugin constructors to wrapped config callbacks", async () => {
+    const config = await resolveNextConfig({
+      webpack: (webpackConfig: any, options: any) => {
+        webpackConfig.plugins.push(new options.webpack.DefinePlugin({ TEST: true }));
+        webpackConfig.plugins.push(new options.webpack.ProvidePlugin({ TEST: "test" }));
+        return webpackConfig;
+      },
+    });
+    expect(config.instrumentationClientRouteManifest).toBeUndefined();
+  });
+
+  it("leaves instrumentation-client route manifest injection disabled when omitted", async () => {
+    const config = await resolveNextConfig({ webpack: (webpackConfig: any) => webpackConfig });
+    expect(config.instrumentationClientRouteManifest).toBeUndefined();
+  });
 });
 
 describe("parseBodySizeLimit", () => {
@@ -2268,6 +2316,7 @@ describe("detectNextIntlConfig", () => {
       compilerDefine: {},
       compilerDefineServer: {},
       instrumentationClientInject: [],
+      instrumentationClientRouteManifest: undefined,
       clientTraceMetadata: undefined,
       staleTimes: { dynamic: 0, static: 300 },
       useLightningcss: false,
