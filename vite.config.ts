@@ -181,6 +181,7 @@ export default defineConfig({
           include: ["tests/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: [
             "tests/fixtures/**/node_modules/**",
+            "tests/e2e/sentry-nextjs-16-static/fixture/tests/**",
             // Integration tests spin up Vite dev servers against shared fixture
             // dirs and use per-worker optimizer caches in their own project.
             // When adding a test that calls startFixtureServer() or createServer(),

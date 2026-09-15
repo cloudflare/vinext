@@ -190,6 +190,8 @@ export default {
     "apps/web/dist/**",
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
     "tests/e2e/app-front-redirect-issue/fixture/**/*.{js,ts,tsx}",
+    // Loaded as an isolated Playwright project and Vite app via playwright.config.ts.
+    "tests/e2e/sentry-nextjs-16-static/fixture/**",
     // stub module loaded via `path.resolve()` as a Vite alias target
     "packages/vinext/src/client/empty-module.ts",
   ],
