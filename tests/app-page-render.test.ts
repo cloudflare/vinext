@@ -376,6 +376,169 @@ describe("SSR shell error recovery", () => {
   });
 });
 
+describe("client trace metadata with edge-managed HTML caching", () => {
+  it("omits request trace metadata from potentially shared edge responses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const common = createCommonOptions();
+    let ssrOptions:
+      | { clientTraceMetadata?: readonly string[]; clientTraceMetadataMarker?: string }
+      | undefined;
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        clientTraceMetadata: ["traceparent", "baggage"],
+        isProduction: true,
+        revalidateSeconds: 30,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+            ssrOptions = options;
+            void options?.sideStream?.cancel();
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+      });
+
+      expect(ssrOptions?.clientTraceMetadata).toBeUndefined();
+      expect(ssrOptions?.clientTraceMetadataMarker).toBeUndefined();
+      expect(response.headers.get("cdn-cache-control")).toContain("max-age=30");
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+      await Promise.all(common.waitUntilPromises);
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("keeps request trace metadata on known no-store edge responses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const common = createCommonOptions();
+    let ssrOptions:
+      | { clientTraceMetadata?: readonly string[]; clientTraceMetadataMarker?: string }
+      | undefined;
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        clientTraceMetadata: ["traceparent", "baggage"],
+        isForceDynamic: true,
+        isProduction: true,
+        revalidateSeconds: 30,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+            ssrOptions = options;
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+      });
+
+      expect(ssrOptions?.clientTraceMetadata).toEqual(["traceparent", "baggage"]);
+      expect(ssrOptions?.clientTraceMetadataMarker).toBeUndefined();
+      expect(response.headers.get("cache-control")).toContain("no-store");
+      expect(response.headers.get("cdn-cache-control")).toBeNull();
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it("omits request trace metadata from cacheable development responses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const common = createCommonOptions();
+    let ssrOptions:
+      | { clientTraceMetadata?: readonly string[]; clientTraceMetadataMarker?: string }
+      | undefined;
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        clientTraceMetadata: ["baggage"],
+        isProduction: false,
+        revalidateSeconds: 30,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+            ssrOptions = options;
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+      });
+
+      expect(ssrOptions?.clientTraceMetadata).toBeUndefined();
+      expect(ssrOptions?.clientTraceMetadataMarker).toBeUndefined();
+      expect(response.headers.get("cache-control")).toContain("s-maxage=30");
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
+  it.each(["CDN-Cache-Control", "Vercel-CDN-Cache-Control"])(
+    "does not trust known no-store policy when middleware sets %s",
+    async (cacheHeaderName) => {
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      const common = createCommonOptions();
+      let ssrOptions:
+        | { clientTraceMetadata?: readonly string[]; clientTraceMetadataMarker?: string }
+        | undefined;
+      try {
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          clientTraceMetadata: ["baggage"],
+          isForceDynamic: true,
+          isProduction: true,
+          middlewareContext: {
+            headers: new Headers({ [cacheHeaderName]: "public, max-age=60" }),
+            status: null,
+          },
+          revalidateSeconds: 30,
+          loadSsrHandler: async () => ({
+            async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+              ssrOptions = options;
+              return createStream(["<html>page</html>"]);
+            },
+          }),
+        });
+
+        expect(ssrOptions?.clientTraceMetadata).toBeUndefined();
+        expect(ssrOptions?.clientTraceMetadataMarker).toBeUndefined();
+        expect(response.headers.get(cacheHeaderName)).toBe("public, max-age=60");
+        await expect(response.text()).resolves.toBe("<html>page</html>");
+      } finally {
+        setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      }
+    },
+  );
+
+  it("treats force-static Edge Runtime responses as potentially shared", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const common = createCommonOptions();
+    let ssrOptions:
+      | { clientTraceMetadata?: readonly string[]; clientTraceMetadataMarker?: string }
+      | undefined;
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        clientTraceMetadata: ["baggage"],
+        isEdgeRuntime: true,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: null,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+            ssrOptions = options;
+            void options?.sideStream?.cancel();
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+      });
+
+      expect(ssrOptions?.clientTraceMetadata).toBeUndefined();
+      expect(ssrOptions?.clientTraceMetadataMarker).toBeUndefined();
+      expect(response.headers.get("cdn-cache-control")).toContain("max-age=31536000");
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+      await Promise.all(common.waitUntilPromises);
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+});
+
 describe("form state rendering", () => {
   it("passes action form state to SSR and disables HTML cache writes", async () => {
     const common = createCommonOptions();

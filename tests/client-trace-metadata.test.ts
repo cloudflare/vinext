@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   filterClientTraceMetadata,
   getClientTraceMetadataHTML,
+  markClientTraceMetadataBlock,
   renderClientTraceMetadataTags,
+  stripClientTraceMetadataBlock,
   type ClientTraceDataEntry,
 } from "../packages/vinext/src/server/client-trace-metadata.js";
 
@@ -307,5 +309,28 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
     });
 
     expect(getClientTraceMetadataHTML(["my-test-key-1"])).toBe("");
+  });
+});
+
+describe("client trace metadata cache markers", () => {
+  it("removes exactly the marked framework-injected block", () => {
+    const entries = [
+      { key: "traceparent", value: "00-abc-def-01" },
+      { key: 'weird"key', value: "a&b<c>" },
+    ];
+    const marker = "private-render-marker";
+    const html = `<head>${markClientTraceMetadataBlock(
+      renderClientTraceMetadataTags(entries),
+      marker,
+    )}<title>x</title></head>`;
+
+    expect(stripClientTraceMetadataBlock(html, marker)).toBe("<head><title>x</title></head>");
+  });
+
+  it("leaves application-authored tags with allow-listed names alone", () => {
+    const html = '<meta name="baggage" content="application-policy"/>';
+
+    expect(stripClientTraceMetadataBlock(html, "private-render-marker")).toBe(html);
+    expect(stripClientTraceMetadataBlock(html, undefined)).toBe(html);
   });
 });

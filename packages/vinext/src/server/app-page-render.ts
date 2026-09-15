@@ -83,6 +83,7 @@ import type {
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 import { peekDynamicUsage } from "vinext/shims/headers";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 
@@ -92,6 +93,13 @@ type AppPageBoundaryOnError = (
   errorContext: unknown,
 ) => unknown;
 type AppPageDebugLogger = (event: string, detail: string) => void;
+
+const SHARED_CACHE_CONTROL_HEADER_NAMES = [
+  "cache-control",
+  "cdn-cache-control",
+  "cloudflare-cdn-cache-control",
+  "vercel-cdn-cache-control",
+] as const;
 
 type AppPageRequestCacheLife = {
   revalidate?: number;
@@ -990,6 +998,39 @@ export async function renderAppPageLifecycle(
     getStyles: options.getFontStyles,
   });
   const fontLinkHeader = buildAppPageFontLinkHeader(fontData.preloads);
+  // Edge-managed adapters cache the outgoing response stream itself, so there
+  // is no separate cache copy to sanitize. Omit request trace metadata from
+  // responses that can enter that shared cache. Known no-store responses keep
+  // the feature because neither the edge nor the origin will persist them.
+  let clientTraceMetadata = options.clientTraceMetadata;
+  let clientTraceMetadataMarker: string | undefined;
+  if (clientTraceMetadata && clientTraceMetadata.length > 0) {
+    const middlewareMayControlSharedCaching = SHARED_CACHE_CONTROL_HEADER_NAMES.some(
+      (name) => options.middlewareContext.headers?.has(name) === true,
+    );
+    const hasKnownNoStoreHtmlPolicy =
+      !middlewareMayControlSharedCaching &&
+      (options.isDraftMode ||
+        options.isForceDynamic ||
+        Boolean(options.scriptNonce) ||
+        options.isProgressiveActionRender === true ||
+        revalidateSeconds === 0 ||
+        (options.isEdgeRuntime &&
+          revalidateSeconds === null &&
+          !options.isForceStatic &&
+          !options.isDynamicError) ||
+        peekDynamicUsage());
+    const canSanitizeSeparateOriginCacheCopy =
+      options.isProduction &&
+      getCdnCacheAdapter().ownsBackgroundRevalidation &&
+      !middlewareMayControlSharedCaching;
+
+    if (!hasKnownNoStoreHtmlPolicy && !canSanitizeSeparateOriginCacheCopy) {
+      clientTraceMetadata = undefined;
+    } else if (!hasKnownNoStoreHtmlPolicy && canSanitizeSeparateOriginCacheCopy) {
+      clientTraceMetadataMarker = crypto.randomUUID();
+    }
+  }
   let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
@@ -1062,7 +1103,8 @@ export async function renderAppPageLifecycle(
         hasCustomGlobalError: options.hasCustomGlobalError,
         navigationContext: options.getNavigationContext(),
         basePath: options.basePath,
-        clientTraceMetadata: options.clientTraceMetadata,
+        clientTraceMetadata,
+        clientTraceMetadataMarker,
         reactMaxHeadersLength: options.reactMaxHeadersLength,
         rootParams: options.rootParams,
         pprFallbackShellSignal: options.pprFallbackShellSignal,
@@ -1245,6 +1287,7 @@ export async function renderAppPageLifecycle(
       },
       capturedRscDataPromise: capturedRscDataRef.value,
       cleanPathname: options.cleanPathname,
+      clientTraceMetadataMarker,
       consumeDynamicUsage: consumeRenderDynamicUsage,
       consumeRenderObservationState: options.consumeRenderObservationState,
       createHtmlRenderObservation(input) {

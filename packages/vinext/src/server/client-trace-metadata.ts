@@ -176,6 +176,35 @@ export function renderClientTraceMetadataTags(
   return html;
 }
 
+function clientTraceMetadataBlockStart(marker: string): string {
+  return `<!--vinext-client-trace-metadata:${marker}:start-->`;
+}
+
+function clientTraceMetadataBlockEnd(marker: string): string {
+  return `<!--vinext-client-trace-metadata:${marker}:end-->`;
+}
+
+/**
+ * Mark the framework-injected trace metadata so a later cache write can remove
+ * exactly that block without matching application-authored `<meta>` tags.
+ */
+export function markClientTraceMetadataBlock(html: string, marker: string | undefined): string {
+  if (!html || !marker) return html;
+  return `${clientTraceMetadataBlockStart(marker)}${html}${clientTraceMetadataBlockEnd(marker)}`;
+}
+
+/** Remove only the trace metadata block carrying this render's private marker. */
+export function stripClientTraceMetadataBlock(html: string, marker: string | undefined): string {
+  if (!marker) return html;
+  const start = clientTraceMetadataBlockStart(marker);
+  const end = clientTraceMetadataBlockEnd(marker);
+  const startIndex = html.indexOf(start);
+  if (startIndex === -1) return html;
+  const endIndex = html.indexOf(end, startIndex + start.length);
+  if (endIndex === -1) return html;
+  return html.slice(0, startIndex) + html.slice(endIndex + end.length);
+}
+
 /**
  * Convenience helper: read OTel propagation data, filter against the
  * configured allow-list, and render the resulting `<meta>` tags. Returns an
