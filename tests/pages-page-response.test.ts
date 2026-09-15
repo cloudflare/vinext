@@ -206,16 +206,13 @@ describe("pages page response", () => {
     });
 
     await expect(
-      renderTracedPagesPageResponse(
-        {
-          ...common.options,
-          renderDocumentToString: async () => {
-            throw new Error("document shell failed");
-          },
-          renderToReadableStream: async () => bodyStream,
+      renderTracedPagesPageResponse({
+        ...common.options,
+        renderDocumentToString: async () => {
+          throw new Error("document shell failed");
         },
-        true,
-      ),
+        renderToReadableStream: async () => bodyStream,
+      }),
     ).rejects.toThrow("document shell failed");
     expect(cancelled).toBe(true);
   });
