@@ -1,10 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { waitForError } from './test-utils';
 
-const isWebpackDev = process.env.TEST_ENV === 'development-webpack';
-
 test('React component annotation adds data-sentry-component attributes (Turbopack)', async ({ page }) => {
-  test.skip(isWebpackDev, 'Only relevant for Turbopack builds');
+  test.skip(true, 'Requires the Turbopack component annotation transform');
 
   await page.goto('/component-annotation');
 

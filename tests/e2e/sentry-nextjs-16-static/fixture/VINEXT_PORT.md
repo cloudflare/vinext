@@ -15,8 +15,8 @@ fixtures must not be moved into this directory.
 
 | Files | Deviation | Reason |
 | --- | --- | --- |
-| `package.json`, root `pnpm-workspace.yaml` fixture catalog | Replaces Sentry-monorepo tarballs and the internal test-utils link with published `@sentry/core` and `@sentry/nextjs@11.0.0-beta.2`, then adds the vinext/Vite workspace tooling. The fixture-specific Sentry, Next.js, and Zod versions live in the `sentry-nextjs-16-static` catalog; React, React DOM, Playwright, Vite, and Vite Plus reuse the repository catalog. The package is also marked as ESM. All upstream runtime dependencies, including `pg` and `ioredis`, remain installed. | The Sentry monorepo tarballs and linked utilities do not exist here. Vinext's React Server Components runtime requires React 19.2.6 or newer. The resolved `zod-to-json-schema@3.25.2` peer dependency requires Zod `^3.25.28 || ^4`, so the fixture pins a compatible Zod 3 release. A single Playwright version avoids loading two incompatible Playwright installations through the root runner. |
-| `vite.config.ts` | Adds the minimal `vinext()` Vite configuration. | The upstream fixture is built by Next.js and has no Vite configuration. |
+| `package.json`, root `pnpm-workspace.yaml` fixture catalog | Replaces Sentry-monorepo tarballs and the internal test-utils link with published `@sentry/core` and `@sentry/nextjs@11.0.0-beta.2`, then adds the vinext/Vite workspace tooling. The fixture-specific Sentry, Next.js, and Zod versions live in the `sentry-nextjs-16-static` catalog; React, React DOM, Playwright, Vite, and Vite Plus reuse the repository catalog. The package is marked as ESM and, like vinext's other fixtures, does not expose the copied application's Next.js build, clean, or test scripts as repository workspace tasks. All upstream runtime dependencies, including `pg` and `ioredis`, remain installed. | The Sentry monorepo tarballs and linked utilities do not exist here. Vinext's React Server Components runtime requires React 19.2.6 or newer. The resolved `zod-to-json-schema@3.25.2` peer dependency requires Zod `^3.25.28 || ^4`, so the fixture pins a compatible Zod 3 release. A single Playwright version avoids loading two incompatible Playwright installations through the root runner. Repository orchestration belongs to the root Playwright configuration; retaining upstream's `clean` (`npx rimraf node_modules pnpm-lock.yaml`) and nested-install scripts would make destructive or networked commands available to workspace-wide task runs. |
+| `vite.config.ts` | Adds the minimal `vinext()` Vite configuration and explicitly roots route discovery at this fixture directory. | The upstream fixture is built by Next.js and has no Vite configuration. Explicit `appDir` matches vinext's checked-in fixture convention and prevents invocation location from changing the app root. |
 | `tests/*.test.ts` | Replaces imports from `@sentry-internal/test-utils` with `./test-utils`. | The local helper implements the same subset used by these specs against the repository-local envelope receiver. Test bodies remain otherwise unchanged except where listed below. |
 | `tests/build-output.test.ts` | Scans `dist/server` instead of `.next/server`. | vinext's production server output directory is `dist/server`. |
 | `tests/db-page.test.ts` | Disables the PostgreSQL/Redis instrumentation case. | This repository does not require Docker-backed services for its Playwright suite. The copied application route and assertions remain available for opt-in compatibility work. |
@@ -32,18 +32,18 @@ fixtures must not be moved into this directory.
 - The async-params case remains skipped by its upstream production-mode condition.
 - The Turbopack development stack-frame case remains skipped because this project runs a vinext production build; `isTurbopackDevMode` evaluates to false.
 - The upstream Edge Route Handler case retains its unconditional `test.skip()`.
-- The component-annotation and third-party-filter tests run, but their Turbopack-only assertions remain guarded by the upstream `turbopack` event tag and therefore do not execute for a Vite build.
+- The component-annotation and third-party-filter tests are explicitly skipped because their only feature assertions require Turbopack transforms that Vite does not execute.
 
 ## Validation status
 
 The production vinext project discovers all 47 upstream cases. The latest full local run completed
-with 40 passing and 7 skipped:
+with 38 passing and 9 skipped:
 
 ```bash
 PLAYWRIGHT_PROJECT=sentry-nextjs-16-static pnpm exec playwright test --workers=1
 ```
 
-The seven skips are the two upstream Vercel AI SDK v3 `test.fixme` cases, the upstream
+The nine skips are the two upstream Vercel AI SDK v3 `test.fixme` cases, the upstream
 production-mode async-params skip, the upstream Edge Route Handler skip, the upstream
-Turbopack-development-only skip, and the two documented vinext deviations for DB services and
-OpenAI Orchestrion.
+Turbopack-development-only skip, the Turbopack-only component-annotation and third-party-filter
+cases, and the two documented vinext deviations for DB services and OpenAI Orchestrion.
