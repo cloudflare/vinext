@@ -14,6 +14,15 @@ const DEFAULT_VINEXT_RESOLVE_EXTENSIONS = [
   ".json",
 ] as const;
 
+// Extensions vinext must always be able to resolve for framework-internal
+// entries — most notably the Nitro Bun preset entry
+// `nitro/dist/presets/bun/runtime/bun`, which is a `.mjs` file. A user
+// `resolve.extensions` / `resolveExtensions` override replaces the resolver
+// defaults for their own code, but it must not shadow these, or a list that
+// omits `.mjs` makes that internal entry unresolvable
+// (`[UNRESOLVED_ENTRY] nitro/dist/presets/bun/runtime/bun`).
+const FRAMEWORK_REQUIRED_RESOLVE_EXTENSIONS = [".mjs", ".js", ".mts", ".cjs", ".cts"] as const;
+
 export function normalizePageExtensions(pageExtensions?: readonly string[] | null): string[] {
   if (!Array.isArray(pageExtensions) || pageExtensions.length === 0) {
     return [...DEFAULT_PAGE_EXTENSIONS];
@@ -157,14 +166,20 @@ export function buildViteResolveExtensions(
 export function normalizeViteResolveExtensions(extensions: readonly string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
-  for (const extension of extensions) {
-    const trimmed = extension.trim();
-    if (!trimmed) continue;
+  const push = (candidate: string): void => {
+    const trimmed = candidate.trim();
+    if (!trimmed) return;
     const dotted = trimmed.startsWith(".") ? trimmed : `.${trimmed}`;
-    if (seen.has(dotted)) continue;
+    if (seen.has(dotted)) return;
     seen.add(dotted);
     result.push(dotted);
-  }
+  };
+  // User extensions keep highest precedence (their app code wins)...
+  for (const extension of extensions) push(extension);
+  // ...but the framework-required extensions are appended at the lowest
+  // precedence so a replace-style override cannot shadow vinext-internal /
+  // Nitro Bun preset entry resolution.
+  for (const extension of FRAMEWORK_REQUIRED_RESOLVE_EXTENSIONS) push(extension);
   return result;
 }
 
