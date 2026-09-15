@@ -403,9 +403,37 @@ describe("create-vinext-app CLI", () => {
     try {
       await runCreateVinextAppCli(["--help"]);
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Usage: create-vinext-app"));
+      expect(logSpy).toHaveBeenCalledWith(
+        expect.stringContaining("--experimental-cloudflare-vite-plugin-v2"),
+      );
     } finally {
       logSpy.mockRestore();
     }
+  });
+
+  it("opts a generated Cloudflare app into the Vite plugin v2 preview", async () => {
+    const appPath = path.join(tmpDir, "plugin-v2-app");
+
+    await withQuietConsole(() =>
+      runCreateVinextAppCli([
+        appPath,
+        "--platform=cloudflare",
+        "--cdn-cache=none",
+        "--image-optimization=none",
+        "--experimental-cloudflare-vite-plugin-v2",
+        "--skip-install",
+        "--disable-git",
+        "--use-pnpm",
+        "--yes",
+      ]),
+    );
+
+    const pkg = JSON.parse(readFile(appPath, "package.json")) as {
+      devDependencies: Record<string, string>;
+    };
+    expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe(
+      "https://pkg.pr.new/@cloudflare/vite-plugin@15508",
+    );
   });
 
   it("accepts a space-separated Response Store mode before the app directory", async () => {

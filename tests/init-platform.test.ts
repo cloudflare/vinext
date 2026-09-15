@@ -5,6 +5,7 @@ import {
   parsePlatformArg,
   parseDataCacheArg,
   parseCdnCacheArg,
+  parseCloudflareVitePluginV2Arg,
   parseImageOptimizationArg,
   parseResponseStoreModeArg,
   parsePrerenderArg,
@@ -39,6 +40,16 @@ describe("Cloudflare init choices", () => {
     expect(parseResponseStoreModeArg(["--response-store-mode=self-contained"])).toBe(
       "self-contained",
     );
+  });
+
+  it("parses the Cloudflare Vite plugin v2 preview opt-in", () => {
+    expect(parseCloudflareVitePluginV2Arg(["--experimental-cloudflare-vite-plugin-v2"])).toBe(true);
+    expect(parseCloudflareVitePluginV2Arg(["--no-experimental-cloudflare-vite-plugin-v2"])).toBe(
+      false,
+    );
+    expect(() =>
+      parseCloudflareVitePluginV2Arg(["--experimental-cloudflare-vite-plugin-v2=maybe"]),
+    ).toThrow("expects true or false");
   });
 
   it("defaults to no cache and Cloudflare Images", async () => {
@@ -410,6 +421,30 @@ describe("resolveInitPlatform", () => {
 });
 
 describe("resolveInitOptions", () => {
+  it("opts Cloudflare initialization into the Vite plugin v2 preview", async () => {
+    await expect(
+      resolveInitOptions(
+        [
+          "--platform=cloudflare",
+          "--cdn-cache=none",
+          "--image-optimization=none",
+          "--experimental-cloudflare-vite-plugin-v2",
+        ],
+        { env: { CODEX_THREAD_ID: "test" } },
+      ),
+    ).resolves.toMatchObject({
+      cloudflare: { vitePluginV2: true },
+    });
+  });
+
+  it("rejects the Vite plugin v2 preview opt-in for Node", async () => {
+    await expect(
+      resolveInitOptions(["--platform=node", "--experimental-cloudflare-vite-plugin-v2"], {
+        env: { CODEX_THREAD_ID: "test" },
+      }),
+    ).rejects.toThrow("requires --platform=cloudflare");
+  });
+
   it("defaults Cloudflare init to no cache", async () => {
     await expect(resolveInitOptions([], { env: {}, isInteractive: false })).resolves.toEqual({
       platform: "cloudflare",

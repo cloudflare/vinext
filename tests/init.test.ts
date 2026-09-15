@@ -4,6 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import {
   init,
+  CLOUDFLARE_VITE_PLUGIN_V2_SPECIFIER,
   generateViteConfig,
   addScripts,
   getInitDeps,
@@ -412,6 +413,17 @@ describe("getInitDeps", () => {
     expect(deps).toContain("@vinext/cloudflare");
   });
 
+  it("uses the Cloudflare Vite plugin v2 preview specifier when opted in", () => {
+    const deps = getInitDeps(true, "cloudflare", {
+      dataCache: "none",
+      cdnCache: "none",
+      imageOptimization: "none",
+      vitePluginV2: true,
+    });
+    expect(deps).toContain(`@cloudflare/vite-plugin@${CLOUDFLARE_VITE_PLUGIN_V2_SPECIFIER}`);
+    expect(deps).not.toContain("@cloudflare/vite-plugin");
+  });
+
   it("adds the deployable Response Store package for service-binding mode", () => {
     const deps = getInitDeps(true, "cloudflare", {
       dataCache: "none",
@@ -564,7 +576,7 @@ describe("init — basic functionality", () => {
     const { result } = await runInit(tmpDir);
 
     expect(result.platform).toBe("cloudflare");
-    expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc"]);
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc", "cloudflare.config.ts"]);
     expect(readFile(tmpDir, "vite.config.ts")).toContain("@cloudflare/vite-plugin");
     expect(readFile(tmpDir, "vite.config.ts")).toContain("data: kvDataAdapter()");
     expect(readFile(tmpDir, "vite.config.ts")).toContain("cdn: cdnAdapter()");
@@ -581,7 +593,7 @@ describe("init — basic functionality", () => {
 
     const { result } = await runInit(tmpDir, { platform: "cloudflare" });
 
-    expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc"]);
+    expect(result.generatedPlatformFiles).toEqual(["wrangler.jsonc", "cloudflare.config.ts"]);
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
       main: "vinext/server/fetch-handler",
@@ -604,6 +616,7 @@ describe("init — basic functionality", () => {
     expect(result.generatedPlatformFiles).toEqual([
       "wrangler.jsonc",
       "wrangler.response-store.jsonc",
+      "cloudflare.config.ts",
     ]);
     expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
       cache: { enabled: false },
@@ -1488,6 +1501,27 @@ describe("init — dependency installation", () => {
     expect(installCall!.cmd).toMatch(/^pnpm add -D/);
   });
 
+  it("installs the Cloudflare Vite plugin v2 preview URL when opted in", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: 5");
+
+    const { execCalls } = await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "none",
+        imageOptimization: "none",
+        vitePluginV2: true,
+      },
+    });
+
+    const installCall = execCalls.find((call) =>
+      call.cmd.includes("@cloudflare/vite-plugin@https://pkg.pr.new"),
+    );
+    expect(installCall?.cmd).toContain(
+      `@cloudflare/vite-plugin@${CLOUDFLARE_VITE_PLUGIN_V2_SPECIFIER}`,
+    );
+  });
+
   it("can write missing dependency entries without installing them", async () => {
     setupProject(tmpDir, { router: "app" });
 
@@ -1510,6 +1544,28 @@ describe("init — dependency installation", () => {
       "@cloudflare/vite-plugin": "latest",
       wrangler: "latest",
     });
+  });
+
+  it("replaces an existing stable Cloudflare Vite plugin when v2 is opted in", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: { devDependencies: { "@cloudflare/vite-plugin": "latest" } },
+    });
+
+    await runInit(tmpDir, {
+      install: false,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "none",
+        imageOptimization: "none",
+        vitePluginV2: true,
+      },
+    });
+
+    const pkg = readPkg(tmpDir) as { devDependencies: Record<string, string> };
+    expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe(
+      CLOUDFLARE_VITE_PLUGIN_V2_SPECIFIER,
+    );
   });
 
   it("updates old React dependency entries without installing when install is disabled", async () => {
@@ -1864,20 +1920,20 @@ describe("updateGitignore", () => {
     expect(content).toBe("node_modules/\n/dist/\n/.vinext/\n");
   });
 
-  it("adds .wrangler/ for the Cloudflare platform", () => {
+  it("adds Cloudflare output directories for the Cloudflare platform", () => {
     const result = updateGitignore(tmpDir, "cloudflare");
 
     expect(result).toBe(true);
-    expect(readFile(tmpDir, ".gitignore")).toBe("/dist/\n.vinext/\n.wrangler/\n");
+    expect(readFile(tmpDir, ".gitignore")).toBe("/dist/\n.vinext/\n.wrangler/\n.cloudflare/\n");
   });
 
-  it("does not duplicate an existing Wrangler directory entry", () => {
-    writeFile(tmpDir, ".gitignore", "/dist/\n.vinext/\n/.wrangler/\n");
+  it("does not duplicate existing Cloudflare directory entries", () => {
+    writeFile(tmpDir, ".gitignore", "/dist/\n.vinext/\n/.wrangler/\n/.cloudflare/\n");
 
     const result = updateGitignore(tmpDir, "cloudflare");
 
     expect(result).toBe(false);
-    expect(readFile(tmpDir, ".gitignore")).toBe("/dist/\n.vinext/\n/.wrangler/\n");
+    expect(readFile(tmpDir, ".gitignore")).toBe("/dist/\n.vinext/\n/.wrangler/\n/.cloudflare/\n");
   });
 });
 
@@ -1894,19 +1950,21 @@ describe("init — .gitignore", () => {
     expect(content).toContain("/dist/");
     expect(content).toContain(".vinext/");
     expect(content).toContain(".wrangler/");
+    expect(content).toContain(".cloudflare/");
   });
 
-  it("does not add .wrangler/ for the Node platform", async () => {
+  it("does not add Cloudflare output directories for the Node platform", async () => {
     setupProject(tmpDir, { router: "app" });
 
     await runInit(tmpDir, { platform: "node" });
 
     expect(readFile(tmpDir, ".gitignore")).not.toContain(".wrangler/");
+    expect(readFile(tmpDir, ".gitignore")).not.toContain(".cloudflare/");
   });
 
   it("does not duplicate entries if already in .gitignore", async () => {
     setupProject(tmpDir, { router: "app" });
-    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n.vinext/\n.wrangler/\n");
+    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n.vinext/\n.wrangler/\n.cloudflare/\n");
 
     const { result } = await runInit(tmpDir);
 
@@ -1919,6 +1977,10 @@ describe("init — .gitignore", () => {
     expect(vinextMatches.length).toBe(1);
     const wranglerMatches = content.split("\n").filter((l: string) => l.trim() === ".wrangler/");
     expect(wranglerMatches.length).toBe(1);
+    const cloudflareMatches = content
+      .split("\n")
+      .filter((l: string) => l.trim() === ".cloudflare/");
+    expect(cloudflareMatches.length).toBe(1);
   });
 
   it("preserves existing .gitignore entries when adding vinext output directories", async () => {

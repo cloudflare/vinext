@@ -144,6 +144,21 @@ async function writeGeneratedConfig(
   await fs.writeFile(generatedConfigPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
+function isCloudflareBuildOutputBundle(outDir: string): boolean {
+  if (path.basename(outDir) !== "bundle") return false;
+  const workerDirectory = path.dirname(outDir);
+  const workersDirectory = path.dirname(workerDirectory);
+  const versionDirectory = path.dirname(workersDirectory);
+  const outputDirectory = path.dirname(versionDirectory);
+  const cloudflareDirectory = path.dirname(outputDirectory);
+  return (
+    path.basename(workersDirectory) === "workers" &&
+    path.basename(versionDirectory) === "v0" &&
+    path.basename(outputDirectory) === "output" &&
+    path.basename(cloudflareDirectory) === ".cloudflare"
+  );
+}
+
 /** Apply the complete CDN adapter policy to the primary generated config. */
 export async function finalizeCdnAdapterBuildOutput({
   outDir,
@@ -159,7 +174,14 @@ export async function finalizeCdnAdapterBuildOutput({
   if (!isPrimaryServerOutput) return;
 
   const generatedConfigPath = path.resolve(outDir, "wrangler.json");
-  const generatedConfig = await readGeneratedConfig(generatedConfigPath, false);
+  // Vite plugin v2 emits the Build Output Specification and writes its Worker
+  // config after environment writeBundle hooks have completed. Its deployment
+  // policy must therefore be declared in cloudflare.config.ts up front rather
+  // than patched here like the legacy generated Wrangler config.
+  const generatedConfig = await readGeneratedConfig(
+    generatedConfigPath,
+    isCloudflareBuildOutputBundle(outDir),
+  );
   if (!generatedConfig) return;
   const withVersionMetadata = configureCdnVersionMetadata(generatedConfig, {
     binding,

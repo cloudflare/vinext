@@ -152,6 +152,19 @@ describe("Cloudflare CDN adapter generated config", () => {
     );
   });
 
+  it("does not expect a legacy Wrangler config in a Vite plugin v2 Build Output bundle", async () => {
+    const outDir = path.join(root, ".cloudflare/output/v0/workers/default/bundle");
+
+    await expect(
+      finalizeCdnAdapterBuildOutput({
+        outDir,
+        isPrimaryServerOutput: true,
+        binding: DEFAULT_CDN_VERSION_METADATA_BINDING,
+        bindingIsExplicit: false,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it("rejects a malformed generated config in the primary output", async () => {
     const generatedPath = path.join(root, "dist/server/wrangler.json");
     fs.mkdirSync(path.dirname(generatedPath), { recursive: true });

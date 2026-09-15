@@ -1021,6 +1021,8 @@ function printHelp(cmd?: string) {
     --experimental-warm-cdn-cache
                          Add experimental CDN pre-warming to the Cloudflare deploy script
                          (Response Store or Workers Cache, default: prompt with No)
+    --experimental-cloudflare-vite-plugin-v2
+                         Install the Cloudflare Vite plugin v2 preview build
     --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache, or data-cache
                          (default: none; response-store is the default cache choice)
     --response-store-mode <type>
@@ -1044,6 +1046,8 @@ function printHelp(cmd?: string) {
     vinext init --prerender     Add prerender: { routes: "*" } to vite.config.ts
     vinext init --experimental-warm-cdn-cache
                                 Add experimental CDN pre-warming to deploy:vinext
+    vinext init --platform=cloudflare --experimental-cloudflare-vite-plugin-v2
+                                Install the Cloudflare Vite plugin v2 preview build
     vinext init --platform=node   Configure a Node deployment
     vinext init -p 4000           Use port 4000 for dev:vinext
     vinext init --force           Overwrite existing vite.config.ts
