@@ -216,6 +216,42 @@ describe("scanImports", () => {
     expect(items[0].name).toBe("next/image");
   });
 
+  it("ignores gitignored build output from other toolchains during migrations", () => {
+    // An OpenNext deployment's worker bundle and wrangler's local state
+    // contain bundled next/* imports and CJS globals that are not
+    // application source; reporting them blocks real migration findings.
+    writeFile(".gitignore", ".open-next/\n.wrangler/\n.output/\n");
+    writeFile(".open-next/server-functions/default/handler.mjs", `import Link from "next/link";`);
+    writeFile(".wrangler/state/v3/d1/cache.js", `import { useAmp } from "next/amp";`);
+    writeFile(".output/server/index.mjs", `import Link from "next/link";`);
+    writeFile("app/page.tsx", `import Image from "next/image";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/image");
+  });
+
+  it("honors scoped gitignore rules and negations without a Git repository", () => {
+    writeFile(".gitignore", "generated/\n*.GENERATED.ts\n/root-only.ts\n*.ignored.ts\n");
+    writeFile("generated/bundle.ts", 'import { useAmp } from "next/amp";');
+    writeFile("root-only.ts", 'import { useAmp } from "next/amp";');
+    writeFile("src/a.generated.ts", 'import { useAmp } from "next/amp";');
+    writeFile("src/b.GENERATED.ts", 'import { useAmp } from "next/amp";');
+    writeFile("src/.gitignore", "!keep.ignored.ts\nlocal.ts\n");
+    writeFile("src/local.ts", 'import { useAmp } from "next/amp";');
+    writeFile("src/keep.ignored.ts", 'import Image from "next/image";');
+    writeFile("src/root-only.ts", 'import Link from "next/link";');
+    writeFile("other/local.ts", 'import Link from "next/link";');
+    writeFile("dist/.gitignore", "!keep.ts\n");
+    writeFile("dist/keep.ts", 'import { useAmp } from "next/amp";');
+
+    expect(
+      scanImports(tmpDir)
+        .map((item) => item.name)
+        .sort(),
+    ).toEqual(["next/amp", "next/image", "next/link"]);
+  });
+
   it("ignores imports used only by test modules and tool config files", () => {
     writeFile("app/page.test.tsx", `import { useAmp } from "next/amp";`);
     writeFile("vitest.config.ts", `import { useAmp } from "next/amp";`);
@@ -1019,6 +1055,23 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name.includes("1 page"))?.status).toBe("supported");
   });
 
+  it.each([
+    ["app", "page.tsx", "ignored/page.tsx"],
+    ["pages", "index.tsx", "ignored.tsx"],
+  ])("counts files in a symlinked %s directory", (router, page, ignoredPage) => {
+    writeFile(`routes/${page}`, `export default function Page() { return null; }`);
+    writeFile(`routes/${ignoredPage}`, `export default function Ignored() { return null; }`);
+    writeFile(".gitignore", `${router}/${ignoredPage}\n`);
+    fs.symlinkSync(
+      path.join(tmpDir, "routes"),
+      path.join(tmpDir, router),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((item) => item.name === "1 page(s)")).toBeDefined();
+  });
+
   it("prefers root-level app/ over src/app/", () => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
     writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
@@ -1238,6 +1291,20 @@ describe("checkConventions", () => {
     expect(cjs?.detail).toContain("import.meta.dirname");
     expect(cjs?.files).toContain("lib/db.ts");
   });
+
+  it.each(["app", "src/app", "pages", "src/pages"])(
+    "applies project gitignore to %s counts and CJS findings",
+    (router) => {
+      writeFile(".gitignore", `${router}/generated/\nlib/generated.ts\n`);
+      const page = router.endsWith("app") ? "page.tsx" : "index.tsx";
+      writeFile(`${router}/${page}`, "export default function Page() { return null; }");
+      writeFile(`${router}/generated/${page}`, "const dir = __dirname;");
+      writeFile("lib/generated.ts", "const dir = __dirname;");
+      const items = checkConventions(tmpDir);
+      expect(items.find((item) => item.name === "1 page(s)")).toBeDefined();
+      expect(items.find((item) => item.name.includes("__dirname"))).toBeUndefined();
+    },
+  );
 
   it("ignores CJS globals in test modules and tool config files", () => {
     writeFile(

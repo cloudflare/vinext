@@ -59,6 +59,7 @@ catalog:
   fumadocs-core: 16.7.9
   fumadocs-mdx: 14.2.10
   fumadocs-ui: 16.7.9
+  ignore: 5.3.2
   image-size: 2.0.2
   ipaddr.js: ^2.1.0
   lucide-react: ^0.577.0
