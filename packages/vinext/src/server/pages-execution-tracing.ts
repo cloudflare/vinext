@@ -86,3 +86,15 @@ export function createPagesApiHandlerSpanDescriptor(routePattern: string) {
 export function tracePagesApiHandler<T>(routePattern: string, callback: () => T): T {
   return frameworkTracer.trace(createPagesApiHandlerSpanDescriptor(routePattern), callback);
 }
+
+export function createPagesFindPageComponentsSpanDescriptor(routePattern: string) {
+  return {
+    attributes: { "next.route": patternToNextFormat(routePattern) },
+    name: "resolve page components",
+    type: "NextNodeServer.findPageComponents",
+  } as const;
+}
+
+export function tracePagesFindPageComponents<T>(routePattern: string, callback: () => T): T {
+  return frameworkTracer.trace(createPagesFindPageComponentsSpanDescriptor(routePattern), callback);
+}
