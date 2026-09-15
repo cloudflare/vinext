@@ -125,6 +125,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     refreshStaleFetchesInForeground: false,
     isFetchDedupeActive: false,
     currentFetchDedupeEntries: new Map(),
+    nextFetchId: 1,
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     requestCache: new WeakMap(),
     afterContext: {
