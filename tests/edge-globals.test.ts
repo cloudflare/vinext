@@ -10,7 +10,7 @@
  * that do `new AsyncLocalStorage()` without an import fail with
  *   ReferenceError: AsyncLocalStorage is not defined.
  */
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import { AsyncLocalStorage as NodeAsyncLocalStorage } from "node:async_hooks";
 
 import { installServerGlobals } from "../packages/vinext/src/server/server-globals.js";
@@ -162,6 +162,63 @@ describe("edge runtime globals", () => {
     for (const [i, response] of responses.entries()) {
       expect(response.status).toBe(200);
       await expect(response.json()).resolves.toEqual({ id: ids[i] });
+    }
+  });
+});
+
+type TaskLike = { name: string; run: <T>(fn: () => T) => T };
+
+describe("console.createTask fallback", () => {
+  const originalDescriptor = Object.getOwnPropertyDescriptor(console, "createTask");
+
+  afterEach(() => {
+    if (originalDescriptor) {
+      Object.defineProperty(console, "createTask", originalDescriptor);
+    }
+  });
+
+  it("replaces a createTask implementation that throws when called", () => {
+    // workerd exposes console.createTask but throws "not implemented" on call.
+    Object.defineProperty(console, "createTask", {
+      configurable: true,
+      writable: true,
+      value: () => {
+        throw new Error("not implemented");
+      },
+    });
+
+    installServerGlobals();
+
+    const createTask = (console as unknown as { createTask: (name: string) => TaskLike })
+      .createTask;
+    const task = createTask("render");
+    expect(task.name).toBe("render");
+    expect(task.run(() => 42)).toBe(42);
+  });
+
+  it("leaves a working createTask implementation untouched", () => {
+    const working = (name: string): TaskLike => ({ name, run: (fn) => fn() });
+    Object.defineProperty(console, "createTask", {
+      configurable: true,
+      writable: true,
+      value: working,
+    });
+
+    installServerGlobals();
+
+    expect((console as { createTask: unknown }).createTask).toBe(working);
+  });
+
+  it("does not add createTask when the runtime does not expose it", () => {
+    const consoleWithoutCreateTask = console as unknown as Record<string, unknown>;
+    const saved = consoleWithoutCreateTask["createTask"];
+    delete consoleWithoutCreateTask["createTask"];
+
+    try {
+      installServerGlobals();
+      expect("createTask" in (console as object)).toBe(false);
+    } finally {
+      consoleWithoutCreateTask["createTask"] = saved;
     }
   });
 });
