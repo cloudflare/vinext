@@ -429,7 +429,10 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           renderMode: normalized.renderMode,
         });
       },
-      { route: () => props.canonicalPathname },
+      {
+        cacheComponents: options.createPprFallbackShells !== undefined,
+        route: () => props.canonicalPathname,
+      },
     ),
   );
 

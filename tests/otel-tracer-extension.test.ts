@@ -18,12 +18,15 @@ const originalRequire = (globalThis as Record<string, unknown>).require;
 
 describe("extendTracerProviderForCacheComponents", () => {
   let extendTracerProviderForCacheComponents: typeof import("../packages/vinext/src/server/otel-tracer-extension.js").extendTracerProviderForCacheComponents;
+  let runWithPrerenderWorkUnit: typeof import("../packages/vinext/src/server/prerender-work-unit-setup.js").runWithPrerenderWorkUnit;
   let workUnitAsyncStorage: typeof import("../packages/vinext/src/shims/internal/work-unit-async-storage.js").workUnitAsyncStorage;
 
   beforeEach(async () => {
     vi.resetModules();
     const mod = await import("../packages/vinext/src/server/otel-tracer-extension.js");
     extendTracerProviderForCacheComponents = mod.extendTracerProviderForCacheComponents;
+    ({ runWithPrerenderWorkUnit } =
+      await import("../packages/vinext/src/server/prerender-work-unit-setup.js"));
     const wuMod = await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
     workUnitAsyncStorage = wuMod.workUnitAsyncStorage;
   });
@@ -161,6 +164,113 @@ describe("extendTracerProviderForCacheComponents", () => {
 
     // The callback should run with the original store re-entered.
     expect(storeInsideCallback).toBe(store);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/cache-components-allow-otel-spans/
+  // cache-components-allow-otel-spans.test.ts (`/novel/server`).
+  // https://github.com/vercel/next.js/blob/b421cadefd31c1b59d117842021ded7c1ebaf5b4/test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  it("restores an ordinary Cache Components request around an active span", async () => {
+    let storeDuringSpanCreation: unknown = "not-yet";
+    let storeInsideCallback: unknown;
+    const spanId = "0123456789abcdef";
+    const tracer = {
+      startSpan: vi.fn(),
+      startActiveSpan: vi.fn(
+        (_name: string, fn: (span: { end(): void; spanContext(): { spanId: string } }) => void) => {
+          storeDuringSpanCreation = workUnitAsyncStorage.getStore();
+          return fn({ end() {}, spanContext: () => ({ spanId }) });
+        },
+      ),
+    };
+    const provider = { getTracer: vi.fn((_name: string) => tracer) };
+    installProvider(provider);
+    extendTracerProviderForCacheComponents();
+    const instrumentedTracer = provider.getTracer("test");
+    let renderedSpanId: string | undefined;
+
+    await runWithPrerenderWorkUnit(
+      async () => {
+        (
+          instrumentedTracer as {
+            startActiveSpan: (
+              name: string,
+              fn: (span: { end(): void; spanContext(): { spanId: string } }) => void,
+            ) => void;
+          }
+        ).startActiveSpan("server-component-span", (span) => {
+          storeInsideCallback = workUnitAsyncStorage.getStore();
+          renderedSpanId = span.spanContext().spanId;
+          span.end();
+        });
+        return new Response();
+      },
+      { cacheComponents: true },
+    );
+
+    expect(storeDuringSpanCreation).toBeUndefined();
+    expect(storeInsideCallback).toEqual({ type: "request" });
+    expect(parseInt(renderedSpanId!.slice(10), 16)).toBeGreaterThan(0);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/cache-components-allow-otel-spans/
+  // cache-components-allow-otel-spans.test.ts (`/novel/cache`).
+  // https://github.com/vercel/next.js/blob/b421cadefd31c1b59d117842021ded7c1ebaf5b4/test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  it("creates an active span outside a cache work unit and caches its result", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let storeDuringSpanCreation: unknown = "not-yet";
+    let storeInsideCallback: unknown;
+    let spanCount = 0;
+    const tracer = {
+      startSpan: vi.fn(),
+      startActiveSpan: vi.fn(
+        (
+          _name: string,
+          fn: (span: { end(): void; spanContext(): { spanId: string } }) => Promise<string>,
+        ) => {
+          storeDuringSpanCreation = workUnitAsyncStorage.getStore();
+          const spanId = (++spanCount).toString(16).padStart(16, "0");
+          return fn({ end() {}, spanContext: () => ({ spanId }) });
+        },
+      ),
+    };
+    const provider = { getTracer: vi.fn((_name: string) => tracer) };
+    installProvider(provider);
+    extendTracerProviderForCacheComponents();
+    const instrumentedTracer = provider.getTracer("test");
+    const cached = registerCachedFunction(
+      async () =>
+        instrumentedTracer.startActiveSpan("cache-component-span", async (span) => {
+          storeInsideCallback = workUnitAsyncStorage.getStore();
+          span.end();
+          return span.spanContext().spanId;
+        }),
+      "test:otel-cache-component-span",
+    );
+
+    const requestStores: unknown[] = [];
+    const invoke = (requestStore: { type: "request" }) =>
+      workUnitAsyncStorage.run(requestStore, async () => {
+        const result = await cached();
+        requestStores.push(workUnitAsyncStorage.getStore());
+        return result;
+      });
+    const firstRequest = { type: "request" as const };
+    const secondRequest = { type: "request" as const };
+
+    const first = await invoke(firstRequest);
+    const second = await invoke(secondRequest);
+
+    expect(parseInt(first.slice(10), 16)).toBeGreaterThan(0);
+    expect(second).toBe(first);
+    expect(spanCount).toBe(1);
+    expect(storeDuringSpanCreation).toBeUndefined();
+    expect(storeInsideCallback).toEqual({ type: "cache" });
+    expect(requestStores).toEqual([firstRequest, secondRequest]);
   });
 
   it("startActiveSpan: forwards unchanged when no workUnitStore is active", () => {
