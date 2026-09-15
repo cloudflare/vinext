@@ -1649,6 +1649,9 @@ export default function About({ source }) { return <h1>{source}</h1>; }
     expect(hydrationProxy).toContain("overlay.installDevErrorOverlay()");
     expect(hydrationProxy).toContain("overlay.installViteHmrErrorHandler(import.meta.hot)");
     expect(hydrationProxy).toContain("overlay.reportInitialDevServerErrors()");
+    // Dev wires onRecoverableError so recoverable hydration mismatches surface
+    // as "Recoverable Error" instead of React's default reportError path.
+    expect(hydrationProxy).toContain("onRecoverableError: overlay.devOnRecoverableError");
     expect(hydrationProxy).toContain(
       'hydrateRoot(document.getElementById("__next"), element, hydrateRootOptions)',
     );
