@@ -33,7 +33,7 @@ export type FrameworkTracingIntegration = {
   withPropagatedContext?<T>(carrier: Headers, callback: () => T): T;
 };
 
-type FrameworkSpan = {
+export type FrameworkSpan = {
   recordException(error: unknown): void;
   setAttribute(key: string, value: FrameworkSpanAttributeValue | undefined): void;
   setAttributes(
@@ -103,7 +103,7 @@ function createCompositeSpan(spans: readonly FrameworkTracingBackendSpan[]): Fra
   };
 }
 
-function closeWithError(span: FrameworkSpan, error: unknown): void {
+export function recordFrameworkSpanError(span: FrameworkSpan, error: unknown): void {
   span.recordException(error);
   span.setAttribute("error.type", errorType(error));
   span.setErrorStatus(error instanceof Error ? error.message : undefined);
@@ -139,11 +139,11 @@ export function createFrameworkTracer(
           const result = callback(span);
           if (!isPromiseLike(result)) return result;
           return Promise.resolve(result).catch((error: unknown) => {
-            closeWithError(span, error);
+            recordFrameworkSpanError(span, error);
             throw error;
           }) as T;
         } catch (error) {
-          closeWithError(span, error);
+          recordFrameworkSpanError(span, error);
           throw error;
         }
       };

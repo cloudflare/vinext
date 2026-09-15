@@ -11,6 +11,10 @@ import {
   type WorkersTracingException,
   type WorkersTracingSpan,
 } from "../packages/vinext/src/server/workers-tracing.js";
+import {
+  createAppPageRenderSpanDescriptor,
+  resolveAppPageTraceOperation,
+} from "../packages/vinext/src/server/app-page-tracing.js";
 
 // Cloudflare Workers custom spans API:
 // https://developers.cloudflare.com/workers/observability/traces/custom-spans/
@@ -46,6 +50,27 @@ function fakeTracing(spans: RecordedSpan[], isTraced = true) {
 }
 
 describe("Workers framework tracing integration", () => {
+  it("chooses an immutable render name for finite-revalidate auto-dynamic pages", () => {
+    const spans: RecordedSpan[] = [];
+    const tracer = createFrameworkTracer([createWorkersTracingIntegration(fakeTracing(spans))]);
+    const operation = resolveAppPageTraceOperation({
+      hasRequestSearchParams: false,
+      isDynamicError: false,
+      isForceStatic: false,
+      isKnownPrerenderedRoute: false,
+      isPrerender: false,
+    });
+
+    tracer.trace(createAppPageRenderSpanDescriptor("/products/:id", operation), () => {});
+
+    expect(spans[0]).toMatchObject({
+      attributes: {
+        "next.span_name": "render route (app) /products/[id]",
+      },
+      name: "render route (app) /products/[id]",
+    });
+  });
+
   it("emits the shared Next.js descriptor and runs the callback once", async () => {
     const spans: RecordedSpan[] = [];
     const tracer = createFrameworkTracer([createWorkersTracingIntegration(fakeTracing(spans))]);
