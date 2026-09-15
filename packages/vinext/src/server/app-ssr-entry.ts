@@ -637,6 +637,7 @@ export async function handleSsr(
         };
 
         let htmlStream: ReadableStream<Uint8Array>;
+        let renderComplete = Promise.resolve();
         let shellErrorRecovered = false;
         let shouldDelayInitialHtmlPull = false;
         if (pprFallbackShellSignal) {
@@ -654,6 +655,7 @@ export async function handleSsr(
             streamingHtmlStream = await renderToReadableStream(ssrRoot, {
               ...renderOptions,
             });
+            renderComplete = streamingHtmlStream.allReady;
 
             if (options?.waitForAllReady === true) {
               await streamingHtmlStream.allReady;
@@ -765,6 +767,7 @@ export async function handleSsr(
           // *where* the blocking happens — do not move the `allReady` await onto
           // this promise expecting it to be load-bearing in production.
           metadataReady: Promise.resolve(),
+          renderComplete,
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
           shellErrorRecovered,
           linkHeader: reactLinkHeader,

@@ -3,6 +3,7 @@ import fs from "node:fs";
 export type PrerenderManifestRoute = {
   route: string;
   status?: string;
+  reason?: string;
   revalidate?: number | false;
   expire?: number;
   /**
@@ -124,7 +125,13 @@ export function buildPregeneratedConcretePathTable(
     return !isFallbackShellArtifactPath(pathname, r);
   });
 
-  return Array.from(groupRoutesByPattern(concreteRoutes).entries());
+  const byPattern = groupRoutesByPattern(concreteRoutes);
+  for (const route of routes) {
+    if (route.status === "skipped" && route.reason === "empty-static-params") {
+      if (!byPattern.has(route.route)) byPattern.set(route.route, []);
+    }
+  }
+  return Array.from(byPattern.entries());
 }
 
 /**

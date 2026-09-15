@@ -29,6 +29,7 @@ type CreateAppPageFontDataOptions = {
 export type AppSsrRenderResult = {
   htmlStream: ReadableStream<Uint8Array>;
   metadataReady: Promise<void>;
+  renderComplete?: Promise<void>;
   capturedRscData: Promise<ArrayBuffer> | null;
   shellErrorRecovered?: boolean;
   /**
@@ -224,6 +225,7 @@ type AppPageHtmlStreamRecoveryResult = {
   htmlStream: ReadableStream<Uint8Array> | null;
   response: Response | null;
   metadataReady: Promise<void>;
+  renderComplete: Promise<void>;
   capturedRscData: Promise<ArrayBuffer> | null;
   shellErrorRecovered: boolean;
   /** React-emitted preload `Link` header (already capped). */
@@ -351,13 +353,20 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
 ): Promise<AppPageHtmlStreamRecoveryResult> {
   try {
     const rawResult = await options.renderHtmlStream();
-    const { htmlStream, metadataReady, capturedRscData, linkHeader, shellErrorRecovered } =
-      normalizeAppSsrRenderResult(rawResult);
+    const {
+      htmlStream,
+      metadataReady,
+      renderComplete,
+      capturedRscData,
+      linkHeader,
+      shellErrorRecovered,
+    } = normalizeAppSsrRenderResult(rawResult);
     options.onShellRendered?.();
     return {
       htmlStream,
       response: null,
       metadataReady,
+      renderComplete: renderComplete ?? resolvedMetadataReady,
       capturedRscData,
       shellErrorRecovered: shellErrorRecovered === true,
       linkHeader,
@@ -369,6 +378,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
         htmlStream: null,
         response: await options.renderSpecialErrorResponse(specialError),
         metadataReady: resolvedMetadataReady,
+        renderComplete: resolvedMetadataReady,
         capturedRscData: null,
         shellErrorRecovered: false,
       };
@@ -380,6 +390,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
         htmlStream: null,
         response: boundaryResponse,
         metadataReady: resolvedMetadataReady,
+        renderComplete: resolvedMetadataReady,
         capturedRscData: null,
         shellErrorRecovered: false,
       };

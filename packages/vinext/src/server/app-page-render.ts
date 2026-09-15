@@ -87,6 +87,8 @@ import { peekDynamicUsage } from "vinext/shims/headers";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
+import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
+import type { FrameworkSpan } from "./framework-tracer.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -152,6 +154,8 @@ type RenderAppPageLifecycleOptions = {
   probePageBeforeRender?: boolean;
   omitPendingDynamicCacheState?: boolean;
   isRscRequest: boolean;
+  traceOperation?: "prerender" | "render";
+  onRenderComplete?: (completion: Promise<void>) => void;
   isrDebug?: AppPageDebugLogger;
   isrHtmlKey: (pathname: string) => string;
   isrRscKey: (
@@ -638,6 +642,44 @@ function wrapRscResponseForDevErrorReporting(
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
+  if (options.isRscRequest) return renderAppPageLifecycleImpl(options);
+
+  const operation = options.traceOperation ?? (options.isPrerender ? "prerender" : "render");
+  let resolveResponse!: (response: Response) => void;
+  let rejectResponse!: (error: unknown) => void;
+  let renderCompletion = Promise.resolve();
+  const responsePromise = new Promise<Response>((resolve, reject) => {
+    resolveResponse = resolve;
+    rejectResponse = reject;
+  });
+  const tracedRender = traceAppPageRender(options.routePattern, operation, async (renderSpan) => {
+    try {
+      const response = await renderAppPageLifecycleImpl(
+        {
+          ...options,
+          onRenderComplete(completion) {
+            renderCompletion = completion;
+            void completion.catch(() => {});
+            options.onRenderComplete?.(completion);
+          },
+        },
+        renderSpan,
+      );
+      resolveResponse(response);
+      await renderCompletion;
+    } catch (error) {
+      rejectResponse(error);
+      throw error;
+    }
+  });
+  void tracedRender.catch(() => {});
+  return responsePromise;
+}
+
+async function renderAppPageLifecycleImpl(
+  options: RenderAppPageLifecycleOptions,
+  renderSpan?: FrameworkSpan,
+): Promise<Response> {
   // Request dynamic state is consumptive, but both cache finalization and the
   // streamed client completion marker need the final answer. Keep the first
   // positive observation for this render so whichever branch drains first
@@ -751,7 +793,10 @@ export async function renderAppPageLifecycle(
     options.routePattern,
     errorContextOverrides,
   );
-  const rscErrorTracker = createAppPageRscErrorTracker(baseOnError);
+  const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
+    if (renderSpan) recordAppPageRenderError(renderSpan, error);
+    return baseOnError(error, requestInfo, errorContext);
+  });
   // Defensive wrap for standalone callers. In the normal dispatch path this is
   // a no-op since dispatchAppPage already activated dedupe. Note that
   // renderToReadableStream returns synchronously — the actual fetch calls
@@ -1025,7 +1070,7 @@ export async function renderAppPageLifecycle(
     },
     async renderHtmlStream() {
       const ssrHandler = await options.loadSsrHandler();
-      const onSsrError = options.createRscOnErrorHandler(
+      const baseOnSsrError = options.createRscOnErrorHandler(
         options.cleanPathname,
         options.routePattern,
         {
@@ -1033,6 +1078,10 @@ export async function renderAppPageLifecycle(
           renderSource: "server-rendering",
         },
       );
+      const onSsrError: AppPageBoundaryOnError = (error, requestInfo, errorContext) => {
+        if (renderSpan) recordAppPageRenderError(renderSpan, error);
+        return baseOnSsrError(error, requestInfo, errorContext);
+      };
       return renderAppPageHtmlStream({
         capturedRscDataRef,
         getInitialNavigationCacheMetadata: () => {
@@ -1110,6 +1159,7 @@ export async function renderAppPageLifecycle(
     },
     resolveSpecialError: resolveAppPageSpecialError,
   });
+  options.onRenderComplete?.(htmlRender.renderComplete);
   if (htmlRender.response) {
     return htmlRender.response;
   }
