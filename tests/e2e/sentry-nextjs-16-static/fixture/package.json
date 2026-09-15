@@ -1,0 +1,46 @@
+{
+  "name": "nextjs-16-static",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build > .tmp_build_stdout 2> .tmp_build_stderr || (cat .tmp_build_stdout && cat .tmp_build_stderr && exit 1)",
+    "clean": "npx rimraf node_modules pnpm-lock.yaml .tmp_dev_server_logs",
+    "start": "next start",
+    "lint": "eslint",
+    "test:prod": "TEST_ENV=production playwright test",
+    "test:dev": "TEST_ENV=development playwright test",
+    "test:build": "pnpm install && pnpm build",
+    "test:assert": "pnpm test:prod && pnpm test:dev"
+  },
+  "//": "Pin `ioredis` to 5.10.1: it's the last version before the driver publishes its own native diagnostics channels; orchestrion's config covers `ioredis <5.11.0`.",
+  "dependencies": {
+    "@sentry/nextjs": "file:../../packed/sentry-nextjs-packed.tgz",
+    "@sentry/core": "file:../../packed/sentry-core-packed.tgz",
+    "@vercel/queue": "^0.1.3",
+    "ai": "^3.0.0",
+    "import-in-the-middle": "^2",
+    "ioredis": "5.10.1",
+    "next": "16.2.11",
+    "openai": "5.18.1",
+    "pg": "^8.13.1",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "require-in-the-middle": "^8",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "~1.63.0",
+    "@sentry-internal/test-utils": "link:../../../test-utils",
+    "@types/node": "^20",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^16",
+    "typescript": "^5"
+  },
+  "volta": {
+    "extends": "../../package.json"
+  }
+}
