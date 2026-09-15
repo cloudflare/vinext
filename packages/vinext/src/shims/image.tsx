@@ -222,12 +222,14 @@ function getFillStyle(
   style?: React.CSSProperties,
   backgroundStyle?: React.CSSProperties,
 ): React.CSSProperties {
+  // Next.js does not set an inline object-fit for fill images: the style is
+  // whatever the caller passes (or their CSS), so the legacy objectFit prop
+  // flows through style and anything else stays under stylesheet control.
   return {
     position: "absolute",
     inset: 0,
     width: "100%",
     height: "100%",
-    objectFit: "cover",
     ...backgroundStyle,
     ...style,
   };
