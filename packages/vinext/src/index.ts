@@ -99,7 +99,10 @@ import {
   type ResolvedNextConfig,
 } from "./config/next-config.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { mergeServerExternalPackages } from "./config/server-external-packages.js";
+import {
+  findOpenTelemetryPackages,
+  mergeServerExternalPackages,
+} from "./config/server-external-packages.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { validateMiddlewareMatcherPatterns } from "./server/middleware-matcher-pattern.js";
@@ -2877,6 +2880,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const nextServerExternal = mergeServerExternalPackages(
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
+          findOpenTelemetryPackages(root),
         );
         resolvedServerExternalPackages = nextServerExternal;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
