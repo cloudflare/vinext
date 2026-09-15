@@ -124,6 +124,10 @@
       "types": "./dist/server/cloudflare-workers-tracing.d.ts",
       "import": "./dist/server/cloudflare-workers-tracing.js"
     },
+    "./internal/server/response-start-tracing": {
+      "types": "./dist/server/response-start-tracing.d.ts",
+      "import": "./dist/server/response-start-tracing.js"
+    },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
       "import": "./dist/build/run-prerender.js"
