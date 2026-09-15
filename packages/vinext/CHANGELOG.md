@@ -1,53 +1,5 @@
 # vinext
 
-## 1.0.0-beta.10
-
-This release includes a new caching library for apps targeting Cloudflare Workers, called Workers Response Store. It is designed to fill the gaps that our other Cloudflare cache adapters struggled with; efficient cache warming, durable backing stores, stable ISR and revalidation, and better internal control of the cache.
-
-To find out more, check out our [caching docs](https://github.com/cloudflare/vinext/blob/main/docs/caching.md). Going forward, the Workers Response Store will be our recommended choice for caching due to the flexibility it provides, and over the coming weeks it shall be stabilised following community feedback.
-
-### Features
-
-#### Build
-
-- support independently deployed worker stages (#3155)
-- select adapter-owned worker stages (#3150)
-- define adapter-owned worker stages (#3142)
-
-#### Cache
-
-- stream response-store cache misses (#3200)
-- seed RSC during response-store warmup (#3196)
-- add Workers Response Store POC (#3192)
-
-#### Misc
-
-- **Cloudflare:** scaffold Response Store Wrangler config (#3249)
-
-### Bug Fixes
-
-#### Cloudflare
-
-- declare response store durable object export (#3262)
-- restore bounded probe scheduling (#3171)
-- reduce staged CDN probe work (#3168)
-
-#### Misc
-
-- **CSS:** preserve url assets with deployment IDs (#3263)
-- **Init:** simplify dependent cache prompts (#3255)
-- **Isr:** ignore interception context on HTML renders (#2915)
-- **App Router:** dedupe next/dynamic module preloads (#3186)
-- **Cache:** preserve staged cache invalidation parity (#3158)
-- **Build:** preserve staged prerender routing (#3151)
-- **Cache:** resolve CDN admission from matched route kind (#3160)
-
-### Contributors
-
-- @james-elicx
-- @JamesbbBriz
-- @keeltrace
-
 ## 1.0.0-beta.9
 
 ### Features

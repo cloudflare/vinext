@@ -1,15 +1,5 @@
 # create-vinext-app
 
-## 1.0.0-beta.3
-
-### Features
-
-- **Cloudflare:** scaffold Response Store Wrangler config (#3249)
-
-### Contributors
-
-- @james-elicx
-
 ## 1.0.0-beta.2
 
 ### Bug Fixes
