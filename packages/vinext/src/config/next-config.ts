@@ -5,6 +5,7 @@
  * Unsupported options are logged as warnings.
  */
 import path, { toSlash } from "pathslash";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire, Module } from "node:module";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -32,6 +33,50 @@ const CommonJsModule = Module as typeof Module & { _resolveFilename: ResolveFile
 const vinextNextPackageJson = fileURLToPath(new URL("../../next-package.json", import.meta.url));
 let nextPackageIdentityUsers = 0;
 let originalResolveFilename: ResolveFilename | undefined;
+type ConfigRootState = {
+  storage: AsyncLocalStorage<boolean>;
+  queue: Promise<void>;
+};
+const processWithConfigRootState = process as NodeJS.Process & {
+  __vinextConfigRootState?: ConfigRootState;
+};
+const configRootState = (processWithConfigRootState.__vinextConfigRootState ??= {
+  storage: new AsyncLocalStorage<boolean>(),
+  queue: Promise.resolve(),
+});
+
+// Next.js config wrappers commonly scan with relative fs/glob calls, so changing
+// process.cwd itself is required; overriding process.cwd() would not root those
+// operations. Serialize top-level loads because cwd is process-wide. The ALS
+// marker keeps a nested load reentrant and restores the outer root afterward.
+async function withConfigRoot<T>(root: string, callback: () => T | Promise<T>): Promise<T> {
+  const run = async () => {
+    const previousCwd = process.cwd();
+    process.chdir(root);
+    try {
+      return await callback();
+    } finally {
+      process.chdir(previousCwd);
+    }
+  };
+
+  if (configRootState.storage.getStore()) {
+    return run();
+  }
+
+  const waitForTurn = configRootState.queue;
+  let release = () => {};
+  configRootState.queue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await waitForTurn;
+
+  try {
+    return await configRootState.storage.run(true, run);
+  } finally {
+    release();
+  }
+}
 
 /**
  * Let Next.js config wrappers inspect the framework compatibility version even
@@ -1049,13 +1094,9 @@ export async function loadNextConfig(
   root: string,
   phase: string = DEFAULT_PHASE,
 ): Promise<NextConfig | null> {
-  const previousCwd = process.cwd();
-  process.chdir(root);
-  try {
-    return await withNextPackageIdentity(() => loadNextConfigWithPackageIdentity(root, phase));
-  } finally {
-    process.chdir(previousCwd);
-  }
+  return withConfigRoot(root, () =>
+    withNextPackageIdentity(() => loadNextConfigWithPackageIdentity(root, phase)),
+  );
 }
 
 async function loadNextConfigWithPackageIdentity(
