@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { createServer } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
@@ -459,5 +462,77 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       expect(code).not.toContain("function createRscOnErrorHandler(request, pathname, routePath)");
       expect(code).not.toContain("return __createRscOnErrorHandler({");
     });
+  });
+});
+
+describe("Next-compatible config wrappers", () => {
+  it("supports Sentry's unchanged wrapper without an installed Next package", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-sentry-config-"));
+    try {
+      fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+      const sentryPackageJson = createRequire(import.meta.url).resolve(
+        "@sentry/nextjs/package.json",
+      );
+      const sentryScopeDir = path.join(tmpDir, "node_modules", "@sentry");
+      fs.mkdirSync(sentryScopeDir, { recursive: true });
+      fs.symlinkSync(
+        path.dirname(sentryPackageJson),
+        path.join(sentryScopeDir, "nextjs"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "next.config.mjs"),
+        `import { createRequire } from "node:module";
+import { withSentryConfig } from "@sentry/nextjs";
+const require = createRequire(import.meta.url);
+export default withSentryConfig({
+  env: { RESOLVED_NEXT_PACKAGE: require.resolve("next/package.json") },
+});
+`,
+      );
+
+      const runnerPath = path.join(tmpDir, "load-config.mjs");
+      const builtConfigUrl = pathToFileURL(
+        path.resolve("packages/vinext/dist/config/next-config.js"),
+      ).href;
+      fs.writeFileSync(
+        runnerPath,
+        `import { createRequire } from "node:module";
+import { loadNextConfig } from ${JSON.stringify(builtConfigUrl)};
+const root = process.argv[2];
+process.chdir(root);
+const config = await loadNextConfig(root);
+const require = createRequire(root + "/package.json");
+let outsideErrorCode;
+try {
+  require.resolve("next/package.json");
+} catch (error) {
+  outsideErrorCode = error?.code;
+}
+process.stdout.write(JSON.stringify({ config, outsideErrorCode }));
+`,
+      );
+
+      const result = JSON.parse(
+        execFileSync(process.execPath, [runnerPath, tmpDir], {
+          cwd: tmpDir,
+          encoding: "utf8",
+        }),
+      ) as {
+        config: {
+          env?: { RESOLVED_NEXT_PACKAGE?: string };
+          experimental?: { clientTraceMetadata?: string[] };
+        };
+        outsideErrorCode?: string;
+      };
+
+      expect(path.resolve(result.config.env?.RESOLVED_NEXT_PACKAGE ?? "")).toBe(
+        path.resolve("packages/vinext/next-package.json"),
+      );
+      expect(result.config.experimental?.clientTraceMetadata).toEqual(["baggage", "sentry-trace"]);
+      expect(result.outsideErrorCode).toBe("MODULE_NOT_FOUND");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

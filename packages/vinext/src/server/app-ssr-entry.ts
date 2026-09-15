@@ -45,7 +45,10 @@ import type { AppSsrRenderResult } from "./app-page-stream.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
-import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
+import {
+  getClientTraceMetadataHTML,
+  markClientTraceMetadataBlock,
+} from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
 import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
@@ -385,6 +388,8 @@ export async function handleSsr(
      * SSR head. Undefined or empty disables emission entirely.
      */
     clientTraceMetadata?: readonly string[];
+    /** Private marker used to identify only this render's injected trace tags. */
+    clientTraceMetadataMarker?: string;
     /**
      * Maximum total length (in characters) of the preload `Link` header React
      * emits during SSR. `0` disables emission. From `reactMaxHeadersLength` in
@@ -699,7 +704,10 @@ export async function handleSsr(
         let traceMetaHTML: string | null = null;
         const getTraceMetaHTML = (): string => {
           if (traceMetaHTML === null) {
-            traceMetaHTML = getClientTraceMetadataHTML(options?.clientTraceMetadata);
+            traceMetaHTML = markClientTraceMetadataBlock(
+              getClientTraceMetadataHTML(options?.clientTraceMetadata, options?.isStaticGeneration),
+              options?.clientTraceMetadataMarker,
+            );
           }
           return traceMetaHTML;
         };

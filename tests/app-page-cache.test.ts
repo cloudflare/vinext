@@ -23,6 +23,10 @@ import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
 import {
+  markClientTraceMetadataBlock,
+  renderClientTraceMetadataTags,
+} from "../packages/vinext/src/server/client-trace-metadata.js";
+import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
   type CdnCacheAdapter,
@@ -1209,6 +1213,42 @@ describe("app page cache helpers", () => {
       },
     ]);
     expect(debugCalls).toEqual([["HTML cache written", "html:/fresh"]]);
+  });
+
+  it("keeps request trace metadata on the live response but not its shared cache copy", async () => {
+    const marker = "private-render-marker";
+    const authored = '<meta name="baggage" content="application-policy"/>';
+    const injected = markClientTraceMetadataBlock(
+      renderClientTraceMetadataTags([{ key: "baggage", value: "tenant=alice" }]),
+      marker,
+    );
+    const pendingCacheWrites: Promise<void>[] = [];
+    let storedHtml = "";
+
+    const response = finalizeAppPageHtmlCacheResponse(
+      new Response(`<head>${authored}${injected}</head><main>page</main>`),
+      {
+        capturedRscDataPromise: null,
+        cleanPathname: "/traced",
+        clientTraceMetadataMarker: marker,
+        consumeDynamicUsage: () => false,
+        getPageTags: () => ["/traced"],
+        isrHtmlKey: (pathname) => `html:${pathname}`,
+        isrRscKey: (pathname) => `rsc:${pathname}`,
+        async isrSet(_key, data) {
+          storedHtml = data.html;
+        },
+        revalidateSeconds: 60,
+        linkHeader: null,
+        waitUntil(promise) {
+          pendingCacheWrites.push(promise);
+        },
+      },
+    );
+
+    await expect(response.text()).resolves.toContain("tenant=alice");
+    await pendingCacheWrites[0];
+    expect(storedHtml).toBe(`<head>${authored}</head><main>page</main>`);
   });
 
   it("skips HTML and RSC cache writes when dynamic usage appears during stream rendering", async () => {
