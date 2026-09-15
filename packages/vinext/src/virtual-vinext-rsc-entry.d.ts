@@ -17,6 +17,7 @@ declare module "virtual:vinext-rsc-entry" {
   export const __hasPagesDir: boolean;
   export const __imageAllowedWidths: number[];
   export const __prerenderSecret: string;
+  export function __ensureInstrumentation(): void | Promise<void>;
   export const __imageConfig: {
     qualities?: number[];
     dangerouslyAllowSVG?: boolean;
@@ -44,6 +45,7 @@ declare module "virtual:vinext-app-request-entry" {
   export const __basePath: string;
   export const __imageAllowedWidths: number[];
   export const __prerenderSecret: string;
+  export function __ensureInstrumentation(): void | Promise<void>;
   export const __imageConfig: {
     qualities?: number[];
     dangerouslyAllowSVG?: boolean;

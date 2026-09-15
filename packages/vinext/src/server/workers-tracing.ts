@@ -30,6 +30,11 @@ function normalizeException(error: unknown): WorkersTracingException {
 export function createWorkersTracingIntegration(
   tracing: WorkersTracing,
 ): FrameworkTracingIntegration {
+  const backendSpan = (span: WorkersTracingSpan): FrameworkTracingBackendSpan => ({
+    recordException: (error) => span.recordException?.(normalizeException(error)),
+    setAttribute: (key, value) => span.setAttribute(key, value),
+  });
+
   return {
     id: "cloudflare-workers",
     enterSpan(descriptor, callback) {
@@ -37,11 +42,7 @@ export function createWorkersTracingIntegration(
         for (const [key, value] of Object.entries(descriptor.attributes)) {
           span.setAttribute(key, value);
         }
-        const backendSpan: FrameworkTracingBackendSpan = {
-          recordException: (error) => span.recordException?.(normalizeException(error)),
-          setAttribute: (key, value) => span.setAttribute(key, value),
-        };
-        return callback(backendSpan);
+        return callback(backendSpan(span));
       });
     },
   };

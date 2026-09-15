@@ -7,6 +7,7 @@ import type {
 import type { BasePathMatchState } from "../config/config-matchers.js";
 import { requestContextFromRequest } from "../config/request-context.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import { patternToNextFormat } from "../routing/route-validation.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
   getEffectiveRequestCookieHeader,
@@ -155,6 +156,7 @@ import {
   consumeResponseStageLinkProvenance,
   copyLinkHeaderProvenance,
 } from "./app-response-header-provenance.js";
+import { setFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -763,6 +765,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     clientReuseManifest,
     hadBasePath,
   } = normalized;
+  setFrameworkRequestRoute(undefined, isRscRequest);
   const hasRawInterceptionContext =
     isRscRequest && request.headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER);
   if (hasRawInterceptionContext) {
@@ -2140,6 +2143,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
+  setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
   if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
@@ -2395,21 +2399,14 @@ export type AppRscRequestHandler = (
 export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): AppRscRequestHandler {
-  const appRscHandler = async function appRscHandler(
+  const handleAppRscRequestLifecycle = async (
     rawRequest: Request,
     ctx: unknown,
     allowInternalRscDocumentFallback = false,
     dispatchResponseStage?: DispatchAppWorkerResponseStage,
     responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
     transportedPrerenderState?: TrustedPrerenderState | null,
-  ): Promise<Response> {
-    // Register config-driven cache adapters before anything touches the cache.
-    // On the Cloudflare worker the entry already registered them with `env` (this
-    // guarded call is a no-op); on Node/dev this is where they get wired, with no
-    // bindings available.
-    options.registerCacheAdapters();
-    await options.ensureInstrumentation?.();
-
+  ): Promise<Response> => {
     // Strip forged internal headers at the App Router request boundary.
     // Must happen BEFORE headersContextFromRequest() and
     // requestContextFromRequest() so the captured context never contains
@@ -2587,6 +2584,40 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
       throw error;
     }
     return closeAfterResponseWithBody(response, requestContext);
+  };
+
+  const appRscHandler = async function appRscHandler(
+    rawRequest: Request,
+    ctx: unknown,
+    allowInternalRscDocumentFallback = false,
+    dispatchResponseStage?: DispatchAppWorkerResponseStage,
+    responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
+    transportedPrerenderState?: TrustedPrerenderState | null,
+  ): Promise<Response> {
+    // Register config-driven cache adapters before anything touches the cache.
+    // On the Cloudflare worker the entry already registered them with `env` (this
+    // guarded call is a no-op); on Node/dev this is where they get wired, with no
+    // bindings available.
+    options.registerCacheAdapters();
+    await options.ensureInstrumentation?.();
+
+    const traceUrl = new URL(rawRequest.url);
+    return traceFrameworkRequest({
+      callback: () =>
+        handleAppRscRequestLifecycle(
+          rawRequest,
+          ctx,
+          allowInternalRscDocumentFallback,
+          dispatchResponseStage,
+          responseStageProbeMode,
+          transportedPrerenderState,
+        ),
+      getStatus: (response) => response?.status,
+      headers: rawRequest.headers,
+      isRsc: traceUrl.pathname.endsWith(".rsc") || rawRequest.headers.get(RSC_HEADER) === "1",
+      method: rawRequest.method,
+      target: traceUrl.pathname + traceUrl.search,
+    });
   };
 
   return appRscHandler;
