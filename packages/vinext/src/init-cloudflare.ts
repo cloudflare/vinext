@@ -25,6 +25,7 @@ const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
   imageOptimization: "cloudflare-images",
 };
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
+const CLOUDFLARE_CONFIG = "cloudflare.config.ts";
 const RESPONSE_STORE_WRANGLER_CONFIG = "wrangler.response-store.jsonc";
 
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
@@ -202,6 +203,14 @@ export function setupCloudflarePlatform(
       );
     }
   }
+  if (!wranglerPath && !fs.existsSync(path.join(context.root, CLOUDFLARE_CONFIG))) {
+    fs.writeFileSync(
+      path.join(context.root, CLOUDFLARE_CONFIG),
+      generateCloudflareConfig(projectInfo, cloudflare, context.today),
+      "utf-8",
+    );
+    generatedPlatformFiles.push(CLOUDFLARE_CONFIG);
+  }
   const finalWranglerConfig = JSON.parse(
     stripJsonComments(fs.readFileSync(finalWranglerPath, "utf-8")),
   ) as { kv_namespaces?: Array<{ binding?: unknown; id?: unknown }> };
@@ -304,6 +313,100 @@ export function generateWranglerConfig(
     info.root,
   );
   return `${JSON.stringify(JSON.parse(configured), null, 2)}\n`;
+}
+
+/**
+ * Generate the Worker definition consumed by Cloudflare Vite plugin v2.
+ * Wrangler config is still emitted alongside it for plugin v1 and the vinext
+ * deployment commands, so projects can switch plugin versions without
+ * changing their application or cache configuration.
+ */
+export function generateCloudflareConfig(
+  info: CloudflareProjectInfo,
+  options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
+  today = new Date().toISOString().split("T")[0],
+): string {
+  const workerEntry = resolveWorkerEntry(info.root);
+  const responseStoreMode = options.responseStoreMode ?? "service-binding";
+  const usesResponseStore = options.cdnCache === "response-store";
+  const usesSelfContainedResponseStore =
+    usesResponseStore && responseStoreMode === "self-contained";
+  const usesWorkersCache = options.cdnCache === "workers-cache";
+  const usesWorkerExports = usesWorkersCache || usesSelfContainedResponseStore;
+  const needsVersionMetadata = usesWorkersCache || usesResponseStore;
+  const compatibilityFlags = ["nodejs_compat"];
+  if (needsVersionMetadata && today < CTX_EXPORTS_DEFAULT_DATE) {
+    compatibilityFlags.push("enable_ctx_exports");
+  }
+
+  const imports = ["bindings", "defineWorker"];
+  if (usesWorkerExports) imports.push("exports as workerExports");
+
+  const envEntries = ["    ASSETS: bindings.assets(),"];
+  if (needsVersionMetadata) {
+    envEntries.push(`    ${DEFAULT_VERSION_METADATA_BINDING}: bindings.versionMetadata(),`);
+  }
+  if (options.imageOptimization === "cloudflare-images") {
+    envEntries.push("    IMAGES: bindings.images(),");
+  }
+  if (options.dataCache === "kv") {
+    envEntries.push('    VINEXT_KV_CACHE: bindings.kv({ id: "<your-kv-namespace-id>" }),');
+  }
+  if (usesResponseStore && responseStoreMode === "service-binding") {
+    const responseStoreName = compactResourceName(info.projectName, "-response-store", 63);
+    envEntries.push(
+      `    ${RESPONSE_STORE_BINDING}: bindings.worker({ worker: ${JSON.stringify(responseStoreName)}, exportName: ${JSON.stringify(RESPONSE_STORE_ENTRYPOINT)} }),`,
+    );
+  }
+  if (usesSelfContainedResponseStore) {
+    envEntries.push(
+      `    ${CACHE_BODIES_BINDING}: bindings.r2({ name: ${JSON.stringify(compactResourceName(info.projectName, "-response-store-cache-bodies", 63))} }),`,
+      `    ${CACHE_METADATA_BINDING}: bindings.durableObject({ worker: ${JSON.stringify(info.projectName)}, exportName: ${JSON.stringify(CACHE_METADATA_CLASS)} }),`,
+    );
+  }
+
+  const configEntries = [
+    `  name: ${JSON.stringify(info.projectName)},`,
+    `  entrypoint: ${JSON.stringify(workerEntry)},`,
+    `  compatibilityDate: ${JSON.stringify(today)},`,
+    `  compatibilityFlags: ${JSON.stringify(compatibilityFlags)},`,
+    "  assets: {",
+    '    notFoundHandling: "none",',
+    "  },",
+    "  env: {",
+    ...envEntries,
+    "  },",
+  ];
+
+  if (usesWorkersCache || usesResponseStore) {
+    configEntries.push("  cache: {", "    enabled: false,", "  },");
+  }
+  if (usesWorkersCache) {
+    configEntries.push(
+      "  exports: {",
+      "    VinextCachedResponse: workerExports.worker({ cache: { enabled: true } }),",
+      "    VinextUncachedResponse: workerExports.worker({ cache: { enabled: false } }),",
+      "  },",
+    );
+  } else if (usesSelfContainedResponseStore) {
+    configEntries.push(
+      "  exports: {",
+      "    ResponseStoreBinding: workerExports.worker({ cache: { enabled: true } }),",
+      '    CacheMetadata: workerExports.durableObject({ storage: "sqlite" }),',
+      "  },",
+    );
+  }
+
+  return [
+    "import {",
+    ...imports.map((name) => `  ${name},`),
+    '} from "@cloudflare/vite-plugin/experimental-config";',
+    "",
+    "export default defineWorker({",
+    ...configEntries,
+    "});",
+    "",
+  ].join("\n");
 }
 
 function stripJsonComments(code: string): string {

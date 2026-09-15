@@ -225,6 +225,10 @@ export type InitDependencyGroups = {
   devDependencies: string[];
 };
 
+// TODO: replace this version specifier with the proper npm beta one when available
+export const CLOUDFLARE_VITE_PLUGIN_V2_SPECIFIER =
+  "https://pkg.pr.new/@cloudflare/vite-plugin@15508";
+
 export function getInitDependencyGroups(
   isAppRouter: boolean,
   platform: InitPlatform,
@@ -244,7 +248,12 @@ export function getInitDependencyGroups(
     ) {
       dependencies.push("@cloudflare/workers-response-store");
     }
-    devDependencies.push("@cloudflare/vite-plugin", "wrangler");
+    devDependencies.push(
+      cloudflare?.vitePluginV2
+        ? `@cloudflare/vite-plugin@${CLOUDFLARE_VITE_PLUGIN_V2_SPECIFIER}`
+        : "@cloudflare/vite-plugin",
+      "wrangler",
+    );
   }
   return { dependencies, devDependencies };
 }
@@ -268,7 +277,8 @@ export function isDepInstalled(root: string, dep: string): boolean {
       ...pkg.devDependencies,
       ...pkg.peerDependencies,
     };
-    return dep in allDeps;
+    const { name, version, hasExplicitVersion } = parseDependencySpecifier(dep);
+    return name in allDeps && (!hasExplicitVersion || allDeps[name] === version);
   } catch {
     return false;
   }
@@ -404,6 +414,10 @@ export function updateGitignore(root: string, platform: InitPlatform = "node"): 
           {
             entry: ".wrangler/",
             coveredBy: new Set(["/.wrangler/", "/.wrangler", ".wrangler/", ".wrangler"]),
+          },
+          {
+            entry: ".cloudflare/",
+            coveredBy: new Set(["/.cloudflare/", "/.cloudflare", ".cloudflare/", ".cloudflare"]),
           },
         ]
       : []),

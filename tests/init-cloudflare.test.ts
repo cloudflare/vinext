@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { parseSync } from "vite";
 import {
   generateAppRouterViteConfig,
+  generateCloudflareConfig,
   generatePagesRouterViteConfig,
   generateResponseStoreWranglerConfig,
   generateWranglerConfig,
@@ -46,6 +47,34 @@ describe("generateWranglerConfig", () => {
       expect(output).toBe(`${JSON.stringify(JSON.parse(output), null, 2)}\n`);
     },
   );
+});
+
+describe("generateCloudflareConfig", () => {
+  it("declares the vinext Worker and Workers Cache policy for Vite plugin v2", () => {
+    const output = generateCloudflareConfig(
+      {
+        root: "/tmp/my-app",
+        projectName: "my-app",
+        isAppRouter: true,
+        hasISR: true,
+        hasMDX: false,
+        nativeModulesToStub: [],
+      },
+      {
+        dataCache: "kv",
+        cdnCache: "workers-cache",
+        imageOptimization: "cloudflare-images",
+      },
+      "2026-09-15",
+    );
+
+    expectValidConfig(output);
+    expect(output).toContain('entrypoint: "vinext/server/fetch-handler"');
+    expect(output).toContain("ASSETS: bindings.assets()");
+    expect(output).toContain("CF_VERSION_METADATA: bindings.versionMetadata()");
+    expect(output).toContain("VINEXT_KV_CACHE: bindings.kv");
+    expect(output).toContain("VinextCachedResponse: workerExports.worker");
+  });
 });
 
 describe("updateViteConfigForCloudflare", () => {

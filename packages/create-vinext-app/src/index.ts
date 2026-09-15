@@ -20,6 +20,7 @@ type CloudflareInitOptions = {
   imageOptimization: InitImageOptimization;
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
+  vitePluginV2?: boolean;
 };
 
 type PlatformPromptOptions = {
@@ -288,6 +289,8 @@ function printHelp(): void {
                                  Add experimental CDN pre-warming to the Cloudflare deploy script
     --no-experimental-warm-cdn-cache
                                  Do not add experimental CDN pre-warming to the deploy script
+    --experimental-cloudflare-vite-plugin-v2
+                                 Install the Cloudflare Vite plugin v2 preview build
     --use-npm                    Use npm
     --use-pnpm                   Use pnpm
     --use-yarn                   Use Yarn

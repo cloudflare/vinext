@@ -14,6 +14,7 @@ export type CloudflareInitOptions = {
   imageOptimization: InitImageOptimization;
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
+  vitePluginV2?: boolean;
 };
 
 export const INIT_PLATFORMS = {
@@ -147,6 +148,15 @@ export function parseWarmCdnCacheArg(args: string[]): boolean | undefined {
   );
 }
 
+export function parseCloudflareVitePluginV2Arg(args: string[]): boolean | undefined {
+  return parseBooleanArg(
+    args,
+    "--experimental-cloudflare-vite-plugin-v2",
+    "--no-experimental-cloudflare-vite-plugin-v2",
+    '--experimental-cloudflare-vite-plugin-v2 expects true or false when using the "--experimental-cloudflare-vite-plugin-v2=value" form.',
+  );
+}
+
 function parseBooleanArg(
   args: string[],
   enabledFlag: string,
@@ -224,6 +234,7 @@ export async function resolveInitOptions(
 ): Promise<ResolvedInitOptions> {
   const platform = await resolveInitPlatform(args, options);
   const platformOptions = await INIT_PLATFORMS[platform].options(args, options);
+  const explicitCloudflareVitePluginV2 = parseCloudflareVitePluginV2Arg(args);
   const explicitWarmCdnCache = parseWarmCdnCacheArg(args);
   const explicitPrerender = parsePrerenderArg(args);
   const supportsWarmCdnCache =
@@ -234,6 +245,9 @@ export async function resolveInitOptions(
         "--experimental-warm-cdn-cache requires --cdn-cache=response-store or workers-cache.",
       );
     }
+  }
+  if (platform !== "cloudflare" && explicitCloudflareVitePluginV2 === true) {
+    throw new Error("--experimental-cloudflare-vite-plugin-v2 requires --platform=cloudflare.");
   }
 
   const prerender =
@@ -251,7 +265,11 @@ export async function resolveInitOptions(
     prerender,
     cloudflare:
       platform === "cloudflare" && platformOptions
-        ? { ...platformOptions, warmCdnCache }
+        ? {
+            ...platformOptions,
+            warmCdnCache,
+            ...(explicitCloudflareVitePluginV2 ? { vitePluginV2: true } : {}),
+          }
         : undefined,
   };
 }

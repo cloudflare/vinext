@@ -5,12 +5,43 @@ exports[`init — generated project snapshots > snapshots a fresh Cloudflare App
 /dist/
 .vinext/
 .wrangler/
+.cloudflare/
 
 --- app/layout.tsx ---
 export default function Layout({ children }) { return <html><body>{children}</body></html> }
 
 --- app/page.tsx ---
 export default function Home() { return <div>hi</div> }
+
+--- cloudflare.config.ts ---
+import {
+  bindings,
+  defineWorker,
+  exports as workerExports,
+} from "@cloudflare/vite-plugin/experimental-config";
+
+export default defineWorker({
+  name: "test-project",
+  entrypoint: "vinext/server/fetch-handler",
+  compatibilityDate: "2026-06-23",
+  compatibilityFlags: ["nodejs_compat"],
+  assets: {
+    notFoundHandling: "none",
+  },
+  env: {
+    ASSETS: bindings.assets(),
+    CF_VERSION_METADATA: bindings.versionMetadata(),
+    IMAGES: bindings.images(),
+    VINEXT_KV_CACHE: bindings.kv({ id: "<your-kv-namespace-id>" }),
+  },
+  cache: {
+    enabled: false,
+  },
+  exports: {
+    VinextCachedResponse: workerExports.worker({ cache: { enabled: true } }),
+    VinextUncachedResponse: workerExports.worker({ cache: { enabled: false } }),
+  },
+});
 
 --- package.json ---
 {
@@ -124,12 +155,43 @@ exports[`init — generated project snapshots > snapshots an AST update to an ex
 /dist/
 .vinext/
 .wrangler/
+.cloudflare/
 
 --- app/layout.tsx ---
 export default function Layout({ children }) { return <html><body>{children}</body></html> }
 
 --- app/page.tsx ---
 export default function Home() { return <div>hi</div> }
+
+--- cloudflare.config.ts ---
+import {
+  bindings,
+  defineWorker,
+  exports as workerExports,
+} from "@cloudflare/vite-plugin/experimental-config";
+
+export default defineWorker({
+  name: "test-project",
+  entrypoint: "vinext/server/fetch-handler",
+  compatibilityDate: "2026-06-23",
+  compatibilityFlags: ["nodejs_compat"],
+  assets: {
+    notFoundHandling: "none",
+  },
+  env: {
+    ASSETS: bindings.assets(),
+    CF_VERSION_METADATA: bindings.versionMetadata(),
+    IMAGES: bindings.images(),
+    VINEXT_KV_CACHE: bindings.kv({ id: "<your-kv-namespace-id>" }),
+  },
+  cache: {
+    enabled: false,
+  },
+  exports: {
+    VinextCachedResponse: workerExports.worker({ cache: { enabled: true } }),
+    VinextUncachedResponse: workerExports.worker({ cache: { enabled: false } }),
+  },
+});
 
 --- package.json ---
 {
