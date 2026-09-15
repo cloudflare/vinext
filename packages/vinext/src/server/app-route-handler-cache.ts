@@ -9,9 +9,11 @@ import {
   buildRouteHandlerCachedResponse,
 } from "./app-route-handler-response.js";
 import { markKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
+import { resolveAppRouteHandlerSpecialError } from "./app-route-handler-policy.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import {
   runAppRouteHandler,
+  traceAppRouteHandlerExecution,
   type AppRouteDebugLogger,
   type AppRouteDynamicUsageFn,
   type AppRouteHandlerFunction,
@@ -106,29 +108,48 @@ export async function readAppRouteHandlerCacheResponse(
       const staleValue = cachedValue;
       const revalidateSearchParams = new URLSearchParams(options.revalidateSearchParams);
 
-      options.scheduleBackgroundRegeneration(routeKey, async () => {
-        await options.runInRevalidationContext(async () => {
+      options.scheduleBackgroundRegeneration(routeKey, () =>
+        options.runInRevalidationContext(async () => {
           options.setNavigationContext({
             pathname: options.cleanPathname,
             searchParams: revalidateSearchParams,
             params: options.params ?? EMPTY_PARAMS,
           });
 
-          const { dynamicUsedInHandler, response } = await runAppRouteHandler({
-            basePath: options.basePath,
-            consumeDynamicUsage: options.consumeDynamicUsage,
-            dynamicConfig: options.dynamicConfig,
-            handlerFn: options.handlerFn,
-            i18n: options.i18n,
-            trailingSlash: options.trailingSlash,
-            markDynamicUsage: options.markDynamicUsage,
-            params: options.params === null ? null : makeThenableParams(options.params),
-            request: new Request(options.requestUrl, { method: "GET" }),
-            routePattern: options.routePattern,
-            setHeadersAccessPhase: options.setHeadersAccessPhase,
-          });
+          let tracedResult:
+            | { handlerResult: Awaited<ReturnType<typeof runAppRouteHandler>> }
+            | { specialError: unknown };
+          try {
+            tracedResult = await traceAppRouteHandlerExecution(options.routePattern, async () => {
+              try {
+                return {
+                  handlerResult: await runAppRouteHandler({
+                    basePath: options.basePath,
+                    consumeDynamicUsage: options.consumeDynamicUsage,
+                    dynamicConfig: options.dynamicConfig,
+                    handlerFn: options.handlerFn,
+                    i18n: options.i18n,
+                    trailingSlash: options.trailingSlash,
+                    markDynamicUsage: options.markDynamicUsage,
+                    params: options.params === null ? null : makeThenableParams(options.params),
+                    request: new Request(options.requestUrl, { method: "GET" }),
+                    routePattern: options.routePattern,
+                    setHeadersAccessPhase: options.setHeadersAccessPhase,
+                  }),
+                };
+              } catch (error) {
+                if (resolveAppRouteHandlerSpecialError(error, options.requestUrl)) {
+                  return { specialError: error };
+                }
+                throw error;
+              }
+            });
+          } finally {
+            options.setNavigationContext(null);
+          }
+          if ("specialError" in tracedResult) return;
 
-          options.setNavigationContext(null);
+          const { dynamicUsedInHandler, response } = tracedResult.handlerResult;
           assertSupportedAppRouteHandlerResponse(response);
 
           if (dynamicUsedInHandler) {
@@ -149,8 +170,8 @@ export async function readAppRouteHandlerCacheResponse(
             tags: routeTags,
           });
           options.isrDebug?.("route regen complete", routeKey);
-        });
-      });
+        }),
+      );
 
       options.isrDebug?.("STALE (route)", options.cleanPathname);
       options.clearRequestContext();
