@@ -4902,7 +4902,10 @@ export const loadServerActionClient = ${
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
-    createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
+    createInstrumentationClientTransformPlugin(
+      () => instrumentationClientPath,
+      () => nextConfig.instrumentationClientRouteManifest,
+    ),
     {
       name: "vinext:instrumentation-client-inject",
       enforce: "pre",
