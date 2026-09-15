@@ -1,5 +1,5 @@
 import test, { expect } from '@playwright/test';
-import { waitForError, waitForTransaction } from '@sentry-internal/test-utils';
+import { waitForError, waitForTransaction } from './test-utils';
 import { isTurbopackDevMode } from './isDevMode';
 
 test('Should create a transaction for node route handlers', async ({ request }) => {
@@ -16,7 +16,7 @@ test('Should create a transaction for node route handlers', async ({ request }) 
 
   expect(routehandlerTransaction.contexts?.trace?.status).toBe('ok');
   expect(routehandlerTransaction.contexts?.trace?.op).toBe('http.server');
-  expect(routehandlerTransaction.contexts?.trace?.data?.['http.request.header.x-charly']).toBe('gomez');
+  expect(routehandlerTransaction.contexts?.trace?.data?.['http.request.header.x_charly']).toBe('gomez');
 });
 
 test('Should create a transaction for edge route handlers', async ({ request }) => {

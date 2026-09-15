@@ -225,11 +225,16 @@ const projectServers = {
   },
   "sentry-nextjs-16-static": {
     testDir: "./tests/e2e/sentry-nextjs-16-static/fixture/tests",
-    testMatch: ["server-components.test.ts"],
+    testMatch: [
+      "server-components.test.ts",
+      "route-handler.test.ts",
+      "nested-rsc-error.test.ts",
+      "streaming-rsc-error.test.ts",
+    ],
     // The transaction-shape test targets unreleased Sentry SDK attribute
     // renames. Keep it in the imported file for comparison, but run the two
     // framework-span tests requested by Sentry against their published SDK.
-    grep: /server component and metadata generation functions/,
+    grep: /server component and metadata generation functions|node route handlers|throwing route handler|captureMessage event|captureException event|nested server components|crashing streaming promises/,
     use: { baseURL: "http://localhost:4211" },
     server: {
       command:
