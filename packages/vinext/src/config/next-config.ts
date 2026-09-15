@@ -5,7 +5,7 @@
  * Unsupported options are logged as warnings.
  */
 import path, { toSlash } from "pathslash";
-import { createRequire } from "node:module";
+import { createRequire, Module } from "node:module";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -20,6 +20,57 @@ import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 export const VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY = "__vinextNextConfig";
+
+type ResolveFilename = (
+  request: string,
+  parent?: Module | null,
+  isMain?: boolean,
+  options?: { paths?: string[] },
+) => string;
+
+const CommonJsModule = Module as typeof Module & { _resolveFilename: ResolveFilename };
+const vinextNextPackageJson = fileURLToPath(new URL("../../next-package.json", import.meta.url));
+let nextPackageIdentityUsers = 0;
+let originalResolveFilename: ResolveFilename | undefined;
+
+/**
+ * Let Next.js config wrappers inspect the framework compatibility version even
+ * after an app has replaced the `next` package with vinext.
+ *
+ * Existing `next` installations always win. The fallback is active only while
+ * evaluating next.config, where wrappers such as next-intl and Sentry call
+ * `require.resolve("next/package.json")` synchronously.
+ */
+async function withNextPackageIdentity<T>(callback: () => T | Promise<T>): Promise<T> {
+  if (nextPackageIdentityUsers++ === 0) {
+    originalResolveFilename = CommonJsModule._resolveFilename;
+    CommonJsModule._resolveFilename = function resolveFilename(request, ...args) {
+      try {
+        return originalResolveFilename!.call(this, request, ...args);
+      } catch (error) {
+        if (
+          request === "next/package.json" &&
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "MODULE_NOT_FOUND"
+        ) {
+          return vinextNextPackageJson;
+        }
+        throw error;
+      }
+    };
+  }
+
+  try {
+    return await callback();
+  } finally {
+    nextPackageIdentityUsers -= 1;
+    if (nextPackageIdentityUsers === 0 && originalResolveFilename) {
+      CommonJsModule._resolveFilename = originalResolveFilename;
+      originalResolveFilename = undefined;
+    }
+  }
+}
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -993,6 +1044,13 @@ async function loadConfigViaRequire(
 export async function loadNextConfig(
   root: string,
   phase: string = DEFAULT_PHASE,
+): Promise<NextConfig | null> {
+  return withNextPackageIdentity(() => loadNextConfigWithPackageIdentity(root, phase));
+}
+
+async function loadNextConfigWithPackageIdentity(
+  root: string,
+  phase: string,
 ): Promise<NextConfig | null> {
   const configPath = findNextConfigPath(root);
   if (!configPath) return null;

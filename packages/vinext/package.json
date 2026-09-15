@@ -13,7 +13,8 @@
   },
   "files": [
     "dist",
-    "THIRD_PARTY_LICENSES.md"
+    "THIRD_PARTY_LICENSES.md",
+    "next-package.json"
   ],
   "type": "module",
   "main": "dist/index.js",

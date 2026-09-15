@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi, beforeEach } from "vite-plus/test"
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import {
   detectNextIntlConfig,
@@ -51,6 +52,85 @@ describe("invalid config files", () => {
     );
 
     await expect(loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD)).rejects.toThrow();
+  });
+});
+
+describe("Next package identity for config wrappers", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("exposes the vinext compatibility version while loading config without next", async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `import fs from "node:fs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const nextPackage = JSON.parse(fs.readFileSync(require.resolve("next/package.json"), "utf8"));
+export default {
+  env: { NEXT_PACKAGE_NAME: nextPackage.name, NEXT_PACKAGE_VERSION: nextPackage.version },
+  experimental: Number(nextPackage.version.split(".")[0]) >= 15
+    ? { clientTraceMetadata: ["baggage", "sentry-trace"] }
+    : {},
+};
+`,
+    );
+
+    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+
+    expect(config?.env).toEqual({
+      NEXT_PACKAGE_NAME: "next",
+      NEXT_PACKAGE_VERSION: "16.2.7",
+    });
+    expect(config?.experimental?.clientTraceMetadata).toEqual(["baggage", "sentry-trace"]);
+  });
+
+  it("prefers an installed Next package", async () => {
+    const nextDir = path.join(tmpDir, "node_modules", "next");
+    fs.mkdirSync(nextDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(nextDir, "package.json"),
+      JSON.stringify({ name: "next", version: "15.4.2" }),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `import fs from "node:fs";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const nextPackage = JSON.parse(fs.readFileSync(require.resolve("next/package.json"), "utf8"));
+export default { env: { NEXT_PACKAGE_VERSION: nextPackage.version } };
+`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+
+    expect(config?.env?.NEXT_PACKAGE_VERSION).toBe("15.4.2");
+  });
+
+  it("does not expose the fallback outside config evaluation", async () => {
+    fs.writeFileSync(path.join(tmpDir, "next.config.mjs"), "export default {};\n");
+    await loadNextConfig(tmpDir);
+
+    const require = createRequire(path.join(tmpDir, "package.json"));
+    expect(() => require.resolve("next/package.json")).toThrow();
+  });
+
+  it("tracks the repository's Next compatibility target", () => {
+    const installedNext = JSON.parse(
+      fs.readFileSync(createRequire(import.meta.url).resolve("next/package.json"), "utf8"),
+    ) as { version: string };
+    const vinextIdentity = JSON.parse(
+      fs.readFileSync(new URL("../packages/vinext/next-package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+
+    expect(vinextIdentity.version).toBe(installedNext.version);
   });
 });
 
