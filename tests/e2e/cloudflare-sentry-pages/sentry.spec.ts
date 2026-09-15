@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import type { ReportedSentryTransaction as ReportedTransaction } from "../../fixtures/sentry-test-state";
 
 async function expectReportedError(request: APIRequestContext, message: string) {
   const state: { errors: Array<{ message?: string }> } = { errors: [] };
@@ -13,6 +14,23 @@ async function expectReportedError(request: APIRequestContext, message: string) 
     .toBe(true);
 
   return state;
+}
+
+async function expectReportedTransaction(request: APIRequestContext, name: string) {
+  let transaction: ReportedTransaction | undefined;
+
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      transaction = state.transactions.find((candidate) => candidate.name === name);
+      return transaction !== undefined;
+    })
+    .toBe(true);
+
+  if (!transaction) throw new Error(`Sentry transaction was not reported: ${name}`);
+  return transaction;
 }
 
 test.describe("Sentry on Cloudflare Workers Pages Router", () => {
@@ -36,6 +54,29 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         routerPath: "/api/error-route",
         routeType: "route",
         sdkName: "sentry.javascript.nextjs",
+      }),
+    );
+  });
+
+  test("records transaction envelopes and nested application spans", async ({ request }) => {
+    const traceRes = await request.get("/api/trace-route");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "fixture.pages.transaction");
+    expect(transaction).toMatchObject({
+      operation: "fixture.request",
+      attributes: expect.objectContaining({ "fixture.router": "pages" }),
+    });
+    expect(transaction.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(transaction.spanId).toMatch(/^[0-9a-f]{16}$/);
+
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        name: "fixture.pages.child",
+        traceId: transaction.traceId,
+        parentSpanId: transaction.spanId,
+        operation: "fixture.child",
+        attributes: expect.objectContaining({ "fixture.child": true }),
       }),
     );
   });
