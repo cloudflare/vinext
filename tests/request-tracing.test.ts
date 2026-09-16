@@ -235,6 +235,32 @@ describe("framework request tracing", () => {
     });
   });
 
+  it("traces an explicitly detached in-process request separately", async () => {
+    spans.length = 0;
+    await traceRequest(async () => {
+      const targetResponse = await traceFrameworkRequest({
+        callback: async () => {
+          setFrameworkRequestRoute("/redirect/destination", true);
+          return new Response(null);
+        },
+        detached: true,
+        getStatus: (response) => response?.status,
+        headers: new Headers(),
+        isRsc: true,
+        method: "GET",
+        target: "/redirect/destination",
+      });
+      expect(targetResponse.status).toBe(200);
+      setFrameworkRequestRoute("/redirect/origin");
+      return new Response(null);
+    });
+
+    expect(spans.map(({ name }) => name)).toEqual([
+      "GET /redirect/origin",
+      "RSC GET /redirect/destination",
+    ]);
+  });
+
   it("keeps one root when a response stage returns the matched route", async () => {
     spans.length = 0;
 

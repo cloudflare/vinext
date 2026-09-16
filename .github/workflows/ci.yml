@@ -541,6 +541,10 @@ jobs:
             label: cloudflare-sentry-pages
             shardIndex: 1
             shardTotal: 1
+          - project: sentry-nextjs-16-static
+            label: sentry-nextjs-16-static
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-dev
             label: cloudflare-dev
             shardIndex: 1

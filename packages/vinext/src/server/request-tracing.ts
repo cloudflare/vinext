@@ -20,6 +20,8 @@ type ActiveRequestTrace = {
 
 type RequestTraceInput<T> = {
   callback: () => Promise<T>;
+  /** Trace an intentional in-process request as a separate propagated request segment. */
+  detached?: boolean;
   getStatus(result: T | undefined): number | undefined;
   headers: Headers;
   isRsc?: boolean;
@@ -145,93 +147,95 @@ export function consumeFrameworkRequestRoute(response: Response): Response {
 }
 
 export function traceFrameworkRequest<T>(input: RequestTraceInput<T>): Promise<T> {
-  if (activeRequestTrace.getStore()) return input.callback();
+  if (activeRequestTrace.getStore() && !input.detached) return input.callback();
 
   const method = input.method.toUpperCase();
-  return frameworkTracer.withPropagatedContext(input.headers, () => {
-    const parentSpan = frameworkTracer.getActiveScopeSpan();
-    let resolveResult!: (result: T) => void;
-    let rejectResult!: (error: unknown) => void;
-    const resultPromise = new Promise<T>((resolve, reject) => {
-      resolveResult = resolve;
-      rejectResult = reject;
-    });
-    const tracedRequest = frameworkTracer.trace(
-      {
-        attributes: {
-          "http.method": method,
-          "http.target": input.target,
+  const trace = () =>
+    frameworkTracer.withPropagatedContext(input.headers, () => {
+      const parentSpan = frameworkTracer.getActiveScopeSpan();
+      let resolveResult!: (result: T) => void;
+      let rejectResult!: (error: unknown) => void;
+      const resultPromise = new Promise<T>((resolve, reject) => {
+        resolveResult = resolve;
+        rejectResult = reject;
+      });
+      const tracedRequest = frameworkTracer.trace(
+        {
+          attributes: {
+            "http.method": method,
+            "http.target": input.target,
+          },
+          kind: "server",
+          name: method,
+          type: "BaseServer.handleRequest",
         },
-        kind: "server",
-        name: method,
-        type: "BaseServer.handleRequest",
-      },
-      async (span) => {
-        let carriedError: Error | undefined;
-        let route: string | undefined;
-        let isRsc = input.isRsc ?? false;
-        let result: T | undefined;
-        let spanFinalized = false;
-        const finalizeSpan = () => {
-          if (spanFinalized) return;
-          spanFinalized = true;
-          finalizeFrameworkRequestSpan({
-            carriedError,
-            input,
-            isRsc,
-            method,
-            parentSpan,
-            result,
-            route,
-            span,
-          });
-        };
-        try {
-          result = await activeRequestTrace.run(
-            {
-              recordError(error) {
-                carriedError = error;
-              },
-              setRoute(nextRoute, nextIsRsc) {
-                if (route === undefined && nextRoute !== undefined) route = nextRoute;
-                if (nextIsRsc !== undefined) isRsc = nextIsRsc;
-              },
-            },
-            input.callback,
-          );
-          finalizeSpan();
-          if (
-            result instanceof Response &&
-            result.body &&
-            !result.body.locked &&
-            !isFullyBufferedBody(result)
-          ) {
-            let finishBody!: () => void;
-            let failBody!: (error: unknown) => void;
-            const bodyCompletion = new Promise<void>((resolve, reject) => {
-              finishBody = resolve;
-              failBody = reject;
+        async (span) => {
+          let carriedError: Error | undefined;
+          let route: string | undefined;
+          let isRsc = input.isRsc ?? false;
+          let result: T | undefined;
+          let spanFinalized = false;
+          const finalizeSpan = () => {
+            if (spanFinalized) return;
+            spanFinalized = true;
+            finalizeFrameworkRequestSpan({
+              carriedError,
+              input,
+              isRsc,
+              method,
+              parentSpan,
+              result,
+              route,
+              span,
             });
-            result = wrapResponseBody(result, finishBody, failBody) as T;
+          };
+          try {
+            result = await activeRequestTrace.run(
+              {
+                recordError(error) {
+                  carriedError = error;
+                },
+                setRoute(nextRoute, nextIsRsc) {
+                  if (route === undefined && nextRoute !== undefined) route = nextRoute;
+                  if (nextIsRsc !== undefined) isRsc = nextIsRsc;
+                },
+              },
+              input.callback,
+            );
+            finalizeSpan();
+            if (
+              result instanceof Response &&
+              result.body &&
+              !result.body.locked &&
+              !isFullyBufferedBody(result)
+            ) {
+              let finishBody!: () => void;
+              let failBody!: (error: unknown) => void;
+              const bodyCompletion = new Promise<void>((resolve, reject) => {
+                finishBody = resolve;
+                failBody = reject;
+              });
+              result = wrapResponseBody(result, finishBody, failBody) as T;
+              resolveResult(result);
+              await bodyCompletion;
+              return result;
+            }
             resolveResult(result);
-            await bodyCompletion;
+            if (result instanceof Response) {
+              await getResponseStartCompletion(result);
+            }
             return result;
+          } catch (error) {
+            finalizeSpan();
+            rejectResult(error);
+            throw error;
           }
-          resolveResult(result);
-          if (result instanceof Response) {
-            await getResponseStartCompletion(result);
-          }
-          return result;
-        } catch (error) {
-          finalizeSpan();
-          rejectResult(error);
-          throw error;
-        }
-      },
-    );
-    void tracedRequest.catch(() => {});
-    return resultPromise;
-  });
+        },
+      );
+      void tracedRequest.catch(() => {});
+      return resultPromise;
+    });
+  return input.detached ? frameworkTracer.runWithDetachedContext(trace) : trace();
 }
 
 function finalizeFrameworkRequestSpan<T>(options: {

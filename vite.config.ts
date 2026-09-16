@@ -30,6 +30,8 @@ export default defineConfig({
     singleQuote: false,
     trailingComma: "all",
     ignorePatterns: [
+      // Kept byte-for-byte comparable with Sentry's upstream Next.js fixture.
+      "tests/e2e/sentry-nextjs-16-static/fixture/**",
       "tests/fixtures/ecosystem/**",
       "examples/**",
       "packages/types/next/upstream/**",
@@ -38,6 +40,8 @@ export default defineConfig({
   lint: {
     ignorePatterns: [
       "fixtures/ecosystem/**",
+      // Kept byte-for-byte comparable with Sentry's upstream Next.js fixture.
+      "tests/e2e/sentry-nextjs-16-static/fixture/**",
       "tests/fixtures/**",
       "tests/fixtures/ecosystem/**",
       "examples/**",
@@ -176,7 +180,8 @@ export default defineConfig({
           // are pure-logic and have no fixture/server dependencies.
           include: ["tests/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: [
-            "tests/fixtures/**/node_modules/**",
+            "tests/**/node_modules/**",
+            "tests/e2e/**",
             // Integration tests spin up Vite dev servers against shared fixture
             // dirs and use per-worker optimizer caches in their own project.
             // When adding a test that calls startFixtureServer() or createServer(),

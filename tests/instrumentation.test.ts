@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as Sentry from "@sentry/nextjs";
-import { createServer } from "vite-plus";
+import { createServer, parseAst } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 import {
   findInstrumentationClientFile,
@@ -13,6 +13,10 @@ import {
 import { toSlash } from "pathslash";
 import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
+import {
+  createInstrumentationClientTransformPlugin,
+  createInstrumentationServerTransformPlugin,
+} from "../packages/vinext/src/plugins/instrumentation-client.js";
 
 const RESOLVED_INSTRUMENTATION_CLIENT = "\0private-next-instrumentation-client.mjs";
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "..", "node_modules");
@@ -57,6 +61,14 @@ function parseSentryEnvelopeEvents(envelope: unknown): SentryEnvelopeEvent[] {
     }
   }
   return events;
+}
+
+function getTransformHandler(
+  plugin: ReturnType<typeof createInstrumentationClientTransformPlugin>,
+) {
+  if (typeof plugin.transform === "function") return plugin.transform;
+  if (plugin.transform?.handler) return plugin.transform.handler;
+  throw new Error("transform hook missing");
 }
 
 function setupInjectProject(options: {
@@ -177,6 +189,115 @@ describe("findInstrumentationFile", () => {
     const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     expect(result).toBeNull();
+  });
+});
+
+describe("instrumentation-client transform", () => {
+  const path = "/project/instrumentation-client.ts";
+  const source = 'import "./setup.js";\ninitialize();\n';
+
+  it("injects a wrapped config route manifest in production without the dev timer", async () => {
+    const manifest = JSON.stringify({ dynamicRoutes: ["/products/:id"] });
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => manifest,
+    );
+    const transform = getTransformHandler(plugin);
+    const result = await transform.call({} as never, source, path);
+    const code = getLoadedCode(result);
+
+    expect(code).toContain(`globalThis["_sentryRouteManifest"] = ${JSON.stringify(manifest)};`);
+    expect(code.indexOf("_sentryRouteManifest")).toBeLessThan(code.indexOf("initialize()"));
+    expect(code).not.toContain("__vinextInstrumentationClientStart");
+  });
+
+  it("injects the route manifest alongside the timer in development", async () => {
+    const manifest = JSON.stringify({ dynamicRoutes: ["/products/:id"] });
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => manifest,
+    );
+    const configResolved =
+      typeof plugin.configResolved === "function"
+        ? plugin.configResolved
+        : plugin.configResolved?.handler;
+    await configResolved?.call({} as never, { command: "serve" } as never);
+
+    const code = getLoadedCode(await getTransformHandler(plugin).call({} as never, source, path));
+    expect(code).toContain(`globalThis["_sentryRouteManifest"] = ${JSON.stringify(manifest)};`);
+    expect(code).toContain("__vinextInstrumentationClientStart");
+  });
+
+  it("injects before executable statements without breaking directives", async () => {
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => "manifest",
+    );
+    const sourceWithLateImport = '"use strict";\ninitialize();\nimport "./setup.js";\n';
+    const code = getLoadedCode(
+      await getTransformHandler(plugin).call({} as never, sourceWithLateImport, path),
+    );
+
+    expect(parseAst(code).body[0]).toMatchObject({ directive: "use strict" });
+    expect(code.indexOf('globalThis["_sentryRouteManifest"]')).toBeGreaterThan(
+      code.indexOf('"use strict"'),
+    );
+    expect(code.indexOf('globalThis["_sentryRouteManifest"]')).toBeLessThan(
+      code.indexOf("initialize()"),
+    );
+  });
+
+  it("keeps route manifest injection disabled when a wrapped config omits it", async () => {
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => undefined,
+    );
+    const transform = getTransformHandler(plugin);
+    expect(await transform.call({} as never, source, path)).toBeNull();
+  });
+});
+
+describe("server instrumentation value transform", () => {
+  const path = "/project/instrumentation.ts";
+  const source = 'import "./setup.js";\nexport function register() {}\n';
+
+  it("injects wrapped-config values into the instrumentation module", async () => {
+    const plugin = createInstrumentationServerTransformPlugin(
+      () => path,
+      () => ({ objectValue: { enabled: true }, stringValue: "value", unsetValue: undefined }),
+    );
+    const code = getLoadedCode(await getTransformHandler(plugin).call({} as never, source, path));
+
+    expect(code).toContain('globalThis["objectValue"] = {"enabled":true};');
+    expect(code).toContain('globalThis["stringValue"] = "value";');
+    expect(code).toContain('globalThis["unsetValue"] = undefined;');
+    expect(code.indexOf("__vinextInstrumentationServerValues")).toBeLessThan(
+      code.indexOf("export function register"),
+    );
+  });
+
+  it("ignores unrelated modules and empty value maps", async () => {
+    const values: Record<string, unknown> = {};
+    const plugin = createInstrumentationServerTransformPlugin(
+      () => path,
+      () => values,
+    );
+    const transform = getTransformHandler(plugin);
+
+    expect(await transform.call({} as never, source, "/project/other.ts")).toBeNull();
+    expect(await transform.call({} as never, source, path)).toBeNull();
+  });
+
+  it("does not apply server value injection to the client environment", () => {
+    const plugin = createInstrumentationServerTransformPlugin(
+      () => path,
+      () => ({ serverOnly: true }),
+    );
+    const apply = plugin.applyToEnvironment!;
+
+    expect(apply({ name: "client" } as never)).toBe(false);
+    expect(apply({ name: "rsc" } as never)).toBe(true);
+    expect(apply({ name: "ssr" } as never)).toBe(true);
   });
 });
 
@@ -446,6 +567,23 @@ describe("reportRequestError", () => {
     await reportRequestError(error, sampleRequest, sampleContext);
 
     expect(onRequestError).toHaveBeenCalledWith(error, sampleRequest, sampleContext);
+  });
+
+  it("reports route patterns in Next.js format", async () => {
+    const onRequestError = vi.fn();
+    const runner = {
+      import: vi.fn().mockResolvedValue({ onRequestError }),
+    };
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
+
+    await reportRequestError(new Error("boom"), sampleRequest, {
+      ...sampleContext,
+      routePath: "/blog/:slug/:rest+/:optional*",
+    });
+
+    expect(onRequestError.mock.calls[0]?.[2].routePath).toBe(
+      "/blog/[slug]/[...rest]/[[...optional]]",
+    );
   });
 
   it("no-ops when no handler is registered", async () => {

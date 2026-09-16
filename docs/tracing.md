@@ -46,6 +46,38 @@ The stable built-in child span types are:
 
 Incoming context is extracted with the propagator registered by the application's OpenTelemetry SDK. Application-created OpenTelemetry spans inside a request therefore inherit the vinext request span. `experimental.clientTraceMetadata` is also supported through the normal Next.js configuration and integration wrappers; static or cached HTML does not retain another request's propagation metadata.
 
+## Sentry
+
+Existing Next.js applications can keep their standard Sentry setup. Vinext uses the same `instrumentation.ts`, `onRequestError`, and `withSentryConfig` public API; there is no vinext-specific Sentry integration:
+
+```ts
+// instrumentation.ts
+import * as Sentry from "@sentry/nextjs";
+
+export function register() {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    tracesSampleRate: 1,
+  });
+}
+
+export const onRequestError = Sentry.captureRequestError;
+```
+
+```ts
+// next.config.ts
+import { withSentryConfig } from "@sentry/nextjs/config";
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {};
+
+export default withSentryConfig(nextConfig, {
+  silent: !process.env.CI,
+});
+```
+
+The Sentry SDK registers its OpenTelemetry provider through that existing setup and receives the request root and built-in child spans listed above. Sentry remains application-owned and optional; installing vinext does not install Sentry or OpenTelemetry packages.
+
 ## Cloudflare Workers traces
 
 On Cloudflare Workers, the same framework call sites also use the native Workers tracing context. There is no separate Workers implementation of the request lifecycle. A custom application span can surround vinext, and custom spans, fetches, or binding calls made inside vinext or route code inherit the currently active span:
