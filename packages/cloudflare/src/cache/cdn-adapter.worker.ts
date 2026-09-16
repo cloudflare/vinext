@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import "vinext/internal/server/cloudflare-workers-tracing";
 import {
   NEXTJS_CACHE_HEADER,
   VINEXT_PRERENDER_READINESS_PATH,
