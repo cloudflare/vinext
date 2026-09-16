@@ -373,8 +373,8 @@ importers:
         specifier: 'catalog:'
         version: 1.50.0(@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(wrangler@4.118.0(@cloudflare/workers-types@4.20260313.1))
       '@cloudflare/workers-types':
-        specifier: 'catalog:'
-        version: 4.20260313.1
+        specifier: ^5.20260904.1
+        version: 5.20260904.1
       '@tailwindcss/postcss':
         specifier: 'catalog:'
         version: 4.1.4
