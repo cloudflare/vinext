@@ -3,7 +3,7 @@ import {
   createPagesApiHandlerSpanDescriptor,
   createPagesDataSpanDescriptor,
   createPagesDocumentSpanDescriptor,
-  createPagesFindPageComponentsSpanDescriptor,
+  createFindPageComponentsSpanDescriptor,
   tracePagesDocumentStream,
 } from "../packages/vinext/src/server/pages-execution-tracing.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
@@ -58,7 +58,7 @@ describe("Pages execution tracing", () => {
   });
 
   it("matches the stable Next.js page component resolution span descriptor", () => {
-    expect(createPagesFindPageComponentsSpanDescriptor("/products/:slug")).toEqual({
+    expect(createFindPageComponentsSpanDescriptor("/products/:slug")).toEqual({
       attributes: { "next.route": "/products/[slug]" },
       name: "resolve page components",
       type: "NextNodeServer.findPageComponents",
