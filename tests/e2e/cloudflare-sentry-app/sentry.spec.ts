@@ -195,6 +195,38 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
     );
   });
 
+  test("reports App Page fetches beneath the render framework span", async ({ request }) => {
+    const traceRes = await request.get("/trace-fetch/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-fetch/[slug]");
+    const renderSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+    );
+    const fetchSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.fetch",
+    );
+    expect(fetchSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "https://example.com/",
+        "net.peer.name": "example.com",
+        "next.fetch.cache_reason": "cache: no-store",
+        "next.fetch.cache_status": "skip",
+        "next.fetch.idx": 2,
+        "next.span_name": "fetch GET https://example.com/",
+        "next.span_type": "AppRender.fetch",
+      }),
+      // Sentry derives the display name from the HTTP semantic attributes;
+      // next.span_name above retains the framework's Next.js-compatible name.
+      name: "GET https://example.com/",
+      operation: "http.client",
+      parentSpanId: renderSpan?.spanId,
+      traceId: transaction.traceId,
+    });
+  });
+
   test("does not emit an App render span for an RSC payload request", async ({ request }) => {
     const traceRes = await request.get("/trace-page/product-42?_rsc", {
       headers: { Accept: "text/x-component", RSC: "1" },
