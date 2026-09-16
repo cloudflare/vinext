@@ -18,6 +18,8 @@ import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
 import { forbidden, notFound } from "../packages/vinext/src/shims/navigation-errors.js";
 import { resolveAppPageRouteStateKey } from "../packages/vinext/src/server/app-page-segment-state.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
 
 // Import the function under test AFTER mocking dependencies.
 // eslint-disable-next-line import/first
@@ -40,6 +42,15 @@ const { markDynamicUsageMock, markRenderRequestApiUsageMock } = vi.hoisted(() =>
   markDynamicUsageMock: vi.fn(),
   markRenderRequestApiUsageMock: vi.fn(),
 }));
+
+const recordedTraceDescriptors: ResolvedFrameworkSpanDescriptor[] = [];
+registerFrameworkTracingIntegration({
+  id: "app-page-element-builder-tracing-test",
+  enterSpan(descriptor, callback) {
+    recordedTraceDescriptors.push(descriptor);
+    return callback({ setAttribute() {} });
+  },
+});
 
 vi.mock("../packages/vinext/src/shims/headers.js", () => ({
   getHeadersAccessPhase: () => "render",
@@ -246,6 +257,127 @@ describe("buildPageElements", () => {
   beforeEach(() => {
     markDynamicUsageMock.mockClear();
     markRenderRequestApiUsageMock.mockClear();
+    recordedTraceDescriptors.length = 0;
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  it("traces only page, layout, and active parallel-route segment modules", async () => {
+    function Component() {
+      return null;
+    }
+
+    await buildPageElements(
+      createBaseOptions({
+        route: createSyntheticRoute({
+          page: createSyntheticPageModule(Component),
+          layouts: [createSyntheticPageModule(Component), createSyntheticPageModule(Component)],
+          layoutTreePositions: [0, 2],
+          routeSegments: ["dashboard", "[slug]"],
+          slots: {
+            active: {
+              configLayouts: [createSyntheticPageModule(Component)],
+              configLayoutTreePositions: [1],
+              layout: createSyntheticPageModule(Component),
+              layoutIndex: 1,
+              name: "active",
+              page: createSyntheticPageModule(Component),
+              routeSegments: ["[member]"],
+            },
+            inactive: {
+              configLayouts: [createSyntheticPageModule(Component)],
+              configLayoutTreePositions: [1],
+              layoutIndex: 1,
+              name: "inactive",
+              routeSegments: ["inactive"],
+            },
+            defaulted: {
+              default: createSyntheticPageModule(Component),
+              layoutIndex: 1,
+              name: "defaulted",
+            },
+            invalidPageFallback: {
+              default: createSyntheticPageModule(Component),
+              layoutIndex: 1,
+              name: "invalidPageFallback",
+              page: createSyntheticPageModuleWithoutDefault(),
+            },
+          },
+        }),
+        opts: {
+          interceptBranchSegments: ["[member]"],
+          interceptLayouts: [createSyntheticPageModule(Component)],
+          interceptLayoutSegments: [["[member]"]],
+          interceptPage: createSyntheticPageModule(Component),
+          interceptParams: {},
+          interceptSlotKey: "active",
+        },
+      }),
+    );
+
+    expect(
+      recordedTraceDescriptors
+        .filter(({ type }) => type === "NextNodeServer.getLayoutOrPageModule")
+        .map(({ attributes }) => attributes["next.segment"]),
+    ).toEqual(["__PAGE__", "", "[slug]", "__PAGE__", "[member]", "(__SLOT__)", "__PAGE__"]);
+    expect(recordedTraceDescriptors).not.toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({ "next.segment": "__DEFAULT__" }),
+      }),
+    );
+  });
+
+  it("traces sibling interception layouts inside the component-tree walk", async () => {
+    function Component() {
+      return null;
+    }
+
+    await buildPageElements(
+      createBaseOptions({
+        route: createSyntheticRoute({
+          layouts: [createSyntheticPageModule(Component)],
+          layoutTreePositions: [0],
+          page: createSyntheticPageModule(Component),
+          routeSegments: ["feed"],
+        }),
+        opts: {
+          interceptBranchSegments: ["feed", "(.)photo"],
+          interceptLayouts: [createSyntheticPageModule(Component)],
+          interceptLayoutSegments: [["feed", "(.)photo"]],
+          interceptPage: createSyntheticPageModule(Component),
+          interceptParams: {},
+          interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+        },
+      }),
+    );
+
+    expect(
+      recordedTraceDescriptors
+        .filter(({ type }) => type === "NextNodeServer.getLayoutOrPageModule")
+        .map(({ attributes }) => attributes["next.segment"]),
+    ).toEqual(["__PAGE__", "(.)photo", ""]);
+  });
+
+  it("retains ancestor layout spans when a page has no default export", async () => {
+    await buildPageElements(
+      createBaseOptions({
+        route: createSyntheticRoute({
+          layouts: [
+            createSyntheticPageModule(() => null),
+            createSyntheticPageModuleWithoutDefault(),
+          ],
+          layoutTreePositions: [0, 1],
+          page: createSyntheticPageModuleWithoutDefault(),
+          routeSegments: ["broken"],
+        }),
+      }),
+    );
+
+    expect(
+      recordedTraceDescriptors
+        .filter(({ type }) => type === "NextNodeServer.getLayoutOrPageModule")
+        .map(({ attributes }) => attributes["next.segment"]),
+    ).toEqual(["__PAGE__", "", "broken"]);
   });
 
   it.each(["plain", "memo", "lazy", "forwardRef"] as const)(
