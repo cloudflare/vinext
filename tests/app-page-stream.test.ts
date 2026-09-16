@@ -3,6 +3,7 @@ import {
   buildAppPageLinkHeader,
   createAppPageFontData,
   createAppPageRscErrorTracker,
+  createAppPageSsrErrorHandler,
   renderAppPageHtmlResponse,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
@@ -515,6 +516,36 @@ describe("app page stream helpers", () => {
 
     expect(tracker.getCapturedSpecialError()).toBe(redirect);
     expect(tracker.getCapturedError()).toBe(realError);
+  });
+
+  it("correlates re-created RSC errors by digest and keeps custom-digest SSR errors reportable", () => {
+    const baseRscOnError = vi.fn(() => "rsc-digest");
+    const tracker = createAppPageRscErrorTracker(baseRscOnError);
+    const originalRscError = new Error("RSC failed");
+    tracker.onRenderError(originalRscError, null, null);
+
+    const baseSsrOnError = vi.fn(() => "ssr-digest");
+    const onSsrError = createAppPageSsrErrorHandler(baseSsrOnError, tracker.isCapturedError);
+    const decodedRscError = Object.assign(new Error("decoded RSC failure"), {
+      digest: "rsc-digest",
+    });
+    const customDigestSsrError = Object.assign(new Error("client SSR failure"), {
+      digest: "custom-ssr-digest",
+    });
+
+    expect(onSsrError(decodedRscError)).toBe("rsc-digest");
+    expect(onSsrError(customDigestSsrError)).toBe("ssr-digest");
+    expect(baseSsrOnError).toHaveBeenCalledOnce();
+    expect(baseSsrOnError).toHaveBeenCalledWith(customDigestSsrError, undefined, undefined);
+  });
+
+  it.each(["AbortError", "ResponseAborted"])("does not report %s SSR cancellations", (name) => {
+    const baseSsrOnError = vi.fn();
+    const onSsrError = createAppPageSsrErrorHandler(baseSsrOnError, () => false);
+    const abortError = Object.assign(new Error("response closed"), { name });
+
+    expect(onSsrError(abortError)).toBeUndefined();
+    expect(baseSsrOnError).not.toHaveBeenCalled();
   });
 
   it("emits the `x-edge-runtime: 1` marker on HTML stream responses for edge-runtime routes", async () => {

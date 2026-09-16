@@ -566,6 +566,33 @@ describe("triggerBackgroundRegeneration", () => {
     }
   });
 
+  it("does not report an error that an inner render boundary already reported", async () => {
+    const handler = vi.fn();
+    globalThis.__VINEXT_onRequestErrorHandler__ = handler;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const reportedError = new Error("already reported");
+
+    try {
+      triggerBackgroundRegeneration(
+        "regen-already-reported",
+        vi.fn().mockRejectedValue(reportedError),
+        {
+          routerKind: "App Router",
+          routePath: "/blog/[slug]",
+          routeType: "render",
+          shouldReport: (error) => error !== reportedError,
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(handler).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalled();
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+      consoleError.mockRestore();
+    }
+  });
+
   it("does NOT call onRequestError handler when errorContext is omitted", async () => {
     const handler = vi.fn();
     globalThis.__VINEXT_onRequestErrorHandler__ = handler;
@@ -584,7 +611,7 @@ describe("triggerBackgroundRegeneration", () => {
     }
   });
 
-  it("wraps non-Error throw values in Error before reporting", async () => {
+  it("preserves non-Error throw values when reporting", async () => {
     const handler = vi.fn();
     globalThis.__VINEXT_onRequestErrorHandler__ = handler;
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -600,8 +627,7 @@ describe("triggerBackgroundRegeneration", () => {
 
       expect(handler).toHaveBeenCalledOnce();
       const [error] = handler.mock.calls[0];
-      expect(error).toBeInstanceOf(Error);
-      expect(error.message).toBe("string error");
+      expect(error).toBe("string error");
     } finally {
       delete globalThis.__VINEXT_onRequestErrorHandler__;
       consoleError.mockRestore();
