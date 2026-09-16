@@ -40,6 +40,9 @@ export const VINEXT_TRACE_ROUTE_HEADER = "X-Vinext-Trace-Route";
 /** Exception metadata returned from an independently hosted response stage. */
 export const VINEXT_TRACE_ERROR_HEADER = "X-Vinext-Trace-Error";
 
+/** Fully buffered response metadata returned from an independently hosted response stage. */
+export const VINEXT_TRACE_BUFFERED_BODY_HEADER = "X-Vinext-Trace-Buffered-Body";
+
 /** Expected Worker version asserted by vinext staged warmup requests. */
 export const VINEXT_EXPECTED_WORKER_VERSION_HEADER = "X-Vinext-Expected-Worker-Version";
 
@@ -283,5 +286,6 @@ export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
   VINEXT_TRACE_ERROR_HEADER.toLowerCase(),
+  VINEXT_TRACE_BUFFERED_BODY_HEADER.toLowerCase(),
   VINEXT_TRACE_ROUTE_HEADER.toLowerCase(),
 ];

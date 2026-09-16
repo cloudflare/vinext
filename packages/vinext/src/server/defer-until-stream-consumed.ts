@@ -4,6 +4,7 @@
 export function deferUntilStreamConsumed(
   stream: ReadableStream<Uint8Array>,
   onFlush: () => void,
+  onError?: (error: unknown) => void,
 ): ReadableStream<Uint8Array> {
   let called = false;
   const once = () => {
@@ -31,6 +32,7 @@ export function deferUntilStreamConsumed(
           }
         },
         (error) => {
+          onError?.(error);
           once();
           controller.error(error);
         },
