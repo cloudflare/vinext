@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "pathslash";
+
 // Keep in sync with Next.js 16.2.6:
 // packages/next/src/lib/server-external-packages.jsonc
 const DEFAULT_SERVER_EXTERNAL_PACKAGES = [
@@ -82,9 +85,52 @@ const DEFAULT_SERVER_EXTERNAL_PACKAGES = [
   "zeromq",
 ] as const;
 
+/**
+ * OpenTelemetry's instrumentation packages must keep their native package
+ * boundaries. In particular, `import-in-the-middle` shares a hook registry
+ * between its Node loader and the Hook class imported by OpenTelemetry.
+ * Bundling the latter creates a second registry and silently disables ESM
+ * instrumentation.
+ *
+ * Externalizing the project's direct OpenTelemetry dependencies also keeps
+ * their transitive IITM/RITM imports resolving from the owning package under
+ * strict pnpm, instead of leaving an unresolvable bare import in dist/server.
+ */
+export function findOpenTelemetryPackages(root: string): string[] {
+  const packageJsonPath = path.join(root, "package.json");
+  let packageJson: Record<string, unknown>;
+
+  try {
+    packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8")) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+
+  const packageNames = new Set<string>();
+  for (const field of [
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+  ]) {
+    const dependencies = packageJson[field];
+    if (!dependencies || typeof dependencies !== "object" || Array.isArray(dependencies)) {
+      continue;
+    }
+    for (const packageName of Object.keys(dependencies)) {
+      if (packageName.startsWith("@opentelemetry/")) {
+        packageNames.add(packageName);
+      }
+    }
+  }
+
+  return [...packageNames];
+}
+
 export function mergeServerExternalPackages(
   userPackages: readonly string[] = [],
   transpilePackages: readonly string[] = [],
+  additionalDefaults: readonly string[] = [],
 ): string[] {
   const transpiled = new Set(transpilePackages);
   const conflicts = userPackages.filter((name) => transpiled.has(name));
@@ -93,6 +139,8 @@ export function mergeServerExternalPackages(
       `The packages specified in the 'transpilePackages' conflict with the 'serverExternalPackages': ${conflicts.join(", ")}`,
     );
   }
-  const defaults = DEFAULT_SERVER_EXTERNAL_PACKAGES.filter((name) => !transpiled.has(name));
+  const defaults = [...DEFAULT_SERVER_EXTERNAL_PACKAGES, ...additionalDefaults].filter(
+    (name) => !transpiled.has(name),
+  );
   return [...new Set([...defaults, ...userPackages])];
 }
