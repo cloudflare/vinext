@@ -4,6 +4,8 @@ const CLOUDFLARE_WORKER_ENTRY_ID = "virtual:cloudflare/worker-entry";
 
 export type ResponseStoreAdapterOptions = {
   mode?: "self-contained" | "service-binding";
+  /** Split version-scoped metadata across this many Durable Objects. */
+  shards?: number;
 };
 
 /**
@@ -16,6 +18,14 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
   if (mode !== "service-binding" && mode !== "self-contained") {
     throw new Error(`Unknown Workers Response Store mode: ${String(mode)}`);
   }
+  if (
+    options.shards !== undefined &&
+    (!Number.isSafeInteger(options.shards) || options.shards <= 1)
+  ) {
+    throw new TypeError("Workers Response Store shards must be an integer greater than 1");
+  }
+  const runtimeOptions =
+    options.shards === undefined ? {} : { options: { shards: options.shards } };
   const workerEntry = fileURLToPath(
     import.meta.resolve(
       mode === "self-contained"
@@ -30,6 +40,7 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
   return {
     cdn: {
       adapter: fileURLToPath(import.meta.resolve("./response-store-cdn.runtime.js")),
+      ...runtimeOptions,
       output: {
         entry: workerEntry,
         matchesBuild({ plugins }: { plugins: readonly { name?: string }[] }) {
@@ -56,6 +67,7 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
     },
     data: {
       adapter: fileURLToPath(import.meta.resolve("./response-store-data.runtime.js")),
+      ...runtimeOptions,
     },
   };
 }

@@ -91,6 +91,15 @@ npx @vinext/cloudflare deploy
 `vinext-cloudflare deploy` never creates, rewrites, or deploys the Response
 Store Worker.
 
+Metadata sharding is opt-in and works in either deployment mode:
+
+```ts
+vinext({ cache: responseStoreAdapter({ shards: 16 }) });
+```
+
+Keys remain pinned to one shard while tag/path mutations fan out across every
+shard. Omit `shards` to retain the original single metadata Durable Object.
+
 To deploy storage and cache entrypoints with the application instead, select
 self-contained mode:
 

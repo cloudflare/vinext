@@ -36,6 +36,14 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 vinext({ cache: responseStoreAdapter() });
 ```
 
+Metadata sharding is available as an explicit scaling option:
+
+```ts
+vinext({ cache: responseStoreAdapter({ shards: 16 }) });
+```
+
+Each cache key remains strongly coordinated by one SQLite Durable Object. Tag/path refreshes and purges fan out across all shards. The option is disabled by default, and changing the count starts a new cache layout for the deployed Worker version.
+
 The default service-binding mode keeps the cache service in a separate Worker. `vinext init` creates `wrangler.response-store.jsonc` alongside the application config and adds a deployment script:
 
 ```sh

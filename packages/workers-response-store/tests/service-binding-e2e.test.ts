@@ -96,6 +96,17 @@ test("a service-bound cache Worker stores and returns responses", async () => {
   const response = await read("/stored");
   assert.equal(await response.text(), "stored-body");
   assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+
+  const namespace = await mf.getDurableObjectNamespace("CACHE_METADATA", "cache-worker");
+  const entries = (
+    await Promise.all(
+      Array.from({ length: 4 }, async (_, index) => {
+        const metadata = namespace.getByName(`user-worker-v1:metadata-shard:${index}-of-4`) as any;
+        return metadata.inspect() as Promise<unknown[]>;
+      }),
+    )
+  ).flat();
+  assert.equal(entries.length, 1);
 });
 
 test("the cache Worker default entrypoint does not expose service details", async () => {

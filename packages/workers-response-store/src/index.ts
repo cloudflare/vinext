@@ -9,6 +9,7 @@ import {
   type ResponseStoreServiceInvocation,
   type WorkersResponseStoreEnv,
   type WorkersResponseStore,
+  validateResponseStoreShards,
 } from "./binding";
 import { CacheMetadata } from "./metadata-do";
 
@@ -47,6 +48,8 @@ export type ResponseStoreClientEntrypoint<Env = WorkersResponseStoreClientEnv> =
 ) => WorkerEntrypoint<Env> & WorkersResponseStore;
 
 export type WorkersResponseStoreOptions<Env> = {
+  /** Split version-scoped metadata across this many Durable Objects. */
+  shards?: number;
   regenerate(
     input: RevalidationInput,
     context: ResponseStoreRevalidationContext<Env>,
@@ -74,9 +77,10 @@ function createStoreFacade(getStore: () => WorkersResponseStore): WorkersRespons
 export function createWorkersResponseStore<
   Env extends WorkersResponseStoreEnv = WorkersResponseStoreEnv,
 >(options: WorkersResponseStoreOptions<Env>): WorkersResponseStoreDefinition<Env> {
+  const shards = validateResponseStoreShards(options.shards);
   const ResponseStoreRevalidator = createRevalidatorEntrypoint(options);
 
-  const getStore = () => getWorkersResponseStore({ exports: workerExports });
+  const getStore = () => getWorkersResponseStore({ exports: workerExports }, { shards });
 
   return {
     entrypoints: { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding },
@@ -94,6 +98,7 @@ export type WorkersResponseStoreClientEnv = {
 export function createWorkersResponseStoreClient<
   Env extends WorkersResponseStoreClientEnv = WorkersResponseStoreClientEnv,
 >(options: WorkersResponseStoreOptions<Env>): WorkersResponseStoreClientDefinition<Env> {
+  const shards = validateResponseStoreShards(options.shards);
   const ResponseStoreRevalidator = createRevalidatorEntrypoint(options);
 
   class ResponseStoreClient extends WorkerEntrypoint<Env> implements WorkersResponseStore {
@@ -118,6 +123,7 @@ export function createWorkersResponseStoreClient<
       return {
         versionId,
         revalidator: factory({ props: {} }),
+        ...(shards === undefined ? {} : { shards }),
       };
     }
 

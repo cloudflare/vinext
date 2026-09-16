@@ -286,5 +286,5 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
 /** Generate request-stage registration without importing a configured data adapter. */
 export function generateCdnCacheAdapterModule(cache?: VinextCacheConfig): string {
-  return `${generateCacheAdaptersModule(cache?.cdn ? { cdn: cache.cdn } : undefined)}export const hasConfiguredDataCache = ${Boolean(cache?.data?.adapter)};\n`;
+  return `${generateCacheAdaptersModule(cache?.cdn ? { cdn: cache.cdn } : undefined)}export const hasConfiguredDataCache = ${Boolean(cache?.data?.adapter)};\nexport const configuredCdnCacheAdapterOptions = ${inlineOptions(cache?.cdn?.adapter ?? "cdn", cache?.cdn?.options)};\n`;
 }

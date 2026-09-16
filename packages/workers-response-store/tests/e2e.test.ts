@@ -30,6 +30,7 @@ type PutOptions = {
   purgeExisting?: boolean;
   revalidator?: Record<string, SerializableValue>;
   status?: number;
+  shards?: number;
   tags?: string[];
   teeBody?: boolean;
 };
@@ -96,6 +97,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   if (options.bodyFailure) headers.set("X-Body-Failure", "1");
   if (options.bodyDelayMs) headers.set("X-Body-Delay-Ms", String(options.bodyDelayMs));
   if (options.teeBody) headers.set("X-Tee-Body", "1");
+  if (options.shards) headers.set("X-Response-Store-Shards", String(options.shards));
   const response = await worker.fetch(`https://user.test/admin/put${path}`, {
     method: "PUT",
     headers,
@@ -111,34 +113,47 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   return { response, json: parsed };
 }
 
-async function read(path: string, options: { headers?: HeadersInit; host?: string } = {}) {
+async function read(
+  path: string,
+  options: { headers?: HeadersInit; host?: string; shards?: number } = {},
+) {
   const headers = new Headers(options.headers);
   if (options.host) headers.set("X-Cache-Host", options.host);
+  if (options.shards) headers.set("X-Response-Store-Shards", String(options.shards));
   return worker.fetch(`https://user.test/cache${path}`, { headers });
 }
 
-async function refreshSelectors(options: ResponseStoreRefreshOptions) {
+async function refreshSelectors(options: ResponseStoreRefreshOptions, shards?: number) {
   const response = await worker.fetch("https://user.test/admin/refresh", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(shards ? { "X-Response-Store-Shards": String(shards) } : {}),
+    },
     body: JSON.stringify(options),
   });
   return { response, json: await response.json() };
 }
 
-async function purge(options: ResponseStorePurgeOptions) {
+async function purge(options: ResponseStorePurgeOptions, shards?: number) {
   const response = await worker.fetch("https://user.test/admin/purge", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(shards ? { "X-Response-Store-Shards": String(shards) } : {}),
+    },
     body: JSON.stringify(options),
   });
   return { response, json: await response.json() };
 }
 
-async function tagExpiration(tags: string[]): Promise<number> {
+async function tagExpiration(tags: string[], shards?: number): Promise<number> {
   const response = await worker.fetch("https://user.test/admin/tag-expiration", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(shards ? { "X-Response-Store-Shards": String(shards) } : {}),
+    },
     body: JSON.stringify({ tags }),
   });
   const body = (await response.json()) as { expiration: number };
@@ -155,9 +170,9 @@ async function metadata(): Promise<any[]> {
   return (await metadataStub()).inspect();
 }
 
-async function metadataRowCount(table: string): Promise<number> {
+async function metadataRowCount(table: string, name = metadataName): Promise<number> {
   const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
-    name: metadataName,
+    name,
   });
   const [row] = await storage.exec(`SELECT COUNT(*) AS count FROM ${table}`);
   return row.count as number;
@@ -166,6 +181,32 @@ async function metadataRowCount(table: string): Promise<number> {
 async function r2Objects() {
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
   return bucket.list();
+}
+
+function metadataShardName(shards: number, index: number): string {
+  return `${metadataName}:metadata-shard:${index}-of-${shards}`;
+}
+
+async function cacheKeyShard(cacheKey: string, shards: number): Promise<number> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(cacheKey));
+  const prefix = [...new Uint8Array(digest).slice(0, 4)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return Number.parseInt(prefix, 16) % shards;
+}
+
+async function onePathPerShard(shards: number): Promise<string[]> {
+  const paths: Array<string | undefined> = Array.from({ length: shards });
+  let found = 0;
+  for (let candidate = 0; found < shards; candidate++) {
+    const path = `/sharded/${candidate}`;
+    const shard = await cacheKeyShard(path, shards);
+    if (paths[shard] === undefined) {
+      paths[shard] = path;
+      found++;
+    }
+  }
+  return paths as string[];
 }
 
 test("put and fetch use pathname plus query, excluding host", async () => {
@@ -203,6 +244,120 @@ test("put and fetch use pathname plus query, excluding host", async () => {
     "R2 custom metadata should remain tiny relative to the 8 KiB object metadata limit",
   );
   assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("opt-in shards distribute keys while preserving refresh, tag invalidation, and SWR", async () => {
+  const shards = 4;
+  const paths = await onePathPerShard(shards);
+
+  for (const [index, path] of paths.entries()) {
+    await put(path, `seed-${index}`, {
+      revalidator: {
+        body: `refreshed-${index}`,
+        cacheControl: "public, max-age=60",
+        cacheTags: ["sharded-tag"],
+      },
+      shards,
+      tags: ["sharded-tag"],
+    });
+  }
+
+  const namespace = await mf.getDurableObjectNamespace("CACHE_METADATA", "user-worker");
+  for (let index = 0; index < shards; index++) {
+    const entries = await (namespace.getByName(metadataShardName(shards, index)) as any).inspect();
+    assert.equal(entries.length, 1);
+  }
+
+  assert.deepEqual((await refreshSelectors({ tags: ["SHARDED-TAG"] }, shards)).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  for (const [index, path] of paths.entries()) {
+    assert.equal(await (await read(path, { shards })).text(), `refreshed-${index}`);
+  }
+
+  assert.deepEqual((await purge({ tags: ["sharded-tag"] }, shards)).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  const expirations = await Promise.all(
+    Array.from({ length: shards }, (_, index) =>
+      (namespace.getByName(metadataShardName(shards, index)) as any).getTagExpiration([
+        "sharded-tag",
+      ]),
+    ),
+  );
+  assert.ok(expirations[0] > 0);
+  assert.ok(expirations.every((expiration) => expiration === expirations[0]));
+  assert.equal(await tagExpiration(["sharded-tag"], shards), expirations[0]);
+  for (const path of paths) assert.equal((await read(path, { shards })).status, 404);
+
+  const swrPath = paths[0];
+  await put(swrPath, "stale", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { body: "fresh", cacheControl: "public, max-age=60", delayMs: 100 },
+    shards,
+  });
+  const stale = await Promise.all(Array.from({ length: 4 }, () => read(swrPath, { shards })));
+  assert.deepEqual(await Promise.all(stale.map((response) => response.text())), [
+    "stale",
+    "stale",
+    "stale",
+    "stale",
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(await (await read(swrPath, { shards })).text(), "fresh");
+});
+
+test("sharded refresh completes healthy shards before reporting reservation failures", async () => {
+  const shards = 4;
+  const paths = await onePathPerShard(shards);
+
+  for (const [index, path] of paths.entries()) {
+    await put(path, `seed-${index}`, {
+      revalidator: { body: `refreshed-${index}`, cacheControl: "public, max-age=60" },
+      shards,
+      tags: ["partial-refresh"],
+    });
+  }
+
+  const failedShard = 0;
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataShardName(shards, failedShard),
+  });
+  await storage.exec("DROP TABLE entries");
+
+  const result = await refreshSelectors({ tags: ["partial-refresh"] }, shards);
+  assert.equal(result.response.status, 500);
+  assert.deepEqual(result.json, { error: "One or more cache entries failed to refresh" });
+
+  for (let index = 1; index < shards; index++) {
+    assert.equal(await (await read(paths[index], { shards })).text(), `refreshed-${index}`);
+  }
+});
+
+test("a sharded tag purge fences an in-flight publication on its key shard", async () => {
+  const shards = 4;
+  const path = "/sharded/pending-tag";
+  const shardName = metadataShardName(shards, await cacheKeyShard(path, shards));
+  const write = put(path, "too-late", {
+    bodyDelayMs: 300,
+    shards,
+    tags: ["pending-sharded-tag"],
+  });
+
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects", shardName)) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("pending_objects", shardName), 1);
+
+  await purge({ tags: ["pending-sharded-tag"] }, shards);
+  assert.deepEqual((await write).json, {
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
+  });
+  assert.equal((await read(path, { shards })).status, 404);
 });
 
 test("null-body response statuses refill without an R2 body stream", async () => {

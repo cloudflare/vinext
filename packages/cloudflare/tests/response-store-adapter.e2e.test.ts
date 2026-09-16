@@ -16,6 +16,7 @@ const cacheConfigPath = path.join(
   root,
   "examples/response-store-demo/wrangler.response-store.jsonc",
 );
+const responseStoreShards = 4;
 
 let miniflare: Miniflare;
 let workerVersionId: string;
@@ -47,6 +48,20 @@ async function cacheStatus(pathname: string): Promise<{ body: string; status: st
   const response = await request(pathname);
   assert.equal(response.status, 200);
   return { body: await response.text(), status: response.headers.get("x-vinext-cache") };
+}
+
+async function metadataEntries(): Promise<unknown[][]> {
+  const namespace = await miniflare.getDurableObjectNamespace("CACHE_METADATA", "cache");
+  return Promise.all(
+    Array.from({ length: responseStoreShards }, async (_, index) => {
+      const metadata = namespace.getByName(
+        `${workerVersionId}:metadata-shard:${index}-of-${responseStoreShards}`,
+      );
+      const inspect = Reflect.get(metadata, "inspect");
+      assert.equal(typeof inspect, "function");
+      return (await Reflect.apply(inspect, metadata, [])) as unknown[];
+    }),
+  );
 }
 
 beforeEach(async () => {
@@ -172,6 +187,25 @@ describe("Cloudflare Workers Response Store adapter", () => {
       ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
       CacheMetadata: { type: "durable-object", storage: "sqlite" },
     });
+  });
+
+  test("passes adapter sharding into the Response Store", async () => {
+    await Promise.all(
+      Array.from({ length: 16 }, async (_, index) => {
+        const response = await request(`/cached/local?shard=${index}`);
+        assert.equal(response.status, 200);
+        await response.arrayBuffer();
+      }),
+    );
+
+    let counts: number[] = [];
+    for (let attempt = 0; attempt < 50; attempt++) {
+      counts = (await metadataEntries()).map((entries) => entries.length);
+      if (counts.reduce((total, count) => total + count, 0) >= 16) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(counts.reduce((total, count) => total + count, 0) >= 16);
+    assert.ok(counts.filter(Boolean).length > 1, JSON.stringify(counts));
   });
 
   test("validates staged-version warmup requests and exposes build identity", async () => {
@@ -308,11 +342,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
   });
 
   test("returns cold App pages before their bodies complete and publishes them", async () => {
-    const namespace = await miniflare.getDurableObjectNamespace("CACHE_METADATA", "cache");
-    const metadata = namespace.getByName(workerVersionId);
-    const inspect = Reflect.get(metadata, "inspect");
-    assert.equal(typeof inspect, "function");
-    const previousEntries = (await Reflect.apply(inspect, metadata, [])) as unknown[];
+    const previousEntryCount = (await metadataEntries()).flat().length;
     const key = `/streaming-cache?key=${crypto.randomUUID()}`;
     const startedAt = Date.now();
     const first = await request(key);
@@ -330,8 +360,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
 
     let published = false;
     for (let attempt = 0; attempt < 50; attempt++) {
-      const entries = (await Reflect.apply(inspect, metadata, [])) as unknown[];
-      if (entries.length > previousEntries.length) {
+      const entryCount = (await metadataEntries()).flat().length;
+      if (entryCount > previousEntryCount) {
         published = true;
         break;
       }
@@ -355,11 +385,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(second.headers.get("x-vinext-cache"), "HIT");
     assert.equal(await second.text(), await first.text());
 
-    const namespace = await miniflare.getDurableObjectNamespace("CACHE_METADATA", "cache");
-    const metadata = namespace.getByName(workerVersionId);
-    const inspect = Reflect.get(metadata, "inspect");
-    assert.equal(typeof inspect, "function");
-    const serialized = JSON.stringify(await Reflect.apply(inspect, metadata, []));
+    const serialized = JSON.stringify((await metadataEntries()).flat());
     assert.doesNotMatch(serialized, /first-secret|second-secret/);
   });
 

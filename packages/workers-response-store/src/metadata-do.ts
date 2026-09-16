@@ -64,7 +64,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     objectKeyRoot: string,
     createdAt: number,
   ): Promise<RefreshCandidate[]>;
-  purgeMatching(options: ResponseStorePurgeOptions): Promise<PurgedEntry[]>;
+  purgeMatching(options: ResponseStorePurgeOptions, invalidatedAt?: number): Promise<PurgedEntry[]>;
   inspect(): Promise<StoredEntry[]>;
 };
 
@@ -852,8 +852,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return candidates;
   }
 
-  async purgeMatching(options: ResponseStorePurgeOptions): Promise<PurgedEntry[]> {
-    const invalidatedAt = Date.now();
+  async purgeMatching(
+    options: ResponseStorePurgeOptions,
+    invalidatedAt = Date.now(),
+  ): Promise<PurgedEntry[]> {
     const matches = this.ctx.storage.transactionSync(() => {
       const matches = this.findMatchingEntryRows(options, true);
 

@@ -54,6 +54,7 @@ async function put(request: Request, store: WorkersResponseStore): Promise<Respo
 }
 
 const responseStore = createWorkersResponseStoreClient({
+  shards: 4,
   async regenerate(input, { env }): Promise<Response> {
     const options = (input.args[0] ?? {}) as RevalidatorOptions;
     if (options.delayMs) {

@@ -124,11 +124,12 @@ describe("generateCacheAdaptersModule", () => {
 
   it("advertises data-cache availability without importing it into the request stage", () => {
     const code = generateCdnCacheAdapterModule({
-      cdn: { adapter: "my-cdn-adapter" },
+      cdn: { adapter: "my-cdn-adapter", options: { shards: 16 } },
       data: { adapter: "my-data-adapter" },
     });
 
     expect(code).toContain("export const hasConfiguredDataCache = true;");
+    expect(code).toContain('export const configuredCdnCacheAdapterOptions = {"shards":16};');
     expect(code).toContain('from "my-cdn-adapter"');
     expect(code).not.toContain("my-data-adapter");
   });
@@ -452,6 +453,16 @@ describe("responseStoreAdapter builder", () => {
       }),
     ).toBe(
       `export default {};\nexport { CacheMetadata, ResponseStoreBinding, ResponseStoreRevalidator } from ${JSON.stringify(descriptor.cdn.output.entry)};\n`,
+    );
+  });
+
+  it("opts into metadata sharding explicitly", () => {
+    const descriptor = responseStoreAdapter({ shards: 16 });
+    expect(descriptor.cdn.options).toEqual({ shards: 16 });
+    expect(descriptor.data.options).toEqual({ shards: 16 });
+    expect(responseStoreAdapter().cdn.options).toBeUndefined();
+    expect(() => responseStoreAdapter({ shards: 1 })).toThrow(
+      "Workers Response Store shards must be an integer greater than 1",
     );
   });
 });

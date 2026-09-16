@@ -5,6 +5,7 @@ import {
   type SerializableValue,
   type WorkersResponseStoreEnv,
   type WorkersResponseStore,
+  type WorkersResponseStoreOptions,
 } from "@cloudflare/workers-response-store";
 
 type FixtureRevalidatorOptions = {
@@ -119,7 +120,7 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
   return json(result);
 }
 
-const responseStore = createWorkersResponseStore({
+const responseStoreOptions = {
   async regenerate(input, { env, ctx }): Promise<Response> {
     if (typeof Reflect.get(ctx.exports, "ResponseStoreBinding") !== "function") {
       throw new Error("ResponseStoreBinding is missing from the revalidation context");
@@ -162,7 +163,16 @@ const responseStore = createWorkersResponseStore({
 
     return new Response(body, { headers });
   },
-});
+} satisfies WorkersResponseStoreOptions<WorkersResponseStoreEnv>;
+
+const responseStore = createWorkersResponseStore(responseStoreOptions);
+const shardedResponseStore = createWorkersResponseStore({ ...responseStoreOptions, shards: 4 });
+
+function storeForRequest(request: Request): WorkersResponseStore {
+  return request.headers.get("X-Response-Store-Shards") === "4"
+    ? shardedResponseStore
+    : responseStore;
+}
 
 export const { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding } =
   responseStore.entrypoints;
@@ -170,6 +180,7 @@ export const { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding } =
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    const store = storeForRequest(request);
 
     try {
       if (request.method === "GET" && url.pathname === "/") {
@@ -184,26 +195,26 @@ export default {
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/cache")) {
-        return responseStore.fetch(cacheRequest(request, "/cache"));
+        return store.fetch(cacheRequest(request, "/cache"));
       }
 
       if (request.method === "PUT" && url.pathname.startsWith("/admin/put")) {
-        return handlePut(request, responseStore);
+        return handlePut(request, store);
       }
 
       if (request.method === "POST" && url.pathname === "/admin/refresh") {
         const options = (await request.json()) as ResponseStoreRefreshOptions;
-        return json(await responseStore.refresh(options));
+        return json(await store.refresh(options));
       }
 
       if (request.method === "POST" && url.pathname === "/admin/purge") {
         const options = (await request.json()) as ResponseStorePurgeOptions;
-        return json(await responseStore.purge(options));
+        return json(await store.purge(options));
       }
 
       if (request.method === "POST" && url.pathname === "/admin/tag-expiration") {
         const { tags } = (await request.json()) as { tags: string[] };
-        return json({ expiration: await responseStore.getTagExpiration(tags) });
+        return json({ expiration: await store.getTagExpiration(tags) });
       }
 
       if (request.method === "GET" && url.pathname === "/admin/stats") {

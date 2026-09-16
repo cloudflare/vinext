@@ -176,10 +176,15 @@ async function invokeResponseStage(
   );
 }
 
-export function createVinextResponseStoreOptions<
-  Env extends VinextResponseStoreEnv,
->(): WorkersResponseStoreOptions<Env> {
+export function createVinextResponseStoreOptions<Env extends VinextResponseStoreEnv>(
+  configuration?: Record<string, unknown>,
+): WorkersResponseStoreOptions<Env> {
+  const shards = configuration?.shards;
+  if (shards !== undefined && typeof shards !== "number") {
+    throw new TypeError("Workers Response Store shards must be a number");
+  }
   return {
+    ...(shards === undefined ? {} : { shards }),
     async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
       if (input.id === ROUTE_REVALIDATOR_ID) {
         const invocation = parseInvocation(input.args.at(-1));

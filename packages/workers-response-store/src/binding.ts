@@ -122,6 +122,7 @@ export type WorkersResponseStoreProps = {
   versionId?: string;
   locationHint?: DurableObjectLocationHint;
   revalidator?: RevalidationService;
+  shards?: number;
 };
 
 export type ResponseStoreServiceProps = Pick<WorkersResponseStoreProps, "locationHint">;
@@ -129,6 +130,7 @@ export type ResponseStoreServiceProps = Pick<WorkersResponseStoreProps, "locatio
 export type ResponseStoreServiceInvocation = {
   versionId: string;
   revalidator: RevalidationService;
+  shards?: number;
 };
 
 type ResponseStoreBindingFactory = WorkersResponseStore &
@@ -210,6 +212,13 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
 const pendingPuts = new Map<string, Promise<StoreResult>>();
 
+export function validateResponseStoreShards(shards: number | undefined): number | undefined {
+  if (shards !== undefined && (!Number.isSafeInteger(shards) || shards <= 1)) {
+    throw new TypeError("Workers Response Store shards must be an integer greater than 1");
+  }
+  return shards;
+}
+
 function* batches<T>(values: readonly T[], size: number): Generator<T[], void> {
   for (let offset = 0; offset < values.length; offset += size) {
     yield values.slice(offset, offset + size);
@@ -269,6 +278,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   WorkersResponseStoreEnv,
   WorkersResponseStoreProps
 > {
+  private readonly shardCount = validateResponseStoreShards(this.ctx.props?.shards) ?? 1;
+
   private getVersionId(): string {
     const versionId = this.ctx.props?.versionId ?? this.env.CF_VERSION_METADATA?.id;
     if (!versionId) {
@@ -278,13 +289,42 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return versionId;
   }
 
-  private getMetadata(): CacheMetadataStub {
+  private getMetadataShard(index: number): CacheMetadataStub {
     const locationHint = this.ctx.props?.locationHint;
+    const shards = this.shardCount;
+    const versionId = this.getVersionId();
+    const name = shards === 1 ? versionId : `${versionId}:metadata-shard:${index}-of-${shards}`;
 
     return this.env.CACHE_METADATA.getByName(
-      this.getVersionId(),
+      name,
       locationHint ? { locationHint } : undefined,
     ) as CacheMetadataStub;
+  }
+
+  private getMetadata(keyHash: string): CacheMetadataStub {
+    const shards = this.shardCount;
+    const index = shards === 1 ? 0 : Number.parseInt(keyHash.slice(0, 8), 16) % shards;
+    return this.getMetadataShard(index);
+  }
+
+  private getMetadataShards(): CacheMetadataStub[] {
+    return Array.from({ length: this.shardCount }, (_, index) => this.getMetadataShard(index));
+  }
+
+  private getTagMetadata(tags: string[]): CacheMetadataStub {
+    const shards = this.shardCount;
+    if (shards === 1) return this.getMetadataShard(0);
+
+    // Invalidations are replicated to every shard. Pick a stable replica per
+    // tag set so soft-tag reads do not all converge on shard 0.
+    let hash = 0x811c9dc5;
+    const normalized = [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))]
+      .sort()
+      .join("\0");
+    for (let index = 0; index < normalized.length; index++) {
+      hash = Math.imul(hash ^ normalized.charCodeAt(index), 0x01000193);
+    }
+    return this.getMetadataShard((hash >>> 0) % shards);
   }
 
   private async deriveCacheKey(request: Request): Promise<CacheKey> {
@@ -346,7 +386,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   private objectKeyRoot(): string {
-    return ["runtime-cache", this.getVersionId()].join("/");
+    const shards = this.shardCount;
+    return [
+      "runtime-cache",
+      this.getVersionId(),
+      ...(shards === 1 ? [] : [`shards-${shards}`]),
+    ].join("/");
   }
 
   private objectKeyPrefix(keyHash: string): string {
@@ -576,7 +621,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
   async fetch(request: Request): Promise<Response> {
     const { keyHash } = await this.deriveCacheKey(request);
-    const metadata = this.getMetadata();
+    const metadata = this.getMetadata(keyHash);
     const entry = await metadata.getEntry(keyHash);
     if (!entry) {
       return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
@@ -613,7 +658,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   getTagExpiration(tags: string[]): Promise<number> {
-    return this.getMetadata().getTagExpiration(tags);
+    return this.getTagMetadata(tags).getTagExpiration(tags);
   }
 
   async put(
@@ -621,11 +666,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     response: Response,
     options: ResponseStorePutOptions = {},
   ): Promise<ResponseStoreMutationResult> {
-    const metadata = this.getMetadata();
-
     const { cacheKey, keyHash } = await this.deriveCacheKey(request);
+    const metadata = this.getMetadata(keyHash);
     const cacheTags = cacheTagsFromResponse(response);
-    const pendingPutKey = `${this.getVersionId()}:${keyHash}:${Boolean(options.purgeExisting)}`;
+    const pendingPutKey = `${this.getVersionId()}:${this.shardCount}:${keyHash}:${Boolean(options.purgeExisting)}`;
     let reservation: WriteReservation | undefined;
     if (options.coalesce) {
       for (;;) {
@@ -697,14 +741,30 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       throw new TypeError("refresh() requires tags or pathPrefixes");
     }
 
-    const metadata = this.getMetadata();
-    const candidates = await metadata.reserveRefresh(options, this.objectKeyRoot(), Date.now());
+    const reserved = await Promise.allSettled(
+      this.getMetadataShards().map(async (metadata) => ({
+        candidates: await metadata.reserveRefresh(options, this.objectKeyRoot(), Date.now()),
+        metadata,
+      })),
+    );
+    const failures: unknown[] = reserved.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    const groups = reserved.flatMap((result) =>
+      result.status === "fulfilled" ? [result.value] : [],
+    );
+    const candidates = groups.flatMap(({ candidates, metadata }) =>
+      candidates.map((candidate) => ({ ...candidate, metadata })),
+    );
     if (candidates.length === 0) {
+      if (failures.length) {
+        throw new AggregateError(failures, "One or more cache entries failed to refresh");
+      }
       return { backingStoreUpdated: false, edgePurgeAccepted: false };
     }
 
     const settled = await Promise.allSettled(
-      candidates.map(async ({ entry, reservation }) => {
+      candidates.map(async ({ entry, metadata, reservation }) => {
         const result = await this.regenerateEntry(
           metadata,
           entry,
@@ -723,8 +783,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     );
 
     const refreshed: StoredEntry[] = [];
-    const failures: unknown[] = [];
-
     for (const result of settled) {
       if (result.status === "rejected") {
         failures.push(result.reason);
@@ -752,8 +810,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       throw new TypeError("purge() requires tags, pathPrefixes, or purgeEverything");
     }
 
-    const metadata = this.getMetadata();
-    const purged = await metadata.purgeMatching(options);
+    const invalidatedAt = Date.now();
+    const settled = await Promise.allSettled(
+      this.getMetadataShards().map((metadata) => metadata.purgeMatching(options, invalidatedAt)),
+    );
+    const failures = settled.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    const purged = settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
     let edgePurgeAccepted = true;
 
     if (options.purgeEverything) {
@@ -762,6 +826,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       edgePurgeAccepted = await this.purgeEdgeCacheByTags(
         purged.map((entry) => purgeTagForEntry(entry)),
       );
+    }
+
+    if (failures.length) {
+      throw new AggregateError(failures, "One or more metadata shards failed to purge");
     }
 
     return { backingStoreUpdated: true, edgePurgeAccepted };

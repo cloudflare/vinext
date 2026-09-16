@@ -508,6 +508,7 @@ declare module "virtual:vinext-cache-adapters" {
 }
 
 declare module "virtual:vinext-cdn-cache-adapter" {
+  export const configuredCdnCacheAdapterOptions: Record<string, unknown> | undefined;
   export const hasConfiguredDataCache: boolean;
   export function registerConfiguredCacheAdapters(env?: Record<string, unknown>): void;
 }

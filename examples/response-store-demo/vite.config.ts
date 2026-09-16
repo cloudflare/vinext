@@ -9,7 +9,10 @@ const outputRoot = selfContained ? ".vinext/response-store-self-contained" : "di
 export default defineConfig({
   plugins: [
     vinext({
-      cache: responseStoreAdapter({ mode: selfContained ? "self-contained" : "service-binding" }),
+      cache: responseStoreAdapter({
+        mode: selfContained ? "self-contained" : "service-binding",
+        shards: 4,
+      }),
       clientOutDir: `${outputRoot}/client`,
       rscOutDir: `${outputRoot}/server`,
       ssrOutDir: `${outputRoot}/server/ssr`,

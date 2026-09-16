@@ -17,7 +17,7 @@ Automatic loopback regeneration is attached only to replay-safe `GET` and `HEAD`
 ```ts
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
 
-vinext({ cache: responseStoreAdapter() });
+vinext({ cache: responseStoreAdapter({ shards: 4 }) });
 ```
 
 `wrangler.jsonc` is the application config. It supplies the `RESPONSE_STORE` service binding and `CF_VERSION_METADATA` metadata binding, but no KV, R2, Durable Object, or application-level Workers Cache. `wrangler.response-store.jsonc` is the independently deployable cache Worker config; it points directly at `@cloudflare/workers-response-store` and owns Workers Cache, R2, and SQLite Durable Object configuration. The two files are the source of truth and can use different names in each application, provided the service Worker name and application binding stay aligned.
