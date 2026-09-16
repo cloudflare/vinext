@@ -90,6 +90,7 @@ import {
   tracePagesData,
   tracePagesDocument,
   tracePagesDocumentStream,
+  tracePagesFindPageComponents,
 } from "./pages-execution-tracing.js";
 
 /**
@@ -841,9 +842,26 @@ export function createSSRHandler(
           }
         }
 
-        // Load the page module through Vite's SSR pipeline
-        // This gives us HMR and transform support for free
-        const pageModule = await importModule(runner, route.filePath);
+        // Match Next.js loadComponents: resolve the page, _app, and _document
+        // beneath one findPageComponents span before data methods run.
+        const { pageModule, AppComponent, appFilePath, DocumentComponent } =
+          await tracePagesFindPageComponents(route.pattern, async () => {
+            const pageModule = await importModule(runner, route.filePath);
+            const appFilePath = findFileWithExts(pagesDir, "_app", matcher);
+            const appModule = appFilePath ? await importModule(runner, appFilePath) : null;
+            const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
+            const docModule = docFilePath
+              ? ((await runner.import(docFilePath)) as Record<string, unknown>)
+              : null;
+            return {
+              pageModule,
+              // oxlint-disable-next-line typescript/no-explicit-any
+              AppComponent: (appModule?.default ?? null) as any,
+              appFilePath,
+              // oxlint-disable-next-line typescript/no-explicit-any
+              DocumentComponent: (docModule?.default ?? null) as any,
+            };
+          });
         isStaticPropsRender =
           typeof pageModule.getStaticProps === "function" &&
           typeof pageModule.getServerSideProps !== "function";
@@ -864,19 +882,6 @@ export function createSSRHandler(
             })
           : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const requestPreviewData = requestPreview.data;
-        // Try to load _app.tsx if it exists. This happens before the readiness
-        // predicate so app-level getInitialProps participates in the same
-        // initial Pages Router state as the client __NEXT_DATA__ payload.
-        // oxlint-disable-next-line typescript/no-explicit-any
-        let AppComponent: any = null;
-        // Import the resolved file (extension included): the module runner
-        // does not apply custom resolve.extensions (e.g. ".page.tsx" from
-        // pageExtensions) to extensionless ids.
-        const appFilePath = findFileWithExts(pagesDir, "_app", matcher);
-        if (appFilePath) {
-          const appModule = await importModule(runner, appFilePath);
-          AppComponent = appModule.default ?? null;
-        }
         const pagesNextData = {
           ...buildPagesReadinessNextData({
             pageModule,
@@ -1594,17 +1599,6 @@ export function createSSRHandler(
           },
         )}</script>`;
 
-        // Try to load custom _document.tsx (import the resolved file — the
-        // module runner does not apply custom resolve.extensions to
-        // extensionless ids)
-        const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
-        // oxlint-disable-next-line typescript/no-explicit-any
-        let DocumentComponent: any = null;
-        if (docFilePath) {
-          const docModule = (await runner.import(docFilePath)) as Record<string, unknown>;
-          DocumentComponent = docModule.default ?? null;
-        }
-
         // Expose page route patterns on window before hydration so the
         // next/navigation compat hooks can resolve a dynamic pattern from a
         // resolved path, matching the production client entry. Kept in its own
@@ -1820,8 +1814,7 @@ async function renderErrorPage(
   attachPagesRequestCookies(req);
   const matcher = fileMatcher ?? createValidFileMatcher();
   // Try specific status page first, then _error, then fallback
-  const candidates =
-    statusCode === 404 ? ["404", "_error"] : statusCode === 500 ? ["500", "_error"] : ["_error"];
+  const candidates = statusCode === 404 ? ["404", "_error"] : ["_error"];
 
   for (const candidate of candidates) {
     // oxlint-disable-next-line typescript/no-explicit-any
@@ -1832,23 +1825,29 @@ async function renderErrorPage(
       errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
       if (!errorAssetPath && candidate !== "_error") continue;
 
-      const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
+      const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
+      const { errorModule, AppComponent, appAssetPath, DocumentComponent } =
+        await tracePagesFindPageComponents(errorPage, async () => {
+          const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
+          const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
+          const appModule = appAssetPath ? await importModule(runner, appAssetPath) : null;
+          const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
+          const docModule = docFilePath ? await importModule(runner, docFilePath) : null;
+          return {
+            errorModule,
+            // oxlint-disable-next-line typescript/no-explicit-any
+            AppComponent: (appModule?.default ?? null) as any,
+            appAssetPath,
+            // oxlint-disable-next-line typescript/no-explicit-any
+            DocumentComponent: (docModule?.default ?? null) as any,
+          };
+        });
       candidateLoaded = true;
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
-      // Try to load _app.tsx to wrap the error page
-      // oxlint-disable-next-line typescript/no-explicit-any
-      let AppComponent: any = null;
-      const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
-      if (appAssetPath) {
-        const appModule = await importModule(runner, appAssetPath);
-        AppComponent = appModule.default ?? null;
-      }
-
       const createElement = React.createElement;
       res.statusCode = statusCode;
-      const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
       const errorRouter = {
         pathname: errorPage,
         query: parseQuery(url),
@@ -1952,16 +1951,6 @@ async function renderErrorPage(
           : appRenderProps;
       } else {
         renderProps = { pageProps: errorProps };
-      }
-
-      // Try custom _document (import the resolved file — the module runner
-      // does not apply custom resolve.extensions to extensionless ids)
-      // oxlint-disable-next-line typescript/no-explicit-any
-      let DocumentComponent: any = null;
-      const docFilePathErr = findFileWithExts(pagesDir, "_document", matcher);
-      if (docFilePathErr) {
-        const docModule = await importModule(runner, docFilePathErr);
-        DocumentComponent = docModule.default ?? null;
       }
 
       const createErrorElement = (
