@@ -6719,6 +6719,34 @@ describe("next/cache shim", () => {
 // ---------------------------------------------------------------------------
 
 describe('"use cache" runtime', () => {
+  it("runs cache misses in the matching work-unit scope", async () => {
+    const { registerCachedFunction, clearPrivateCache } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+    setCacheHandler(new MemoryCacheHandler());
+    clearPrivateCache();
+
+    const shared = registerCachedFunction(
+      async () => workUnitAsyncStorage.getStore()?.type,
+      "test:otel-work-unit-shared",
+    );
+    const privateCached = registerCachedFunction(
+      async () => workUnitAsyncStorage.getStore()?.type,
+      "test:otel-work-unit-private",
+      "private",
+    );
+
+    await expect(workUnitAsyncStorage.run({ type: "request" }, () => shared())).resolves.toBe(
+      "cache",
+    );
+    await expect(
+      workUnitAsyncStorage.run({ type: "request" }, () => privateCached()),
+    ).resolves.toBe("private-cache");
+  });
+
   it("registerCachedFunction caches return values", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -7604,20 +7632,25 @@ describe('"use cache" runtime', () => {
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
     setCacheHandler(new MemoryCacheHandler());
 
     let callCount = 0;
+    const workUnitTypes: Array<string | undefined> = [];
     const fn = async (_cb: () => void) => {
       callCount++;
+      workUnitTypes.push(workUnitAsyncStorage.getStore()?.type);
       return { called: true };
     };
 
     const cached = registerCachedFunction(fn, "test:fn-arg");
 
     // Functions can't be serialized — should execute every time (no caching)
-    await cached(() => {});
-    await cached(() => {});
+    await workUnitAsyncStorage.run({ type: "request" }, () => cached(() => {}));
+    await workUnitAsyncStorage.run({ type: "request" }, () => cached(() => {}));
     expect(callCount).toBe(2);
+    expect(workUnitTypes).toEqual(["cache", "cache"]);
   });
 
   it("produces different cache entries for Promise-augmented params with different values", async () => {
