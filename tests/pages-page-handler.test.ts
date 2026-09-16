@@ -1038,6 +1038,12 @@ describe("createPagesPageHandler — i18n redirect", () => {
 
 describe("createPagesPageHandler — internal error guard", () => {
   it("returns 500 text when __isInternalErrorRender is set and render throws", async () => {
+    let finishReporting!: () => void;
+    const reportingFinished = new Promise<void>((resolve) => {
+      finishReporting = resolve;
+    });
+    const onRequestError = vi.fn(() => reportingFinished);
+    globalThis.__VINEXT_onRequestErrorHandler__ = onRequestError;
     const errorRoute = makeRoute("/_error", makePageModule());
     const handler = createPagesPageHandler(
       makeOpts({
@@ -1053,13 +1059,27 @@ describe("createPagesPageHandler — internal error guard", () => {
         },
       }),
     );
-    const res = await handler(makeRequest("/_error"), "/_error", null, null, {
+    let responseSettled = false;
+    const responsePromise = handler(makeRequest("/_error"), "/_error", null, null, {
       __isInternalErrorRender: true,
       __forcedRoute: errorRoute,
+    }).then((response) => {
+      responseSettled = true;
+      return response;
     });
-    expect(res.status).toBe(500);
-    const body = await res.text();
-    expect(body).toBe("Internal Server Error");
+
+    try {
+      // Ported from Next.js: packages/next/src/server/route-modules/pages/pages-handler.ts
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+      await vi.waitFor(() => expect(onRequestError).toHaveBeenCalledOnce());
+      expect(responseSettled).toBe(false);
+      finishReporting();
+      const res = await responsePromise;
+      expect(res.status).toBe(500);
+      await expect(res.text()).resolves.toBe("Internal Server Error");
+    } finally {
+      delete globalThis.__VINEXT_onRequestErrorHandler__;
+    }
   });
 
   it("falls back to 500 text on data request even without __isInternalErrorRender", async () => {
