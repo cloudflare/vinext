@@ -12,14 +12,13 @@ import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
   createWorkerPrerenderDiscoveryContext,
-  createWorkerPrerenderReadinessResponse,
+  validateWorkerPrerenderReadiness,
 } from "./worker-prerender-discovery.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
 } from "./headers.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
-import { validateCdnRequest } from "./cache-control.js";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -44,10 +43,8 @@ async function handleSingleStageRequest(
     request,
     pagesRequestStagePrerenderSecret,
   );
-  const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
-  if (readinessResponse) {
-    return (await validateCdnRequest(request)) ?? readinessResponse;
-  }
+  const readinessResponse = await validateWorkerPrerenderReadiness(ctx, request);
+  if (readinessResponse) return readinessResponse;
 
   let finalize: ((response: Response, context: typeof ctx) => Promise<Response>) | undefined;
   if (request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {

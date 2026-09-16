@@ -75,7 +75,7 @@ import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js"
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import {
   createWorkerPrerenderDiscoveryContext,
-  createWorkerPrerenderReadinessResponse,
+  validateWorkerPrerenderReadiness,
 } from "./worker-prerender-discovery.js";
 
 // Precompute the path components used for `_next/static/*` 404 short-circuit
@@ -128,10 +128,8 @@ async function handleRequest(
   registerConfiguredCacheAdapters(env as Record<string, unknown> | undefined);
   const cdnCacheAdapter = getCdnCacheAdapter();
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
-  const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
-  if (readinessResponse) {
-    return (await validateCdnRequest(request)) ?? readinessResponse;
-  }
+  const readinessResponse = await validateWorkerPrerenderReadiness(ctx, request);
+  if (readinessResponse) return readinessResponse;
   let finalizeCacheabilityResponse:
     | ((response: Response, ctx: ExecutionContextLike) => Promise<Response>)
     | undefined;
