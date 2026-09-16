@@ -43,6 +43,7 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import { tracePagesData } from "./pages-execution-tracing.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -1332,17 +1333,19 @@ export async function resolvePagesPageData(
     }
     renderProps = { ...renderProps, __N_SSP: true };
     const { req, res, responsePromise } = getSharedReqRes();
-    const result = await options.pageModule.getServerSideProps({
-      params: userFacingParams,
-      req,
-      res,
-      query: options.query,
-      resolvedUrl: options.resolvedUrl ?? options.routeUrl,
-      locale: options.i18n.locale,
-      locales: options.i18n.locales,
-      defaultLocale: options.i18n.defaultLocale,
-      ...previewContext,
-    });
+    const result = await tracePagesData("getServerSideProps", options.routePattern, () =>
+      options.pageModule.getServerSideProps!({
+        params: userFacingParams,
+        req,
+        res,
+        query: options.query,
+        resolvedUrl: options.resolvedUrl ?? options.routeUrl,
+        locale: options.i18n.locale,
+        locales: options.i18n.locales,
+        defaultLocale: options.i18n.defaultLocale,
+        ...previewContext,
+      }),
+    );
 
     if (isResponseSent(res)) {
       return {
@@ -1430,13 +1433,15 @@ export async function resolvePagesPageData(
 
             let freshPageProps = freshAppResult.pageProps;
             let freshRenderProps = freshAppResult.renderProps;
-            const freshResult = await options.pageModule.getStaticProps?.({
-              params: userFacingParams,
-              locale: options.i18n.locale,
-              locales: options.i18n.locales,
-              defaultLocale: options.i18n.defaultLocale,
-              revalidateReason: "stale",
-            });
+            const freshResult = await tracePagesData("getStaticProps", options.routePattern, () =>
+              options.pageModule.getStaticProps?.({
+                params: userFacingParams,
+                locale: options.i18n.locale,
+                locales: options.i18n.locales,
+                defaultLocale: options.i18n.defaultLocale,
+                revalidateReason: "stale",
+              }),
+            );
             if (!freshResult) return;
             assertPages404DoesNotReturnNotFound(options.routePattern, freshResult);
 
@@ -1696,18 +1701,20 @@ export async function resolvePagesPageData(
     }
     const result = generatedPageData
       ? null
-      : await options.pageModule.getStaticProps({
-          params: userFacingParams,
-          locale: options.i18n.locale,
-          locales: options.i18n.locales,
-          defaultLocale: options.i18n.defaultLocale,
-          ...previewContext,
-          revalidateReason: options.isOnDemandRevalidate
-            ? "on-demand"
-            : options.isBuildTimePrerendering
-              ? "build"
-              : "stale",
-        });
+      : await tracePagesData("getStaticProps", options.routePattern, () =>
+          options.pageModule.getStaticProps!({
+            params: userFacingParams,
+            locale: options.i18n.locale,
+            locales: options.i18n.locales,
+            defaultLocale: options.i18n.defaultLocale,
+            ...previewContext,
+            revalidateReason: options.isOnDemandRevalidate
+              ? "on-demand"
+              : options.isBuildTimePrerendering
+                ? "build"
+                : "stale",
+          }),
+        );
     assertPages404DoesNotReturnNotFound(options.routePattern, result);
 
     if (generatedPageData) {
