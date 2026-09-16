@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   filterClientTraceMetadata,
   getClientTraceMetadataHTML,
+  markClientTraceMetadataBlock,
   renderClientTraceMetadataTags,
+  stripClientTraceMetadataBlock,
   type ClientTraceDataEntry,
 } from "../packages/vinext/src/server/client-trace-metadata.js";
 
@@ -45,6 +47,19 @@ describe("client trace metadata: filterClientTraceMetadata", () => {
   it("excludes keys that are not in the allow-list", () => {
     const result = filterClientTraceMetadata(entries, ["my-test-key-1"]);
     expect(result).toEqual([{ key: "my-test-key-1", value: "my-test-value-1" }]);
+  });
+});
+
+describe("client trace metadata cache marker", () => {
+  it("removes only the marked framework-injected block", () => {
+    const authored = '<meta name="baggage" content="application-policy"/>';
+    const injected = renderClientTraceMetadataTags([
+      { key: "baggage", value: "tenant=alice" },
+      { key: "sentry-trace", value: "abc-def-1" },
+    ]);
+    const html = `<head>${authored}${markClientTraceMetadataBlock(injected, "private")}</head>`;
+
+    expect(stripClientTraceMetadataBlock(html, "private")).toBe(`<head>${authored}</head>`);
   });
 });
 
@@ -307,5 +322,19 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
     });
 
     expect(getClientTraceMetadataHTML(["my-test-key-1"])).toBe("");
+  });
+
+  it("does not emit trace metadata for runtime static generation", () => {
+    const inject = vi.fn();
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      context: {
+        active: () => ({ getValue: () => ({}) }),
+        with: (_context: unknown, fn: () => unknown) => fn(),
+      },
+      propagation: { inject },
+    };
+
+    expect(getClientTraceMetadataHTML(["my-test-key-1"], true)).toBe("");
+    expect(inject).not.toHaveBeenCalled();
   });
 });

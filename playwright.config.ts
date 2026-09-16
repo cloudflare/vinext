@@ -198,7 +198,7 @@ const projectServers = {
   "cloudflare-sentry-app-workers-cache": {
     testDir: "./tests/e2e",
     testMatch: ["**/cloudflare-sentry-app/**/*.spec.ts"],
-    grep: /cached RSC payload|response start for an App Page cache hit/,
+    grep: /cached RSC payload|response start for an App Page cache hit|trace metadata from static HTML/,
     use: { baseURL: "http://localhost:4210" },
     server: {
       command:

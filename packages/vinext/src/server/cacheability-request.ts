@@ -593,6 +593,7 @@ function responseWithCachePolicy(
   outcome: RouteCacheabilityOutcome | null,
 ): Response {
   const headers = new Headers(response.headers);
+  if (typeof body === "string") headers.delete("Content-Length");
   applyCdnResponseHeaders(
     headers,
     outcome?.cacheable === true && outcome.cacheControl
@@ -604,6 +605,16 @@ function responseWithCachePolicy(
     status: response.status,
     statusText: response.statusText,
   });
+}
+
+async function stripSharedHtmlClientTraceMetadata(
+  body: ReadableStream<Uint8Array> | null,
+  marker: string,
+): Promise<string | null> {
+  if (!body) return null;
+  const html = await new Response(body).text();
+  const { stripClientTraceMetadataBlock } = await import("./client-trace-metadata.js");
+  return stripClientTraceMetadataBlock(html, marker);
 }
 
 function inferFinalAppPageCacheability(
@@ -878,7 +889,13 @@ async function finalizeWorkerCacheabilityAdmission(
     }
     return responseWithCachePolicy(response, captured.body, null);
   }
-  return responseWithCachePolicy(response, captured.body, outcome);
+  return responseWithCachePolicy(
+    response,
+    representation === "html" && state.clientTraceMetadataMarker
+      ? await stripSharedHtmlClientTraceMetadata(captured.body, state.clientTraceMetadataMarker)
+      : captured.body,
+    outcome,
+  );
 }
 
 export async function finalizeWorkerCacheabilityResponse(
