@@ -25,7 +25,7 @@ function createPagesBuild(): string {
   return root;
 }
 
-function createAppBuild(): string {
+function createAppBuild(options?: { instrumentationFailure?: boolean }): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-prod-server-app-logs-"));
   const distDir = path.join(root, "dist");
   const clientDir = path.join(distDir, "client");
@@ -39,6 +39,9 @@ function createAppBuild(): string {
       "export default async function handler() {",
       "  return new Response('ok', { headers: { 'content-type': 'text/html' } });",
       "}",
+      ...(options?.instrumentationFailure
+        ? ["export function __ensureInstrumentation() { throw new Error('register failed'); }"]
+        : []),
       "",
     ].join("\n"),
   );
@@ -164,5 +167,28 @@ describe("startProdServer logging", () => {
     expect(messages).toEqual([
       `[vinext] Production server for prerendering running at http://127.0.0.1:${port}`,
     ]);
+  });
+
+  it("returns 500 when App Router instrumentation registration fails", async () => {
+    const root = createAppBuild({ instrumentationFailure: true });
+    roots.push(root);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server, port } = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir: path.join(root, "dist"),
+      noCompression: true,
+      silent: true,
+    });
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/`);
+      expect(response.status).toBe(500);
+      await expect(response.text()).resolves.toBe("Internal Server Error");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

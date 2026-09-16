@@ -4162,7 +4162,7 @@ describe("instrumentation.ts support", () => {
       }),
     };
 
-    await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
+    await runInstrumentation(mockRunner, "/fake/register-instrumentation.ts");
 
     expect(registerCalled).toBe(true);
     expect(getOnRequestErrorHandler()).toBe(mockOnRequestError);
@@ -4183,7 +4183,7 @@ describe("instrumentation.ts support", () => {
       }),
     };
 
-    await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
+    await runInstrumentation(mockRunner, "/fake/report-error-instrumentation.ts");
 
     const testError = new Error("test error");
     await reportRequestError(
@@ -4826,6 +4826,58 @@ describe("Set-Cookie header preservation in prod-server", () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers["Vary"]).toBeUndefined();
     expect(Buffer.concat(chunks).toString()).toBe("encoded");
+  });
+
+  it("sendWebResponse resolves after the response body finishes", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+    let release!: () => void;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("first"));
+          release = () => {
+            controller.enqueue(new TextEncoder().encode("last"));
+            controller.close();
+          };
+        },
+      }),
+    );
+    const res = new CapturingNodeResponse();
+    res.resume();
+    let resolved = false;
+
+    const sending = sendWebResponse(
+      response,
+      { method: "GET", headers: {} } as any,
+      res as any,
+      false,
+    ).then(() => {
+      resolved = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(resolved).toBe(false);
+    release();
+    await sending;
+    expect(resolved).toBe(true);
+  });
+
+  it("keeps the Node request boundary open for an asynchronously piped response", async () => {
+    const { waitForNodeResponseCompletion } =
+      await import("../packages/vinext/src/server/prod-server.js");
+    const res = new CapturingNodeResponse();
+    res.resume();
+    let resolved = false;
+
+    const waiting = waitForNodeResponseCompletion(res as any).then(() => {
+      resolved = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(resolved).toBe(false);
+
+    res.end("static body");
+    await waiting;
+    expect(resolved).toBe(true);
   });
 
   it("sendWebResponse varies identity responses by Accept-Encoding", async () => {

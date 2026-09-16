@@ -49,6 +49,11 @@ const noopSpan: FrameworkTracingBackendSpan = {
 
 /** Standard OpenTelemetry backend using the provider registered by the app. */
 export const openTelemetryTracingIntegration: FrameworkTracingIntegration = {
+  getActiveSpan() {
+    const api = getOpenTelemetryApi();
+    const span = api?.trace.getSpan(api.context.active());
+    return span ? backendSpan(span) : undefined;
+  },
   id: "opentelemetry",
   enterSpan<T>(
     descriptor: ResolvedFrameworkSpanDescriptor,
