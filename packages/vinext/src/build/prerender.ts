@@ -182,7 +182,7 @@ export type PrerenderRouteResult =
   | {
       route: string;
       status: "skipped";
-      reason: "ssr" | "dynamic" | "no-static-params" | "api" | "internal";
+      reason: "ssr" | "dynamic" | "no-static-params" | "empty-static-params" | "api" | "internal";
     }
   | {
       route: string;
@@ -1372,8 +1372,13 @@ export async function prerenderApp({
           }
 
           if (paramSets.length === 0) {
-            // Empty params — skip with warning
-            results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            // No concrete artifact is emitted, but the route remains SSG and
+            // may be generated on demand at runtime.
+            results.push({
+              route: route.pattern,
+              status: "skipped",
+              reason: "empty-static-params",
+            });
             continue;
           }
 
