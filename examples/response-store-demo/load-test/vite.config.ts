@@ -6,7 +6,7 @@ import vinext from "vinext";
 export default defineConfig({
   plugins: [
     vinext({
-      cache: responseStoreAdapter(),
+      cache: responseStoreAdapter({ shards: 16 }),
       clientOutDir: "dist/client",
       rscOutDir: "dist/server",
       ssrOutDir: "dist/server/ssr",
