@@ -1139,6 +1139,32 @@ test("retention sweep removes orphaned candidates without deleting active R2 obj
   assert.deepEqual(await stub.listExpiredPendingObjects(1, finishedKeys.length), []);
 });
 
+test("retention cleanup uses the persistent active-object index", async () => {
+  await put("/cleanup-index", "active");
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const plan = await storage.exec(`
+    EXPLAIN QUERY PLAN
+    SELECT pending_objects.object_key
+    FROM pending_objects
+    LEFT JOIN entries
+      ON entries.object_key = pending_objects.object_key AND entries.tombstoned = 0
+    ORDER BY pending_objects.created_at
+    LIMIT 101
+  `);
+  const details = plan.map(({ detail }) => detail).filter((detail) => typeof detail === "string");
+
+  assert.ok(
+    details.some((detail) => detail.includes("COVERING INDEX entries_active_object_key")),
+    JSON.stringify(plan),
+  );
+  assert.ok(
+    details.every((detail) => !detail.includes("AUTOMATIC")),
+    JSON.stringify(plan),
+  );
+});
+
 test("retention cleanup fences a body recreated after its first delete", async () => {
   const stub = await metadataStub();
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
