@@ -86,7 +86,11 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
-import { tracePagesData } from "./pages-execution-tracing.js";
+import {
+  tracePagesData,
+  tracePagesDocument,
+  tracePagesDocumentStream,
+} from "./pages-execution-tracing.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -265,7 +269,8 @@ function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
  * deferring them reduces TTFB and lets the browser start parsing the
  * shell sooner).
  */
-async function streamPageToResponse(
+async function streamPageToResponseImpl(
+  routePattern: string,
   res: ServerResponse,
   element: React.ReactElement,
   options: {
@@ -311,6 +316,7 @@ async function streamPageToResponse(
     bufferBodyBeforeHeaders?: boolean;
     /** Keep a response Content-Type set before rendering a notFound page. */
     preserveExistingContentType?: boolean;
+    onDocumentBody?: (stream: ReadableStream<Uint8Array>) => void;
   },
 ): Promise<void> {
   const {
@@ -331,6 +337,7 @@ async function streamPageToResponse(
     crossOrigin,
     bufferBodyBeforeHeaders = false,
     preserveExistingContentType = false,
+    onDocumentBody,
   } = options;
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -340,47 +347,50 @@ async function streamPageToResponse(
   // streaming path stays as the default for the common case. The contract
   // (including `withScriptNonce` and `styles` rendering) lives in the shared
   // helper so dev and prod stay in lockstep.
-  const documentRenderPage = await runDocumentRenderPage({
-    DocumentComponent,
-    enhancePageElement,
-    renderToReadableStream,
-    renderStylesToString: renderToStringAsync,
-    scriptNonce,
-    context: documentContext,
-  });
-  if (res.headersSent || res.writableEnded) return;
-
-  let bodyStream: ReadableStream<Uint8Array>;
-  if (documentRenderPage.status === "rendered") {
-    const synthesised = documentRenderPage.bodyHtml;
-    bodyStream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(synthesised));
-        controller.close();
-      },
+  const renderDocument = async () => {
+    const documentRenderPage = await runDocumentRenderPage({
+      DocumentComponent,
+      enhancePageElement,
+      renderToReadableStream,
+      renderStylesToString: renderToStringAsync,
+      scriptNonce,
+      context: documentContext,
     });
-  } else {
-    // Start the React body stream FIRST — the promise resolves when the
-    // shell is ready (synchronous content outside Suspense boundaries).
-    // This triggers the render which populates <Head> tags.
-    bodyStream = await renderToReadableStream(element);
-  }
+    if (res.headersSent || res.writableEnded) return { documentRenderPage, responseSent: true };
 
-  // Fold any head tags returned by `_document.getInitialProps()` into the same
-  // dedupe pipeline as user `next/head` tags. Matches Next.js's `_document`
-  // contract. `runDocumentRenderPage` already invokes `getInitialProps` for the
-  // renderPage contract, so reuse the head it surfaced
-  // rather than calling it a second time. Only the `skipped` path (no override,
-  // or no `enhancePageElement` wired) falls back to the standalone helper, which
-  // itself skips the unmodified default from vinext's `next/document` shim —
-  // extending Document without overriding the method inherits the base
-  // implementation, and the default returns no head tags, so dispatching it on
-  // every render is wasted work.
-  if (documentRenderPage.status === "skipped") {
-    await callDocumentGetInitialProps(DocumentComponent, setDocumentInitialHead);
-  } else {
-    setDocumentInitialHead?.(documentRenderPage.head);
-  }
+    let bodyStream: ReadableStream<Uint8Array>;
+    if (documentRenderPage.status === "rendered") {
+      const synthesised = documentRenderPage.bodyHtml;
+      bodyStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(synthesised));
+          controller.close();
+        },
+      });
+    } else {
+      // Start the body render before collecting its head state, then let the
+      // tracing adapter keep the span alive without delaying the response.
+      bodyStream = await renderToReadableStream(element);
+    }
+
+    if (documentRenderPage.status === "skipped") {
+      await callDocumentGetInitialProps(DocumentComponent, setDocumentInitialHead);
+    } else {
+      setDocumentInitialHead?.(documentRenderPage.head);
+    }
+
+    return {
+      bodyStream,
+      documentRenderPage,
+      responseSent: false,
+      waitForBody: documentRenderPage.status === "skipped",
+    };
+  };
+  const documentResult = await tracePagesDocumentStream(routePattern, renderDocument);
+  if (documentResult.responseSent) return;
+  const { bodyStream, documentRenderPage } = documentResult;
+  if (!bodyStream) throw new Error("Pages document render did not produce a body stream");
+  onDocumentBody?.(bodyStream);
 
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
@@ -553,6 +563,23 @@ async function streamPageToResponse(
 
   // Write the document suffix (closing tags, scripts)
   res.end(suffix);
+}
+
+async function streamPageToResponse(
+  ...args: Parameters<typeof streamPageToResponseImpl>
+): Promise<void> {
+  let bodyStream: ReadableStream<Uint8Array> | undefined;
+  try {
+    await streamPageToResponseImpl(args[0], args[1], args[2], {
+      ...args[3],
+      onDocumentBody(stream) {
+        bodyStream = stream;
+      },
+    });
+  } catch (error) {
+    if (bodyStream && !bodyStream.locked) await bodyStream.cancel(error).catch(() => {});
+    throw error;
+  }
 }
 
 /**
@@ -1619,7 +1646,7 @@ export function createSSRHandler(
         // Stream the page using progressive SSR.
         // The shell (layouts, non-suspended content) arrives immediately.
         // Suspense content streams in as it resolves.
-        await streamPageToResponse(res, withScriptNonce(element, scriptNonce), {
+        await streamPageToResponse(route.pattern, res, withScriptNonce(element, scriptNonce), {
           url,
           server,
           fontHeadHTML,
@@ -2004,7 +2031,7 @@ async function renderErrorPage(
       const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
       if (statusCode === 404) stripDevPagesNotFoundFramingHeaders(res);
       if (DocumentComponent) {
-        await streamPageToResponse(res, element, {
+        await streamPageToResponse(errorPage, res, element, {
           url,
           server,
           fontHeadHTML: "",
@@ -2042,7 +2069,7 @@ async function renderErrorPage(
           preserveExistingContentType: statusCode === 404,
         });
       } else {
-        const bodyHtml = await renderToStringAsync(element);
+        const bodyHtml = await tracePagesDocument(errorPage, () => renderToStringAsync(element));
         const traceMetaHTML = getClientTraceMetadataHTML(context.clientTraceMetadata);
         const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
         const protectAssetTags = (assetHtml: string): string =>

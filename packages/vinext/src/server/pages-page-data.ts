@@ -43,7 +43,7 @@ import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
-import { tracePagesData } from "./pages-execution-tracing.js";
+import { tracePagesData, tracePagesDocument } from "./pages-execution-tracing.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -1481,21 +1481,23 @@ export async function resolvePagesPageData(
             }
 
             if (cachedValue?.kind === "PAGES" && !cachedValue.generatedFromDataRequest) {
-              const freshHtml = await renderPagesIsrHtml({
-                buildId: options.buildId,
-                cachedHtml: cachedValue.html,
-                createPageElement: options.createPageElement,
-                i18n: options.i18n,
-                pageProps: freshPageProps,
-                props: freshRenderProps,
-                params: options.params,
-                renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
-                collectIsrHeadHTML: options.collectIsrHeadHTML,
-                routePattern: options.routePattern,
-                safeJsonStringify: options.safeJsonStringify,
-                nextData: options.nextData,
-                vinext: options.vinext,
-              });
+              const freshHtml = await tracePagesDocument(options.routePattern, () =>
+                renderPagesIsrHtml({
+                  buildId: options.buildId,
+                  cachedHtml: cachedValue.html,
+                  createPageElement: options.createPageElement,
+                  i18n: options.i18n,
+                  pageProps: freshPageProps,
+                  props: freshRenderProps,
+                  params: options.params,
+                  renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
+                  collectIsrHeadHTML: options.collectIsrHeadHTML,
+                  routePattern: options.routePattern,
+                  safeJsonStringify: options.safeJsonStringify,
+                  nextData: options.nextData,
+                  vinext: options.vinext,
+                }),
+              );
               await options.isrSet(
                 cacheKey,
                 buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
