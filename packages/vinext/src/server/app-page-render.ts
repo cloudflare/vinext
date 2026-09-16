@@ -103,7 +103,13 @@ type AppPageRequestCacheLife = {
   stale?: number;
 };
 
-type RenderAppPageLifecycleOptions = {
+type AppPageRenderableElement = ReactNode | Readonly<Record<string, ReactNode>>;
+
+type PreparedAppPageElement =
+  | { element: AppPageRenderableElement; response?: never }
+  | { element?: never; response: Response };
+
+type RenderAppPageLifecycleOptionsBase = {
   basePath?: string;
   bypassInterceptionContextCache?: boolean;
   /**
@@ -212,8 +218,17 @@ type RenderAppPageLifecycleOptions = {
   // Per-layout observation tracker. Constructed in dispatch, consumed by the
   // skip transport planner to reject layouts that are unsafe for static reuse.
   layoutParamAccess?: AppLayoutParamAccessTracker;
-  element: ReactNode | Readonly<Record<string, ReactNode>>;
   classification?: LayoutClassificationOptions | null;
+};
+
+type RenderAppPageLifecycleOptions = RenderAppPageLifecycleOptionsBase &
+  (
+    | { element: AppPageRenderableElement; prepareElement?: never }
+    | { element?: never; prepareElement: () => Promise<PreparedAppPageElement> }
+  );
+
+type ResolvedRenderAppPageLifecycleOptions = RenderAppPageLifecycleOptionsBase & {
+  element: AppPageRenderableElement;
 };
 
 function buildResponseTiming(
@@ -642,7 +657,10 @@ function wrapRscResponseForDevErrorReporting(
 export async function renderAppPageLifecycle(
   options: RenderAppPageLifecycleOptions,
 ): Promise<Response> {
-  if (options.isRscRequest) return renderAppPageLifecycleImpl(options);
+  if (options.isRscRequest) {
+    const prepared = await prepareAppPageElement(options);
+    return prepared instanceof Response ? prepared : renderAppPageLifecycleImpl(prepared);
+  }
 
   const operation = options.traceOperation ?? (options.isPrerender ? "prerender" : "render");
   let resolveResponse!: (response: Response) => void;
@@ -654,9 +672,14 @@ export async function renderAppPageLifecycle(
   });
   const tracedRender = traceAppPageRender(options.routePattern, operation, async (renderSpan) => {
     try {
+      const prepared = await prepareAppPageElement(options);
+      if (prepared instanceof Response) {
+        resolveResponse(prepared);
+        return;
+      }
       const response = await renderAppPageLifecycleImpl(
         {
-          ...options,
+          ...prepared,
           onRenderComplete(completion) {
             renderCompletion = completion;
             void completion.catch(() => {});
@@ -676,8 +699,16 @@ export async function renderAppPageLifecycle(
   return responsePromise;
 }
 
-async function renderAppPageLifecycleImpl(
+async function prepareAppPageElement(
   options: RenderAppPageLifecycleOptions,
+): Promise<Response | ResolvedRenderAppPageLifecycleOptions> {
+  if (!options.prepareElement) return options;
+  const prepared = await options.prepareElement();
+  return prepared.response ?? { ...options, element: prepared.element };
+}
+
+async function renderAppPageLifecycleImpl(
+  options: ResolvedRenderAppPageLifecycleOptions,
   renderSpan?: FrameworkSpan,
 ): Promise<Response> {
   // Request dynamic state is consumptive, but both cache finalization and the
