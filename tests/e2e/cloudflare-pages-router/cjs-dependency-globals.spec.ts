@@ -17,10 +17,18 @@ test.describe("Pages Router bundled CommonJS globals on Cloudflare Workers", () 
     const response = await page.goto(`${BASE}/cjs-dependency-globals`);
     expect(response?.status()).toBe(200);
 
-    await expect(page.locator("#runtime-path")).toHaveText("/bundle/runtime.js");
-    await expect(page.locator("#project-runtime-path")).toHaveText("/bundle/project-runtime.js");
-    await expect(page.locator("#local-runtime-path")).toHaveText("/bundle/local-runtime.js");
-    await expect(page.locator("#concatenated-path")).toHaveText("/bundle/concatenated.js");
+    // instrumentation.ts completes before the lazy user-module graph evaluates,
+    // so these dependencies correctly report their emitted lazy-chunk identity.
+    await expect(page.locator("#runtime-path")).toHaveText("/bundle/_next/static/runtime.js");
+    await expect(page.locator("#project-runtime-path")).toHaveText(
+      "/bundle/_next/static/project-runtime.js",
+    );
+    await expect(page.locator("#local-runtime-path")).toHaveText(
+      "/bundle/_next/static/local-runtime.js",
+    );
+    await expect(page.locator("#concatenated-path")).toHaveText(
+      "/bundle/_next/static/concatenated.js",
+    );
     await expectFunctionalIdentity(page);
   });
 

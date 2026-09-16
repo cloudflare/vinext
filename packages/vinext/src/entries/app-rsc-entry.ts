@@ -150,6 +150,8 @@ const routePatternPath = resolveEntryPath("../routing/route-pattern.js", import.
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
 type AppRouterConfig = {
+  /** Register the application's direct OpenTelemetry ESM loader in Node builds. */
+  nodeOpenTelemetryLoader?: boolean;
   actionOwners?: Record<string, string[]> | null;
   redirects?: NextRedirect[];
   rewrites?: {
@@ -326,18 +328,21 @@ import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stri
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 import { clearAppRequestStageContext as __clearRequestContext, setAppRequestStageNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestStageContextPath)};
 import { matchRoutePattern as __matchRoutePattern } from ${JSON.stringify(routePatternPath)};
-${
-  middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
-import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};`
-    : ""
-}
+${middlewarePath ? `import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};` : ""}
 ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};
-export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))}); }`
+export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))}); }
+await __ensureInstrumentation();`
     : "export function __ensureInstrumentation() {}"
+}
+${
+  middlewarePath
+    ? instrumentationPath
+      ? `const middlewareModule = await import(${JSON.stringify(toSlash(middlewarePath))});`
+      : `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};`
+    : ""
 }
 ${
   hasPagesDir
@@ -581,6 +586,7 @@ export function generateRscEntry(
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
   };
   const manifestCode = buildAppRscManifestCode({
+    deferEagerImports: Boolean(instrumentationPath),
     routes,
     metadataRoutes,
     globalErrorPath,
@@ -649,17 +655,30 @@ import { getRequestExecutionContext as __getRequestExecutionContext } from "vine
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${
-  middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
-import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};`
+  config?.nodeOpenTelemetryLoader
+    ? `import { register as __registerOpenTelemetryLoader } from "node:module";
+const __openTelemetryLoaderKey = Symbol.for("vinext.openTelemetryLoader");
+if (process.env.VINEXT_PRERENDER !== "1" && !globalThis[__openTelemetryLoaderKey]) {
+  globalThis[__openTelemetryLoaderKey] = true;
+  __registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs", import.meta.url);
+}`
     : ""
 }
+${middlewarePath ? `import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};` : ""}
 ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};
-export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))}); }`
+export function __ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))}); }
+await __ensureInstrumentation();`
     : "export function __ensureInstrumentation() {}"
+}
+${
+  middlewarePath
+    ? instrumentationPath
+      ? `const middlewareModule = await import(${JSON.stringify(toSlash(middlewarePath))});`
+      : `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};`
+    : ""
 }
 ${
   responseStageOnly
