@@ -20,8 +20,7 @@
  *    context restored.
  *
  * This extension is intentionally a no-op when:
- *  - `@opentelemetry/api` is not installed (graceful degradation).
- *  - No OTel tracer provider has been registered (provider is the noop provider).
+ *  - No compatible OpenTelemetry API has registered its process-wide global.
  *  - `workUnitAsyncStorage` has no active store (non-render contexts).
  *
  * References:
@@ -30,6 +29,7 @@
  */
 
 import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-storage";
+import { getOpenTelemetryApi, type OpenTelemetryTracer } from "./opentelemetry-api.js";
 
 // Track which provider objects have already been extended so that if the
 // registered provider is swapped out (e.g. during testing or HMR), the new
@@ -37,6 +37,7 @@ import { workUnitAsyncStorage } from "vinext/shims/internal/work-unit-async-stor
 // per-tracer deduplication and is safer than a module-level boolean which
 // would leave a replaced provider unwrapped forever.
 const extendedProviders = new WeakSet<object>();
+const extendedTracers = new WeakSet<object>();
 
 // Symbol used by registerCachedFunction (cache-runtime.ts) to tag "use cache"
 // wrapper functions.  Keeping the check inline here avoids importing the full
@@ -58,122 +59,91 @@ function isUseCacheFn(fn: unknown): boolean {
  * Safe to call multiple times — subsequent calls are no-ops once the provider
  * has been wrapped.
  *
- * Must only be called in Node.js environments (not Edge runtime).
+ * Safe in Node.js and Workers because it consumes only the application's
+ * standard OpenTelemetry global registry.
  */
 export function extendTracerProviderForCacheComponents(): void {
-  let api:
-    | {
-        trace: {
-          getTracerProvider(): {
-            getTracer: (...args: unknown[]) => unknown;
-          };
-        };
-      }
-    | undefined;
-
-  try {
-    // Use globalThis.require so the call is safe in ESM Worker bundles where
-    // bare `require` is undefined.  This matches the pattern used by
-    // client-trace-metadata.ts for the same optional dependency.
-    const req = (globalThis as { require?: (id: string) => unknown }).require;
-    if (typeof req === "function") {
-      api = req("@opentelemetry/api") as typeof api;
-    }
-  } catch {
-    // @opentelemetry/api is not installed — OTel is not in use; no-op.
-    return;
-  }
-
+  const api = getOpenTelemetryApi();
   if (!api) return;
 
   const provider = api.trace.getTracerProvider();
-  if (!provider || typeof provider.getTracer !== "function") return;
 
   // Already extended this exact provider object — skip.
-  if (extendedProviders.has(provider as object)) return;
-  extendedProviders.add(provider as object);
+  if (extendedProviders.has(provider)) return;
+  extendedProviders.add(provider);
 
   const originalGetTracer = provider.getTracer.bind(provider);
-  // Track wrapped tracer instances so we never double-wrap.
-  const wrappedTracers = new WeakSet<object>();
+  provider.getTracer = (...args) => instrumentTracer(originalGetTracer(...args));
 
-  provider.getTracer = (...args: unknown[]) => {
+  if (typeof provider.getDelegateTracer === "function") {
+    const originalGetDelegateTracer = provider.getDelegateTracer.bind(provider);
+    provider.getDelegateTracer = (...args: unknown[]) => {
+      const tracer = originalGetDelegateTracer(...args);
+      return tracer ? instrumentTracer(tracer) : undefined;
+    };
+  }
+}
+
+function instrumentTracer(tracer: OpenTelemetryTracer): OpenTelemetryTracer {
+  if (extendedTracers.has(tracer)) return tracer;
+
+  type MutableTracer = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tracer = (originalGetTracer as (...a: unknown[]) => any)(...args);
-    if (!tracer || wrappedTracers.has(tracer as object)) {
-      return tracer;
-    }
-
-    const originalStartSpan = tracer.startSpan;
-    if (typeof originalStartSpan === "function") {
-      tracer.startSpan = (...startSpanArgs: unknown[]) =>
-        workUnitAsyncStorage.exit(() =>
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (originalStartSpan as (...a: unknown[]) => any).apply(tracer, startSpanArgs),
-        );
-    }
-
-    const originalStartActiveSpan = tracer.startActiveSpan;
-    if (typeof originalStartActiveSpan === "function") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      tracer.startActiveSpan = (...startActiveSpanArgs: any[]) => {
-        const workUnitStore = workUnitAsyncStorage.getStore();
-        if (!workUnitStore) {
-          // Not inside a work unit context — forward unchanged.
-          return (originalStartActiveSpan as (...a: unknown[]) => unknown).apply(
-            tracer,
-            startActiveSpanArgs,
-          );
-        }
-
-        // Determine which positional argument is the user's callback.
-        // startActiveSpan has these overloads:
-        //   startActiveSpan(name, fn)
-        //   startActiveSpan(name, options, fn)
-        //   startActiveSpan(name, options, context, fn)
-        let fnIdx = 0;
-        if (startActiveSpanArgs.length === 2 && typeof startActiveSpanArgs[1] === "function") {
-          fnIdx = 1;
-        } else if (
-          startActiveSpanArgs.length === 3 &&
-          typeof startActiveSpanArgs[2] === "function"
-        ) {
-          fnIdx = 2;
-        } else if (startActiveSpanArgs.length > 3 && typeof startActiveSpanArgs[3] === "function") {
-          fnIdx = 3;
-        }
-
-        if (fnIdx > 0) {
-          const originalFn = startActiveSpanArgs[fnIdx];
-          // Warn when the user passes a "use cache" function directly to
-          // startActiveSpan.  A cached function receives a Span argument on
-          // every invocation which means the argument changes every time the
-          // span is created, leading to cache misses on every call.  This
-          // mirrors the upstream warning in instrumentation-node-extensions.ts.
-          if (isUseCacheFn(originalFn)) {
-            console.error(
-              "A Cache Function (`use cache`) was passed to startActiveSpan which means it will receive a Span argument with a possibly random ID on every invocation leading to cache misses. Provide a wrapping function around the Cache Function that does not forward the Span argument to avoid this issue.",
-            );
-          }
-          // Re-enter the work unit store inside the callback so that the
-          // callback runs with the correct request context (e.g. headers(),
-          // cookies(), io() work correctly inside the span body).
-          startActiveSpanArgs[fnIdx] = (...cbArgs: unknown[]) =>
-            workUnitAsyncStorage.run(workUnitStore, originalFn, ...cbArgs);
-        }
-
-        // Exit the work unit context when creating the span so the span ID is
-        // generated fresh and not tainted by the prerender/cache work unit.
-        return workUnitAsyncStorage.exit(() =>
-          (originalStartActiveSpan as (...a: unknown[]) => unknown).apply(
-            tracer,
-            startActiveSpanArgs,
-          ),
-        );
-      };
-    }
-
-    wrappedTracers.add(tracer as object);
-    return tracer;
+    startActiveSpan: (...args: any[]) => any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    startSpan: (...args: any[]) => any;
   };
+  const mutableTracer = tracer as unknown as MutableTracer;
+  const originalStartSpan = mutableTracer.startSpan.bind(mutableTracer);
+  mutableTracer.startSpan = (...startSpanArgs: unknown[]) =>
+    workUnitAsyncStorage.exit(() => originalStartSpan(...startSpanArgs));
+
+  const originalStartActiveSpan = mutableTracer.startActiveSpan.bind(mutableTracer);
+  mutableTracer.startActiveSpan = (...startActiveSpanArgs: unknown[]) => {
+    const workUnitStore = workUnitAsyncStorage.getStore();
+    if (!workUnitStore) {
+      // Not inside a work unit context — forward unchanged.
+      return originalStartActiveSpan(...startActiveSpanArgs);
+    }
+
+    // Determine which positional argument is the user's callback.
+    // startActiveSpan has these overloads:
+    //   startActiveSpan(name, fn)
+    //   startActiveSpan(name, options, fn)
+    //   startActiveSpan(name, options, context, fn)
+    let fnIdx = 0;
+    if (startActiveSpanArgs.length === 2 && typeof startActiveSpanArgs[1] === "function") {
+      fnIdx = 1;
+    } else if (startActiveSpanArgs.length === 3 && typeof startActiveSpanArgs[2] === "function") {
+      fnIdx = 2;
+    } else if (startActiveSpanArgs.length > 3 && typeof startActiveSpanArgs[3] === "function") {
+      fnIdx = 3;
+    }
+
+    if (fnIdx > 0) {
+      const originalFn = startActiveSpanArgs[fnIdx] as (...args: unknown[]) => unknown;
+      // Warn when the user passes a "use cache" function directly to
+      // startActiveSpan.  A cached function receives a Span argument on
+      // every invocation which means the argument changes every time the
+      // span is created, leading to cache misses on every call.  This
+      // mirrors the upstream warning in instrumentation-node-extensions.ts.
+      if (isUseCacheFn(originalFn)) {
+        console.error(
+          "A Cache Function (`use cache`) was passed to startActiveSpan which means it will receive a Span argument with a possibly random ID on every invocation leading to cache misses. Provide a wrapping function around the Cache Function that does not forward the Span argument to avoid this issue.",
+        );
+      }
+      // Re-enter the work unit store inside the callback so that the
+      // callback runs with the correct request context (e.g. headers(),
+      // cookies(), io() work correctly inside the span body).
+      startActiveSpanArgs[fnIdx] = (...cbArgs: unknown[]) =>
+        workUnitAsyncStorage.run(workUnitStore, originalFn, ...cbArgs);
+    }
+
+    // Exit the work unit context when creating the span so the span ID is
+    // generated fresh and not tainted by the prerender/cache work unit.
+    return workUnitAsyncStorage.exit(() => originalStartActiveSpan(...startActiveSpanArgs));
+  };
+
+  extendedTracers.add(tracer);
+  return tracer;
 }
