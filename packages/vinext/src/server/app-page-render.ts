@@ -89,6 +89,7 @@ import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
+import { traceResponseStartWithCompletion } from "./response-start-tracing.js";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -674,22 +675,26 @@ export async function renderAppPageLifecycle(
     try {
       const prepared = await prepareAppPageElement(options);
       if (prepared instanceof Response) {
-        resolveResponse(prepared);
+        const traced = traceResponseStartWithCompletion(prepared);
+        resolveResponse(traced.response);
+        await traced.started;
         return;
       }
-      const response = await renderAppPageLifecycleImpl(
-        {
-          ...prepared,
-          onRenderComplete(completion) {
-            renderCompletion = completion;
-            void completion.catch(() => {});
-            options.onRenderComplete?.(completion);
+      const traced = traceResponseStartWithCompletion(
+        await renderAppPageLifecycleImpl(
+          {
+            ...prepared,
+            onRenderComplete(completion) {
+              renderCompletion = completion;
+              void completion.catch(() => {});
+              options.onRenderComplete?.(completion);
+            },
           },
-        },
-        renderSpan,
+          renderSpan,
+        ),
       );
-      resolveResponse(response);
-      await renderCompletion;
+      resolveResponse(traced.response);
+      await Promise.all([renderCompletion, traced.started]);
     } catch (error) {
       rejectResponse(error);
       throw error;

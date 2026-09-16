@@ -13,6 +13,7 @@ import type {
 } from "vinext/server/multi-stage";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
+import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import {
   applyRscCompatibilityIdHeader,
@@ -288,7 +289,11 @@ function isResponseStoreMiss(response: Response): boolean {
   return response.status === 404 && response.headers.get("X-Workers-Response-Store") === "MISS";
 }
 
-function publicResponse(response: Response, cacheStatus?: string): Response {
+function publicResponse(
+  response: Response,
+  cacheStatus: string,
+  responseStageProps: unknown,
+): Response {
   const headers = new Headers(response.headers);
   const publicCacheStatus =
     cacheStatus === "HIT" && headers.get("CF-Cache-Status") === "UPDATING"
@@ -319,11 +324,15 @@ function publicResponse(response: Response, cacheStatus?: string): Response {
   if (!cacheControl || !isNonCacheableCacheControl(cacheControl)) {
     headers.set("Cache-Control", "private, max-age=0, must-revalidate");
   }
-  return new Response(response.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
+  return traceCachedResponseStart(
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+    publicCacheStatus ?? null,
+    responseStageProps,
+  );
 }
 
 let responseStore: WorkersResponseStore;
@@ -354,6 +363,7 @@ const handler = {
         return publicResponse(
           await invokeResponseStage(stageRequest, props, env, ctx, "bypass"),
           "BYPASS",
+          props,
         );
       }
 
@@ -385,12 +395,12 @@ const handler = {
       const key = await cacheRequest(stageRequest, props);
       const stored = await responseStore.fetch(key);
       if (!isResponseStoreMiss(stored)) {
-        if (!rscKey) return publicResponse(stored, "HIT");
+        if (!rscKey) return publicResponse(stored, "HIT", props);
 
         const storedRsc = await responseStore.fetch(rscKey);
         if (!isResponseStoreMiss(storedRsc)) {
           await storedRsc.body?.cancel();
-          return publicResponse(stored, "HIT");
+          return publicResponse(stored, "HIT", props);
         }
         await Promise.all([stored.body?.cancel(), storedRsc.body?.cancel()]);
       }
@@ -423,11 +433,11 @@ const handler = {
               );
             }),
         );
-        return publicResponse(rendered, "MISS");
+        return publicResponse(rendered, "MISS", props);
       }
       if (!isCacheable(rendered)) {
         void capture?.rscData?.catch(() => {});
-        return publicResponse(rendered, "BYPASS");
+        return publicResponse(rendered, "BYPASS", props);
       }
       if (rscSeed && !capture?.rscData) {
         await rendered.body?.cancel();
@@ -464,7 +474,7 @@ const handler = {
           },
         );
       }
-      return publicResponse(new Response(foreground, rendered), "MISS");
+      return publicResponse(new Response(foreground, rendered), "MISS", props);
     };
 
     const { handleRequestStage } = await loadVinextRequestStage<
