@@ -639,6 +639,63 @@ describe("KVCacheHandler", () => {
       expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: 300, stale: 30 });
     });
 
+    it("round-trips revalidate: Infinity without invalid-shape errors (static pages)", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await handler.set(
+          "static-infinity",
+          {
+            kind: "APP_PAGE",
+            html: "<div>static</div>",
+            rscData: undefined,
+            headers: undefined,
+            postponed: undefined,
+            status: 200,
+          },
+          { cacheControl: { revalidate: Infinity } },
+        );
+
+        // JSON cannot carry Infinity — the adapter must encode it explicitly.
+        const raw = store.get("cache:static-infinity")!;
+        expect(raw).toBeDefined();
+        expect(JSON.parse(raw).cacheControl.revalidate).toBeNull();
+
+        const hit = await handler.get("static-infinity");
+        expect(hit).not.toBeNull();
+        expect(hit?.cacheControl).toEqual({ revalidate: Infinity });
+        expect(hit?.value?.kind).toBe("APP_PAGE");
+        expect(consoleError).not.toHaveBeenCalledWith(
+          expect.stringContaining("Invalid cache entry shape"),
+          expect.anything(),
+        );
+        expect(kv.delete).not.toHaveBeenCalledWith("cache:static-infinity");
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
+    it("heals legacy beta.9/10 entries already stored with revalidate: null", async () => {
+      store.set(
+        "cache:legacy-infinity",
+        JSON.stringify({
+          value: {
+            kind: "PAGES",
+            html: "<html>legacy</html>",
+            pageData: {},
+            status: 200,
+          },
+          tags: [],
+          lastModified: Date.now(),
+          revalidateAt: null,
+          cacheControl: { revalidate: null },
+        }),
+      );
+
+      const hit = await handler.get("legacy-infinity");
+      expect(hit).not.toBeNull();
+      expect(hit?.cacheControl).toEqual({ revalidate: Infinity });
+    });
+
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);
