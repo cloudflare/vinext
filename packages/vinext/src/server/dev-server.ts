@@ -86,6 +86,7 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import { tracePagesData } from "./pages-execution-tracing.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -1100,7 +1101,9 @@ export function createSSRHandler(
             defaultLocale: currentDefaultLocale,
             ...previewContext,
           };
-          const result = await pageModule.getServerSideProps(context);
+          const result = await tracePagesData("getServerSideProps", route.pattern, () =>
+            pageModule.getServerSideProps!(context),
+          );
           // If gSSP called res.end() directly (short-circuit pattern),
           // the response is already sent. Do not continue rendering.
           // Note: middleware headers are already on `res` (middleware runs
@@ -1258,7 +1261,9 @@ export function createSSRHandler(
             return;
           }
 
-          const result = await pageModule.getStaticProps(context);
+          const result = await tracePagesData("getStaticProps", route.pattern, () =>
+            pageModule.getStaticProps!(context),
+          );
           const routePattern = patternToNextFormat(route.pattern);
           assertPages404DoesNotReturnNotFound(routePattern, result);
           if (result) {
@@ -1849,12 +1854,14 @@ async function renderErrorPage(
         const isOnDemandRevalidate = isOnDemandRevalidateRequest(
           req.headers[PRERENDER_REVALIDATE_HEADER],
         );
-        const staticResult = await errorModule.getStaticProps({
-          locale: context.locale,
-          locales: context.locales,
-          defaultLocale: context.defaultLocale,
-          revalidateReason: isOnDemandRevalidate ? "on-demand" : "stale",
-        });
+        const staticResult = await tracePagesData("getStaticProps", errorPage, () =>
+          errorModule.getStaticProps({
+            locale: context.locale,
+            locales: context.locales,
+            defaultLocale: context.defaultLocale,
+            revalidateReason: isOnDemandRevalidate ? "on-demand" : "stale",
+          }),
+        );
         assertPages404DoesNotReturnNotFound(errorPage, staticResult);
         if (staticResult?.redirect) {
           applyDevPagesCacheHeaders(

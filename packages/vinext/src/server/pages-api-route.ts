@@ -29,6 +29,7 @@ import {
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
 import { NextRequest } from "vinext/shims/server";
+import { tracePagesApiHandler } from "./pages-execution-tracing.js";
 
 type PagesApiRouteConfig = {
   runtime?: string;
@@ -158,6 +159,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
 
   try {
     if (isEdgeApiRouteModule(route.module)) {
+      const handler = route.module.default;
       // Next.js wraps the incoming Request in a NextRequest before invoking
       // edge API handlers, so handlers can use `req.nextUrl.searchParams`,
       // `req.cookies`, etc. (Cf. NextRequestHint in next/src/server/web/adapter.ts.)
@@ -173,7 +175,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
             }
           : undefined,
       );
-      const response = await route.module.default(nextRequest);
+      const response = await tracePagesApiHandler(route.pattern, () => handler(nextRequest));
       if (response instanceof Response) {
         const finalized = finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker");
         if (
@@ -284,7 +286,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     // handlers attached. A synchronous throw may destroy the response bridge,
     // which rejects responsePromise as well as the handler completion.
     const handlerCompletion = Promise.resolve()
-      .then(() => handler(req, res))
+      .then(() => tracePagesApiHandler(route.pattern, () => handler(req, res)))
       .then(() => ({ type: "handler" as const }), destroyAfterHandlerError);
 
     // A real Node ServerResponse is consumed by the socket while the API
