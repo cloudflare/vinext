@@ -14,7 +14,7 @@ import {
 
 describe("pages-data-route", () => {
   it.each([204, 205, 304])(
-    "emits no body or representation headers for status %i",
+    "emits no body while preserving response headers for status %i",
     async (status) => {
       const response = buildNextDataPropsJsonResponse(
         { pageProps: { message: "must not be serialized" } },
@@ -33,10 +33,10 @@ describe("pages-data-route", () => {
 
       expect(response.status).toBe(status);
       expect(await response.text()).toBe("");
-      expect(response.headers.get("content-encoding")).toBeNull();
-      expect(response.headers.get("content-length")).toBeNull();
-      expect(response.headers.get("content-type")).toBeNull();
-      expect(response.headers.get("transfer-encoding")).toBeNull();
+      expect(response.headers.get("content-encoding")).toBe("gzip");
+      expect(response.headers.get("content-length")).toBe("32");
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(response.headers.get("transfer-encoding")).toBe("chunked");
       expect(response.headers.get("x-custom")).toBe("preserved");
     },
   );

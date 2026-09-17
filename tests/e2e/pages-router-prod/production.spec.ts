@@ -61,14 +61,7 @@ test.describe("Pages Router Production Build", () => {
       );
       expect(noBodyResponse.status()).toBe(status);
       expect(await noBodyResponse.body()).toHaveLength(0);
-      for (const name of [
-        "content-encoding",
-        "content-length",
-        "content-type",
-        "transfer-encoding",
-      ]) {
-        expect(noBodyResponse.headers()[name]).toBeUndefined();
-      }
+      expect(noBodyResponse.headers()["content-type"]).toBe("application/json");
     }
   });
 

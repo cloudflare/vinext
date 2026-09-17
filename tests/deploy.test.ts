@@ -1765,6 +1765,30 @@ describe("readPagesRouterEntrySource", () => {
     }
   });
 
+  it("mergeHeaders preserves headers on already-bodyless responses", async () => {
+    for (const status of [204, 205, 304]) {
+      const response = new Response(null, {
+        status,
+        headers: {
+          "content-encoding": "gzip",
+          "content-length": "32",
+          "content-type": "application/json",
+          "transfer-encoding": "chunked",
+        },
+      });
+
+      const merged = mergeHeaders(response, { "x-custom": "from-middleware" });
+
+      expect(merged.status).toBe(status);
+      expect(merged.headers.get("content-encoding")).toBe("gzip");
+      expect(merged.headers.get("content-length")).toBe("32");
+      expect(merged.headers.get("content-type")).toBe("application/json");
+      expect(merged.headers.get("transfer-encoding")).toBe("chunked");
+      expect(merged.headers.get("x-custom")).toBe("from-middleware");
+      expect(await merged.text()).toBe("");
+    }
+  });
+
   it("mergeHeaders cancels discarded body streams for no-body statuses", async () => {
     let started = false;
     let canceled = false;

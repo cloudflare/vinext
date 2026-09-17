@@ -144,19 +144,11 @@ export function buildNextDataPropsJsonResponse(
   const body = safeJsonStringify(props);
   const headers = new Headers(init?.headers);
   const status = init?.status ?? 200;
+  headers.set("Content-Type", "application/json");
   if (NO_BODY_RESPONSE_STATUSES.has(status)) {
-    for (const name of [
-      "content-encoding",
-      "content-length",
-      "content-type",
-      "transfer-encoding",
-    ]) {
-      headers.delete(name);
-    }
     return new Response(null, { status, statusText: init?.statusText, headers });
   }
 
-  headers.set("Content-Type", "application/json");
   return new Response(body, {
     status,
     statusText: init?.statusText,
