@@ -639,6 +639,44 @@ describe("KVCacheHandler", () => {
       expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: 300, stale: 30 });
     });
 
+    it("round-trips the Infinity revalidate used by static pages", async () => {
+      await handler.set(
+        "static-infinity",
+        {
+          kind: "APP_PAGE",
+          html: "<div>static</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: Infinity } },
+      );
+
+      const stored = JSON.parse(store.get("cache:static-infinity")!);
+      expect(stored).toMatchObject({
+        revalidateAt: null,
+        cacheControl: { revalidate: null },
+      });
+      expect(kv.put).toHaveBeenCalledWith("cache:static-infinity", expect.any(String), {
+        expirationTtl: 30 * 24 * 3600,
+        metadata: { tags: [] },
+      });
+      expect((await handler.get("static-infinity"))?.cacheControl).toEqual({
+        revalidate: Infinity,
+      });
+      expect(kv.delete).not.toHaveBeenCalled();
+    });
+
+    it.each([NaN, -Infinity])(
+      "does not encode invalid revalidate %s as Infinity",
+      async (value) => {
+        await handler.set("invalid-revalidate", null, { cacheControl: { revalidate: value } });
+
+        expect(kv.put).not.toHaveBeenCalled();
+      },
+    );
+
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);
