@@ -95,57 +95,9 @@ type KVCacheEntry = {
   revalidateAt: number | null;
   /** Absolute timestamp (ms) after which the entry must block on fresh render. */
   expireAt?: number | null;
-  /**
-   * Effective cache-control policy used for response headers.
-   *
-   * JSON cannot carry `Infinity`, so non-finite values (static pages use
-   * `revalidate: Infinity`) are encoded as `null` on write and restored to
-   * `Infinity` on read. `null` never meant anything else here — the previous
-   * validator rejected it — so old beta.9/10 rows already stored as `null`
-   * heal to `Infinity` automatically.
-   */
-  cacheControl?: SerializedCacheControlMetadata;
+  /** Effective cache-control policy used for response headers. */
+  cacheControl?: CacheControlMetadata;
 };
-
-/** On-wire form of {@link CacheControlMetadata} with `Infinity` encoded as `null`. */
-type SerializedCacheControlMetadata = {
-  revalidate: number | null;
-  expire?: number | null;
-  stale?: number | null;
-};
-
-/** Encode a required finite number for JSON storage (`Infinity`/`NaN` → `null`). */
-function encodeFiniteNumber(value: number): number | null {
-  return Number.isFinite(value) ? value : null;
-}
-
-/** Encode an optional finite number (`undefined` stays absent, non-finite → `null`). */
-function encodeOptionalFiniteNumber(value: number | undefined): number | null | undefined {
-  return value === undefined ? undefined : encodeFiniteNumber(value);
-}
-
-/** Restore an encoded required number (`null` → `Infinity`). */
-function restoreInfiniteNumber(value: number | null): number {
-  return value === null ? Infinity : value;
-}
-
-/** Restore an encoded optional number (`null` → `Infinity`, `undefined` stays absent). */
-function restoreOptionalInfiniteNumber(value: number | null | undefined): number | undefined {
-  if (value === undefined) return undefined;
-  return value === null ? Infinity : value;
-}
-
-/** Restore stored cache-control to its in-memory form (`null` → `Infinity`). */
-function restoreCacheControl(stored: SerializedCacheControlMetadata): CacheControlMetadata {
-  const restored: CacheControlMetadata = {
-    revalidate: restoreInfiniteNumber(stored.revalidate),
-  };
-  const expire = restoreOptionalInfiniteNumber(stored.expire);
-  if (expire !== undefined) restored.expire = expire;
-  const stale = restoreOptionalInfiniteNumber(stored.stale);
-  if (stale !== undefined) restored.stale = stale;
-  return restored;
-}
 
 /** Prefix used by revalidatePath for path-based tags. */
 const PATH_TAG_PREFIX = "_N_T_";
@@ -389,23 +341,19 @@ export class KVCacheHandler implements CacheHandler {
       (entry.revalidateAt !== null && now > entry.revalidateAt) ||
       (requestedRevalidateAt !== null && now > requestedRevalidateAt);
 
-    const restoredCacheControl = entry.cacheControl
-      ? restoreCacheControl(entry.cacheControl)
-      : undefined;
-
     if (isStale) {
       return {
         lastModified: entry.lastModified,
         value: restoredValue,
         cacheState: "stale",
-        cacheControl: restoredCacheControl,
+        cacheControl: entry.cacheControl,
       };
     }
 
     return {
       lastModified: entry.lastModified,
       value: restoredValue,
-      cacheControl: restoredCacheControl,
+      cacheControl: entry.cacheControl,
     };
   }
 
@@ -521,32 +469,31 @@ export class KVCacheHandler implements CacheHandler {
       effectiveRevalidate = data.revalidate;
     }
     if (effectiveRevalidate === 0) return Promise.resolve();
+    if (
+      typeof effectiveRevalidate === "number" &&
+      !Number.isFinite(effectiveRevalidate) &&
+      effectiveRevalidate !== Infinity
+    ) {
+      return Promise.resolve();
+    }
 
     const now = Date.now();
-    const rawRevalidateAt =
+    const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000
         : null;
-    // JSON.stringify(Infinity) becomes null, so encode non-finite timestamps
-    // explicitly. `null` already means "never stale/expire" to readers.
-    const revalidateAt = rawRevalidateAt === null ? null : encodeFiniteNumber(rawRevalidateAt);
-    const rawExpireAt =
+    const expireAt =
       typeof effectiveExpire === "number" && effectiveExpire > 0
         ? now + effectiveExpire * 1000
         : null;
-    const expireAt = rawExpireAt === null ? null : encodeFiniteNumber(rawExpireAt);
-    const cacheControl: SerializedCacheControlMetadata | undefined =
+    const cacheControl: CacheControlMetadata | undefined =
       typeof effectiveRevalidate === "number"
         ? {
-            revalidate: encodeFiniteNumber(effectiveRevalidate),
-            ...(effectiveExpire === undefined
-              ? {}
-              : { expire: encodeOptionalFiniteNumber(effectiveExpire) }),
+            revalidate: effectiveRevalidate,
+            ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
             // Client-router reuse bound — must survive KV so warm hits replay
             // the producing render's claim (see CacheControlMetadata.stale).
-            ...(effectiveStale === undefined
-              ? {}
-              : { stale: encodeOptionalFiniteNumber(effectiveStale) }),
+            ...(effectiveStale === undefined ? {} : { stale: effectiveStale }),
           }
         : undefined;
 
@@ -576,11 +523,7 @@ export class KVCacheHandler implements CacheHandler {
     // Background regen overwrites the key with a fresh entry + new revalidateAt,
     // so active pages always have something to serve. Entries only disappear after
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
-    // Use the pre-encoding timestamp so `Infinity` (static pages, encoded as
-    // `null` above) still gets the standard 30-day KV TTL instead of becoming
-    // immortal storage.
-    const expirationTtl: number | undefined =
-      rawRevalidateAt !== null ? this.ttlSeconds : undefined;
+    const expirationTtl: number | undefined = revalidateAt !== null ? this.ttlSeconds : undefined;
 
     // Store tags in KV metadata so revalidateByPathPrefix can discover them
     // via kv.list() without fetching entry values. Cloudflare KV limits
@@ -748,24 +691,15 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   }
   if (obj.cacheControl !== undefined) {
     if (!isUnknownRecord(obj.cacheControl)) return null;
-    // `null` is the JSON encoding of `Infinity` (static pages). Accept it so
-    // entries written by set() — including beta.9/10 rows already stored as
-    // `null` — validate and restore instead of being deleted as corrupt.
+    // `null` is the JSON encoding of `Infinity` used by static pages.
     if (typeof obj.cacheControl.revalidate !== "number" && obj.cacheControl.revalidate !== null) {
       return null;
     }
-    if (
-      obj.cacheControl.expire !== undefined &&
-      obj.cacheControl.expire !== null &&
-      typeof obj.cacheControl.expire !== "number"
-    ) {
+    if (obj.cacheControl.revalidate === null) obj.cacheControl.revalidate = Infinity;
+    if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
       return null;
     }
-    if (
-      obj.cacheControl.stale !== undefined &&
-      obj.cacheControl.stale !== null &&
-      typeof obj.cacheControl.stale !== "number"
-    ) {
+    if (obj.cacheControl.stale !== undefined && typeof obj.cacheControl.stale !== "number") {
       return null;
     }
   }
