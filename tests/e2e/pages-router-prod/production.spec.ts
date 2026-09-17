@@ -32,6 +32,30 @@ test.describe("Pages Router Production Build", () => {
     );
   });
 
+  test("preserves gSSP status and cookies on the data route", async ({ request }) => {
+    // Next.js keeps the mutable response passed to getServerSideProps when it
+    // sends the data response:
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/route-modules/pages/pages-handler.ts#L647-L754
+    const response = await request.get(`${BASE}/_next/data/test-build-id/ssr-headers.json`);
+
+    expect.soft(response.status()).toBe(201);
+    expect(response.headers()["content-type"]).toContain("application/json");
+    expect
+      .soft(
+        response
+          .headersArray()
+          .filter(({ name }) => name.toLowerCase() === "set-cookie")
+          .map(({ value }) => value),
+      )
+      .toEqual([
+        "gssp_token=abc123; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/; HttpOnly",
+        "gssp_notice=reauthenticate; Path=/",
+      ]);
+    expect(await response.json()).toMatchObject({
+      pageProps: { greeting: "Headers were set" },
+    });
+  });
+
   test("__NEXT_DATA__ is present with page props", async ({ page }) => {
     await page.goto(`${BASE}/ssr`);
     const nextData = await page.evaluate(() => (window as any).__NEXT_DATA__);
