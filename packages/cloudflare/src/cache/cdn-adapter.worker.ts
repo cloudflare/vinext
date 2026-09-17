@@ -305,6 +305,11 @@ async function createCacheFacingRequest(
   return new Request(url, {
     ...init,
     method: request.method,
+    // A cache-fronted fetch follows redirects by default; following would
+    // re-enter the entrypoint for the redirect target while the invocation
+    // props still describe the original URL, re-rendering the redirect
+    // source forever. Return redirects to the caller instead.
+    redirect: "manual",
   });
 }
 
