@@ -1446,6 +1446,9 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
 });
 
 describe("parseBodySizeLimit", () => {
+  const configError =
+    "Server Actions Size Limit must be a valid number or filesize format larger than 1MB";
+
   it("parses megabyte strings", () => {
     expect(parseBodySizeLimit("10mb")).toBe(10 * 1024 * 1024);
     expect(parseBodySizeLimit("1mb")).toBe(1 * 1024 * 1024);
@@ -1476,30 +1479,38 @@ describe("parseBodySizeLimit", () => {
     expect(parseBodySizeLimit("1.5mb")).toBe(Math.floor(1.5 * 1024 * 1024));
   });
 
+  // Next.js delegates to bytes.parse(), whose filesize grammar accepts an
+  // explicit positive sign.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/compiled/bytes/index.js
+  it("accepts explicitly positive filesize strings", () => {
+    expect(parseBodySizeLimit("+2mb")).toBe(2 * 1024 * 1024);
+    expect(parseBodySizeLimit("+1048576")).toBe(1048576);
+  });
+
+  // Next.js delegates to bytes.parse(), which falls back to parseInt(value, 10)
+  // whenever the complete filesize grammar does not match. These surprising
+  // results are compatibility behavior, not additional validation rules.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/compiled/bytes/index.js
+  it("matches bytes.parse fallback semantics for non-filesize strings", () => {
+    expect(parseBodySizeLimit("1mb ")).toBe(1);
+    expect(parseBodySizeLimit(" 1mb")).toBe(1);
+    expect(parseBodySizeLimit("1\tmb")).toBe(1);
+    expect(parseBodySizeLimit("2wat")).toBe(2);
+    expect(parseBodySizeLimit("1e3")).toBe(1);
+    expect(parseBodySizeLimit("1.5")).toBe(1);
+  });
+
   it("returns default 1MB for undefined", () => {
     expect(parseBodySizeLimit(undefined)).toBe(1 * 1024 * 1024);
   });
 
-  it("returns default 1MB for null", () => {
-    expect(parseBodySizeLimit(null)).toBe(1 * 1024 * 1024);
-  });
-
-  it("returns default 1MB and warns for invalid strings", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    // In Vitest 4, spyOn on an already-intercepted console returns the same mock,
-    // which may have accumulated calls from earlier tests. Clear before asserting.
-    warn.mockClear();
-    expect(parseBodySizeLimit("invalid")).toBe(1 * 1024 * 1024);
-    expect(parseBodySizeLimit("10mbb")).toBe(1 * 1024 * 1024);
-    expect(warn).toHaveBeenCalledTimes(2);
-    expect(warn.mock.calls[0][0]).toContain("Invalid bodySizeLimit");
-    warn.mockRestore();
-    // empty string also falls through to the regex (no match), so it warns too
-    const warn2 = vi.spyOn(console, "warn").mockImplementation(() => {});
-    warn2.mockClear();
-    expect(parseBodySizeLimit("")).toBe(1 * 1024 * 1024);
-    expect(warn2).toHaveBeenCalledTimes(1);
-    warn2.mockRestore();
+  // Ported from Next.js:
+  // test/e2e/app-dir/actions/app-action-size-limit-invalid.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action-size-limit-invalid.test.ts
+  it("rejects invalid and negative filesize strings", () => {
+    expect(() => parseBodySizeLimit("testmb")).toThrow(configError);
+    expect(() => parseBodySizeLimit("-3000mb")).toThrow(configError);
+    expect(() => parseBodySizeLimit("")).toThrow(configError);
   });
 
   it("parses terabyte strings", () => {
@@ -1515,9 +1526,16 @@ describe("parseBodySizeLimit", () => {
     expect(parseBodySizeLimit("2097152")).toBe(2097152);
   });
 
-  it("throws for zero or negative numeric values", () => {
-    expect(() => parseBodySizeLimit(0)).toThrow();
-    expect(() => parseBodySizeLimit(-1)).toThrow();
+  it("throws the canonical error for invalid numeric values", () => {
+    expect(() => parseBodySizeLimit(0)).toThrow(configError);
+    expect(() => parseBodySizeLimit(-1)).toThrow(configError);
+    expect(() => parseBodySizeLimit(Number.NaN)).toThrow(configError);
+  });
+
+  it("rejects configured values outside Next.js's string-or-number schema", () => {
+    expect(() => parseBodySizeLimit(null)).toThrow(configError);
+    expect(() => parseBodySizeLimit(true)).toThrow(configError);
+    expect(() => parseBodySizeLimit({ value: "2mb" })).toThrow(configError);
   });
 });
 
@@ -1646,6 +1664,21 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
     expect(resolved.serverActionsBodySizeLimit).toBe(5242880);
   });
 
+  it.each([-3000, "testmb", "-3000mb", null, true])(
+    "rejects invalid bodySizeLimit config %j",
+    async (bodySizeLimit) => {
+      await expect(
+        resolveNextConfig({
+          experimental: {
+            serverActions: { bodySizeLimit: bodySizeLimit as string | number },
+          },
+        }),
+      ).rejects.toThrow(
+        "Server Actions Size Limit must be a valid number or filesize format larger than 1MB",
+      );
+    },
+  );
+
   // The verbatim config string drives the "Body exceeded {limit} limit" error
   // message (matching Next.js), so it must be preserved alongside the parsed
   // byte count rather than reconstructed from it.
@@ -1692,17 +1725,22 @@ describe("resolveNextConfig crossOrigin", () => {
 
   it("warns about unsupported crossOrigin values", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const resolved = await resolveNextConfig({ crossOrigin: "invalid" as "anonymous" });
+    warn.mockClear();
+    try {
+      const resolved = await resolveNextConfig({ crossOrigin: "invalid" as "anonymous" });
 
-    expect(resolved.crossOrigin).toBeUndefined();
-    expect(warn).toHaveBeenCalledOnce();
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("Invalid next.config options detected"),
-    );
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"crossOrigin"'));
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("https://nextjs.org/docs/messages/invalid-next-config"),
-    );
+      expect(resolved.crossOrigin).toBeUndefined();
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Invalid next.config options detected"),
+      );
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"crossOrigin"'));
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("https://nextjs.org/docs/messages/invalid-next-config"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
