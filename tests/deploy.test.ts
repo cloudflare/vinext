@@ -3281,8 +3281,8 @@ describe("client asset sidecar generation", () => {
       "docs/assets/mermaid-vendor.js",
     ]);
     expect(metadata.dynamicPreloads?.["src/components/MermaidChart.tsx"]).toEqual([
-      "cdn-prefix/_next/static/assets/mermaid-chart.js",
       "cdn-prefix/_next/static/assets/mermaid-vendor.js",
+      "cdn-prefix/_next/static/assets/mermaid-chart.js",
     ]);
   });
 

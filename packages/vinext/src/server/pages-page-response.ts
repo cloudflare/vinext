@@ -182,6 +182,7 @@ type RenderPagesPageResponseOptions = {
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  initialStylesheetHrefs?: ReadonlySet<string>;
   crossOrigin?: string;
   disableOptimizedLoading: boolean;
   statusCode?: number;
@@ -551,6 +552,7 @@ export async function renderPagesPageResponse(
     renderStylesToString: async (element) =>
       readStreamAsText(await options.renderToReadableStream(element)),
     scriptNonce: options.scriptNonce,
+    initialStylesheetHrefs: options.initialStylesheetHrefs,
     context: {
       err: options.err,
       req: options.documentReqRes?.req,
@@ -585,6 +587,7 @@ export async function renderPagesPageResponse(
     const pageElement = withScriptNonce(
       React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
       options.scriptNonce,
+      options.initialStylesheetHrefs,
     );
     bodyStream = await options.renderToReadableStream(pageElement);
   }
