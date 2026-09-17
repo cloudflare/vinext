@@ -58,7 +58,8 @@
     "test": "vp run vinext#build && vp run @cloudflare/workers-response-store#build && vp run @vinext/cloudflare#build && VINEXT_RESPONSE_STORE_MODE=self-contained pnpm --filter response-store-demo run build && pnpm --filter response-store-demo run build && vitest run"
   },
   "dependencies": {
-    "@cloudflare/workers-response-store": "workspace:*"
+    "@cloudflare/workers-response-store": "workspace:*",
+    "wrangler": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",
