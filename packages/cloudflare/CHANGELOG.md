@@ -1,5 +1,19 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.9
+
+### Features
+
+- **Response Store:** support for sharded durable objects (#3301)
+
+### Bug Fixes
+
+- **Response Store:** stabilize cached variant selection (#3308)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.8
 
 ### Features

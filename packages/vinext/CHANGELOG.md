@@ -1,5 +1,26 @@
 # vinext
 
+## 1.0.0-beta.11
+
+### Features
+
+- **Response Store:** support for sharded durable objects (#3301)
+
+### Bug Fixes
+
+- **Check:** ignore build output from other toolchains (#3231)
+- **Build:** preserve bundled Nitro service exports (#3312)
+- **Server:** align user agent parsing with Next.js (#3202)
+- **Pages:** serve dynamic Pages Router routes under the Nitro preset (#3197) (#3204)
+- **Cache:** expose response store entrypoints in dev (#3306)
+
+### Contributors
+
+- @AhmedElBanna80
+- @hyoban
+- @james-elicx
+- @JamesbbBriz
+
 ## 1.0.0-beta.10
 
 This release includes a new caching library for apps targeting Cloudflare Workers, called Workers Response Store. It is designed to fill the gaps that our other Cloudflare cache adapters struggled with; efficient cache warming, durable backing stores, stable ISR and revalidation, and better internal control of the cache.
