@@ -1203,6 +1203,7 @@ async function sendWebResponse(
   const contentEncoding = webResponse.headers.get("content-encoding");
   const alreadyEncoded = contentEncoding !== null;
   if (!webResponse.body) {
+    if (status === 205) delete nodeHeaders["content-length"];
     writeHead(nodeHeaders);
     res.end();
     return;

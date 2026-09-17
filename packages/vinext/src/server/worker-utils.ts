@@ -98,11 +98,16 @@ export function mergeHeaders(
   }
 
   if (shouldDropBody) {
+    const hadBody = response.body !== null;
     cancelResponseBody(response);
-    merged.delete("content-encoding");
-    merged.delete("content-length");
-    merged.delete("content-type");
-    merged.delete("transfer-encoding");
+    if (hadBody) {
+      merged.delete("content-encoding");
+      merged.delete("content-length");
+      merged.delete("content-type");
+      merged.delete("transfer-encoding");
+    } else if (status === 205) {
+      merged.delete("content-length");
+    }
     return new Response(null, {
       status,
       statusText: status === response.status ? response.statusText : undefined,
