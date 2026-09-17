@@ -245,12 +245,12 @@ Add:
 - `Render.getStaticProps`;
 - `Render.renderDocument`;
 - `Node.runHandler` for API routes;
-- `NextNodeServer.findPageComponents`;
-- `NextNodeServer.startResponse`.
+- `NextNodeServer.findPageComponents`.
 
 Requirements:
 
 - Add each boundary once through the shared framework tracer so its OTel and Workers representations cannot drift.
+- Do not add `NextNodeServer.startResponse` to buffered Pages renders. Current Next.js sends those payloads with `res.end(payload)` and its authoritative Pages OTel expectations omit that span; only instrument a future Pages streaming path if Next.js exposes and tests the same boundary.
 
 Sentry E2E acceptance criteria:
 
@@ -261,7 +261,7 @@ Sentry E2E acceptance criteria:
 
 Workers acceptance criteria:
 
-- The same GSSP, document, API-handler, page-component, and response span definitions appear beneath `BaseServer.handleRequest` in Workers Observability when those paths execute there.
+- The same GSSP, document, API-handler, and page-component span definitions appear beneath `BaseServer.handleRequest` in Workers Observability when those paths execute there.
 
 ### OTel-7: Prove server-to-browser trace continuation
 
