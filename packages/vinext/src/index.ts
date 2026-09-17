@@ -3404,10 +3404,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Apply the define to the default optimizer and explicitly to server
         // environments, where Vite's keepProcessEnv default prevents replacement.
         viteConfig.optimizeDeps = {
-          // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
-          exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE, [
-            "@tailwindcss/oxide",
-          ]),
+          // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process.
+          // The top-level optimizer also covers legacy single-build Pages configurations.
+          exclude: mergeOptimizeDepsExclude(
+            incomingExclude,
+            VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+            nextServerExternal,
+            ["@tailwindcss/oxide"],
+          ),
           ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
           ...depOptimizeNodeEnvOptions,
           rolldownOptions: {
@@ -3483,7 +3487,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
+                // Server-external packages are loaded by the runtime resolver
+                // (never pre-bundled), so the server optimizers must exclude
+                // them just like the client optimizer below. Their
+                // node-only conditional exports otherwise resolve to the
+                // wrong entry inside the optimizer pipeline.
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  nextServerExternal,
+                ),
                 entries: optimizeEntries,
                 // plugin-rsc pre-includes server.edge, but not its vendored
                 // static.edge import, which it rewrites to this package specifier.
@@ -3555,6 +3568,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  nextServerExternal,
                   ["ipaddr.js"],
                   userSsrExternal === true || externalizeSsrReactInDev
                     ? SSR_EXTERNAL_REACT_ENTRIES
@@ -3641,6 +3655,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: {
               consumer: "client",
               optimizeDeps: {
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  nextServerExternal,
+                ),
                 ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
                 ...depOptimizeNodeEnvOptions,
               },
@@ -3669,6 +3688,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: {
               consumer: "client",
               optimizeDeps: {
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  nextServerExternal,
+                ),
                 ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
                 ...depOptimizeNodeEnvOptions,
               },
@@ -3705,6 +3729,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  nextServerExternal,
                   ["ipaddr.js"],
                   Object.keys(nextShimMap),
                 ),
@@ -3790,6 +3815,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
             config.optimizeDeps.exclude ?? [],
             VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+            resolvedServerExternalPackages,
             PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE,
           );
         }

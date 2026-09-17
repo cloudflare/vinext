@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
-import { createBuilder, parseAst } from "vite";
+import { createBuilder, parseAst, resolveConfig } from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
   hasExportAllCandidate as _hasExportAllCandidate,
@@ -272,7 +272,10 @@ describe("optimizeDeps.exclude for vinext", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { serverExternalPackages: ["jose"] };`,
+    );
 
     try {
       const mockConfig = {
@@ -287,15 +290,30 @@ describe("optimizeDeps.exclude for vinext", () => {
 
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
+      expect(result.optimizeDeps?.exclude).toContain("file-type");
+      expect(result.optimizeDeps?.exclude).toContain("jose");
       // Incoming excludes from other plugins must survive the merge
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
       expect(result.environments.ssr.resolve.external).toContain("typescript");
+      expect(result.environments.client.optimizeDeps.exclude).toContain("file-type");
+      expect(result.environments.client.optimizeDeps.exclude).toContain("jose");
+      expect(result.environments.ssr.optimizeDeps.exclude).toContain("file-type");
+      expect(result.environments.ssr.optimizeDeps.exclude).toContain("jose");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"true"');
       expect(
         aliasEntriesToRecord(result.resolve.alias)["vinext/server/pages-client-assets"],
       ).toMatch(/server\/pages-client-assets\.ts$/);
+
+      const resolved = await resolveConfig(
+        { root: tmpDir, logLevel: "silent", plugins: vinext() },
+        "serve",
+      );
+      for (const name of ["client", "ssr"] as const) {
+        expect(resolved.environments[name].optimizeDeps.exclude).toContain("file-type");
+        expect(resolved.environments[name].optimizeDeps.exclude).toContain("jose");
+      }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -476,7 +494,7 @@ describe("optimizeDeps.exclude for vinext", () => {
     "react-server-dom-webpack/client.edge",
   ];
 
-  async function setupAppRouterConfigTest(prefix: string) {
+  async function setupAppRouterConfigTest(prefix: string, nextConfig: object = {}) {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const mainPlugin = vinext().find(
       (plugin: any) => plugin.name === "vinext:config" && typeof plugin.config === "function",
@@ -498,7 +516,10 @@ describe("optimizeDeps.exclude for vinext", () => {
       path.join(root, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(path.join(root, "next.config.mjs"), `export default {};`);
+    await fsp.writeFile(
+      path.join(root, "next.config.mjs"),
+      `export default ${JSON.stringify(nextConfig)};`,
+    );
 
     return {
       config(userConfig: Record<string, unknown> = {}, command: "serve" | "build" = "serve") {
@@ -532,6 +553,35 @@ describe("optimizeDeps.exclude for vinext", () => {
       // external: true and recreate the duplicate-React bug.
       expect(result.ssr?.noExternal).toBeUndefined();
       expect(result.ssr?.external).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  it("excludes server-external packages and file-type from every dev optimizer", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-optdeps-server-external-", {
+      serverExternalPackages: ["jose"],
+    });
+
+    try {
+      const result = await fixture.config();
+
+      const rscExclude = result.environments.rsc.optimizeDeps?.exclude ?? [];
+      const ssrExclude = result.environments.ssr.optimizeDeps?.exclude ?? [];
+      const clientExclude = result.environments.client.optimizeDeps?.exclude ?? [];
+
+      for (const [name, exclude] of [
+        ["rsc", rscExclude],
+        ["ssr", ssrExclude],
+        ["client", clientExclude],
+      ] as const) {
+        // server-external packages must stay out of every pre-bundle — the
+        // runtime resolver loads them, and their node-only conditional
+        // exports resolve to the wrong entry inside the optimizer.
+        expect(exclude, `${name} exclude should contain jose`).toContain("jose");
+        // known dual-shape interop package (file-type) is excluded everywhere
+        expect(exclude, `${name} exclude should contain file-type`).toContain("file-type");
+      }
     } finally {
       await fixture.cleanup();
     }
@@ -718,7 +768,10 @@ describe("optimizeDeps.exclude for vinext", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { serverExternalPackages: ["jose"] };`,
+    );
 
     try {
       await (mainPlugin as any).config(
@@ -750,6 +803,8 @@ describe("optimizeDeps.exclude for vinext", () => {
       );
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("already-excluded");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("file-type");
+      expect(workerEnvConfig.optimizeDeps.exclude).toContain("jose");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/pages-router-entry");
     } finally {
