@@ -35,6 +35,8 @@ async function expectReportedTransaction(request: APIRequestContext, name: strin
 }
 
 test.describe("Sentry on Cloudflare Workers App Router", () => {
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
   test.beforeEach(async ({ request }) => {
     const res = await request.delete("/api/sentry-test-state");
     expect(res.status()).toBe(200);
@@ -60,13 +62,17 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
   });
 
   test("records transaction envelopes and nested application spans", async ({ request }) => {
-    const traceRes = await request.get("/api/trace-route");
+    const traceRes = await request.get("/api/trace/product-42");
     expect(traceRes.status()).toBe(200);
 
-    const transaction = await expectReportedTransaction(request, "fixture.app.transaction");
+    const transaction = await expectReportedTransaction(request, "GET /api/trace/[slug]");
     expect(transaction).toMatchObject({
-      operation: "fixture.request",
-      attributes: expect.objectContaining({ "fixture.router": "app" }),
+      attributes: expect.objectContaining({
+        "http.route": "/api/trace/[slug]",
+        "http.status_code": 200,
+        "next.route": "/api/trace/[slug]",
+        "next.span_type": "BaseServer.handleRequest",
+      }),
     });
     expect(transaction.traceId).toMatch(/^[0-9a-f]{32}$/);
     expect(transaction.spanId).toMatch(/^[0-9a-f]{16}$/);
@@ -77,9 +83,48 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
         traceId: transaction.traceId,
         parentSpanId: transaction.spanId,
         operation: "fixture.child",
-        attributes: expect.objectContaining({ "fixture.child": true }),
+        attributes: expect.objectContaining({
+          "fixture.router": "app",
+          "fixture.slug": "product-42",
+        }),
       }),
     );
+  });
+
+  test("continues incoming Sentry traces without leaking parallel request context", async ({
+    request,
+  }) => {
+    const firstTraceId = "11111111111111111111111111111111";
+    const secondTraceId = "22222222222222222222222222222222";
+    await Promise.all([
+      request.get("/api/trace/first", {
+        headers: { "sentry-trace": `${firstTraceId}-aaaaaaaaaaaaaaaa-1` },
+      }),
+      request.get("/api/trace/second", {
+        headers: { "sentry-trace": `${secondTraceId}-bbbbbbbbbbbbbbbb-1` },
+      }),
+    ]);
+
+    await expect
+      .poll(async () => {
+        const stateRes = await request.get("/api/sentry-test-state");
+        expect(stateRes.status()).toBe(200);
+        const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+        return state.transactions
+          .filter(({ name }) => name === "GET /api/trace/[slug]")
+          .map(({ traceId }) => traceId)
+          .sort();
+      })
+      .toEqual([firstTraceId, secondTraceId]);
+  });
+
+  test("marks 500 framework transactions as failed", async ({ request }) => {
+    const res = await request.get("/api/trace-failure/test");
+    expect(res.status()).toBe(500);
+
+    const transaction = await expectReportedTransaction(request, "GET /api/trace-failure/[slug]");
+    expect(transaction).toMatchObject({ status: expect.any(String) });
+    expect(transaction.status).not.toBe("ok");
   });
 
   test("reports a thrown render error through real @sentry/nextjs", async ({ request }) => {

@@ -143,6 +143,7 @@ import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
+import { traceFrameworkRequest } from "./server/request-tracing.js";
 
 import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
 
@@ -5567,11 +5568,12 @@ export const loadServerActionClient = ${
           // server.ssrLoadModule() to crash with outsideEmitter. The runner
           // calls environment.fetchModule() directly and never touches the hot
           // channel, making it safe with all Vite plugin combinations.
-          if (instrumentationPath && !hasAppDir) {
-            runInstrumentation(getPagesRunner(), instrumentationPath).catch((err) => {
-              console.error("[vinext] Instrumentation error:", err);
-            });
-          }
+          const pagesInstrumentationReady =
+            instrumentationPath && (!hasAppDir || !hasCloudflarePlugin)
+              ? runInstrumentation(getPagesRunner(), instrumentationPath).catch((err) => {
+                  console.error("[vinext] Instrumentation error:", err);
+                })
+              : Promise.resolve();
           // App Router request logging in dev server
           //
           // For App Router, the RSC plugin handles requests internally.
@@ -5702,33 +5704,14 @@ export const loadServerActionClient = ${
             });
           }
 
-          handlePagesMiddleware = async (
+          const handlePagesRequest = async (
             req: import("node:http").IncomingMessage,
             res: import("node:http").ServerResponse,
-            next: (err?: unknown) => void,
+            next: (err?: unknown) => void | Promise<void>,
           ): Promise<void> => {
             try {
               let url: string = req.url ?? "/";
               const originalRequestUrl = url;
-
-              // If no pages directory, skip this middleware entirely
-              // (app router is handled by @vitejs/plugin-rsc's built-in middleware)
-              if (!hasPagesDir) return next();
-
-              // Skip Vite internal requests and static files
-              if (
-                url.startsWith("/@") ||
-                url.startsWith("/__vite") ||
-                url.startsWith("/node_modules")
-              ) {
-                return next();
-              }
-
-              // Skip .rsc requests — those are for the App Router RSC handler
-              if (url.split("?")[0].endsWith(".rsc")) {
-                return next();
-              }
-
               // ── Cross-origin request protection (defense-in-depth) ──────
               // The pre-Vite middleware above already blocks cross-origin
               // requests before Vite serves any content. This second check
@@ -6270,7 +6253,10 @@ export const loadServerActionClient = ${
                       nextConfig.images?.qualities,
                     );
                     return encodedLocation
-                      ? new Response(null, { status: 302, headers: { Location: encodedLocation } })
+                      ? new Response(null, {
+                          status: 302,
+                          headers: { Location: encodedLocation },
+                        })
                       : new Response("Invalid image optimization parameters", { status: 400 });
                   }
                   const isRetrievalMethod = req.method === "GET" || req.method === "HEAD";
@@ -6487,8 +6473,72 @@ export const loadServerActionClient = ${
                 );
               }
             } catch (e) {
-              next(e);
+              return next(e);
             }
+          };
+
+          handlePagesMiddleware = async (req, res, next): Promise<void> => {
+            const url = req.url ?? "/";
+
+            // If no pages directory, skip this middleware entirely
+            // (app router is handled by @vitejs/plugin-rsc's built-in middleware)
+            if (!hasPagesDir) return next();
+
+            // Skip Vite internal requests and static files
+            if (
+              url.startsWith("/@") ||
+              url.startsWith("/__vite") ||
+              url.startsWith("/node_modules")
+            ) {
+              return next();
+            }
+
+            // Skip .rsc requests — those are for the App Router RSC handler
+            if (url.split("?")[0].endsWith(".rsc")) return next();
+
+            // The Cloudflare dev proxy owns request execution and tracing in
+            // workerd. Do not create a second Node-side request root here.
+            if (hasCloudflarePlugin) return next();
+
+            await pagesInstrumentationReady;
+            const traceHeaders = new Headers();
+            for (const [name, value] of Object.entries(req.headers)) {
+              if (value === undefined || name.startsWith(":")) continue;
+              traceHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
+            }
+
+            const continueRequest = (error?: unknown): Promise<void> =>
+              new Promise((resolve, reject) => {
+                const finish = () => {
+                  res.off("finish", finish);
+                  res.off("close", finish);
+                  res.off("error", fail);
+                  resolve();
+                };
+                const fail = (responseError: unknown) => {
+                  res.off("finish", finish);
+                  res.off("close", finish);
+                  res.off("error", fail);
+                  reject(responseError);
+                };
+                res.once("finish", finish);
+                res.once("close", finish);
+                res.once("error", fail);
+                try {
+                  next(error);
+                  if (res.writableFinished || res.destroyed) finish();
+                } catch (nextError) {
+                  fail(nextError);
+                }
+              });
+
+            return traceFrameworkRequest({
+              callback: () => handlePagesRequest(req, res, continueRequest),
+              getStatus: () => res.statusCode,
+              headers: traceHeaders,
+              method: req.method ?? "GET",
+              target: url,
+            });
           };
 
           server.middlewares.use((req, res, next) => {

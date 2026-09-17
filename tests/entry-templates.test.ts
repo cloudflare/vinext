@@ -1860,7 +1860,9 @@ describe("Pages Router entry template", () => {
       expect(code).not.toContain("react-dom/server.edge");
       expect(code).not.toContain("createPagesPageHandler");
       expect(code).not.toContain("handlePagesApiRoute");
-      expect(code).toContain("await __ensureInstrumentationRegistered(_instrumentation)");
+      expect(code).toContain(
+        `await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)})`,
+      );
       expect(code).not.toContain("await _instrumentation.register()");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1895,7 +1897,9 @@ describe("Pages Router entry template", () => {
       expect(code).toContain("createPagesPageHandler");
       expect(code).toContain("handlePagesApiRoute");
       expect(code).toContain("export const hasMiddleware = true");
-      expect(code).toContain("await __ensureInstrumentationRegistered(_instrumentation)");
+      expect(code).toContain(
+        `await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)})`,
+      );
       expect(code).not.toContain("await _instrumentation.register()");
       expect(code).not.toContain(JSON.stringify(middlewarePath));
       expect(code).not.toContain("runGeneratedMiddleware");

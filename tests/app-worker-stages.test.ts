@@ -18,6 +18,7 @@ import {
   VINEXT_PRERENDER_READINESS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import { setFrameworkRequestRoute } from "../packages/vinext/src/server/request-tracing.js";
 
 const stages = vi.hoisted(() => ({
   renderFullRequest: vi.fn(),
@@ -246,7 +247,10 @@ describe("App Worker response stage", () => {
   });
 
   it("passes only authenticated prerender state into the full response graph", async () => {
-    stages.renderFullRequest.mockResolvedValue(new Response("rendered"));
+    stages.renderFullRequest.mockImplementation(async () => {
+      setFrameworkRequestRoute("/post/[slug]");
+      return new Response("rendered", { headers: { "X-Vinext-Trace-Error": "forged" } });
+    });
     const trustedPrerenderState = {
       routeParams: { params: { slug: "hello" }, routePattern: "/post/:slug" },
       speculative: true,
@@ -276,6 +280,8 @@ describe("App Worker response stage", () => {
     );
 
     await expect(response.text()).resolves.toBe("rendered");
+    expect(response.headers.get("X-Vinext-Trace-Route")).toBe(encodeURIComponent("/post/[slug]"));
+    expect(response.headers.get("X-Vinext-Trace-Error")).toBeNull();
     expect(stages.renderFullRequest).toHaveBeenCalledWith(
       request,
       expect.anything(),
@@ -284,5 +290,43 @@ describe("App Worker response stage", () => {
       null,
       trustedPrerenderState,
     );
+  });
+
+  it("returns a captured route when the full response graph rejects", async () => {
+    stages.renderFullRequest.mockImplementation(async () => {
+      setFrameworkRequestRoute("/broken/[slug]");
+      throw new Error("route load failed");
+    });
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const props = {
+      buildId: null,
+      cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/broken/test" },
+      draftModeCookie: null,
+      kind: "app-full-request" as const,
+      middlewareCookieOverlay: null,
+      prerenderDiscovery: false,
+      protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+      requestOrigin: "https://example.com",
+      scriptNonce: null,
+      staticFileSignalToken: "00000000-0000-4000-8000-000000000000",
+      trustedPrerenderState: null,
+    } satisfies AppWorkerResponseStageProps;
+
+    try {
+      const response = await handleResponseStage(
+        new Request("https://example.com/broken/test"),
+        undefined,
+        undefined,
+        props,
+        async () => new Response("request-stage"),
+      );
+
+      expect(response.status).toBe(500);
+      expect(response.headers.get("X-Vinext-Trace-Route")).toBe(
+        encodeURIComponent("/broken/[slug]"),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

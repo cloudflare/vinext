@@ -24,6 +24,7 @@ export type FrameworkTracingBackendSpan = {
 };
 
 export type FrameworkTracingIntegration = {
+  getActiveSpan?(): FrameworkTracingBackendSpan | undefined;
   id: string;
   enterSpan<T>(
     descriptor: ResolvedFrameworkSpanDescriptor,
@@ -43,6 +44,7 @@ type FrameworkSpan = {
 };
 
 export type FrameworkTracer = {
+  getActiveScopeSpan(): FrameworkSpan | undefined;
   trace<T>(descriptor: FrameworkSpanDescriptor, callback: (span: FrameworkSpan) => T): T;
   withPropagatedContext<T>(carrier: Headers, callback: () => T): T;
 };
@@ -111,6 +113,14 @@ export function createFrameworkTracer(
   integrations: readonly FrameworkTracingIntegration[],
 ): FrameworkTracer {
   return {
+    getActiveScopeSpan(): FrameworkSpan | undefined {
+      const spans = integrations.flatMap((integration) => {
+        const span = integration.getActiveSpan?.();
+        return span ? [span] : [];
+      });
+      return spans.length ? createCompositeSpan(spans) : undefined;
+    },
+
     trace<T>(descriptor: FrameworkSpanDescriptor, callback: (span: FrameworkSpan) => T): T {
       const resolved = resolveDescriptor(descriptor);
       const backendSpans: FrameworkTracingBackendSpan[] = [];
