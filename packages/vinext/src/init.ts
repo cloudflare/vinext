@@ -6,7 +6,7 @@
  *   1. Run `vinext check` to show compatibility report
  *   2. Add "type": "module" to package.json
  *   3. Rename CJS config files to .cjs
- *   4. Add vinext scripts to package.json
+ *   4. Add Vite scripts to package.json
  *   5. Generate vite.config.ts and platform files
  *   6. Update .gitignore to include /dist/ and .vinext/
  *   7. Install dependencies (vite, @vitejs/plugin-react, and App Router deps)
@@ -185,8 +185,8 @@ export function addScripts(
       added.push(scriptName);
     };
 
-    addScript("dev", port === false ? "vinext dev" : `vinext dev --port ${port}`);
-    addScript("build", "vinext build");
+    addScript("dev", port === false ? "vite dev" : `vite dev --port ${port}`);
+    addScript("build", "vite build");
     addScript(
       "start",
       platform === "cloudflare"
@@ -779,7 +779,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   console.log(`
   ${terminalStyle.cyan(terminalStyle.bold("Next steps:"))}
 ${nextSteps.map((step) => `    ${step}`).join("\n")}${nextSteps.length > 0 ? "\n" : ""}
-    ${pmName} run ${scriptName("dev")}    Start the vinext dev server
+    ${pmName} run ${scriptName("dev")}    Start the Vite dev server
     ${pmName} run ${scriptName("build")}  Build production output
     ${pmName} run ${scriptName("start")}  ${startCommandDescription}
 ${deployCommandStep}${options.scriptNames === "standard" ? "" : `    ${pmName} run dev           Start Next.js (still works as before)\n`}

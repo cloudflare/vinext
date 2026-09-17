@@ -2,12 +2,12 @@
  * Dev server lock file.
  *
  * Writes the running dev server's PID, port, and URL into a lock file at
- * `<root>/.vinext/dev/lock.json`. When a second `vinext dev` process starts in
+ * `<root>/.vinext/dev/lock.json`. When a second Vite dev process starts in
  * the same project directory, it reads the lock file and either fails with an
  * actionable error or, if the previous process is dead, takes over the lock.
  *
  * This is especially useful for AI coding agents, which frequently attempt to
- * start `vinext dev` without knowing a server is already running.
+ * start `vite dev` without knowing a server is already running.
  *
  * Ported behaviorally from Next.js:
  *   https://github.com/vercel/next.js/blob/canary/packages/next/src/build/lockfile.ts
@@ -43,7 +43,7 @@ export type DevServerInfo = {
   cwd: string;
 };
 
-export type DevLockfile = {
+type DevLockfile = {
   /** Update the lock file contents (e.g. once the port is known after listen). */
   update(info: DevServerInfo): void;
   /** Release the lock — deletes the file. Safe to call multiple times. */
@@ -147,13 +147,13 @@ export function formatAlreadyRunningError(opts: FormatErrorOptions): string {
   if (!existing) {
     // Defensive fallback. Not reachable from tryAcquireLockfile today.
     return [
-      "Another vinext dev server appears to be running in this directory.",
+      "Another vinext Vite dev server appears to be running in this directory.",
       "",
       // pathslash's relative() emits forward slashes on every platform, so
       // this message reads the same everywhere — it's meant to be parsed by
       // AI agents and CLIs.
       `Stale lock file: ${path.relative(cwd, lockfilePath)}`,
-      "Remove it manually if no server is running, then re-run `vinext dev`.",
+      "Remove it manually if no server is running, then re-run `vite dev`.",
     ].join("\n");
   }
 
@@ -161,7 +161,7 @@ export function formatAlreadyRunningError(opts: FormatErrorOptions): string {
     process.platform === "win32" ? `taskkill /PID ${existing.pid} /F` : `kill ${existing.pid}`;
 
   return [
-    "Another vinext dev server is already running.",
+    "Another vinext Vite dev server is already running.",
     "",
     `- Local:        ${existing.appUrl}`,
     `- PID:          ${existing.pid}`,
@@ -262,7 +262,7 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
   // (event loop drained, explicit process.exit(), or after the default
   // SIGINT/SIGTERM handlers terminate the process). It does NOT fire on
   // uncaught exceptions or hard crashes (SIGKILL), which is fine: the next
-  // `vinext dev` will detect the dead PID and take over the stale lock.
+  // `vite dev` will detect the dead PID and take over the stale lock.
   //
   // If a future caller installs a custom signal handler that swallows
   // SIGINT/SIGTERM without exiting, the lock would leak — also fine, same

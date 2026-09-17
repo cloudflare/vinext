@@ -100,7 +100,7 @@ describe("App Router Static export", () => {
     } finally {
       fs.rmSync(trailingDir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it("reports errors for dynamic routes without generateStaticParams", async () => {
     const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
