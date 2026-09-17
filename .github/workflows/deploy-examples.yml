@@ -3,7 +3,8 @@ name: Deploy Examples
 on:
   push:
     branches: [main]
-  pull_request: # run on PRs against any base branch, not just main
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
 
 concurrency:
   group: deploy-${{ github.event_name }}-${{ github.ref }}
@@ -12,10 +13,120 @@ concurrency:
 permissions: {}
 
 jobs:
+  response_store:
+    # Skip entirely for fork and Dependabot PRs — they don't have access to deploy secrets.
+    if: github.event_name == 'push' || (github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
+    name: Deploy and test Workers Response Store
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    outputs:
+      service_name: ${{ steps.names.outputs.service_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      - name: Build Workers Response Store
+        run: vp run @cloudflare/workers-response-store#build
+
+      - name: Select per-run Worker names
+        id: names
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            prefix="pr-${{ github.event.pull_request.number }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            service_name="${prefix}-rs-service"
+          else
+            prefix="main"
+            service_name="vinext-workers-response-store-service-poc"
+          fi
+          {
+            echo "service_name=$service_name"
+            echo "client_name=${prefix}-rs-client"
+            echo "inline_name=${prefix}-rs-inline"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure live client Worker
+        working-directory: packages/workers-response-store
+        env:
+          CLIENT_NAME: ${{ steps.names.outputs.client_name }}
+          SERVICE_NAME: ${{ steps.names.outputs.service_name }}
+        run: |
+          # Node reads the values from process.env.
+          # shellcheck disable=SC2016
+          node -e '
+            const fs = require("node:fs");
+            const source = fs.readFileSync("example/service-binding/wrangler.user.jsonc", "utf8");
+            const config = source
+              .replace(/"name": "[^"]+"/, `"name": "${process.env.CLIENT_NAME}"`)
+              .replace(/"main": "user-worker\.ts"/, `"main": "example/service-binding/user-worker.ts"`)
+              .replace(/"service": "[^"]+"/, `"service": "${process.env.SERVICE_NAME}"`);
+            fs.writeFileSync(".wrangler-e2e.user.jsonc", config);
+          '
+
+      - name: Deploy live Response Store Workers
+        working-directory: packages/workers-response-store
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SERVICE_NAME: ${{ steps.names.outputs.service_name }}
+          INLINE_NAME: ${{ steps.names.outputs.inline_name }}
+        run: |
+          node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config example/service-binding/wrangler.cache.jsonc --name "$SERVICE_NAME"
+          node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config .wrangler-e2e.user.jsonc
+          node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.jsonc --name "$INLINE_NAME"
+
+      - name: Run live Response Store E2E
+        working-directory: packages/workers-response-store
+        env:
+          LIVE_CACHE_BASE: https://${{ steps.names.outputs.inline_name }}.vinext.workers.dev
+          LIVE_RESPONSE_STORE_SERVICE_BASE: https://${{ steps.names.outputs.client_name }}.vinext.workers.dev
+        run: |
+          for url in "$LIVE_CACHE_BASE" "$LIVE_RESPONSE_STORE_SERVICE_BASE"; do
+            ready=false
+            consecutive=0
+            for _ in {1..60}; do
+              if node -e 'fetch(process.argv[1]).then(async response => process.exit(response.ok && (await response.text()).includes("\"status\":\"ready\"") ? 0 : 1)).catch(() => process.exit(1))' "$url"; then
+                consecutive=$((consecutive + 1))
+                if [[ "$consecutive" -eq 5 ]]; then
+                  ready=true
+                  break
+                fi
+              else
+                consecutive=0
+              fi
+              sleep 2
+            done
+            if [[ "$ready" != true ]]; then
+              echo "$url did not become ready"
+              exit 1
+            fi
+          done
+          vp run test:live
+
+      - name: Clean up live Response Store Workers
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        working-directory: packages/workers-response-store
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLIENT_NAME: ${{ steps.names.outputs.client_name }}
+          INLINE_NAME: ${{ steps.names.outputs.inline_name }}
+        run: |
+          set +e
+          for worker in "$CLIENT_NAME" "$INLINE_NAME"; do
+            vp exec wrangler delete "$worker" --force
+          done
+
   deploy:
-    # Skip entirely for fork PRs — they don't have access to deploy secrets.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    # Skip entirely for fork and Dependabot PRs — they don't have access to deploy secrets.
+    if: github.event_name == 'push' || (github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
     name: Deploy ${{ matrix.example.name }}
+    needs: response_store
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,9 +163,9 @@ jobs:
             project: hackernews
             working_directory: examples/hackernews
             wrangler_config: dist/server/wrangler.json
-          - name: workers-cache
-            project: workers-cache
-            working_directory: examples/workers-cache
+          - name: response-store-demo
+            project: response-store-demo
+            working_directory: examples/response-store-demo
             wrangler_config: dist/server/wrangler.json
             warm_cdn_cache: true
           - name: static-export
@@ -76,6 +187,41 @@ jobs:
 
       - name: Build vinext plugin
         run: vp run build
+
+      - name: Configure Response Store demo preview
+        if: matrix.example.name == 'response-store-demo' && github.event_name == 'pull_request'
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          SERVICE_NAME: pr-${{ github.event.pull_request.number }}-response-store-demo-response-store
+        run: |
+          # Node reads the value from process.env.
+          # shellcheck disable=SC2016
+          node -e '
+            const fs = require("node:fs");
+            const appPath = "wrangler.jsonc";
+            const servicePath = "wrangler.response-store.jsonc";
+            const app = fs.readFileSync(appPath, "utf8").replace(
+              `"service": "response-store-demo-response-store"`,
+              `"service": "${process.env.SERVICE_NAME}"`,
+            );
+            const service = fs.readFileSync(servicePath, "utf8").replace(
+              `"name": "response-store-demo-response-store"`,
+              `"name": "${process.env.SERVICE_NAME}"`,
+            );
+            if (!app.includes(process.env.SERVICE_NAME) || !service.includes(process.env.SERVICE_NAME)) {
+              throw new Error("Could not configure the Response Store preview Worker name");
+            }
+            fs.writeFileSync(appPath, app);
+            fs.writeFileSync(servicePath, service);
+          '
+
+      - name: Deploy configured Response Store service
+        if: matrix.example.name == 'response-store-demo' || (matrix.example.name == 'web' && github.event_name == 'push' && github.ref == 'refs/heads/main')
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc
 
       - name: Build example
         if: matrix.example.static_export != true
@@ -153,100 +299,6 @@ jobs:
           workingDirectory: ${{ matrix.example.working_directory }}
           command: triggers deploy --config ${{ matrix.example.wrangler_config }}
 
-      - name: Seed RSC prewarm test Worker
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
-        working-directory: ${{ matrix.example.working_directory }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: >-
-          vp exec wrangler deploy
-          --config ../../tests/fixtures/rsc-prewarm-seed/wrangler.jsonc
-          --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}
-
-      - name: Install Chromium for RSC prewarm verification
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
-        run: vp exec playwright install chromium
-
-      - name: Deploy and prewarm RSC test Worker
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
-        working-directory: ${{ matrix.example.working_directory }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          VINEXT_CDN_WARM_DEBUG: "1"
-        run: >-
-          vp exec vinext-cloudflare deploy
-          --skip-build
-          --config ${{ matrix.example.wrangler_config }}
-          --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}
-          --experimental-warm-cdn-cache
-
-      - name: Verify deploy-prewarmed RSC browser reuse
-        id: verify-rsc-prewarm
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
-        continue-on-error: true
-        env:
-          PLAYWRIGHT_PROJECT: cloudflare-workers
-          VINEXT_E2E_BASE_URL: https://rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}.vinext.workers.dev
-        run: vp exec playwright test tests/e2e/cloudflare-workers/rsc-prewarm.spec.ts
-
-      # A Playwright retry against the same keys could pass because the failed
-      # first attempt filled them. Repeat the deployment under a fresh hostname.
-      - name: Seed fresh Worker for RSC prewarm verification retry
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache' && steps.verify-rsc-prewarm.outcome == 'failure'
-        working-directory: ${{ matrix.example.working_directory }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: >-
-          vp exec wrangler deploy
-          --config ../../tests/fixtures/rsc-prewarm-seed/wrangler.jsonc
-          --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}-retry
-
-      - name: Retry deploy and RSC prewarm with fresh Worker
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache' && steps.verify-rsc-prewarm.outcome == 'failure'
-        working-directory: ${{ matrix.example.working_directory }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          VINEXT_CDN_WARM_DEBUG: "1"
-        run: >-
-          vp exec vinext-cloudflare deploy
-          --skip-build
-          --config ${{ matrix.example.wrangler_config }}
-          --name rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}-retry
-          --experimental-warm-cdn-cache
-
-      - name: Retry deploy-prewarmed RSC browser reuse with fresh Worker
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache' && steps.verify-rsc-prewarm.outcome == 'failure'
-        env:
-          PLAYWRIGHT_PROJECT: cloudflare-workers
-          VINEXT_E2E_BASE_URL: https://rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}-retry.vinext.workers.dev
-        run: vp exec playwright test tests/e2e/cloudflare-workers/rsc-prewarm.spec.ts
-
-      - name: Delete RSC prewarm retry Worker
-        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache' && steps.verify-rsc-prewarm.outcome == 'failure'
-        working-directory: ${{ matrix.example.working_directory }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: >-
-          vp exec wrangler delete rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}-retry
-          --config ${{ matrix.example.wrangler_config }}
-          --force
-
-      - name: Delete RSC prewarm test Worker
-        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.name == 'workers-cache'
-        working-directory: ${{ matrix.example.working_directory }}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: >-
-          vp exec wrangler delete rsc-prewarm-${{ github.run_id }}-${{ github.run_attempt }}
-          --config ${{ matrix.example.wrangler_config }}
-          --force
-
   smoke-test:
     name: Smoke Test Deployments
     runs-on: ubuntu-latest
@@ -301,6 +353,35 @@ jobs:
           tests/e2e/cloudflare-workers/web-worker.spec.ts
           tests/e2e/cloudflare-workers/optimistic-search-navigation.spec.ts
 
+  cleanup-response-store:
+    name: Clean up Workers Response Store services
+    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
+    needs: [response_store, deploy, smoke-test, deployed-e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      - name: Delete cache Worker
+        continue-on-error: true
+        working-directory: packages/workers-response-store
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SERVICE_NAME: ${{ needs.response_store.outputs.service_name }}
+          DEMO_SERVICE_NAME: pr-${{ github.event.pull_request.number }}-response-store-demo-response-store
+          PR_ACTION: ${{ github.event.action }}
+        run: |
+          if [[ "$PR_ACTION" == "closed" ]]; then
+            vp exec wrangler delete "$DEMO_SERVICE_NAME" --force
+          elif [[ -n "$SERVICE_NAME" ]]; then
+            vp exec wrangler delete "$SERVICE_NAME" --force
+          fi
+
   comment:
     name: Comment Preview URLs
     runs-on: ubuntu-latest
@@ -324,7 +405,7 @@ jobs:
               { name: 'nextra-docs-template', project: 'nextra-docs-template' },
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
-              { name: 'workers-cache', project: 'workers-cache' },
+              { name: 'response-store-demo', project: 'response-store-demo' },
               { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];

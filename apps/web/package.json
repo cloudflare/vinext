@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@cloudflare/kumo": "catalog:",
+    "@cloudflare/workers-response-store": "workspace:*",
     "@phosphor-icons/react": "catalog:",
     "@vinext/cloudflare": "workspace:*",
     "drizzle-orm": "catalog:",

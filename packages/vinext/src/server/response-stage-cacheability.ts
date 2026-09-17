@@ -1,4 +1,8 @@
 import type { ExecutionContextLike } from "vinext/shims/request-context";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "vinext/shims/cacheability-classification";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import type { VinextResponseStageDispatchOptions } from "./multi-stage.js";
 import type { WorkerCacheabilityProbeMode } from "./cacheability-request.js";
@@ -71,5 +75,19 @@ export async function withResponseStageCacheability(
   const response = options.policyHeadersAppliedBeforeRender
     ? rendered
     : cacheability.applyResponseStageCachePolicy(rendered, context, options.policyHeaders);
-  return cacheability.finalizeWorkerCacheabilityResponse(response, context);
+  const complete = (candidate: Response) =>
+    cacheability.finalizeWorkerCacheabilityResponse(candidate, context);
+  const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as
+    | RouteCacheabilityState
+    | undefined;
+  const route = state?.route;
+  if (
+    !options.probeMode &&
+    state?.admission?.policy !== "manifest" &&
+    (route?.kind === "app-page" || route?.kind === "pages-page")
+  ) {
+    const deferred = adapter.deferCompletedPageResponseAdmission?.(response, complete);
+    if (deferred) return deferred;
+  }
+  return complete(response);
 }

@@ -1,0 +1,128 @@
+# Caching
+
+Vinext supports several caching setups on Cloudflare. Caching is optional: if you do not enable it, your app still works without a shared response or data cache.
+
+## What Vinext caches
+
+There are two main kinds of cache:
+
+- **Response / CDN cache:** rendered HTML, RSC payloads, and other ISR responses.
+- **Data cache:** cached `fetch` calls, `unstable_cache`, and functions marked with `"use cache"`.
+
+`revalidatePath()` and `revalidateTag()` invalidate entries in the configured cache. A route that uses request-specific data such as cookies or headers is not added to the shared response cache.
+
+Static files and browser caching are separate from these options. Cloudflare can cache built assets without enabling a vinext cache adapter.
+
+## Options
+
+| Setup                                | Response storage           | Data storage           | Best for                                                                           | Main trade-off                                                                                               |
+| ------------------------------------ | -------------------------- | ---------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| No persistent cache                  | In-memory                  | In-memory              | Dynamic apps and initial migrations                                                | Every request may need to render and fetch its data                                                          |
+| Workers Response Store (recommended) | Workers Cache backed by R2 | Workers Response Store | Durable responses, SWR, cache warming, and one cache system for responses and data | Requires R2, a SQLite Durable Object, and either a separate cache Worker or extra bindings on the app Worker |
+| Workers Cache + data cache           | Workers Cache              | Workers KV             | Fast edge responses using Cloudflare's native caches                               | Cached responses have no durable backing store, and a hit in one region does not guarantee a hit elsewhere   |
+| Data cache                           | Workers KV                 | Workers KV             | A simple persistent cache without Workers Cache                                    | Requests still reach the Worker and KV is eventually consistent                                              |
+
+When caching is enabled through `vinext init`, Workers Response Store is the default choice.
+
+## Workers Response Store
+
+Workers Response Store is the most complete and best supported option. Workers Cache serves hot responses, R2 provides a durable backing store, and a SQLite Durable Object tracks metadata and invalidation state. An edge miss can read the stored response from R2 instead of immediately rendering the route again.
+
+It also handles the data cache, so it replaces both `cdnAdapter()` and `kvDataAdapter()`:
+
+```ts
+import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
+
+vinext({ cache: responseStoreAdapter() });
+```
+
+Metadata sharding is available as an explicit scaling option:
+
+```ts
+vinext({ cache: responseStoreAdapter({ shards: 16 }) });
+```
+
+Each cache key remains strongly coordinated by one SQLite Durable Object. Tag/path refreshes and purges fan out across all shards. The option is disabled by default, and changing the count starts a new cache layout for the deployed Worker version.
+
+The default service-binding mode keeps the cache service in a separate Worker. `vinext init` creates `wrangler.response-store.jsonc` alongside the application config and adds a deployment script:
+
+```sh
+pnpm run deploy:response-store
+```
+
+Then deploy the application using its normal deploy command. The Response Store only needs redeploying when its package or Wrangler configuration changes. New application versions can be deployed normally.
+
+For a single-Worker deployment, you can also consider using self-contained mode:
+
+```ts
+vinext({ cache: responseStoreAdapter({ mode: "self-contained" }) });
+```
+
+This avoids a second Worker, but the application Worker owns the R2 bucket, Durable Object, and cache-enabled entrypoint, which may not be desired for some applications.
+
+## Workers Cache and KV
+
+The older split setup uses Workers Cache for rendered responses and Workers KV for cached data:
+
+```ts
+import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+
+vinext({
+  cache: {
+    cdn: cdnAdapter(),
+    data: kvDataAdapter(),
+  },
+});
+```
+
+Workers Cache can serve a response without rerunning the render stage. Middleware and request routing still run before vinext selects the cached response entrypoint.
+
+This setup is fast when an entry is present at the edge, but Workers Cache is distributed rather than one globally shared cache. A response cached in one region may still miss in another. Tiered caching can reduce this duplication, but without a durable response store a regional miss or eviction can require another render. The KV data cache is also eventually consistent.
+
+The Workers Cache adapter supports staged cache warming through the Cloudflare deploy command. Warming is less direct because Workers Cache admission is controlled by response headers rather than a programmatic `put` API. vinext must render and probe routes to build a cacheability manifest, then make requests to fill the cache; it cannot simply upload known responses into Workers Cache. HTML and RSC payloads also use separate cache entries, so warming needs separate HTTP requests to seed both.
+
+## KV data cache
+
+You can use Workers KV without Workers Cache:
+
+```ts
+import { kvDataAdapter } from "@vinext/cloudflare/cache/kv-data-adapter";
+
+vinext({
+  cache: {
+    data: kvDataAdapter(),
+  },
+});
+```
+
+Add the matching namespace to `wrangler.jsonc`:
+
+```jsonc
+{
+  "kv_namespaces": [{ "binding": "VINEXT_KV_CACHE", "id": "<your-namespace-id>" }],
+}
+```
+
+This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
+
+## Which option should I choose?
+
+- Choose **no persistent cache** while migrating an app or when every response is intentionally dynamic.
+- Choose **Workers Response Store (recommended)** for the most complete Cloudflare caching setup and durable response storage.
+- Choose **Workers Cache + KV** when you specifically want the existing native Workers Cache architecture and accept that responses have no backing store.
+- Choose **KV only** when you want the simplest persistent cache and do not need Workers Cache to serve responses.
+
+You can run `vinext init --platform=cloudflare` to configure these choices. The generated Vite and Wrangler files are normal source files and can be adjusted later.
+
+## Freshness and revalidation
+
+vinext follows Next.js-style cache semantics:
+
+- A **fresh** entry is returned immediately.
+- A **stale** entry may be returned while stale-while-revalidate refreshes it in the background.
+- An **expired** entry is not returned and must be regenerated.
+- `revalidatePath()` invalidates content associated with a path.
+- `revalidateTag()` invalidates content associated with a cache tag.
+
+The adapter changes where entries live and how they are served, but it should not change the caching API used by application code.

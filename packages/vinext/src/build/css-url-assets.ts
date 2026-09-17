@@ -84,8 +84,15 @@ function decodeURIComponentSafe(value: string): string {
   }
 }
 
+function splitMarkerQuery(query: string): string[] {
+  // Vite appends an asset's query postfix after plugins may have added ?dpl,
+  // producing `?dpl=id?vinext_css_url_asset=name`. Treat that second `?` as
+  // the marker separator so the private marker can still be restored/removed.
+  return query.replaceAll(`?${CSS_URL_ASSET_MARKER}=`, `&${CSS_URL_ASSET_MARKER}=`).split("&");
+}
+
 function getMarker(query: string): string | null {
-  for (const part of query.split("&")) {
+  for (const part of splitMarkerQuery(query)) {
     const eq = part.indexOf("=");
     const key = eq === -1 ? part : part.slice(0, eq);
     if (key === CSS_URL_ASSET_MARKER) {
@@ -96,8 +103,7 @@ function getMarker(query: string): string | null {
 }
 
 function dropMarker(query: string): string {
-  return query
-    .split("&")
+  return splitMarkerQuery(query)
     .filter(
       (part) =>
         (part.indexOf("=") === -1 ? part : part.slice(0, part.indexOf("="))) !==

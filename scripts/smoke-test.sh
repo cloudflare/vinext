@@ -42,6 +42,7 @@ CHECKS=(
   "nextra-docs-template          /about  About"
   "benchmarks                    /       Benchmark"
   "hackernews                    /       Hacker News"
+  "response-store-demo          /       Workers Response Store"
   "static-export                /       Static by design"
   "static-export                /catalog/pocket-observatory/  Pocket Observatory"
   "static-export                /products/atlas/              Atlas Field Kit"

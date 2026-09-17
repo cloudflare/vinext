@@ -78,6 +78,7 @@ export default defineConfig({
     entry: ["src/**/*.ts", "src/**/*.tsx", "!src/**/*.d.ts"],
     clean: true,
     deps: {
+      resolveDepSubpath: true,
       // Agent detection, user-agent parsing, and image dimension extraction are
       // implementation details, so inline them rather than requiring vinext
       // consumers to install them. Same for pathslash: it is our own ~90-line
@@ -100,6 +101,7 @@ export default defineConfig({
       chunkFileNames: renameBundledDepsOutput,
     },
     dts: {
+      generator: "tsgo",
       tsgo: { path: getTscPath() },
     },
     copy: [

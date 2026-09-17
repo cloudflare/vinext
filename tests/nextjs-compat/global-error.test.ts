@@ -31,7 +31,13 @@ import path from "node:path";
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import { createBuilder, preview, type ViteDevServer } from "vite-plus";
 import vinext from "../../packages/vinext/src/index.js";
-import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
+import {
+  APP_FIXTURE_DIR,
+  createIsolatedFixture,
+  startFixtureServer,
+  fetchHtml,
+  testCacheDir,
+} from "../helpers.js";
 
 describe("Next.js compat: global-error", () => {
   let server: ViteDevServer;
@@ -273,23 +279,31 @@ describe("Next.js compat: global-error", () => {
 });
 
 describe("Next.js compat: global-error (production preview)", () => {
-  const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
+  let fixtureDir: string;
   let previewServer: Awaited<ReturnType<typeof preview>>;
   let baseUrl: string;
 
   beforeAll(async () => {
+    fixtureDir = await createIsolatedFixture(
+      APP_FIXTURE_DIR,
+      "vinext-global-error-",
+      undefined,
+      path.join(APP_FIXTURE_DIR, "node_modules"),
+    );
     const builder = await createBuilder({
-      root: APP_FIXTURE_DIR,
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
       configFile: false,
-      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      plugins: [vinext({ appDir: fixtureDir })],
       logLevel: "silent",
     });
     await builder.buildApp();
 
     previewServer = await preview({
-      root: APP_FIXTURE_DIR,
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
       configFile: false,
-      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      plugins: [vinext({ appDir: fixtureDir })],
       preview: { port: 0 },
       logLevel: "silent",
     });
@@ -303,7 +317,7 @@ describe("Next.js compat: global-error (production preview)", () => {
 
   afterAll(() => {
     previewServer?.httpServer.close();
-    fs.rmSync(outDir, { recursive: true, force: true });
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
   it("server component throw without local error.tsx renders global-error with 500", async () => {

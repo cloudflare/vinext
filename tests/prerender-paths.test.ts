@@ -177,6 +177,32 @@ describe("prerender path manifest", () => {
     expect(closeMock).toHaveBeenCalledOnce();
   });
 
+  it("discovers response-store warm targets without writing a manifest", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const discovery = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      buildIdentity: "response-header",
+      includeCanonicalRsc: true,
+    });
+
+    expect(discovery).toMatchObject({
+      buildIdentity: "rsc-build-a",
+      paths: ["/"],
+      rscBuildId: "rsc-build-a",
+      rscPaths: ["/"],
+      routePatterns: { "/": { kind: "app-page", pattern: "/" } },
+    });
+    expect(discovery?.responseVary).toBeUndefined();
+    expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(false);
+  });
+
   it("marks probe collapses unsafe when config cache policy varies by path or request", async () => {
     // Next.js applies pathname-specific custom Cache-Control to dynamic App
     // routes and evaluates has/missing conditions against each request:

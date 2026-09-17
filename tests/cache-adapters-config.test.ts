@@ -21,6 +21,7 @@ import {
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
+  supportsCanonicalRscWarmup,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
   VIRTUAL_CDN_CACHE_ADAPTER,
@@ -36,6 +37,7 @@ import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js"
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
+import { responseStoreAdapter } from "../packages/cloudflare/src/cache/response-store-adapter.js";
 import createKvDataCacheAdapter, {
   KVCacheHandler,
 } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
@@ -122,11 +124,12 @@ describe("generateCacheAdaptersModule", () => {
 
   it("advertises data-cache availability without importing it into the request stage", () => {
     const code = generateCdnCacheAdapterModule({
-      cdn: { adapter: "my-cdn-adapter" },
+      cdn: { adapter: "my-cdn-adapter", options: { shards: 16 } },
       data: { adapter: "my-data-adapter" },
     });
 
     expect(code).toContain("export const hasConfiguredDataCache = true;");
+    expect(code).toContain('export const configuredCdnCacheAdapterOptions = {"shards":16};');
     expect(code).toContain('from "my-cdn-adapter"');
     expect(code).not.toContain("my-data-adapter");
   });
@@ -420,6 +423,46 @@ describe("cdnAdapter builder + factory", () => {
     });
     expect(() => cdnAdapter({ versionMetadataBinding: "" })).toThrow(
       "must be a non-empty string binding name",
+    );
+  });
+});
+
+describe("responseStoreAdapter builder", () => {
+  it("declares single-upload, after-render warmup capabilities", () => {
+    const descriptor = responseStoreAdapter();
+    expect(descriptor.cdn.capabilities).toEqual({
+      buildIdentity: "response-header",
+      isResponsePolicyHeader: expect.any(Function),
+      requestRouting: "uncached-stage",
+      warmup: "response-store",
+    });
+    expect(hasBuildIdentityResponseHeader(descriptor)).toBe(true);
+    expect(hasVerbatimResponseVary(descriptor)).toBe(false);
+    expect(supportsCanonicalRscWarmup(descriptor)).toBe(false);
+  });
+
+  it("can keep Response Store inside the application Worker", () => {
+    const descriptor = responseStoreAdapter({ mode: "self-contained" });
+    expect(descriptor.cdn.output.entry).toMatch(
+      /response-store-adapter\.self-contained\.worker\.js$/,
+    );
+    expect(
+      descriptor.cdn.output.transformHostEntry({
+        code: "export default {};",
+        id: "virtual:cloudflare/worker-entry",
+      }),
+    ).toBe(
+      `export default {};\nexport { CacheMetadata, ResponseStoreBinding, ResponseStoreRevalidator } from ${JSON.stringify(descriptor.cdn.output.entry)};\n`,
+    );
+  });
+
+  it("opts into metadata sharding explicitly", () => {
+    const descriptor = responseStoreAdapter({ shards: 16 });
+    expect(descriptor.cdn.options).toEqual({ shards: 16 });
+    expect(descriptor.data.options).toEqual({ shards: 16 });
+    expect(responseStoreAdapter().cdn.options).toBeUndefined();
+    expect(() => responseStoreAdapter({ shards: 1 })).toThrow(
+      "Workers Response Store shards must be an integer greater than 1",
     );
   });
 });

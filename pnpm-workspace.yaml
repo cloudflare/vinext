@@ -47,7 +47,7 @@ catalog:
   recma-codehike: 0.0.1
   remark-codehike: 0.0.1
   "@vitejs/plugin-rsc": ^0.5.34
-  "@vitest/coverage-istanbul": 4.1.10
+  "@vitest/coverage-istanbul": 4.1.11
   better-auth: ^1.5.6
   better-sqlite3: ^12.0.0
   class-variance-authority: ^0.7.1
@@ -68,6 +68,7 @@ catalog:
   am-i-vibing: ^0.5.0
   msw: ^2.14.6
   ms: 3.0.0-canary.1
+  miniflare: 5.20260730.0-alpha
   next: 16.2.7
   next-intl: ^4.9.2
   next-themes: ^0.4.6
@@ -90,10 +91,10 @@ catalog:
   ua-parser-js: 1.0.35
   use-count-up: 3.0.1
   validator: ^13.15.26
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.6
+  vite: npm:@voidzero-dev/vite-plus-core@0.3.2
   vite-plugin-commonjs: ^0.10.4
-  vite-plus: 0.2.6
-  vitest: 4.1.10
+  vite-plus: 0.3.2
+  vitest: 4.1.11
   web-vitals: ^4.2.4
   wrangler: ^4.118.0
   zod: 3.24.3

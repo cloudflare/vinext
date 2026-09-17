@@ -42,11 +42,11 @@ describe("ServerInsertedHTMLContext", () => {
     const { ServerInsertedHTMLContext } =
       await import("../packages/vinext/src/shims/navigation.js");
 
-    let contextValue: unknown = "not-set";
-
     // Component that reads the context — simulates what Apollo does
     function ContextReader() {
-      contextValue = React.useContext(ServerInsertedHTMLContext!);
+      const contextValue = React.useContext(ServerInsertedHTMLContext!);
+      expect(contextValue).toBe(addCallback);
+      expect(typeof contextValue).toBe("function");
       return React.createElement("div", null, "test");
     }
 
@@ -61,8 +61,6 @@ describe("ServerInsertedHTMLContext", () => {
     );
 
     renderToString(tree);
-    expect(contextValue).toBe(addCallback);
-    expect(typeof contextValue).toBe("function");
   });
 
   it("Apollo Client pattern: useContext returns a usable registration function", async () => {
@@ -73,14 +71,9 @@ describe("ServerInsertedHTMLContext", () => {
     //   const insertHtml = useContext(ServerInsertedHTMLContext);
     //   if (!insertHtml) throw new Error("...");
     //   insertHtml(() => <style>...</style>);
-    let apolloError: Error | null = null;
-
     function ApolloSSRComponent() {
       const insertHtml = React.useContext(ServerInsertedHTMLContext!);
       if (!insertHtml) {
-        apolloError = new Error(
-          "The SSR build of ApolloNextAppProvider cannot be used outside of the Next App Router!",
-        );
         return React.createElement("div", null, "error");
       }
       // Register a style injection callback (what Apollo does for SSR)
@@ -97,8 +90,6 @@ describe("ServerInsertedHTMLContext", () => {
 
     const html = renderToString(tree);
 
-    // Apollo should NOT throw
-    expect(apolloError).toBeNull();
     expect(html).toContain("apollo-content");
 
     // The callback should have been registered via useServerInsertedHTML
@@ -145,18 +136,13 @@ describe("ServerInsertedHTMLContext", () => {
     const { ServerInsertedHTMLContext } =
       await import("../packages/vinext/src/shims/navigation.js");
 
-    let contextValue: unknown = "not-set";
-
     function ComponentWithoutProvider() {
-      contextValue = React.useContext(ServerInsertedHTMLContext!);
+      expect(React.useContext(ServerInsertedHTMLContext!)).toBeNull();
       return React.createElement("div", null, "no-provider");
     }
 
     // Render WITHOUT Provider — simulates using outside App Router
     renderToString(React.createElement(ComponentWithoutProvider));
-
-    // Context value should be null (the default)
-    expect(contextValue).toBeNull();
   });
 
   it("supports multiple callback registrations from context", async () => {

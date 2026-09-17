@@ -2,6 +2,7 @@ import { expect, test, type APIResponse } from "@playwright/test";
 
 function expectGatewayCachePolicy(response: APIResponse): void {
   expect(response.headers()["cache-control"]).toContain("must-revalidate");
+  expect(response.headers()["cache-control"]).not.toContain("no-store");
   expect(response.headers()["cdn-cache-control"]).toBeUndefined();
   expect(response.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
 }
@@ -46,15 +47,6 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   });
   expect(runtimeCheck.status()).toBe(200);
   expectGatewayCachePolicy(runtimeCheck);
-
-  const lateCookie = await request.get("/cacheability/static?late-policy=set-cookie", {
-    headers: { Accept: "text/html" },
-  });
-  expect(lateCookie.status()).toBe(200);
-  expect(lateCookie.headers()["set-cookie"]).toContain("late-config=cookie");
-  expect(lateCookie.headers()["cache-control"]).toContain("no-store");
-  expect(lateCookie.headers()["cdn-cache-control"]).toBeUndefined();
-  expect(lateCookie.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
 
   for (const policy of ["cache-control", "cdn-cache-control", "cloudflare-cdn-cache-control"]) {
     const latePrivatePolicy = await request.get(`/cacheability/static?late-policy=${policy}`, {
@@ -274,4 +266,15 @@ test("admits pattern-backed App responses only after each clean EOF", async ({ r
   expect(lateConfigPublicFailure.status()).toBe(500);
   expect(lateConfigPublicFailure.headers()["cache-control"]).toContain("no-store");
   expect(lateConfigPublicFailure.headers()["cdn-cache-control"]).toBeUndefined();
+
+  // Keep this last: APIRequestContext retains response cookies, and credentialed
+  // requests intentionally bypass shared response admission.
+  const lateCookie = await request.get("/cacheability/static?late-policy=set-cookie", {
+    headers: { Accept: "text/html" },
+  });
+  expect(lateCookie.status()).toBe(200);
+  expect(lateCookie.headers()["set-cookie"]).toContain("late-config=cookie");
+  expect(lateCookie.headers()["cache-control"]).toContain("no-store");
+  expect(lateCookie.headers()["cdn-cache-control"]).toBeUndefined();
+  expect(lateCookie.headers()["cloudflare-cdn-cache-control"]).toBeUndefined();
 });

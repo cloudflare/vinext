@@ -8,6 +8,7 @@
  */
 
 import http, { type IncomingHttpHeaders } from "node:http";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
@@ -15,6 +16,7 @@ import { createServer, build, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 import type { NextConfigInput } from "../packages/vinext/src/config/next-config.js";
+import { afterAll } from "vite-plus/test";
 
 // ── Fixture paths ─────────────────────────────────────────────
 export const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
@@ -34,6 +36,36 @@ export const RSC_ENTRIES = {
   ssr: "virtual:vinext-app-ssr-entry",
   client: "virtual:vinext-app-browser-entry",
 } as const;
+
+const testCacheDirs = new Map<string, string>();
+let testCacheRoot: string | undefined;
+
+if (process.env.VINEXT_PARALLEL_INTEGRATION === "true") {
+  afterAll(() => {
+    if (testCacheRoot) fsSync.rmSync(testCacheRoot, { recursive: true, force: true });
+    testCacheDirs.clear();
+    testCacheRoot = undefined;
+  });
+}
+
+export function testCacheDir(fixtureDir: string): string | undefined {
+  if (process.env.VINEXT_PARALLEL_INTEGRATION !== "true") return undefined;
+
+  const fixture = path.resolve(fixtureDir);
+  let cacheDir = testCacheDirs.get(fixture);
+  if (!cacheDir) {
+    if (!testCacheRoot) {
+      testCacheRoot = path.resolve(
+        import.meta.dirname,
+        `../node_modules/.vite-vitest-${process.pid}`,
+      );
+      fsSync.mkdirSync(testCacheRoot);
+    }
+    cacheDir = path.join(testCacheRoot, String(testCacheDirs.size));
+    testCacheDirs.set(fixture, cacheDir);
+  }
+  return cacheDir;
+}
 
 // ── Server lifecycle helper ───────────────────────────────────
 
@@ -86,6 +118,7 @@ export async function startFixtureServer(
 
   const server = await createServer({
     root: fixtureDir,
+    cacheDir: testCacheDir(fixtureDir),
     configFile: false,
     plugins,
     publicDir: opts?.publicDir,
@@ -263,6 +296,7 @@ export async function buildPagesFixture(
   // (hybrid); we only want the Pages Router SSR bundle here.
   await build({
     root: fixtureDir,
+    cacheDir: testCacheDir(fixtureDir),
     configFile: false,
     plugins: [vinext({ disableAppRouter: true, nextConfig })],
     logLevel: "silent",
@@ -299,6 +333,7 @@ export async function buildAppFixture(
   const { createBuilder } = await import("vite");
   const builder = await createBuilder({
     root: fixtureDir,
+    cacheDir: testCacheDir(fixtureDir),
     configFile: false,
     plugins: [vinext({ appDir: fixtureDir, rscOutDir, ssrOutDir, clientOutDir, nextConfig })],
     logLevel: "silent",
@@ -349,6 +384,7 @@ export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
   const { createBuilder } = await import("vite");
   const builder = await createBuilder({
     root: tmpDir,
+    cacheDir: testCacheDir(tmpDir),
     configFile: false,
     plugins: [
       vinext({ appDir: tmpDir }),

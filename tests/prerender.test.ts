@@ -13,7 +13,12 @@ import fs from "node:fs";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { buildPagesFixture, buildAppFixture, buildCloudflareAppFixture } from "./helpers.js";
+import {
+  buildPagesFixture,
+  buildAppFixture,
+  buildCloudflareAppFixture,
+  createIsolatedFixture,
+} from "./helpers.js";
 import {
   extractRscPayloadFromPrerenderedHtml,
   resolveParentParams,
@@ -2015,25 +2020,35 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
 // ─── runPrerender — output: 'export' wiring ───────────────────────────────────
 
 describe("runPrerender — output: 'export' wiring", () => {
+  let fixtureDir: string;
   let pagesBundlePath: string;
   let exportNextConfig: Awaited<
     ReturnType<typeof import("../packages/vinext/src/config/next-config.js").resolveNextConfig>
   >;
 
   beforeAll(async () => {
-    // Build pages-basic to a fresh tmpdir — no fixture copying needed.
+    fixtureDir = await createIsolatedFixture(
+      PAGES_FIXTURE,
+      "vinext-run-prerender-",
+      undefined,
+      path.join(PAGES_FIXTURE, "node_modules"),
+    );
     // Pass the bundle path and resolved config to runPrerender so it
     // exercises output: 'export' without touching the real next.config.mjs.
     pagesBundlePath = await buildPagesFixture(PAGES_FIXTURE);
     const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
-    exportNextConfig = await resolveNextConfig({ output: "export" }, PAGES_FIXTURE);
+    exportNextConfig = await resolveNextConfig({ output: "export" }, fixtureDir);
   }, 120_000);
+
+  afterAll(() => {
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
+  });
 
   it("throws when next.config output: 'export' and SSR routes exist", async () => {
     const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
     await expect(
       runPrerender({
-        root: PAGES_FIXTURE,
+        root: fixtureDir,
         nextConfig: exportNextConfig,
         pagesBundlePath,
       }),
@@ -2041,7 +2056,7 @@ describe("runPrerender — output: 'export' wiring", () => {
   });
 
   it("does not reload disk config when the caller supplies resolved config", async () => {
-    const configPath = path.join(PAGES_FIXTURE, "next.config.mjs");
+    const configPath = path.join(fixtureDir, "next.config.mjs");
     const originalConfig = fs.readFileSync(configPath, "utf-8");
 
     try {
@@ -2050,11 +2065,11 @@ describe("runPrerender — output: 'export' wiring", () => {
         import("../packages/vinext/src/build/run-prerender.js"),
         import("../packages/vinext/src/config/next-config.js"),
       ]);
-      const nextConfig = await resolveNextConfig({ output: "export" }, PAGES_FIXTURE);
+      const nextConfig = await resolveNextConfig({ output: "export" }, fixtureDir);
 
       await expect(
         runPrerender({
-          root: PAGES_FIXTURE,
+          root: fixtureDir,
           nextConfig,
           pagesBundlePath,
         }),
@@ -2065,7 +2080,7 @@ describe("runPrerender — output: 'export' wiring", () => {
   });
 
   it("does not rewrite the Worker entry when prerender validation fails", async () => {
-    const workerEntry = path.join(PAGES_FIXTURE, "dist", "server", "index.js");
+    const workerEntry = path.join(fixtureDir, "dist", "server", "index.js");
     const source = 'export default { fetch() { return new Response("unchanged"); } };\n';
     fs.mkdirSync(path.dirname(workerEntry), { recursive: true });
     fs.writeFileSync(workerEntry, source, "utf-8");
@@ -2074,7 +2089,7 @@ describe("runPrerender — output: 'export' wiring", () => {
       const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
       await expect(
         runPrerender({
-          root: PAGES_FIXTURE,
+          root: fixtureDir,
           nextConfig: exportNextConfig,
           pagesBundlePath,
         }),
@@ -2082,7 +2097,7 @@ describe("runPrerender — output: 'export' wiring", () => {
 
       expect(fs.readFileSync(workerEntry, "utf-8")).toBe(source);
     } finally {
-      fs.rmSync(path.join(PAGES_FIXTURE, "dist"), { recursive: true, force: true });
+      fs.rmSync(path.join(fixtureDir, "dist"), { recursive: true, force: true });
     }
   });
 
@@ -2090,7 +2105,7 @@ describe("runPrerender — output: 'export' wiring", () => {
     const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
     await expect(
       runPrerender({
-        root: PAGES_FIXTURE,
+        root: fixtureDir,
         nextConfig: exportNextConfig,
         pagesBundlePath,
       }),

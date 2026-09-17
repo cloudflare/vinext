@@ -185,6 +185,10 @@ export function createWorkerCacheabilityAdmissionContext(
   options?: { applyCompletedResponsePolicy?: boolean },
 ): ExecutionContextLike {
   const identity = cacheabilityRequestIdentity(request, trustedRepresentation);
+  const credentialedRequest =
+    request.headers.has("authorization") ||
+    request.headers.has("cookie") ||
+    request.headers.has("proxy-authorization");
   const routePathname = identity
     ? cacheabilityRoutePathname(
         resolvedRoutePathname ?? new URL(request.url).pathname,
@@ -202,6 +206,7 @@ export function createWorkerCacheabilityAdmissionContext(
           }
         : { policy: "deny" },
       captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
+      credentialedRequest,
       mode: "admit",
       applyCompletedResponsePolicy: options?.applyCompletedResponsePolicy,
       responseVary,
@@ -224,6 +229,7 @@ export function createWorkerCacheabilityAdmissionContext(
           }
         : { policy: "deny" },
     captureDeadlineAt: Date.now() + CACHEABILITY_PROBE_TIMEOUT_MS,
+    credentialedRequest,
     mode: "admit",
     applyCompletedResponsePolicy: options?.applyCompletedResponsePolicy,
     responseVary,
@@ -756,6 +762,7 @@ async function finalizeWorkerCacheabilityAdmission(
     if (
       (!isManifestAuthorized && !canUseBoundedRuntimeAdmission) ||
       response.status >= 500 ||
+      state.credentialedRequest ||
       state.forcedDynamicReason ||
       hasStrictFinalResponseVeto(response, state) ||
       cacheabilityVaryRejectionReason(response.headers, state) !== null

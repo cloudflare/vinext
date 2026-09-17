@@ -11,10 +11,10 @@
  * THE CORRECTNESS RULE: to accumulate across pushes without persisting changesets
  * on `main`, we regenerate the full unreleased set every run, from each package's
  * last release tag to HEAD. That would collide with the publish trigger right
- * after a Version PR merges, so decideGeneration() skips a package whose
- * package.json version is already ahead of its latest tag (release merged,
- * awaiting publish) — leaving the working tree empty so the action publishes
- * instead of re-opening a PR. Recomputing from the tag each run is idempotent.
+ * after a Version PR merges, so decideGeneration() detects packages awaiting
+ * publication. If any package is awaiting publication, generation stops for the
+ * whole workspace so the action publishes instead of re-opening a PR.
+ * Recomputing from the tag each run is idempotent.
  *
  * Type → bump: feat→minor; fix/perf/revert→patch; everything else→skip;
  * any `<type>!` or `BREAKING CHANGE:` footer→major (overrides the table).
@@ -170,13 +170,28 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 {
  * one case to suppress: right after a Version PR merges, `package.json` is
  * bumped but `changeset publish` hasn't created the tag yet. Regenerating then
  * would re-pick-up the just-released commits and re-open a Version PR instead of
- * letting the publish run — so skip while the version is ahead of its tag.
+ * letting the publish run — so skip while the version is ahead of its tag, or
+ * while a tagless package is ahead of its prerelease initial version.
  */
+export type GenerationDecision = { action: "skip" | "generate"; reason: string };
+
 export function decideGeneration(
   pkgVersion: string,
   tagVersion: string | null,
-): { action: "skip" | "generate"; reason: string } {
-  if (tagVersion == null) return { action: "generate", reason: "no release tag yet" };
+  prereleaseInitialVersion: string | null = null,
+): GenerationDecision {
+  if (tagVersion == null) {
+    if (
+      prereleaseInitialVersion != null &&
+      compareVersions(pkgVersion, prereleaseInitialVersion) > 0
+    ) {
+      return {
+        action: "skip",
+        reason: `package.json (${pkgVersion}) > prerelease initial version (${prereleaseInitialVersion}); first release awaiting publish`,
+      };
+    }
+    return { action: "generate", reason: "no release tag yet" };
+  }
   if (compareVersions(pkgVersion, tagVersion) > 0) {
     return {
       action: "skip",
@@ -187,6 +202,11 @@ export function decideGeneration(
     action: "generate",
     reason: `package.json (${pkgVersion}) == tag (${tagVersion}); accumulating unreleased commits`,
   };
+}
+
+/** Publishing and versioning are mutually exclusive workspace-wide action modes. */
+export function hasPendingPublish(decisions: GenerationDecision[]): boolean {
+  return decisions.some(({ action }) => action === "skip");
 }
 
 /** Build the combined changeset file (frontmatter + bullet body). Pure. */
@@ -558,6 +578,15 @@ export function releaseRangeStart(name: string): string {
 export function run(): { written: string | null; bumps: Record<string, Bump> } {
   const packageDirToName = discoverPublishablePackages();
   const overrides = loadOverrides();
+  let prereleaseInitialVersions: Record<string, string> = {};
+  try {
+    const pre = JSON.parse(readFileSync(join(CHANGESET_DIR, "pre.json"), "utf8")) as {
+      initialVersions?: Record<string, string>;
+    };
+    prereleaseInitialVersions = pre.initialVersions ?? {};
+  } catch {
+    /* not in prerelease mode */
+  }
   if (overrides.length > 0) {
     console.log(
       `[create-changeset] Applying ${overrides.length} SHA-named changeset override(s): ${overrides
@@ -568,13 +597,23 @@ export function run(): { written: string | null; bumps: Record<string, Bump> } {
 
   // Per-package: decide generate-vs-skip and the diff range.
   const ranges = new Map<string, string>(); // name → `from` ref
+  const decisions: GenerationDecision[] = [];
   for (const [dir, name] of Object.entries(packageDirToName)) {
     const pkg = JSON.parse(
       readFileSync(join(REPO_ROOT, dir, "package.json"), "utf8"),
     ) as PackageJson;
-    const decision = decideGeneration(pkg.version ?? "0.0.0", latestPackageTagVersion(name));
+    const decision = decideGeneration(
+      pkg.version ?? "0.0.0",
+      latestPackageTagVersion(name),
+      prereleaseInitialVersions[name] ?? null,
+    );
     console.log(`[create-changeset] ${name}: ${decision.action} — ${decision.reason}`);
+    decisions.push(decision);
     if (decision.action === "generate") ranges.set(name, releaseRangeStart(name));
+  }
+  if (hasPendingPublish(decisions)) {
+    console.log("[create-changeset] Nothing to generate (workspace publish pending).");
+    return { written: null, bumps: {} };
   }
   if (ranges.size === 0) {
     console.log("[create-changeset] Nothing to generate (guard active for all packages).");

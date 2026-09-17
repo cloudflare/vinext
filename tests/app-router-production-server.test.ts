@@ -9,7 +9,7 @@ import {
   getPagesClientAssets,
   setPagesClientAssets,
 } from "../packages/vinext/src/server/pages-client-assets.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture } from "./helpers.js";
+import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
 
 const ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
@@ -296,6 +296,7 @@ describe("App Router Production server (startProdServer)", () => {
       // Build the app-basic fixture to the default dist/ directory
       const builder = await createBuilder({
         root: APP_FIXTURE_DIR,
+        cacheDir: testCacheDir(APP_FIXTURE_DIR),
         configFile: false,
         plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
         logLevel: "silent",

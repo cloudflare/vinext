@@ -129,6 +129,19 @@ export type CdnCacheAdapter = {
   readonly requiresCompletedResponseAdmission?: boolean;
 
   /**
+   * Optionally return a foreground page response while completed-response
+   * admission continues on an independent body branch. Returning `null` keeps
+   * the normal blocking admission path. API responses are never passed here.
+   */
+  deferCompletedPageResponseAdmission?(
+    response: Response,
+    complete: (response: Response) => Promise<Response>,
+  ): Response | null;
+
+  /** Capture the full-route RSC side stream while admitting a completed HTML response. */
+  captureAppPageRscData?(rscData: Promise<ArrayBuffer>): void;
+
+  /**
    * Validate provider-specific request routing before the application handles
    * the request. Returning a response short-circuits the request pipeline;
    * returning `null` continues normally.

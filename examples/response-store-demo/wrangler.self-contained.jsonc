@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "response-store-demo-self-contained",
+  "compatibility_date": "2026-04-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "vinext/server/fetch-handler",
+  "preview_urls": true,
+  "account_id": "d48e2eb599d9aa075d5e682deaecc518",
+  "assets": {
+    "directory": ".vinext/response-store-self-contained/client",
+    "not_found_handling": "none",
+    "binding": "ASSETS",
+  },
+  "cache": { "enabled": true },
+  "exports": {
+    "default": { "type": "worker", "cache": { "enabled": false } },
+    "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },
+    "CacheMetadata": { "type": "durable-object", "storage": "sqlite" },
+  },
+  "r2_buckets": [
+    {
+      "binding": "CACHE_BODIES",
+      "bucket_name": "response-store-demo-self-contained-cache-bodies",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "CACHE_METADATA", "class_name": "CacheMetadata" }],
+  },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+}

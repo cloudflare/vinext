@@ -9,6 +9,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 const emitPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
+const discoverPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
 const realWranglerUrl = pathToFileURL(
   createRequire(path.join(process.cwd(), "examples/app-router-cloudflare/package.json")).resolve(
     "wrangler",
@@ -24,6 +25,12 @@ vi.mock("vinext/internal/build/prerender-paths", async (importOriginal) => {
     await importOriginal<typeof import("../packages/vinext/src/build/prerender-paths.js")>();
   return {
     ...actual,
+    discoverPrerenderPathManifest: async (
+      options: Parameters<typeof actual.discoverPrerenderPathManifest>[0],
+    ) => {
+      discoverPrerenderPathManifestMock(options);
+      return actual.discoverPrerenderPathManifest(options);
+    },
     emitPrerenderPathManifest: async (
       options: Parameters<typeof actual.emitPrerenderPathManifest>[0],
     ) => {
@@ -205,6 +212,7 @@ describe("deploy prerender config wiring", () => {
     tmpDir = fs.mkdtempSync(path.join(process.cwd(), ".tmp-vinext-deploy-prerender-"));
     runPrerenderMock.mockClear();
     emitPrerenderPathManifestMock.mockClear();
+    discoverPrerenderPathManifestMock.mockClear();
     vi.mocked(execFileSync).mockClear();
     vi.mocked(spawn).mockClear();
   });
@@ -353,7 +361,7 @@ describe("deploy prerender config wiring", () => {
     });
 
     expect(fs.readFileSync(path.join(tmpDir, "config-load-count.txt"), "utf8")).toBe("1");
-    expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(false);
     expect(
       vi.mocked(spawn).mock.calls.some(([, args]) => {
         const wranglerArgs = args as string[];
@@ -477,16 +485,8 @@ describe("deploy prerender config wiring", () => {
 
     expect(runPrerenderMock).not.toHaveBeenCalled();
 
-    expect(
-      JSON.parse(
-        fs.readFileSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"), "utf-8"),
-      ),
-    ).toEqual({
-      appPaths: [],
-      buildId: "build-a",
-      trailingSlash: false,
-      paths: [],
-    });
+    expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(false);
+    expect(discoverPrerenderPathManifestMock).toHaveBeenCalledOnce();
     expect(
       vi.mocked(execFileSync).mock.calls.some(([, args]) => {
         const wranglerArgs = args as string[];
@@ -508,13 +508,13 @@ describe("deploy prerender config wiring", () => {
 
     await deploy({ root: tmpDir, skipBuild: true, warmCdnCache: true });
 
-    expect(emitPrerenderPathManifestMock).toHaveBeenLastCalledWith(
+    expect(discoverPrerenderPathManifestMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         pathDiscoveryTarget: expect.objectContaining({ retries: undefined }),
       }),
     );
 
-    emitPrerenderPathManifestMock.mockClear();
+    discoverPrerenderPathManifestMock.mockClear();
     await deploy({
       root: tmpDir,
       skipBuild: true,
@@ -522,7 +522,7 @@ describe("deploy prerender config wiring", () => {
       warmCdnDiscoveryRetries: 7,
     });
 
-    expect(emitPrerenderPathManifestMock).toHaveBeenLastCalledWith(
+    expect(discoverPrerenderPathManifestMock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         pathDiscoveryTarget: expect.objectContaining({ retries: 7 }),
       }),
