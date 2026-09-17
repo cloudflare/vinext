@@ -625,6 +625,11 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
             ...(intercept?.interceptNotFound
               ? {
                   notFoundModule: intercept.interceptNotFound,
+                  notFoundModuleRouteSegments: (
+                    intercept.interceptNotFoundBranchSegments ??
+                    intercept.interceptSourcePageSegments ??
+                    fallbackRouteSegments
+                  ).slice(0, intercept.interceptNotFoundTreePosition ?? 0),
                   notFoundParams: resolveAppPageBranchParams(
                     intercept.interceptNotFoundBranchSegments ??
                       intercept.interceptBranchSegments ??
@@ -640,7 +645,14 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
       const fallbackHeadOptions = {
         boundaryModule,
         boundaryParams,
+        boundaryRouteSegments: fallbackRouteSegments.slice(0, boundaryTreePosition ?? 0),
         branchNotFoundConventions: options.statusCode === 404,
+        errorConvention:
+          options.statusCode === 403
+            ? ("forbidden" as const)
+            : options.statusCode === 401
+              ? ("unauthorized" as const)
+              : ("not-found" as const),
         layoutModules,
         layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
           options.route,

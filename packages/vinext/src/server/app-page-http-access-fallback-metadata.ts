@@ -12,6 +12,7 @@ import {
   type ApplyAppPageFileBasedMetadata,
   type OrderedAppPageMetadataSource,
 } from "./app-page-head.js";
+import { createAppMetadataModuleRoute } from "./app-metadata-tracing.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 
@@ -19,8 +20,10 @@ type HttpAccessFallbackMetadataPlanOptions<TModule extends AppPageHeadModule = A
   {
     boundaryModule?: TModule | null;
     boundaryParams: AppPageParams;
+    boundaryRouteSegments?: readonly string[] | null;
     /** Whether active branches may replace the fallback with their local not-found convention. */
     branchNotFoundConventions?: boolean;
+    errorConvention: "forbidden" | "not-found" | "unauthorized";
     layoutModules: readonly (TModule | null | undefined)[];
     layoutTreePositions?: readonly number[] | null;
     parallelBranches?: readonly ActiveParallelRouteHeadInput<TModule>[] | null;
@@ -70,6 +73,10 @@ function createHttpAccessFallbackPlan<TModule extends AppPageHeadModule>(
       source: {
         includeWhenEmpty: true,
         module: layoutModule,
+        moduleRoute: createAppMetadataModuleRoute(
+          routeSegments.slice(0, treePosition),
+          options.errorConvention,
+        ),
         params: resolveAppPageSegmentParams(routeSegments, treePosition, options.params),
         routeSegments: routeSegments.slice(0, treePosition),
       },
@@ -78,7 +85,7 @@ function createHttpAccessFallbackPlan<TModule extends AppPageHeadModule>(
 
   let activeBoundaryModule = options.boundaryModule;
   let activeBoundaryParams = options.boundaryParams;
-  let activeBoundaryRouteSegments = routeSegments;
+  let activeBoundaryRouteSegments = options.boundaryRouteSegments ?? [];
   const appendFallbackLeaf = () => {
     if (fallbackLeafMode === "final") {
       plan.push({ kind: "fallback-leaf" });
@@ -90,6 +97,10 @@ function createHttpAccessFallbackPlan<TModule extends AppPageHeadModule>(
       source: {
         includeWhenEmpty: true,
         module: activeBoundaryModule,
+        moduleRoute: createAppMetadataModuleRoute(
+          activeBoundaryRouteSegments,
+          options.errorConvention,
+        ),
         params: activeBoundaryParams,
         routeSegments: activeBoundaryRouteSegments,
       },
@@ -111,6 +122,8 @@ function createHttpAccessFallbackPlan<TModule extends AppPageHeadModule>(
     const parallelRoute = branch.head;
     const parallelParams = parallelRoute.params ?? options.params;
     const parallelRouteSegments = parallelRoute.routeSegments ?? routeSegments;
+    const parallelModuleRoutePrefix = parallelRoute.moduleRoutePrefixSegments ?? [];
+    const parallelModuleRouteSegments = parallelRoute.moduleRouteSegments ?? parallelRouteSegments;
     const layoutModules = [
       ...(parallelRoute.layoutModules ?? []),
       parallelRoute.layoutModule,
@@ -124,6 +137,13 @@ function createHttpAccessFallbackPlan<TModule extends AppPageHeadModule>(
         source: {
           includeWhenEmpty: true,
           module: layoutModule,
+          moduleRoute: createAppMetadataModuleRoute(
+            [
+              ...parallelModuleRoutePrefix,
+              ...parallelModuleRouteSegments.slice(0, layoutTreePositions[index] ?? 0),
+            ],
+            options.errorConvention,
+          ),
           params:
             layoutParams[index] ??
             resolveAppPageBranchParams(
@@ -138,7 +158,10 @@ function createHttpAccessFallbackPlan<TModule extends AppPageHeadModule>(
     if (options.branchNotFoundConventions !== false && branch.notFoundModule) {
       activeBoundaryModule = branch.notFoundModule;
       activeBoundaryParams = branch.notFoundParams ?? parallelParams;
-      activeBoundaryRouteSegments = parallelRouteSegments;
+      activeBoundaryRouteSegments = branch.notFoundModuleRouteSegments ?? [
+        ...parallelModuleRoutePrefix,
+        ...parallelModuleRouteSegments,
+      ];
     }
     appendFallbackLeaf();
   }
@@ -150,6 +173,10 @@ function createHttpAccessFallbackPlan<TModule extends AppPageHeadModule>(
       {
         includeWhenEmpty: true,
         module: activeBoundaryModule,
+        moduleRoute: createAppMetadataModuleRoute(
+          activeBoundaryRouteSegments,
+          options.errorConvention,
+        ),
         params: activeBoundaryParams,
         routeSegments: activeBoundaryRouteSegments,
       },
