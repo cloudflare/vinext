@@ -1109,6 +1109,7 @@ export function createPagesPageHandler(
         const pageModuleIds: (string | null | undefined)[] = [];
         if (appAssetPath) pageModuleIds.push(appAssetPath);
         if (route.filePath) pageModuleIds.push(route.filePath);
+        const initialStylesheetHrefs = new Set<string>();
         const assetTags = collectAssetTags({
           manifest,
           moduleIds: pageModuleIds,
@@ -1118,6 +1119,7 @@ export function createPagesPageHandler(
           assetPrefix: vinextConfig.assetPrefix,
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
           crossOrigin: vinextConfig.crossOrigin,
+          initialStylesheetHrefs,
         });
 
         let pageResponse = await renderPagesPageResponse({
@@ -1171,6 +1173,7 @@ export function createPagesPageHandler(
           routeUrl: renderRouteUrl,
           safeJsonStringify,
           scriptNonce,
+          initialStylesheetHrefs,
           crossOrigin: vinextConfig.crossOrigin,
           disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
           statusCode: renderStatusCode,

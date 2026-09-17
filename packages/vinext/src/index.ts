@@ -7445,6 +7445,7 @@ export const loadServerActionClient = ${
               clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
               ssrManifest,
+              cssGraph: runtimeMetadata.cssGraph,
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
             });
