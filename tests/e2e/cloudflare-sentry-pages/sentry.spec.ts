@@ -181,6 +181,19 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         traceId: transaction.traceId,
       }),
     );
+    const documentSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Render.renderDocument",
+    );
+    expect(documentSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.route": "/trace-gssp/[slug]",
+        "next.span_name": "render route (pages) /trace-gssp/[slug]",
+        "next.span_type": "Render.renderDocument",
+      }),
+      name: "render route (pages) /trace-gssp/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
   });
 
   test("traces request-time getStaticProps for a blocking fallback", async ({ request }) => {
@@ -208,6 +221,60 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         name: "fixture.pages.gsp.child",
         operation: "fixture.gsp",
         parentSpanId: dataSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/trace-gsp/[slug]",
+          "next.span_name": "render route (pages) /trace-gsp/[slug]",
+          "next.span_type": "Render.renderDocument",
+        }),
+        name: "render route (pages) /trace-gsp/[slug]",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+
+    const resetRes = await request.delete("/api/sentry-test-state");
+    expect(resetRes.status()).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const staleRes = await request.get(`/trace-gsp/${slug}`);
+    expect(staleRes.status()).toBe(200);
+    expect(staleRes.headers()["x-nextjs-cache"]).toBe("STALE");
+
+    const staleTransaction = await expectReportedTransaction(request, "GET /trace-gsp/[slug]");
+    expect(staleTransaction.spans.map(({ attributes }) => attributes["next.span_type"])).toEqual(
+      expect.arrayContaining(["Render.getStaticProps", "Render.renderDocument"]),
+    );
+  });
+
+  // Next.js resolves the built-in Pages-only 404 through /_error when there is
+  // no app directory: packages/next/src/server/base-server.ts.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+  test("traces the Pages document span for the built-in production 404", async ({ request }) => {
+    const traceRes = await request.get("/trace-not-found");
+    expect(traceRes.status()).toBe(404);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-not-found");
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/trace-not-found",
+          "next.span_type": "Render.getServerSideProps",
+        }),
+      }),
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/_error",
+          "next.span_name": "render route (pages) /_error",
+          "next.span_type": "Render.renderDocument",
+        }),
+        name: "render route (pages) /_error",
+        parentSpanId: transaction.spanId,
         traceId: transaction.traceId,
       }),
     );
@@ -274,6 +341,16 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
       state.errors.find(
         ({ message }) => message === "Intentional Sentry Pages Router render error",
       )!,
+    );
+    const transaction = await expectReportedTransaction(request, "GET /render-error");
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/_error",
+          "next.span_type": "Render.renderDocument",
+        }),
+        name: "render route (pages) /_error",
+      }),
     );
   });
 
