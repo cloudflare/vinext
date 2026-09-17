@@ -11,7 +11,7 @@ export default function SSRHeadersPage({ greeting }: Props) {
   );
 }
 
-export async function getServerSideProps({ res }: { res: any }) {
+export async function getServerSideProps({ res, query }: { res: any; query: { status?: string } }) {
   // Set a custom header
   res.setHeader("x-custom-header", "hello-from-gssp");
   // Set multiple cookies, including an Expires value whose comma must not be
@@ -21,7 +21,7 @@ export async function getServerSideProps({ res }: { res: any }) {
     "gssp_notice=reauthenticate; Path=/",
   ]);
   // Set a non-default status code
-  res.statusCode = 201;
+  res.statusCode = query.status ? Number(query.status) : 201;
   return {
     props: {
       greeting: "Headers were set",

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vite-plus/test";
 import {
   buildMiddlewarePrefetchSkipResponse,
+  buildNextDataPropsJsonResponse,
   isNextDataPathname,
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
@@ -12,6 +13,34 @@ import {
 } from "../packages/vinext/src/server/pages-data-route.js";
 
 describe("pages-data-route", () => {
+  it.each([204, 205, 304])(
+    "emits no body or representation headers for status %i",
+    async (status) => {
+      const response = buildNextDataPropsJsonResponse(
+        { pageProps: { message: "must not be serialized" } },
+        JSON.stringify,
+        {
+          status,
+          headers: {
+            "Content-Encoding": "gzip",
+            "Content-Length": "32",
+            "Content-Type": "application/custom",
+            "Transfer-Encoding": "chunked",
+            "X-Custom": "preserved",
+          },
+        },
+      );
+
+      expect(response.status).toBe(status);
+      expect(await response.text()).toBe("");
+      expect(response.headers.get("content-encoding")).toBeNull();
+      expect(response.headers.get("content-length")).toBeNull();
+      expect(response.headers.get("content-type")).toBeNull();
+      expect(response.headers.get("transfer-encoding")).toBeNull();
+      expect(response.headers.get("x-custom")).toBe("preserved");
+    },
+  );
+
   describe("isNextDataPathname", () => {
     it("returns true for valid _next/data paths regardless of buildId", () => {
       expect(isNextDataPathname("/_next/data/abc/about.json")).toBe(true);

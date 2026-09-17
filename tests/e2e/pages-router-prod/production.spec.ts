@@ -54,6 +54,22 @@ test.describe("Pages Router Production Build", () => {
     expect(await response.json()).toMatchObject({
       pageProps: { greeting: "Headers were set" },
     });
+
+    for (const status of [204, 304]) {
+      const noBodyResponse = await request.get(
+        `${BASE}/_next/data/test-build-id/ssr-headers.json?status=${status}`,
+      );
+      expect(noBodyResponse.status()).toBe(status);
+      expect(await noBodyResponse.body()).toHaveLength(0);
+      for (const name of [
+        "content-encoding",
+        "content-length",
+        "content-type",
+        "transfer-encoding",
+      ]) {
+        expect(noBodyResponse.headers()[name]).toBeUndefined();
+      }
+    }
   });
 
   test("__NEXT_DATA__ is present with page props", async ({ page }) => {
