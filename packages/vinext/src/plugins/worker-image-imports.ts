@@ -171,3 +171,57 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
     },
   };
 }
+
+const WORKER_DEPLOYMENT_ID_IDENTS = [
+  "process.env.NEXT_DEPLOYMENT_ID",
+  "process.env.__VINEXT_DEPLOYMENT_ID",
+] as const;
+const WORKER_DEPLOYMENT_ID_RE = /process\.env\.(?:NEXT_DEPLOYMENT_ID|__VINEXT_DEPLOYMENT_ID)\b/;
+
+/**
+ * Inline the deployment-id defines into worker bundles.
+ *
+ * The top-level Vite config sets `process.env.NEXT_DEPLOYMENT_ID` and
+ * `process.env.__VINEXT_DEPLOYMENT_ID` as `define`s (index.ts), and the comment
+ * there explicitly intends worker code to be able to read
+ * `process.env.NEXT_DEPLOYMENT_ID`. But worker builds run in their own plugin
+ * container that the top-level defines do not reach (the sibling
+ * `createWorkerImageImportsPlugin` exists for exactly this reason), so a worker
+ * that reads `process.env.NEXT_DEPLOYMENT_ID` otherwise sees an un-replaced
+ * member access — `null`/`undefined`. This worker-scoped plugin performs the
+ * same replacement inside worker scripts, mirroring the top-level define values
+ * for parity (`NEXT_DEPLOYMENT_ID` → the string or `false`; `__VINEXT_DEPLOYMENT_ID`
+ * → the string or `""`). It is a no-op where the identifiers are absent.
+ */
+export function createWorkerDeploymentIdDefinePlugin(
+  options: { deploymentId?: string } = {},
+): Plugin {
+  const publicReplacement = options.deploymentId ? JSON.stringify(options.deploymentId) : "false";
+  const internalReplacement = JSON.stringify(options.deploymentId ?? "");
+  const replacementFor = (ident: string): string =>
+    ident === "process.env.NEXT_DEPLOYMENT_ID" ? publicReplacement : internalReplacement;
+  return {
+    name: "vinext:worker-deployment-id-define",
+    enforce: "pre",
+    transform: {
+      filter: {
+        id: { include: WORKER_SCRIPT_RE, exclude: NODE_MODULES_PATH_RE },
+        code: WORKER_DEPLOYMENT_ID_RE,
+      },
+      handler(code) {
+        const output = new MagicString(code);
+        let changed = false;
+        for (const ident of WORKER_DEPLOYMENT_ID_IDENTS) {
+          const replacement = replacementFor(ident);
+          let idx = code.indexOf(ident);
+          while (idx !== -1) {
+            output.overwrite(idx, idx + ident.length, replacement);
+            changed = true;
+            idx = code.indexOf(ident, idx + ident.length);
+          }
+        }
+        return changed ? magicStringTransformResult(output) : null;
+      },
+    },
+  };
+}
