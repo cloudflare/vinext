@@ -104,7 +104,7 @@ const responseStore = createWorkersResponseStore<Env>({
   },
 });
 
-export const { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding } =
+export const { CacheMetadata, ResponseStoreAdmin, ResponseStoreRevalidator, ResponseStoreBinding } =
   responseStore.entrypoints;
 ```
 
@@ -272,7 +272,7 @@ Keep every version that can still receive traffic or be rolled back to. When a v
 
 1. If it is still addressable, call `purge({ purgeEverything: true })` through that version to tombstone its metadata and delete its active R2 response bodies. This also requests a broad edge-cache purge, so other versions may need to refill.
 2. Delete any remaining objects under its R2 prefix: `runtime-cache/<version-id>/` for an unsharded store, or `runtime-cache/<version-id>/shards-<count>/` for a sharded store.
-3. If you need to reclaim the retired metadata Durable Object's SQLite storage, use an application-owned administrative path to call `deleteAll()` on each known object. The object is named `<version-id>` without sharding, or `<version-id>:metadata-shard:<index>-of-<count>` for each shard. This cleanup is outside the package API.
+3. If you need to reclaim the retired metadata Durable Object's SQLite storage, call `ResponseStoreAdmin.deleteVersionStorage({ versionId, shards })` through an account-owned service binding. The method calls atomic `deleteAll()` on `<version-id>` without sharding, or every `<version-id>:metadata-shard:<index>-of-<count>` object for a sharded layout. `@vinext/cloudflare` exposes this as its guarded `response-store-cleanup` command.
 
 Do not delete the shared Durable Object namespace while active versions use it. Avoid an age-only R2 lifecycle rule unless it is guaranteed to outlive every valid response and rollback window; explicit retired-version prefixes avoid deleting old but still-active cache entries.
 

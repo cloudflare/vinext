@@ -1,11 +1,12 @@
 import { CacheMetadata } from "./metadata-do";
 import {
+  ResponseStoreAdmin,
   ResponseStoreBinding,
   ResponseStoreService,
   type WorkersResponseStoreEnv,
 } from "./binding";
 
-export { CacheMetadata, ResponseStoreBinding, ResponseStoreService };
+export { CacheMetadata, ResponseStoreAdmin, ResponseStoreBinding, ResponseStoreService };
 
 export default {
   fetch(): Response {
