@@ -177,8 +177,8 @@ export default {
     "cloudflare",
   ],
   ignoreBinaries: [
-    // workspace's own bin, invoked in CI
-    "vinext",
+    // External ecosystem fixtures install and invoke the public Vite binary.
+    "vite",
     // system/user-project binaries invoked by runtime scripts
     "ps",
     "taskkill",
@@ -187,7 +187,6 @@ export default {
     "jq",
   ],
   ignoreFiles: [
-    "apps/web/dist/**",
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
     "tests/e2e/app-front-redirect-issue/fixture/**/*.{js,ts,tsx}",
     // stub module loaded via `path.resolve()` as a Vite alias target

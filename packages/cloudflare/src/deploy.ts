@@ -20,7 +20,6 @@ import {
   DEFAULT_REMOTE_PATH_DISCOVERY_PHASE_TIMEOUT_MS,
   DEFAULT_REMOTE_PATH_DISCOVERY_RETRY_DELAY_MS,
   discoverPrerenderPathManifest,
-  emitPrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
@@ -527,7 +526,11 @@ async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteCon
   };
 }
 
-async function runBuild(info: ProjectInfo, env: string | undefined): Promise<void> {
+async function runBuild(
+  info: ProjectInfo,
+  env: string | undefined,
+  options: Pick<DeployOptions, "prerenderAll" | "prerenderConcurrency">,
+): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
   const { createBuilder } = await loadProjectViteApi(info.root);
@@ -541,8 +544,29 @@ async function runBuild(info: ProjectInfo, env: string | undefined): Promise<voi
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
   await withCloudflareEnv(env, async () => {
-    const builder = await createBuilder({ root: info.root });
-    await builder.buildApp();
+    const previousPrerenderAll = process.env.VINEXT_PRERENDER_ALL;
+    const previousPrerenderConcurrency = process.env.VINEXT_PRERENDER_CONCURRENCY;
+    const previousBuildLifecycle = process.env.__VINEXT_BUILD_LIFECYCLE;
+    process.env.__VINEXT_BUILD_LIFECYCLE = "1";
+    if (options.prerenderAll) process.env.VINEXT_PRERENDER_ALL = "1";
+    else delete process.env.VINEXT_PRERENDER_ALL;
+    if (options.prerenderConcurrency !== undefined) {
+      process.env.VINEXT_PRERENDER_CONCURRENCY = String(options.prerenderConcurrency);
+    } else delete process.env.VINEXT_PRERENDER_CONCURRENCY;
+    try {
+      const builder = await createBuilder({ root: info.root });
+      await builder.buildApp();
+    } finally {
+      if (previousPrerenderAll === undefined) delete process.env.VINEXT_PRERENDER_ALL;
+      else process.env.VINEXT_PRERENDER_ALL = previousPrerenderAll;
+      if (previousPrerenderConcurrency === undefined) {
+        delete process.env.VINEXT_PRERENDER_CONCURRENCY;
+      } else {
+        process.env.VINEXT_PRERENDER_CONCURRENCY = previousPrerenderConcurrency;
+      }
+      if (previousBuildLifecycle === undefined) delete process.env.__VINEXT_BUILD_LIFECYCLE;
+      else process.env.__VINEXT_BUILD_LIFECYCLE = previousBuildLifecycle;
+    }
   });
 }
 
@@ -2068,10 +2092,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
     info,
     viteConfigMetadata.cacheConfig,
   );
-  const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
   // Step 5: Build
   if (!options.skipBuild) {
-    await runBuild(info, buildEnv);
+    await runBuild(info, buildEnv, options);
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
@@ -2147,25 +2170,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
     }
   }
 
-  if (shouldEmitPrerenderPathManifest) {
-    await emitPrerenderPathManifest({
-      root: info.root,
-      nextConfig,
-      buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
-      requestRouting: hasStagedRequestRouting ? "uncached-stage" : undefined,
-      responseVary: hasStrictResponseVary ? "verbatim" : undefined,
-      isResponsePolicyHeader: (name) =>
-        isConfiguredCdnResponsePolicyHeader(viteConfigMetadata.cacheConfig, name),
-      routeRootConfig: viteConfigMetadata.routeRootConfig,
-    });
-  }
-
   // Step 6a: prerender — render every discovered route into dist.
   // Triggered only by --prerender-all, vinext({ prerender: true }), or
   // output: 'export'. CDN warmup performs path discovery above, but relies on
   // the deployed Worker to render and classify each response.
-  let ranPrerender = false;
-  if (shouldPrerenderLocally) {
+  let ranPrerender = Boolean(shouldPrerenderLocally && !options.skipBuild);
+  if (shouldPrerenderLocally && options.skipBuild) {
     console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);

@@ -167,11 +167,14 @@ describe("compiler.define forwarding to Vite", () => {
       // NEXT_RUNTIME is always injected for server environments in addition to
       // user-configured defineServer entries.
       const previewDefines = getPreviewDefines(rscResult?.define);
+      const revalidateDefine = rscResult?.define?.["process.env.__VINEXT_REVALIDATE_SECRET"];
+      expect(revalidateDefine).toEqual(expect.any(String));
       expect(rscResult?.define).toEqual({
         MY_SERVER_VARIABLE: '"server"',
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
         "process.env.NEXT_PHASE": "globalThis.__VINEXT_NEXT_PHASE",
         "process.env.NEXT_RUNTIME": '"nodejs"',
+        "process.env.__VINEXT_REVALIDATE_SECRET": revalidateDefine,
         ...previewDefines,
       });
       expect(ssrResult?.define).toEqual({
@@ -179,6 +182,7 @@ describe("compiler.define forwarding to Vite", () => {
         "process.env.MY_MAGIC_SERVER_EXPR": '"serverbarbaz"',
         "process.env.NEXT_PHASE": "globalThis.__VINEXT_NEXT_PHASE",
         "process.env.NEXT_RUNTIME": '"nodejs"',
+        "process.env.__VINEXT_REVALIDATE_SECRET": revalidateDefine,
         ...previewDefines,
       });
       // Client environment must never receive server-only defines.
@@ -328,9 +332,8 @@ describe("compiler.define forwarding to Vite", () => {
     expect(mainPlugin).toBeDefined();
     expect(serverDefinePlugin).toBeDefined();
 
-    // Explicitly clear the build-time revalidate secret env var so the hook has
-    // no user `defineServer` entries AND no baked revalidate-secret define —
-    // only the built-in NEXT_RUNTIME define is present.
+    // Explicitly clear the shared env var so this exercises the plugin's own
+    // per-build secret generation rather than a caller-provided value.
     const prev = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
     delete process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
 
@@ -348,6 +351,7 @@ describe("compiler.define forwarding to Vite", () => {
       expect(Object.keys(rscResult!.define!)).toEqual([
         "process.env.NEXT_RUNTIME",
         "process.env.NEXT_PHASE",
+        "process.env.__VINEXT_REVALIDATE_SECRET",
         ...PREVIEW_DEFINE_NAMES,
       ]);
       getPreviewDefines(rscResult?.define);

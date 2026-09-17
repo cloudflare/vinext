@@ -80,28 +80,39 @@ npm install react-server-dom-webpack
 npm install -D @vitejs/plugin-rsc
 ```
 
-Replace `next` with `vinext` in your scripts:
+Add the vinext plugin to `vite.config.ts`:
+
+```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [vinext()],
+});
+```
+
+Then use Vite in your scripts:
 
 ```json
 {
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
+    "dev": "vite dev",
+    "build": "vite build",
     "start": "vinext start"
   }
 }
 ```
 
 ```bash
-vinext dev          # Development server with HMR
-vinext build        # Production build
+vite dev            # Development server with HMR
+vite build          # Production build
 npx @vinext/cloudflare deploy  # Build and deploy to Cloudflare Workers
 ```
 
 With Vite+, use `vpx @vinext/cloudflare deploy`, or
 `vp exec vinext-cloudflare deploy` when running the locally installed bin.
 
-vinext auto-detects your `app/` or `pages/` directory, loads `next.config.js`, and configures Vite automatically. No `vite.config.ts` required for basic usage.
+The vinext plugin auto-detects your `app/` or `pages/` directory and loads `next.config.js`.
 
 Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work as-is. Run `vinext check` first to scan for known compatibility issues, or use `vinext init` to [automate the full migration](#migrating-an-existing-nextjs-project).
 
@@ -109,8 +120,8 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 | Command                            | Description                                                             |
 | ---------------------------------- | ----------------------------------------------------------------------- |
-| `vinext dev`                       | Start dev server with HMR                                               |
-| `vinext build`                     | Production build (multi-environment for App Router: RSC + SSR + client) |
+| `vite dev`                         | Start dev server with HMR                                               |
+| `vite build`                       | Production build (multi-environment for App Router: RSC + SSR + client) |
 | `vinext start`                     | Start local production server for testing                               |
 | `npx @vinext/cloudflare deploy`    | Build and deploy to Cloudflare Workers                                  |
 | `vp exec vinext-cloudflare deploy` | Build and deploy to Cloudflare Workers with Vite+                       |
@@ -118,7 +129,16 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 | `vinext check`                     | Scan your Next.js app for compatibility issues before migrating         |
 | `vinext lint`                      | Delegate to eslint or oxlint                                            |
 
-Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
+The legacy `vinext dev` and `vinext build` commands remain as compatibility aliases that forward to Vite.
+
+To pre-render every discovered static route during `vite build`, configure the vinext plugin:
+
+```ts
+vinext({ prerender: { routes: "*", concurrency: 4 } });
+```
+
+`vinext({ prerender: true })` is equivalent when the default concurrency is sufficient. The legacy
+`vinext build --prerender-all` flag remains supported for existing scripts.
 
 `@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-traffic-aware-warm-cache`.
 
@@ -127,7 +147,7 @@ user which target they want, then pass `--platform=cloudflare` or `--platform=no
 
 Other options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
-If your `next.config.*` sets `output: "standalone"`, `vinext build` emits a self-hosting bundle at `dist/standalone/`. Start it with:
+If your `next.config.*` sets `output: "standalone"`, `vite build` emits a self-hosting bundle at `dist/standalone/`. Start it with:
 
 ```bash
 node dist/standalone/server.js
@@ -173,8 +193,8 @@ The migration is non-destructive -- your existing Next.js setup continues to wor
 vinext targets Vite 8, which defaults to Rolldown, Oxc, Lightning CSS, and a newer browser baseline. If you bring custom Vite config or plugins from an older setup, prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` over older `esbuild` and `build.rollupOptions` knobs, and override `build.target` if you still need older browsers. If a dependency breaks because of stricter CommonJS default import handling, fix the import or use `legacy.inconsistentCjsInterop: true` as a temporary escape hatch. See the [Vite 8 migration guide](https://vite.dev/guide/migration).
 
 ```bash
-npm run dev:vinext    # Start the vinext dev server (port 3001)
-npm run build:vinext  # Build production output with vinext
+npm run dev:vinext    # Start the Vite dev server with vinext (port 3001)
+npm run build:vinext  # Build production output with Vite and vinext
 npm run start:vinext  # Start vinext production server
 npm run dev           # Still runs Next.js as before
 ```
@@ -653,8 +673,8 @@ Load order matches Next.js (highest priority first):
 
 Modes:
 
-- `vinext dev` uses `development`
-- `vinext build`, `vinext start`, and `@vinext/cloudflare deploy` use `production`
+- `vite dev` uses `development`
+- `vite build`, `vinext start`, and `@vinext/cloudflare deploy` use `production`
 
 Variable expansion (`$VAR` / `${VAR}`) is supported.
 

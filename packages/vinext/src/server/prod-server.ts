@@ -1,7 +1,7 @@
 /**
  * Production server for vinext.
  *
- * Serves the built output from `vinext build`. Handles:
+ * Serves the built output from `vite build`. Handles:
  * - Static asset serving from client build output
  * - Pages Router: SSR rendering + API route handling
  * - App Router: RSC/SSR rendering, route handlers, server actions
@@ -1320,7 +1320,7 @@ export async function startProdServer(options: ProdServerOptions = {}) {
 
   if (!isAppRouter && !fs.existsSync(serverEntryPath)) {
     console.error(`[vinext] No build output found in ${outDir}`);
-    console.error("Run `vinext build` first.");
+    console.error("Run `vite build` first.");
     process.exit(1);
   }
 
