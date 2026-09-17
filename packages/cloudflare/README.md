@@ -104,13 +104,16 @@ Retired application versions keep their version-scoped metadata for rollback.
 Preview a cleanup after the rollback window, then repeat it with `--yes`:
 
 ```sh
-CLOUDFLARE_API_TOKEN=... npx @vinext/cloudflare response-store-cleanup \
+CLOUDFLARE_API_TOKEN=... npx @vinext/cloudflare cleanup-response-store \
   --older-than 30d --shards 1,16
-CLOUDFLARE_API_TOKEN=... npx @vinext/cloudflare response-store-cleanup \
+CLOUDFLARE_API_TOKEN=... npx @vinext/cloudflare cleanup-response-store \
   --older-than 30d --shards 1,16 --yes
+CLOUDFLARE_API_TOKEN=... npx @vinext/cloudflare cleanup-response-store \
+  --version-id <version-id> --shards 1,16 --yes
 ```
 
-List every historical shard layout that may contain data. The command fetches
+Provide exactly one of `--older-than` or `--version-id`, and list every
+historical shard layout that may contain data. The command fetches
 all application Worker versions, excludes every version in the current
 deployment, and atomically deletes each selected metadata Durable Object's
 SQLite storage. It infers the separate cache Worker from the `RESPONSE_STORE`

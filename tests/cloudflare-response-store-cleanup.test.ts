@@ -89,6 +89,64 @@ describe("Response Store version cleanup", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("deletes a version selected by id", async () => {
+    process.env.CLOUDFLARE_API_TOKEN = "test-token";
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : input);
+      if (url.pathname.endsWith("/versions")) {
+        return Response.json({
+          success: true,
+          result: {
+            items: [
+              { id: OLD_VERSION, metadata: { created_on: "2026-08-01T00:00:00.000Z" } },
+              { id: NEW_VERSION, metadata: { created_on: "2026-09-17T00:00:00.000Z" } },
+            ],
+          },
+        });
+      }
+      if (url.pathname.endsWith("/deployments")) {
+        return Response.json({ success: true, result: { deployments: [{ versions: [] }] } });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const deleteVersionStorage = vi.fn(async () => []);
+    const wrangler = {
+      unstable_readConfig: () => ({ account_id: "account-id", name: "app-worker" }),
+    } as never;
+    const result = await cleanupResponseStoreVersions(
+      {
+        root: "/project",
+        versionId: NEW_VERSION,
+        shardCounts: [1, 16],
+        yes: true,
+      },
+      {
+        deleteVersionStorage,
+        fetch: fetch as typeof globalThis.fetch,
+        loadWrangler: async () => wrangler,
+      },
+    );
+
+    expect(result.cutoff).toBeUndefined();
+    expect(result.selectedVersions.map(({ id }) => id)).toEqual([NEW_VERSION]);
+    expect(deleteVersionStorage).toHaveBeenCalledWith(wrangler, "account-id", "app-worker", [
+      { versionId: NEW_VERSION },
+      { versionId: NEW_VERSION, shards: 16 },
+    ]);
+  });
+
+  it("requires exactly one version selector", async () => {
+    const options = { root: "/project", shardCounts: [1], yes: false };
+
+    await expect(cleanupResponseStoreVersions(options)).rejects.toThrow(
+      "Exactly one of --older-than or --version-id is required.",
+    );
+    await expect(
+      cleanupResponseStoreVersions({ ...options, olderThan: "7d", versionId: OLD_VERSION }),
+    ).rejects.toThrow("Exactly one of --older-than or --version-id is required.");
+  });
+
   it("rechecks deployment traffic before deleting", async () => {
     process.env.CLOUDFLARE_API_TOKEN = "test-token";
     let deploymentRequest = 0;

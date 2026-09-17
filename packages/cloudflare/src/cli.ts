@@ -16,14 +16,15 @@ function printHelp(commandName?: string): void {
     printDeployHelp();
     return;
   }
-  if (commandName === "response-store-cleanup") {
+  if (commandName === "cleanup-response-store") {
     console.log(`
-  vinext-cloudflare response-store-cleanup - Delete retired version metadata
+  vinext-cloudflare cleanup-response-store - Delete retired version metadata
 
-  Usage: vinext-cloudflare response-store-cleanup --older-than <age> [options]
+  Usage: vinext-cloudflare cleanup-response-store (--older-than <age> | --version-id <id>) [options]
 
   Options:
     --older-than <age>            Select versions older than an age such as 24h, 7d, or 4w
+    --version-id <id>             Select one Worker version by id
     --shards <counts>             Historical shard layouts, comma-separated (default: 1)
     --name <name>                 Application Worker whose versions are selected
     --response-store-worker <name>
@@ -51,7 +52,7 @@ function printHelp(commandName?: string): void {
 
   Commands:
     deploy                   Deploy to Cloudflare Workers
-    response-store-cleanup   Delete retired Response Store metadata
+    cleanup-response-store   Delete retired Response Store metadata
 
   Options:
     -h, --help     Show this help
@@ -78,21 +79,20 @@ async function responseStoreCleanupCommand(): Promise<void> {
       "older-than": { type: "string" },
       "response-store-worker": { type: "string" },
       shards: { type: "string", default: "1" },
+      "version-id": { type: "string" },
       yes: { type: "boolean", default: false },
     },
     strict: true,
   });
   if (values.help) {
-    printHelp("response-store-cleanup");
+    printHelp("cleanup-response-store");
     return;
-  }
-  if (!values["older-than"]) {
-    throw new Error("--older-than is required.");
   }
 
   const result = await cleanupResponseStoreVersions({
     root: process.cwd(),
     olderThan: values["older-than"],
+    versionId: values["version-id"],
     shardCounts: parseShardCounts(values.shards),
     yes: values.yes,
     config: values.config,
@@ -101,7 +101,7 @@ async function responseStoreCleanupCommand(): Promise<void> {
     responseStoreWorker: values["response-store-worker"],
   });
   console.log(
-    `  Found ${result.selectedVersions.length} undeployed Worker version(s) older than ${result.cutoff}.`,
+    `  Found ${result.selectedVersions.length} undeployed Worker version(s) ${result.cutoff ? `older than ${result.cutoff}` : `matching ${values["version-id"]}`}.`,
   );
   for (const version of result.selectedVersions) {
     console.log(`  ${version.id}  ${new Date(version.metadata.created_on).toISOString()}`);
@@ -180,7 +180,7 @@ switch (command) {
       process.exit(1);
     });
     break;
-  case "response-store-cleanup":
+  case "cleanup-response-store":
     responseStoreCleanupCommand().catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);

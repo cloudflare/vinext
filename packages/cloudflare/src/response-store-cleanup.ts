@@ -56,7 +56,8 @@ type ApiEnvelope<T> = {
 
 export type ResponseStoreCleanupOptions = {
   root: string;
-  olderThan: string;
+  olderThan?: string;
+  versionId?: string;
   shardCounts: number[];
   yes: boolean;
   config?: string;
@@ -66,7 +67,7 @@ export type ResponseStoreCleanupOptions = {
 };
 
 export type ResponseStoreCleanupResult = {
-  cutoff: string;
+  cutoff?: string;
   protectedVersionIds: string[];
   selectedVersions: WorkerVersion[];
   deletions: ResponseStoreVersionStorageDeletionResult[];
@@ -255,6 +256,13 @@ export async function cleanupResponseStoreVersions(
     now?: number;
   } = {},
 ): Promise<ResponseStoreCleanupResult> {
+  if ((options.olderThan === undefined) === (options.versionId === undefined)) {
+    throw new Error("Exactly one of --older-than or --version-id is required.");
+  }
+  const versionId = options.versionId?.trim();
+  if (versionId !== undefined && !versionId) {
+    throw new Error("--version-id must not be empty.");
+  }
   const shardCounts = [...new Set(options.shardCounts)];
   if (
     shardCounts.length === 0 ||
@@ -262,7 +270,10 @@ export async function cleanupResponseStoreVersions(
   ) {
     throw new Error("Response Store cleanup requires at least one positive shard count.");
   }
-  const cutoff = responseStoreCleanupCutoff(options.olderThan, dependencies.now ?? Date.now());
+  const cutoff =
+    options.olderThan === undefined
+      ? undefined
+      : responseStoreCleanupCutoff(options.olderThan, dependencies.now ?? Date.now());
   const apiToken = process.env.CLOUDFLARE_API_TOKEN;
   if (!apiToken) throw new Error("CLOUDFLARE_API_TOKEN is required.");
 
@@ -292,7 +303,9 @@ export async function cleanupResponseStoreVersions(
     currentDeploymentVersionIds(accountId, workerName, apiToken, fetchImpl),
   ]);
   const selectedVersions = versions.filter(
-    ({ id, metadata }) => new Date(metadata.created_on) < cutoff && !protectedVersionIds.has(id),
+    ({ id, metadata }) =>
+      !protectedVersionIds.has(id) &&
+      (cutoff ? new Date(metadata.created_on) < cutoff : id === versionId),
   );
   const inputs = selectedVersions.flatMap(({ id: versionId }) =>
     shardCounts.map((shards): ResponseStoreVersionStorageDeletion => ({
@@ -323,7 +336,7 @@ export async function cleanupResponseStoreVersions(
   }
 
   return {
-    cutoff: cutoff.toISOString(),
+    cutoff: cutoff?.toISOString(),
     protectedVersionIds: [...protectedVersionIds],
     selectedVersions,
     deletions,
