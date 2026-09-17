@@ -1821,6 +1821,60 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
     }
   });
 
+  // Next.js keeps a route with generateStaticParams() returning [] in its SSG
+  // prerender metadata so unknown paths can be generated on demand.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/app-page-runtime.ts
+  it("retains route-level SSG metadata when generateStaticParams returns no paths", async () => {
+    const root = tmpDir("vinext-prerender-empty-gsp-");
+    const outDir = path.join(root, "out");
+    const pageDir = path.join(root, "app", "blog", "[slug]");
+    fs.mkdirSync(pageDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pageDir, "page.tsx"),
+      "export function generateStaticParams() { return []; }\nexport default function Page() { return null; }\n",
+    );
+
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        res.setHeader("content-type", "application/json");
+        res.end("[]");
+        return;
+      }
+      res.statusCode = 500;
+      res.end("an empty static params route should not render at build time");
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await appRouter(path.join(root, "app"));
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+
+      expect(result.routes).toContainEqual({
+        route: "/blog/:slug",
+        status: "skipped",
+        reason: "empty-static-params",
+      });
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(outDir, "vinext-prerender.json"), "utf8"),
+      );
+      expect(manifest.pregeneratedConcretePaths).toContainEqual(["/blog/:slug", []]);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces a thrown getStaticPaths error instead of silently skipping the route", async () => {
     const root = tmpDir("vinext-prerender-pages-gsp-error-");
     const outDir = path.join(root, "out");

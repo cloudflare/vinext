@@ -82,14 +82,11 @@ import {
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
-import {
-  createAppPageRscErrorTracker,
-  createAppPageSsrErrorHandler,
-  type AppPageSsrHandler,
-} from "./app-page-stream.js";
+import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
+import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
 import {
   createAppLayoutParamAccessTracker,
@@ -672,6 +669,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     );
   }
   const isPrerender = process.env.VINEXT_PRERENDER === "1";
+  let traceOperation: "prerender" | "render" = isPrerender ? "prerender" : "render";
   const serveStreamingMetadata = shouldServeStreamingMetadata(
     options.request.headers.get("user-agent") ?? "",
     options.htmlLimitedBots,
@@ -754,6 +752,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       scriptNonce: options.scriptNonce,
     })
   ) {
+    traceOperation = resolveAppPageTraceOperation({
+      hasRequestSearchParams,
+      isDynamicError,
+      isForceStatic,
+      isKnownPrerenderedRoute: options.renderedConcreteUrlPaths !== undefined,
+      isPrerender,
+    });
     const { readAppPageCacheResponse } = await import("./app-page-cache.js");
     const reportedSsrRevalidationErrors = new Set<unknown>();
     let revalidationRscErrorTracker: ReturnType<typeof createAppPageRscErrorTracker> | null = null;
@@ -860,13 +865,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               { renderSource: "server-rendering", revalidateReason: "stale" },
             );
             revalidationRscErrorTracker = createAppPageRscErrorTracker(baseRevalidatedOnError);
-            const revalidatedOnSsrError = createAppPageSsrErrorHandler(
-              (error, requestInfo, errorContext) => {
-                reportedSsrRevalidationErrors.add(error);
-                return baseRevalidatedOnSsrError(error, requestInfo, errorContext);
-              },
-              revalidationRscErrorTracker.isCapturedError,
-            );
             // No inner runWithFetchDedupe here: this renderFn is already
             // wrapped in runWithFetchDedupe by runAppPageRevalidationContext.
             const rendered = await renderAppPageCacheArtifacts({
@@ -882,8 +880,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               loadSsrHandler: options.loadSsrHandler,
               mountedSlotsHeader: options.mountedSlotsHeader,
               navigationParams: revalidationTarget.navigationParams,
+              isCapturedRscError: revalidationRscErrorTracker.isCapturedError,
               onError: revalidationRscErrorTracker.onRenderError,
-              onSsrError: revalidatedOnSsrError,
+              onSsrError(error) {
+                reportedSsrRevalidationErrors.add(error);
+                return baseRevalidatedOnSsrError(error, undefined, undefined);
+              },
               reactMaxHeadersLength: options.reactMaxHeadersLength,
               renderToReadableStream: options.renderToReadableStream,
               rootParams: options.rootParams,
@@ -1202,6 +1204,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isSpeculativePrerender,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
+    traceOperation,
     isrDebug: options.isrDebug,
     isrHtmlKey: options.isrHtmlKey,
     isrRscKey: options.isrRscKey,

@@ -4,6 +4,50 @@ import { isKnownDynamicAppRoute } from "../packages/vinext/src/server/app-route-
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import type { HeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type {
+  FrameworkTracingBackendSpan,
+  ResolvedFrameworkSpanDescriptor,
+} from "../packages/vinext/src/server/framework-tracer.js";
+import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
+
+type RecordedRouteSpan = {
+  errors: unknown[];
+  status?: string;
+  type: string;
+};
+
+const recordedRouteSpans: RecordedRouteSpan[] = [];
+let activeRouteSpanCount = 0;
+registerFrameworkTracingIntegration({
+  id: "app-route-handler-cache-test",
+  enterSpan<T>(
+    descriptor: ResolvedFrameworkSpanDescriptor,
+    callback: (span: FrameworkTracingBackendSpan) => T,
+  ): T {
+    const recorded: RecordedRouteSpan = { errors: [], type: descriptor.type };
+    recordedRouteSpans.push(recorded);
+    activeRouteSpanCount++;
+    let result: T;
+    try {
+      result = callback({
+        recordException: (error) => recorded.errors.push(error),
+        setAttribute() {},
+        setErrorStatus: (message) => {
+          recorded.status = message ?? "error";
+        },
+      });
+    } catch (error) {
+      activeRouteSpanCount--;
+      throw error;
+    }
+    if (isPromiseLike(result)) {
+      return Promise.resolve(result).finally(() => activeRouteSpanCount--) as T;
+    }
+    activeRouteSpanCount--;
+    return result;
+  },
+});
 
 function createDynamicUsageState(): {
   consumeDynamicUsage: () => boolean;
@@ -209,6 +253,7 @@ describe("app route handler cache helpers", () => {
         return "route:" + pathname;
       },
       async isrSet(key, value, policy) {
+        expect(activeRouteSpanCount).toBe(0);
         expect(value.kind).toBe("APP_ROUTE");
         isrSetCalls.push({
           key,
@@ -467,10 +512,67 @@ describe("app route handler cache helpers", () => {
       throw new Error("Expected scheduled route regeneration");
     }
 
+    recordedRouteSpans.length = 0;
     await expect(scheduledRegenRun()).rejects.toThrow(
       "NextResponse.next() was used in a app route handler",
     );
     expect(wroteCache).toBe(false);
+    expect(recordedRouteSpans).toContainEqual({
+      errors: [],
+      type: "AppRouteRouteHandlers.runHandler",
+    });
+  });
+
+  it("keeps stale regeneration control responses successful", async () => {
+    const scheduledRegens: Array<() => Promise<void>> = [];
+    await readAppRouteHandlerCacheResponse(
+      createReadOptions({
+        handlerFn() {
+          throw { digest: "NEXT_REDIRECT;replace;%2Ftarget;307" };
+        },
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRegens.push(renderFn);
+        },
+      }),
+    );
+
+    recordedRouteSpans.length = 0;
+    await expect(scheduledRegens[0]!()).resolves.toBeUndefined();
+    expect(recordedRouteSpans).toContainEqual({
+      errors: [],
+      type: "AppRouteRouteHandlers.runHandler",
+    });
+  });
+
+  it("fails stale handler spans when user code throws a validation-message lookalike", async () => {
+    const scheduledRegens: Array<() => Promise<void>> = [];
+    const failure = new Error(
+      "NextResponse.next() was used in a app route handler, this is not supported. See here for more info: https://nextjs.org/docs/messages/next-response-next-in-app-route-handler",
+    );
+    await readAppRouteHandlerCacheResponse(
+      createReadOptions({
+        handlerFn() {
+          throw failure;
+        },
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("from-stale"), true);
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRegens.push(renderFn);
+        },
+      }),
+    );
+
+    recordedRouteSpans.length = 0;
+    await expect(scheduledRegens[0]!()).rejects.toBe(failure);
+    expect(recordedRouteSpans).toContainEqual({
+      errors: [failure],
+      status: failure.message,
+      type: "AppRouteRouteHandlers.runHandler",
+    });
   });
 
   it("falls through on cache read errors", async () => {

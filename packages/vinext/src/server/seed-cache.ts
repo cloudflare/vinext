@@ -47,6 +47,7 @@ import {
 } from "../utils/prerender-output-paths.js";
 import {
   addPregeneratedConcretePath,
+  addPregeneratedRoute,
   clearPregeneratedConcretePaths,
   normalizePregeneratedPathname,
 } from "./pregenerated-concrete-paths.js";
@@ -118,6 +119,12 @@ export async function seedMemoryCacheFromPrerender(
   const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
   const writeAppRouteEntry = options?.writeAppRouteEntry ?? isrSet;
   let seeded = 0;
+
+  for (const route of routes) {
+    if (route.status === "skipped" && route.reason === "empty-static-params") {
+      addPregeneratedRoute(route.route);
+    }
+  }
 
   const appRoutes = getRenderedAppRoutes(routes);
 
