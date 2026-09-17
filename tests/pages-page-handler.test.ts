@@ -611,6 +611,27 @@ describe("createPagesPageHandler — _next/data", () => {
     expect(response.headers.get("content-type")).toContain("application/json");
   });
 
+  it("preserves gSSP status on data redirect responses", async () => {
+    const route = makeRoute(
+      "/about",
+      makePageModule({
+        getServerSideProps: async ({ res }: { res: { statusCode: number } }) => {
+          res.statusCode = 201;
+          return { redirect: { destination: "/target", permanent: false } };
+        },
+      }),
+    );
+    const handler = createPagesPageHandler(makeOpts({ pageRoutes: [route] }));
+    const dataUrl = "/_next/data/test-build-id/about.json";
+
+    const response = await handler(makeRequest(dataUrl), dataUrl, null, null, null);
+
+    expect(response.status).toBe(201);
+    await expect(response.json()).resolves.toMatchObject({
+      pageProps: { __N_REDIRECT: "/target", __N_REDIRECT_STATUS: 307 },
+    });
+  });
+
   it("marks preview data and forces private no-store caching", async () => {
     const routeModule = makePageModule({
       getStaticProps: async ({ previewData }: { previewData: unknown }) => ({
