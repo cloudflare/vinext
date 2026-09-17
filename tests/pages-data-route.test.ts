@@ -34,7 +34,7 @@ describe("pages-data-route", () => {
       expect(response.status).toBe(status);
       expect(await response.text()).toBe("");
       expect(response.headers.get("content-encoding")).toBe("gzip");
-      expect(response.headers.get("content-length")).toBe("32");
+      expect(response.headers.get("content-length")).toBe(status === 205 ? null : "32");
       expect(response.headers.get("content-type")).toBe("application/json");
       expect(response.headers.get("transfer-encoding")).toBe("chunked");
       expect(response.headers.get("x-custom")).toBe("preserved");

@@ -22,6 +22,7 @@ export async function getServerSideProps({ res, query }: { res: any; query: { st
   ]);
   // Set a non-default status code
   res.statusCode = query.status ? Number(query.status) : 201;
+  if (res.statusCode === 205) res.setHeader("content-length", "32");
   return {
     props: {
       greeting: "Headers were set",

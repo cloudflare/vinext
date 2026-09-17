@@ -1781,7 +1781,7 @@ describe("readPagesRouterEntrySource", () => {
 
       expect(merged.status).toBe(status);
       expect(merged.headers.get("content-encoding")).toBe("gzip");
-      expect(merged.headers.get("content-length")).toBe("32");
+      expect(merged.headers.get("content-length")).toBe(status === 205 ? null : "32");
       expect(merged.headers.get("content-type")).toBe("application/json");
       expect(merged.headers.get("transfer-encoding")).toBe("chunked");
       expect(merged.headers.get("x-custom")).toBe("from-middleware");

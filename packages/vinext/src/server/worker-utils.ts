@@ -105,6 +105,8 @@ export function mergeHeaders(
       merged.delete("content-length");
       merged.delete("content-type");
       merged.delete("transfer-encoding");
+    } else if (status === 205) {
+      merged.delete("content-length");
     }
     return new Response(null, {
       status,

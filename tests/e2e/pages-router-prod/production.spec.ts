@@ -55,13 +55,14 @@ test.describe("Pages Router Production Build", () => {
       pageProps: { greeting: "Headers were set" },
     });
 
-    for (const status of [204, 304]) {
+    for (const status of [204, 205, 304]) {
       const noBodyResponse = await request.get(
         `${BASE}/_next/data/test-build-id/ssr-headers.json?status=${status}`,
       );
       expect(noBodyResponse.status()).toBe(status);
       expect(await noBodyResponse.body()).toHaveLength(0);
       expect(noBodyResponse.headers()["content-type"]).toBe("application/json");
+      expect(noBodyResponse.headers()["content-length"]).toBeUndefined();
     }
   });
 

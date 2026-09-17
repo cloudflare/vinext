@@ -146,6 +146,7 @@ export function buildNextDataPropsJsonResponse(
   const status = init?.status ?? 200;
   headers.set("Content-Type", "application/json");
   if (NO_BODY_RESPONSE_STATUSES.has(status)) {
+    if (status === 205) headers.delete("content-length");
     return new Response(null, { status, statusText: init?.statusText, headers });
   }
 
