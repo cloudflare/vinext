@@ -1,3 +1,7 @@
+import {
+  createDefaultCacheLifeProfiles,
+  type CacheLifeConfig,
+} from "../utils/cache-life-profiles.js";
 import { getHeadersAccessPhase } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
@@ -6,21 +10,16 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 
-export type CacheLifeConfig = {
-  stale?: number;
-  revalidate?: number;
-  expire?: number;
-};
+export type { CacheLifeConfig } from "../utils/cache-life-profiles.js";
 
-export const cacheLifeProfiles: Record<string, CacheLifeConfig> = {
-  default: { revalidate: 900, expire: 4294967294 },
-  seconds: { stale: 30, revalidate: 1, expire: 60 },
-  minutes: { stale: 300, revalidate: 60, expire: 3600 },
-  hours: { stale: 300, revalidate: 3600, expire: 86400 },
-  days: { stale: 300, revalidate: 86400, expire: 604800 },
-  weeks: { stale: 300, revalidate: 604800, expire: 2592000 },
-  max: { stale: 300, revalidate: 2592000, expire: 31536000 },
-};
+declare const __VINEXT_CACHE_LIFE_PROFILES__: string | undefined;
+
+// Vite substitutes this constant separately in each application's module graphs.
+// Direct shim imports have no injected constant and retain the built-in profiles.
+export const cacheLifeProfiles: Record<string, CacheLifeConfig> =
+  typeof __VINEXT_CACHE_LIFE_PROFILES__ === "undefined"
+    ? createDefaultCacheLifeProfiles()
+    : (JSON.parse(__VINEXT_CACHE_LIFE_PROFILES__) as Record<string, CacheLifeConfig>);
 
 type CacheContextLike = {
   tags: string[];

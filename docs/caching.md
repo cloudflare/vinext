@@ -13,6 +13,67 @@ There are two main kinds of cache:
 
 Static files and browser caching are separate from these options. Cloudflare can cache built assets without enabling a vinext cache adapter.
 
+## Configuring cache lifetimes
+
+Define named `cacheLife` profiles in `next.config.*` to reuse the same durations across cached functions:
+
+```ts
+// next.config.ts
+export default {
+  cacheLife: {
+    blog: { stale: 60, revalidate: 300, expire: 3600 },
+    hours: { expire: 7200 },
+    default: { stale: 300, revalidate: 900, expire: 86400 },
+  },
+};
+```
+
+Durations are in seconds. `stale` controls client reuse, `revalidate` sets the server's freshness window, and `expire` bounds how long a server entry may be reused before regeneration is required.
+
+```ts
+import { cacheLife, cacheTag, revalidateTag } from "next/cache";
+
+export async function getPosts() {
+  "use cache";
+  cacheLife("blog");
+  cacheTag("posts");
+  return fetchPosts();
+}
+
+// In a Server Action or Route Handler:
+revalidateTag("posts", "blog");
+```
+
+You can also supply these options through the vinext plugin:
+
+```ts
+// vite.config.ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [
+    vinext({
+      nextConfig: {
+        cacheLife: {
+          blog: { stale: 60, revalidate: 300, expire: 3600 },
+        },
+      },
+    }),
+  ],
+});
+```
+
+When supplied, `vinext({ nextConfig })` takes precedence over the root `next.config.*` file, following the existing inline configuration behavior.
+
+A configured name replaces that entire profile, including built-in names. Ordinary profiles may omit fields: `hours: { expire: 7200 }` inherits `stale` and `revalidate` from the resolved `default` profile when consumed. Calls without `cacheLife()` use `default`; repeated named profile calls take the shortest supplied duration for each field before omitted fields inherit defaults. `revalidateTag(tag, profile)` uses the profile's expiration, inheriting `default.expire` if omitted. The deprecated `unstable_cacheLife()` alias uses the same profiles.
+
+If `default` is overridden, its omitted fields use `experimental.staleTimes.static` (or 300 seconds), 900 seconds for `revalidate`, and `expireTime` (or one year). With no configured profiles, vinext retains its built-in durations. `Infinity` is supported; invalid field types, non-finite values other than `Infinity`, and explicitly supplied `revalidate > expire` are rejected during configuration resolution.
+
+The legacy `experimental.cacheLife` option is accepted with a migration warning. If both fields are present, the legacy field replaces the entire top-level profile map, matching Next.js; move profiles to the top-level `cacheLife` option.
+
+Profile changes take effect when the development server restarts or the production app is rebuilt. This support does not generate `cache-life.d.ts` or extend the installed Next.js types with custom profile names. Full Cache Components support remains incomplete.
+
 ## Options
 
 | Setup                                | Response storage           | Data storage           | Best for                                                                           | Main trade-off                                                                                               |

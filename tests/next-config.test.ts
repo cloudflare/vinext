@@ -11,8 +11,10 @@ import {
   reassignsModuleExports,
   referencesCjsGlobals,
   resolveNextConfig,
+  type NextConfig,
   type ResolvedNextConfig,
 } from "../packages/vinext/src/config/next-config.js";
+import { createDefaultCacheLifeProfiles } from "../packages/vinext/src/utils/cache-life-profiles.js";
 import {
   PHASE_PRODUCTION_BUILD,
   PHASE_DEVELOPMENT_SERVER,
@@ -2066,6 +2068,214 @@ describe("resolveNextConfig expireTime", () => {
   });
 });
 
+describe("resolveNextConfig cacheLife", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([null, {}, { expireTime: 60, experimental: { staleTimes: { static: 120 } } }])(
+    "preserves the existing built-in profiles without cacheLife configuration: %j",
+    async (input) => {
+      const resolved = await resolveNextConfig(input);
+      expect(resolved.cacheLife).toStrictEqual(createDefaultCacheLifeProfiles());
+    },
+  );
+
+  it("resolves custom and overridden built-in profiles without filling ordinary profiles", async () => {
+    const resolved = await resolveNextConfig({
+      cacheLife: {
+        blog: { stale: 60, revalidate: 300, expire: 3600 },
+        hours: { expire: 60 },
+        partial: { revalidate: 30 },
+      },
+    });
+
+    expect(resolved.cacheLife).toStrictEqual({
+      ...createDefaultCacheLifeProfiles(),
+      blog: { stale: 60, revalidate: 300, expire: 3600 },
+      hours: { expire: 60 },
+      partial: { revalidate: 30 },
+    });
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  // Next.js backfills an overridden default using staleTimes.static and expireTime:
+  // https://github.com/vercel/next.js/blob/f464e32ec092c5a00c967e64cba40121a2992224/packages/next/src/server/config.ts#L1441
+  it("fills an overridden default with the resolved configuration defaults", async () => {
+    const resolved = await resolveNextConfig({ cacheLife: { default: {} } });
+    expect(resolved.cacheLife.default).toStrictEqual({
+      stale: 300,
+      revalidate: 900,
+      expire: 31_536_000,
+    });
+  });
+
+  it("uses configured staleTimes.static and expireTime for omitted default fields", async () => {
+    const resolved = await resolveNextConfig({
+      cacheLife: { default: { revalidate: 10 } },
+      experimental: { staleTimes: { static: 120 } },
+      expireTime: 3600,
+    });
+    expect(resolved.cacheLife.default).toStrictEqual({ stale: 120, revalidate: 10, expire: 3600 });
+  });
+
+  it("keeps explicit default fields ahead of configuration fallbacks", async () => {
+    const resolved = await resolveNextConfig({
+      cacheLife: { default: { stale: 0, revalidate: 0, expire: 0 } },
+      experimental: { staleTimes: { static: 120 } },
+      expireTime: 3600,
+    });
+    expect(resolved.cacheLife.default).toStrictEqual({ stale: 0, revalidate: 0, expire: 0 });
+  });
+
+  // Configuration case from Next.js: test/e2e/app-dir/use-cache-default-profile-expire-zero
+  // https://github.com/vercel/next.js/blob/f464e32ec092c5a00c967e64cba40121a2992224/test/e2e/app-dir/use-cache-default-profile-expire-zero/use-cache-default-profile-expire-zero.test.ts
+  it("accepts a default expire shorter than the backfilled revalidate", async () => {
+    const resolved = await resolveNextConfig({ cacheLife: { default: { expire: 0 } } });
+    expect(resolved.cacheLife.default).toStrictEqual({ stale: 300, revalidate: 900, expire: 0 });
+  });
+
+  it("normalizes an infinite expireTime inherited by the default profile", async () => {
+    const resolved = await resolveNextConfig({ cacheLife: { default: {} }, expireTime: Infinity });
+    expect(resolved.cacheLife.default).toStrictEqual({
+      stale: 300,
+      revalidate: 900,
+      expire: 4294967294,
+    });
+    expect(JSON.parse(JSON.stringify(resolved.cacheLife))).toStrictEqual(resolved.cacheLife);
+  });
+
+  it.each([NaN, -Infinity])(
+    "rejects a non-finite expireTime inherited by the default profile: %j",
+    async (expireTime) => {
+      await expect(resolveNextConfig({ cacheLife: { default: {} }, expireTime })).rejects.toThrow(
+        'Invalid "cacheLife.default.expire"',
+      );
+    },
+  );
+
+  // Ported from Next.js: test/unit/warn-removed-experimental-config.test.ts
+  // https://github.com/vercel/next.js/blob/f464e32ec092c5a00c967e64cba40121a2992224/test/unit/warn-removed-experimental-config.test.ts
+  it("accepts experimental.cacheLife and emits its migration warning once", async () => {
+    const root = makeTempDir();
+    fs.writeFileSync(path.join(root, "next.config.ts"), "export default {};\n");
+    const input = { experimental: { cacheLife: { blog: { expire: 60 } } } };
+
+    try {
+      const resolved = await resolveNextConfig(input, root);
+      await resolveNextConfig(input, root);
+
+      expect(resolved.cacheLife.blog).toStrictEqual({ expire: 60 });
+      expect(vi.mocked(console.warn).mock.calls.map(([message]) => message)).toEqual([
+        "`experimental.cacheLife` has been moved to `cacheLife`. Please update your next.config.ts file accordingly.",
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("lets the legacy field replace the entire top-level profile map before validation", async () => {
+    const resolved = await resolveNextConfig({
+      cacheLife: {
+        blog: { revalidate: 120, expire: 60 },
+        topOnly: { expire: 120 },
+      },
+      experimental: { cacheLife: { blog: { expire: 30 } } },
+    });
+
+    expect(resolved.cacheLife).toStrictEqual({
+      ...createDefaultCacheLifeProfiles(),
+      blog: { expire: 30 },
+    });
+  });
+
+  it.each([undefined, {}])(
+    "lets an explicitly configured legacy field %j override the top-level field",
+    async (cacheLife) => {
+      const resolved = await resolveNextConfig({
+        cacheLife: { blog: { expire: 60 } },
+        experimental: { cacheLife },
+      });
+      expect(resolved.cacheLife).toStrictEqual(createDefaultCacheLifeProfiles());
+    },
+  );
+
+  it("does not mutate either configuration field or share profiles between resolutions", async () => {
+    const input = Object.freeze({
+      cacheLife: Object.freeze({ topOnly: Object.freeze({ expire: 60 }) }),
+      experimental: Object.freeze({
+        cacheLife: Object.freeze({ blog: Object.freeze({ expire: Infinity }) }),
+      }),
+    });
+    const first = await resolveNextConfig(input);
+    const second = await resolveNextConfig(input);
+    first.cacheLife.blog.expire = 1;
+    first.cacheLife.hours.expire = 1;
+
+    expect(input.cacheLife).toStrictEqual({ topOnly: { expire: 60 } });
+    expect(input.experimental.cacheLife).toStrictEqual({ blog: { expire: Infinity } });
+    expect(second.cacheLife.blog).toStrictEqual({ expire: 4294967294 });
+    expect(second.cacheLife.hours.expire).toBe(86400);
+  });
+
+  describe.each(["cacheLife", "experimental.cacheLife"])("invalid %s", (field) => {
+    it.each([
+      null,
+      false,
+      [],
+      { blog: "hours" },
+      { blog: { stale: "60" } },
+      { blog: { revalidate: NaN } },
+      { blog: { expire: -Infinity } },
+      { blog: { revalidate: 61, expire: 60 } },
+    ])("throws instead of ignoring an invalid profile configuration: %j", async (input) => {
+      const cacheLife = input as unknown as NextConfig["cacheLife"];
+      const config = field === "cacheLife" ? { cacheLife } : { experimental: { cacheLife } };
+      await expect(resolveNextConfig(config)).rejects.toThrow();
+    });
+  });
+
+  // Configuration cases from Next.js: test/e2e/app-dir/use-cache and use-cache-infinity-profile
+  // https://github.com/vercel/next.js/blob/f464e32ec092c5a00c967e64cba40121a2992224/test/e2e/app-dir/use-cache/next.config.js
+  // https://github.com/vercel/next.js/blob/f464e32ec092c5a00c967e64cba40121a2992224/test/e2e/app-dir/use-cache-infinity-profile/next.config.js
+  it.each(["next.config.mjs", "next.config.cjs", "next.config.ts"])(
+    "loads and resolves profiles from %s",
+    async (filename) => {
+      const root = makeTempDir();
+      const source = `const config = { cacheLife: {
+      frequent: { stale: 30, revalidate: 100, expire: 300 },
+      frozen: { stale: Infinity, revalidate: Infinity, expire: Infinity },
+    } };\n`;
+      fs.writeFileSync(
+        path.join(root, filename),
+        source +
+          (filename.endsWith(".cjs") ? "module.exports = config;\n" : "export default config;\n"),
+      );
+
+      try {
+        const raw = await loadNextConfig(root);
+        const resolved = await resolveNextConfig(raw, root);
+        expect(resolved.cacheLife.frequent).toStrictEqual({
+          stale: 30,
+          revalidate: 100,
+          expire: 300,
+        });
+        expect(resolved.cacheLife.frozen).toStrictEqual({
+          stale: 4294967294,
+          revalidate: 4294967294,
+          expire: 4294967294,
+        });
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
 describe("resolveNextConfig reactMaxHeadersLength", () => {
   it("defaults to the Next.js default of 6000", async () => {
     const resolved = await resolveNextConfig(null);
@@ -2148,6 +2358,7 @@ describe("detectNextIntlConfig", () => {
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cacheLife: createDefaultCacheLifeProfiles(),
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
