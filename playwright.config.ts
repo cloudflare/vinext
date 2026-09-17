@@ -166,6 +166,7 @@ const projectServers = {
     testDir: "./tests/e2e",
     testMatch: [
       "**/cloudflare-workers/**/*.spec.ts",
+      "**/cloudflare-response-store.spec.ts",
       "**/app-router/instrumentation.spec.ts",
       "**/og-image.spec.ts",
     ],
@@ -175,7 +176,7 @@ const projectServers = {
       : {
           // Build app-router-cloudflare with Vite, then serve with wrangler dev (miniflare)
           command:
-            "npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
+            "VINEXT_RESPONSE_STORE_E2E=1 npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
           cwd: "./examples/app-router-cloudflare",
           port: 4176,
           reuseExistingServer: !process.env.CI,
@@ -212,6 +213,7 @@ const projectServers = {
     testDir: "./tests/e2e",
     testMatch: [
       "**/cloudflare-dev/**/*.spec.ts",
+      "**/cloudflare-response-store.spec.ts",
       "**/app-router/instrumentation.spec.ts",
       "**/og-image.spec.ts",
     ],
@@ -219,7 +221,7 @@ const projectServers = {
     server: {
       // Run vite dev (not wrangler) against the cloudflare example so that
       // configureServer() is exercised with @cloudflare/vite-plugin loaded.
-      command: "npx vp dev --port 4178",
+      command: "VINEXT_RESPONSE_STORE_E2E=1 npx vp dev --port 4178",
       cwd: "./examples/app-router-cloudflare",
       port: 4178,
       reuseExistingServer: !process.env.CI,
