@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
-import type { ViteDevServer } from "vite-plus";
+import { createServer, type ViteDevServer } from "vite-plus";
 import type { Server } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,6 +10,7 @@ import {
   startFixtureServer,
   fetchHtml,
 } from "./helpers.js";
+import vinext from "../packages/vinext/src/index.js";
 
 async function writeFixtureFile(
   root: string,
@@ -90,8 +91,22 @@ describe("CJS interop (Pages Router)", () => {
   });
 
   it("transforms project source that resembles a Nitro service output path", async () => {
-    const module = await server.environments.ssr.transformRequest("/vite/services/local/entry.js");
-    expect(module?.code).toContain("[vite-plugin-commonjs] export-runtime-S");
+    const nitroServer = await createServer({
+      root: PAGES_FIXTURE_DIR,
+      configFile: false,
+      plugins: [vinext({ appDir: PAGES_FIXTURE_DIR })],
+      environments: { nitro: { consumer: "server" } },
+      server: { middlewareMode: true },
+      logLevel: "silent",
+    });
+    try {
+      const module = await nitroServer.environments.nitro.transformRequest(
+        "/vite/services/local/entry.js",
+      );
+      expect(module?.code).toContain("[vite-plugin-commonjs] export-runtime-S");
+    } finally {
+      await nitroServer.close();
+    }
   });
 });
 

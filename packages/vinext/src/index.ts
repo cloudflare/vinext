@@ -1463,6 +1463,7 @@ export type VinextOptions = {
 
 type NitroSetupContext = {
   options: {
+    buildDir?: string;
     dev?: boolean;
     exportConditions?: string[];
     routeRules?: Record<string, NitroRouteRuleConfig>;
@@ -1508,6 +1509,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
+  let nitroBuildDir: string | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
@@ -2014,13 +2016,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const commonJsTransform = commonJsPlugin.transform;
   if (typeof commonJsTransform === "function") {
     commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+      const normalizedId = toSlash(stripViteModuleQuery(id));
+      const nitroServicePath =
+        this.environment.name === "nitro" && nitroBuildDir && normalizedId.endsWith("/entry.js")
+          ? path.relative(path.join(canonicalize(nitroBuildDir), "vite/services"), normalizedId)
+          : "";
       // Nitro service entries are already bundled ESM. Inlined CommonJS
       // wrappers must not make vite-plugin-commonjs add a second default export.
-      if (
-        this.environment.name === "nitro" &&
-        /\/vite\/services\/[^/]+\/entry\.js$/.test(toSlash(stripViteModuleQuery(id)))
-      )
-        return null;
+      if (/^[^/]+\/entry\.js$/.test(nitroServicePath)) return null;
 
       // The published runtime and its inlined dependencies were already
       // converted to ESM by tsdown. Workspace links resolve them outside
@@ -7204,6 +7207,9 @@ export const loadServerActionClient = ${
       name: "vinext:nitro-route-rules",
       nitro: {
         setup: async (nitro: NitroSetupContext) => {
+          nitroBuildDir = nitro.options.buildDir
+            ? path.resolve(root, nitro.options.buildDir)
+            : undefined;
           nitroHostRuntime = nitro.options.exportConditions?.includes("workerd")
             ? "worker"
             : "node";
