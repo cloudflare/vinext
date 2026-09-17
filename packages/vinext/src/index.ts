@@ -2014,6 +2014,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const commonJsTransform = commonJsPlugin.transform;
   if (typeof commonJsTransform === "function") {
     commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+      // Nitro service entries are already bundled ESM. Inlined CommonJS
+      // wrappers must not make vite-plugin-commonjs add a second default export.
+      if (/\/vite\/services\/[^/]+\/entry\.js$/.test(toSlash(stripViteModuleQuery(id))))
+        return null;
+
       // The published runtime and its inlined dependencies were already
       // converted to ESM by tsdown. Workspace links resolve them outside
       // node_modules, where vite-plugin-commonjs would otherwise process them
