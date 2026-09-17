@@ -141,6 +141,7 @@ export function buildNextDataPropsJsonResponse(
   safeJsonStringify: (value: unknown) => string,
   init?: ResponseInit,
 ): Response {
+  const body = safeJsonStringify(props);
   const headers = new Headers(init?.headers);
   const status = init?.status ?? 200;
   if (NO_BODY_RESPONSE_STATUSES.has(status)) {
@@ -156,7 +157,7 @@ export function buildNextDataPropsJsonResponse(
   }
 
   headers.set("Content-Type", "application/json");
-  return new Response(safeJsonStringify(props), {
+  return new Response(body, {
     status,
     statusText: init?.statusText,
     headers,

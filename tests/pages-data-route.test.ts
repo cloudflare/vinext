@@ -41,6 +41,18 @@ describe("pages-data-route", () => {
     },
   );
 
+  it("still serializes props for bodyless statuses", () => {
+    expect(() =>
+      buildNextDataPropsJsonResponse(
+        {},
+        () => {
+          throw new TypeError("invalid props");
+        },
+        { status: 204 },
+      ),
+    ).toThrow("invalid props");
+  });
+
   describe("isNextDataPathname", () => {
     it("returns true for valid _next/data paths regardless of buildId", () => {
       expect(isNextDataPathname("/_next/data/abc/about.json")).toBe(true);
