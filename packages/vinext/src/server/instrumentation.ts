@@ -111,20 +111,26 @@ export function findInstrumentationClientFile(
  * Provides the error, the request info, and an error context.
  */
 export type OnRequestErrorContext = {
-  /** The route path (e.g., '/blog/[slug]') */
+  /** The router which handled the request. */
   routerKind: "Pages Router" | "App Router";
-  /** The matched route pattern */
+  /** The matched route pattern. */
   routePath: string;
-  /** The route type */
-  routeType: "render" | "route" | "action" | "middleware";
-  /** HTTP status code that will be sent */
-  revalidateReason?: "on-demand" | "stale" | undefined;
+  /** The request operation which failed. */
+  routeType: "render" | "route" | "action" | "proxy";
+  /** The App Router render phase which failed. */
+  renderSource?: "react-server-components" | "react-server-components-payload" | "server-rendering";
+  /** Why a static route was being regenerated. */
+  revalidateReason: "on-demand" | "stale" | undefined;
 };
 
 export type OnRequestErrorHandler = (
-  error: Error,
-  request: { path: string; method: string; headers: Record<string, string> },
-  context: OnRequestErrorContext,
+  error: unknown,
+  request: Readonly<{
+    path: string;
+    method: string;
+    headers: Record<string, string | string[] | undefined>;
+  }>,
+  context: Readonly<OnRequestErrorContext>,
 ) => void | Promise<void>;
 
 /**
@@ -181,8 +187,12 @@ export async function runInstrumentation(
  * of which environment it is called from.
  */
 export function reportRequestError(
-  error: Error,
-  request: { path: string; method: string; headers: Record<string, string> },
+  error: unknown,
+  request: Readonly<{
+    path: string;
+    method: string;
+    headers: Record<string, string | string[] | undefined>;
+  }>,
   context: OnRequestErrorContext,
 ): Promise<void> {
   const handler = getOnRequestErrorHandler();

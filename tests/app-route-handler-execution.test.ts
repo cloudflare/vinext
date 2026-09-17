@@ -219,7 +219,7 @@ describe("app route handler execution helpers", () => {
       tags: string[];
     }> = [];
     const phaseCalls: string[] = [];
-    const reportCalls: Error[] = [];
+    const reportCalls: unknown[] = [];
     let didClearRequestContext = false;
 
     const response = await executeAppRouteHandler({
@@ -1192,7 +1192,7 @@ describe("app route handler execution helpers", () => {
 
   it("maps special route handler errors and reports generic failures", async () => {
     const dynamicUsage = createDynamicUsageState();
-    const reportedErrors: Error[] = [];
+    const reportedErrors: unknown[] = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const redirectResponse = await executeAppRouteHandler({
@@ -1245,6 +1245,7 @@ describe("app route handler execution helpers", () => {
     );
     expect(reportedErrors).toEqual([]);
 
+    const reportRequestError = vi.fn();
     const errorResponse = await executeAppRouteHandler({
       buildPageCacheTags(pathname, extraTags) {
         return [pathname, ...extraTags];
@@ -1276,11 +1277,10 @@ describe("app route handler execution helpers", () => {
       method: "GET",
       middlewareContext: { headers: null, status: null },
       params: {},
-      reportRequestError(error) {
-        reportedErrors.push(error);
-      },
+      reportRequestError,
       request: new Request("https://example.com/api/error"),
       revalidateSeconds: 60,
+      revalidateReason: "on-demand",
       routePattern: "/api/error",
       setHeadersAccessPhase() {
         return "render";
@@ -1288,7 +1288,16 @@ describe("app route handler execution helpers", () => {
     });
 
     expect(errorResponse.status).toBe(500);
-    expect(reportedErrors.map((error) => error.message)).toEqual(["boom"]);
+    expect(reportRequestError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "boom" }),
+      expect.objectContaining({ path: "/api/error" }),
+      {
+        routerKind: "App Router",
+        routePath: "/api/error",
+        routeType: "route",
+        revalidateReason: "on-demand",
+      },
+    );
 
     errorSpy.mockRestore();
   });
@@ -1318,7 +1327,7 @@ describe("app route handler execution helpers", () => {
     try {
       for (const testCase of cases) {
         const dynamicUsage = createDynamicUsageState();
-        const reportedErrors: Error[] = [];
+        const reportedErrors: unknown[] = [];
         let wroteCache = false;
         let didClearRequestContext = false;
 
@@ -1372,7 +1381,9 @@ describe("app route handler execution helpers", () => {
 
         expect(response.status).toBe(500);
         await expect(response.text()).resolves.toBe("");
-        expect(reportedErrors.map((error) => error.message)).toEqual([testCase.message]);
+        expect(
+          reportedErrors.map((error) => (error instanceof Error ? error.message : String(error))),
+        ).toEqual([testCase.message]);
         expect(wroteCache).toBe(false);
         expect(didClearRequestContext).toBe(true);
       }

@@ -84,6 +84,10 @@ describe("Sentry fixture envelope state", () => {
               router_path: "/error",
               route_type: "render",
             },
+            trace: {
+              span_id: "1111111111111111",
+              trace_id: "22222222222222222222222222222222",
+            },
           },
           sdk: { name: "sentry.javascript.nextjs" },
         }),
@@ -99,6 +103,8 @@ describe("Sentry fixture envelope state", () => {
         routerPath: "/error",
         routeType: "render",
         sdkName: "sentry.javascript.nextjs",
+        spanId: "1111111111111111",
+        traceId: "22222222222222222222222222222222",
       },
     ]);
     expect(getReportedSentryTransactions()).toEqual([]);

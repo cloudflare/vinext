@@ -18,6 +18,7 @@ import type { ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
 import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
+import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 
 // oxlint-disable-next-line @typescript-eslint/no-explicit-any
 type AppPageComponent = import("react").ComponentType<any>;
@@ -51,6 +52,7 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
     request: Request,
     pathname: string,
     routePath: string,
+    overrides?: AppRenderErrorContextOverrides,
   ) => AppPageBoundaryOnError;
   fontProviders: AppFallbackRendererFontProviders;
   getAndClearPendingCookies?: () => string[];
@@ -267,8 +269,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
             boundaryModule: globalNotFoundModule ?? null,
             buildFontLinkHeader: fontProviders.buildFontLinkHeader,
             clearRequestContext,
-            createRscOnErrorHandler(pathname, routePath) {
-              return buildRscOnErrorHandler(request, pathname, routePath);
+            createRscOnErrorHandler(pathname, routePath, overrides) {
+              return buildRscOnErrorHandler(request, pathname, routePath, overrides);
             },
             getFontLinks: fontProviders.getFontLinks,
             getFontPreloads: fontProviders.getFontPreloads,
@@ -313,8 +315,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         boundaryModule: opts?.boundaryModule ?? null,
         buildFontLinkHeader: fontProviders.buildFontLinkHeader,
         clearRequestContext,
-        createRscOnErrorHandler(pathname, routePath) {
-          return buildRscOnErrorHandler(request, pathname, routePath);
+        createRscOnErrorHandler(pathname, routePath, overrides) {
+          return buildRscOnErrorHandler(request, pathname, routePath, overrides);
         },
         getFontLinks: fontProviders.getFontLinks,
         getFontPreloads: fontProviders.getFontPreloads,
@@ -387,8 +389,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         trailingSlash,
         buildFontLinkHeader: fontProviders.buildFontLinkHeader,
         clearRequestContext,
-        createRscOnErrorHandler(pathname, routePath) {
-          return buildRscOnErrorHandler(request, pathname, routePath);
+        createRscOnErrorHandler(pathname, routePath, overrides) {
+          return buildRscOnErrorHandler(request, pathname, routePath, overrides);
         },
         error,
         errorOrigin,

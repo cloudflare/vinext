@@ -78,9 +78,14 @@ export type RouteHandlerCacheSetter = (
   policy: IsrWritePolicy,
 ) => Promise<void>;
 type AppRouteErrorReporter = (
-  error: Error,
+  error: unknown,
   request: { path: string; method: string; headers: Record<string, string> },
-  route: { routerKind: "App Router"; routePath: string; routeType: "route" },
+  route: {
+    routerKind: "App Router";
+    routePath: string;
+    routeType: "route";
+    revalidateReason: "on-demand" | "stale" | undefined;
+  },
 ) => void;
 export type AppRouteDebugLogger = (event: string, detail: string) => void;
 
@@ -232,6 +237,7 @@ type ExecuteAppRouteHandlerOptions = {
   reportRequestError: AppRouteErrorReporter;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  revalidateReason?: "on-demand" | "stale";
   routePattern: string;
   setHeadersAccessPhase: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 } & RunAppRouteHandlerOptions;
@@ -536,7 +542,7 @@ export async function executeAppRouteHandler(
 
     console.error("[vinext] Route handler error:", error);
     options.reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
+      error,
       {
         path: options.cleanPathname,
         method: options.request.method,
@@ -546,6 +552,7 @@ export async function executeAppRouteHandler(
         routerKind: "App Router",
         routePath: options.routePattern,
         routeType: "route",
+        revalidateReason: options.revalidateReason,
       },
     );
 

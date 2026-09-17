@@ -720,7 +720,12 @@ export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin,
       void _reportRequestError(
         error,
         { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-        { routerKind: "Pages Router", routePath: routePattern, routeType: "route" },
+        {
+          routerKind: "Pages Router",
+          routePath: routePattern,
+          routeType: "route",
+          revalidateReason: undefined,
+        },
       );
     },
   });

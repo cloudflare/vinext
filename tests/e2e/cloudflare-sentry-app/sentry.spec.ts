@@ -1,9 +1,12 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
-import type { ReportedSentryTransaction as ReportedTransaction } from "../../fixtures/sentry-test-state";
+import type {
+  ReportedSentryError as ReportedError,
+  ReportedSentryTransaction as ReportedTransaction,
+} from "../../fixtures/sentry-test-state";
 import { waitForAppRouterHydration } from "../helpers";
 
 async function expectReportedError(request: APIRequestContext, message: string) {
-  const state: { errors: Array<{ message?: string }> } = { errors: [] };
+  const state: { errors: ReportedError[] } = { errors: [] };
 
   await expect
     .poll(async () => {
@@ -15,6 +18,28 @@ async function expectReportedError(request: APIRequestContext, message: string) 
     .toBe(true);
 
   return state;
+}
+
+async function expectErrorTraceCorrelation(
+  request: APIRequestContext,
+  error: ReportedError,
+): Promise<void> {
+  expect(error.traceId).toMatch(/^[0-9a-f]{32}$/);
+  expect(error.spanId).toMatch(/^[0-9a-f]{16}$/);
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      return state.transactions.some(
+        (transaction) =>
+          transaction.traceId === error.traceId &&
+          [transaction.spanId, ...transaction.spans.map(({ spanId }) => spanId)].includes(
+            error.spanId ?? "",
+          ),
+      );
+    })
+    .toBe(true);
 }
 
 async function expectReportedTransaction(request: APIRequestContext, name: string) {
@@ -59,6 +84,29 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
         sdkName: "sentry.javascript.nextjs",
       }),
     );
+    await expectErrorTraceCorrelation(
+      request,
+      state.errors.find(({ message }) => message === "Intentional Sentry App Router error")!,
+    );
+  });
+
+  test("reports proxy errors with Next.js context and trace correlation", async ({ request }) => {
+    const errorRes = await request.get("/proxy-error");
+    expect(errorRes.status()).toBe(500);
+
+    const state = await expectReportedError(request, "Intentional Sentry App Router proxy error");
+    const error = state.errors.find(
+      ({ message }) => message === "Intentional Sentry App Router proxy error",
+    )!;
+    expect(error).toMatchObject({
+      projectId: "1",
+      requestPath: "/proxy-error",
+      routerKind: "Pages Router",
+      routerPath: "/proxy",
+      routeType: "proxy",
+      sdkName: "sentry.javascript.nextjs",
+    });
+    await expectErrorTraceCorrelation(request, error);
   });
 
   test("records transaction envelopes and nested application spans", async ({ request }) => {
@@ -144,6 +192,34 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
         sdkName: "sentry.javascript.nextjs",
       }),
     );
+    await expectErrorTraceCorrelation(
+      request,
+      state.errors.find(({ message }) => message === "Intentional Sentry App Router render error")!,
+    );
+  });
+
+  // Ported from Next.js: test/e2e/on-request-error/basic/basic.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/on-request-error/basic/basic.test.ts
+  test("reports client component SSR errors in the request trace", async ({ request }) => {
+    const errorRes = await request.get("/ssr-render-error");
+    expect(errorRes.status()).toBe(500);
+
+    const state = await expectReportedError(
+      request,
+      "Intentional Sentry App Router SSR render error",
+    );
+    const error = state.errors.find(
+      ({ message }) => message === "Intentional Sentry App Router SSR render error",
+    )!;
+    expect(error).toMatchObject({
+      projectId: "1",
+      requestPath: "/ssr-render-error",
+      routerKind: "App Router",
+      routerPath: "/ssr-render-error",
+      routeType: "render",
+      sdkName: "sentry.javascript.nextjs",
+    });
+    await expectErrorTraceCorrelation(request, error);
   });
 
   test("reports a browser error through instrumentation-client Sentry.init", async ({

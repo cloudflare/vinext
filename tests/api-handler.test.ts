@@ -42,7 +42,7 @@ function mockReq(
   method: string,
   url: string,
   body?: string | Buffer,
-  headers: Record<string, string> = {},
+  headers: Record<string, string | string[]> = {},
 ): http.IncomingMessage {
   const stream = new PassThrough();
   // Attach IncomingMessage-like properties
@@ -1522,6 +1522,24 @@ describe("handleApiRoute", () => {
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(res._statusCode).toBe(500);
+    });
+
+    it("preserves Node header arrays in onRequestError while dropping HTTP/2 pseudo-headers", async () => {
+      const server = mockServer({
+        default() {
+          throw new Error("header failure");
+        },
+      });
+      const req = mockReq("GET", "/api/headers", undefined, {
+        ":method": "GET",
+        "set-cookie": ["a=1", "b=2"],
+      });
+
+      await handleApiRoute(server, req, mockRes(), "/api/headers", [route("/api/headers")]);
+
+      expect(vi.mocked(reportRequestError).mock.calls[0]?.[1].headers).toEqual({
+        "set-cookie": ["a=1", "b=2"],
+      });
     });
   });
 });
