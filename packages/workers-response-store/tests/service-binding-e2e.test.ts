@@ -10,6 +10,7 @@ const cacheWorkerScript = fileURLToPath(
 const userWorkerScript = fileURLToPath(
   new URL("../dist/service-user/user-worker.js", import.meta.url),
 );
+const VERSION_ID = "11111111-1111-4111-8111-111111111111";
 
 type PutOptions = {
   cacheControl?: string;
@@ -25,6 +26,7 @@ beforeEach(async () => {
     compatibilityDate: "2026-04-08",
     compatibilityFlags: ["nodejs_compat", "experimental"],
     unsafeEphemeralDurableObjects: true,
+    unsafeInspectDurableObjects: true,
     workers: [
       {
         name: "user-worker",
@@ -37,10 +39,14 @@ beforeEach(async () => {
             name: "cache-worker",
             entrypoint: "ResponseStoreService",
           },
+          RESPONSE_STORE_ADMIN: {
+            name: "cache-worker",
+            entrypoint: "ResponseStoreAdmin",
+          },
         },
         bindings: {
           CF_VERSION_METADATA: {
-            id: "user-worker-v1",
+            id: VERSION_ID,
             tag: "test",
             timestamp: "2026-09-04T00:00:00Z",
           },
@@ -101,7 +107,7 @@ test("a service-bound cache Worker stores and returns responses", async () => {
   const entries = (
     await Promise.all(
       Array.from({ length: 4 }, async (_, index) => {
-        const metadata = namespace.getByName(`user-worker-v1:metadata-shard:${index}-of-4`) as any;
+        const metadata = namespace.getByName(`${VERSION_ID}:metadata-shard:${index}-of-4`) as any;
         return metadata.inspect() as Promise<unknown[]>;
       }),
     )
@@ -139,7 +145,7 @@ test("manual refresh calls back into the user Worker version", async () => {
 
   const response = await read("/manual");
   assert.equal(await response.text(), "manually-regenerated");
-  assert.equal(response.headers.get("X-Revalidation-Version"), "user-worker-v1");
+  assert.equal(response.headers.get("X-Revalidation-Version"), VERSION_ID);
   assert.equal(response.headers.get("X-Revalidation-Reason"), "manual");
 });
 
@@ -157,5 +163,42 @@ test("SWR keeps the passed user-Worker loopback alive after returning stale", as
   const fresh = await read("/swr");
   assert.equal(await fresh.text(), "fresh");
   assert.equal(fresh.headers.get("X-Revalidation-Reason"), "swr");
-  assert.equal(fresh.headers.get("X-Revalidation-Version"), "user-worker-v1");
+  assert.equal(fresh.headers.get("X-Revalidation-Version"), VERSION_ID);
+});
+
+test("the admin entrypoint deletes every metadata shard for a retired version", async () => {
+  await put("/retired", "stored-body");
+
+  const response = await worker.fetch("https://user.test/admin/delete-version-storage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ versionId: VERSION_ID, shards: 4 }),
+  });
+  const result = await response.json();
+  assert.equal(response.status, 200, JSON.stringify(result));
+  assert.equal(result.versionId, VERSION_ID);
+  assert.equal(result.shardCount, 4);
+  assert.ok(result.deletedBytes > 0);
+
+  for (let index = 0; index < 4; index++) {
+    const storage = await mf.unsafeGetDurableObjectStorage("cache-worker", "CacheMetadata", {
+      name: `${VERSION_ID}:metadata-shard:${index}-of-4`,
+    });
+    assert.deepEqual(
+      await storage.exec("SELECT name FROM sqlite_schema WHERE name = 'entries'"),
+      [],
+    );
+  }
+});
+
+test("the admin entrypoint rejects non-version Durable Object names", async () => {
+  const response = await worker.fetch("https://user.test/admin/delete-version-storage", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ versionId: "some-other-object" }),
+  });
+  assert.equal(response.status, 500);
+  assert.deepEqual(await response.json(), {
+    error: "Workers Response Store requires a Worker version UUID",
+  });
 });

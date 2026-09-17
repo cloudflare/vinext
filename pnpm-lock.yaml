@@ -1073,6 +1073,9 @@ importers:
       '@cloudflare/workers-response-store':
         specifier: workspace:*
         version: link:../workers-response-store
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.118.0(@cloudflare/workers-types@5.20260904.1)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

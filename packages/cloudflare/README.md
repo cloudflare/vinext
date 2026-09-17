@@ -100,6 +100,27 @@ vinext({ cache: responseStoreAdapter({ shards: 16 }) });
 Keys remain pinned to one shard while tag/path mutations fan out across every
 shard. Omit `shards` to retain the original single metadata Durable Object.
 
+Retired application versions keep their version-scoped metadata for rollback.
+Preview a cleanup after the rollback window, then repeat it with `--yes`:
+
+```sh
+CLOUDFLARE_API_TOKEN=... npx @vinext/cloudflare cleanup-response-store \
+  --older-than 30d --shards 1,16
+CLOUDFLARE_API_TOKEN=... npx @vinext/cloudflare cleanup-response-store \
+  --older-than 30d --shards 1,16 --yes
+CLOUDFLARE_API_TOKEN=... npx @vinext/cloudflare cleanup-response-store \
+  --version-id <version-id> --shards 1,16 --yes
+```
+
+Provide exactly one of `--older-than` or `--version-id`, and list every
+historical shard layout that may contain data. The command fetches
+all application Worker versions, excludes every version in the current
+deployment, and atomically deletes each selected metadata Durable Object's
+SQLite storage. It infers the separate cache Worker from the `RESPONSE_STORE`
+service binding; use `--response-store-worker` to override it. The API token
+needs Workers Scripts read/write access for version listing and Wrangler's
+remote service-binding session. R2 response bodies are not deleted.
+
 To deploy storage and cache entrypoints with the application instead, select
 self-contained mode:
 

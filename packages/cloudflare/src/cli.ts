@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import { parseArgs } from "node:util";
 import { deploy, parseDeployArgs } from "./deploy.js";
 import { printDeployHelp } from "./deploy-help.js";
+import { cleanupResponseStoreVersions } from "./response-store-cleanup.js";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"))
   .version as string;
@@ -12,6 +14,30 @@ const rawArgs = process.argv.slice(3);
 function printHelp(commandName?: string): void {
   if (commandName === "deploy") {
     printDeployHelp();
+    return;
+  }
+  if (commandName === "cleanup-response-store") {
+    console.log(`
+  vinext-cloudflare cleanup-response-store - Delete retired version metadata
+
+  Usage: vinext-cloudflare cleanup-response-store (--older-than <age> | --version-id <id>) [options]
+
+  Options:
+    --older-than <age>            Select versions older than an age such as 24h, 7d, or 4w
+    --version-id <id>             Select one Worker version by id
+    --shards <counts>             Historical shard layouts, comma-separated (default: 1)
+    --name <name>                 Application Worker whose versions are selected
+    --response-store-worker <name>
+                                  Cache Worker that owns the metadata Durable Objects
+    --env <name>                  Use Wrangler env.<name>
+    --config <path>               Wrangler config path
+    --yes                         Delete the selected Durable Object storage
+    -h, --help                    Show this help
+
+  Without --yes, the command only prints the versions it would delete. Versions in
+  the current deployment are always protected. This deletes SQLite Durable Object
+  storage; version-scoped R2 response bodies are unchanged.
+`);
     return;
   }
 
@@ -25,12 +51,73 @@ function printHelp(commandName?: string): void {
     vp exec vinext-cloudflare <command>    Run the locally installed bin
 
   Commands:
-    deploy   Deploy to Cloudflare Workers
+    deploy                   Deploy to Cloudflare Workers
+    cleanup-response-store   Delete retired Response Store metadata
 
   Options:
     -h, --help     Show this help
     --version      Show version
 `);
+}
+
+function parseShardCounts(raw: string): number[] {
+  const counts = [...new Set(raw.split(",").map(Number))];
+  if (counts.some((count) => !Number.isSafeInteger(count) || count < 1)) {
+    throw new Error(`--shards expects comma-separated positive integers, but got "${raw}".`);
+  }
+  return counts;
+}
+
+async function responseStoreCleanupCommand(): Promise<void> {
+  const { values } = parseArgs({
+    args: rawArgs,
+    options: {
+      config: { type: "string" },
+      env: { type: "string" },
+      help: { type: "boolean", short: "h" },
+      name: { type: "string" },
+      "older-than": { type: "string" },
+      "response-store-worker": { type: "string" },
+      shards: { type: "string", default: "1" },
+      "version-id": { type: "string" },
+      yes: { type: "boolean", default: false },
+    },
+    strict: true,
+  });
+  if (values.help) {
+    printHelp("cleanup-response-store");
+    return;
+  }
+
+  const result = await cleanupResponseStoreVersions({
+    root: process.cwd(),
+    olderThan: values["older-than"],
+    versionId: values["version-id"],
+    shardCounts: parseShardCounts(values.shards),
+    yes: values.yes,
+    config: values.config,
+    env: values.env,
+    workerName: values.name,
+    responseStoreWorker: values["response-store-worker"],
+  });
+  console.log(
+    `  Found ${result.selectedVersions.length} undeployed Worker version(s) ${result.cutoff ? `older than ${result.cutoff}` : `matching ${values["version-id"]}`}.`,
+  );
+  for (const version of result.selectedVersions) {
+    console.log(`  ${version.id}  ${new Date(version.metadata.created_on).toISOString()}`);
+  }
+  if (!values.yes && result.selectedVersions.length) {
+    console.log("\n  Dry run only. Re-run with --yes to delete their metadata Durable Objects.");
+  }
+  if (values.yes) {
+    const deletedBytes = result.deletions.reduce(
+      (total, deletion) => total + deletion.deletedBytes,
+      0,
+    );
+    console.log(
+      `  Deleted ${result.deletions.length} version layout(s), reclaiming ${deletedBytes} SQLite byte(s).`,
+    );
+  }
 }
 
 async function deployCommand(): Promise<void> {
@@ -89,6 +176,12 @@ if (command === "--help" || command === "-h" || !command) {
 switch (command) {
   case "deploy":
     deployCommand().catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    });
+    break;
+  case "cleanup-response-store":
+    responseStoreCleanupCommand().catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     });

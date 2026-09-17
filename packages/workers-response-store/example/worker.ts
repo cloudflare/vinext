@@ -174,7 +174,7 @@ function storeForRequest(request: Request): WorkersResponseStore {
     : responseStore;
 }
 
-export const { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding } =
+export const { CacheMetadata, ResponseStoreAdmin, ResponseStoreRevalidator, ResponseStoreBinding } =
   responseStore.entrypoints;
 
 export default {
