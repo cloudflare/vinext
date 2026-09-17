@@ -51,14 +51,21 @@ describe("App Router Production build", () => {
   });
 
   it("produces RSC/SSR/client bundles via vite build", async () => {
-    const builder = await createBuilder({
-      root: fixtureDir,
-      cacheDir: testCacheDir(fixtureDir),
-      configFile: false,
-      plugins: [vinext({ appDir: fixtureDir })],
-      logLevel: "silent",
-    });
-    await builder.buildApp();
+    const previousLifecycle = process.env.__VINEXT_BUILD_LIFECYCLE;
+    process.env.__VINEXT_BUILD_LIFECYCLE = "1";
+    try {
+      const builder = await createBuilder({
+        root: fixtureDir,
+        cacheDir: testCacheDir(fixtureDir),
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+    } finally {
+      if (previousLifecycle === undefined) delete process.env.__VINEXT_BUILD_LIFECYCLE;
+      else process.env.__VINEXT_BUILD_LIFECYCLE = previousLifecycle;
+    }
 
     // RSC entry should exist (at dist/server/index.js)
     expect(fs.existsSync(path.join(outDir, "server", "index.js"))).toBe(true);
@@ -66,6 +73,9 @@ describe("App Router Production build", () => {
     expect(fs.existsSync(path.join(outDir, "server", "ssr", "index.js"))).toBe(true);
     // Client bundle should exist
     expect(fs.existsSync(path.join(outDir, "client"))).toBe(true);
+    // Hybrid app+pages projects also need the Pages Router server entry. This
+    // is finalized by the vinext plugin, including for a direct Vite build.
+    expect(fs.existsSync(path.join(outDir, "server", "entry.js"))).toBe(true);
 
     // Client JS should land under Next.js's canonical `_next/static/chunks/`
     // directory.

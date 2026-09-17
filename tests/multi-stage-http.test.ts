@@ -221,11 +221,11 @@ beforeAll(async () => {
     fs.symlinkSync(path.join(ROOT, "tests/fixtures/pages-basic/node_modules"), fixtureNodeModules);
     createdNodeModules = true;
   }
-  const buildOutput = await spawnAndWait(process.execPath, [
-    VINEXT_CLI,
-    "build",
-    "--prerender-all",
-  ]);
+  const buildOutput = await spawnAndWait(
+    process.execPath,
+    [VINEXT_CLI, "build", "--prerender-all"],
+    { NODE_ENV: undefined },
+  );
   const manifestPath = path.join(FIXTURE_ROOT, "dist/server/.vite/manifest.json");
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`HTTP stage build did not emit a server manifest\n${buildOutput}`);

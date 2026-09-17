@@ -23,8 +23,8 @@ export default function Home() { return <div>hi</div> }
   },
   "type": "module",
   "scripts": {
-    "dev:vinext": "vinext dev --port 3001",
-    "build:vinext": "vinext build",
+    "dev:vinext": "vite dev --port 3001",
+    "build:vinext": "vite build",
     "start:vinext": "wrangler dev --config dist/server/wrangler.json",
     "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   }
@@ -101,8 +101,8 @@ exports[`init — generated project snapshots > snapshots a fresh Node Pages Rou
   },
   "type": "module",
   "scripts": {
-    "dev:vinext": "vinext dev --port 3001",
-    "build:vinext": "vinext build",
+    "dev:vinext": "vite dev --port 3001",
+    "build:vinext": "vite build",
     "start:vinext": "vinext start"
   }
 }
@@ -142,8 +142,8 @@ export default function Home() { return <div>hi</div> }
   },
   "type": "module",
   "scripts": {
-    "dev:vinext": "vinext dev --port 3001",
-    "build:vinext": "vinext build",
+    "dev:vinext": "vite dev --port 3001",
+    "build:vinext": "vite build",
     "start:vinext": "wrangler dev --config dist/server/wrangler.json",
     "deploy:vinext": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   }

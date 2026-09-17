@@ -1537,8 +1537,12 @@ describe("treeshake config integration", () => {
         command: "build",
       });
 
-      // For standalone client builds (non-SSR, non-multi-env),
-      // output config should include the min chunk size setting.
+      // Plain Pages Router projects opt into Vite's environment builder so a
+      // direct `vite build` emits both client and SSR outputs.
+      expect(result.builder).toEqual({});
+      expect(Object.keys(result.environments)).toEqual(["client", "ssr"]);
+
+      // The shared client output config still includes minimum chunk sizing.
       const output = getBuildBundlerOptions(result).output;
       expect(output).toBeDefined();
       expect(output.entryFileNames).toBe("_next/static/chunks/[name]-[hash].js");
