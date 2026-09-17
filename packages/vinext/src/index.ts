@@ -1520,6 +1520,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // initializer guards any unexpected hook ordering.
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
   let hasCloudflarePlugin = false;
+  let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
   const isMultiStageServerEnvironment = (environment: {
     config: { build: { ssr?: unknown }; consumer?: string };
@@ -2800,8 +2801,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
         );
         const configuredMultiStageOutput = options.cache?.cdn?.output;
-        selectedMultiStageOutput =
-          !isServeCommand &&
+        matchedMultiStageOutput =
           configuredMultiStageOutput?.type === "multi-stage" &&
           (configuredMultiStageOutput.matchesBuild?.({
             plugins: pluginsFlat as { name?: string }[],
@@ -2809,6 +2809,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             true)
             ? configuredMultiStageOutput
             : undefined;
+        // Dev retains the ordinary single-stage request path, but the host
+        // entry still needs adapter-owned named exports (for example Durable
+        // Object classes declared in Wrangler configuration).
+        selectedMultiStageOutput = isServeCommand ? undefined : matchedMultiStageOutput;
         hasNitroPlugin = pluginsFlat.some(
           (p: unknown) =>
             p &&
@@ -4610,7 +4614,6 @@ export const loadServerActionClient = ${
     },
     {
       name: "vinext:multi-stage-host-entry",
-      apply: "build",
 
       transform: {
         // The adapter owns entry matching. Do not pre-filter by an import
@@ -4619,7 +4622,7 @@ export const loadServerActionClient = ${
         // specifically so it can recognize those layouts.
         filter: { id: /virtual:|\.[cm]?[jt]sx?(?:\?|$)/ },
         handler(code, id) {
-          const transformed = selectedMultiStageOutput?.transformHostEntry?.({ code, id });
+          const transformed = matchedMultiStageOutput?.transformHostEntry?.({ code, id });
           return transformed == null ? null : { code: transformed, map: null };
         },
       },
