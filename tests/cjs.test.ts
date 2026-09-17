@@ -88,6 +88,11 @@ describe("CJS interop (Pages Router)", () => {
     // expressions (e.g. "Random: <!-- -->4"), so use a regex.
     expect(html).toMatch(/Random:.*4/);
   });
+
+  it("transforms project source that resembles a Nitro service output path", async () => {
+    const module = await server.environments.ssr.transformRequest("/vite/services/local/entry.js");
+    expect(module?.code).toContain("[vite-plugin-commonjs] export-runtime-S");
+  });
 });
 
 // Ported from Next.js: test/e2e/app-dir/client-module-with-package-type/index.test.ts
