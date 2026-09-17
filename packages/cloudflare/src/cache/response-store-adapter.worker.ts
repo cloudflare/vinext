@@ -60,6 +60,10 @@ const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const REPLAY_REQUEST_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
   name.trim().toLowerCase(),
 );
+const CACHE_REQUEST_VARY_HEADERS = REPLAY_REQUEST_HEADERS.map((name): [string, string] => [
+  name,
+  "vinext-keyed",
+]);
 
 function stageContext(ctx: WorkerExecutionContext, env: VinextResponseStoreEnv): StageContext {
   const assets = Reflect.get(env, "ASSETS");
@@ -268,7 +272,9 @@ async function cacheRequest(request: Request, props: unknown): Promise<Request> 
     RESPONSE_STORE_KEY_PARAM,
     [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
   );
-  return new Request(url, { method: "GET" });
+  // The opaque URL already partitions these selectors. Keep every Vary field
+  // present so cache-selection rules agree on the selected representation.
+  return new Request(url, { headers: CACHE_REQUEST_VARY_HEADERS, method: "GET" });
 }
 
 function isCacheable(response: Response): boolean {
