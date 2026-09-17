@@ -130,6 +130,8 @@ describe("App Router Production build", () => {
     // RSC bundle should contain route handling code
     const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
     expect(rscEntry).toContain("handler");
+    expect(readAllJs(path.join(outDir, "server"))).not.toContain("cloudflare:workers");
+    expect(readAllJs(path.join(outDir, "server"))).not.toContain("cloudflare-workers");
 
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);

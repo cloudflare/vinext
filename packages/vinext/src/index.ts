@@ -1144,6 +1144,10 @@ const APP_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("app-request-stage-ind
 const APP_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("app-response-stage-entry");
 const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage-entry");
 const PAGES_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("pages-response-stage-entry");
+const WORKER_ROUTER_ENTRIES = new Set([
+  resolveRuntimeEntryModule("app-router-entry"),
+  resolveRuntimeEntryModule("pages-router-entry"),
+]);
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
 const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
 /** CDN-only registrar kept out of the data-cache response graph. */
@@ -4553,6 +4557,21 @@ export const loadServerActionClient = ${
           // consumed, so nulling the map is safe and prevents stale-map
           // confusion in tooling.
           return { code: nextCode, map: null };
+        },
+      },
+    },
+    {
+      name: "vinext:cloudflare-framework-tracing",
+      transform: {
+        filter: { id: /(?:app|pages)-router-entry\.[cm]?[jt]s(?:\?|$)/ },
+        handler(code, id) {
+          if (!hasCloudflarePlugin) return null;
+          const cleanId = toSlash(stripViteModuleQuery(id));
+          if (!WORKER_ROUTER_ENTRIES.has(cleanId)) return null;
+          return {
+            code: `import "vinext/internal/server/cloudflare-workers-tracing";\n${code}`,
+            map: null,
+          };
         },
       },
     },
