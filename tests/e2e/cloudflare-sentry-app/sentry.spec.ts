@@ -206,6 +206,32 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
       parentSpanId: transaction.spanId,
       traceId: transaction.traceId,
     });
+    const componentTreeSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "NextNodeServer.createComponentTree",
+    );
+    expect(componentTreeSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.span_name": "build component tree",
+        "next.span_type": "NextNodeServer.createComponentTree",
+      }),
+      name: "build component tree",
+      parentSpanId: renderSpan?.spanId,
+      traceId: transaction.traceId,
+    });
+    for (const segment of ["__PAGE__", "[slug]"]) {
+      expect(transaction.spans).toContainEqual(
+        expect.objectContaining({
+          attributes: expect.objectContaining({
+            "next.segment": segment,
+            "next.span_name": "resolve segment modules",
+            "next.span_type": "NextNodeServer.getLayoutOrPageModule",
+          }),
+          name: "resolve segment modules",
+          parentSpanId: componentTreeSpan?.spanId,
+          traceId: transaction.traceId,
+        }),
+      );
+    }
     expect(transaction.spans).toContainEqual(
       expect.objectContaining({
         attributes: expect.objectContaining({
