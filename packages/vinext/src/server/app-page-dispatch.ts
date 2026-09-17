@@ -100,6 +100,7 @@ import {
   markRouteCacheabilityPatternDynamic,
 } from "vinext/shims/cacheability-classification";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
+import { traceResponseStart } from "./response-start-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -634,11 +635,14 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
+  let response: Response;
   if (!options.pprFallbackShell || !options.pprRuntime) {
-    return await dispatch();
+    response = await dispatch();
+  } else {
+    response = await options.pprRuntime.run(options.pprFallbackShell, dispatch);
   }
 
-  return await options.pprRuntime.run(options.pprFallbackShell, dispatch);
+  return options.isRscRequest ? response : traceResponseStart(response);
 }
 
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(

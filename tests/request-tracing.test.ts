@@ -12,6 +12,8 @@ import type {
   FrameworkTracingBackendSpan,
   ResolvedFrameworkSpanDescriptor,
 } from "../packages/vinext/src/server/framework-tracer.js";
+import { markFullyBufferedBody } from "../packages/vinext/src/server/fully-buffered-response.js";
+import { traceResponseStart } from "../packages/vinext/src/server/response-start-tracing.js";
 
 type RecordedSpan = {
   attributes: Record<string, boolean | number | string>;
@@ -90,6 +92,22 @@ describe("framework request tracing", () => {
     controller.close();
     await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
     await vi.waitFor(() => expect(finishedSpans.has(spans[0])).toBe(true));
+  });
+
+  it("keeps a fully buffered request span open until response start is traced", async () => {
+    spans.length = 0;
+    finishedSpans.clear();
+    const response = await traceRequest(async () =>
+      traceResponseStart(markFullyBufferedBody(new Response("buffered"))),
+    );
+
+    expect(finishedSpans.has(spans[0])).toBe(false);
+    await response.text();
+    await vi.waitFor(() => expect(finishedSpans.has(spans[0])).toBe(true));
+    expect(spans.map(({ attributes }) => attributes["next.span_type"])).toEqual([
+      "BaseServer.handleRequest",
+      "NextNodeServer.startResponse",
+    ]);
   });
 
   it("finishes the request span when the response body is cancelled", async () => {
