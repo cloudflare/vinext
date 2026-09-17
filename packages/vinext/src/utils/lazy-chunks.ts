@@ -109,15 +109,15 @@ function collectStaticChunkFiles(
   const chunk = buildManifest[key];
   if (!chunk) return;
 
+  for (const importedKey of chunk.imports ?? []) {
+    collectStaticChunkFiles(buildManifest, importedKey, files, seenFiles, visitedChunks);
+  }
+
   if (chunk.file.endsWith(".js")) {
     addFile(files, seenFiles, chunk.file);
   }
   for (const cssFile of chunk.css ?? []) {
     addFile(files, seenFiles, cssFile);
-  }
-
-  for (const importedKey of chunk.imports ?? []) {
-    collectStaticChunkFiles(buildManifest, importedKey, files, seenFiles, visitedChunks);
   }
 }
 
