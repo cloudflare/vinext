@@ -89,7 +89,7 @@ export function CompatibilityLineChart({
   const [hover, setHover] = useState<{ index: number; x: number; y: number } | null>(null);
 
   // Reduce TrendPoint to both pass-rate definitions for the selected router.
-  // Recomputed when filter changes, but that's a cheap O(n) over <=90 points.
+  // Recomputed when filter changes, but that's a cheap O(n) over the recorded runs.
   const series = useMemo(
     () =>
       points.map((p) => {

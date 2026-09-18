@@ -113,7 +113,7 @@ async function runQueries(
   latestFiles: GridCell[];
   trend: TrendPoint[];
 }> {
-  // The "latest run" and "last 90 runs trend" queries are independent —
+  // The "latest run" and all-time trend queries are independent —
   // issue them in parallel to save one D1 round-trip on every page load.
   // The file-results query depends on the latest run id, so that stays
   // sequential.
@@ -121,8 +121,7 @@ async function runQueries(
   // Trend query: aggregates per-run, per-router totals via JOIN against
   // compat_suite_meta. SUM(CASE WHEN ...) gives us one row per run with
   // app/pages/both/unknown rollups in a single round-trip. SQLite is fine
-  // with this shape at our scale (~90 runs × ~1000 file rows = 90k row
-  // scan over an indexed JOIN). The "all" series sums every file row and
+  // with this shape at our scale. The "all" series sums every file row and
   // matches compat_runs.{passed,failed,...} — we derive it from the JOIN
   // anyway so all five series stay consistent with each other.
   type TrendRow = {
@@ -227,7 +226,6 @@ async function runQueries(
       WHERE r.kind = ${kind}
       GROUP BY r.id
       ORDER BY r.created_at DESC
-      LIMIT 90
     `) as unknown as Promise<TrendRow[]>,
   ]);
 
