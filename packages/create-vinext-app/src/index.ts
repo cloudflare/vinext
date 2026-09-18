@@ -393,10 +393,16 @@ function detectPackageManager(
 }
 
 function getPackageManagerVersion(packageManager: PackageManagerName): string | null {
-  const result = spawnSync(packageManager, ["--version"], {
-    encoding: "utf-8",
-    stdio: ["ignore", "pipe", "ignore"],
-  });
+  const isWindows = process.platform === "win32";
+  const result = spawnSync(
+    isWindows ? (process.env.ComSpec ?? "cmd.exe") : packageManager,
+    isWindows ? ["/d", "/s", "/c", `${packageManager} --version`] : ["--version"],
+    {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    },
+  );
   return result.status === 0 ? result.stdout.trim() : null;
 }
 
