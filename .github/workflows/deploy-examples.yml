@@ -131,6 +131,9 @@ jobs:
     permissions:
       contents: read
       deployments: write
+    env:
+      VINEXT_CACHE_BACKEND: ${{ matrix.example.cache_backend }}
+      VINEXT_KV_APP_PREFIX: ${{ matrix.example.cache_backend == 'kv' && github.event_name == 'pull_request' && format('pr-{0}-{1}-{2}', github.event.pull_request.number, github.run_id, github.run_attempt) || 'workers-cache' }}
     strategy:
       fail-fast: false
       matrix:
@@ -167,6 +170,15 @@ jobs:
             project: response-store-demo
             working_directory: examples/response-store-demo
             wrangler_config: dist/server/wrangler.json
+            cache_backend: response-store
+            prewarm_e2e: true
+            warm_cdn_cache: true
+          - name: workers-cache
+            project: workers-cache
+            working_directory: examples/response-store-demo
+            wrangler_config: dist/server/wrangler.json
+            cache_backend: kv
+            prewarm_e2e: true
             warm_cdn_cache: true
           - name: static-export
             project: static-export
@@ -299,6 +311,49 @@ jobs:
           workingDirectory: ${{ matrix.example.working_directory }}
           command: triggers deploy --config ${{ matrix.example.wrangler_config }}
 
+      - name: Seed cache prewarm E2E Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: vp exec wrangler deploy --config ../../tests/fixtures/rsc-prewarm-seed/wrangler.jsonc --name "$WORKER_NAME"
+
+      - name: Deploy cache prewarm E2E Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VINEXT_CDN_WARM_DEBUG: "1"
+          WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: >-
+          vp exec vinext-cloudflare deploy
+          --skip-build
+          --config ${{ matrix.example.wrangler_config }}
+          --name "$WORKER_NAME"
+          --experimental-warm-cdn-cache
+          --warm-cdn-certify
+
+      - name: Verify deployed cache prewarm
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-workers
+          VINEXT_E2E_CACHE_BACKEND: ${{ matrix.example.cache_backend }}
+          VINEXT_E2E_BASE_URL: https://prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}.vinext.workers.dev
+        run: vp exec playwright test tests/e2e/cloudflare-workers/cache-prewarm.spec.ts
+
+      - name: Delete cache prewarm E2E Worker
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        continue-on-error: true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: vp exec wrangler delete "$WORKER_NAME" --config ${{ matrix.example.wrangler_config }} --force
+
   smoke-test:
     name: Smoke Test Deployments
     runs-on: ubuntu-latest
@@ -406,6 +461,7 @@ jobs:
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
               { name: 'response-store-demo', project: 'response-store-demo' },
+              { name: 'workers-cache', project: 'workers-cache' },
               { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];
