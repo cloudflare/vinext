@@ -28,6 +28,9 @@ describe("Next.js deploy harness", () => {
     expect(workflow).toContain("Backfills require a full 40-character vinext commit SHA");
     expect(workflow).toContain("path: historical-vinext");
     expect(workflow).toContain("VINEXT_HARNESS_DIR: ${{ github.workspace }}");
+    expect(workflow).toContain(
+      "VINEXT_FALLBACK_BUILD_ID: ${{ inputs.backfill-date && inputs.vinext-ref || '' }}",
+    );
     expect(workflow).toContain("`backfill:${backfillDate}:${process.env.VINEXT_REF}`");
     expect(workflow).toContain("{ createdAt: backfillCreatedAt }");
     expect(workflow).toContain("inputs.backfill-date != '' && github.ref == 'refs/heads/main'");
@@ -255,6 +258,12 @@ describe("Next.js deploy harness", () => {
     expect(script).toContain('"${VINEXT_BIN}" build --prerender-all');
     expect(script).toContain('"${VINEXT_BIN}" start --port "${PORT}" --hostname 127.0.0.1');
     expect(script).not.toContain("run_pnpm exec vinext");
+  });
+
+  it("falls back to the historical commit when old bundles have no build ID", () => {
+    const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
+
+    expect(script).toContain("process.env.VINEXT_FALLBACK_BUILD_ID");
   });
 
   it("normalizes non-pnpm packageManager pins before pnpm install", () => {

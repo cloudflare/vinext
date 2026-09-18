@@ -202,6 +202,10 @@ const match =
   code.match(/get buildId\(\)\s*\{\s*return "([^"]+)"/) ||
   code.match(/\bbuildId\s*=\s*"([^"]+)"/)
 if (!match) {
+  if (process.env.VINEXT_FALLBACK_BUILD_ID) {
+    console.log(process.env.VINEXT_FALLBACK_BUILD_ID)
+    process.exit(0)
+  }
   console.error(`Failed to extract build ID from ${bundlePath}`)
   process.exit(1)
 }

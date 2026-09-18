@@ -340,6 +340,7 @@ jobs:
           ADAPTER_DIR: ${{ inputs.backfill-date && format('{0}/historical-vinext', github.workspace) || github.workspace }}
           VINEXT_HARNESS_DIR: ${{ github.workspace }}
           VINEXT_DEPLOY_DEBUG_DIR: ${{ github.workspace }}/reports/nextjs-deploy-debug
+          VINEXT_FALLBACK_BUILD_ID: ${{ inputs.backfill-date && inputs.vinext-ref || '' }}
           # Required by the Next.js deploy test manifest — tests are keyed to
           # the turbopack variant, so this must be set even though vinext uses Vite.
           IS_TURBOPACK_TEST: "1"
