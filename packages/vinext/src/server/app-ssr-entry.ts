@@ -308,7 +308,7 @@ function extractBootstrapModuleUrl(bootstrapScriptContent?: string): string | un
 
 function buildModulePreloadHtml(bootstrapModuleUrl?: string, nonce?: string): string {
   if (!bootstrapModuleUrl) return "";
-  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}" />\n`;
+  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}" crossorigin="" />\n`;
 }
 
 function buildHeadInjectionHtml(
@@ -460,6 +460,7 @@ export async function handleSsr(
           for (const moduleUrl of pagesClientAssets.appBootstrapPreinitModules ?? []) {
             preinitModule(moduleUrl, {
               as: "script",
+              crossOrigin: "",
               nonce: options?.scriptNonce,
             });
           }
@@ -594,7 +595,9 @@ export async function handleSsr(
           //  - React still applies `nonce` to the emitted
           //    `<script type="module" src=…>` tag, so nonce-based CSP
           //    (`script-src 'nonce-…' 'strict-dynamic'`) keeps working.
-          bootstrapModules: bootstrapModuleUrl ? [bootstrapModuleUrl] : undefined,
+          bootstrapModules: bootstrapModuleUrl
+            ? [{ src: bootstrapModuleUrl, crossOrigin: "" }]
+            : undefined,
           formState: options?.formState ?? null,
           nonce: options?.scriptNonce,
           onHeaders: captureHeaders
