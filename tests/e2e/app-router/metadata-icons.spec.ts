@@ -2,8 +2,14 @@
 // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata-icons/metadata-icons.test.ts
 
 import type { Page } from "@playwright/test";
-import { expect, test } from "../fixtures";
+import { expect, test, REACT_DEV_CSP_EVAL_WARNING } from "../fixtures";
 import { waitForAppRouterHydration } from "../helpers";
+
+// React 19.3 reports unavailable development stack reconstruction under this
+// fixture's strict CSP. Keep the CSP and reject all other console/page errors.
+test.use({
+  expectedConsoleErrorPatterns: [REACT_DEV_CSP_EVAL_WARNING],
+});
 
 const iconInsertionScript = `document.querySelectorAll('body link[rel="icon"], body link[rel="apple-touch-icon"]').forEach(el => document.head.appendChild(el))`;
 

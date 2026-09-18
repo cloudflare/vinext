@@ -59,3 +59,28 @@ function findPackageVersion(resolvedEntry: string, packageName: string): string 
   }
   return null;
 }
+
+/** Check the application's React capabilities and matching renderer versions. */
+export function hasReactViewTransitionRuntime(root: string): boolean {
+  const req = createRequire(path.join(root, "package.json"));
+  try {
+    const react: unknown = req("react");
+    if (
+      react === null ||
+      typeof react !== "object" ||
+      !("version" in react) ||
+      typeof react.version !== "string" ||
+      !("ViewTransition" in react) ||
+      typeof react.ViewTransition !== "symbol" ||
+      !("addTransitionType" in react) ||
+      typeof react.addTransitionType !== "function"
+    )
+      return false;
+    return ["react-dom", "react-server-dom-webpack"].every(
+      (name) => findPackageVersion(req.resolve(`${name}/package.json`), name) === react.version,
+    );
+  } catch {
+    // A missing or unloadable runtime cannot provide the animation contract.
+    return false;
+  }
+}
