@@ -2,11 +2,15 @@
 // overlay React component (dev-error-overlay.tsx) can subscribe via
 // useSyncExternalStore without circular imports.
 
+import { isSameReportedError } from "./dev-console-error.js";
+
 export type Source =
   | "server"
   | "vite"
   | "uncaught"
   | "caught"
+  | "recoverable"
+  | "console-error"
   | "window-error"
   | "unhandledrejection";
 
@@ -15,6 +19,10 @@ export type ReportedError = {
   source: Source;
   message: string;
   stack: string | undefined;
+  // React 19's captureOwnerStack(), captured synchronously at report time
+  // (see dev-error-overlay.tsx). Distinguishes two call sites that happen to
+  // log identical text/stack, and is part of the duplicate check below.
+  ownerStack: string | null | undefined;
   ignoredStackFrames: boolean[] | undefined;
   projectRoot: string | undefined;
   codeFrame: OverlayCodeFrame | undefined;
@@ -66,6 +74,17 @@ export function getOverlaySnapshot(): OverlayState {
 }
 
 export function reportToOverlay(error: Omit<ReportedError, "id">): number {
+  // Structural dedup, matching Next.js's pushErrorFilterDuplicates: a report
+  // is only "new" if it differs from every error already retained on
+  // message, stack, or owner stack. No time window — an identical failure
+  // reported minutes later is still the same duplicate, and state.errors
+  // only clears on dismissOverlay (an explicit refresh), not on a timer.
+  // A duplicate leaves state untouched (no re-open, no re-expand) and
+  // resolves to the existing entry's id so an in-flight source-map lookup
+  // for the new occurrence still lands on it.
+  const duplicate = snapshot.errors.find((existing) => isSameReportedError(existing, error));
+  if (duplicate) return duplicate.id;
+
   // Any new error pops the dialog open, regardless of source or current
   // state. The developer can minimize once they've taken stock; subsequent
   // failures will re-expand.
