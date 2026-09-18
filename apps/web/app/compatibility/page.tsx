@@ -125,6 +125,7 @@ async function runQueries(
   // matches compat_runs.{passed,failed,...} — we derive it from the JOIN
   // anyway so all five series stay consistent with each other.
   type TrendRow = {
+    run_key: string;
     created_at: number;
     all_total: number;
     all_passed: number;
@@ -188,6 +189,7 @@ async function runQueries(
     db.all(sql`
       WITH out_of_scope(suite) AS (VALUES ${outOfScopeValues})
       SELECT
+        r.run_key AS run_key,
         r.created_at AS created_at,
         SUM(f.total)   AS all_total,
         SUM(f.passed)  AS all_passed,
@@ -278,6 +280,7 @@ async function runQueries(
     .reverse()
     .map((r) => ({
       createdAt: r.created_at,
+      reconstructed: r.run_key.startsWith("backfill:"),
       byRouter: {
         all: {
           total: r.all_total,
