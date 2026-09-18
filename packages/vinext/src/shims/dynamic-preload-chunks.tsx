@@ -88,6 +88,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
           key: href,
           rel: "stylesheet",
           href,
+          crossOrigin: "",
           nonce,
           precedence: "dynamic",
         }),

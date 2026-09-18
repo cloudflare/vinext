@@ -824,6 +824,7 @@ describe("App Router Production server (startProdServer)", () => {
       // The PR deliberately drops `as="style"` — `as` is only valid on
       // rel="preload" per the HTML spec, not on rel="stylesheet".
       expect(tag).not.toContain('as="style"');
+      expect(tag).toMatch(/\bcrossorigin(?:="")?/i);
     }
   });
 
@@ -965,6 +966,7 @@ describe("App Router Production server (startProdServer)", () => {
       expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
       for (const tag of dynamicScriptPreloads) {
         expect(tag).toMatch(/\bhref="\/cdn\/_next\/static\/chunks\/[^"]+\.js"/);
+        expect(tag).toMatch(/\bcrossorigin/i);
       }
     } finally {
       assetPrefixServer?.close();
@@ -1064,6 +1066,36 @@ describe("App Router Production server (startProdServer)", () => {
         expect(tag).toMatch(
           /\bhref="https:\/\/cdn\.example\.com\/_next\/static\/chunks\/[^"]+\.js"/,
         );
+      }
+
+      const cdnAssetLinks = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+        (tag) =>
+          (/\brel="modulepreload"/i.test(tag) || /\brel="stylesheet"/i.test(tag)) &&
+          tag.includes("https://cdn.example.com/_next/static/"),
+      );
+      expect(cdnAssetLinks.length).toBeGreaterThan(0);
+      for (const tag of cdnAssetLinks) {
+        expect(tag).toMatch(/\bcrossorigin/i);
+      }
+
+      const cssRes = await fetch(
+        `${tmpBaseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`,
+      );
+      expect(cssRes.status).toBe(200);
+      const cssHtml = await cssRes.text();
+      expect(cssHtml).toContain("rsc-imports-client-widget");
+      const dynamicStylesheets = (cssHtml.match(/<link\b[^>]*>/g) ?? []).filter(
+        (tag) =>
+          /\brel="stylesheet"/i.test(tag) &&
+          /\bdata-precedence="dynamic"/i.test(tag) &&
+          tag.includes("https://cdn.example.com/_next/static/"),
+      );
+
+      expect(dynamicStylesheets.length).toBeGreaterThan(0);
+      for (const tag of dynamicStylesheets) {
+        expect(tag).toContain('nonce="vinext-test-nonce"');
+        expect(tag).not.toContain('as="style"');
+        expect(tag).toMatch(/\bcrossorigin/i);
       }
     } finally {
       assetPrefixServer?.close();
