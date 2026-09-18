@@ -1,10 +1,11 @@
 import Link from "next/link";
+import { cacheLife, cacheTag } from "next/cache";
 import { CacheStatusProbe } from "../../components/cache-status-probe";
 import { RevalidateControls } from "../../components/revalidate-controls";
 
 // ISR config — slugs are cached for 60 seconds with a 5-minute
 // stale-while-revalidate window. The data adapter persists the completed
-// vinext cache value in Workers Response Store.
+// vinext cache value.
 export const revalidate = 60;
 
 export async function generateStaticParams() {
@@ -29,12 +30,17 @@ export async function generateMetadata({
  * The fetch target is a no-op data: URL so the demo has no external
  * dependency — vinext's fetch shim records the tag before doing any I/O.
  */
-async function loadPost(slug: string): Promise<{ title: string }> {
+async function loadPost(
+  slug: string,
+): Promise<{ cacheId: string; cachedAt: number; title: string }> {
+  "use cache";
+  cacheLife({ revalidate: 60, expire: 300 });
+  cacheTag(`post:${slug}`);
   const payload = JSON.stringify({ slug });
   await fetch(`data:application/json,${encodeURIComponent(payload)}`, {
     next: { tags: [`post:${slug}`], revalidate: 60 },
   });
-  return { title: `Post: ${slug}` };
+  return { cacheId: crypto.randomUUID(), cachedAt: Date.now(), title: `Post: ${slug}` };
 }
 
 export default async function CachedSlugPage({
@@ -80,6 +86,12 @@ export default async function CachedSlugPage({
       </div>
       <p>
         Render ID: <code data-render-id-tag>{renderId}</code>
+      </p>
+      <p>
+        Data cache ID: <code data-cache-id>{post.cacheId}</code>
+      </p>
+      <p>
+        Data cached at: <code data-cache-created-at>{post.cachedAt}</code>
       </p>
       <p>
         Sample noise (re-rendered = re-randomised): <code>{random}</code>

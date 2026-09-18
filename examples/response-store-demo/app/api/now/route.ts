@@ -10,6 +10,6 @@ export async function GET(): Promise<Response> {
     now: new Date().toISOString(),
     renderId: crypto.randomUUID(),
     random: Math.random(),
-    note: "Cached by vinext + Workers Response Store with one-second freshness.",
+    note: "Cached by vinext's configured adapters with one-second freshness.",
   });
 }
