@@ -1968,6 +1968,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
     viteConfigMetadata.cacheConfig,
   );
   const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
+  // Static export still needs local artifacts. Other pre-warm deploys render
+  // through the staged Worker so runtime-backed adapters populate themselves.
+  const shouldPrerenderLocally =
+    prerenderDecision &&
+    (options.warmCdnCache !== true || prerenderDecision.reason === "next-export");
   // Step 5: Build
   if (!options.skipBuild) {
     await runBuild(info, buildEnv);
@@ -2017,7 +2022,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // output: 'export'. CDN warmup performs path discovery above, but relies on
   // the deployed Worker to render and classify each response.
   let ranPrerender = false;
-  if (prerenderDecision) {
+  if (shouldPrerenderLocally) {
     console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
