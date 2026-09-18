@@ -13,6 +13,9 @@ test("deployment pre-warming populates the configured data cache", async ({ base
   const buildId = fs
     .readFileSync("examples/response-store-demo/dist/server/BUILD_ID", "utf-8")
     .trim();
+  const rscBuildId = fs
+    .readFileSync("examples/response-store-demo/dist/server/RSC_BUILD_ID", "utf-8")
+    .trim();
   const deadline = Date.now() + 60_000;
   let consecutiveReady = 0;
 
@@ -66,7 +69,7 @@ test("deployment pre-warming populates the configured data cache", async ({ base
   });
   const originHeaders = origin.headers();
   expect(origin.ok(), JSON.stringify(originHeaders)).toBe(true);
-  expect(originHeaders["x-vinext-build-id"]).toBe(buildId);
+  expect(originHeaders["x-vinext-build-id"]).toBe(rscBuildId);
   if (backend === "kv") {
     expect(originHeaders["cf-cache-status"], JSON.stringify(originHeaders)).toBe("MISS");
   } else {

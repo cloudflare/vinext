@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { cacheLife, cacheTag } from "next/cache";
+import { cacheLife } from "next/cache";
 import { CacheStatusProbe } from "../../components/cache-status-probe";
 import { RevalidateControls } from "../../components/revalidate-controls";
 
@@ -30,17 +30,18 @@ export async function generateMetadata({
  * The fetch target is a no-op data: URL so the demo has no external
  * dependency — vinext's fetch shim records the tag before doing any I/O.
  */
-async function loadPost(
-  slug: string,
-): Promise<{ cacheId: string; cachedAt: number; title: string }> {
-  "use cache";
-  cacheLife({ revalidate: 60, expire: 300 });
-  cacheTag(`post:${slug}`);
+async function loadPost(slug: string): Promise<{ title: string }> {
   const payload = JSON.stringify({ slug });
   await fetch(`data:application/json,${encodeURIComponent(payload)}`, {
     next: { tags: [`post:${slug}`], revalidate: 60 },
   });
-  return { cacheId: crypto.randomUUID(), cachedAt: Date.now(), title: `Post: ${slug}` };
+  return { title: `Post: ${slug}` };
+}
+
+async function loadPrewarmProbe(slug: string) {
+  "use cache";
+  cacheLife({ revalidate: 60, expire: 300 });
+  return { cacheId: crypto.randomUUID(), cachedAt: Date.now(), slug };
 }
 
 export default async function CachedSlugPage({
@@ -52,6 +53,7 @@ export default async function CachedSlugPage({
   const path = `/cached/${slug}`;
   const tag = `post:${slug}`;
   const post = await loadPost(slug);
+  const prewarmProbe = await loadPrewarmProbe(slug);
 
   // Generated at render time. Embedded into the response so the client probe
   // can tell whether a subsequent fetch was actually re-rendered (new id) or
@@ -88,10 +90,10 @@ export default async function CachedSlugPage({
         Render ID: <code data-render-id-tag>{renderId}</code>
       </p>
       <p>
-        Data cache ID: <code data-cache-id>{post.cacheId}</code>
+        Data cache ID: <code data-cache-id>{prewarmProbe.cacheId}</code>
       </p>
       <p>
-        Data cached at: <code data-cache-created-at>{post.cachedAt}</code>
+        Data cached at: <code data-cache-created-at>{prewarmProbe.cachedAt}</code>
       </p>
       <p>
         Sample noise (re-rendered = re-randomised): <code>{random}</code>
