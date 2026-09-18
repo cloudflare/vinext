@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test"
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import Module from "node:module";
 import {
   init,
   generateViteConfig,
+  getInitDependencyGroups,
   addScripts,
   getInitDeps,
   isDepInstalled,
@@ -1116,6 +1118,102 @@ describe("init — generated project snapshots", () => {
     expect(snapshotProject(tmpDir)).toMatchSnapshot();
   });
 
+  it.each([
+    ["node", "app", "^3.4.0"],
+    ["node", "app", "^4.2.0"],
+    ["node", "pages", "^3.4.0"],
+    ["node", "pages", "^4.2.0"],
+    ["cloudflare", "app", "^3.4.0"],
+    ["cloudflare", "app", "^4.2.0"],
+    ["cloudflare", "pages", "^3.4.0"],
+    ["cloudflare", "pages", "^4.2.0"],
+    ["node", "app", ">=4 <5"],
+  ] as const)("wires Tailwind %s %s %s without upgrading v3", async (platform, router, version) => {
+    setupProject(tmpDir, { router, extraPkg: { devDependencies: { tailwindcss: version } } });
+    const enabled = version !== "^3.4.0";
+    writeFile(
+      tmpDir,
+      "node_modules/tailwindcss/package.json",
+      JSON.stringify({ version: enabled ? "4.2.0" : "3.4.17" }),
+    );
+    await runInit(tmpDir, { platform, install: false });
+    expect(readFile(tmpDir, "vite.config.ts").includes("@tailwindcss/vite")).toBe(enabled);
+    expect("@tailwindcss/vite" in (readPkg(tmpDir).devDependencies as object)).toBe(enabled);
+  });
+
+  it("detects an installed Tailwind v4 package resolved through Yarn PnP", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: { devDependencies: { tailwindcss: "latest" } },
+    });
+    const manifestPath = path.join(tmpDir, ".yarn/cache/tailwindcss/package.json");
+    writeFile(tmpDir, ".yarn/cache/tailwindcss/package.json", JSON.stringify({ version: "4.2.0" }));
+
+    const originalResolveFilename = Reflect.get(Module, "_resolveFilename") as (
+      request: string,
+      parent: { filename?: string } | undefined,
+      ...args: unknown[]
+    ) => string;
+    Reflect.set(
+      Module,
+      "_resolveFilename",
+      (request: string, parent: { filename?: string } | undefined, ...args: unknown[]) =>
+        request === "tailwindcss/package.json" &&
+        parent?.filename === path.join(tmpDir, "package.json")
+          ? manifestPath
+          : originalResolveFilename.call(Module, request, parent, ...args),
+    );
+
+    try {
+      await runInit(tmpDir, { platform: "node", install: false });
+    } finally {
+      Reflect.set(Module, "_resolveFilename", originalResolveFilename);
+    }
+
+    expect(readFile(tmpDir, "vite.config.ts")).toContain(
+      'import tailwindcss from "@tailwindcss/vite"',
+    );
+  });
+
+  it.each(["app", "pages"] as const)(
+    "installs the MDX plugin for detected %s routes",
+    async (router) => {
+      setupProject(tmpDir, { router });
+      writeFile(tmpDir, `${router}/about.mdx`, "# About");
+      await runInit(tmpDir, { platform: "node", install: false });
+      expect(readPkg(tmpDir).devDependencies).toMatchObject({ "@mdx-js/rollup": "latest" });
+    },
+  );
+
+  it("adds MDX and Tailwind devDependencies for detected frameworks", () => {
+    const groups = getInitDependencyGroups(true, "node", undefined, {
+      hasMDX: true,
+      hasTailwindV4: true,
+    });
+    expect(groups.devDependencies).toContain("@mdx-js/rollup");
+    expect(groups.devDependencies).toContain("@tailwindcss/vite");
+
+    const bare = getInitDependencyGroups(true, "node");
+    expect(bare.devDependencies).not.toContain("@mdx-js/rollup");
+    expect(bare.devDependencies).not.toContain("@tailwindcss/vite");
+  });
+
+  it("generates a vite config with the Tailwind plugin when detected", () => {
+    const withTailwind = generateViteConfig(false, false, { hasTailwindV4: true });
+    expect(withTailwind).toContain('import tailwindcss from "@tailwindcss/vite"');
+    expect(withTailwind).toContain("tailwindcss()");
+
+    const without = generateViteConfig(false, false);
+    expect(without).not.toContain("tailwindcss");
+    expect(without).toBe(`import vinext from "vinext";
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  plugins: [vinext()],
+});
+`);
+  });
+
   it("snapshots a fresh Node Pages Router init", async () => {
     setupProject(tmpDir, { router: "pages" });
 
@@ -1622,6 +1720,53 @@ describe("init — guard rails", () => {
     expect(result.skippedViteConfig).toBe(true);
   });
 
+  it("adds Tailwind v4 to an existing Node Vite config", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: { devDependencies: { tailwindcss: "^4.2.0" } },
+    });
+    writeFile(
+      tmpDir,
+      "node_modules/tailwindcss/package.json",
+      JSON.stringify({ version: "4.2.0" }),
+    );
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      'import vinext from "vinext";\nexport const plugins = [vinext()];\nexport default { plugins };',
+    );
+
+    const { result } = await runInit(tmpDir, { platform: "node", install: false });
+    await runInit(tmpDir, { platform: "node", install: false });
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(result.generatedViteConfig).toBe(true);
+    expect(config.match(/import tailwindcss from "@tailwindcss\/vite"/g)).toHaveLength(1);
+    expect(config.match(/tailwindcss\(\)/g)).toHaveLength(1);
+  });
+
+  it("rejects an unsupported Tailwind v4 Node config before mutating the project", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: { devDependencies: { tailwindcss: "^4.2.0" } },
+    });
+    writeFile(
+      tmpDir,
+      "node_modules/tailwindcss/package.json",
+      JSON.stringify({ version: "4.2.0" }),
+    );
+    writeFile(tmpDir, "vite.config.ts", `const config = getConfig(); export default config;\n`);
+    writeFile(tmpDir, "postcss.config.js", "module.exports = { plugins: {} };\n");
+    const before = snapshotProject(tmpDir);
+    const exec = vi.fn();
+
+    await expect(
+      runInit(tmpDir, { platform: "node", install: false, _exec: exec }),
+    ).rejects.toThrow("Could not find a static Vite config object");
+    expect(exec).not.toHaveBeenCalled();
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
   it("AST-updates a Cloudflare init when the existing Vite config lacks plugins", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.ts", "export default {}");
@@ -1632,6 +1777,30 @@ describe("init — guard rails", () => {
     expect(config).toContain('import vinext from "vinext"');
     expect(config).toContain("vinext({");
     expect(config).toContain("cloudflare(");
+  });
+
+  it("adds Tailwind v4 to an existing Cloudflare Vite config", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: { devDependencies: { tailwindcss: ">=4 <5" } },
+    });
+    writeFile(
+      tmpDir,
+      "node_modules/tailwindcss/package.json",
+      JSON.stringify({ version: "4.2.0" }),
+    );
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      'import vinext from "vinext";\nexport default { plugins: [vinext()] };',
+    );
+
+    await runInit(tmpDir, { platform: "cloudflare", install: false });
+    await runInit(tmpDir, { platform: "cloudflare", install: false });
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config.match(/import tailwindcss from "@tailwindcss\/vite"/g)).toHaveLength(1);
+    expect(config.match(/tailwindcss\(\)/g)).toHaveLength(1);
   });
 
   it("uses an existing Cloudflare plugin import when adding the call", async () => {

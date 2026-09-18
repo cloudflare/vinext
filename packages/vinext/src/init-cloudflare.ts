@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import MagicString from "magic-string";
 import type { ESTree } from "vite";
 import type { CloudflareInitOptions } from "./init-platform.js";
+import { forEachAstChild, unwrapExpression } from "./plugins/ast-utils.js";
 import { detectProject } from "./utils/project.js";
 import { isUnknownRecord } from "./utils/record.js";
 
@@ -16,6 +17,7 @@ export type CloudflareProjectInfo = {
   isAppRouter: boolean;
   hasISR: boolean;
   hasMDX: boolean;
+  hasTailwindV4: boolean;
   nativeModulesToStub: string[];
 };
 
@@ -92,6 +94,7 @@ export function validateCloudflarePlatformSetup(
       fs.readFileSync(context.existingViteConfigPath, "utf-8"),
       {
         isAppRouter: context.isAppRouter,
+        hasTailwindV4: projectInfo.hasTailwindV4,
         nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         imagesBinding,
@@ -130,6 +133,7 @@ export function setupCloudflarePlatform(
       currentConfig,
       {
         isAppRouter: context.isAppRouter,
+        hasTailwindV4: projectInfo.hasTailwindV4,
         nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         imagesBinding,
@@ -1056,18 +1060,22 @@ function vinextExpression(
   prerender = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
   responseStoreBinding = "responseStoreAdapter",
+  resolvedCacheEntries?: Array<{ name: "data" | "cdn"; expression: string }>,
 ): string {
   const responseStore = options.cdnCache === "response-store";
-  const cacheEntries: string[] = [];
-  if (options.dataCache === "kv") {
-    cacheEntries.push("data: kvDataAdapter()");
-  }
-  if (options.cdnCache === "workers-cache") {
-    const adapterOptions =
-      versionMetadataBinding === DEFAULT_VERSION_METADATA_BINDING
-        ? ""
-        : `{ versionMetadataBinding: ${JSON.stringify(versionMetadataBinding)} }`;
-    cacheEntries.push(`cdn: cdnAdapter(${adapterOptions})`);
+  const cacheEntries =
+    resolvedCacheEntries?.map(({ name, expression }) => `${name}: ${expression}`) ?? [];
+  if (!resolvedCacheEntries) {
+    if (options.dataCache === "kv") {
+      cacheEntries.push("data: kvDataAdapter()");
+    }
+    if (options.cdnCache === "workers-cache") {
+      const adapterOptions =
+        versionMetadataBinding === DEFAULT_VERSION_METADATA_BINDING
+          ? ""
+          : `{ versionMetadataBinding: ${JSON.stringify(versionMetadataBinding)} }`;
+      cacheEntries.push(`cdn: cdnAdapter(${adapterOptions})`);
+    }
   }
   const optionEntries: string[] = [];
   if (responseStore) {
@@ -1109,10 +1117,18 @@ export function generateAppRouterViteConfig(
     imports.push(`import path from "node:path";`);
   }
 
+  if (info?.hasTailwindV4) {
+    imports.push(`import tailwindcss from "@tailwindcss/vite";`);
+  }
+
   const plugins: string[] = [];
 
   if (info?.hasMDX) {
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
+  }
+
+  if (info?.hasTailwindV4) {
+    plugins.push(`    tailwindcss(),`);
   }
   plugins.push(
     `    ${vinextExpression(
@@ -1176,6 +1192,10 @@ export function generatePagesRouterViteConfig(
     imports.push(`import path from "node:path";`);
   }
 
+  if (info?.hasTailwindV4) {
+    imports.push(`import tailwindcss from "@tailwindcss/vite";`);
+  }
+
   // Build resolve.alias for native module stubs (tsconfig paths are handled
   // by the vinext plugin's native Vite support).
   let resolveBlock = "";
@@ -1195,14 +1215,14 @@ export function generatePagesRouterViteConfig(
 
 export default defineConfig({
   plugins: [
-    ${vinextExpression(
-      options,
-      "vinext",
-      "imagesOptimizer",
-      imagesBinding,
-      prerender,
-      versionMetadataBinding,
-    ).replace(/\n/g, "\n    ")},
+${info?.hasTailwindV4 ? "    tailwindcss(),\n" : ""}    ${vinextExpression(
+    options,
+    "vinext",
+    "imagesOptimizer",
+    imagesBinding,
+    prerender,
+    versionMetadataBinding,
+  ).replace(/\n/g, "\n    ")},
     cloudflare(),
   ],${resolveBlock}
 });
@@ -1254,16 +1274,201 @@ function findProperty(object: AstObject, name: string): AstProperty | undefined 
   );
 }
 
-function unwrapObject(expression: ESTree.Expression): AstObject | undefined {
-  if (expression.type === "ObjectExpression") return expression as AstObject;
-  if (expression.type === "ParenthesizedExpression") return unwrapObject(expression.expression);
-  return undefined;
+function findPluginsProperty(config: AstObject): AstProperty | undefined {
+  let plugins: AstProperty | undefined;
+  let pluginsIndex = -1;
+  let lastUnknownIndex = -1;
+  for (const [index, property] of config.properties.entries()) {
+    if (property.type === "SpreadElement") {
+      lastUnknownIndex = index;
+      continue;
+    }
+    const name =
+      propertyName(property) ??
+      (property.computed && property.key.type === "Literal" ? property.key.value : undefined);
+    if (name === "plugins") {
+      plugins = property;
+      pluginsIndex = index;
+    } else if (property.computed && name === undefined) {
+      lastUnknownIndex = index;
+    }
+  }
+  if (lastUnknownIndex > pluginsIndex) {
+    throw new Error(
+      "The Vite config's plugins option cannot be updated because a later spread or computed property may override it.",
+    );
+  }
+  return plugins;
 }
 
-function findVariableObject(program: ESTree.Program, name: string): AstObject | undefined {
+function unwrapObject(expression: ESTree.Node): AstObject | undefined {
+  const unwrapped = unwrapExpression(expression);
+  return unwrapped?.type === "ObjectExpression" ? (unwrapped as AstObject) : undefined;
+}
+
+function isViteNamespaceBinding(program: ESTree.Program, name: string): boolean {
   for (const statement of program.body) {
-    if (statement.type !== "VariableDeclaration") continue;
-    for (const declaration of statement.declarations) {
+    if (statement.type === "ImportDeclaration" && statement.source.value === "vite") {
+      if (
+        statement.specifiers.some(
+          (specifier) =>
+            specifier.type === "ImportNamespaceSpecifier" && specifier.local.name === name,
+        )
+      ) {
+        return true;
+      }
+      continue;
+    }
+    const variableDeclaration =
+      statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+    if (variableDeclaration?.type !== "VariableDeclaration" || variableDeclaration.kind !== "const")
+      continue;
+    for (const declaration of variableDeclaration.declarations) {
+      const initializer = unwrapExpression(declaration.init);
+      if (
+        declaration.id.type === "Identifier" &&
+        declaration.id.name === name &&
+        initializer?.type === "CallExpression" &&
+        initializer.callee.type === "Identifier" &&
+        initializer.callee.name === "require" &&
+        initializer.arguments[0]?.type === "Literal" &&
+        initializer.arguments[0].value === "vite"
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isViteDefineConfigBinding(program: ESTree.Program, name: string): boolean {
+  for (const statement of program.body) {
+    if (statement.type === "ImportDeclaration" && statement.source.value === "vite") {
+      if (
+        statement.specifiers.some(
+          (specifier) =>
+            specifier.type === "ImportSpecifier" &&
+            specifier.imported.type === "Identifier" &&
+            specifier.imported.name === "defineConfig" &&
+            specifier.local.name === name,
+        )
+      ) {
+        return true;
+      }
+      continue;
+    }
+    const variableDeclaration =
+      statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+    if (variableDeclaration?.type !== "VariableDeclaration" || variableDeclaration.kind !== "const")
+      continue;
+    for (const declaration of variableDeclaration.declarations) {
+      const initializer = unwrapExpression(declaration.init);
+      if (
+        declaration.id.type !== "ObjectPattern" ||
+        initializer?.type !== "CallExpression" ||
+        initializer.callee.type !== "Identifier" ||
+        initializer.callee.name !== "require" ||
+        initializer.arguments[0]?.type !== "Literal" ||
+        initializer.arguments[0].value !== "vite"
+      ) {
+        continue;
+      }
+      if (
+        declaration.id.properties.some(
+          (property) =>
+            property.type === "Property" &&
+            property.key.type === "Identifier" &&
+            property.key.name === "defineConfig" &&
+            property.value.type === "Identifier" &&
+            property.value.name === name,
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function isViteDefineConfigCall(program: ESTree.Program, call: ESTree.CallExpression): boolean {
+  const callee = unwrapExpression(call.callee) ?? call.callee;
+  if (callee.type === "Identifier") return isViteDefineConfigBinding(program, callee.name);
+  if (callee.type !== "MemberExpression") return false;
+  const property = unwrapExpression(callee.property) ?? callee.property;
+  const propertyIsDefineConfig = callee.computed
+    ? property.type === "Literal" && property.value === "defineConfig"
+    : property.type === "Identifier" && property.name === "defineConfig";
+  const object = unwrapExpression(callee.object) ?? callee.object;
+  return (
+    propertyIsDefineConfig &&
+    object.type === "Identifier" &&
+    isViteNamespaceBinding(program, object.name)
+  );
+}
+
+function findSingleDirectReturn(body: ESTree.BlockStatement): ESTree.ReturnStatement | undefined {
+  const directReturns = body.body.filter(
+    (statement): statement is ESTree.ReturnStatement => statement.type === "ReturnStatement",
+  );
+  const reachableReturns: ESTree.ReturnStatement[] = [];
+  const collectReturns = (node: ESTree.Node): void => {
+    if (node.type === "ReturnStatement") {
+      reachableReturns.push(node);
+      return;
+    }
+    if (
+      node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression"
+    ) {
+      return;
+    }
+    forEachAstChild(node, collectReturns);
+  };
+  for (const statement of body.body) collectReturns(statement);
+  return directReturns.length === 1 &&
+    reachableReturns.length === 1 &&
+    reachableReturns[0] === directReturns[0]
+    ? directReturns[0]
+    : undefined;
+}
+
+function findConfigObjectInCall(
+  program: ESTree.Program,
+  call: ESTree.CallExpression,
+): AstObject | undefined {
+  if (!isViteDefineConfigCall(program, call) || call.arguments.length === 0) return undefined;
+  const firstArgument = call.arguments[0];
+  if (firstArgument.type === "SpreadElement") return undefined;
+  const argumentObject = unwrapObject(firstArgument);
+  if (argumentObject) return argumentObject;
+  const callback = unwrapExpression(firstArgument) ?? firstArgument;
+  if (callback.type !== "ArrowFunctionExpression" && callback.type !== "FunctionExpression") {
+    return undefined;
+  }
+  if (!callback.body) return undefined;
+  if (callback.body.type !== "BlockStatement") return unwrapObject(callback.body);
+  const returnStatement = findSingleDirectReturn(callback.body);
+  if (!returnStatement?.argument) return undefined;
+  const returned = unwrapExpression(returnStatement.argument) ?? returnStatement.argument;
+  const direct = unwrapObject(returned);
+  if (direct) return direct;
+  return returned.type === "Identifier"
+    ? findVariableObjectInStatements(program, callback.body.body, returned.name)
+    : undefined;
+}
+
+function findVariableObjectInStatements(
+  program: ESTree.Program,
+  statements: ESTree.Statement[],
+  name: string,
+): AstObject | undefined {
+  for (const statement of statements) {
+    const variableDeclaration =
+      statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+    if (variableDeclaration?.type !== "VariableDeclaration" || variableDeclaration.kind !== "const")
+      continue;
+    for (const declaration of variableDeclaration.declarations) {
       if (
         declaration.id.type !== "Identifier" ||
         declaration.id.name !== name ||
@@ -1271,10 +1476,19 @@ function findVariableObject(program: ESTree.Program, name: string): AstObject | 
       ) {
         continue;
       }
-      return unwrapObject(declaration.init);
+      const initializer = unwrapExpression(declaration.init) ?? declaration.init;
+      const direct = unwrapObject(initializer);
+      if (direct) return direct;
+      if (initializer.type === "CallExpression")
+        return findConfigObjectInCall(program, initializer);
+      return undefined;
     }
   }
   return undefined;
+}
+
+function findVariableObject(program: ESTree.Program, name: string): AstObject | undefined {
+  return findVariableObjectInStatements(program, program.body, name);
 }
 
 function findConfigObject(program: ESTree.Program): AstObject | undefined {
@@ -1284,59 +1498,244 @@ function findConfigObject(program: ESTree.Program): AstObject | undefined {
   );
   if (!defaultExport) {
     for (const statement of program.body) {
-      if (statement.type !== "ExpressionStatement") continue;
-      const expression = statement.expression;
       if (
-        expression.type !== "AssignmentExpression" ||
-        expression.left.type !== "MemberExpression" ||
-        expression.left.object.type !== "Identifier" ||
-        expression.left.object.name !== "module" ||
-        expression.left.property.type !== "Identifier" ||
-        expression.left.property.name !== "exports"
+        statement.type !== "ExportNamedDeclaration" ||
+        statement.source ||
+        statement.exportKind === "type"
       ) {
         continue;
       }
-      const direct = unwrapObject(expression.right);
-      if (direct) return direct;
-      if (expression.right.type === "CallExpression" && expression.right.arguments.length > 0) {
-        const firstArgument = expression.right.arguments[0];
-        if (firstArgument.type !== "SpreadElement") return unwrapObject(firstArgument);
+      const defaultSpecifier = statement.specifiers.find(
+        (specifier) =>
+          specifier.type === "ExportSpecifier" &&
+          specifier.exportKind !== "type" &&
+          ((specifier.exported.type === "Identifier" && specifier.exported.name === "default") ||
+            (specifier.exported.type === "Literal" && specifier.exported.value === "default")),
+      );
+      if (defaultSpecifier?.local.type === "Identifier") {
+        const config = findVariableObject(program, defaultSpecifier.local.name);
+        if (config) return config;
       }
     }
+    const commonJsExports = program.body.flatMap((statement) => {
+      if (statement.type !== "ExpressionStatement") return [];
+      const expression = statement.expression;
+      return expression.type === "AssignmentExpression" &&
+        expression.operator === "=" &&
+        expression.left.type === "MemberExpression" &&
+        !expression.left.computed &&
+        expression.left.object.type === "Identifier" &&
+        expression.left.object.name === "module" &&
+        expression.left.property.type === "Identifier" &&
+        expression.left.property.name === "exports"
+        ? [expression.right]
+        : [];
+    });
+    if (commonJsExports.length !== 1) return undefined;
+    const right = unwrapExpression(commonJsExports[0]) ?? commonJsExports[0];
+    const direct = unwrapObject(right);
+    if (direct) return direct;
+    if (right.type === "Identifier") return findVariableObject(program, right.name);
+    if (right.type === "CallExpression") return findConfigObjectInCall(program, right);
     return undefined;
   }
   if (defaultExport.declaration.type === "FunctionDeclaration") return undefined;
 
-  const declaration = defaultExport.declaration;
-  if (declaration.type === "ClassDeclaration" || declaration.type === "TSInterfaceDeclaration") {
+  const exported = defaultExport.declaration;
+  if (exported.type === "ClassDeclaration" || exported.type === "TSInterfaceDeclaration") {
     return undefined;
   }
+  const declaration = unwrapExpression(exported) ?? exported;
   const direct = unwrapObject(declaration);
   if (direct) return direct;
   if (declaration.type === "Identifier") return findVariableObject(program, declaration.name);
-  if (declaration.type !== "CallExpression" || declaration.arguments.length === 0) return undefined;
+  return declaration.type === "CallExpression"
+    ? findConfigObjectInCall(program, declaration)
+    : undefined;
+}
 
-  const firstArgument = declaration.arguments[0];
-  if (firstArgument.type === "SpreadElement") return undefined;
-  const argumentObject = unwrapObject(firstArgument);
-  if (argumentObject) return argumentObject;
-  if (
-    firstArgument.type !== "ArrowFunctionExpression" &&
-    firstArgument.type !== "FunctionExpression"
-  ) {
-    return undefined;
+function findOwningConstInitializer(
+  program: ESTree.Program,
+  target: ESTree.Node,
+): ESTree.Node | undefined {
+  const path = findAstPath(program, target);
+  if (!path) return undefined;
+  for (let index = path.length - 1; index > 0; index--) {
+    const node = path[index];
+    const parent = path[index - 1];
+    if (
+      node.type === "VariableDeclarator" &&
+      node.id.type === "Identifier" &&
+      node.init &&
+      parent.type === "VariableDeclaration" &&
+      parent.kind === "const"
+    ) {
+      return unwrapExpression(node.init) ?? node.init;
+    }
   }
+  return undefined;
+}
 
-  if (!firstArgument.body) return undefined;
-  if (firstArgument.body.type !== "BlockStatement") return unwrapObject(firstArgument.body);
-  const returnStatement = firstArgument.body.body.find(
-    (statement): statement is ESTree.ReturnStatement => statement.type === "ReturnStatement",
+function expressionResolvesToInitializer(
+  program: ESTree.Program,
+  target: ESTree.Node,
+  expression: ESTree.Node,
+  expected: ESTree.Node,
+  seen = new Set<string>(),
+): boolean {
+  const reference = unwrapExpression(expression);
+  if (reference?.type === "MemberExpression") {
+    return expressionResolvesToInitializer(
+      program,
+      target,
+      rootReference(reference),
+      expected,
+      seen,
+    );
+  }
+  if (reference?.type !== "Identifier" || seen.has(reference.name)) return false;
+  const initializer =
+    findVisibleConstInitializer(program, target, reference.name) ??
+    findVisibleDestructuredSource(program, target, reference.name);
+  return (
+    initializer === expected ||
+    Boolean(
+      initializer &&
+      expressionResolvesToInitializer(
+        program,
+        target,
+        initializer,
+        expected,
+        new Set(seen).add(reference.name),
+      ),
+    )
   );
-  return returnStatement?.argument ? unwrapObject(returnStatement.argument) : undefined;
+}
+
+function rootReference(node: ESTree.Node): ESTree.Node {
+  let root = unwrapExpression(node) ?? node;
+  while (root.type === "MemberExpression") {
+    root = unwrapExpression(root.object) ?? root.object;
+  }
+  return root;
+}
+
+function memberName(member: ESTree.MemberExpression): string | undefined {
+  if (member.computed) {
+    return member.property.type === "Literal" && typeof member.property.value === "string"
+      ? member.property.value
+      : undefined;
+  }
+  return member.property.type === "Identifier" ? member.property.name : undefined;
+}
+
+const MUTATING_METHODS = new Set([
+  "copyWithin",
+  "fill",
+  "pop",
+  "push",
+  "reverse",
+  "shift",
+  "sort",
+  "splice",
+  "unshift",
+]);
+const OBJECT_MUTATORS = new Set(["assign", "defineProperties", "defineProperty", "setPrototypeOf"]);
+const REFLECT_MUTATORS = new Set(["defineProperty", "deleteProperty", "set", "setPrototypeOf"]);
+
+function isUnshadowedGlobal(
+  program: ESTree.Program,
+  target: ESTree.Node,
+  binding: string,
+): boolean {
+  return (
+    !collectTopLevelBindings(program).has(binding) &&
+    !collectShadowedBindings(program, target).has(binding)
+  );
+}
+
+function hasLaterInitializerMutation(program: ESTree.Program, initializer: ESTree.Node): boolean {
+  let mutated = false;
+  const visit = (node: ESTree.Node): void => {
+    if (mutated) return;
+    const afterInitializer =
+      (node as Partial<AstNode>).start !== undefined &&
+      (initializer as Partial<AstNode>).end !== undefined &&
+      (node as AstNode).start > (initializer as AstNode).end;
+    let member: ESTree.MemberExpression | undefined;
+    if (node.type === "AssignmentExpression" && node.left.type === "MemberExpression") {
+      member = node.left;
+    } else if (node.type === "UpdateExpression" && node.argument.type === "MemberExpression") {
+      member = node.argument;
+    } else if (
+      node.type === "UnaryExpression" &&
+      node.operator === "delete" &&
+      node.argument.type === "MemberExpression"
+    ) {
+      member = node.argument;
+    }
+    if (
+      member &&
+      afterInitializer &&
+      expressionResolvesToInitializer(program, node, rootReference(member), initializer)
+    ) {
+      mutated = true;
+      return;
+    }
+    const callee = node.type === "CallExpression" ? unwrapExpression(node.callee) : undefined;
+    if (afterInitializer && callee?.type === "MemberExpression") {
+      const method = memberName(callee);
+      const object = unwrapExpression(callee.object) ?? callee.object;
+      const firstArgument = node.type === "CallExpression" ? node.arguments[0] : undefined;
+      const staticMutatorTarget =
+        object.type === "Identifier" &&
+        isUnshadowedGlobal(program, node, object.name) &&
+        ((object.name === "Object" && method && OBJECT_MUTATORS.has(method)) ||
+          (object.name === "Reflect" && method && REFLECT_MUTATORS.has(method))) &&
+        firstArgument &&
+        firstArgument.type !== "SpreadElement"
+          ? firstArgument
+          : undefined;
+      const methodTarget = method && MUTATING_METHODS.has(method) ? callee.object : undefined;
+      const target = staticMutatorTarget ?? methodTarget;
+      if (
+        target &&
+        expressionResolvesToInitializer(program, node, rootReference(target), initializer)
+      ) {
+        mutated = true;
+        return;
+      }
+    }
+    forEachAstChild(node, visit);
+  };
+  visit(program);
+  return mutated;
+}
+
+function assertConfigPropertiesAreStatic(program: ESTree.Program, config: AstObject): void {
+  const initializer = findOwningConstInitializer(program, config);
+  if (initializer && hasLaterInitializerMutation(program, initializer)) {
+    throw new Error(
+      "The Vite config cannot be updated because properties are mutated after its static initializer.",
+    );
+  }
+}
+
+function assertPluginArrayIsStatic(
+  program: ESTree.Program,
+  array: (ESTree.ArrayExpression & AstNode) | undefined,
+): void {
+  if (!array) return;
+  const initializer = findOwningConstInitializer(program, array);
+  if (initializer === array && hasLaterInitializerMutation(program, initializer)) {
+    throw new Error(
+      "The Vite config's plugins option cannot be updated because its array is mutated after initialization.",
+    );
+  }
 }
 
 function importInsertionOffset(program: ESTree.Program): number {
-  let offset = 0;
+  let offset = program.hashbang?.end ?? 0;
   for (const statement of program.body) {
     if (statement.type !== "ImportDeclaration") break;
     offset = (statement as AstNode).end;
@@ -1395,6 +1794,7 @@ function collectTopLevelBindings(program: ESTree.Program): Set<string> {
       bindings.add(declaration.id.name);
     }
   }
+  for (const statement of program.body) collectNestedFunctionVarBindings(statement, bindings);
   return bindings;
 }
 
@@ -1414,6 +1814,7 @@ function findImportedBinding(
   program: ESTree.Program,
   source: string,
   imported: string,
+  excludedBindings?: Set<string>,
 ): string | undefined {
   for (const statement of program.body) {
     if (statement.type !== "ImportDeclaration" || statement.source.value !== source) continue;
@@ -1421,7 +1822,8 @@ function findImportedBinding(
       if (
         specifier.type === "ImportSpecifier" &&
         specifier.imported.type === "Identifier" &&
-        specifier.imported.name === imported
+        specifier.imported.name === imported &&
+        !excludedBindings?.has(specifier.local.name)
       ) {
         return specifier.local.name;
       }
@@ -1436,9 +1838,10 @@ function ensureNamedImport(
   source: string,
   imported: string,
   binding: string,
+  reuseExisting = true,
 ): string {
   const existing = findImportedBinding(program, source, imported);
-  if (existing) return existing;
+  if (existing && reuseExisting) return existing;
 
   const declaration = program.body.find(
     (statement): statement is ESTree.ImportDeclaration =>
@@ -1467,6 +1870,7 @@ function ensureDefaultImport(
   output: MagicString,
   source: string,
   binding: string,
+  reuseExisting = true,
 ): string {
   const declaration = program.body.find(
     (statement): statement is ESTree.ImportDeclaration =>
@@ -1476,7 +1880,7 @@ function ensureDefaultImport(
     (specifier): specifier is ESTree.ImportDefaultSpecifier =>
       specifier.type === "ImportDefaultSpecifier",
   );
-  if (existing) return existing.local.name;
+  if (existing && reuseExisting) return existing.local.name;
 
   const offset = importInsertionOffset(program);
   const sourceText = `import ${binding} from ${JSON.stringify(source)};`;
@@ -1484,26 +1888,202 @@ function ensureDefaultImport(
   return binding;
 }
 
+function findDefaultImportedBinding(
+  program: ESTree.Program,
+  source: string,
+  excludedBindings?: Set<string>,
+): { binding: string; namespace: boolean } | undefined {
+  for (const statement of program.body) {
+    if (
+      statement.type !== "ImportDeclaration" ||
+      statement.source.value !== source ||
+      statement.importKind === "type"
+    ) {
+      continue;
+    }
+    const specifier = statement.specifiers.find(
+      (candidate) =>
+        (candidate.type === "ImportDefaultSpecifier" ||
+          candidate.type === "ImportNamespaceSpecifier" ||
+          (candidate.type === "ImportSpecifier" &&
+            candidate.importKind !== "type" &&
+            candidate.imported.type === "Identifier" &&
+            candidate.imported.name === "default")) &&
+        !excludedBindings?.has(candidate.local.name),
+    );
+    if (specifier) {
+      return {
+        binding: specifier.local.name,
+        namespace: specifier.type === "ImportNamespaceSpecifier",
+      };
+    }
+  }
+  return undefined;
+}
+
+function findDefaultRequiredBinding(
+  program: ESTree.Program,
+  source: string,
+  excludedBindings?: Set<string>,
+): { binding: string; namespace: boolean } | undefined {
+  for (const statement of program.body) {
+    if (statement.type !== "VariableDeclaration" || statement.kind !== "const") continue;
+    for (const declaration of statement.declarations) {
+      const initializer = unwrapExpression(declaration.init);
+      let requireCall: ESTree.CallExpression | undefined;
+      let namespace = false;
+      if (initializer?.type === "CallExpression") {
+        requireCall = initializer;
+        namespace = true;
+      } else if (
+        initializer?.type === "MemberExpression" &&
+        ((!initializer.computed &&
+          initializer.property.type === "Identifier" &&
+          initializer.property.name === "default") ||
+          (initializer.computed &&
+            initializer.property.type === "Literal" &&
+            initializer.property.value === "default"))
+      ) {
+        const object = unwrapExpression(initializer.object);
+        if (object?.type === "CallExpression") requireCall = object;
+      }
+      if (
+        !requireCall ||
+        requireCall.callee.type !== "Identifier" ||
+        requireCall.callee.name !== "require" ||
+        requireCall.arguments[0]?.type !== "Literal" ||
+        requireCall.arguments[0].value !== source
+      ) {
+        continue;
+      }
+      if (declaration.id.type === "Identifier") {
+        if (excludedBindings?.has(declaration.id.name)) continue;
+        return { binding: declaration.id.name, namespace };
+      }
+      if (declaration.id.type !== "ObjectPattern") continue;
+      for (const property of declaration.id.properties) {
+        if (
+          property.type === "Property" &&
+          property.key.type === "Identifier" &&
+          property.key.name === "default" &&
+          property.value.type === "Identifier" &&
+          !excludedBindings?.has(property.value.name)
+        ) {
+          return { binding: property.value.name, namespace: false };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function findDynamicImportPluginBinding(
+  program: ESTree.Program,
+  source: string,
+  excludedBindings?: Set<string>,
+): string | undefined {
+  for (const statement of program.body) {
+    if (statement.type !== "VariableDeclaration" || statement.kind !== "const") continue;
+    for (const declaration of statement.declarations) {
+      const initializer = unwrapExpression(declaration.init);
+      if (
+        declaration.id.type !== "Identifier" ||
+        excludedBindings?.has(declaration.id.name) ||
+        initializer?.type !== "ArrowFunctionExpression" ||
+        initializer.params.length !== 0
+      ) {
+        continue;
+      }
+      const body = unwrapExpression(initializer.body);
+      if (body?.type !== "CallExpression") continue;
+      const callee = unwrapExpression(body.callee);
+      if (
+        callee?.type === "MemberExpression" &&
+        !callee.computed &&
+        callee.property.type === "Identifier" &&
+        callee.property.name === "then"
+      ) {
+        const imported = unwrapExpression(callee.object);
+        if (
+          imported?.type === "ImportExpression" &&
+          imported.source.type === "Literal" &&
+          imported.source.value === source &&
+          dynamicImportCallbackCallsDefault(body.arguments[0])
+        ) {
+          return declaration.id.name;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function dynamicImportCallbackCallsDefault(
+  argument: ESTree.CallExpression["arguments"][number] | undefined,
+): boolean {
+  if (
+    !argument ||
+    argument.type === "SpreadElement" ||
+    (argument.type !== "ArrowFunctionExpression" && argument.type !== "FunctionExpression") ||
+    argument.params.length !== 1
+  ) {
+    return false;
+  }
+  if (!argument.body) return false;
+  const returned =
+    argument.body.type === "BlockStatement"
+      ? findSingleDirectReturn(argument.body)?.argument
+      : argument.body;
+  const call = unwrapExpression(returned);
+  if (call?.type !== "CallExpression") return false;
+  const parameter = argument.params[0];
+  if (parameter.type === "Identifier") {
+    const callbackCallee = unwrapExpression(call.callee);
+    return Boolean(
+      callbackCallee?.type === "MemberExpression" &&
+      callbackCallee.object.type === "Identifier" &&
+      callbackCallee.object.name === parameter.name &&
+      ((!callbackCallee.computed &&
+        callbackCallee.property.type === "Identifier" &&
+        callbackCallee.property.name === "default") ||
+        (callbackCallee.computed &&
+          callbackCallee.property.type === "Literal" &&
+          callbackCallee.property.value === "default")),
+    );
+  }
+  if (parameter.type !== "ObjectPattern" || call.callee.type !== "Identifier") return false;
+  const calleeName = call.callee.name;
+  return parameter.properties.some(
+    (property) =>
+      property.type === "Property" &&
+      ((property.key.type === "Identifier" && property.key.name === "default") ||
+        (property.key.type === "Literal" && property.key.value === "default")) &&
+      property.value.type === "Identifier" &&
+      property.value.name === calleeName,
+  );
+}
+
 function findRequiredBinding(
   program: ESTree.Program,
   source: string,
   imported: string,
+  excludedBindings?: Set<string>,
 ): string | undefined {
+  if (imported === "default") {
+    return findDefaultRequiredBinding(program, source, excludedBindings)?.binding;
+  }
   for (const statement of program.body) {
-    if (statement.type !== "VariableDeclaration") continue;
+    if (statement.type !== "VariableDeclaration" || statement.kind !== "const") continue;
     for (const declaration of statement.declarations) {
+      const initializer = unwrapExpression(declaration.init);
       if (
-        !declaration.init ||
-        declaration.init.type !== "CallExpression" ||
-        declaration.init.callee.type !== "Identifier" ||
-        declaration.init.callee.name !== "require" ||
-        declaration.init.arguments[0]?.type !== "Literal" ||
-        declaration.init.arguments[0].value !== source
+        initializer?.type !== "CallExpression" ||
+        initializer.callee.type !== "Identifier" ||
+        initializer.callee.name !== "require" ||
+        initializer.arguments[0]?.type !== "Literal" ||
+        initializer.arguments[0].value !== source
       ) {
         continue;
-      }
-      if (imported === "default" && declaration.id.type === "Identifier") {
-        return declaration.id.name;
       }
       if (declaration.id.type !== "ObjectPattern") continue;
       for (const property of declaration.id.properties) {
@@ -1511,7 +2091,8 @@ function findRequiredBinding(
           property.type === "Property" &&
           property.key.type === "Identifier" &&
           property.key.name === imported &&
-          property.value.type === "Identifier"
+          property.value.type === "Identifier" &&
+          !excludedBindings?.has(property.value.name)
         ) {
           return property.value.name;
         }
@@ -1522,10 +2103,17 @@ function findRequiredBinding(
 }
 
 function requireInsertionOffset(program: ESTree.Program): number {
-  let offset = 0;
+  let offset = program.hashbang?.end ?? 0;
   for (const statement of program.body) {
-    if (statement.type !== "VariableDeclaration") break;
-    offset = (statement as AstNode).end;
+    if (
+      statement.type === "ExpressionStatement" &&
+      statement.expression.type === "Literal" &&
+      typeof statement.expression.value === "string"
+    ) {
+      offset = (statement as AstNode).end;
+      continue;
+    }
+    break;
   }
   return offset;
 }
@@ -1536,9 +2124,10 @@ function ensureNamedRequire(
   source: string,
   imported: string,
   binding: string,
+  reuseExisting = true,
 ): string {
   const existing = findRequiredBinding(program, source, imported);
-  if (existing) return existing;
+  if (existing && reuseExisting) return existing;
   const offset = requireInsertionOffset(program);
   const property = binding === imported ? imported : `${imported}: ${binding}`;
   const sourceText = `const { ${property} } = require(${JSON.stringify(source)});`;
@@ -1551,9 +2140,10 @@ function ensureDefaultRequire(
   output: MagicString,
   source: string,
   binding: string,
+  reuseExisting = true,
 ): string {
   const existing = findRequiredBinding(program, source, "default");
-  if (existing) return existing;
+  if (existing && reuseExisting) return existing;
   const offset = requireInsertionOffset(program);
   const sourceText = `const ${binding} = require(${JSON.stringify(source)});`;
   output.appendLeft(offset, offset === 0 ? `${sourceText}\n` : `\n${sourceText}`);
@@ -1568,7 +2158,10 @@ function insertObjectProperty(
 ): void {
   const offset = object.end - 1;
   const hasProperties = object.properties.length > 0;
-  const hasTrailingComma = /,\s*$/.test(code.slice(object.start + 1, offset));
+  const finalProperty = object.properties.at(-1);
+  const hasTrailingComma = finalProperty
+    ? endsWithCommaIgnoringWhitespaceAndComments(code.slice(finalProperty.end, offset))
+    : false;
   output.appendLeft(offset, `${hasProperties && !hasTrailingComma ? "," : ""}\n${source}\n`);
 }
 
@@ -1601,6 +2194,22 @@ function endsWithCommaIgnoringWhitespaceAndComments(code: string): boolean {
   return lastToken === ",";
 }
 
+function findCommaIgnoringComments(code: string): number {
+  for (let index = 0; index < code.length; index++) {
+    if (code[index] === "/" && code[index + 1] === "/") {
+      index = code.indexOf("\n", index + 2);
+      if (index === -1) return -1;
+    } else if (code[index] === "/" && code[index + 1] === "*") {
+      index = code.indexOf("*/", index + 2);
+      if (index === -1) return -1;
+      index++;
+    } else if (code[index] === ",") {
+      return index;
+    }
+  }
+  return -1;
+}
+
 function cloudflarePluginExpression(isAppRouter: boolean, binding: string): string {
   return isAppRouter
     ? `${binding}({\n  viteEnvironment: {\n    name: "rsc",\n    childEnvironments: ["ssr"],\n  },\n})`
@@ -1618,9 +2227,10 @@ function ensureCloudflareViteEnvironment(
   binding: string,
   isAppRouter: boolean,
   code: string,
+  program: ESTree.Program,
 ): void {
   if (!isAppRouter) return;
-  const call = findPluginCall(config, binding);
+  const call = findPluginCall(config, binding, program);
   if (!call) return;
   const viteEnvironment = `viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] }`;
   const firstArgument = call.arguments[0];
@@ -1695,15 +2305,322 @@ function ensureCloudflareViteEnvironment(
 function findPluginCall(
   config: AstObject,
   binding: string,
+  program: ESTree.Program,
+  member?: string,
 ): (ESTree.CallExpression & AstNode) | undefined {
-  const plugins = findProperty(config, "plugins");
-  if (!plugins || plugins.value.type !== "ArrayExpression") return undefined;
-  return plugins.value.elements.find(
-    (element): element is ESTree.CallExpression & AstNode =>
-      element?.type === "CallExpression" &&
-      element.callee.type === "Identifier" &&
-      element.callee.name === binding,
-  );
+  const array = findPluginArray(config, program);
+  return array
+    ? findCallInPluginArray(
+        array,
+        (call) => calleeMatchesPluginAddition(call.callee, { binding, member }, program, array),
+        program,
+      )
+    : undefined;
+}
+
+function findAstPath(root: ESTree.Node, target: ESTree.Node): ESTree.Node[] | undefined {
+  if (root === target) return [root];
+  let path: ESTree.Node[] | undefined;
+  forEachAstChild(root, (child) => {
+    if (path) return;
+    const childPath = findAstPath(child, target);
+    if (childPath) path = [root, ...childPath];
+  });
+  return path;
+}
+
+function collectNestedFunctionVarBindings(node: ESTree.Node, bindings: Set<string>): void {
+  if (
+    node.type === "FunctionDeclaration" ||
+    node.type === "FunctionExpression" ||
+    node.type === "ArrowFunctionExpression" ||
+    node.type === "ClassDeclaration" ||
+    node.type === "ClassExpression"
+  ) {
+    return;
+  }
+  if (node.type === "VariableDeclaration" && node.kind === "var") {
+    for (const declarator of node.declarations) collectPatternBindings(declarator.id, bindings);
+  }
+  forEachAstChild(node, (child) => collectNestedFunctionVarBindings(child, bindings));
+}
+
+function collectShadowedBindings(program: ESTree.Program, target: ESTree.Node): Set<string> {
+  const bindings = new Set<string>();
+  const path = findAstPath(program, target);
+  if (!path) return bindings;
+  for (const node of path.slice(1)) {
+    if (
+      node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression"
+    ) {
+      for (const parameter of node.params) collectPatternBindings(parameter, bindings);
+      if (node.type === "FunctionExpression" && node.id) bindings.add(node.id.name);
+      if (node.body?.type === "BlockStatement") {
+        for (const statement of node.body.body) {
+          collectNestedFunctionVarBindings(statement, bindings);
+        }
+      }
+    }
+    if (node.type !== "BlockStatement") continue;
+    for (const declaration of node.body) {
+      if (declaration?.type === "VariableDeclaration") {
+        for (const declarator of declaration.declarations) {
+          collectPatternBindings(declarator.id, bindings);
+        }
+      } else if (
+        (declaration?.type === "FunctionDeclaration" || declaration?.type === "ClassDeclaration") &&
+        declaration.id
+      ) {
+        bindings.add(declaration.id.name);
+      } else if (declaration?.type === "TSEnumDeclaration") {
+        bindings.add(declaration.id.name);
+      } else if (
+        declaration?.type === "TSModuleDeclaration" &&
+        declaration.id.type === "Identifier"
+      ) {
+        bindings.add(declaration.id.name);
+      }
+    }
+  }
+  return bindings;
+}
+
+function patternBinds(pattern: ESTree.Node, binding: string): boolean {
+  const bindings = new Set<string>();
+  collectPatternBindings(pattern, bindings);
+  return bindings.has(binding);
+}
+
+function findVisibleConstInitializer(
+  program: ESTree.Program,
+  target: ESTree.Node,
+  binding: string,
+): ESTree.Node | undefined {
+  const path = findAstPath(program, target);
+  if (!path) return undefined;
+  let initializer: ESTree.Node | undefined;
+  for (const node of path) {
+    if (
+      node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression"
+    ) {
+      const parameterBindings = new Set<string>();
+      for (const parameter of node.params) collectPatternBindings(parameter, parameterBindings);
+      if (parameterBindings.has(binding)) initializer = undefined;
+    }
+    if (node.type === "FunctionExpression" && node.id?.name === binding) initializer = undefined;
+    const statements =
+      node.type === "Program" || node.type === "BlockStatement" ? node.body : undefined;
+    if (!statements) continue;
+    for (const statement of statements) {
+      const declaration =
+        statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+      if (declaration?.type === "VariableDeclaration") {
+        const declarator = declaration.declarations.find((candidate) =>
+          patternBinds(candidate.id, binding),
+        );
+        if (!declarator) continue;
+        initializer =
+          declaration.kind === "const" && declarator.id.type === "Identifier"
+            ? (unwrapExpression(declarator.init) ?? undefined)
+            : undefined;
+      } else if (
+        ((declaration?.type === "FunctionDeclaration" ||
+          declaration?.type === "ClassDeclaration") &&
+          declaration.id?.name === binding) ||
+        (declaration?.type === "TSEnumDeclaration" && declaration.id.name === binding) ||
+        (declaration?.type === "TSModuleDeclaration" &&
+          declaration.id.type === "Identifier" &&
+          declaration.id.name === binding)
+      ) {
+        initializer = undefined;
+      }
+    }
+  }
+  return initializer;
+}
+
+function findVisibleDestructuredSource(
+  program: ESTree.Program,
+  target: ESTree.Node,
+  binding: string,
+): ESTree.Node | undefined {
+  const path = findAstPath(program, target);
+  if (!path) return undefined;
+  let source: ESTree.Node | undefined;
+  for (const node of path) {
+    if (
+      node.type === "FunctionDeclaration" ||
+      node.type === "FunctionExpression" ||
+      node.type === "ArrowFunctionExpression"
+    ) {
+      if (node.params.some((parameter) => patternBinds(parameter, binding))) source = undefined;
+    }
+    if (node.type === "FunctionExpression" && node.id?.name === binding) source = undefined;
+    const statements =
+      node.type === "Program" || node.type === "BlockStatement" ? node.body : undefined;
+    if (!statements) continue;
+    for (const statement of statements) {
+      const declaration =
+        statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+      if (declaration?.type === "VariableDeclaration") {
+        const declarator = declaration.declarations.find((candidate) =>
+          patternBinds(candidate.id, binding),
+        );
+        if (!declarator) continue;
+        source =
+          declaration.kind === "const" && declarator.id.type === "ObjectPattern"
+            ? (unwrapExpression(declarator.init) ?? undefined)
+            : undefined;
+      } else if (
+        ((declaration?.type === "FunctionDeclaration" ||
+          declaration?.type === "ClassDeclaration") &&
+          declaration.id?.name === binding) ||
+        (declaration?.type === "TSEnumDeclaration" && declaration.id.name === binding) ||
+        (declaration?.type === "TSModuleDeclaration" &&
+          declaration.id.type === "Identifier" &&
+          declaration.id.name === binding)
+      ) {
+        source = undefined;
+      }
+    }
+  }
+  return source;
+}
+
+function findVisiblePluginArray(
+  program: ESTree.Program,
+  config: AstObject,
+  binding: string,
+): (ESTree.ArrayExpression & AstNode) | undefined {
+  const initializer = findVisibleConstInitializer(program, config, binding);
+  return initializer?.type === "ArrayExpression"
+    ? (initializer as ESTree.ArrayExpression & AstNode)
+    : undefined;
+}
+
+function findPluginArray(
+  config: AstObject,
+  program: ESTree.Program,
+): (ESTree.ArrayExpression & AstNode) | undefined {
+  const plugins = findPluginsProperty(config);
+  if (!plugins) return undefined;
+  if (plugins.value.type === "ArrayExpression") return plugins.value;
+  if (plugins.value.type !== "Identifier") return undefined;
+  return findVisiblePluginArray(program, config, plugins.value.name);
+}
+
+function findCallInPluginArray(
+  array: ESTree.ArrayExpression,
+  matches: (call: ESTree.CallExpression) => boolean,
+  program: ESTree.Program,
+  allowConditional = false,
+  scopeTarget: ESTree.Node = array,
+  seenBindings = new Set<string>(),
+): (ESTree.CallExpression & AstNode) | undefined {
+  for (const element of array.elements) {
+    const call = findCallInPluginExpression(
+      element,
+      matches,
+      program,
+      allowConditional,
+      scopeTarget,
+      seenBindings,
+    );
+    if (call) return call;
+  }
+  return undefined;
+}
+
+function findCallInPluginExpression(
+  node: ESTree.Node | null,
+  matches: (call: ESTree.CallExpression) => boolean,
+  program: ESTree.Program,
+  allowConditional: boolean,
+  scopeTarget: ESTree.Node,
+  seenBindings: Set<string>,
+): (ESTree.CallExpression & AstNode) | undefined {
+  const expression = unwrapExpression(node?.type === "SpreadElement" ? node.argument : node);
+  if (expression?.type === "ArrayExpression") {
+    return findCallInPluginArray(
+      expression,
+      matches,
+      program,
+      allowConditional,
+      scopeTarget,
+      seenBindings,
+    );
+  }
+  if (expression?.type === "Identifier" && !seenBindings.has(expression.name)) {
+    const initializer = findVisibleConstInitializer(program, scopeTarget, expression.name);
+    if (!initializer) return undefined;
+    const nextSeenBindings = new Set(seenBindings).add(expression.name);
+    return findCallInPluginExpression(
+      initializer,
+      matches,
+      program,
+      allowConditional,
+      scopeTarget,
+      nextSeenBindings,
+    );
+  }
+  if (allowConditional && expression?.type === "LogicalExpression") {
+    if (expression.operator === "&&") {
+      return findCallInPluginExpression(
+        expression.right,
+        matches,
+        program,
+        true,
+        scopeTarget,
+        seenBindings,
+      );
+    }
+    return (
+      findCallInPluginExpression(
+        expression.left,
+        matches,
+        program,
+        true,
+        scopeTarget,
+        seenBindings,
+      ) ??
+      findCallInPluginExpression(
+        expression.right,
+        matches,
+        program,
+        true,
+        scopeTarget,
+        seenBindings,
+      )
+    );
+  }
+  if (allowConditional && expression?.type === "ConditionalExpression") {
+    return (
+      findCallInPluginExpression(
+        expression.consequent,
+        matches,
+        program,
+        true,
+        scopeTarget,
+        seenBindings,
+      ) ??
+      findCallInPluginExpression(
+        expression.alternate,
+        matches,
+        program,
+        true,
+        scopeTarget,
+        seenBindings,
+      )
+    );
+  }
+  if (expression?.type === "CallExpression" && matches(expression)) {
+    return expression as ESTree.CallExpression & AstNode;
+  }
+  return undefined;
 }
 
 function getVinextCacheSlot(
@@ -1800,9 +2717,11 @@ function ensureVinextCache(
   vinextBinding: string,
   additions: Array<{ name: "data" | "cdn"; expression: string }>,
   code: string,
+  program: ESTree.Program,
+  vinextMember?: string,
 ): void {
   if (additions.length === 0) return;
-  const call = findPluginCall(config, vinextBinding);
+  const call = findPluginCall(config, vinextBinding, program, vinextMember);
   if (!call) return;
   if (call.arguments.length === 0) {
     output.appendLeft(
@@ -1851,9 +2770,11 @@ function ensureVinextResponseStore(
   vinextBinding: string,
   expression: string | undefined,
   code: string,
+  program: ESTree.Program,
+  vinextMember?: string,
 ): void {
   if (!expression) return;
-  const call = findPluginCall(config, vinextBinding);
+  const call = findPluginCall(config, vinextBinding, program, vinextMember);
   const firstArgument = call?.arguments[0];
   if (!call || !firstArgument || firstArgument.type === "SpreadElement") return;
   if (firstArgument.type !== "ObjectExpression") {
@@ -1876,9 +2797,11 @@ function ensureVinextImageOptimizer(
   vinextBinding: string,
   expression: string | undefined,
   code: string,
+  program: ESTree.Program,
+  vinextMember?: string,
 ): void {
   if (!expression) return;
-  const call = findPluginCall(config, vinextBinding);
+  const call = findPluginCall(config, vinextBinding, program, vinextMember);
   if (!call) return;
   if (call.arguments.length === 0) {
     output.appendLeft(call.end - 1, `{ images: { optimizer: ${expression} } }`);
@@ -1920,9 +2843,11 @@ function ensureVinextPrerender(
   vinextBinding: string,
   prerender: boolean | undefined,
   code: string,
+  program: ESTree.Program,
+  vinextMember?: string,
 ): void {
   if (!prerender) return;
-  const call = findPluginCall(config, vinextBinding);
+  const call = findPluginCall(config, vinextBinding, program, vinextMember);
   if (!call || hasVinextPrerender(call)) return;
   if (call.arguments.length === 0) {
     output.appendLeft(call.end - 1, `{ prerender: { routes: "*" } }`);
@@ -1944,24 +2869,146 @@ function indentBlock(source: string, indent: string): string {
     .join("\n");
 }
 
+type PluginBindingReference = {
+  binding: string;
+  member?: string;
+};
+
+type PluginAddition = PluginBindingReference & {
+  expression: string;
+  equivalentBindings?: PluginBindingReference[];
+  allowConditional?: boolean;
+};
+
+function expressionReferencesBinding(
+  node: ESTree.Node,
+  binding: string,
+  program: ESTree.Program,
+  scopeTarget: ESTree.Node,
+  seenBindings = new Set<string>(),
+): boolean {
+  const expression = unwrapExpression(node);
+  if (expression?.type !== "Identifier") return false;
+  if (expression.name === binding) return true;
+  if (seenBindings.has(expression.name)) return false;
+  const initializer = findVisibleConstInitializer(program, scopeTarget, expression.name);
+  return initializer
+    ? expressionReferencesBinding(
+        initializer,
+        binding,
+        program,
+        scopeTarget,
+        new Set(seenBindings).add(expression.name),
+      )
+    : false;
+}
+
+function calleeMatchesPluginAddition(
+  node: ESTree.Node,
+  addition: PluginBindingReference,
+  program: ESTree.Program,
+  scopeTarget: ESTree.Node,
+  seenBindings = new Set<string>(),
+): boolean {
+  const callee = unwrapExpression(node);
+  if (!callee) return false;
+  if (addition.member === undefined) {
+    return expressionReferencesBinding(
+      callee,
+      addition.binding,
+      program,
+      scopeTarget,
+      seenBindings,
+    );
+  }
+  if (callee.type === "Identifier") {
+    if (seenBindings.has(callee.name)) return false;
+    const initializer = findVisibleConstInitializer(program, scopeTarget, callee.name);
+    return initializer
+      ? calleeMatchesPluginAddition(
+          initializer,
+          addition,
+          program,
+          scopeTarget,
+          new Set(seenBindings).add(callee.name),
+        )
+      : false;
+  }
+  return (
+    callee.type === "MemberExpression" &&
+    ((!callee.computed &&
+      callee.property.type === "Identifier" &&
+      callee.property.name === addition.member) ||
+      (callee.computed &&
+        callee.property.type === "Literal" &&
+        callee.property.value === addition.member)) &&
+    expressionReferencesBinding(callee.object, addition.binding, program, scopeTarget)
+  );
+}
+
+function findUnshadowedTopLevelAliases(
+  program: ESTree.Program,
+  source: PluginBindingReference,
+  excludedBindings: Set<string>,
+): PluginBindingReference[] {
+  const known = [source];
+  let foundAlias = true;
+  while (foundAlias) {
+    foundAlias = false;
+    for (const statement of program.body) {
+      const declaration =
+        statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+      if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") continue;
+      for (const declarator of declaration.declarations) {
+        if (declarator.id.type !== "Identifier") continue;
+        const aliasName = declarator.id.name;
+        if (known.some(({ binding }) => binding === aliasName)) continue;
+        const initializer = unwrapExpression(declarator.init);
+        const referenced = known.find(({ binding, member }) => {
+          if (initializer?.type === "Identifier") return initializer.name === binding;
+          return (
+            member !== undefined &&
+            initializer?.type === "MemberExpression" &&
+            expressionReferencesBinding(initializer.object, binding, program, program) &&
+            ((!initializer.computed &&
+              initializer.property.type === "Identifier" &&
+              initializer.property.name === member) ||
+              (initializer.computed &&
+                initializer.property.type === "Literal" &&
+                initializer.property.value === member))
+          );
+        });
+        if (!referenced) continue;
+        known.push({
+          binding: aliasName,
+          member: initializer?.type === "Identifier" ? referenced.member : undefined,
+        });
+        foundAlias = true;
+      }
+    }
+  }
+  return known.filter(({ binding }) => !excludedBindings.has(binding));
+}
+
 function ensurePlugins(
   output: MagicString,
   config: AstObject,
-  additions: Array<{ expression: string; binding: string }>,
+  additions: PluginAddition[],
   code: string,
+  program: ESTree.Program,
 ): void {
-  const plugins = findProperty(config, "plugins");
+  const plugins = findPluginsProperty(config);
   if (!plugins) {
     const expressions = additions.map(({ expression }) => indentBlock(expression, "    "));
     insertObjectProperty(output, config, `  plugins: [\n${expressions.join(",\n")},\n  ],`, code);
     return;
   }
-  if (plugins.value.type !== "ArrayExpression") {
+  const array = findPluginArray(config, program);
+  if (!array) {
     throw new Error(
       "The Vite config's plugins option must be an array for vinext init to update it.",
     );
   }
-  const array = plugins.value as ESTree.ArrayExpression & AstNode;
   const propertyIndent =
     code
       .slice(0, (plugins as AstNode).start)
@@ -1971,11 +3018,14 @@ function ensurePlugins(
   const elementIndent = `${propertyIndent}  `;
   const missingExpressions: string[] = [];
   for (const addition of additions) {
-    const alreadyConfigured = array.elements.some(
-      (element) =>
-        element?.type === "CallExpression" &&
-        element.callee.type === "Identifier" &&
-        element.callee.name === addition.binding,
+    const alreadyConfigured = findCallInPluginArray(
+      array,
+      (expression) =>
+        [addition, ...(addition.equivalentBindings ?? [])].some((reference) =>
+          calleeMatchesPluginAddition(expression.callee, reference, program, array),
+        ),
+      program,
+      addition.allowConditional,
     );
     if (!alreadyConfigured) missingExpressions.push(addition.expression);
   }
@@ -2004,13 +3054,17 @@ function ensurePlugins(
       if (!element) continue;
       if (previousElement) {
         const gap = code.slice((previousElement as AstNode).end, (element as AstNode).start);
-        const commaIndex = gap.indexOf(",");
+        const commaIndex = findCommaIgnoringComments(gap);
         if (commaIndex >= 0) {
-          const trivia = gap.slice(commaIndex + 1).trim();
+          const trivia = [gap.slice(0, commaIndex), gap.slice(commaIndex + 1)]
+            .map((part) => part.trim())
+            .filter(Boolean);
           output.overwrite(
             (previousElement as AstNode).end,
             (element as AstNode).start,
-            trivia ? `,\n${elementIndent}${trivia}\n${elementIndent}` : `,\n${elementIndent}`,
+            trivia.length > 0
+              ? `,\n${elementIndent}${trivia.join(`\n${elementIndent}`)}\n${elementIndent}`
+              : `,\n${elementIndent}`,
           );
         }
       }
@@ -2023,6 +3077,71 @@ function ensurePlugins(
       .map((expression) => indentBlock(expression, elementIndent))
       .join(",\n")},\n${propertyIndent}`,
   );
+}
+
+function prepareTailwindPlugin(
+  program: ESTree.Program,
+  output: MagicString,
+  bindings: Set<string>,
+  commonJs: boolean,
+  shadowedBindings: Set<string>,
+): PluginAddition {
+  const tailwindLocal = allocateBinding(bindings, "tailwindcss");
+  const requiredPackageBinding = commonJs
+    ? findDefaultRequiredBinding(program, "@tailwindcss/vite")
+    : undefined;
+  const dynamicPackageBinding = commonJs
+    ? findDynamicImportPluginBinding(program, "@tailwindcss/vite")
+    : undefined;
+  const packageBinding = commonJs
+    ? (requiredPackageBinding ??
+      (dynamicPackageBinding ? { binding: dynamicPackageBinding, namespace: false } : undefined))
+    : findDefaultImportedBinding(program, "@tailwindcss/vite");
+  const equivalentBindings = packageBinding
+    ? findUnshadowedTopLevelAliases(
+        program,
+        {
+          binding: packageBinding.binding,
+          member: packageBinding.namespace ? "default" : undefined,
+        },
+        shadowedBindings,
+      )
+    : [];
+  const existingAlias = equivalentBindings[0];
+  const existingRequire = commonJs
+    ? findDefaultRequiredBinding(program, "@tailwindcss/vite", shadowedBindings)
+    : undefined;
+  const existingDynamicImport = commonJs
+    ? findDynamicImportPluginBinding(program, "@tailwindcss/vite", shadowedBindings)
+    : undefined;
+  const existingImport = commonJs
+    ? undefined
+    : findDefaultImportedBinding(program, "@tailwindcss/vite", shadowedBindings);
+  let tailwindBinding: string;
+  if (commonJs && !existingRequire && !existingDynamicImport && !existingAlias) {
+    const offset = requireInsertionOffset(program);
+    const sourceText = `const ${tailwindLocal} = () => import("@tailwindcss/vite").then(({ default: plugin }) => plugin());`;
+    output.appendLeft(offset, offset === 0 ? `${sourceText}\n` : `\n${sourceText}`);
+    tailwindBinding = tailwindLocal;
+  } else {
+    tailwindBinding = commonJs
+      ? (existingRequire?.binding ??
+        existingDynamicImport ??
+        existingAlias?.binding ??
+        tailwindLocal)
+      : (existingImport?.binding ??
+        existingAlias?.binding ??
+        ensureDefaultImport(program, output, "@tailwindcss/vite", tailwindLocal, false));
+  }
+  const member =
+    existingRequire?.namespace || existingImport?.namespace ? "default" : existingAlias?.member;
+  return {
+    expression: `${tailwindBinding}${member ? `.${member}` : ""}()`,
+    binding: tailwindBinding,
+    member,
+    equivalentBindings,
+    allowConditional: true,
+  };
 }
 
 function ensureNativeAliases(
@@ -2080,11 +3199,38 @@ function ensureNativeAliases(
   }
 }
 
+export function updateViteConfigForTailwind(filePath: string, code: string): string {
+  const program = parseViteConfig(filePath, code);
+  const config = findConfigObject(program);
+  if (!config) {
+    throw new Error(
+      `Could not find a static Vite config object in ${path.basename(filePath)}. Use an object export or defineConfig({...}) so vinext init can update it.`,
+    );
+  }
+  assertConfigPropertiesAreStatic(program, config);
+  const pluginArray = findPluginArray(config, program);
+  assertPluginArrayIsStatic(program, pluginArray);
+  const output = new MagicString(code);
+  const commonJs = usesCommonJsViteConfig(filePath, code);
+  const bindings = collectTopLevelBindings(program);
+  const shadowedBindings = collectShadowedBindings(program, pluginArray ?? config);
+  for (const binding of shadowedBindings) bindings.add(binding);
+  ensurePlugins(
+    output,
+    config,
+    [prepareTailwindPlugin(program, output, bindings, commonJs, shadowedBindings)],
+    code,
+    program,
+  );
+  return output.toString();
+}
+
 export function updateViteConfigForCloudflare(
   filePath: string,
   code: string,
   options: {
     isAppRouter: boolean;
+    hasTailwindV4?: boolean;
     nativeModulesToStub: string[];
     cache?: CloudflareInitOptions;
     imagesBinding?: string;
@@ -2100,27 +3246,64 @@ export function updateViteConfigForCloudflare(
       `Could not find a static Vite config object in ${path.basename(filePath)}. Use an object export or defineConfig({...}) so vinext init can update it.`,
     );
   }
+  assertConfigPropertiesAreStatic(program, config);
+  const pluginArray = findPluginArray(config, program);
+  assertPluginArrayIsStatic(program, pluginArray);
 
   const output = new MagicString(code);
   const commonJs = usesCommonJsViteConfig(filePath, code);
   const bindings = collectTopLevelBindings(program);
-  const existingVinextBinding = commonJs
-    ? findRequiredBinding(program, "vinext", "default")
-    : program.body
-        .filter(
-          (statement): statement is ESTree.ImportDeclaration =>
-            statement.type === "ImportDeclaration",
-        )
-        .find((statement) => statement.source.value === "vinext")
-        ?.specifiers.find(
-          (specifier): specifier is ESTree.ImportDefaultSpecifier =>
-            specifier.type === "ImportDefaultSpecifier",
-        )?.local.name;
-  const vinextLocal = existingVinextBinding ?? allocateBinding(bindings, "vinext");
-  const vinextBinding = commonJs
-    ? ensureDefaultRequire(program, output, "vinext", vinextLocal)
-    : ensureDefaultImport(program, output, "vinext", vinextLocal);
-  const existingVinextCall = findPluginCall(config, vinextBinding);
+  const shadowedBindings = collectShadowedBindings(program, pluginArray ?? config);
+  for (const binding of shadowedBindings) bindings.add(binding);
+  const importedVinext = commonJs
+    ? findDefaultRequiredBinding(program, "vinext")
+    : findDefaultImportedBinding(program, "vinext");
+  const vinextPackageReferences: PluginBindingReference[] = importedVinext
+    ? [
+        {
+          binding: importedVinext.binding,
+          member: !commonJs && importedVinext.namespace ? "default" : undefined,
+        },
+        ...(commonJs && importedVinext.namespace
+          ? [{ binding: importedVinext.binding, member: "default" }]
+          : []),
+      ]
+    : [];
+  const vinextEquivalentBindings = vinextPackageReferences
+    .flatMap((reference) => findUnshadowedTopLevelAliases(program, reference, shadowedBindings))
+    .filter(
+      (reference, index, references) =>
+        references.findIndex(
+          (candidate) =>
+            candidate.binding === reference.binding && candidate.member === reference.member,
+        ) === index,
+    );
+  const configuredVinextAlias = vinextEquivalentBindings.find(({ binding, member }) =>
+    findPluginCall(config, binding, program, member),
+  );
+  const directVinext = commonJs
+    ? findRequiredBinding(program, "vinext", "default", shadowedBindings)
+    : findDefaultImportedBinding(program, "vinext", shadowedBindings);
+  const directVinextReference =
+    typeof directVinext === "string"
+      ? { binding: directVinext }
+      : directVinext
+        ? {
+            binding: directVinext.binding,
+            member: directVinext.namespace ? "default" : undefined,
+          }
+        : undefined;
+  const existingVinextReference =
+    configuredVinextAlias ?? directVinextReference ?? vinextEquivalentBindings[0];
+  const vinextLocal = existingVinextReference?.binding ?? allocateBinding(bindings, "vinext");
+  const vinextBinding =
+    existingVinextReference?.binding ??
+    (commonJs
+      ? ensureDefaultRequire(program, output, "vinext", vinextLocal, false)
+      : ensureDefaultImport(program, output, "vinext", vinextLocal, false));
+  const vinextMember = existingVinextReference?.member;
+  const vinextCallee = `${vinextBinding}${vinextMember ? `.${vinextMember}` : ""}`;
+  const existingVinextCall = findPluginCall(config, vinextBinding, program, vinextMember);
   const existingImageOptimizer = getVinextImageOptimizer(existingVinextCall);
   const needsPrerender = Boolean(options.prerender && !hasVinextPrerender(existingVinextCall));
   const configureCaches = options.cache !== undefined;
@@ -2149,8 +3332,8 @@ export function updateViteConfigForCloudflare(
     const source = "@vinext/cloudflare/cache/response-store-adapter";
     const imported = "responseStoreAdapter";
     const existing = commonJs
-      ? findRequiredBinding(program, source, imported)
-      : findImportedBinding(program, source, imported);
+      ? findRequiredBinding(program, source, imported, shadowedBindings)
+      : findImportedBinding(program, source, imported, shadowedBindings);
     const cache = getVinextCacheOption(existingVinextCall);
     const alreadyConfigured = Boolean(
       existing &&
@@ -2173,9 +3356,11 @@ export function updateViteConfigForCloudflare(
       (cache.value.type === "ObjectExpression" && cache.value.properties.length === 0)
     ) {
       const local = existing ?? allocateBinding(bindings, imported);
-      const binding = commonJs
-        ? ensureNamedRequire(program, output, source, imported, local)
-        : ensureNamedImport(program, output, source, imported, local);
+      const binding =
+        existing ??
+        (commonJs
+          ? ensureNamedRequire(program, output, source, imported, local, false)
+          : ensureNamedImport(program, output, source, imported, local, false));
       responseStoreBinding = binding;
       responseStoreExpression = `${binding}(${cacheOptions.responseStoreMode === "self-contained" ? '{ mode: "self-contained" }' : ""})`;
       if (alreadyConfigured && cache) {
@@ -2217,32 +3402,46 @@ export function updateViteConfigForCloudflare(
   }
   if (cacheOptions.dataCache === "kv" && !hasVinextCacheSlot(existingVinextCall, "data")) {
     const existing = commonJs
-      ? findRequiredBinding(program, "@vinext/cloudflare/cache/kv-data-adapter", "kvDataAdapter")
-      : findImportedBinding(program, "@vinext/cloudflare/cache/kv-data-adapter", "kvDataAdapter");
-    const local = existing ?? allocateBinding(bindings, "kvDataAdapter");
-    const binding = commonJs
-      ? ensureNamedRequire(
+      ? findRequiredBinding(
           program,
-          output,
           "@vinext/cloudflare/cache/kv-data-adapter",
           "kvDataAdapter",
-          local,
+          shadowedBindings,
         )
-      : ensureNamedImport(
+      : findImportedBinding(
           program,
-          output,
           "@vinext/cloudflare/cache/kv-data-adapter",
           "kvDataAdapter",
-          local,
+          shadowedBindings,
         );
+    const local = existing ?? allocateBinding(bindings, "kvDataAdapter");
+    const binding =
+      existing ??
+      (commonJs
+        ? ensureNamedRequire(
+            program,
+            output,
+            "@vinext/cloudflare/cache/kv-data-adapter",
+            "kvDataAdapter",
+            local,
+            false,
+          )
+        : ensureNamedImport(
+            program,
+            output,
+            "@vinext/cloudflare/cache/kv-data-adapter",
+            "kvDataAdapter",
+            local,
+            false,
+          ));
     cacheAdditions.push({ name: "data", expression: `${binding}()` });
   }
   if (configureCaches && cacheOptions.cdnCache === "workers-cache") {
     const imported = "cdnAdapter";
     const source = "@vinext/cloudflare/cache/cdn-adapter";
     const existing = commonJs
-      ? findRequiredBinding(program, source, imported)
-      : findImportedBinding(program, source, imported);
+      ? findRequiredBinding(program, source, imported, shadowedBindings)
+      : findImportedBinding(program, source, imported, shadowedBindings);
     const existingCdnSlot = getVinextCacheSlot(existingVinextCall, "cdn");
     const existingUsesCloudflareAdapter = Boolean(
       existing &&
@@ -2253,9 +3452,11 @@ export function updateViteConfigForCloudflare(
     // An existing custom CDN adapter is user-owned; init must not replace it.
     if (!existingCdnSlot || existingUsesCloudflareAdapter) {
       const local = existing ?? allocateBinding(bindings, imported);
-      const binding = commonJs
-        ? ensureNamedRequire(program, output, source, imported, local)
-        : ensureNamedImport(program, output, source, imported, local);
+      const binding =
+        existing ??
+        (commonJs
+          ? ensureNamedRequire(program, output, source, imported, local, false)
+          : ensureNamedImport(program, output, source, imported, local, false));
       const adapterOptions =
         options.versionMetadataBinding &&
         options.versionMetadataBinding !== DEFAULT_VERSION_METADATA_BINDING
@@ -2278,16 +3479,18 @@ export function updateViteConfigForCloudflare(
     const source = "@vinext/cloudflare/images/images-optimizer";
     const imported = "imagesOptimizer";
     const existing = commonJs
-      ? findRequiredBinding(program, source, imported)
-      : findImportedBinding(program, source, imported);
+      ? findRequiredBinding(program, source, imported, shadowedBindings)
+      : findImportedBinding(program, source, imported, shadowedBindings);
     if (
       !isUsableImageOptimizer(existingImageOptimizer) ||
       isImagesOptimizerCall(existingImageOptimizer, existing)
     ) {
       const local = existing ?? allocateBinding(bindings, imported);
-      const imageBinding = commonJs
-        ? ensureNamedRequire(program, output, source, imported, local)
-        : ensureNamedImport(program, output, source, imported, local);
+      const imageBinding =
+        existing ??
+        (commonJs
+          ? ensureNamedRequire(program, output, source, imported, local, false)
+          : ensureNamedImport(program, output, source, imported, local, false));
       const bindingOption =
         options.imagesBinding && options.imagesBinding !== "IMAGES"
           ? `{ binding: ${JSON.stringify(options.imagesBinding)} }`
@@ -2295,42 +3498,92 @@ export function updateViteConfigForCloudflare(
       imageOptimizerExpression = `${imageBinding}(${bindingOption})`;
     }
   }
-  const existingCloudflareBinding = commonJs
+  const cloudflarePackageBinding = commonJs
     ? findRequiredBinding(program, "@cloudflare/vite-plugin", "cloudflare")
     : findImportedBinding(program, "@cloudflare/vite-plugin", "cloudflare");
+  const cloudflareEquivalentBindings = cloudflarePackageBinding
+    ? findUnshadowedTopLevelAliases(
+        program,
+        { binding: cloudflarePackageBinding },
+        shadowedBindings,
+      )
+    : [];
+  const configuredCloudflareAlias = cloudflareEquivalentBindings.find(({ binding }) =>
+    findPluginCall(config, binding, program),
+  );
+  const directCloudflareBinding = commonJs
+    ? findRequiredBinding(program, "@cloudflare/vite-plugin", "cloudflare", shadowedBindings)
+    : findImportedBinding(program, "@cloudflare/vite-plugin", "cloudflare", shadowedBindings);
+  const existingCloudflareBinding =
+    directCloudflareBinding ??
+    configuredCloudflareAlias?.binding ??
+    cloudflareEquivalentBindings[0]?.binding;
   const cloudflareLocal = existingCloudflareBinding ?? allocateBinding(bindings, "cloudflare");
-  const cloudflareBinding = commonJs
-    ? ensureNamedRequire(program, output, "@cloudflare/vite-plugin", "cloudflare", cloudflareLocal)
-    : ensureNamedImport(program, output, "@cloudflare/vite-plugin", "cloudflare", cloudflareLocal);
+  const cloudflareBinding =
+    existingCloudflareBinding ??
+    (commonJs
+      ? ensureNamedRequire(
+          program,
+          output,
+          "@cloudflare/vite-plugin",
+          "cloudflare",
+          cloudflareLocal,
+          false,
+        )
+      : ensureNamedImport(
+          program,
+          output,
+          "@cloudflare/vite-plugin",
+          "cloudflare",
+          cloudflareLocal,
+          false,
+        ));
+  let tailwindPlugin: PluginAddition | undefined;
+  if (options.hasTailwindV4) {
+    tailwindPlugin = prepareTailwindPlugin(program, output, bindings, commonJs, shadowedBindings);
+  }
   ensurePlugins(
     output,
     config,
     [
+      ...(tailwindPlugin ? [tailwindPlugin] : []),
       {
         expression: existingVinextCall
-          ? `${vinextBinding}()`
+          ? `${vinextCallee}()`
           : options.cache || options.prerender
             ? vinextExpression(
                 cacheOptions,
-                vinextBinding,
+                vinextCallee,
                 imageOptimizerExpression?.slice(0, imageOptimizerExpression.indexOf("(")) ||
                   "imagesOptimizer",
                 options.imagesBinding,
                 options.prerender,
                 options.versionMetadataBinding,
                 responseStoreBinding,
+                cacheAdditions,
               )
-            : `${vinextBinding}()`,
+            : `${vinextCallee}()`,
         binding: vinextBinding,
+        member: vinextMember,
+        equivalentBindings: vinextEquivalentBindings,
       },
       {
         expression: cloudflarePluginExpression(options.isAppRouter, cloudflareBinding),
         binding: cloudflareBinding,
+        equivalentBindings: cloudflareEquivalentBindings,
       },
     ],
     code,
+    program,
   );
-  ensureCloudflareViteEnvironment(output, config, cloudflareBinding, options.isAppRouter, code);
+  ensureCloudflareViteEnvironment(
+    output,
+    config,
+    cloudflareBinding,
+    options.isAppRouter,
+    code,
+    program,
+  );
   if (existingVinextCall) {
     if (
       existingVinextCall.arguments.length === 0 &&
@@ -2353,7 +3606,7 @@ export function updateViteConfigForCloudflare(
       if (needsPrerender) {
         properties.push(`prerender: { routes: "*" }`);
       }
-      const plugins = findProperty(config, "plugins");
+      const plugins = findPluginsProperty(config);
       const propertyIndent = plugins
         ? (code
             .slice(0, (plugins as AstNode).start)
@@ -2368,30 +3621,58 @@ export function updateViteConfigForCloudflare(
         `{\n${propertyEntryIndent}${properties.join(`,\n${propertyEntryIndent}`)},\n${closingIndent}}`,
       );
     } else {
-      ensureVinextResponseStore(output, config, vinextBinding, responseStoreExpression, code);
-      ensureVinextCache(output, config, vinextBinding, cacheAdditions, code);
-      ensureVinextImageOptimizer(output, config, vinextBinding, imageOptimizerExpression, code);
-      ensureVinextPrerender(output, config, vinextBinding, options.prerender, code);
+      ensureVinextResponseStore(
+        output,
+        config,
+        vinextBinding,
+        responseStoreExpression,
+        code,
+        program,
+        vinextMember,
+      );
+      ensureVinextCache(output, config, vinextBinding, cacheAdditions, code, program, vinextMember);
+      ensureVinextImageOptimizer(
+        output,
+        config,
+        vinextBinding,
+        imageOptimizerExpression,
+        code,
+        program,
+        vinextMember,
+      );
+      ensureVinextPrerender(
+        output,
+        config,
+        vinextBinding,
+        options.prerender,
+        code,
+        program,
+        vinextMember,
+      );
     }
   }
 
   if (options.nativeModulesToStub.length > 0) {
     const existingPathBinding = commonJs
-      ? findRequiredBinding(program, "node:path", "default")
+      ? findRequiredBinding(program, "node:path", "default", shadowedBindings)
       : program.body
           .filter(
             (statement): statement is ESTree.ImportDeclaration =>
               statement.type === "ImportDeclaration",
           )
-          .find((statement) => statement.source.value === "node:path")
-          ?.specifiers.find(
+          .filter((statement) => statement.source.value === "node:path")
+          .flatMap((statement) => statement.specifiers)
+          .find(
             (specifier): specifier is ESTree.ImportDefaultSpecifier =>
-              specifier.type === "ImportDefaultSpecifier",
+              specifier.type === "ImportDefaultSpecifier" &&
+              !shadowedBindings.has(specifier.local.name),
           )?.local.name;
     const pathLocal = existingPathBinding ?? allocateBinding(bindings, "path");
-    const pathBinding = commonJs
-      ? ensureDefaultRequire(program, output, "node:path", pathLocal)
-      : ensureDefaultImport(program, output, "node:path", pathLocal);
+    const pathBinding =
+      existingPathBinding ??
+      (commonJs
+        ? ensureDefaultRequire(program, output, "node:path", pathLocal, false)
+        : ensureDefaultImport(program, output, "node:path", pathLocal, false));
     ensureNativeAliases(output, config, options.nativeModulesToStub, pathBinding, code);
   }
 

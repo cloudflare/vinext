@@ -30,6 +30,7 @@ import {
 } from "./utils/project.js";
 import {
   setupCloudflarePlatform,
+  updateViteConfigForTailwind,
   usesCommonJsViteConfig,
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
@@ -139,13 +140,21 @@ type InitResult = {
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
 
-export function generateViteConfig(_isAppRouter: boolean, prerender = false): string {
+export function generateViteConfig(
+  _isAppRouter: boolean,
+  prerender = false,
+  extras: { hasTailwindV4?: boolean } = {},
+): string {
   const vinextCall = prerender ? `vinext({ prerender: { routes: "*" } })` : "vinext()";
+  const tailwindImport = extras.hasTailwindV4
+    ? `\nimport tailwindcss from "@tailwindcss/vite";`
+    : "";
+  const plugins = extras.hasTailwindV4 ? `tailwindcss(), ${vinextCall}` : vinextCall;
   return `import vinext from "vinext";
-import { defineConfig } from "vite";
+import { defineConfig } from "vite";${tailwindImport}
 
 export default defineConfig({
-  plugins: [${vinextCall}],
+  plugins: [${plugins}],
 });
 `;
 }
@@ -229,6 +238,7 @@ export function getInitDependencyGroups(
   isAppRouter: boolean,
   platform: InitPlatform,
   cloudflare?: CloudflareInitOptions,
+  project?: { hasMDX?: boolean; hasTailwindV4?: boolean },
 ): InitDependencyGroups {
   const dependencies = ["vinext"];
   const devDependencies = ["vite", "@vitejs/plugin-react"];
@@ -246,6 +256,10 @@ export function getInitDependencyGroups(
     }
     devDependencies.push("@cloudflare/vite-plugin", "wrangler");
   }
+  // Framework onboarding: MDX rendering and Tailwind v4 both need a Vite
+  // plugin that the plain dependency graph does not pull in.
+  if (project?.hasMDX) devDependencies.push("@mdx-js/rollup");
+  if (project?.hasTailwindV4) devDependencies.push("@tailwindcss/vite");
   return { dependencies, devDependencies };
 }
 
@@ -253,8 +267,9 @@ export function getInitDeps(
   isAppRouter: boolean,
   platform: InitPlatform,
   cloudflare?: CloudflareInitOptions,
+  project?: { hasMDX?: boolean; hasTailwindV4?: boolean },
 ): string[] {
-  const groups = getInitDependencyGroups(isAppRouter, platform, cloudflare);
+  const groups = getInitDependencyGroups(isAppRouter, platform, cloudflare, project);
   return [...groups.dependencies, ...groups.devDependencies];
 }
 
@@ -439,6 +454,7 @@ type PlatformSetupContext = {
   force: boolean;
   prerender?: boolean;
   today?: string;
+  hasTailwindV4?: boolean;
 };
 
 type PlatformSetupResult = {
@@ -450,9 +466,21 @@ type PlatformSetupResult = {
 
 function setupNodePlatform(context: PlatformSetupContext): PlatformSetupResult {
   if (context.viteConfigExists && !context.force) {
+    let generatedViteConfig = false;
+    if (context.hasTailwindV4 && context.existingViteConfigPath) {
+      const currentConfig = fs.readFileSync(context.existingViteConfigPath, "utf-8");
+      const updatedConfig = updateViteConfigForTailwind(
+        context.existingViteConfigPath,
+        currentConfig,
+      );
+      if (updatedConfig !== currentConfig) {
+        fs.writeFileSync(context.existingViteConfigPath, updatedConfig, "utf-8");
+        generatedViteConfig = true;
+      }
+    }
     return {
-      generatedViteConfig: false,
-      skippedViteConfig: true,
+      generatedViteConfig,
+      skippedViteConfig: !generatedViteConfig,
       generatedPlatformFiles: [],
       nextSteps: [],
     };
@@ -460,7 +488,9 @@ function setupNodePlatform(context: PlatformSetupContext): PlatformSetupResult {
 
   fs.writeFileSync(
     context.existingViteConfigPath ?? path.join(context.root, "vite.config.ts"),
-    generateViteConfig(context.isAppRouter, context.prerender),
+    generateViteConfig(context.isAppRouter, context.prerender, {
+      hasTailwindV4: context.hasTailwindV4,
+    }),
     "utf-8",
   );
   return {
@@ -540,7 +570,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   const viteConfigExists = hasViteConfig(root);
 
-  const isApp = detectProject(root).isAppRouter;
+  const projectInfo = detectProject(root);
+  const isApp = projectInfo.isAppRouter;
   const pmName = detectPackageManagerName(root);
   const shouldInstall = options.install ?? true;
 
@@ -554,6 +585,16 @@ export async function init(options: InitOptions): Promise<InitResult> {
         today: options._today,
       },
       options.cloudflare!,
+    );
+  } else if (
+    viteConfigExists &&
+    !options.force &&
+    projectInfo.hasTailwindV4 &&
+    existingViteConfigPath
+  ) {
+    updateViteConfigForTailwind(
+      existingViteConfigPath,
+      fs.readFileSync(existingViteConfigPath, "utf-8"),
     );
   }
 
@@ -605,6 +646,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     force: options.force ?? false,
     prerender: options.prerender,
     today: options._today,
+    hasTailwindV4: projectInfo.hasTailwindV4,
   };
   const platformSetup =
     platform === "cloudflare"
@@ -618,7 +660,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
-  const neededDeps = getInitDependencyGroups(isApp, platform, options.cloudflare);
+  const neededDeps = getInitDependencyGroups(isApp, platform, options.cloudflare, projectInfo);
   const missingDependencies = neededDeps.dependencies.filter((dep) => !isDepInstalled(root, dep));
   const missingDevDependencies = neededDeps.devDependencies.filter(
     (dep) => !isDepInstalled(root, dep),

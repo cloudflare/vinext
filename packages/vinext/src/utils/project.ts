@@ -10,6 +10,8 @@ import fs from "node:fs";
 import path from "pathslash";
 import { createRequire } from "node:module";
 
+const DECLARED_TAILWIND_V4_VERSION = /^(?:[~^=]\s*)?v?4(?:\.(?:\d+|[xX*])){0,2}(?:-[\w.-]+)?$/;
+
 // ─── CJS Config Handling ─────────────────────────────────────────────────────
 
 /** Common CJS config files that may need renaming when adding "type": "module" */
@@ -316,6 +318,8 @@ export type ProjectInfo = {
   hasMDX: boolean;
   /** CodeHike is a dependency */
   hasCodeHike: boolean;
+  /** Tailwind v4 is detected and can use @tailwindcss/vite. */
+  hasTailwindV4: boolean;
   /** Native Node modules that need stubbing for Workers */
   nativeModulesToStub: string[];
 };
@@ -410,6 +414,43 @@ export function detectProject(root: string): ProjectInfo {
     ...(pkg?.devDependencies as Record<string, unknown> | undefined),
   };
   const hasCodeHike = "codehike" in allDeps;
+  // Tailwind v3 uses its PostCSS plugin and must not be upgraded by init.
+  // https://v3.tailwindcss.com/docs/guides/vite
+  const declaredTailwind =
+    typeof allDeps.tailwindcss === "string"
+      ? allDeps.tailwindcss
+          .trim()
+          .replace(/^workspace:/, "")
+          .replace(/^npm:tailwindcss@/, "")
+      : undefined;
+  let installedTailwindMajor: number | undefined;
+  let tailwindManifest: string | null = null;
+  if (declaredTailwind) {
+    try {
+      tailwindManifest = createRequire(pkgPath).resolve("tailwindcss/package.json");
+    } catch {
+      tailwindManifest = findInNodeModules(root, "tailwindcss/package.json");
+    }
+  }
+  if (tailwindManifest) {
+    try {
+      const version = (
+        JSON.parse(fs.readFileSync(tailwindManifest, "utf-8")) as { version?: unknown }
+      ).version;
+      if (typeof version === "string" && /^\d+\./.test(version)) {
+        installedTailwindMajor = Number.parseInt(version, 10);
+      }
+    } catch {
+      // Fall back to a simple declared version below.
+    }
+  }
+  const hasTailwindV4 =
+    "@tailwindcss/postcss" in allDeps ||
+    "@tailwindcss/vite" in allDeps ||
+    installedTailwindMajor === 4 ||
+    (installedTailwindMajor === undefined &&
+      declaredTailwind !== undefined &&
+      DECLARED_TAILWIND_V4_VERSION.test(declaredTailwind));
   const nativeModulesToStub = detectNativeModules(allDeps);
 
   return {
@@ -427,6 +468,7 @@ export function detectProject(root: string): ProjectInfo {
     hasTypeModule,
     hasMDX,
     hasCodeHike,
+    hasTailwindV4,
     nativeModulesToStub,
   };
 }
@@ -592,6 +634,9 @@ export function getMissingDeps(
   }
   if (info.hasMDX && !_isResolvable(info.root, "@mdx-js/rollup")) {
     missing.push({ name: "@mdx-js/rollup", version: "latest" });
+  }
+  if (info.hasTailwindV4 && !_isResolvable(info.root, "@tailwindcss/vite")) {
+    missing.push({ name: "@tailwindcss/vite", version: "latest" });
   }
 
   return missing;

@@ -30,6 +30,9 @@ function readPkg(dir: string): {
 }
 
 function linkInstalledPackage(root: string, packageName: string): void {
+  const benchmarkRequire = createRequire(
+    new URL("../examples/benchmarks/package.json", import.meta.url),
+  );
   const vinextRequire = createRequire(new URL("../packages/vinext/package.json", import.meta.url));
   let packageRoot =
     packageName === "vinext" || packageName === "@vinext/types"
@@ -39,9 +42,11 @@ function linkInstalledPackage(root: string, packageName: string): void {
             import.meta.url,
           ),
         )
-      : packageName === "@vitejs/plugin-react"
-        ? path.dirname(vinextRequire.resolve(packageName))
-        : path.dirname(fileURLToPath(import.meta.resolve(`${packageName}/package.json`)));
+      : packageName === "@tailwindcss/vite"
+        ? path.dirname(benchmarkRequire.resolve(packageName))
+        : packageName === "@vitejs/plugin-react"
+          ? path.dirname(vinextRequire.resolve(packageName))
+          : path.dirname(fileURLToPath(import.meta.resolve(`${packageName}/package.json`)));
   while (!fs.existsSync(path.join(packageRoot, "package.json"))) {
     const parent = path.dirname(packageRoot);
     if (parent === packageRoot) throw new Error(`Could not find package root for ${packageName}`);
@@ -243,7 +248,7 @@ describe("createVinextApp", () => {
       "pnpm add vinext react-server-dom-webpack @vinext/cloudflare @cloudflare/workers-response-store",
     );
     expect(calls).toContain(
-      "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
+      "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler @tailwindcss/vite",
     );
     expect(calls.some((command) => command.split(/\s+/).includes("next"))).toBe(false);
     expect(calls.some((command) => command.includes("typegen"))).toBe(false);
@@ -266,6 +271,7 @@ describe("createVinextApp", () => {
     for (const packageName of [
       "vinext",
       "@vinext/types",
+      "@tailwindcss/vite",
       "@types/node",
       "@types/react",
       "@types/react-dom",
