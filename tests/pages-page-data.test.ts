@@ -326,7 +326,114 @@ describe("pages page data", () => {
     });
   });
 
-  it("preserves custom app props during stale ISR regeneration", async () => {
+  it("does not cache request-derived _app props for getStaticProps pages", async () => {
+    const isrGet = vi.fn().mockResolvedValue({
+      isStale: false,
+      value: {
+        cacheControl: { revalidate: 60 },
+        value: {
+          kind: "PAGES",
+          html: "cached private response",
+          pageData: { appSecret: "sid=alice-private", pageProps: { cached: true } },
+        },
+      },
+    });
+    const isrSet = vi.fn(async () => {});
+    const appGetInitialProps = vi.fn(
+      ({ ctx }: { ctx: { req: { headers: { cookie: string } } } }) => ({
+        appSecret: ctx.req.headers.cookie,
+        pageProps: {},
+      }),
+    );
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(function App() {}, {
+          getInitialProps: appGetInitialProps,
+        }),
+        createGsspReqRes() {
+          return {
+            req: { headers: { cookie: "sid=bob-private" } },
+            res: {
+              headersSent: false,
+              statusCode: 200,
+              getHeaders() {
+                return {};
+              },
+            },
+            responsePromise: Promise.resolve(new Response()),
+          };
+        },
+        isrGet,
+        isrSet,
+        pageModule: {
+          default: function Page() {},
+          getStaticProps() {
+            return { props: { fresh: true }, revalidate: 60 };
+          },
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      isrRevalidateSeconds: null,
+      props: {
+        appSecret: "sid=bob-private",
+        pageProps: { fresh: true },
+      },
+    });
+    expect(appGetInitialProps).toHaveBeenCalledOnce();
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("does not cache request-derived _app props during on-demand revalidation", async () => {
+    const isrGet = vi.fn().mockResolvedValue({
+      isStale: true,
+      value: {
+        cacheControl: { revalidate: 60 },
+        value: {
+          kind: "PAGES",
+          html: "cached private response",
+          pageData: { appSecret: "sid=alice-private", pageProps: { cached: true } },
+        },
+      },
+    });
+    const isrSet = vi.fn(async () => {});
+
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(function App() {}, {
+          getInitialProps() {
+            return { appSecret: "sid=bob-private", pageProps: {} };
+          },
+        }),
+        isOnDemandRevalidate: true,
+        isrGet,
+        isrSet,
+        pageModule: {
+          default: function Page() {},
+          getStaticProps() {
+            return { props: { fresh: true }, revalidate: 60 };
+          },
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      isrRevalidateSeconds: null,
+      props: {
+        appSecret: "sid=bob-private",
+        pageProps: { fresh: true },
+      },
+    });
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("bypasses stale ISR entries when a custom app supplies request-aware props", async () => {
     const isrSet = vi.fn(async () => {});
     const createPageElement = vi.fn(() => "page");
     let requestContextsApplied = false;
@@ -362,7 +469,7 @@ describe("pages page data", () => {
         pageModule: {
           default: function Page() {},
           getStaticProps() {
-            expect(requestContextsApplied).toBe(true);
+            expect(requestContextsApplied).toBe(false);
             return { props: { fromStatic: true }, revalidate: 10 };
           },
         },
@@ -372,22 +479,18 @@ describe("pages page data", () => {
       }),
     );
 
-    expect(result.kind).toBe("response");
-    await regenerationPromise;
-    expect(createPageElement).toHaveBeenCalledWith({
-      appValue: "fresh-app",
-      pageProps: { fromApp: true, fromStatic: true },
+    expect(result).toMatchObject({
+      kind: "render",
+      isrRevalidateSeconds: null,
+      props: {
+        appValue: "fresh-app",
+        pageProps: { fromApp: true, fromStatic: true },
+      },
     });
-    expect(isrSet).toHaveBeenCalledWith(
-      "pages:/posts/post",
-      expect.objectContaining({
-        pageData: {
-          appValue: "fresh-app",
-          pageProps: { fromApp: true, fromStatic: true },
-        },
-      }),
-      { cacheControl: { revalidate: 10, expire: 300 } },
-    );
+    expect(appGetInitialPropsCalls).toBe(1);
+    expect(regenerationPromise).toBeUndefined();
+    expect(createPageElement).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("returns a notFound signal when getStaticPaths excludes a dynamic HTML path", async () => {
@@ -1393,7 +1496,7 @@ describe("pages page data", () => {
     );
   });
 
-  it("preserves _app.getInitialProps app-level props during stale ISR regeneration", async () => {
+  it("does not regenerate stale ISR entries with _app.getInitialProps props", async () => {
     let regenPromise: Promise<void> | null = null;
     const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
     const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
@@ -1448,43 +1551,21 @@ describe("pages page data", () => {
       }),
     );
 
-    expect(result.kind).toBe("response");
-    if (result.kind !== "response") {
-      throw new Error("expected response result");
-    }
-    expect(result.response.headers.get("x-vinext-cache")).toBe("STALE");
-
-    if (!regenPromise) {
-      throw new Error("expected stale ISR regeneration to start");
-    }
-    const pendingRegen: Promise<void> = regenPromise;
-    await pendingRegen;
-
-    expect(capturedRenderProps).toEqual(
-      expect.objectContaining({
+    expect(result).toMatchObject({
+      kind: "render",
+      isrRevalidateSeconds: null,
+      props: {
         appProp: "from-app",
         pageProps: { pageProp: "from-page" },
-      }),
-    );
-
-    expect(isrSet).toHaveBeenCalledOnce();
-    const regeneratedCacheValue = isrSet.mock.calls[0]?.[1];
-    expect(regeneratedCacheValue).toEqual(
-      expect.objectContaining({
-        kind: "PAGES",
-        pageData: {
-          appProp: "from-app",
-          pageProps: { pageProp: "from-page" },
-        },
-      }),
-    );
-    if (regeneratedCacheValue?.kind !== "PAGES") throw new Error("expected PAGES cache value");
-    expect(regeneratedCacheValue?.html).toContain('"appProp":"from-app"');
-    expect(regeneratedCacheValue?.html).toContain('"pageProp":"from-page"');
-    expect(regeneratedCacheValue?.html).toContain('"page":"/posts/[slug]"');
+      },
+    });
+    expect(regenPromise).toBeNull();
+    expect(capturedRenderProps).toBeUndefined();
+    expect(triggerBackgroundRegeneration).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
-  it("does not run _app.getInitialProps on a fresh ISR cache HIT", async () => {
+  it("bypasses fresh ISR cache HITs when _app.getInitialProps is present", async () => {
     const appGip = vi.fn().mockResolvedValue({
       appProp: "from-app",
       pageProps: {},
@@ -1521,15 +1602,199 @@ describe("pages page data", () => {
       }),
     );
 
-    expect(result.kind).toBe("response");
-    if (result.kind !== "response") {
-      throw new Error("expected response result");
-    }
-    expect(result.response.headers.get("x-vinext-cache")).toBe("HIT");
-    expect(appGip).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      kind: "render",
+      isrRevalidateSeconds: null,
+      props: {
+        appProp: "from-app",
+        pageProps: { pageProp: "fresh" },
+      },
+    });
+    expect(appGip).toHaveBeenCalledOnce();
   });
 
-  it("only runs _app.getInitialProps in the stale ISR regeneration path, not on the immediate stale response", async () => {
+  it("keeps ISR for an App that inherits the shim's default getInitialProps", async () => {
+    const isrGet = vi.fn().mockResolvedValue(null);
+    const defaultGip = vi.fn().mockResolvedValue({ pageProps: {} });
+    const result = await resolvePagesPageData(
+      createOptions({
+        // Mirrors `class MyApp extends App {}`: the static getInitialProps is
+        // the shim default, not a userland override.
+        AppComponent: Object.assign(
+          function App() {
+            return null;
+          },
+          { getInitialProps: defaultGip, origGetInitialProps: defaultGip },
+        ),
+        isrGet,
+        pageModule: {
+          async getStaticProps() {
+            return { props: { pageProp: "fresh" }, revalidate: 60 };
+          },
+        },
+      }),
+    );
+
+    expect(result).toMatchObject({ kind: "render", isrRevalidateSeconds: 60 });
+    expect(isrGet).toHaveBeenCalledWith("pages:/posts/post");
+  });
+
+  it("rejects page getInitialProps combined with getStaticProps", async () => {
+    const Page = Object.assign(
+      function Page() {
+        return null;
+      },
+      { getInitialProps: vi.fn().mockResolvedValue({ viewer: "me" }) },
+    );
+
+    await expect(
+      resolvePagesPageData(
+        createOptions({
+          pageModule: {
+            default: Page,
+            getStaticProps: vi.fn().mockResolvedValue({ props: {} }),
+          },
+        }),
+      ),
+    ).rejects.toThrow(
+      "You can not use getInitialProps with getStaticProps. To use SSG, please remove your getInitialProps /posts/[slug]",
+    );
+  });
+
+  it("skips the shared cache probe for request-aware fallback shells", async () => {
+    const isrGet = vi.fn().mockResolvedValue({
+      isStale: false,
+      value: {
+        cacheControl: { revalidate: 60 },
+        value: {
+          kind: "PAGES",
+          html: "legacy cached page",
+          pageData: { pageProps: { cached: true } },
+        },
+      },
+    });
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(
+          function App() {
+            return null;
+          },
+          { getInitialProps: vi.fn().mockResolvedValue({ viewer: "me", pageProps: {} }) },
+        ),
+        pageModule: {
+          getStaticPaths() {
+            return { paths: [], fallback: true };
+          },
+          async getStaticProps() {
+            return { props: { pageProp: "fresh" }, revalidate: 60 };
+          },
+        },
+        isrGet,
+        route: { isDynamic: true },
+        routePattern: "/posts/[slug]",
+        routeUrl: "/posts/unseen",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      kind: "render",
+      isFallback: true,
+      bypassSharedCache: true,
+      props: { viewer: "me" },
+    });
+    expect(isrGet).not.toHaveBeenCalled();
+  });
+
+  it("returns an uncacheable notFound when a custom App supplies request-aware props", async () => {
+    const isrSet = vi.fn(async () => {});
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(
+          function App() {
+            return null;
+          },
+          { getInitialProps: vi.fn().mockResolvedValue({ pageProps: {} }) },
+        ),
+        isrSet,
+        pageModule: {
+          async getStaticProps() {
+            return { notFound: true, revalidate: 60 };
+          },
+        },
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "notFound",
+      bypassSharedCache: true,
+      revalidateSeconds: undefined,
+      expireSeconds: undefined,
+      cacheState: undefined,
+      responseHeaders: undefined,
+    });
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("marks request-aware fallback false path misses as bypassing shared cache", async () => {
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(
+          function App() {
+            return null;
+          },
+          { getInitialProps: vi.fn().mockResolvedValue({ pageProps: {} }) },
+        ),
+        pageModule: {
+          getStaticPaths() {
+            return { paths: [], fallback: false };
+          },
+          async getStaticProps() {
+            return { props: {}, revalidate: 60 };
+          },
+        },
+        route: { isDynamic: true },
+        routePattern: "/posts/[slug]",
+        routeUrl: "/posts/unlisted",
+      }),
+    );
+
+    expect(result).toEqual({
+      kind: "notFound",
+      bypassSharedCache: true,
+      revalidateSeconds: undefined,
+      expireSeconds: undefined,
+      cacheState: undefined,
+      responseHeaders: undefined,
+    });
+  });
+
+  it("treats only-generated revalidation as a no-op when a custom App supplies request-aware props", async () => {
+    const isrGet = vi.fn().mockResolvedValue(null);
+    const getStaticProps = vi.fn(async () => ({ props: { pageProp: "fresh" }, revalidate: 60 }));
+    const result = await resolvePagesPageData(
+      createOptions({
+        AppComponent: Object.assign(
+          function App() {
+            return null;
+          },
+          { getInitialProps: vi.fn().mockResolvedValue({ pageProps: {} }) },
+        ),
+        isOnDemandRevalidate: true,
+        revalidateOnlyGenerated: true,
+        isrGet,
+        pageModule: { getStaticProps },
+      }),
+    );
+
+    expect(result.kind).toBe("response");
+    if (result.kind !== "response") throw new Error("expected response result");
+    expect(result.response.status).toBe(404);
+    expect(result.response.headers.get("x-nextjs-cache")).toBe("REVALIDATED");
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(getStaticProps).not.toHaveBeenCalled();
+  });
+
+  it("renders request-aware app props in the foreground instead of serving stale ISR HTML", async () => {
     let regenPromise: Promise<void> | null = null;
     const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
     const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
@@ -1588,24 +1853,20 @@ describe("pages page data", () => {
       }),
     );
 
-    expect(result.kind).toBe("response");
-    if (result.kind !== "response") {
-      throw new Error("expected response result");
-    }
-    expect(result.response.headers.get("x-vinext-cache")).toBe("STALE");
-    // App GIP must not run before serving the stale response.
-    expect(foregroundGipCalls).toBe(0);
-
-    if (!regenPromise) {
-      throw new Error("expected stale ISR regeneration to start");
-    }
-    const pendingRegen: Promise<void> = regenPromise;
-    await pendingRegen;
-
-    // App GIP must run exactly once, inside the background regeneration callback.
-    expect(regenGipCalls).toBe(1);
+    expect(result).toMatchObject({
+      kind: "render",
+      isrRevalidateSeconds: null,
+      props: {
+        appProp: "from-app",
+        pageProps: { pageProp: "from-page" },
+      },
+    });
+    expect(foregroundGipCalls).toBe(1);
+    expect(regenGipCalls).toBe(0);
+    expect(regenPromise).toBeNull();
     expect(appGip).toHaveBeenCalledOnce();
-    expect(isrSet).toHaveBeenCalledOnce();
+    expect(triggerBackgroundRegeneration).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("preserves vinext module metadata during stale ISR regeneration", async () => {
@@ -1734,6 +1995,7 @@ describe("pages page data", () => {
       gsspRes: null,
       isrExpireSeconds: 300,
       isrRevalidateSeconds: 30,
+      bypassSharedCache: false,
       pageProps: { title: "hello" },
       props: { pageProps: { title: "hello" } },
       isFallback: false,
