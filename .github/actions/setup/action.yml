@@ -39,7 +39,7 @@ runs:
         echo "version=$version" >> "$GITHUB_OUTPUT"
 
     - name: Setup Vite+
-      uses: voidzero-dev/setup-vp@2dec1e33f4ab2c6d5bce1b0c4607961bb1a3f7a1 # v1
+      uses: voidzero-dev/setup-vp@24d870228786dc83ae73482406bdd1e7befaec14 # v1.21.0
       with:
         node-version: ${{ inputs.node-version }}
         cache: ${{ inputs.cache }}
