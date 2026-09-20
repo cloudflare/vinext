@@ -980,6 +980,23 @@ test("a failed R2 purge remains queued and retryable after SQLite is tombstoned"
   assert.equal((await read("/retry-purge")).status, 404);
 });
 
+test("a failed R2 publication can be fenced with a newer tombstone", async () => {
+  await put("/failed-publication", "possibly-committed");
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+
+  const reconciled = await stub.invalidatePublishedRevision(entry.keyHash, entry.activeRevision);
+
+  assert.deepEqual(reconciled.failures, []);
+  assert.equal(reconciled.purged.length, 1);
+  assert.deepEqual(await metadata(), []);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+  assert.equal((await read("/failed-publication")).status, 404);
+
+  await put("/failed-publication", "replacement");
+  assert.equal(await (await read("/failed-publication")).text(), "replacement");
+});
+
 test("purge batches more entries than the SQL and R2 drain limits", async () => {
   await Promise.all(
     Array.from({ length: 401 }, (_, index) => put(`/large-purge/${index}`, `${index}`)),

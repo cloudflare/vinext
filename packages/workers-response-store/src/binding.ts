@@ -862,14 +862,34 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     let stored = false;
     if (publication.entry) {
-      stored = await this.writeR2Response(
-        publication.entry,
-        body,
-        response.status,
-        policy.createdAt,
-        policy.initialAge,
-        expectedR2Etag !== undefined ? expectedR2Etag : write.r2ObjectAbsent ? null : undefined,
-      );
+      try {
+        stored = await this.writeR2Response(
+          publication.entry,
+          body,
+          response.status,
+          policy.createdAt,
+          policy.initialAge,
+          expectedR2Etag !== undefined ? expectedR2Etag : write.r2ObjectAbsent ? null : undefined,
+        );
+      } catch (error) {
+        const reconciliation = await metadata
+          .invalidatePublishedRevision(publication.entry.keyHash, publication.entry.activeRevision)
+          .catch((reconciliationError) => ({
+            failures: [
+              reconciliationError instanceof Error
+                ? reconciliationError.message
+                : String(reconciliationError),
+            ],
+            purged: [],
+          }));
+        if (reconciliation.failures.length) {
+          throw new AggregateError(
+            [error, ...reconciliation.failures.map((failure) => new Error(failure))],
+            "R2 response publication and reconciliation failed",
+          );
+        }
+        throw error;
+      }
     }
 
     const entry = this.readableEntry(publication.entry);
@@ -1223,9 +1243,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     for (const { metadata, reservation } of reservations) {
       const batchCount = Math.ceil(reservation.pendingTombstones / PURGE_TOMBSTONE_BATCH_SIZE);
       for (let batch = 0; batch < batchCount; batch++) {
-        const drained = await metadata.drainPendingTombstones(PURGE_TOMBSTONE_BATCH_SIZE);
-        purged.push(...drained.purged);
-        failures.push(...drained.failures.map((failure) => new Error(failure)));
+        try {
+          const drained = await metadata.drainPendingTombstones(PURGE_TOMBSTONE_BATCH_SIZE);
+          purged.push(...drained.purged);
+          failures.push(...drained.failures.map((failure) => new Error(failure)));
+        } catch (error) {
+          failures.push(error);
+        }
       }
     }
     let edgePurgeAccepted = true;

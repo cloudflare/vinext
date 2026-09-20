@@ -81,6 +81,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     claimId?: string,
     reservationObjectKey?: string,
   ): Promise<PublicationResult>;
+  invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
   getTagExpiration(tags: string[]): Promise<number>;
   reserveRefresh(
@@ -316,10 +317,13 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   private async ensureCleanupAlarm(createdAt: number): Promise<void> {
     if (this.cleanupAlarmKnown) return;
+    await this.scheduleCleanupAlarm(createdAt + ORPHAN_RETENTION_MS);
+  }
 
+  private async scheduleCleanupAlarm(scheduledTime: number): Promise<void> {
     const current = await this.ctx.storage.getAlarm();
-    if (current === null) {
-      await this.ctx.storage.setAlarm(createdAt + ORPHAN_RETENTION_MS);
+    if (current === null || current > scheduledTime) {
+      await this.ctx.storage.setAlarm(scheduledTime);
     }
     this.cleanupAlarmKnown = true;
   }
@@ -457,6 +461,23 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   async alarm(): Promise<void> {
     try {
+      const pendingTombstones = this.ctx.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending_r2_tombstones")
+        .one().count;
+      if (pendingTombstones > 0) {
+        const drained = await this.drainPendingTombstones(400);
+        if (drained.failures.length) {
+          throw new AggregateError(
+            drained.failures.map((failure) => new Error(failure)),
+            "R2 tombstone cleanup failed",
+          );
+        }
+        if (pendingTombstones > drained.purged.length) {
+          await this.ctx.storage.setAlarm(Date.now());
+          this.cleanupAlarmKnown = true;
+          return;
+        }
+      }
       await this.sweepExpiredPendingObjects();
     } catch (error) {
       console.error(
@@ -740,6 +761,48 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     });
   }
 
+  async invalidatePublishedRevision(
+    keyHash: string,
+    revision: number,
+  ): Promise<TombstoneDrainResult> {
+    const queued = this.ctx.storage.transactionSync(() => {
+      const current = this.ctx.storage.sql
+        .exec<EntryRow>("SELECT * FROM entries WHERE key_hash = ?", keyHash)
+        .toArray()[0];
+      if (!current || current.active_revision !== revision || current.object_key === null) {
+        return false;
+      }
+
+      const tombstoneRevision = current.latest_revision + 1;
+      this.ctx.storage.sql.exec(
+        `INSERT OR REPLACE INTO pending_r2_tombstones
+          (key_hash, cache_key, object_key, revision) VALUES (?, ?, ?, ?)`,
+        keyHash,
+        current.cache_key,
+        current.object_key,
+        tombstoneRevision,
+      );
+      this.ctx.storage.sql.exec(
+        `UPDATE entries SET
+          latest_revision = ?, active_revision = ?, object_key = NULL,
+          status_text = NULL, response_headers = NULL, fresh_until = NULL,
+          swr_until = NULL, revalidator_id = NULL, revalidator_args = NULL,
+          cache_tags = NULL, tombstoned = 1
+        WHERE key_hash = ? AND active_revision = ?`,
+        tombstoneRevision,
+        tombstoneRevision,
+        keyHash,
+        revision,
+      );
+      this.ctx.storage.sql.exec("DELETE FROM revalidation_claims WHERE key_hash = ?", keyHash);
+      return true;
+    });
+
+    if (!queued) return { failures: [], purged: [] };
+    await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
+    return this.drainPendingTombstones(1);
+  }
+
   getEntry(keyHash: string): StoredEntry | null {
     const row = this.ctx.storage.sql
       .exec<EntryRow>("SELECT * FROM entries WHERE key_hash = ?", keyHash)
@@ -845,7 +908,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     options: ResponseStorePurgeOptions,
     invalidatedAt = Date.now(),
   ): Promise<PurgeReservation> {
-    return this.ctx.storage.transactionSync(() => {
+    const reservation = this.ctx.storage.transactionSync(() => {
       const matches = this.findMatchingEntryRows(options, true);
 
       const tags = normalizeTags(options.tags ?? []);
@@ -919,6 +982,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         .one().count;
       return { backingStoreUpdated: matches.length > 0 || tags.length > 0, pendingTombstones };
     });
+    if (reservation.pendingTombstones > 0) {
+      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
+    }
+    return reservation;
   }
 
   private async writeR2Tombstone(entry: PurgedEntry): Promise<void> {
@@ -938,6 +1005,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       });
       if (stored) return;
     }
+    const current = await this.env.CACHE_BODIES.head(entry.objectKey);
+    const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
+    if (currentRevision !== undefined && currentRevision >= entry.revision) return;
     throw new Error(
       `R2 revision ${entry.revision} could not be tombstoned after concurrent writes`,
     );
