@@ -1,8 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createBenchmarkMetadata } from "../apps/web/app/benchmarks/metadata";
 import robots from "../apps/web/app/robots";
 import sitemap from "../apps/web/app/sitemap";
 import { addPreviewRobotsHeader, getCanonicalRedirect } from "../apps/web/worker/seo";
+
+vi.mock("../apps/web/app/docs/_source", () => ({
+  docs: [
+    { slug: "" },
+    { slug: "getting-started" },
+    { slug: "getting-started/migrating" },
+    { slug: "deploying/cloudflare" },
+    { slug: "deploying/other-platforms" },
+    { slug: "guides/caching" },
+    { slug: "reference/differences" },
+    { slug: "reference/nextjs", external: "https://nextjs.org/docs/app" },
+  ],
+}));
 
 describe("vinext.dev SEO metadata", () => {
   it("builds canonical and social metadata for benchmark detail pages", () => {
@@ -37,6 +50,13 @@ describe("vinext.dev SEO metadata", () => {
       "https://vinext.dev",
       "https://vinext.dev/compatibility",
       "https://vinext.dev/benchmarks",
+      "https://vinext.dev/docs",
+      "https://vinext.dev/docs/getting-started",
+      "https://vinext.dev/docs/getting-started/migrating",
+      "https://vinext.dev/docs/deploying/cloudflare",
+      "https://vinext.dev/docs/deploying/other-platforms",
+      "https://vinext.dev/docs/guides/caching",
+      "https://vinext.dev/docs/reference/differences",
     ]);
   });
 });

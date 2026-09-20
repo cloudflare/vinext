@@ -1940,13 +1940,24 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe(true);
   });
 
-  it("discovers binding-backed paths from the staged version before readiness and warming", async () => {
+  it("discovers and certifies binding-backed paths through the staged version", async () => {
     const events: string[] = [];
+    let warmAttempt = 0;
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
-    vi.mocked(fetch).mockImplementation(async (input, init) => {
-      const headers = new Headers(init?.headers);
-      events.push(isReadinessFetch(input) ? "readiness" : "warm");
-      return headers.get("rsc") === "1" ? cacheableRsc() : cacheableHtml();
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      if (isReadinessFetch(input)) {
+        events.push("readiness");
+        return readinessResponse();
+      }
+      warmAttempt++;
+      events.push(`warm:${warmAttempt === 1 ? "MISS" : "HIT"}`);
+      return new Response("html", {
+        headers: {
+          "content-type": "text/html",
+          "x-vinext-build-id": "app-build-a",
+          "x-vinext-cache": warmAttempt === 1 ? "MISS" : "HIT",
+        },
+      });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -1985,12 +1996,15 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           loadingShellPaths: [],
           paths: ["/cached/intro"],
           rscBuildId: "app-build-a",
-          rscPaths: ["/cached/intro"],
+          rscPaths: [],
         };
       },
+      statusSource: "data-cache",
+      warmCdnCertify: true,
       warmCdnPromotionDelay: 0,
       warmCdnReadinessProbeDelay: 0,
       warmCdnReadinessProbes: 1,
+      warmCdnRetries: 0,
     });
 
     expect(events).toEqual([
@@ -1998,8 +2012,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "triggers",
       "discover",
       "readiness",
-      "warm",
-      "warm",
+      "warm:MISS",
+      "warm:HIT",
       "promote",
     ]);
   });

@@ -41,7 +41,7 @@ import {
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
-  usesVinextCacheWarmupStatus,
+  cacheWarmupStatusSource,
   requiresRouteCacheabilityProbeManifest,
   resolveVinextPrerenderDecision,
   type ResolvedVinextPrerenderConfig,
@@ -156,7 +156,7 @@ export type DeployOptions = {
   warmCdnReadinessProbeDelay?: number;
   /** Promote even when staged CDN warmup cannot be completed */
   dangerouslyPromoteOnCdnWarmError?: boolean;
-  /** Promote the warmed Worker version to 100% traffic (default: true) */
+  /** Promote the uploaded Worker version to 100% traffic (default: true) */
   warmCdnPromote?: boolean;
   /** Delay between successful warmup and promotion in milliseconds */
   warmCdnPromotionDelay?: number;
@@ -293,6 +293,7 @@ const deployArgOptions = {
   "warm-cdn-readiness-probes": { type: "string" },
   "warm-cdn-readiness-probe-delay": { type: "string" },
   "dangerously-promote-on-cdn-warm-error": { type: "boolean", default: false },
+  "no-promote": { type: "boolean", default: false },
   "warm-cdn-no-promote": { type: "boolean", default: false },
   "warm-cdn-promotion-delay": { type: "string" },
   "warm-cdn-include-fallbacks": { type: "boolean", default: false },
@@ -409,7 +410,7 @@ export function parseDeployArgs(args: string[]) {
             values["warm-cdn-readiness-probe-delay"],
           ),
     dangerouslyPromoteOnCdnWarmError: values["dangerously-promote-on-cdn-warm-error"],
-    warmCdnPromote: !values["warm-cdn-no-promote"],
+    warmCdnPromote: !values["no-promote"] && !values["warm-cdn-no-promote"],
     warmCdnPromotionDelay:
       values["warm-cdn-promotion-delay"] === undefined
         ? undefined
@@ -710,9 +711,16 @@ export async function runWranglerKVBulkPut(
 
 export async function runWranglerDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env" | "name" | "config">,
+  options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
+    promote?: boolean;
+  },
   execute: typeof spawn = spawn,
 ): Promise<string> {
+  if (options.promote === false) {
+    const upload = runWranglerVersionUpload(root, options);
+    return upload.previewUrl ?? "(Preview URL not detected in wrangler output)";
+  }
+
   const spawnOptions: SpawnOptions = {
     cwd: root,
     stdio: ["inherit", "pipe", "pipe"],
@@ -1191,7 +1199,7 @@ async function deployUploadedVersionWithCdnWarmup(
               routeHandlerPaths: warmResult.retryPlan.routeHandlerPaths,
               rscPaths: warmResult.retryPlan.rscPaths,
             };
-            if (hasPreparedWarmPlan && options.warmCdnCertify && warmResult.warmed > 0) {
+            if (options.warmCdnCertify && warmResult.warmed > 0) {
               console.log(
                 `  CDN warmup: certifying ${warmResult.warmed} staged cache entr${warmResult.warmed === 1 ? "y" : "ies"} before promotion...`,
               );
@@ -1288,7 +1296,7 @@ async function deployUploadedVersionWithCdnWarmup(
       }
     }
     console.log(
-      "  CDN warmup: promotion disabled; uploaded Worker version remains staged at 0% traffic and production Worker triggers/routes remain applied.",
+      `  CDN warmup: promotion disabled; uploaded Worker version ${upload.versionId} remains staged at 0% traffic and production Worker triggers/routes remain applied.`,
     );
     return (
       staged.deployedUrl ??
@@ -1962,12 +1970,17 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const hasStagedRequestRouting = hasUncachedRequestRouting(viteConfigMetadata.cacheConfig);
   const hasBuildIdentityHeader = hasBuildIdentityResponseHeader(viteConfigMetadata.cacheConfig);
   const hasCanonicalRscWarmup = supportsCanonicalRscWarmup(viteConfigMetadata.cacheConfig);
-  const hasVinextCacheWarmupStatus = usesVinextCacheWarmupStatus(viteConfigMetadata.cacheConfig);
+  const warmupStatusSource = cacheWarmupStatusSource(viteConfigMetadata.cacheConfig);
   const needsCacheabilityProbeManifest = projectRequiresRouteCacheabilityProbeManifest(
     info,
     viteConfigMetadata.cacheConfig,
   );
   const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
+  // Static export still needs local artifacts. Other pre-warm deploys render
+  // through the staged Worker so runtime-backed adapters populate themselves.
+  const shouldPrerenderLocally =
+    prerenderDecision &&
+    (options.warmCdnCache !== true || prerenderDecision.reason === "next-export");
   // Step 5: Build
   if (!options.skipBuild) {
     await runBuild(info, buildEnv);
@@ -2017,7 +2030,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // output: 'export'. CDN warmup performs path discovery above, but relies on
   // the deployed Worker to render and classify each response.
   let ranPrerender = false;
-  if (prerenderDecision) {
+  if (shouldPrerenderLocally) {
     console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
@@ -2102,7 +2115,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
           strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
         });
       },
-      statusSource: hasVinextCacheWarmupStatus ? "vinext" : "cloudflare",
+      statusSource: warmupStatusSource,
       warmCdnConcurrency: options.warmCdnConcurrency,
       warmCdnTarget,
       warmCdnTimeout: options.warmCdnTimeout,
@@ -2121,10 +2134,13 @@ export async function deploy(options: DeployOptions): Promise<void> {
       warmCdnPromotionDelay: options.warmCdnPromotionDelay,
     });
   } else {
-    url = await runWranglerDeploy(root, wranglerOptions);
+    url = await runWranglerDeploy(root, {
+      ...wranglerOptions,
+      promote: options.warmCdnPromote,
+    });
   }
 
   console.log("\n  ─────────────────────────────────────────");
-  console.log(`  Deployed to: ${url}`);
+  console.log(`  ${options.warmCdnPromote === false ? "Version URL" : "Deployed to"}: ${url}`);
   console.log("  ─────────────────────────────────────────\n");
 }

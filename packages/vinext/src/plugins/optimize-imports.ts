@@ -75,7 +75,8 @@ type PluginCtx = { environment?: { name?: string } };
 
 /**
  * Packages whose barrel imports are automatically optimized.
- * Matches Next.js's built-in optimizePackageImports defaults plus radix-ui.
+ * Matches Next.js's built-in optimizePackageImports defaults plus vinext-specific
+ * compatibility entries for radix-ui and @chakra-ui/react.
  * @see https://github.com/vercel/next.js/blob/9c31bbdaa/packages/next/src/server/config.ts#L1301
  */
 export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
@@ -97,6 +98,7 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
   "rxjs",
   "@mui/material",
   "@mui/icons-material",
+  "@chakra-ui/react",
   "recharts",
   "react-use",
   "effect",

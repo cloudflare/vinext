@@ -18,6 +18,24 @@ describe("Next.js deploy harness", () => {
     expect(deployShard).toContain("__NEXT_TEST_MODE: e2e");
   });
 
+  it("keeps historical compatibility backfills explicit and isolated", () => {
+    const workflow = fs.readFileSync(
+      path.resolve(".github/workflows/nextjs-deploy-suite.yml"),
+      "utf8",
+    );
+
+    expect(workflow).toContain("backfill-date:");
+    expect(workflow).toContain("Backfills require a full 40-character vinext commit SHA");
+    expect(workflow).toContain("path: historical-vinext");
+    expect(workflow).toContain("VINEXT_HARNESS_DIR: ${{ github.workspace }}");
+    expect(workflow).toContain(
+      "VINEXT_FALLBACK_BUILD_ID: ${{ inputs.backfill-date && inputs.vinext-ref || '' }}",
+    );
+    expect(workflow).toContain("`backfill:${backfillDate}:${process.env.VINEXT_REF}`");
+    expect(workflow).toContain("{ createdAt: backfillCreatedAt }");
+    expect(workflow).toContain("inputs.backfill-date != '' && github.ref == 'refs/heads/main'");
+  });
+
   it("does not recursively append failure diagnostics to deploy logs", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
     const cleanup = script.match(
@@ -148,6 +166,84 @@ describe("Next.js deploy harness", () => {
     }
   });
 
+  it("materializes a historical vinext workspace without newer sibling packages", () => {
+    const repoRoot = path.resolve(".");
+    const script = fs.readFileSync(path.join(repoRoot, "scripts/e2e-deploy.sh"), "utf8");
+    const injection = script.match(
+      /node <<'EOF' >> "\$\{BUILD_LOG\}" 2>&1\n([\s\S]*?)\nEOF\n/,
+    )?.[1];
+    expect(injection).toBeDefined();
+
+    const tempRoot = fs.mkdtempSync(path.join(process.cwd(), ".e2e-deploy-history-test-"));
+    try {
+      const workspaceRoot = path.join(tempRoot, "workspace");
+      const appRoot = path.join(tempRoot, "app");
+      const vinextRoot = path.join(workspaceRoot, "packages/vinext");
+      fs.mkdirSync(path.join(vinextRoot, "dist"), { recursive: true });
+      fs.mkdirSync(appRoot, { recursive: true });
+      fs.writeFileSync(
+        path.join(workspaceRoot, "package.json"),
+        JSON.stringify({
+          private: true,
+          packageManager: "pnpm@10.30.0",
+          devDependencies: {
+            "@vitejs/plugin-rsc": "^0.5.19",
+            react: "19.2.4",
+            "react-dom": "19.2.4",
+            "react-server-dom-webpack": "19.2.4",
+            vite: "^7.3.1",
+          },
+          dependencies: { "@mdx-js/react": "^3.1.1", "@mdx-js/rollup": "^3.1.1" },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(workspaceRoot, "pnpm-workspace.yaml"),
+        "packages:\n  - packages/*\n",
+      );
+      fs.writeFileSync(
+        path.join(vinextRoot, "package.json"),
+        JSON.stringify({
+          name: "vinext",
+          version: "0.0.5",
+          type: "module",
+          main: "dist/index.js",
+          bin: { vinext: "./dist/cli.js" },
+          files: ["dist"],
+          peerDependencies: { react: "^19.2.4", "react-dom": "^19.2.4", vite: "^7.0.0" },
+          dependencies: { "@vitejs/plugin-rsc": "^0.5.19" },
+        }),
+      );
+      for (const packageName of ["react", "react-dom", "react-server-dom-webpack"]) {
+        const packageRoot = path.join(vinextRoot, "node_modules", packageName);
+        fs.mkdirSync(packageRoot, { recursive: true });
+        fs.writeFileSync(
+          path.join(packageRoot, "package.json"),
+          JSON.stringify({ name: packageName, version: "19.2.4" }),
+        );
+      }
+      fs.writeFileSync(path.join(appRoot, "package.json"), JSON.stringify({ name: "fixture" }));
+
+      execFileSync(process.execPath, ["-e", injection!], {
+        cwd: appRoot,
+        env: {
+          ...process.env,
+          VINEXT_DIR: workspaceRoot,
+          VINEXT_HARNESS_DIR: repoRoot,
+        },
+        stdio: "pipe",
+      });
+
+      const fixture = JSON.parse(fs.readFileSync(path.join(appRoot, "package.json"), "utf8"));
+      expect(fixture.devDependencies.vinext).toBe("file:.vinext-local-package");
+      expect(fixture.devDependencies.vite).toBe("^7.0.0");
+      expect(fs.existsSync(path.join(appRoot, ".vinext-local-package/package.json"))).toBe(true);
+      expect(fs.existsSync(path.join(appRoot, ".vinext-local-cloudflare-package"))).toBe(false);
+      expect(fs.existsSync(path.join(appRoot, ".vinext-local-types-package"))).toBe(false);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("initializes fixtures for the Node deployment platform", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
 
@@ -164,6 +260,12 @@ describe("Next.js deploy harness", () => {
     expect(script).not.toContain("run_pnpm exec vinext");
   });
 
+  it("falls back to the historical commit when old bundles have no build ID", () => {
+    const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
+
+    expect(script).toContain("process.env.VINEXT_FALLBACK_BUILD_ID");
+  });
+
   it("normalizes non-pnpm packageManager pins before pnpm install", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
 
@@ -177,7 +279,7 @@ describe("Next.js deploy harness", () => {
   it("removes install-time deprecation noise from application cliOutput", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
 
-    expect(script).toContain('"${VINEXT_DIR}/scripts/filter-e2e-install-log.sh"');
+    expect(script).toContain('"${VINEXT_HARNESS_DIR}/scripts/filter-e2e-install-log.sh"');
     expect(script).toContain('>> "${BUILD_LOG}"');
 
     const output = execFileSync("bash", ["scripts/filter-e2e-install-log.sh"], {
