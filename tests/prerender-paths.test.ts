@@ -208,10 +208,7 @@ describe("prerender path manifest", () => {
     });
   });
 
-  it.each([
-    ["data-cache warming", undefined],
-    ["an uncached request stage", "uncached-stage" as const],
-  ])("keeps traffic paths that rewrites resolve during %s", async (_label, requestRouting) => {
+  it("keeps traffic paths that an uncached request stage rewrites", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
@@ -237,14 +234,12 @@ describe("prerender path manifest", () => {
         },
         tmpDir,
       ),
-      requestRouting,
+      requestRouting: "uncached-stage",
     });
 
     expect(manifest?.paths).toContain("/hot");
     expect(manifest?.appPaths).toContain("/hot");
-    expect(manifest?.routePatterns?.["/hot"]?.cacheabilityProbe?.routeMayResolve).toBe(
-      requestRouting ? true : undefined,
-    );
+    expect(manifest?.routePatterns?.["/hot"]?.cacheabilityProbe?.routeMayResolve).toBe(true);
   });
 
   it.each([false, true])(

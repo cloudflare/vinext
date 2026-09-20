@@ -1430,7 +1430,6 @@ export async function discoverPrerenderPathManifest(
     }
   });
 
-  const candidatePathSet = new Set<string>();
   for (const publicPathname of options.candidatePaths ?? []) {
     let pathname = normalizePathTrailingSlash(
       new URL(publicPathname, "http://vinext.local").pathname,
@@ -1442,7 +1441,6 @@ export async function discoverPrerenderPathManifest(
         pathname = pathname.slice(config.basePath.length);
       else continue;
     }
-    candidatePathSet.add(pathname);
     addPath(paths, seen, pathname);
     if (pagesDir) addPath(discoveredPagesPaths, seenPagesPaths, pathname);
   }
@@ -1553,7 +1551,7 @@ export async function discoverPrerenderPathManifest(
         rscPaths: [],
       };
   for (const pathname of configuredCandidatePaths) {
-    if (appOwnedWarmPaths.routePatterns[pathname] || !candidatePathSet.has(pathname)) {
+    if (appOwnedWarmPaths.routePatterns[pathname] || !routeMayResolveWarmPathSet.has(pathname)) {
       continue;
     }
     appOwnedWarmPaths.htmlPaths.push(pathname);

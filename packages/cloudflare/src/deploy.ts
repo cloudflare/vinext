@@ -2020,10 +2020,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
     nextOutput: nextConfig.output,
   });
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
-  const hasStagedRequestRouting = hasUncachedRequestRouting(viteConfigMetadata.cacheConfig);
+  const warmupStatusSource = cacheWarmupStatusSource(viteConfigMetadata.cacheConfig);
+  const hasStagedRequestRouting =
+    hasUncachedRequestRouting(viteConfigMetadata.cacheConfig) ||
+    warmupStatusSource === "data-cache";
   const hasBuildIdentityHeader = hasBuildIdentityResponseHeader(viteConfigMetadata.cacheConfig);
   const hasCanonicalRscWarmup = supportsCanonicalRscWarmup(viteConfigMetadata.cacheConfig);
-  const warmupStatusSource = cacheWarmupStatusSource(viteConfigMetadata.cacheConfig);
   const needsCacheabilityProbeManifest = projectRequiresRouteCacheabilityProbeManifest(
     info,
     viteConfigMetadata.cacheConfig,
@@ -2180,7 +2182,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
           includeFallbackShells: options.warmCdnIncludeFallbacks,
           strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
         });
-        return tprRoutes.length > 0
+        return tprRoutes.length > 0 && !prerenderDecision
           ? selectTPRWarmPlan(
               plan,
               tprRoutes,

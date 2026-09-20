@@ -44,10 +44,11 @@ describe("TPR route resolution", () => {
       }
       const body = JSON.parse(init?.body as string);
       expect(body.query).toContain("orderBy: [count_DESC]");
+      expect(body.query).not.toContain("clientRequestHTTPHost");
       expect(body.variables).toMatchObject({
-        hostname: "app.example.com",
         zoneTag: "zone-id",
       });
+      expect(body.variables).not.toHaveProperty("hostname");
       return Response.json({
         data: {
           viewer: {

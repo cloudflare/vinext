@@ -25,7 +25,7 @@ export type TPROptions = {
   config?: string;
   /** Wrangler environment whose custom domain should be analyzed. */
   env?: string;
-  /** Explicit analytics hostname, overriding Wrangler routes. */
+  /** Explicit domain used to resolve the analytics zone, overriding Wrangler routes. */
   hostname?: string;
   /** Analytics lookback window in hours. Default: 24. */
   window: number;
@@ -108,21 +108,19 @@ async function resolveZoneId(domain: string, apiToken: string): Promise<string |
  */
 export async function queryTraffic(
   zoneTag: string,
-  hostname: string,
   apiToken: string,
   windowHours: number,
 ): Promise<TrafficEntry[]> {
   const now = new Date();
   const start = new Date(now.getTime() - windowHours * 60 * 60 * 1000);
 
-  const query = `query($zoneTag: string!, $hostname: string!, $start: Time!, $end: Time!) {
+  const query = `query($zoneTag: string!, $start: Time!, $end: Time!) {
     viewer {
       zones(filter: { zoneTag: $zoneTag }) {
         httpRequestsAdaptiveGroups(
           limit: 10000
           orderBy: [count_DESC]
           filter: {
-            clientRequestHTTPHost: $hostname
             datetime_geq: $start
             datetime_lt: $end
             requestSource: "eyeball"
@@ -145,7 +143,6 @@ export async function queryTraffic(
       query,
       variables: {
         zoneTag,
-        hostname,
         start: start.toISOString(),
         end: now.toISOString(),
       },
@@ -263,14 +260,14 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
     return skip("no custom domain — zone analytics unavailable");
   }
 
-  console.log(`  TPR: Analyzing traffic for ${hostname} (last ${windowHours}h)`);
+  console.log(`  TPR: Analyzing zone traffic for ${hostname} (last ${windowHours}h)`);
 
   const zoneId = await resolveZoneId(hostname, apiToken);
   if (!zoneId) return skip(`could not resolve zone for ${hostname}`);
 
   let traffic: TrafficEntry[];
   try {
-    traffic = await queryTraffic(zoneId, hostname, apiToken, windowHours);
+    traffic = await queryTraffic(zoneId, apiToken, windowHours);
   } catch (error) {
     return skip(
       `analytics query failed: ${error instanceof Error ? error.message : String(error)}`,

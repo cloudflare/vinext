@@ -333,7 +333,7 @@ describe("deploy prerender config wiring", () => {
     await expect(deploy({ root: tmpDir, skipBuild: true })).rejects.toThrow("vite config loaded");
   });
 
-  it("loads Vite config once and prewarms configured KV through the staged Worker", async () => {
+  it("keeps all-route prerendering when TPR prewarms KV through the staged Worker", async () => {
     writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     writeFile(
       "wrangler.jsonc",
@@ -377,11 +377,14 @@ describe("deploy prerender config wiring", () => {
       `import "./count-config-load.js";\n${fs.readFileSync(viteConfigPath, "utf8")}`,
     );
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+    resolveTPRRoutesMock.mockResolvedValueOnce({
+      routes: [{ path: "/missing", requests: 10 }],
+    });
 
     await deploy({
       root: tmpDir,
       skipBuild: true,
-      warmCdnCache: true,
+      experimentalTPR: true,
       warmCdnPromotionDelay: 0,
       warmCdnReadinessProbeDelay: 0,
       warmCdnReadinessProbes: 1,
@@ -391,6 +394,12 @@ describe("deploy prerender config wiring", () => {
     expect(runPrerenderMock).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(false);
     expect(discoverPrerenderPathManifestMock).toHaveBeenCalledOnce();
+    expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidatePaths: ["/missing"],
+        requestRouting: "uncached-stage",
+      }),
+    );
     expect(fetchMock).toHaveBeenCalled();
     expect(
       vi.mocked(spawn).mock.calls.some(([, args]) => {
