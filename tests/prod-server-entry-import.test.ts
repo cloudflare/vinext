@@ -66,6 +66,24 @@ describe("server entry import URL resolution", () => {
     expect(url).not.toContain("?");
   });
 
+  it("names the entry and the runtime-only scheme when a Worker bundle cannot load", async () => {
+    const dir = makeTmpDir();
+    const entryPath = path.join(dir, "entry.mjs");
+    // `cloudflare:*` resolves only inside workerd; the raw Node error names
+    // neither the file nor the cause. A multi-stage Cloudflare build emits its
+    // Worker entry at dist/server/index.js, so this is what `vinext start` and
+    // the prerender harness hit when the App handler is not resolved from the
+    // build manifest.
+    fs.writeFileSync(entryPath, `import "cloudflare:workers";\nexport default {};\n`);
+
+    const error = await importServerEntryModule(entryPath).catch((e: unknown) => e as Error);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toContain(entryPath);
+    expect(error.message).toContain("runtime-only URL scheme");
+    expect(error.message).toContain("vinext-cloudflare deploy");
+  });
+
   it("keeps the bare URL for repeated imports of an unchanged build", () => {
     const dir = makeTmpDir();
     const entryPath = path.join(dir, "entry.mjs");

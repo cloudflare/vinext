@@ -44,6 +44,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_REASON_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -1057,13 +1058,30 @@ export async function prerenderPages({
 }
 
 /**
+ * Render failures a bare status code cannot explain. The prerender server
+ * reports them through a response header because the render happens over HTTP,
+ * and, with the render pool enabled, in a child process.
+ */
+const PRERENDER_RENDER_ERROR_REASONS: Record<string, string> = {
+  "cloudflare-runtime":
+    'Cloudflare runtime modules (cloudflare:*) only exist in the Workers runtime, so a route that imports them cannot render in the local Node prerender server. Deploy with `vinext-cloudflare deploy` and pre-render against the staged Worker, or mark the route dynamic (export const dynamic = "force-dynamic").',
+};
+
+function prerenderRenderErrorMessage(status: number, reason: string | null): string {
+  const detail = reason ? PRERENDER_RENDER_ERROR_REASONS[reason] : undefined;
+  return detail ? `RSC handler returned ${status} — ${detail}` : `RSC handler returned ${status}`;
+}
+
+/**
  * Run the prerender phase for App Router.
  *
  * Starts a local production server and fetches every static/ISR route via HTTP.
- * Works for both plain Node and Cloudflare Workers builds — the CF Workers bundle
- * (`dist/server/index.js`) is a standard Node-compatible server entry, so no
- * wrangler/miniflare is needed. Writes HTML files, Flight payloads, and
- * `vinext-prerender.json` to `outDir`.
+ * Works for both plain Node and Cloudflare Workers builds. A single-stage
+ * Workers bundle writes `dist/server/index.js` as a Node-compatible server
+ * entry, so no wrangler/miniflare is needed; a multi-stage Worker bundle
+ * (`cache.cdn`) resolves the App handler from the build manifest instead,
+ * because its `index.js` is the Worker entry and cannot load on Node.
+ * Writes HTML files, Flight payloads, and `vinext-prerender.json` to `outDir`.
  *
  * If the bundle does not exist, an error is thrown directing the user to run
  * `vinext build` first.
@@ -1637,6 +1655,7 @@ export async function prerenderApp({
             const responseCacheLife = readPrerenderCacheLifeHeader(response.headers);
             const cacheTags = readPrerenderCacheTagsHeader(response.headers);
             const fatal = response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1";
+            const reason = response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_REASON_HEADER);
             if (!response.ok || cacheControl.includes("no-store")) {
               await response.body?.cancel();
               return {
@@ -1644,6 +1663,7 @@ export async function prerenderApp({
                 linkHeader,
                 html: null,
                 ok: response.ok,
+                reason,
                 requestCacheLife: null,
                 tags: [],
                 status: response.status,
@@ -1661,6 +1681,7 @@ export async function prerenderApp({
               linkHeader,
               html,
               ok: true,
+              reason: null,
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
               tags: cacheTags,
@@ -1676,7 +1697,7 @@ export async function prerenderApp({
           return {
             route: routePattern,
             status: "error",
-            error: `RSC handler returned ${htmlRender.status}`,
+            error: prerenderRenderErrorMessage(htmlRender.status, htmlRender.reason),
             ...(htmlRender.fatal ? { fatal: true as const } : {}),
           };
         }

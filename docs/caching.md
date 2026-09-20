@@ -82,6 +82,30 @@ This setup is fast when an entry is present at the edge, but Workers Cache is di
 
 The Workers Cache adapter supports staged cache warming through the Cloudflare deploy command. Warming is less direct because Workers Cache admission is controlled by response headers rather than a programmatic `put` API. vinext must render and probe routes to build a cacheability manifest, then make requests to fill the cache; it cannot simply upload known responses into Workers Cache. HTML and RSC payloads also use separate cache entries, so warming needs separate HTTP requests to seed both.
 
+## Middleware and response cache policy
+
+Middleware runs above the cached response stage on every request, including cache hits, so it cannot change which stored response is selected.
+
+When a CDN adapter is configured, the adapter owns the client-visible cache policy. It derives `Cache-Control` from the route's own policy and keeps its edge policy in a provider header that is stripped before the response reaches the client. A cacheable `Cache-Control` set by middleware is rewritten into that derived policy, so middleware values are not delivered as authored. A middleware policy that is already non-cacheable, such as `no-store` or `private`, is preserved verbatim.
+
+vinext warns in development when middleware sets `Cache-Control`, an adapter provider policy header, `Cache-Tag`, or a custom `Vary` field while a CDN adapter is configured. Put the route policy on the route instead, using `export const revalidate`, `cacheLife`, or `"use cache"`.
+
+`Vary` fields set by middleware reach the client, but middleware runs above the cache, so they cannot partition the stored response or influence which cached variant is selected.
+
+## Host-based partitioning and custom Vary
+
+Workers Cache keys a response by the target entrypoint, the path and query string, the Worker version, and `ctx.props`. The request host is not part of that key; `Vary` is the documented content-negotiation mechanism. See [Cache keys](https://developers.cloudflare.com/workers/cache/cache-keys/).
+
+vinext's response stage adds an opaque `__vinext_cache_key` to the cache-facing URL, derived from the full stage identity, which includes the request URL. Because the URL includes the hostname, the same path requested on different hostnames is stored and served separately. Multi-host and white-label deployments are therefore partitioned per hostname without `Vary: Host`, and keying on `x-forwarded-host` is not required.
+
+Workers Cache honors the fields a cached response lists in `Vary`, but all variants of one URL share a single purge identity and must carry identical `Cache-Tag` values; see [Cache configuration](https://developers.cloudflare.com/workers/cache/configuration/). vinext fails closed when the response stage cannot prove that tag invariance: a response that carries `Cache-Tag` and lists any non-framework `Vary` field is served with `Cache-Control: no-store` instead of being cached, and the response stage logs a warning when it does that.
+
+In practice:
+
+- Partition cached content with the path or the query string, or deploy a separate Worker per hostname.
+- Do not expect `Vary` on a cached route response to partition it.
+- `revalidateTag()` and `revalidatePath()` purge every variant of a URL together.
+
 ## KV data cache
 
 You can use Workers KV without Workers Cache:

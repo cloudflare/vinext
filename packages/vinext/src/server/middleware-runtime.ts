@@ -24,6 +24,7 @@ import {
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
+import { warnOnUnreachableMiddlewareCachePolicy } from "./middleware-cache-policy-warning.js";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 import {
   addBasePathToPathname,
@@ -509,6 +510,13 @@ export async function executeMiddleware(
     releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     return { continue: true, waitUntilPromises };
   }
+
+  // Middleware-authored cache headers are discarded by a configured CDN
+  // adapter, which re-derives the client-visible policy from the route policy.
+  // Surface the drop in dev instead of silently serving a different policy.
+  warnOnUnreachableMiddlewareCachePolicy(response.headers, {
+    fileName: options.filePath ? path.basename(options.filePath) : "middleware",
+  });
 
   if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
     releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);

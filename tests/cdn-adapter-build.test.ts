@@ -6,7 +6,9 @@ import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
+import { resolveBuiltRscEntryPath } from "../packages/vinext/src/build/server-entry.js";
 import vinext from "../packages/vinext/src/index.js";
+import { importServerEntryModule } from "../packages/vinext/src/server/prod-server.js";
 
 const CLOUDFLARE_NODE_MODULES = path.resolve(
   import.meta.dirname,
@@ -71,6 +73,18 @@ describe("Cloudflare CDN adapter build output", () => {
 
   afterAll(async () => {
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("resolves a Node-loadable App handler for prerendering, not the Worker entry", async () => {
+    const serverDir = path.join(root, "dist/server");
+    const entryPath = resolveBuiltRscEntryPath(serverDir);
+    const entry = await importServerEntryModule(entryPath);
+
+    // A multi-stage build writes the Worker facade at dist/server/index.js,
+    // which imports `cloudflare:*` and cannot load on Node. Resolving that file
+    // is what made `vinext build --prerender-all` fail with a raw ESM loader
+    // error (cloudflare/vinext#3318).
+    expect(typeof entry.default).toBe("function");
   });
 
   it("makes the emitted Wrangler config directly deployable without changing source config", async () => {

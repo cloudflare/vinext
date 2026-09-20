@@ -75,6 +75,7 @@ import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_REASON_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "./headers.js";
@@ -217,13 +218,41 @@ function createServerEntryRequire(entryPath: string): ServerEntryRequire {
   return createRequire(pathToFileURL(entryPath));
 }
 
+/** Errors that only occur because a module cannot load outside the Workers runtime. */
+const RUNTIME_ONLY_SCHEME_ERROR = /cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i;
+
+/**
+ * A route whose server graph imports `cloudflare:*` can never render in the
+ * local Node prerender server: those modules only exist inside workerd. Report
+ * that per route rather than leaving the harness with a bare 500. Same
+ * signature the CDN warmup path discovery maps in `build/prerender-paths.ts`.
+ */
+function prerenderRenderErrorReason(error: unknown): string | null {
+  const message = error instanceof Error ? error.message : String(error);
+  return RUNTIME_ONLY_SCHEME_ERROR.test(message) ? "cloudflare-runtime" : null;
+}
+
 // oxlint-disable-next-line typescript/no-explicit-any -- built entry modules are untyped, matching the previous inline `await import(...)`
 export async function importServerEntryModule(entryPath: string): Promise<any> {
   const entryRequire = createServerEntryRequire(entryPath);
-  return runWithServerEntryRequire(
-    entryRequire,
-    () => import(resolveServerEntryImportUrl(entryPath)),
-  );
+  try {
+    return await runWithServerEntryRequire(
+      entryRequire,
+      () => import(resolveServerEntryImportUrl(entryPath)),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!RUNTIME_ONLY_SCHEME_ERROR.test(message)) throw error;
+    // A Worker bundle is not a Node server entry. Name the file and the cause
+    // instead of surfacing the raw ESM loader error, which points at no file
+    // the caller can act on.
+    throw new Error(
+      `[vinext] Cannot load the built server entry at ${entryPath}.\n` +
+        `  ${message}\n` +
+        "  A module in this entry's graph imports a runtime-only URL scheme (for example cloudflare:*), which Node cannot resolve: the built entry is a Worker bundle, not a Node server entry.\n" +
+        "  Deploy this build with `vinext-cloudflare deploy`, or rebuild so the App handler is resolved from dist/server/.vite/manifest.json.",
+    );
+  }
 }
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
@@ -1845,6 +1874,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       if (!res.headersSent) {
         if (purpose === "prerender") {
           res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+          const reason = prerenderRenderErrorReason(e);
+          if (reason) res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_REASON_HEADER, reason);
         }
         res.writeHead(500);
         res.end("Internal Server Error");
@@ -2392,6 +2423,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (!res.headersSent) {
         if (purpose === "prerender") {
           res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+          const reason = prerenderRenderErrorReason(e);
+          if (reason) res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_REASON_HEADER, reason);
         }
         res.writeHead(500);
         res.end("Internal Server Error");

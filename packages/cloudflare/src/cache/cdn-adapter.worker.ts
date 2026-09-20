@@ -74,6 +74,9 @@ type ResponseStageWireCache =
 const FRAMEWORK_RESPONSE_VARY_FIELDS = new Set(
   VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
 );
+// One warning per isolate: every miss of such a response would otherwise repeat
+// the same deployment-level condition in the logs.
+let warnedTaggedCustomVary = false;
 
 function isResponseStageReadinessRequest(request: Request): boolean {
   return (
@@ -464,6 +467,16 @@ function hasTaggedCustomVary(response: Response): boolean {
   return varyFields.some((name) => !FRAMEWORK_RESPONSE_VARY_FIELDS.has(name));
 }
 
+function warnTaggedCustomVary(vary: string): void {
+  if (warnedTaggedCustomVary) return;
+  warnedTaggedCustomVary = true;
+  console.warn(
+    `[vinext] Not caching a response that carries Cache-Tag and custom Vary fields (Vary: ${vary}).\n` +
+      "  Workers Cache variants of one URL share a single purge identity and must carry identical Cache-Tag values, so this response is served with Cache-Control: no-store instead of being cached.\n" +
+      "  See docs/caching.md.",
+  );
+}
+
 function withResponseStagePurge(context: CloudflareStageContext): CloudflareStageContext {
   const factory = context.exports?.[CACHED_RESPONSE_STAGE_EXPORT];
   if (typeof factory !== "function") return context;
@@ -601,8 +614,10 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     // resulting tag set is invariant across variants, so fail closed. The RSC
     // selectors are already partitioned by the response-stage invocation.
     // https://developers.cloudflare.com/workers/cache/#content-negotiation-with-vary
+    const taggedCustomVary = hasTaggedCustomVary(response);
+    if (taggedCustomVary) warnTaggedCustomVary(response.headers.get("Vary") ?? "");
     return stampResponseStageBuildIdentity(
-      restored.didAccessRequestCf() || hasTaggedCustomVary(response)
+      restored.didAccessRequestCf() || taggedCustomVary
         ? preventResponseCaching(response)
         : response,
     );

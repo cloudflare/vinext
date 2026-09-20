@@ -99,6 +99,13 @@ export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life
 /** Marks a local prerender-server 500 that originated from a thrown render error. */
 export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
 
+/**
+ * Classifies a local prerender-server 500 that the status code alone cannot
+ * explain (for example a route whose server graph cannot load outside workerd),
+ * so the prerender harness can report the cause per route.
+ */
+export const VINEXT_PRERENDER_RENDER_ERROR_REASON_HEADER = "x-vinext-prerender-render-error-reason";
+
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 

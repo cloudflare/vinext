@@ -1120,6 +1120,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
   });
 
   it("keeps tagged responses with custom Vary fields private", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     stages.response.mockResolvedValue(
       new Response("variant", {
         headers: {
@@ -1143,6 +1144,9 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(response.headers.get("Cache-Tag")).toBeNull();
     expect(response.headers.get("Vary")).toBe("RSC, Accept-Language");
     await expect(response.text()).resolves.toBe("variant");
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toContain("Cache-Tag");
+    expect(warn.mock.calls[0]?.[0]).toContain("Accept-Language");
   });
 
   it("retains tagged responses with framework-owned RSC variance", async () => {
@@ -1249,6 +1253,31 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
     expect(seen).toHaveLength(4);
     expect(new Set(seen)).toHaveProperty("size", 4);
+  });
+
+  it("partitions the opaque cache key by hostname for the same path", async () => {
+    const cacheFacingUrls: URL[] = [];
+    const binding = vi.fn(() => ({
+      fetch(request: Request) {
+        cacheFacingUrls.push(new URL(request.url));
+        return new Response("cached");
+      },
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-route-handler" }, { cache: "shared" }),
+    );
+
+    const context = { exports: { VinextCachedResponse: binding } };
+    await worker.fetch(new Request("https://tenant-a.example.com/pricing"), {}, context);
+    await worker.fetch(new Request("https://tenant-b.example.com/pricing"), {}, context);
+
+    expect(cacheFacingUrls.map((url) => `${url.host}${url.pathname}`)).toEqual([
+      "tenant-a.example.com/pricing",
+      "tenant-b.example.com/pricing",
+    ]);
+    const keys = cacheFacingUrls.map((url) => url.searchParams.get("__vinext_cache_key"));
+    expect(keys[0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(keys[1]).not.toBe(keys[0]);
   });
 
   it("partitions and restores HEAD when Workers Cache invokes the entrypoint as GET", async () => {

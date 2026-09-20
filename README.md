@@ -717,6 +717,10 @@ your source `wrangler.jsonc`; the generated `dist/server/wrangler.json` contains
 the per-entrypoint cache settings and version metadata binding used for staged
 discovery and warming.
 
+Under a CDN adapter the adapter owns the client-visible cache policy, so
+middleware cache headers are not delivered as authored (see
+[Middleware and response cache policy](docs/caching.md#middleware-and-response-cache-policy)).
+
 The generated version metadata binding lets staged discovery and warming verify
 the uploaded Worker version. Pass `versionMetadataBinding` to `cdnAdapter()`
 only when the deployment needs a custom binding name.
