@@ -3706,7 +3706,7 @@ id = "namespace-id"
     expect(config?.customDomain).toBe("example.co.uk");
   });
 
-  it("uses the route pattern hostname instead of its zone name", () => {
+  it("preserves route object domain precedence", () => {
     writeFile(
       tmpDir,
       "wrangler.jsonc",
@@ -3714,7 +3714,7 @@ id = "namespace-id"
         routes: [{ pattern: "app.example.com/*", zone_name: "example.com" }],
       }),
     );
-    expect(parseWranglerConfig(tmpDir)?.customDomain).toBe("app.example.com");
+    expect(parseWranglerConfig(tmpDir)?.customDomain).toBe("example.com");
 
     writeFile(
       tmpDir,

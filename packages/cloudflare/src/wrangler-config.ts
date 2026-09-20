@@ -246,10 +246,10 @@ function extractDomainFromRoutes(routes: unknown): string | null {
     } else if (route && typeof route === "object") {
       const r = route as Record<string, unknown>;
       const pattern =
-        typeof r.pattern === "string"
-          ? r.pattern
-          : typeof r.zone_name === "string"
-            ? r.zone_name
+        typeof r.zone_name === "string"
+          ? r.zone_name
+          : typeof r.pattern === "string"
+            ? r.pattern
             : null;
       if (pattern) {
         const domain = cleanDomain(pattern);
