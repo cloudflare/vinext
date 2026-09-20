@@ -257,9 +257,10 @@ application Worker
             └─ regeneration ───────► application callback
 ```
 
-- Responses use `runtime-cache/<version-id>/[shards-<count>/]<digest>/active`.
+- Responses use `runtime-cache/<version-id>/r2-v1/[shards-<count>/]<digest>/active`. The layout segment isolates this R2-backed implementation from older cache-Worker versions during service-binding rollbacks and rolling deployments.
 - SQLite revisions and conditional publication prevent slow writes from replacing newer writes or resurrecting purged entries. User RPC, R2, and cache-purge I/O run outside SQLite transactions.
 - Purging replaces the active R2 object with a higher-revision tombstone. A later put can replace that tombstone, but an older delayed write cannot recreate purged content.
+- R2 tombstones are durably queued in SQLite and drained in bounded batches. A failed R2 operation leaves its tombstone queued so a later purge can retry it instead of losing the anti-resurrection fence.
 - A stale R2 response inside its SWR window returns immediately while `ctx.waitUntil()` runs one claimed regeneration. A later Workers Cache request promotes the completed revision, so one extra stale response is possible.
 - Hard-expired responses are never served. Reads wait for regeneration and therefore require a stored revalidator descriptor.
 - Abandoned write reservations are retained for one hour before alarm-driven cleanup fences them from later publication. Response bodies are written only after Durable Object publication, so this cleanup does not perform R2 operations.
@@ -275,8 +276,8 @@ This is deployment compatibility, not an in-place object-layout migration. Every
 Keep every version that can still receive traffic or be rolled back to. When a version is permanently retired:
 
 1. If it is still addressable, call `purge({ purgeEverything: true })` through that version to tombstone its metadata and active R2 response objects. This also requests a broad edge-cache purge, so other versions may need to refill.
-2. Delete any remaining objects under its R2 prefix: `runtime-cache/<version-id>/` for an unsharded store, or `runtime-cache/<version-id>/shards-<count>/` for a sharded store.
-3. If you need to reclaim the retired metadata Durable Object's SQLite storage, use an application-owned administrative path to call `deleteAll()` on each known object. The object is named `<version-id>` without sharding, or `<version-id>:metadata-shard:<index>-of-<count>` for each shard. This cleanup is outside the package API.
+2. Delete any remaining objects under its R2 prefix: `runtime-cache/<version-id>/` contains every storage layout and shard count for that application version.
+3. If you need to reclaim the retired metadata Durable Object's SQLite storage, use an application-owned administrative path to call `deleteAll()` on each known object. The current layout is named `<version-id>:r2-v1` without sharding, or `<version-id>:r2-v1:metadata-shard:<index>-of-<count>` for each shard. Older layouts may have additional objects. This cleanup is outside the package API.
 
 Do not delete the shared Durable Object namespace while active versions use it. Avoid an age-only R2 lifecycle rule unless it is guaranteed to outlive every valid response and rollback window; explicit retired-version prefixes avoid deleting old but still-active cache entries.
 

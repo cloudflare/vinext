@@ -37,6 +37,16 @@ type RegenerationReservation = {
   reservation?: WriteReservation;
 };
 
+type PurgeReservation = {
+  backingStoreUpdated: boolean;
+  pendingTombstones: number;
+};
+
+type TombstoneDrainResult = {
+  failures: string[];
+  purged: PurgedEntry[];
+};
+
 export type CacheMetadataStub = DurableObjectStub & {
   reserveWrite(
     keyHash: string,
@@ -78,7 +88,11 @@ export type CacheMetadataStub = DurableObjectStub & {
     objectKeyRoot: string,
     createdAt: number,
   ): Promise<RefreshCandidate[]>;
-  purgeMatching(options: ResponseStorePurgeOptions, invalidatedAt?: number): Promise<PurgedEntry[]>;
+  purgeMatching(
+    options: ResponseStorePurgeOptions,
+    invalidatedAt?: number,
+  ): Promise<PurgeReservation>;
+  drainPendingTombstones(limit: number): Promise<TombstoneDrainResult>;
   inspect(): Promise<StoredEntry[]>;
 };
 
@@ -109,8 +123,24 @@ const MAX_SQL_PARAMETERS = 100;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
 const ORPHAN_CLEANUP_LIMIT = 100;
 const ORPHAN_CLEANUP_RETRY_MS = 60 * 1000;
+const MAX_R2_CAS_ATTEMPTS = 3;
 
-type CacheMetadataEnv = Record<string, unknown>;
+type CacheMetadataEnv = {
+  CACHE_BODIES: R2Bucket;
+};
+
+type PendingTombstoneRow = Record<string, SqlStorageValue> & {
+  cache_key: string;
+  key_hash: string;
+  object_key: string;
+  revision: number;
+};
+
+function metadataInteger(value: string | undefined): number | undefined {
+  if (value === undefined || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
 
 function normalizeTags(tags: string[]): string[] {
   const normalized = tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean);
@@ -222,6 +252,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS pending_objects_created_at ON pending_objects(created_at);
+        CREATE TABLE IF NOT EXISTS pending_r2_tombstones (
+          key_hash TEXT PRIMARY KEY,
+          cache_key TEXT NOT NULL,
+          object_key TEXT NOT NULL,
+          revision INTEGER NOT NULL
+        ) WITHOUT ROWID;
       `);
 
       ctx.storage.transactionSync(() => {
@@ -808,8 +844,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   async purgeMatching(
     options: ResponseStorePurgeOptions,
     invalidatedAt = Date.now(),
-  ): Promise<PurgedEntry[]> {
-    const matches = this.ctx.storage.transactionSync(() => {
+  ): Promise<PurgeReservation> {
+    return this.ctx.storage.transactionSync(() => {
       const matches = this.findMatchingEntryRows(options, true);
 
       const tags = normalizeTags(options.tags ?? []);
@@ -839,6 +875,21 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       }
 
       for (const batch of batches(matches, MAX_SQL_PARAMETERS - 1)) {
+        const active = batch.filter((row) => row.object_key !== null);
+        for (const entryBatch of batches(active, MAX_SQL_PARAMETERS / 4)) {
+          this.ctx.storage.sql.exec(
+            `INSERT OR REPLACE INTO pending_r2_tombstones
+              (key_hash, cache_key, object_key, revision) VALUES ${entryBatch
+                .map(() => "(?, ?, ?, ?)")
+                .join(", ")}`,
+            ...entryBatch.flatMap((row) => [
+              row.key_hash,
+              row.cache_key,
+              row.object_key!,
+              row.latest_revision + 1,
+            ]),
+          );
+        }
         const keyHashes = batch.map((row) => row.key_hash);
         const placeholders = keyHashes.map(() => "?").join(", ");
         this.ctx.storage.sql.exec(
@@ -863,20 +914,76 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
       }
 
-      return matches.flatMap((row) =>
-        row.object_key === null
-          ? []
-          : [
-              {
-                keyHash: row.key_hash,
-                cacheKey: row.cache_key,
-                objectKey: row.object_key,
-                revision: row.latest_revision + 1,
-              },
-            ],
-      );
+      const pendingTombstones = this.ctx.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending_r2_tombstones")
+        .one().count;
+      return { backingStoreUpdated: matches.length > 0 || tags.length > 0, pendingTombstones };
     });
-    return matches;
+  }
+
+  private async writeR2Tombstone(entry: PurgedEntry): Promise<void> {
+    let etag: string | null | undefined;
+    for (let attempt = 0; attempt < MAX_R2_CAS_ATTEMPTS; attempt++) {
+      const current = await this.env.CACHE_BODIES.head(entry.objectKey);
+      const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
+      if (currentRevision !== undefined && currentRevision >= entry.revision) return;
+      etag = current?.etag ?? null;
+
+      const stored = await this.env.CACHE_BODIES.put(entry.objectKey, new Uint8Array(), {
+        onlyIf: etag === null ? { etagDoesNotMatch: "*" } : { etagMatches: etag },
+        customMetadata: {
+          latestRevision: String(entry.revision),
+          tombstoned: "1",
+        },
+      });
+      if (stored) return;
+    }
+    throw new Error(
+      `R2 revision ${entry.revision} could not be tombstoned after concurrent writes`,
+    );
+  }
+
+  async drainPendingTombstones(limit: number): Promise<TombstoneDrainResult> {
+    const rows = this.ctx.storage.sql
+      .exec<PendingTombstoneRow>(
+        `SELECT key_hash, cache_key, object_key, revision
+        FROM pending_r2_tombstones ORDER BY key_hash LIMIT ?`,
+        limit,
+      )
+      .toArray();
+    const settled = await Promise.allSettled(
+      rows.map(async (row): Promise<PurgedEntry> => {
+        const entry = {
+          keyHash: row.key_hash,
+          cacheKey: row.cache_key,
+          objectKey: row.object_key,
+          revision: row.revision,
+        };
+        await this.writeR2Tombstone(entry);
+        return entry;
+      }),
+    );
+    const purged = settled.flatMap((result) =>
+      result.status === "fulfilled" ? [result.value] : [],
+    );
+    this.ctx.storage.transactionSync(() => {
+      for (const batch of batches(purged, MAX_SQL_PARAMETERS / 2)) {
+        this.ctx.storage.sql.exec(
+          `DELETE FROM pending_r2_tombstones WHERE ${batch
+            .map(() => "(key_hash = ? AND revision = ?)")
+            .join(" OR ")}`,
+          ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
+        );
+      }
+    });
+    return {
+      failures: settled.flatMap((result) =>
+        result.status === "rejected"
+          ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+          : [],
+      ),
+      purged,
+    };
   }
 
   inspect(): StoredEntry[] {

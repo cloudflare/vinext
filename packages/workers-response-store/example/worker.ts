@@ -54,6 +54,10 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
   const age = request.headers.get("X-Response-Age");
   const cloudflareCacheControl = request.headers.get("X-Response-Cloudflare-CDN-Cache-Control");
   const cdnCacheControl = request.headers.get("X-Response-CDN-Cache-Control");
+  const largeHeaderBytes = Number.parseInt(
+    request.headers.get("X-Response-Large-Header-Bytes") ?? "0",
+    10,
+  );
 
   if (cacheTags) headers.set("Cache-Tag", cacheTags);
   if (age) headers.set("Age", age);
@@ -61,6 +65,7 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
     headers.set("Cloudflare-CDN-Cache-Control", cloudflareCacheControl);
   }
   if (cdnCacheControl) headers.set("CDN-Cache-Control", cdnCacheControl);
+  if (largeHeaderBytes > 0) headers.set("X-Large-Response-Header", "x".repeat(largeHeaderBytes));
 
   let body = request.body;
   if (request.headers.get("X-Body-Failure") === "1") {

@@ -211,14 +211,15 @@ const MISS_HEADERS = {
 
 const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
+const PURGE_TOMBSTONE_BATCH_SIZE = 400;
 const ISOLATE_MISS_CACHE_CAPACITY = 1_024;
 const ISOLATE_MISS_CACHE_TTL_MS = 1_000;
 const MAX_R2_CAS_ATTEMPTS = 3;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
+const R2_CUSTOM_METADATA_SAFE_BYTES = 7 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
-const VERSIONED_CACHE_KEY_PARAMETER = "__workers_response_store";
-const VERSIONED_CACHE_KEY_VALUE = /^v1\.([0-9a-f]{64})$/;
+const STORAGE_LAYOUT_VERSION = "r2-v1";
 const pendingPuts = new Map<string, Promise<StoreResult>>();
 const pendingR2Reads = new Map<string, Promise<boolean>>();
 const entryReads = new IsolateNegativeCache<string>(
@@ -267,6 +268,56 @@ function isHeaderEntries(value: unknown): value is [string, string][] {
         entry.every((item) => typeof item === "string"),
     )
   );
+}
+
+function customMetadataSize(metadata: Record<string, string>): number {
+  const encoder = new TextEncoder();
+  return Object.entries(metadata).reduce(
+    (size, [key, value]) =>
+      size + encoder.encode(key).byteLength + encoder.encode(value).byteLength,
+    0,
+  );
+}
+
+async function readBodyPrefix(
+  body: ReadableStream<Uint8Array>,
+  prefixLength: number,
+): Promise<{ prefix: Uint8Array; remainder: ReadableStream<Uint8Array> }> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  while (length < prefixLength) {
+    const { done, value } = await reader.read();
+    if (done) {
+      throw new Error("R2 response metadata prefix is incomplete");
+    }
+    chunks.push(value);
+    length += value.byteLength;
+  }
+
+  const buffered = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffered.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const leftover = buffered.subarray(prefixLength);
+  return {
+    prefix: buffered.subarray(0, prefixLength),
+    remainder: new ReadableStream<Uint8Array>({
+      start(controller) {
+        if (leftover.byteLength) controller.enqueue(leftover);
+      },
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    }),
+  };
 }
 
 function purgeTagForEntry(entry: Pick<StoredEntry, "keyHash">): string {
@@ -328,7 +379,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const locationHint = this.ctx.props?.locationHint;
     const shards = this.shardCount;
     const versionId = this.getVersionId();
-    const name = shards === 1 ? versionId : `${versionId}:metadata-shard:${index}-of-${shards}`;
+    const layoutName = `${versionId}:${STORAGE_LAYOUT_VERSION}`;
+    const name = shards === 1 ? layoutName : `${layoutName}:metadata-shard:${index}-of-${shards}`;
 
     return this.env.CACHE_METADATA.getByName(
       name,
@@ -379,15 +431,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const url = new URL(request.url);
     const cacheKey = `${url.pathname}${url.search}`;
-    const versionedKeyValues = url.searchParams.getAll(VERSIONED_CACHE_KEY_PARAMETER);
-    const versionedKey =
-      versionedKeyValues.length === 1
-        ? VERSIONED_CACHE_KEY_VALUE.exec(versionedKeyValues[0])
-        : null;
-    if (versionedKey) {
-      return { cacheKey, keyHash: versionedKey[1] };
-    }
-
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(cacheKey));
     const keyHash = [...new Uint8Array(digest)]
       .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -444,6 +487,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return [
       "runtime-cache",
       this.getVersionId(),
+      STORAGE_LAYOUT_VERSION,
       ...(shards === 1 ? [] : [`shards-${shards}`]),
     ].join("/");
   }
@@ -467,13 +511,16 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const latestRevision = metadataInteger(metadata.latestRevision);
     const freshUntil = metadataInteger(metadata.freshUntil);
     const swrUntil = metadataInteger(metadata.swrUntil);
+    const responseMetadataBytes = metadataInteger(metadata.responseMetadataBytes);
     const responseHeaders = metadataJson(metadata.responseHeaders);
+    const hasResponseMetadataPrefix =
+      responseMetadataBytes !== undefined && responseMetadataBytes > 0;
     if (
-      typeof metadata.statusText !== "string" ||
       latestRevision === undefined ||
       freshUntil === undefined ||
       swrUntil === undefined ||
-      !isHeaderEntries(responseHeaders)
+      (!hasResponseMetadataPrefix &&
+        (typeof metadata.statusText !== "string" || !isHeaderEntries(responseHeaders)))
     ) {
       return null;
     }
@@ -482,8 +529,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       keyHash,
       cacheKey,
       objectKey: this.r2ObjectKey(keyHash),
-      statusText: metadata.statusText,
-      responseHeaders,
+      statusText: hasResponseMetadataPrefix ? "" : metadata.statusText!,
+      responseHeaders: hasResponseMetadataPrefix ? [] : (responseHeaders as [string, string][]),
       freshUntil,
       swrUntil,
       revalidator: null,
@@ -579,32 +626,46 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   ): Promise<boolean> {
     this.invalidateEntryRead(entry.keyHash);
     try {
-      return await this.writeR2Revision(
-        this.r2ObjectKey(entry.keyHash),
-        entry.activeRevision,
-        body,
-        {
+      const responseHeaders = JSON.stringify(entry.responseHeaders);
+      let storedBody: ArrayBuffer | Uint8Array = body;
+      let customMetadata: Record<string, string> = {
+        status: String(status),
+        createdAt: String(createdAt),
+        initialAge: String(initialAge),
+        statusText: entry.statusText,
+        responseHeaders,
+        freshUntil: String(entry.freshUntil),
+        swrUntil: String(entry.swrUntil),
+        latestRevision: String(entry.activeRevision),
+      };
+      if (customMetadataSize(customMetadata) > R2_CUSTOM_METADATA_SAFE_BYTES) {
+        const responseMetadata = new TextEncoder().encode(
+          JSON.stringify({ statusText: entry.statusText, responseHeaders: entry.responseHeaders }),
+        );
+        const envelope = new Uint8Array(responseMetadata.byteLength + body.byteLength);
+        envelope.set(responseMetadata);
+        envelope.set(new Uint8Array(body), responseMetadata.byteLength);
+        storedBody = envelope;
+        customMetadata = {
           status: String(status),
           createdAt: String(createdAt),
           initialAge: String(initialAge),
-          statusText: entry.statusText,
-          responseHeaders: JSON.stringify(entry.responseHeaders),
+          responseMetadataBytes: String(responseMetadata.byteLength),
           freshUntil: String(entry.freshUntil),
           swrUntil: String(entry.swrUntil),
           latestRevision: String(entry.activeRevision),
-        },
+        };
+      }
+      return await this.writeR2Revision(
+        this.r2ObjectKey(entry.keyHash),
+        entry.activeRevision,
+        storedBody,
+        customMetadata,
         expectedEtag,
       );
     } finally {
       this.invalidateEntryRead(entry.keyHash);
     }
-  }
-
-  private async writeR2Tombstone(entry: PurgedEntry): Promise<void> {
-    await this.writeR2Revision(this.r2ObjectKey(entry.keyHash), entry.revision, new Uint8Array(), {
-      latestRevision: String(entry.revision),
-      tombstoned: "1",
-    });
   }
 
   private readableEntry(entry: StoredEntry | null): StoredEntry | null {
@@ -695,11 +756,39 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       return null;
     }
 
-    const body = NULL_BODY_STATUSES.has(status) ? null : object.body;
-    if (!body) {
-      await object.body.cancel();
+    let storedEntry = entry;
+    let storedBody = object.body;
+    const responseMetadataBytes = metadataInteger(object.customMetadata?.responseMetadataBytes);
+    if (responseMetadataBytes !== undefined) {
+      try {
+        const { prefix, remainder } = await readBodyPrefix(storedBody, responseMetadataBytes);
+        const responseMetadata = metadataJson(new TextDecoder().decode(prefix));
+        if (
+          typeof responseMetadata !== "object" ||
+          responseMetadata === null ||
+          !("statusText" in responseMetadata) ||
+          typeof responseMetadata.statusText !== "string" ||
+          !("responseHeaders" in responseMetadata) ||
+          !isHeaderEntries(responseMetadata.responseHeaders)
+        ) {
+          await remainder.cancel();
+          return null;
+        }
+        storedEntry = {
+          ...entry,
+          statusText: responseMetadata.statusText,
+          responseHeaders: responseMetadata.responseHeaders,
+        };
+        storedBody = remainder;
+      } catch {
+        await storedBody.cancel().catch(() => {});
+        return null;
+      }
     }
-    return this.createStoredResponse(entry, body, status, createdAt, initialAge, now);
+
+    const body = NULL_BODY_STATUSES.has(status) ? null : storedBody;
+    if (!body) await storedBody.cancel();
+    return this.createStoredResponse(storedEntry, body, status, createdAt, initialAge, now);
   }
 
   private async storeResponse(
@@ -1115,17 +1204,22 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const settled = await Promise.allSettled(
       this.getMetadataShards().map((metadata) => metadata.purgeMatching(options, invalidatedAt)),
     );
-    const failures = settled.flatMap((result) =>
+    const failures: unknown[] = settled.flatMap((result) =>
       result.status === "rejected" ? [result.reason] : [],
     );
-    const purged = settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
-    if (purged.length) {
-      const tombstones = await Promise.allSettled(
-        purged.map((entry) => this.writeR2Tombstone(entry)),
-      );
-      failures.push(
-        ...tombstones.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
-      );
+    const reservations = settled.flatMap((result, index) =>
+      result.status === "fulfilled"
+        ? [{ metadata: this.getMetadataShard(index), reservation: result.value }]
+        : [],
+    );
+    const purged: PurgedEntry[] = [];
+    for (const { metadata, reservation } of reservations) {
+      const batchCount = Math.ceil(reservation.pendingTombstones / PURGE_TOMBSTONE_BATCH_SIZE);
+      for (let batch = 0; batch < batchCount; batch++) {
+        const drained = await metadata.drainPendingTombstones(PURGE_TOMBSTONE_BATCH_SIZE);
+        purged.push(...drained.purged);
+        failures.push(...drained.failures.map((failure) => new Error(failure)));
+      }
     }
     let edgePurgeAccepted = true;
 
@@ -1141,6 +1235,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       throw new AggregateError(failures, "One or more metadata shards failed to purge");
     }
 
-    return { backingStoreUpdated: true, edgePurgeAccepted };
+    return {
+      backingStoreUpdated: reservations.some(
+        ({ reservation }) => reservation.backingStoreUpdated || reservation.pendingTombstones > 0,
+      ),
+      edgePurgeAccepted,
+    };
   }
 }
