@@ -182,6 +182,7 @@ jobs:
             warm_cdn_cache: true
           - name: kv
             project: kv
+            worker_name: kv
             working_directory: examples/response-store-demo
             wrangler_config: dist/server/wrangler.json
             cache_backend: kv
@@ -291,8 +292,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WARM_CDN_TARGET: ${{ matrix.example.warm_cdn_target }}
+          WORKER_NAME: ${{ matrix.example.worker_name }}
         run: |
           args=(--skip-build --config "${{ matrix.example.wrangler_config }}" --experimental-warm-cdn-cache)
+          if [[ -n "$WORKER_NAME" ]]; then
+            args+=(--name "$WORKER_NAME")
+          fi
           if [[ -n "$WARM_CDN_TARGET" ]]; then
             args+=(--warm-cdn-target "$WARM_CDN_TARGET")
           fi
@@ -305,7 +310,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
-          command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
+          command: versions upload --config ${{ matrix.example.wrangler_config }} ${{ matrix.example.worker_name && format('--name {0}', matrix.example.worker_name) || '' }} --preview-alias pr-${{ github.event.pull_request.number }}
 
       # `versions upload` does not apply non-versioned workers.dev/preview URL
       # settings. A newly added assets-only Worker has no routes until this runs.
@@ -469,6 +474,7 @@ jobs:
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
               { name: 'response-store-demo', project: 'response-store-demo' },
               { name: 'workers-cache', project: 'workers-cache' },
+              { name: 'kv', project: 'kv' },
               { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];
