@@ -85,6 +85,7 @@ export type PurgedEntry = {
   keyHash: string;
   cacheKey: string;
   objectKey: string;
+  revision: number;
 };
 
 export type RevalidationService = {
@@ -100,12 +101,14 @@ type WriteReservation = CacheKey & {
   claimId?: string;
   fenceTags: string[];
   objectKey: string;
+  r2ObjectAbsent?: boolean;
   revision: number;
 };
 
 type StoreResult = {
   published: boolean;
   entry: StoredEntry | null;
+  response?: Response;
 };
 
 type PublicationResult = {
@@ -210,11 +213,15 @@ const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
 const ISOLATE_MISS_CACHE_CAPACITY = 1_024;
 const ISOLATE_MISS_CACHE_TTL_MS = 1_000;
+const MAX_R2_CAS_ATTEMPTS = 3;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
+const VERSIONED_CACHE_KEY_PARAMETER = "__workers_response_store";
+const VERSIONED_CACHE_KEY_VALUE = /^v1\.([0-9a-f]{64})$/;
 const pendingPuts = new Map<string, Promise<StoreResult>>();
-const entryReads = new IsolateNegativeCache<string, StoredEntry>(
+const pendingR2Reads = new Map<string, Promise<boolean>>();
+const entryReads = new IsolateNegativeCache<string>(
   ISOLATE_MISS_CACHE_CAPACITY,
   ISOLATE_MISS_CACHE_TTL_MS,
 );
@@ -239,6 +246,27 @@ function metadataInteger(value: string | undefined): number | undefined {
 
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function metadataJson(value: string | undefined): unknown {
+  if (value === undefined) return undefined;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function isHeaderEntries(value: unknown): value is [string, string][] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        Array.isArray(entry) &&
+        entry.length === 2 &&
+        entry.every((item) => typeof item === "string"),
+    )
+  );
 }
 
 function purgeTagForEntry(entry: Pick<StoredEntry, "keyHash">): string {
@@ -314,12 +342,18 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return this.getMetadataShard(index);
   }
 
+  private getMetadataShards(): CacheMetadataStub[] {
+    return Array.from({ length: this.shardCount }, (_, index) => this.getMetadataShard(index));
+  }
+
   private entryReadKey(keyHash: string): string {
     return `${this.getVersionId()}:${this.shardCount}:${keyHash}`;
   }
 
-  private getMetadataShards(): CacheMetadataStub[] {
-    return Array.from({ length: this.shardCount }, (_, index) => this.getMetadataShard(index));
+  private invalidateEntryRead(keyHash: string): void {
+    const key = this.entryReadKey(keyHash);
+    entryReads.delete(key);
+    pendingR2Reads.delete(key);
   }
 
   private getTagMetadata(tags: string[]): CacheMetadataStub {
@@ -345,6 +379,15 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const url = new URL(request.url);
     const cacheKey = `${url.pathname}${url.search}`;
+    const versionedKeyValues = url.searchParams.getAll(VERSIONED_CACHE_KEY_PARAMETER);
+    const versionedKey =
+      versionedKeyValues.length === 1
+        ? VERSIONED_CACHE_KEY_VALUE.exec(versionedKeyValues[0])
+        : null;
+    if (versionedKey) {
+      return { cacheKey, keyHash: versionedKey[1] };
+    }
+
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(cacheKey));
     const keyHash = [...new Uint8Array(digest)]
       .map((byte) => byte.toString(16).padStart(2, "0"))
@@ -409,19 +452,177 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return `${this.objectKeyRoot()}/${keyHash}`;
   }
 
-  private async reserveWrite(
-    metadata: CacheMetadataStub,
+  private r2ObjectKey(keyHash: string): string {
+    return `${this.objectKeyPrefix(keyHash)}/active`;
+  }
+
+  private entryFromR2Metadata(
     keyHash: string,
     cacheKey: string,
+    object: R2Object | null,
+  ): StoredEntry | null {
+    const metadata = object?.customMetadata;
+    if (!metadata || metadata.tombstoned === "1") return null;
+
+    const latestRevision = metadataInteger(metadata.latestRevision);
+    const freshUntil = metadataInteger(metadata.freshUntil);
+    const swrUntil = metadataInteger(metadata.swrUntil);
+    const responseHeaders = metadataJson(metadata.responseHeaders);
+    if (
+      typeof metadata.statusText !== "string" ||
+      latestRevision === undefined ||
+      freshUntil === undefined ||
+      swrUntil === undefined ||
+      !isHeaderEntries(responseHeaders)
+    ) {
+      return null;
+    }
+
+    return {
+      keyHash,
+      cacheKey,
+      objectKey: this.r2ObjectKey(keyHash),
+      statusText: metadata.statusText,
+      responseHeaders,
+      freshUntil,
+      swrUntil,
+      revalidator: null,
+      cacheTags: [],
+      activeRevision: latestRevision,
+      latestRevision,
+    };
+  }
+
+  private async readR2Metadata(cacheKey: CacheKey): Promise<{
+    entry: StoredEntry | null;
+    object?: R2ObjectBody;
+  }> {
+    const object = await this.env.CACHE_BODIES.get(this.r2ObjectKey(cacheKey.keyHash));
+    const entry = this.entryFromR2Metadata(cacheKey.keyHash, cacheKey.cacheKey, object);
+    if (!entry && object) {
+      await object.body.cancel();
+    }
+    return { entry, ...(entry && object ? { object } : {}) };
+  }
+
+  private async readR2MetadataCached(cacheKey: CacheKey): Promise<{
+    entry: StoredEntry | null;
+    object?: R2ObjectBody;
+  }> {
+    const readKey = this.entryReadKey(cacheKey.keyHash);
+    if (entryReads.has(readKey)) return { entry: null };
+
+    const existing = pendingR2Reads.get(readKey);
+    if (existing && !(await existing)) return { entry: null };
+
+    const read = this.readR2Metadata(cacheKey);
+    if (existing) return read;
+
+    let pending!: Promise<boolean>;
+    pending = read.then(
+      ({ entry }) => {
+        if (!entry && pendingR2Reads.get(readKey) === pending) {
+          entryReads.add(readKey);
+        }
+        return entry !== null;
+      },
+      () => true,
+    );
+    pendingR2Reads.set(readKey, pending);
+    try {
+      return await read;
+    } finally {
+      if (pendingR2Reads.get(readKey) === pending) pendingR2Reads.delete(readKey);
+    }
+  }
+
+  private async writeR2Revision(
+    objectKey: string,
+    revision: number,
+    body: ArrayBuffer | Uint8Array,
+    customMetadata: Record<string, string>,
+    expectedEtag?: string | null,
+  ): Promise<boolean> {
+    let etag: string | null | undefined = expectedEtag;
+
+    // A conditional PUT can lose to another revision between HEAD and PUT.
+    // Retry against the winner's ETag, but never spin indefinitely under load.
+    for (let attempt = 0; attempt < MAX_R2_CAS_ATTEMPTS; attempt++) {
+      if (etag === undefined) {
+        const current = await this.env.CACHE_BODIES.head(objectKey);
+        const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
+        if (currentRevision !== undefined && currentRevision >= revision) return false;
+        etag = current?.etag ?? null;
+      }
+
+      const stored = await this.env.CACHE_BODIES.put(objectKey, body, {
+        onlyIf: etag === null ? { etagDoesNotMatch: "*" } : { etagMatches: etag },
+        customMetadata,
+      });
+      if (stored) return true;
+      etag = undefined;
+    }
+
+    const current = await this.env.CACHE_BODIES.head(objectKey);
+    const currentRevision = metadataInteger(current?.customMetadata?.latestRevision);
+    if (currentRevision !== undefined && currentRevision >= revision) return false;
+    throw new Error(`R2 revision ${revision} could not be published after concurrent writes`);
+  }
+
+  private async writeR2Response(
+    entry: StoredEntry,
+    body: ArrayBuffer,
+    status: number,
+    createdAt: number,
+    initialAge: number,
+    expectedEtag?: string | null,
+  ): Promise<boolean> {
+    this.invalidateEntryRead(entry.keyHash);
+    try {
+      return await this.writeR2Revision(
+        this.r2ObjectKey(entry.keyHash),
+        entry.activeRevision,
+        body,
+        {
+          status: String(status),
+          createdAt: String(createdAt),
+          initialAge: String(initialAge),
+          statusText: entry.statusText,
+          responseHeaders: JSON.stringify(entry.responseHeaders),
+          freshUntil: String(entry.freshUntil),
+          swrUntil: String(entry.swrUntil),
+          latestRevision: String(entry.activeRevision),
+        },
+        expectedEtag,
+      );
+    } finally {
+      this.invalidateEntryRead(entry.keyHash);
+    }
+  }
+
+  private async writeR2Tombstone(entry: PurgedEntry): Promise<void> {
+    await this.writeR2Revision(this.r2ObjectKey(entry.keyHash), entry.revision, new Uint8Array(), {
+      latestRevision: String(entry.revision),
+      tombstoned: "1",
+    });
+  }
+
+  private readableEntry(entry: StoredEntry | null): StoredEntry | null {
+    return entry ? { ...entry, cacheTags: [], objectKey: this.r2ObjectKey(entry.keyHash) } : entry;
+  }
+
+  private async reserveWrite(
+    metadata: CacheMetadataStub,
+    cacheKey: CacheKey,
     cacheTags: string[],
   ): Promise<WriteReservation> {
     const reservation = await metadata.reserveWrite(
-      keyHash,
-      cacheKey,
-      this.objectKeyPrefix(keyHash),
+      cacheKey.keyHash,
+      cacheKey.cacheKey,
+      this.objectKeyPrefix(cacheKey.keyHash),
       Date.now(),
     );
-    return { cacheKey, fenceTags: cacheTags, keyHash, ...reservation };
+    return { ...cacheKey, fenceTags: cacheTags, ...reservation };
   }
 
   private logCleanupFailure(objectKey: string, error: unknown): void {
@@ -443,8 +644,39 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       .catch((error) => this.logCleanupFailure(write.objectKey, error));
   }
 
-  private async readStoredResponse(entry: StoredEntry, now = Date.now()): Promise<Response | null> {
-    const object = await this.env.CACHE_BODIES.get(entry.objectKey);
+  private createStoredResponse(
+    entry: StoredEntry,
+    body: BodyInit | null,
+    status: number,
+    createdAt: number,
+    initialAge: number,
+    now = Date.now(),
+  ): Response {
+    const headers = new Headers(entry.responseHeaders);
+    headers.set(AGE_BASIS_HEADER, `${createdAt}:${initialAge}`);
+    headers.set("Age", String(representationAge(createdAt, initialAge, now)));
+    headers.set(
+      "Cloudflare-CDN-Cache-Control",
+      edgeCacheControl(entry.freshUntil, entry.swrUntil, now),
+    );
+    headers.set("Cache-Tag", cacheTagHeader(entry));
+    headers.set("X-Workers-Response-Store", now < entry.freshUntil ? "BLOB-FRESH" : "BLOB-STALE");
+    headers.set("X-Workers-Response-Store-Revision", String(entry.activeRevision));
+    headers.set("X-Workers-Response-Store-Binding-Invocation", crypto.randomUUID());
+
+    return new Response(body, {
+      status,
+      statusText: entry.statusText,
+      headers,
+    });
+  }
+
+  private async readStoredResponse(
+    entry: StoredEntry,
+    now = Date.now(),
+    prefetchedObject?: R2ObjectBody,
+  ): Promise<Response | null> {
+    const object = prefetchedObject ?? (await this.env.CACHE_BODIES.get(entry.objectKey));
     if (!object) {
       return null;
     }
@@ -463,28 +695,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       return null;
     }
 
-    const headers = new Headers(entry.responseHeaders);
-    headers.set(AGE_BASIS_HEADER, `${createdAt}:${initialAge}`);
-    headers.set("Age", String(representationAge(createdAt, initialAge, now)));
-    headers.set(
-      "Cloudflare-CDN-Cache-Control",
-      edgeCacheControl(entry.freshUntil, entry.swrUntil, now),
-    );
-    headers.set("Cache-Tag", cacheTagHeader(entry));
-    headers.set("X-Workers-Response-Store", now < entry.freshUntil ? "BLOB-FRESH" : "BLOB-STALE");
-    headers.set("X-Workers-Response-Store-Revision", String(entry.activeRevision));
-    headers.set("X-Workers-Response-Store-Binding-Invocation", crypto.randomUUID());
-
     const body = NULL_BODY_STATUSES.has(status) ? null : object.body;
     if (!body) {
       await object.body.cancel();
     }
-
-    return new Response(body, {
-      status,
-      statusText: entry.statusText,
-      headers,
-    });
+    return this.createStoredResponse(entry, body, status, createdAt, initialAge, now);
   }
 
   private async storeResponse(
@@ -494,24 +709,30 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     revalidator: ResponseStorePutOptions["revalidator"],
     reservation?: WriteReservation,
     cacheTags = cacheTagsFromResponse(response),
+    expectedR2Etag?: string | null,
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
-    const write =
-      reservation ??
-      (await this.reserveWrite(metadata, cacheKey.keyHash, cacheKey.cacheKey, cacheTags));
-    const { keyHash, objectKey, revision } = write;
+    const write = reservation ?? (await this.reserveWrite(metadata, cacheKey, cacheTags));
+    const { keyHash, objectKey: reservationObjectKey, revision } = write;
 
     let publication: PublicationResult;
+    let body: ArrayBuffer;
+    let policy: ReturnType<typeof deriveCachePolicy>;
     try {
       const now = Date.now();
-      const policy = deriveCachePolicy(response.headers, now);
+      policy = deriveCachePolicy(response.headers, now);
       const responseHeaders = [...response.headers].filter(([name]) => {
         const lower = name.toLowerCase();
-        return lower !== "age" && lower !== "cf-cache-status" && lower !== "content-length";
+        return (
+          lower !== "age" &&
+          lower !== "cache-tag" &&
+          lower !== "cf-cache-status" &&
+          lower !== "content-length"
+        );
       });
       const candidate: CandidateMetadata = {
         fenceTags: [...new Set([...write.fenceTags, ...cacheTags])],
-        objectKey,
+        objectKey: this.r2ObjectKey(keyHash),
         statusText: response.statusText,
         responseHeaders,
         freshUntil: policy.freshUntil,
@@ -523,26 +744,54 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       // RPC-transferred Response streams do not retain the fixed-length marker
       // required by R2's single-part put API. Materialise only in the cache
       // Worker; bodies are never stored in the metadata Durable Object.
-      const body = response.body ? await response.arrayBuffer() : new ArrayBuffer(0);
-      await this.env.CACHE_BODIES.put(objectKey, body, {
-        customMetadata: {
-          status: String(response.status),
-          createdAt: String(policy.createdAt),
-          initialAge: String(policy.initialAge),
-        },
-      });
-
-      publication = await metadata.publish(keyHash, revision, candidate, write.claimId);
+      body = response.body ? await response.arrayBuffer() : new ArrayBuffer(0);
+      publication = await metadata.publish(
+        keyHash,
+        revision,
+        candidate,
+        write.claimId,
+        reservationObjectKey,
+      );
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
       throw error;
     }
 
     if (!publication.published) {
-      return { published: false, entry: publication.entry };
+      return {
+        published: false,
+        entry: this.readableEntry(publication.entry),
+      };
     }
 
-    return { published: true, entry: publication.entry };
+    let stored = false;
+    if (publication.entry) {
+      stored = await this.writeR2Response(
+        publication.entry,
+        body,
+        response.status,
+        policy.createdAt,
+        policy.initialAge,
+        expectedR2Etag !== undefined ? expectedR2Etag : write.r2ObjectAbsent ? null : undefined,
+      );
+    }
+
+    const entry = this.readableEntry(publication.entry);
+    return {
+      published: true,
+      entry,
+      ...(stored && entry
+        ? {
+            response: this.createStoredResponse(
+              entry,
+              NULL_BODY_STATUSES.has(response.status) ? null : body,
+              response.status,
+              policy.createdAt,
+              policy.initialAge,
+            ),
+          }
+        : {}),
+    };
   }
 
   private async regenerateEntry(
@@ -550,6 +799,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     entry: StoredEntry,
     reason: RevalidationReason,
     reservation?: WriteReservation,
+    expectedR2Etag?: string | null,
   ): Promise<StoreResult> {
     if (!entry.revalidator) {
       throw new Error("Cache entry has no configured revalidator");
@@ -558,7 +808,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const cacheRequest = new Request(`https://runtime-cache.invalid${entry.cacheKey}`);
     const writeReservation =
       reservation ??
-      (await this.reserveWrite(metadata, entry.keyHash, entry.cacheKey, entry.cacheTags));
+      (await this.reserveWrite(
+        metadata,
+        { cacheKey: entry.cacheKey, keyHash: entry.keyHash },
+        entry.cacheTags,
+      ));
 
     let response: Response;
     try {
@@ -587,17 +841,16 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       response,
       entry.revalidator,
       writeReservation,
+      undefined,
+      expectedR2Etag,
     );
   }
 
   private async revalidateEntryInBackground(
     metadata: CacheMetadataStub,
     entry: StoredEntry,
+    expectedR2Etag?: string | null,
   ): Promise<void> {
-    if (!entry.revalidator) {
-      return;
-    }
-
     const claim = await metadata.claimRevalidation(
       entry.keyHash,
       entry.activeRevision,
@@ -611,14 +864,20 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     try {
-      await this.regenerateEntry(metadata, entry, "swr", {
-        cacheKey: entry.cacheKey,
-        claimId: claim.claimId,
-        fenceTags: entry.cacheTags,
-        keyHash: entry.keyHash,
-        objectKey: claim.objectKey,
-        revision: claim.revision,
-      });
+      await this.regenerateEntry(
+        metadata,
+        claim.entry,
+        "swr",
+        {
+          cacheKey: claim.entry.cacheKey,
+          claimId: claim.claimId,
+          fenceTags: claim.entry.cacheTags,
+          keyHash: claim.entry.keyHash,
+          objectKey: claim.objectKey,
+          revision: claim.revision,
+        },
+        expectedR2Etag,
+      );
     } catch (error) {
       console.error(
         JSON.stringify({
@@ -631,38 +890,69 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   async fetch(request: Request): Promise<Response> {
-    const { keyHash } = await this.deriveCacheKey(request);
-    const metadata = this.getMetadata(keyHash);
-    const entry = await entryReads.getOrLoad(this.entryReadKey(keyHash), () =>
-      metadata.getEntry(keyHash),
-    );
+    const cacheKey = await this.deriveCacheKey(request);
+    const { keyHash } = cacheKey;
+    const r2Read = await this.readR2MetadataCached(cacheKey);
+    const entry = r2Read.entry;
+    const expectedR2Etag = r2Read.object?.etag;
     if (!entry) {
       return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
     }
 
     const now = Date.now();
     if (now < entry.swrUntil) {
-      const stored = await this.readStoredResponse(entry, now);
+      const stored = await this.readStoredResponse(entry, now, r2Read?.object);
       if (stored) {
         if (now < entry.freshUntil) {
           return stored;
         }
 
-        this.ctx.waitUntil(this.revalidateEntryInBackground(metadata, entry));
+        this.ctx.waitUntil(
+          Promise.resolve().then(async () => {
+            const metadata = this.getMetadata(keyHash);
+            await this.revalidateEntryInBackground(metadata, entry, expectedR2Etag);
+          }),
+        );
         return stored;
       }
     }
 
+    await r2Read?.object?.body.cancel();
+    const metadata = this.getMetadata(keyHash);
+    const regeneration = await metadata.reserveRegeneration(
+      keyHash,
+      cacheKey.cacheKey,
+      this.objectKeyPrefix(keyHash),
+      now,
+    );
+    if (!regeneration) {
+      return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+    }
     const regenerated = await this.regenerateEntry(
       metadata,
-      entry,
+      regeneration.entry,
       now >= entry.swrUntil ? "expired" : "missing",
+      regeneration.reservation
+        ? {
+            ...cacheKey,
+            fenceTags: regeneration.entry.cacheTags,
+            ...regeneration.reservation,
+          }
+        : undefined,
+      expectedR2Etag,
     );
     if (!regenerated.entry) {
       throw new Error("Regeneration was superseded and no active entry remains");
     }
 
-    const response = await this.readStoredResponse(regenerated.entry);
+    let response = regenerated.response;
+    if (!response) {
+      const winner = await this.readR2Metadata(cacheKey);
+      if (winner.entry) {
+        response =
+          (await this.readStoredResponse(winner.entry, Date.now(), winner.object)) ?? undefined;
+      }
+    }
     if (!response) {
       throw new Error("The committed cache body is unavailable");
     }
@@ -679,79 +969,71 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     response: Response,
     options: ResponseStorePutOptions = {},
   ): Promise<ResponseStoreMutationResult> {
-    const { cacheKey, keyHash } = await this.deriveCacheKey(request);
-    const entryReadKey = this.entryReadKey(keyHash);
-    entryReads.delete(entryReadKey);
-    try {
-      const metadata = this.getMetadata(keyHash);
-      const cacheTags = cacheTagsFromResponse(response);
-      const pendingPutKey = `${this.getVersionId()}:${this.shardCount}:${keyHash}:${Boolean(options.purgeExisting)}`;
-      let reservation: WriteReservation | undefined;
-      if (options.coalesce) {
-        for (;;) {
-          const pending = pendingPuts.get(pendingPutKey);
-          if (!pending) break;
-
-          reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
-          let result: StoreResult;
-          try {
-            result = await pending;
-          } catch {
-            // Preserve this response as the fallback when the leading write fails.
-            if (pendingPuts.get(pendingPutKey) === pending) {
-              pendingPuts.delete(pendingPutKey);
-            }
-            continue;
-          }
-          if (result.published && result.entry) {
-            const objectKey = reservation.objectKey;
-            await metadata
-              .finishPendingObjects([objectKey])
-              .catch((error) => this.logCleanupFailure(objectKey, error));
-            void response.body?.cancel().catch(() => {});
-            return {
-              backingStoreUpdated: true,
-              edgePurgeAccepted: options.purgeExisting
-                ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
-                : true,
-            };
-          }
+    const cacheKey = await this.deriveCacheKey(request);
+    const { keyHash } = cacheKey;
+    const metadata = this.getMetadata(keyHash);
+    const cacheTags = cacheTagsFromResponse(response);
+    const pendingPutKey = `${this.getVersionId()}:${this.shardCount}:${keyHash}:${Boolean(options.purgeExisting)}`;
+    let reservation: WriteReservation | undefined;
+    if (options.coalesce) {
+      const pending = pendingPuts.get(pendingPutKey);
+      if (pending) {
+        reservation ??= await this.reserveWrite(metadata, cacheKey, cacheTags);
+        let result: StoreResult | undefined;
+        try {
+          result = await pending;
+        } catch {
+          // Preserve this response as the fallback when the leading write fails.
           if (pendingPuts.get(pendingPutKey) === pending) {
             pendingPuts.delete(pendingPutKey);
           }
         }
-      }
-
-      const write = (async (): Promise<StoreResult> => {
-        reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
-        return this.storeResponse(
-          metadata,
-          request,
-          response,
-          options.revalidator,
-          reservation,
-          cacheTags,
-        );
-      })();
-      if (options.coalesce) pendingPuts.set(pendingPutKey, write);
-      try {
-        const result = await write;
-        if (!result.published || !result.entry) {
-          return { backingStoreUpdated: false, edgePurgeAccepted: false };
+        if (result?.published && result.entry) {
+          const objectKey = reservation.objectKey;
+          await metadata
+            .finishPendingObjects([objectKey])
+            .catch((error) => this.logCleanupFailure(objectKey, error));
+          void response.body?.cancel().catch(() => {});
+          return {
+            backingStoreUpdated: true,
+            edgePurgeAccepted: options.purgeExisting
+              ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+              : true,
+          };
         }
-        return {
-          backingStoreUpdated: true,
-          edgePurgeAccepted: options.purgeExisting
-            ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
-            : true,
-        };
-      } finally {
-        if (options.coalesce && pendingPuts.get(pendingPutKey) === write) {
+        if (pendingPuts.get(pendingPutKey) === pending) {
           pendingPuts.delete(pendingPutKey);
         }
       }
+    }
+
+    const write = (async (): Promise<StoreResult> => {
+      reservation ??= await this.reserveWrite(metadata, cacheKey, cacheTags);
+      return this.storeResponse(
+        metadata,
+        request,
+        response,
+        options.revalidator,
+        reservation,
+        cacheTags,
+      );
+    })();
+    if (options.coalesce) pendingPuts.set(pendingPutKey, write);
+    try {
+      const result = await write;
+      if (!result.published || !result.entry) {
+        return { backingStoreUpdated: false, edgePurgeAccepted: false };
+      }
+      return {
+        backingStoreUpdated: true,
+        edgePurgeAccepted: options.purgeExisting
+          ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+          : true,
+      };
     } finally {
-      entryReads.delete(entryReadKey);
+      if (options.coalesce && pendingPuts.get(pendingPutKey) === write) {
+        pendingPuts.delete(pendingPutKey);
+      }
     }
   }
 
@@ -837,6 +1119,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       result.status === "rejected" ? [result.reason] : [],
     );
     const purged = settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
+    if (purged.length) {
+      const tombstones = await Promise.allSettled(
+        purged.map((entry) => this.writeR2Tombstone(entry)),
+      );
+      failures.push(
+        ...tombstones.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
+      );
+    }
     let edgePurgeAccepted = true;
 
     if (options.purgeEverything) {

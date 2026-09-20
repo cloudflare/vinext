@@ -55,7 +55,7 @@ type StoredInvocation = {
 export type VinextResponseStoreEnv = WorkersResponseStoreClientEnv | WorkersResponseStoreEnv;
 
 const ROUTE_REVALIDATOR_ID = "vinext:response";
-const RESPONSE_STORE_KEY_PARAM = "__vinext_response_store";
+const RESPONSE_STORE_KEY_PARAM = "__workers_response_store";
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
 const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const REPLAY_REQUEST_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =>
@@ -271,7 +271,7 @@ async function cacheRequest(request: Request, props: unknown): Promise<Request> 
   const url = new URL(request.url);
   url.searchParams.set(
     RESPONSE_STORE_KEY_PARAM,
-    [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+    `v1.${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`,
   );
   // The opaque URL already partitions these selectors. Keep every Vary field
   // present so cache-selection rules agree on the selected representation.

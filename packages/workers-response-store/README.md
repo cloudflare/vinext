@@ -193,6 +193,7 @@ type ResponseStoreMutationResult = {
 
 - Keys must be `GET` requests.
 - Identity is the URL pathname plus query string; scheme and host are ignored.
+- Every key stores its response and read metadata together in one version-scoped R2 object by default, so fresh hits and misses do not query the metadata Durable Object. No special key format is required.
 - Build the key from trusted route and vary data. Do not include arbitrary visitor headers or other unbounded input unless it intentionally creates a distinct shared response.
 
 ### Freshness and tags
@@ -203,12 +204,12 @@ Set `Cache-Tag` on the response passed to `put()` to associate comma-separated p
 
 The `regenerate` callback receives the stored `id` and `args`, a canonical cache-key request, and one of these reasons:
 
-| Reason    | Trigger                                                    |
-| --------- | ---------------------------------------------------------- |
-| `swr`     | A stale response was returned inside its SWR window.       |
-| `expired` | The response passed its SWR window and the read must wait. |
-| `missing` | Metadata exists but its committed R2 body is unavailable.  |
-| `manual`  | `refresh()` selected the entry.                            |
+| Reason    | Trigger                                                                 |
+| --------- | ----------------------------------------------------------------------- |
+| `swr`     | A stale response was returned inside its SWR window.                    |
+| `expired` | The response passed its SWR window and the read must wait.              |
+| `missing` | The R2 object exists but its committed response content is unavailable. |
+| `manual`  | `refresh()` selected the entry.                                         |
 
 ### Response headers
 
@@ -251,16 +252,17 @@ application Worker
   └─ ResponseStoreBinding (Workers Cache enabled)
        ├─ cache hit ───────────────► stored Response
        └─ cache miss
-            ├─ response body ──────► R2
-            ├─ metadata/revisions ─► SQLite Durable Object
+            ├─ response + read metadata ─► R2
+            ├─ write coordination/revisions ─► SQLite Durable Object
             └─ regeneration ───────► application callback
 ```
 
-- Response bodies live only in revision-specific R2 objects. SQLite stores metadata, freshness, tag invalidations, and pending-object cleanup records.
+- Responses use `runtime-cache/<version-id>/[shards-<count>/]<digest>/active`.
 - SQLite revisions and conditional publication prevent slow writes from replacing newer writes or resurrecting purged entries. User RPC, R2, and cache-purge I/O run outside SQLite transactions.
+- Purging replaces the active R2 object with a higher-revision tombstone. A later put can replace that tombstone, but an older delayed write cannot recreate purged content.
 - A stale R2 response inside its SWR window returns immediately while `ctx.waitUntil()` runs one claimed regeneration. A later Workers Cache request promotes the completed revision, so one extra stale response is possible.
 - Hard-expired responses are never served. Reads wait for regeneration and therefore require a stored revalidator descriptor.
-- Pending R2 objects are retained for one hour before alarm-driven cleanup. Failed deletion is retried without making the active response unavailable.
+- Abandoned write reservations are retained for one hour before alarm-driven cleanup fences them from later publication. Response bodies are written only after Durable Object publication, so this cleanup does not perform R2 operations.
 - RPC-transferred response bodies are buffered before R2 writes because transferred streams do not retain the fixed-length marker required by R2's single-part put API. Account for Worker memory limits when choosing maximum response sizes.
 - Service-binding callbacks remain pinned to the application Worker version that supplied the revalidator capability.
 
@@ -268,9 +270,11 @@ application Worker
 
 Backing data is scoped by the application Worker version ID. A new deployment therefore starts with a cold backing layout while retaining prior versions for rollback. Deploying a new version does not delete the old version's R2 objects or metadata Durable Objects, and the library does not currently run cross-version garbage collection.
 
+This is deployment compatibility, not an in-place object-layout migration. Every invocation remains partitioned by its application Worker version ID. In self-contained mode, a newly deployed application version starts cold and leaves the previous version's data available for rollback. In service-binding mode, upgrading only the cache Worker keeps the existing application version IDs but treats entries in the previous R2 layout as cold misses; existing clients refill them through the unchanged API, and legacy cache-key formats remain valid ordinary keys. The old R2 objects are retained until that application version is cleaned up. Do not manually assign one application version ID to unrelated deployments.
+
 Keep every version that can still receive traffic or be rolled back to. When a version is permanently retired:
 
-1. If it is still addressable, call `purge({ purgeEverything: true })` through that version to tombstone its metadata and delete its active R2 response bodies. This also requests a broad edge-cache purge, so other versions may need to refill.
+1. If it is still addressable, call `purge({ purgeEverything: true })` through that version to tombstone its metadata and active R2 response objects. This also requests a broad edge-cache purge, so other versions may need to refill.
 2. Delete any remaining objects under its R2 prefix: `runtime-cache/<version-id>/` for an unsharded store, or `runtime-cache/<version-id>/shards-<count>/` for a sharded store.
 3. If you need to reclaim the retired metadata Durable Object's SQLite storage, use an application-owned administrative path to call `deleteAll()` on each known object. The object is named `<version-id>` without sharding, or `<version-id>:metadata-shard:<index>-of-<count>` for each shard. This cleanup is outside the package API.
 

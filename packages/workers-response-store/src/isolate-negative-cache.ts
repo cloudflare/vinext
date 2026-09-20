@@ -1,45 +1,34 @@
-export class IsolateNegativeCache<K, V> {
+export class IsolateNegativeCache<K> {
   private readonly misses = new Map<K, number>();
-  private readonly pending = new Map<K, Promise<V | null>>();
 
   constructor(
     private readonly capacity: number,
     private readonly ttlMs: number,
   ) {}
 
-  async getOrLoad(key: K, load: () => Promise<V | null>): Promise<V | null> {
+  has(key: K): boolean {
     const expiresAt = this.misses.get(key);
-    if (expiresAt !== undefined) {
-      if (expiresAt > Date.now()) {
-        this.misses.delete(key);
-        this.misses.set(key, expiresAt);
-        return null;
-      }
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= Date.now()) {
       this.misses.delete(key);
+      return false;
     }
 
-    const existing = this.pending.get(key);
-    if (existing) return existing;
+    this.misses.delete(key);
+    this.misses.set(key, expiresAt);
+    return true;
+  }
 
-    const pending = Promise.resolve().then(load);
-    this.pending.set(key, pending);
-    try {
-      const value = await pending;
-      if (value === null && this.pending.get(key) === pending) {
-        this.misses.set(key, Date.now() + this.ttlMs);
-        if (this.misses.size > this.capacity) {
-          const oldest = this.misses.keys().next();
-          if (!oldest.done) this.misses.delete(oldest.value);
-        }
-      }
-      return value;
-    } finally {
-      if (this.pending.get(key) === pending) this.pending.delete(key);
+  add(key: K): void {
+    this.misses.delete(key);
+    this.misses.set(key, Date.now() + this.ttlMs);
+    if (this.misses.size > this.capacity) {
+      const oldest = this.misses.keys().next();
+      if (!oldest.done) this.misses.delete(oldest.value);
     }
   }
 
   delete(key: K): void {
-    this.pending.delete(key);
     this.misses.delete(key);
   }
 }

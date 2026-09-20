@@ -11,6 +11,7 @@ import type {
 
 type RevalidationClaim = {
   claimId: string;
+  entry: StoredEntry;
   objectKey: string;
   revision: number;
 };
@@ -22,12 +23,18 @@ type PublicationResult = {
 
 type WriteReservation = {
   objectKey: string;
+  r2ObjectAbsent: boolean;
   revision: number;
 };
 
 type RefreshCandidate = {
   entry: StoredEntry;
   reservation?: Pick<WriteReservation, "objectKey" | "revision">;
+};
+
+type RegenerationReservation = {
+  entry: StoredEntry;
+  reservation?: WriteReservation;
 };
 
 export type CacheMetadataStub = DurableObjectStub & {
@@ -37,6 +44,12 @@ export type CacheMetadataStub = DurableObjectStub & {
     objectKeyPrefix: string,
     createdAt: number,
   ): Promise<WriteReservation>;
+  reserveRegeneration(
+    keyHash: string,
+    cacheKey: string,
+    objectKeyPrefix: string,
+    createdAt: number,
+  ): Promise<RegenerationReservation | null>;
   claimRevalidation(
     keyHash: string,
     activeRevision: number,
@@ -56,6 +69,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     revision: number,
     metadata: CandidateMetadata,
     claimId?: string,
+    reservationObjectKey?: string,
   ): Promise<PublicationResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
   getTagExpiration(tags: string[]): Promise<number>;
@@ -75,6 +89,7 @@ type EntryRow = Record<string, SqlStorageValue> & {
   latest_revision: number;
   object_key: string | null;
   claim_active_revision?: number | null;
+  claim_expires_at?: number | null;
   claim_id?: string | null;
   claim_revision?: number | null;
   current_invalidation_sequence?: number;
@@ -91,14 +106,11 @@ type EntryRow = Record<string, SqlStorageValue> & {
 };
 
 const MAX_SQL_PARAMETERS = 100;
-const R2_DELETE_BATCH_SIZE = 1_000;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
 const ORPHAN_CLEANUP_LIMIT = 100;
 const ORPHAN_CLEANUP_RETRY_MS = 60 * 1000;
 
-type CacheMetadataEnv = {
-  CACHE_BODIES: R2Bucket;
-};
+type CacheMetadataEnv = Record<string, unknown>;
 
 function normalizeTags(tags: string[]): string[] {
   const normalized = tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean);
@@ -276,17 +288,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     this.cleanupAlarmKnown = true;
   }
 
-  private async maintainCleanupAlarm(createdAt: number): Promise<void> {
-    await this.ensureCleanupAlarm(createdAt).catch((error) => {
-      console.error(
-        JSON.stringify({
-          message: "Workers Response Store cleanup alarm update failed",
-          error: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    });
-  }
-
   private findMatchingEntryRows(
     options: ResponseStorePurgeOptions,
     includePending = false,
@@ -338,12 +339,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   }
 
   releaseWrite(keyHash: string, objectKey: string, claimId?: string): void {
-    // Keep the object registered for cleanup while expiring its overlap lease.
     this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
-        "UPDATE pending_objects SET created_at = 0, publishable = 0 WHERE object_key = ?",
-        objectKey,
-      );
+      this.ctx.storage.sql.exec("DELETE FROM pending_objects WHERE object_key = ?", objectKey);
       if (claimId) {
         this.ctx.storage.sql.exec(
           "DELETE FROM revalidation_claims WHERE key_hash = ? AND claim_id = ?",
@@ -369,43 +366,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     });
   }
 
-  private async deleteTrackedObjects(objectKeys: string[]): Promise<void> {
-    for (const batch of batches(objectKeys, R2_DELETE_BATCH_SIZE)) {
-      try {
-        await this.env.CACHE_BODIES.delete(batch);
-        this.finishPendingObjects(batch);
-      } catch (error) {
-        for (const retryBatch of batches(batch, MAX_SQL_PARAMETERS)) {
-          this.ctx.storage.sql.exec(
-            `INSERT OR REPLACE INTO pending_objects
-              (object_key, created_at, publishable) VALUES ${retryBatch
-                .map(() => "(?, 0, 0)")
-                .join(", ")}`,
-            ...retryBatch,
-          );
-        }
-        console.error(
-          JSON.stringify({
-            message: "Workers Response Store R2 cleanup failed",
-            objectKeys: batch,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
-        try {
-          await this.ctx.storage.setAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
-          this.cleanupAlarmKnown = true;
-        } catch (alarmError) {
-          console.error(
-            JSON.stringify({
-              message: "Workers Response Store cleanup retry scheduling failed",
-              error: alarmError instanceof Error ? alarmError.message : String(alarmError),
-            }),
-          );
-        }
-      }
-    }
-  }
-
   listExpiredPendingObjects(cutoff: number, limit: number): string[] {
     return this.ctx.storage.sql
       .exec<{ object_key: string }>(
@@ -429,10 +389,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         active: number;
         created_at: number;
         object_key: string;
-        publishable: number;
       }>(
         `SELECT pending_objects.object_key, pending_objects.created_at,
-          pending_objects.publishable,
           entries.object_key IS NOT NULL AS active
         FROM pending_objects
         LEFT JOIN entries
@@ -447,34 +405,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       .filter(({ active }) => active)
       .map(({ object_key }) => object_key);
     const expired = batch.filter(({ active, created_at }) => !active && created_at <= cutoff);
-    const reservations = expired.filter(({ publishable }) => publishable === 1);
-    const cleanupObjectKeys = expired
-      .filter(({ publishable }) => publishable === 0)
-      .map(({ object_key }) => object_key);
-    const fencedAt = Date.now();
     const expiredObjectKeys = expired.map(({ object_key }) => object_key);
-    this.finishPendingObjects(activeObjectKeys);
-    for (const reservationBatch of batches(reservations, MAX_SQL_PARAMETERS - 1)) {
-      this.ctx.storage.sql.exec(
-        `UPDATE pending_objects SET created_at = ?, publishable = 0
-        WHERE object_key IN (${reservationBatch.map(() => "?").join(", ")})`,
-        fencedAt,
-        ...reservationBatch.map(({ object_key }) => object_key),
-      );
-    }
-    if (expiredObjectKeys.length) {
-      await this.env.CACHE_BODIES.delete(expiredObjectKeys);
-      this.finishPendingObjects(cleanupObjectKeys);
-    }
+    this.finishPendingObjects([...activeObjectKeys, ...expiredObjectKeys]);
 
     const next = batch.find(({ active, created_at }) => !active && created_at > cutoff);
     if (!next && rows.length > ORPHAN_CLEANUP_LIMIT) {
       await this.ctx.storage.setAlarm(Date.now());
       this.cleanupAlarmKnown = true;
-    } else if (next || reservations.length) {
-      await this.ensureCleanupAlarm(
-        Math.min(next?.created_at ?? Number.POSITIVE_INFINITY, fencedAt),
-      );
+    } else if (next) {
+      await this.ensureCleanupAlarm(next.created_at);
     }
 
     return expiredObjectKeys.length;
@@ -505,14 +444,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   ): Promise<RevalidationClaim | null> {
     const claim = this.ctx.storage.transactionSync(() => {
       const entry = this.ctx.storage.sql
-        .exec<{
-          active_revision: number | null;
-          latest_revision: number;
-          tombstoned: number;
-          claim_active_revision: number | null;
-          claim_expires_at: number | null;
-        }>(
-          `SELECT entries.active_revision, entries.latest_revision, entries.tombstoned,
+        .exec<EntryRow>(
+          `SELECT entries.*,
             revalidation_claims.active_revision AS claim_active_revision,
             revalidation_claims.expires_at AS claim_expires_at
           FROM entries
@@ -525,6 +458,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       if (entry?.tombstoned || entry?.active_revision !== activeRevision) {
         return null;
       }
+
+      const storedEntry = storedEntryFromRow(entry);
+      if (!storedEntry?.revalidator) return null;
 
       if (entry.claim_active_revision === activeRevision && (entry.claim_expires_at ?? 0) > now) {
         return null;
@@ -559,7 +495,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         now,
       );
 
-      return { claimId, objectKey, revision };
+      return { claimId, entry: storedEntry, objectKey, revision };
     });
     if (claim) await this.ensureCleanupAlarm(now);
     return claim;
@@ -614,10 +550,46 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         objectKey,
         createdAt,
       );
-      return { objectKey, revision };
+      return { objectKey, r2ObjectAbsent: current === undefined, revision };
     });
     await this.ensureCleanupAlarm(createdAt);
     return reservation;
+  }
+
+  async reserveRegeneration(
+    keyHash: string,
+    cacheKey: string,
+    objectKeyPrefix: string,
+    createdAt: number,
+  ): Promise<RegenerationReservation | null> {
+    const result = this.ctx.storage.transactionSync(() => {
+      const current = this.ctx.storage.sql
+        .exec<EntryRow>(
+          "SELECT * FROM entries WHERE key_hash = ? AND cache_key = ?",
+          keyHash,
+          cacheKey,
+        )
+        .toArray()[0];
+      const entry = current ? storedEntryFromRow(current) : null;
+      if (!entry) return null;
+      if (!entry.revalidator) return { entry };
+
+      const revision = this.reserveRevision(keyHash, cacheKey, current);
+      const objectKey = `${objectKeyPrefix}/${revision}`;
+      this.ctx.storage.sql.exec(
+        `INSERT OR REPLACE INTO pending_objects
+          (object_key, created_at, invalidation_sequence)
+        VALUES (?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))`,
+        objectKey,
+        createdAt,
+      );
+      return {
+        entry,
+        reservation: { objectKey, r2ObjectAbsent: false, revision },
+      };
+    });
+    if (result?.reservation) await this.ensureCleanupAlarm(createdAt);
+    return result;
   }
 
   async publish(
@@ -625,8 +597,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     revision: number,
     metadata: CandidateMetadata,
     claimId?: string,
+    reservationObjectKey = metadata.objectKey,
   ): Promise<PublicationResult> {
-    const { cleanupObjectKey, result } = this.ctx.storage.transactionSync(() => {
+    return this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
         .exec<EntryRow>(
           `SELECT entries.*,
@@ -641,7 +614,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           LEFT JOIN pending_objects ON pending_objects.object_key = ?
           LEFT JOIN revalidation_claims ON revalidation_claims.key_hash = entries.key_hash
           WHERE entries.key_hash = ?`,
-          metadata.objectKey,
+          reservationObjectKey,
           keyHash,
         )
         .toArray()[0];
@@ -668,11 +641,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             claimId,
           );
         }
-        return {
-          cleanupObjectKey:
-            current?.object_key === metadata.objectKey ? undefined : metadata.objectKey,
-          result: { entry: current ? storedEntryFromRow(current) : null, published: false },
-        };
+        this.ctx.storage.sql.exec(
+          "DELETE FROM pending_objects WHERE object_key = ?",
+          reservationObjectKey,
+        );
+        return { entry: current ? storedEntryFromRow(current) : null, published: false };
       }
 
       const update = this.ctx.storage.sql.exec<{ key_hash: string }>(
@@ -698,20 +671,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       );
 
       const published = update.toArray().length === 1;
-      if (published) {
-        this.ctx.storage.sql.exec(
-          "DELETE FROM pending_objects WHERE object_key = ?",
-          metadata.objectKey,
-        );
-      }
-      if (published && current.object_key && current.object_key !== metadata.objectKey) {
-        this.ctx.storage.sql.exec(
-          `INSERT OR IGNORE INTO pending_objects
-            (object_key, created_at, publishable) VALUES (?, ?, 0)`,
-          current.object_key,
-          Date.now(),
-        );
-      }
+      this.ctx.storage.sql.exec(
+        "DELETE FROM pending_objects WHERE object_key = ?",
+        reservationObjectKey,
+      );
       if (claimId) {
         this.ctx.storage.sql.exec(
           "DELETE FROM revalidation_claims WHERE key_hash = ? AND claim_id = ?",
@@ -735,23 +698,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       };
 
       return {
-        cleanupObjectKey: published
-          ? current.object_key && current.object_key !== metadata.objectKey
-            ? current.object_key
-            : undefined
-          : metadata.objectKey,
-        result: {
-          entry: published ? entry : null,
-          published,
-        },
+        entry: published ? entry : null,
+        published,
       };
     });
-
-    if (cleanupObjectKey) {
-      await this.maintainCleanupAlarm(Date.now());
-      await this.deleteTrackedObjects([cleanupObjectKey]);
-    }
-    return result;
   }
 
   getEntry(keyHash: string): StoredEntry | null {
@@ -892,13 +842,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const keyHashes = batch.map((row) => row.key_hash);
         const placeholders = keyHashes.map(() => "?").join(", ");
         this.ctx.storage.sql.exec(
-          `INSERT OR IGNORE INTO pending_objects (object_key, created_at, publishable)
-          SELECT object_key, ?, 0 FROM entries
-          WHERE key_hash IN (${placeholders}) AND object_key IS NOT NULL`,
-          invalidatedAt,
-          ...keyHashes,
-        );
-        this.ctx.storage.sql.exec(
           `UPDATE entries SET
             latest_revision = latest_revision + 1,
             active_revision = latest_revision + 1,
@@ -923,13 +866,16 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       return matches.flatMap((row) =>
         row.object_key === null
           ? []
-          : [{ keyHash: row.key_hash, cacheKey: row.cache_key, objectKey: row.object_key }],
+          : [
+              {
+                keyHash: row.key_hash,
+                cacheKey: row.cache_key,
+                objectKey: row.object_key,
+                revision: row.latest_revision + 1,
+              },
+            ],
       );
     });
-    if (matches.length) {
-      await this.maintainCleanupAlarm(invalidatedAt);
-      await this.deleteTrackedObjects(matches.map((entry) => entry.objectKey));
-    }
     return matches;
   }
 

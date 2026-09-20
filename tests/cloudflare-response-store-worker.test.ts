@@ -64,6 +64,12 @@ describe("Cloudflare Response Store Worker", () => {
     expect(requests).toHaveLength(2);
     const [htmlKey, rscKey] = requests as [Request, Request];
     expect(htmlKey.url).not.toBe(rscKey.url);
+    for (const key of [htmlKey, rscKey]) {
+      expect(new URL(key.url).searchParams.get("__workers_response_store")).toMatch(
+        /^v1\.[0-9a-f]{64}$/,
+      );
+      expect(new URL(key.url).searchParams.has("__vinext_response_store")).toBe(false);
+    }
     for (const name of VINEXT_RSC_VARY_HEADER.split(",")) {
       expect(htmlKey.headers.get(name.trim())).toBe("vinext-keyed");
       expect(rscKey.headers.get(name.trim())).toBe("vinext-keyed");
