@@ -1146,6 +1146,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
               cacheKey.cacheKey,
               this.objectKeyPrefix(keyHash),
               reservation.objectKey,
+              cacheTags,
               Date.now(),
             );
             reservation = replacement

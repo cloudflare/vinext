@@ -1338,6 +1338,7 @@ test("a failed write replacement preserves an intervening purge fence", async ()
     "/retry-fence",
     prefix,
     first.objectKey,
+    [],
     Date.now(),
   );
   assert.ok(replacement);
@@ -1350,9 +1351,34 @@ test("a failed write replacement preserves an intervening purge fence", async ()
       "/retry-fence",
       prefix,
       replacement.objectKey,
+      [],
       Date.now(),
     ),
     null,
+  );
+});
+
+test("an unrelated purge does not discard a failed write replacement", async () => {
+  const stub = await metadataStub();
+  const prefix = "runtime-cache/poc-v2/retry-unrelated-purge";
+  const first = await stub.reserveWrite(
+    "retry-unrelated-purge",
+    "/retry-unrelated-purge",
+    prefix,
+    Date.now(),
+  );
+
+  await stub.purgeMatching({ pathPrefixes: ["/other"] });
+
+  assert.ok(
+    await stub.replaceFailedWrite(
+      "retry-unrelated-purge",
+      "/retry-unrelated-purge",
+      prefix,
+      first.objectKey,
+      [],
+      Date.now(),
+    ),
   );
 });
 
