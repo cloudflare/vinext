@@ -276,6 +276,15 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
         data.adapter,
         data.options,
       )} }));`,
+    );
+    if (dataProvidesBuildIdentity) {
+      lines.push(
+        "    registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter(",
+        "      process.env.__VINEXT_RSC_BUILD_IDENTITY || process.env.__VINEXT_BUILD_ID,",
+        "    ));",
+      );
+    }
+    lines.push(
       "  } catch (error) {",
       '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
         'using the default handler.\\n" + __vinextFormatAdapterError(error));',
@@ -293,12 +302,6 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
       '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
         'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
       "  }",
-    );
-  } else if (dataProvidesBuildIdentity) {
-    lines.push(
-      "  registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter(",
-      "    process.env.__VINEXT_RSC_BUILD_IDENTITY || process.env.__VINEXT_BUILD_ID,",
-      "  ));",
     );
   }
   lines.push("}", "");

@@ -120,6 +120,12 @@ describe("generateCacheAdaptersModule", () => {
       "process.env.__VINEXT_RSC_BUILD_IDENTITY || process.env.__VINEXT_BUILD_ID",
     );
     expect(code).toContain("registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter(");
+    expect(code.indexOf("registerDataCacheHandler(")).toBeLessThan(
+      code.indexOf("registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter("),
+    );
+    expect(code.indexOf("registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter(")).toBeLessThan(
+      code.indexOf("  } catch (error) {"),
+    );
   });
 
   it("wires both adapters and guards against double registration", () => {

@@ -860,8 +860,15 @@ function validateCachePolicy(
 function validateVinextCacheStatus(
   response: Response,
   missingStatus: "failed" | "skipped" = "failed",
+  requireCacheHit = false,
 ): WarmValidation {
   const status = response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase();
+  if (requireCacheHit && status !== "HIT") {
+    return {
+      outcome: "failed",
+      error: `${VINEXT_CACHE_HEADER} is ${status ?? "missing"}; the cache fill is not reusable`,
+    };
+  }
   if (status === "MISS" || status === "HIT" || status === "UPDATING") {
     return { outcome: "warmed" };
   }
@@ -878,8 +885,12 @@ function validateWarmAdmission(
   statusSource: "cloudflare" | "data-cache" | "vinext",
   requireCacheHit: boolean,
 ): WarmValidation {
-  if (statusSource === "vinext") return validateVinextCacheStatus(response);
-  if (statusSource === "data-cache") return validateVinextCacheStatus(response, "skipped");
+  if (statusSource === "vinext") {
+    return validateVinextCacheStatus(response, "failed", requireCacheHit);
+  }
+  if (statusSource === "data-cache") {
+    return validateVinextCacheStatus(response, "skipped", requireCacheHit);
+  }
   return validateCachePolicy(response, true, requireCacheHit);
 }
 

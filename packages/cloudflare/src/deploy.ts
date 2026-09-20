@@ -1191,7 +1191,7 @@ async function deployUploadedVersionWithCdnWarmup(
               routeHandlerPaths: warmResult.retryPlan.routeHandlerPaths,
               rscPaths: warmResult.retryPlan.rscPaths,
             };
-            if (hasPreparedWarmPlan && options.warmCdnCertify && warmResult.warmed > 0) {
+            if (options.warmCdnCertify && warmResult.warmed > 0) {
               console.log(
                 `  CDN warmup: certifying ${warmResult.warmed} staged cache entr${warmResult.warmed === 1 ? "y" : "ies"} before promotion...`,
               );
