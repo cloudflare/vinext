@@ -44,6 +44,7 @@ type PurgeReservation = {
 
 type TombstoneDrainResult = {
   failures: string[];
+  pending: PurgedEntry[];
   purged: PurgedEntry[];
 };
 
@@ -93,7 +94,9 @@ export type CacheMetadataStub = DurableObjectStub & {
     options: ResponseStorePurgeOptions,
     invalidatedAt?: number,
   ): Promise<PurgeReservation>;
-  drainPendingTombstones(limit: number): Promise<TombstoneDrainResult>;
+  drainPendingTombstones(limit: number, keyHash?: string): Promise<TombstoneDrainResult>;
+  listPendingEdgePurges(limit: number): Promise<PurgedEntry[]>;
+  markTombstonesEdgePurged(entries: PurgedEntry[]): Promise<void>;
   inspect(): Promise<StoredEntry[]>;
 };
 
@@ -132,8 +135,10 @@ type CacheMetadataEnv = {
 
 type PendingTombstoneRow = Record<string, SqlStorageValue> & {
   cache_key: string;
+  edge_purge_complete: number;
   key_hash: string;
   object_key: string;
+  r2_complete: number;
   revision: number;
 };
 
@@ -257,7 +262,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           key_hash TEXT PRIMARY KEY,
           cache_key TEXT NOT NULL,
           object_key TEXT NOT NULL,
-          revision INTEGER NOT NULL
+          revision INTEGER NOT NULL,
+          r2_complete INTEGER NOT NULL DEFAULT 0,
+          edge_purge_complete INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID;
       `);
 
@@ -265,17 +272,18 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const migrations = new Set(
           ctx.storage.sql
             .exec<{ version: number }>(
-              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3)",
+              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4)",
             )
             .toArray()
             .map(({ version }) => version),
         );
-        if (migrations.size === 2) return;
+        if (migrations.size === 3) return;
 
         const schemas = ctx.storage.sql
           .exec<{ name: string; sql: string }>(
             `SELECT name, sql FROM sqlite_schema
-            WHERE type = 'table' AND name IN ('tag_invalidations', 'pending_objects')`,
+            WHERE type = 'table'
+              AND name IN ('tag_invalidations', 'pending_objects', 'pending_r2_tombstones')`,
           )
           .toArray();
         if (
@@ -310,6 +318,20 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             );
           }
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (3)");
+        }
+        if (!migrations.has(4)) {
+          const tombstones = schemas.find(({ name }) => name === "pending_r2_tombstones")?.sql;
+          if (!tombstones?.includes("r2_complete")) {
+            ctx.storage.sql.exec(
+              "ALTER TABLE pending_r2_tombstones ADD COLUMN r2_complete INTEGER NOT NULL DEFAULT 0",
+            );
+          }
+          if (!tombstones?.includes("edge_purge_complete")) {
+            ctx.storage.sql.exec(
+              "ALTER TABLE pending_r2_tombstones ADD COLUMN edge_purge_complete INTEGER NOT NULL DEFAULT 0",
+            );
+          }
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (4)");
         }
       });
     });
@@ -461,10 +483,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   async alarm(): Promise<void> {
     try {
-      const pendingTombstones = this.ctx.storage.sql
-        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending_r2_tombstones")
+      const pendingR2Tombstones = this.ctx.storage.sql
+        .exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM pending_r2_tombstones WHERE r2_complete = 0",
+        )
         .one().count;
-      if (pendingTombstones > 0) {
+      if (pendingR2Tombstones > 0) {
         const drained = await this.drainPendingTombstones(400);
         if (drained.failures.length) {
           throw new AggregateError(
@@ -472,7 +496,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             "R2 tombstone cleanup failed",
           );
         }
-        if (pendingTombstones > drained.purged.length) {
+        if (pendingR2Tombstones > drained.purged.length) {
           await this.ctx.storage.setAlarm(Date.now());
           this.cleanupAlarmKnown = true;
           return;
@@ -798,9 +822,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       return true;
     });
 
-    if (!queued) return { failures: [], purged: [] };
+    if (!queued) return { failures: [], pending: [], purged: [] };
     await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
-    return this.drainPendingTombstones(1);
+    return this.drainPendingTombstones(1, keyHash);
   }
 
   getEntry(keyHash: string): StoredEntry | null {
@@ -1013,22 +1037,30 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     );
   }
 
-  async drainPendingTombstones(limit: number): Promise<TombstoneDrainResult> {
+  private finishCompletedTombstones(): void {
+    this.ctx.storage.sql.exec(
+      "DELETE FROM pending_r2_tombstones WHERE r2_complete = 1 AND edge_purge_complete = 1",
+    );
+  }
+
+  async drainPendingTombstones(limit: number, keyHash?: string): Promise<TombstoneDrainResult> {
     const rows = this.ctx.storage.sql
       .exec<PendingTombstoneRow>(
-        `SELECT key_hash, cache_key, object_key, revision
-        FROM pending_r2_tombstones ORDER BY key_hash LIMIT ?`,
-        limit,
+        `SELECT key_hash, cache_key, object_key, revision, r2_complete, edge_purge_complete
+        FROM pending_r2_tombstones
+        WHERE r2_complete = 0${keyHash === undefined ? "" : " AND key_hash = ?"}
+        ORDER BY key_hash LIMIT ?`,
+        ...(keyHash === undefined ? [limit] : [keyHash, limit]),
       )
       .toArray();
+    const pending = rows.map((row) => ({
+      keyHash: row.key_hash,
+      cacheKey: row.cache_key,
+      objectKey: row.object_key,
+      revision: row.revision,
+    }));
     const settled = await Promise.allSettled(
-      rows.map(async (row): Promise<PurgedEntry> => {
-        const entry = {
-          keyHash: row.key_hash,
-          cacheKey: row.cache_key,
-          objectKey: row.object_key,
-          revision: row.revision,
-        };
+      pending.map(async (entry): Promise<PurgedEntry> => {
         await this.writeR2Tombstone(entry);
         return entry;
       }),
@@ -1039,12 +1071,13 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     this.ctx.storage.transactionSync(() => {
       for (const batch of batches(purged, MAX_SQL_PARAMETERS / 2)) {
         this.ctx.storage.sql.exec(
-          `DELETE FROM pending_r2_tombstones WHERE ${batch
+          `UPDATE pending_r2_tombstones SET r2_complete = 1 WHERE ${batch
             .map(() => "(key_hash = ? AND revision = ?)")
             .join(" OR ")}`,
           ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
         );
       }
+      this.finishCompletedTombstones();
     });
     return {
       failures: settled.flatMap((result) =>
@@ -1052,8 +1085,40 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
           : [],
       ),
+      pending,
       purged,
     };
+  }
+
+  listPendingEdgePurges(limit: number): PurgedEntry[] {
+    return this.ctx.storage.sql
+      .exec<PendingTombstoneRow>(
+        `SELECT key_hash, cache_key, object_key, revision, r2_complete, edge_purge_complete
+        FROM pending_r2_tombstones
+        WHERE edge_purge_complete = 0 ORDER BY key_hash LIMIT ?`,
+        limit,
+      )
+      .toArray()
+      .map((row) => ({
+        keyHash: row.key_hash,
+        cacheKey: row.cache_key,
+        objectKey: row.object_key,
+        revision: row.revision,
+      }));
+  }
+
+  markTombstonesEdgePurged(entries: PurgedEntry[]): void {
+    this.ctx.storage.transactionSync(() => {
+      for (const batch of batches(entries, MAX_SQL_PARAMETERS / 2)) {
+        this.ctx.storage.sql.exec(
+          `UPDATE pending_r2_tombstones SET edge_purge_complete = 1 WHERE ${batch
+            .map(() => "(key_hash = ? AND revision = ?)")
+            .join(" OR ")}`,
+          ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
+        );
+      }
+      this.finishCompletedTombstones();
+    });
   }
 
   inspect(): StoredEntry[] {

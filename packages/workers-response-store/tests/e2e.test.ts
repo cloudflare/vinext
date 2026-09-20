@@ -976,20 +976,32 @@ test("a failed R2 purge remains queued and retryable after SQLite is tombstoned"
   const drained = await stub.drainPendingTombstones(400);
   assert.deepEqual(drained.failures, []);
   assert.equal(drained.purged.length, 1);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+  await stub.markTombstonesEdgePurged(drained.pending);
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
   assert.equal((await read("/retry-purge")).status, 404);
 });
 
 test("a failed R2 publication can be fenced with a newer tombstone", async () => {
   await put("/failed-publication", "possibly-committed");
-  const [entry] = await metadata();
+  await put("/unrelated-pending-tombstone", "unrelated", { tags: ["unrelated"] });
+  const entry = (await metadata()).find(({ cacheKey }) => cacheKey === "/failed-publication");
+  assert.ok(entry);
   const stub = await metadataStub();
+  await stub.purgeMatching({ tags: ["unrelated"] });
 
   const reconciled = await stub.invalidatePublishedRevision(entry.keyHash, entry.activeRevision);
 
   assert.deepEqual(reconciled.failures, []);
   assert.equal(reconciled.purged.length, 1);
+  assert.equal(reconciled.pending[0].keyHash, entry.keyHash);
+  await stub.markTombstonesEdgePurged(reconciled.pending);
   assert.deepEqual(await metadata(), []);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+
+  const unrelated = await stub.drainPendingTombstones(1);
+  assert.equal(unrelated.pending[0].cacheKey, "/unrelated-pending-tombstone");
+  await stub.markTombstonesEdgePurged(unrelated.pending);
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
   assert.equal((await read("/failed-publication")).status, 404);
 

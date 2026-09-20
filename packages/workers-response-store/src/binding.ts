@@ -487,6 +487,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return accepted;
   }
 
+  private async purgePendingEdgeEntries(
+    metadata: CacheMetadataStub,
+    purgeByTag: boolean,
+  ): Promise<boolean> {
+    let accepted = true;
+    for (;;) {
+      const entries = await metadata.listPendingEdgePurges(PURGE_TOMBSTONE_BATCH_SIZE);
+      if (!entries.length) return accepted;
+      if (purgeByTag && !(await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
+        accepted = false;
+      }
+      await metadata.markTombstonesEdgePurged(entries);
+    }
+  }
+
   private objectKeyRoot(): string {
     const shards = this.shardCount;
     return [
@@ -880,11 +895,25 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
                 ? reconciliationError.message
                 : String(reconciliationError),
             ],
+            pending: [],
             purged: [],
           }));
-        if (reconciliation.failures.length) {
+        const reconciliationFailures = reconciliation.failures.map((failure) => new Error(failure));
+        if (reconciliation.pending.length) {
+          try {
+            await this.purgeEdgeCacheByTags(reconciliation.pending.map(purgeTagForEntry));
+            await metadata.markTombstonesEdgePurged(reconciliation.pending);
+          } catch (reconciliationError) {
+            reconciliationFailures.push(
+              reconciliationError instanceof Error
+                ? reconciliationError
+                : new Error(String(reconciliationError)),
+            );
+          }
+        }
+        if (reconciliationFailures.length) {
           throw new AggregateError(
-            [error, ...reconciliation.failures.map((failure) => new Error(failure))],
+            [error, ...reconciliationFailures],
             "R2 response publication and reconciliation failed",
           );
         }
@@ -1239,13 +1268,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         ? [{ metadata: this.getMetadataShard(index), reservation: result.value }]
         : [],
     );
-    const purged: PurgedEntry[] = [];
     for (const { metadata, reservation } of reservations) {
       const batchCount = Math.ceil(reservation.pendingTombstones / PURGE_TOMBSTONE_BATCH_SIZE);
       for (let batch = 0; batch < batchCount; batch++) {
         try {
           const drained = await metadata.drainPendingTombstones(PURGE_TOMBSTONE_BATCH_SIZE);
-          purged.push(...drained.purged);
           failures.push(...drained.failures.map((failure) => new Error(failure)));
         } catch (error) {
           failures.push(error);
@@ -1255,11 +1282,29 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     let edgePurgeAccepted = true;
 
     if (options.purgeEverything) {
-      edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
-    } else if (purged.length) {
-      edgePurgeAccepted = await this.purgeEdgeCacheByTags(
-        purged.map((entry) => purgeTagForEntry(entry)),
+      try {
+        edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
+        const acknowledged = await Promise.allSettled(
+          reservations.map(({ metadata }) => this.purgePendingEdgeEntries(metadata, false)),
+        );
+        for (const result of acknowledged) {
+          if (result.status === "rejected") failures.push(result.reason);
+        }
+      } catch (error) {
+        edgePurgeAccepted = false;
+        failures.push(error);
+      }
+    } else {
+      const acknowledged = await Promise.allSettled(
+        reservations.map(({ metadata }) => this.purgePendingEdgeEntries(metadata, true)),
       );
+      for (const result of acknowledged) {
+        if (result.status === "rejected") {
+          failures.push(result.reason);
+        } else if (!result.value) {
+          edgePurgeAccepted = false;
+        }
+      }
     }
 
     if (failures.length) {
