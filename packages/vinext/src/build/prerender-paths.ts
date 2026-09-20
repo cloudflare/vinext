@@ -128,6 +128,8 @@ type PrerenderPathDiscoveryOptions = {
   root: string;
   /** Additional concrete public paths to resolve through the route graph. */
   candidatePaths?: readonly string[];
+  /** Resolve only candidate paths instead of enumerating dynamic route hooks. */
+  candidatePathsOnly?: boolean;
   /** Fully resolved Next.js config. Loaded from disk when omitted. */
   nextConfig?: ResolvedNextConfig;
   appDir?: string | null;
@@ -512,6 +514,7 @@ async function withPrerenderEndpoints<T>(fn: () => Promise<T>): Promise<T> {
 
 async function collectPagesPaths(options: {
   baseUrl: string | null;
+  enumerateDynamicPaths: boolean;
   i18n: ResolvedNextConfig["i18n"];
   pagesDir: string;
   pageExtensions: readonly string[];
@@ -563,6 +566,8 @@ async function collectPagesPaths(options: {
       }
       continue;
     }
+
+    if (!options.enumerateDynamicPaths) continue;
 
     // A dynamic GSSP route has no enumerable parameter source. It remains
     // fail-closed unless another deployment input supplies a concrete path.
@@ -723,6 +728,7 @@ async function collectAppPaths(options: {
   appDir: string;
   baseUrl: string | null;
   cacheComponents: boolean;
+  enumerateDynamicPaths: boolean;
   pageExtensions: readonly string[];
   retryOptions?: PathDiscoveryRetryOptions;
   secretHeaders: Record<string, string>;
@@ -821,6 +827,8 @@ async function collectAppPaths(options: {
       addPath(nonDynamicPaths, seenNonDynamicPaths, route.pattern);
       continue;
     }
+
+    if (!options.enumerateDynamicPaths) continue;
 
     // Next.js enables Cache Components PPR validation only for App Pages.
     // App Route Handlers still permit empty generateStaticParams results.
@@ -1386,6 +1394,7 @@ export async function discoverPrerenderPathManifest(
           appDir,
           baseUrl,
           cacheComponents: config.cacheComponents,
+          enumerateDynamicPaths: options.candidatePathsOnly !== true,
           pageExtensions: config.pageExtensions,
           retryOptions: pathDiscoveryRetryOptions,
           secretHeaders,
@@ -1405,6 +1414,7 @@ export async function discoverPrerenderPathManifest(
       if (pagesDir) {
         const pagesPathResult = await collectPagesPaths({
           baseUrl,
+          enumerateDynamicPaths: options.candidatePathsOnly !== true,
           i18n: config.i18n,
           pagesDir,
           pageExtensions: config.pageExtensions,
@@ -1551,12 +1561,18 @@ export async function discoverPrerenderPathManifest(
         rscPaths: [],
       };
   for (const pathname of configuredCandidatePaths) {
-    if (appOwnedWarmPaths.routePatterns[pathname] || !routeMayResolveWarmPathSet.has(pathname)) {
+    if (
+      appOwnedWarmPaths.routePatterns[pathname] ||
+      (!routeMayResolveWarmPathSet.has(pathname) &&
+        !requestStageMayTerminateWarmPathSet.has(pathname))
+    ) {
       continue;
     }
     appOwnedWarmPaths.htmlPaths.push(pathname);
     (appDir ? appOwnedWarmPaths.appPaths : appOwnedWarmPaths.pagesPaths).push(pathname);
-    if (appDir) appOwnedWarmPaths.rscPaths.push(pathname);
+    if (appDir && routeMayResolveWarmPathSet.has(pathname)) {
+      appOwnedWarmPaths.rscPaths.push(pathname);
+    }
     appOwnedWarmPaths.routePatterns[pathname] = {
       kind: appDir ? "app-page" : "pages-page",
       pattern: pathname,

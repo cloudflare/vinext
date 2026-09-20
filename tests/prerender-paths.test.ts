@@ -197,9 +197,11 @@ describe("prerender path manifest", () => {
     const manifest = await discoverPrerenderPathManifest({
       root: tmpDir,
       candidatePaths: ["/cached/from-traffic"],
+      candidatePathsOnly: true,
       responseVary: "verbatim",
     });
 
+    expect(fetch).not.toHaveBeenCalled();
     expect(manifest?.paths).toContain("/cached/from-traffic");
     expect(manifest?.rscPaths).toContain("/cached/from-traffic");
     expect(manifest?.routePatterns?.["/cached/from-traffic"]).toMatchObject({
@@ -242,6 +244,36 @@ describe("prerender path manifest", () => {
     expect(manifest?.appPaths).toContain("/hot");
     expect(manifest?.rscPaths).toContain("/hot");
     expect(manifest?.routePatterns?.["/hot"]?.cacheabilityProbe?.routeMayResolve).toBe(true);
+  });
+
+  it("keeps redirect-only traffic paths without adding an RSC request", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      candidatePaths: ["/old"],
+      candidatePathsOnly: true,
+      includeCanonicalRsc: true,
+      nextConfig: await resolveNextConfig(
+        {
+          redirects: () => [{ source: "/old", destination: "/", permanent: false }],
+        },
+        tmpDir,
+      ),
+      requestRouting: "uncached-stage",
+    });
+
+    expect(manifest?.paths).toContain("/old");
+    expect(manifest?.rscPaths).not.toContain("/old");
+    expect(manifest?.routePatterns?.["/old"]?.cacheabilityProbe).toMatchObject({
+      requestStageMayTerminate: true,
+    });
   });
 
   it.each([false, true])(
