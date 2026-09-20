@@ -147,17 +147,18 @@ describe("Cloudflare CDN warmup", () => {
     expect(result).toMatchObject({ failed: 0, skipped: 1, total: 1, warmed: 0 });
   });
 
-  it("requires an origin-managed data-cache hit during certification", async () => {
-    const fetchImpl = vi.fn(
-      async () =>
-        new Response("html", {
-          headers: {
-            "content-type": "text/html",
-            "x-vinext-build-id": "build-a",
-            "x-vinext-cache": "MISS",
-          },
-        }),
-    );
+  it("retries an origin-managed data-cache miss during certification", async () => {
+    let attempt = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempt++;
+      return new Response("html", {
+        headers: {
+          "content-type": "text/html",
+          "x-vinext-build-id": "build-a",
+          "x-vinext-cache": attempt === 1 ? "MISS" : "HIT",
+        },
+      });
+    });
 
     await expect(
       warmCdnCache({
@@ -165,12 +166,14 @@ describe("Cloudflare CDN warmup", () => {
         fetchImpl,
         paths: ["/uncertified"],
         requireCacheHit: true,
-        retries: 0,
+        retries: 1,
+        retryDelayMs: 0,
         statusSource: "data-cache",
         strict: true,
         targetUrl: "https://app.example.com",
       }),
-    ).rejects.toThrow("X-Vinext-Cache is MISS; the cache fill is not reusable");
+    ).resolves.toMatchObject({ failed: 0, warmed: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("reads only build-discovered paths and does not require local prerender output", () => {

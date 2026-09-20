@@ -727,6 +727,7 @@ const REQUIRED_RSC_VARY_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =
 );
 const ADMITTED_CF_CACHE_STATUSES = new Set(["HIT", "MISS", "EXPIRED", "REVALIDATED", "UPDATING"]);
 const REUSABLE_CF_CACHE_STATUSES = new Set(["HIT", "REVALIDATED", "UPDATING"]);
+const TRANSITIONAL_VINEXT_CACHE_STATUSES = new Set(["MISS", "UPDATING"]);
 const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS"]);
 const CDN_CACHE_POLICY_HEADERS = [
   "Cloudflare-CDN-Cache-Control",
@@ -1252,6 +1253,20 @@ function shouldRetryValidationFailure(
   return isRetryableStatus(response.status, options.retryNotFound);
 }
 
+function isRetryableCertificationMiss(
+  response: Response,
+  statusSource: "cloudflare" | "data-cache" | "vinext",
+): boolean {
+  if (statusSource === "cloudflare") {
+    const status = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
+    return (
+      ADMITTED_CF_CACHE_STATUSES.has(status ?? "") && !REUSABLE_CF_CACHE_STATUSES.has(status ?? "")
+    );
+  }
+  const status = response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase();
+  return TRANSITIONAL_VINEXT_CACHE_STATUSES.has(status ?? "");
+}
+
 async function warmOnePath(
   target: CdnWarmTarget,
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
@@ -1362,11 +1377,9 @@ async function warmOnePath(
         }
         lastSkippedReason = null;
         lastError = validation.error;
-        const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
         lastRetryable =
           (options.requireCacheHit &&
-            ADMITTED_CF_CACHE_STATUSES.has(cacheStatus ?? "") &&
-            !REUSABLE_CF_CACHE_STATUSES.has(cacheStatus ?? "")) ||
+            isRetryableCertificationMiss(response, options.statusSource)) ||
           shouldRetryValidationFailure(response, target, options);
         if (!lastRetryable) break;
         if (!canRetry(attempt)) break;
@@ -1407,11 +1420,8 @@ async function warmOnePath(
       }
       lastSkippedReason = null;
       lastError = validation.error;
-      const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
       lastRetryable =
-        (options.requireCacheHit &&
-          ADMITTED_CF_CACHE_STATUSES.has(cacheStatus ?? "") &&
-          !REUSABLE_CF_CACHE_STATUSES.has(cacheStatus ?? "")) ||
+        (options.requireCacheHit && isRetryableCertificationMiss(response, options.statusSource)) ||
         shouldRetryValidationFailure(response, target, options);
       if (!lastRetryable) break;
     } catch (error) {
