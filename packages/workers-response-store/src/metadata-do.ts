@@ -339,13 +339,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   private async ensureCleanupAlarm(createdAt: number): Promise<void> {
     if (this.cleanupAlarmKnown) return;
-    await this.scheduleCleanupAlarm(createdAt + ORPHAN_RETENTION_MS);
-  }
-
-  private async scheduleCleanupAlarm(scheduledTime: number): Promise<void> {
     const current = await this.ctx.storage.getAlarm();
-    if (current === null || current > scheduledTime) {
-      await this.ctx.storage.setAlarm(scheduledTime);
+    if (current === null) {
+      await this.ctx.storage.setAlarm(createdAt + ORPHAN_RETENTION_MS);
     }
     this.cleanupAlarmKnown = true;
   }
@@ -483,25 +479,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   async alarm(): Promise<void> {
     try {
-      const pendingR2Tombstones = this.ctx.storage.sql
-        .exec<{ count: number }>(
-          "SELECT COUNT(*) AS count FROM pending_r2_tombstones WHERE r2_complete = 0",
-        )
-        .one().count;
-      if (pendingR2Tombstones > 0) {
-        const drained = await this.drainPendingTombstones(400);
-        if (drained.failures.length) {
-          throw new AggregateError(
-            drained.failures.map((failure) => new Error(failure)),
-            "R2 tombstone cleanup failed",
-          );
-        }
-        if (pendingR2Tombstones > drained.purged.length) {
-          await this.ctx.storage.setAlarm(Date.now());
-          this.cleanupAlarmKnown = true;
-          return;
-        }
-      }
       await this.sweepExpiredPendingObjects();
     } catch (error) {
       console.error(
@@ -823,7 +800,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     });
 
     if (!queued) return { failures: [], pending: [], purged: [] };
-    await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
     return this.drainPendingTombstones(1, keyHash);
   }
 
@@ -1006,9 +982,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         .one().count;
       return { backingStoreUpdated: matches.length > 0 || tags.length > 0, pendingTombstones };
     });
-    if (reservation.pendingTombstones > 0) {
-      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
-    }
     return reservation;
   }
 
@@ -1095,7 +1068,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       .exec<PendingTombstoneRow>(
         `SELECT key_hash, cache_key, object_key, revision, r2_complete, edge_purge_complete
         FROM pending_r2_tombstones
-        WHERE edge_purge_complete = 0 ORDER BY key_hash LIMIT ?`,
+        WHERE r2_complete = 1 AND edge_purge_complete = 0 ORDER BY key_hash LIMIT ?`,
         limit,
       )
       .toArray()

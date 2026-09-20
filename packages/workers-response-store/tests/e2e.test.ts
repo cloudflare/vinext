@@ -973,10 +973,12 @@ test("a failed R2 purge remains queued and retryable after SQLite is tombstoned"
 
   const retry = await stub.purgeMatching({ tags: ["retry-purge"] });
   assert.equal(retry.pendingTombstones, 1);
+  assert.deepEqual(await stub.listPendingEdgePurges(400), []);
   const drained = await stub.drainPendingTombstones(400);
   assert.deepEqual(drained.failures, []);
   assert.equal(drained.purged.length, 1);
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+  assert.equal((await stub.listPendingEdgePurges(400)).length, 1);
   await stub.markTombstonesEdgePurged(drained.pending);
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
   assert.equal((await read("/retry-purge")).status, 404);
