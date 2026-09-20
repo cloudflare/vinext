@@ -251,6 +251,11 @@ export async function resolveInitOptions(
     throw new Error("--experimental-cf requires --platform=cloudflare.");
   }
   const explicitPrerender = parsePrerenderArg(args);
+  if (platform === "cloudflare" && explicitPrerender === true) {
+    throw new Error(
+      "--prerender is only supported by Node init. For Cloudflare, use --experimental-warm-cdn-cache with Workers Cache or Workers Response Store.",
+    );
+  }
   const supportsWarmCdnCache =
     platformOptions?.cdnCache === "response-store" || platformOptions?.cdnCache === "workers-cache";
   if (platform === "cloudflare" && !supportsWarmCdnCache) {
@@ -260,10 +265,9 @@ export async function resolveInitOptions(
   }
 
   const prerender =
-    explicitPrerender ??
-    (platformOptions?.cdnCache === "response-store"
-      ? false
-      : await resolveInitPrerender(args, options));
+    platform === "node"
+      ? (explicitPrerender ?? (await resolveInitPrerender(args, options)))
+      : false;
   const warmCdnCache =
     platform === "cloudflare" && supportsWarmCdnCache
       ? await resolveInitWarmCdnCache(args, options)

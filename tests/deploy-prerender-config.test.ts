@@ -100,18 +100,6 @@ function writeFile(relativePath: string, content: string): void {
   fs.writeFileSync(fullPath, content, "utf-8");
 }
 
-function createMockChildProcess(output: string, code: number): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
-  const childStdout = new PassThrough();
-  child.stdout = childStdout;
-  child.stderr = new PassThrough();
-  queueMicrotask(() => {
-    if (output) childStdout.write(output);
-    child.emit("close", code, null);
-  });
-  return child;
-}
-
 function writeProject(prerenderConfig: string | undefined, cacheConfig?: string): void {
   writeFile("package.json", JSON.stringify({ name: "prerender-config-app", type: "module" }));
   writeFile("app/page.tsx", "export default function Page() { return <div>home</div>; }\n");
@@ -287,63 +275,39 @@ describe("deploy prerender config wiring", () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("runs prerender during deploy when vinext config uses the true shorthand", async () => {
-    writeProject("true");
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+  it.each(["true", '{ routes: "*" }'])(
+    "ignores runtime prerender config during Cloudflare deploy: %s",
+    async (prerenderConfig) => {
+      writeProject(prerenderConfig);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deploy({ root: tmpDir, skipBuild: true });
+      await deploy({ root: tmpDir, skipBuild: true });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        root: tmpDir,
-        concurrency: undefined,
-        nextConfig: expect.any(Object),
-      }),
-    );
-    expect(
-      vi.mocked(spawn).mock.calls.some(([, args]) => {
-        const wranglerArgs = args as string[];
-        return wranglerArgs.includes("kv") && wranglerArgs.includes("bulk");
-      }),
-    ).toBe(false);
-  });
-
-  it("runs prerender during deploy when vinext config uses routes star", async () => {
-    writeProject('{ routes: "*" }');
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
-
-    await deploy({ root: tmpDir, skipBuild: true });
-
-    expect(runPrerenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        root: tmpDir,
-        concurrency: undefined,
-        nextConfig: expect.any(Object),
-      }),
-    );
-  });
-
-  it("passes configured build output roots to deploy prerendering", async () => {
-    writeProject("true");
-    const viteConfigPath = path.join(tmpDir, "vite.config.ts");
-    fs.writeFileSync(
-      viteConfigPath,
-      fs
-        .readFileSync(viteConfigPath, "utf-8")
-        .replace(
-          "vinext({ prerender: true",
-          'vinext({ rscOutDir: "build/application", prerender: true',
+      expect(runPrerenderMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "vinext prerender config is ignored by Cloudflare deploy. Use --experimental-warm-cdn-cache",
         ),
-    );
+      );
+      warn.mockRestore();
+    },
+  );
+
+  it("ignores --prerender-all during Worker deploys", async () => {
+    writeProject("true");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deploy({ root: tmpDir, skipBuild: true });
+    await deploy({ root: tmpDir, skipBuild: true, prerenderAll: true });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        routeRootConfig: expect.objectContaining({ rscOutDir: "build/application" }),
-      }),
+    expect(runPrerenderMock).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "--prerender-all is ignored by Cloudflare deploy. Use --experimental-warm-cdn-cache",
+      ),
     );
+    warn.mockRestore();
   });
 
   it("loads Vite config even when the prerender-all flag already decides prerendering", async () => {
@@ -372,10 +336,10 @@ describe("deploy prerender config wiring", () => {
   });
 
   it.each([
-    ["all-route prerendering", "true", false, true],
-    ["explicit CDN warming without analytics", undefined, true, false],
-    ["staged warming with configured prerendering", "true", true, false],
-  ])("keeps %s when TPR is also enabled", async (_, prerender, warmCdn, prerenderLocally) => {
+    ["TPR despite an ignored prerender setting", "true", false],
+    ["explicit CDN warming", undefined, true],
+    ["staged warming with configured prerendering", "true", true],
+  ])("keeps %s when TPR is also enabled", async (_, prerender, warmCdn) => {
     writeProject(prerender, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     writeFile(
       "wrangler.jsonc",
@@ -418,13 +382,12 @@ describe("deploy prerender config wiring", () => {
       viteConfigPath,
       `import "./count-config-load.js";\n${fs.readFileSync(viteConfigPath, "utf8")}`,
     );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
-    if (!prerender) {
-      resolveTPRRoutesMock.mockResolvedValueOnce({
-        routes: [],
-        targetUrl: "https://vinext.dev",
-      });
-    }
+    resolveTPRRoutesMock.mockResolvedValueOnce({
+      routes: [{ path: "/missing", requests: 10 }],
+      targetUrl: "https://vinext.dev",
+    });
 
     await deploy({
       root: tmpDir,
@@ -437,29 +400,26 @@ describe("deploy prerender config wiring", () => {
     });
 
     expect(fs.readFileSync(path.join(tmpDir, "config-load-count.txt"), "utf8")).toBe("1");
-    if (prerenderLocally) {
-      expect(runPrerenderMock).toHaveBeenCalledOnce();
-      expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
-      expect(discoverPrerenderPathManifestMock).not.toHaveBeenCalled();
-      expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
-        expect.stringContaining("wrangler"),
-        "deploy",
-      ]);
-      return;
-    }
     expect(runPrerenderMock).not.toHaveBeenCalled();
+    expect(resolveTPRRoutesMock).toHaveBeenCalledOnce();
+    if (prerender) {
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("vinext prerender config is ignored by Cloudflare deploy"),
+      );
+    } else {
+      expect(warn).not.toHaveBeenCalled();
+    }
+    warn.mockRestore();
     expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(false);
     expect(discoverPrerenderPathManifestMock).toHaveBeenCalledOnce();
     expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        candidatePaths: [],
+        candidatePaths: ["/missing"],
         requestRouting: "uncached-stage",
-        ...(!prerender && {
-          pathDiscoveryTarget: expect.objectContaining({ baseUrl: "https://vinext.dev" }),
-        }),
+        pathDiscoveryTarget: expect.objectContaining({ baseUrl: "https://vinext.dev" }),
       }),
     );
-    expect(fetchMock).toHaveBeenCalled();
+    if (warmCdn) expect(fetchMock).toHaveBeenCalled();
     expect(
       vi.mocked(spawn).mock.calls.some(([, args]) => {
         const wranglerArgs = args as string[];
@@ -748,8 +708,8 @@ describe("deploy prerender config wiring", () => {
     );
   });
 
-  it("passes deploy prerender concurrency through config-triggered prerender", async () => {
-    writeProject('{ routes: "*", concurrency: 1 }');
+  it("passes deploy prerender concurrency through static export", async () => {
+    writeProjectWithInlineNextConfig('{ output: "export" }');
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true, prerenderConcurrency: 3 });
@@ -759,28 +719,21 @@ describe("deploy prerender config wiring", () => {
     );
   });
 
-  it("uses config-owned prerender concurrency when the deploy flag is absent", async () => {
+  it("does not prerender Worker routes despite config-owned concurrency", async () => {
     writeProject('{ routes: "*", concurrency: 3 }');
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true });
 
-    expect(runPrerenderMock).toHaveBeenCalledWith(
-      expect.objectContaining({ root: tmpDir, concurrency: 3 }),
-    );
+    expect(runPrerenderMock).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ["the prerender-all flag", { prerenderAll: true }],
-    ["static export", {}],
-  ])("keeps config-owned concurrency for %s", async (trigger, options) => {
+  it("keeps config-owned concurrency for static export", async () => {
     writeProject('{ routes: "*", concurrency: 3 }');
-    if (trigger === "static export") {
-      writeFile("next.config.mjs", 'export default { output: "export" };\n');
-    }
+    writeFile("next.config.mjs", 'export default { output: "export" };\n');
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
-    await deploy({ root: tmpDir, skipBuild: true, ...options });
+    await deploy({ root: tmpDir, skipBuild: true });
 
     expect(runPrerenderMock).toHaveBeenCalledWith(
       expect.objectContaining({ root: tmpDir, concurrency: 3 }),
@@ -916,118 +869,6 @@ describe("deploy prerender config wiring", () => {
     } finally {
       delete process.env[envKey];
     }
-  });
-
-  it("uploads prerendered App Router artifacts to KV only when configured in Vite", async () => {
-    writeProject('{ routes: "*" }', '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
-    runPrerenderMock.mockImplementationOnce(async () => {
-      writeFile(
-        "dist/server/vinext-prerender.json",
-        JSON.stringify({
-          buildId: "build-1",
-          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
-        }),
-      );
-      writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
-      writeFile("dist/server/prerendered-routes/about.rsc", "flight");
-      return { routes: [] };
-    });
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
-
-    await deploy({ root: tmpDir, skipBuild: true });
-
-    const calls = vi.mocked(spawn).mock.calls;
-    const kvBulkCall = calls.find(([, args]) => {
-      const wranglerArgs = args as string[];
-      return wranglerArgs.includes("kv") && wranglerArgs.includes("bulk");
-    });
-    expect(kvBulkCall?.[1]).toEqual([
-      expect.stringContaining("wrangler"),
-      "kv",
-      "bulk",
-      "put",
-      expect.stringContaining("prerender-kv-0.json"),
-      "--binding",
-      "MY_KV",
-      "--remote",
-    ]);
-    expect(calls.at(-1)?.[1]).toEqual([expect.stringContaining("wrangler"), "deploy"]);
-  });
-
-  it("uploads prerendered KV entries with cf for typed configs without Wrangler", async () => {
-    writeProject('{ routes: "*" }', '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
-    fs.rmSync(path.join(tmpDir, "wrangler.jsonc"));
-    writeCfBuildOutputScaffolding();
-    writeFile(
-      ".cloudflare/output/v0/workers/default/worker.config.json",
-      JSON.stringify({ name: "prerender-config-app", env: { MY_KV: { type: "kv", id: "kv-id" } } }),
-    );
-    runPrerenderMock.mockImplementationOnce(async () => {
-      writeFile(
-        "dist/server/vinext-prerender.json",
-        JSON.stringify({
-          buildId: "build-1",
-          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
-        }),
-      );
-      writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
-      return { routes: [] };
-    });
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
-
-    await deploy({ root: tmpDir, skipBuild: true });
-
-    const calls = vi.mocked(spawn).mock.calls;
-    const kvCall = calls.find(([, args]) => (args as string[]).includes("bulk"));
-    expect(kvCall?.[1]).toEqual([
-      expect.stringContaining("/cf"),
-      "kv",
-      "bulk",
-      "update",
-      "kv-id",
-      "--body",
-      expect.stringMatching(/^@.*\.json$/),
-      "--mode",
-      "production",
-    ]);
-    expect(calls.at(-1)?.[1]).toEqual([
-      expect.stringContaining("/cf"),
-      "deploy",
-      "--prebuilt",
-      "--mode",
-      "production",
-    ]);
-    expect(calls.every(([, args]) => !(args as string[])[0]?.includes("wrangler"))).toBe(true);
-  });
-
-  it("continues deploy when configured KV prerender upload fails", async () => {
-    writeProject('{ routes: "*" }', '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
-    runPrerenderMock.mockImplementationOnce(async () => {
-      writeFile(
-        "dist/server/vinext-prerender.json",
-        JSON.stringify({
-          buildId: "build-1",
-          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
-        }),
-      );
-      writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
-      return { routes: [] };
-    });
-    vi.mocked(spawn).mockImplementation(((_file, args) => {
-      const wranglerArgs = args as string[];
-      if (wranglerArgs.includes("kv") && wranglerArgs.includes("bulk")) {
-        return createMockChildProcess("", 1);
-      }
-      return createMockChildProcess("Published app\n  https://app.example.workers.dev\n", 0);
-    }) as typeof spawn);
-    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
-
-    await deploy({ root: tmpDir, skipBuild: true });
-
-    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
-      expect.stringContaining("wrangler"),
-      "deploy",
-    ]);
   });
 
   it("discovers warmup paths during skip-build warm CDN deploys", async () => {

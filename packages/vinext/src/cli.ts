@@ -367,8 +367,8 @@ function printHelp(cmd?: string) {
     --no-install         Update dependency entries without installing them
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
-    --prerender          Configure Vite builds to pre-render all static routes
-                         (default: prompt, with No selected by default)
+    --prerender          Node only: configure Vite builds to pre-render all
+                         static routes (default: prompt, with No selected)
     --warm-cache         Add cache warming to the Cloudflare deploy script
                          (Response Store or Workers Cache, default: prompt with No)
     --experimental-cf    Generate cloudflare.config.ts with the v2 Cloudflare Vite plugin
@@ -393,7 +393,8 @@ function printHelp(cmd?: string) {
                                 Configure the default Cloudflare cache handlers
     vinext init --platform=cloudflare --image-optimization=none
                                 Do not configure Cloudflare Images
-    vinext init --prerender     Add prerender: { routes: "*" } to vite.config.ts
+    vinext init --platform=node --prerender
+                                Add prerender: { routes: "*" } to vite.config.ts
     vinext init --warm-cache
                                 Add cache warming to deploy:vinext
     vinext init --platform=node   Configure a Node deployment

@@ -9,7 +9,6 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { spawn, type SpawnOptions } from "node:child_process";
@@ -40,7 +39,6 @@ import {
   findVinextCacheConfigInPlugins,
   findVinextPrerenderConfigInPlugins,
   findVinextRouteRootConfigInPlugins,
-  formatVinextPrerenderLabel,
   isConfiguredCdnResponsePolicyHeader,
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
@@ -78,7 +76,6 @@ import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
   resolveCdnAdapterConfig,
-  resolveKvDataAdapterConfig,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
@@ -103,7 +100,6 @@ import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { cacheabilityRoutePathname } from "vinext/internal/server/cacheability-manifest";
-import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 import { writeCacheabilityManifestArtifact } from "./cacheability-artifact.js";
 import {
   DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
@@ -623,40 +619,6 @@ async function runBuild(info: ProjectInfo, env: string | undefined, mode: string
   if (!completed) throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
 }
 
-async function populateKVCacheFromPrerenderedArtifacts(
-  root: string,
-  deploymentTool: DeploymentTool,
-  env: string | undefined,
-  cacheConfig: VinextCacheConfig | null,
-): Promise<void> {
-  // `loadDeployViteConfigMetadata` returns null unless a cache adapter is declared.
-  const kvConfig = resolveKvDataAdapterConfig(cacheConfig);
-  if (!kvConfig) return;
-
-  const { routeCount, pairs } = buildPrerenderKVPairs(path.join(root, "dist", "server"), {
-    appPrefix: kvConfig.appPrefix,
-    ttlSeconds: kvConfig.ttlSeconds,
-  });
-
-  if (pairs.length === 0) {
-    console.log(
-      "  KV cache: Skipping prerender upload (no App Router prerendered cache entries found).",
-    );
-    return;
-  }
-
-  await runKVBulkPut(root, {
-    binding: kvConfig.binding,
-    deploymentTool,
-    env,
-    pairs,
-  });
-
-  console.log(
-    `  KV cache: Uploaded ${pairs.length} entr${pairs.length === 1 ? "y" : "ies"} for ${routeCount} prerendered route${routeCount === 1 ? "" : "s"}.`,
-  );
-}
-
 // ─── Deploy ──────────────────────────────────────────────────────────────────
 
 type WranglerDeployArgs = {
@@ -668,14 +630,6 @@ type CfDeployArgs = {
   args: string[];
   mode: string | undefined;
 };
-
-type WranglerKVBulkPutArgs = {
-  args: string[];
-  env: string | undefined;
-};
-
-const KV_BULK_PUT_CHUNK_SIZE = 25;
-
 export function validateWranglerEnvName(env: string): string {
   if (env.includes("\0")) {
     throw new Error("Wrangler environment names cannot contain null bytes.");
@@ -722,19 +676,6 @@ export function buildCfDeployArgs(options: Pick<DeployOptions, "preview" | "env"
   const args = ["deploy", "--prebuilt"];
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
   return { args, mode };
-}
-
-export function buildWranglerKVBulkPutArgs(options: {
-  binding: string;
-  env?: string;
-  filePath: string;
-}): WranglerKVBulkPutArgs {
-  const env = options.env || undefined;
-  const args = ["kv", "bulk", "put", options.filePath, "--binding", options.binding, "--remote"];
-  if (env) {
-    args.push("--env", validateWranglerEnvName(env));
-  }
-  return { args, env };
 }
 
 /**
@@ -802,87 +743,6 @@ export function buildWranglerInvocation(
   const wranglerBin = resolveWranglerBin(root);
   const { args, env } = buildWranglerDeployArgs(options);
   return { ...buildNodeCliInvocation(wranglerBin, args, nodeExecutable), env };
-}
-
-export async function runKVBulkPut(
-  root: string,
-  options: {
-    binding: string;
-    deploymentTool: DeploymentTool;
-    env?: string;
-    pairs: KVBulkPair[];
-    tempDir?: string;
-  },
-  execute: typeof spawn = spawn,
-  nodeExecutable: string = process.execPath,
-): Promise<void> {
-  const cfNamespaceId = (() => {
-    if (options.deploymentTool !== "cf") return undefined;
-    const configPath = path.join(root, ".cloudflare/output/v0/workers/default/worker.config.json");
-    const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
-      env?: Record<string, { type?: unknown; id?: unknown }>;
-    };
-    const binding = config.env?.[options.binding];
-    if (binding?.type !== "kv" || typeof binding.id !== "string" || !binding.id) {
-      throw new Error(
-        `[vinext] Generated Cloudflare Build Output does not declare KV binding ${JSON.stringify(options.binding)} with a namespace ID.`,
-      );
-    }
-    return binding.id;
-  })();
-  const tempDir = fs.mkdtempSync(path.join(options.tempDir ?? os.tmpdir(), "vinext-kv-bulk-"));
-
-  try {
-    const cliBin = cfNamespaceId ? resolveCfBin(root) : resolveWranglerBin(root);
-    const totalChunks = Math.ceil(options.pairs.length / KV_BULK_PUT_CHUNK_SIZE);
-    for (let i = 0; i < totalChunks; i++) {
-      const filePath = path.join(tempDir, `prerender-kv-${i}.json`);
-      const chunk = options.pairs.slice(
-        i * KV_BULK_PUT_CHUNK_SIZE,
-        (i + 1) * KV_BULK_PUT_CHUNK_SIZE,
-      );
-      fs.writeFileSync(filePath, JSON.stringify(chunk), "utf-8");
-      const args = cfNamespaceId
-        ? [
-            "kv",
-            "bulk",
-            "update",
-            cfNamespaceId,
-            "--body",
-            `@${filePath}`,
-            ...(options.env ? ["--mode", validateWranglerEnvName(options.env)] : []),
-          ]
-        : buildWranglerKVBulkPutArgs({
-            binding: options.binding,
-            env: options.env,
-            filePath,
-          }).args;
-      const invocation = buildNodeCliInvocation(cliBin, args, nodeExecutable);
-      const child = execute(invocation.file, invocation.args, {
-        cwd: root,
-        stdio: "inherit",
-        shell: false,
-      });
-      await new Promise<void>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code, signal) => {
-          if (code === 0) {
-            resolve();
-            return;
-          }
-
-          const exitReason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
-          reject(
-            new Error(
-              `${cfNamespaceId ? "cf" : "Wrangler"} KV bulk upload failed with ${exitReason}.`,
-            ),
-          );
-        });
-      });
-    }
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
 }
 
 export async function runWranglerDeploy(
@@ -2346,6 +2206,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     vinextPrerenderConfig,
     nextOutput: nextConfig.output,
   });
+  const shouldPrerenderLocally = prerenderDecision?.reason === "next-export";
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
   const warmupStatusSource = cacheWarmupStatusSource(viteConfigMetadata.cacheConfig);
   const hasStagedRequestRouting =
@@ -2358,6 +2219,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
     viteConfigMetadata.cacheConfig,
   );
   const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
+  if (prerenderDecision && !shouldPrerenderLocally) {
+    const trigger =
+      prerenderDecision.reason === "flag" ? "--prerender-all" : "vinext prerender config";
+    const replacement = options.warmCdnCache
+      ? "Routes will be rendered and warmed through the staged Worker instead."
+      : "Use --experimental-warm-cdn-cache to render and warm routes through the deployed Worker instead.";
+    console.warn(`\n  Warning: ${trigger} is ignored by Cloudflare deploy. ${replacement}`);
+  }
   // Step 5: Build
   if (!options.skipBuild) {
     await runBuild(info, deployEnv, viteMode);
@@ -2365,8 +2234,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  const canWarmTpr = options.experimentalTPR && !prerenderDecision && hasBuildIdentityHeader;
-  if (options.experimentalTPR && prerenderDecision) {
+  const canWarmTpr = options.experimentalTPR && !shouldPrerenderLocally && hasBuildIdentityHeader;
+  if (options.experimentalTPR && shouldPrerenderLocally) {
     console.log("  TPR: Skipping route selection (all-route prerendering configured)");
   } else if (options.experimentalTPR && !hasBuildIdentityHeader) {
     console.log(
@@ -2412,11 +2281,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
   const shouldSelectTpr = shouldWarmTpr && !options.warmCdnCache;
   const candidatePathsOnly = shouldSelectTpr && !needsCacheabilityProbeManifest;
-  // Static export still needs local artifacts. Other pre-warm deploys render
-  // through the staged Worker so runtime-backed adapters populate themselves.
-  const shouldPrerenderLocally =
-    prerenderDecision && (!shouldWarmCdnCache || prerenderDecision.reason === "next-export");
-
   if (shouldWarmCdnCache && cdnAdapterConfig) {
     if (deploymentTool === "cf") {
       const configPath = path.join(
@@ -2470,14 +2334,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
     });
   }
 
-  // Step 6a: prerender — render every discovered route into dist.
-  // Triggered only by --prerender-all, vinext({ prerender: true }), or
-  // output: 'export'. CDN warmup performs path discovery above, but relies on
-  // the deployed Worker to render and classify each response.
-  let ranPrerender = false;
+  // Step 6a: static export still requires local prerendered artifacts. Worker
+  // deployments render through the deployed Worker during CDN pre-warming.
   let prerenderResult: Awaited<ReturnType<typeof runPrerender>> | undefined = undefined;
-  if (shouldPrerenderLocally && !ranPrerender) {
-    console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
+  if (shouldPrerenderLocally) {
+    console.log("\n  Pre-rendering all routes (output: 'export')...");
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
@@ -2488,7 +2349,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
       nextConfig,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
-    ranPrerender = true;
   }
 
   if (!options.skipBuild) {
@@ -2498,21 +2358,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
       prerenderResult: prerenderResult ?? undefined,
     });
     console.log("\n  Build complete.\n");
-  }
-
-  if (ranPrerender) {
-    try {
-      await populateKVCacheFromPrerenderedArtifacts(
-        root,
-        deploymentTool,
-        deploymentTool === "cf" ? viteMode : wranglerFallbackEnv,
-        viteConfigMetadata.cacheConfig,
-      );
-    } catch (error) {
-      console.log(
-        `  KV cache: Skipping prerender upload (${formatUnknownError(error)}). Continuing with deploy.`,
-      );
-    }
   }
 
   // Step 7: Deploy the entry Worker via the selected CLI.
