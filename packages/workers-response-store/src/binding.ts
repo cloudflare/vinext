@@ -116,6 +116,12 @@ type PublicationResult = {
   published: boolean;
 };
 
+class R2PublicationError extends Error {
+  constructor(cause: unknown) {
+    super("R2 response publication failed", { cause });
+  }
+}
+
 export type WorkersResponseStoreEnv = {
   CACHE_BODIES: R2Bucket;
   CACHE_METADATA: DurableObjectNamespace<undefined>;
@@ -913,11 +919,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           }
         }
         if (reconciliationFailures.length) {
-          throw new AggregateError(
+          const failure = new AggregateError(
             [error, ...reconciliationFailures],
             "R2 response publication and reconciliation failed",
           );
+          if (reconciliation.pending.length) throw new R2PublicationError(failure);
+          throw failure;
         }
+        if (reconciliation.pending.length) throw new R2PublicationError(error);
         throw error;
       }
     }
@@ -1129,8 +1138,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         let result: StoreResult | undefined;
         try {
           result = await pending;
-        } catch {
+        } catch (error) {
           // Preserve this response as the fallback when the leading write fails.
+          if (error instanceof R2PublicationError && reservation) {
+            await this.releaseFailedWrite(metadata, reservation);
+            reservation = undefined;
+          }
           if (pendingPuts.get(pendingPutKey) === pending) {
             pendingPuts.delete(pendingPutKey);
           }
