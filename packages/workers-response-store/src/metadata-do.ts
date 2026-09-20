@@ -43,13 +43,14 @@ type PurgeReservation = {
 };
 
 type TombstoneDrainResult = {
+  cursor?: string;
   failures: string[];
   pending: PurgedEntry[];
   purged: PurgedEntry[];
 };
 
 type R2TombstoneEdgePurger = {
-  purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<void>;
+  purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean>;
 };
 
 export type CacheMetadataStub = DurableObjectStub & {
@@ -98,7 +99,11 @@ export type CacheMetadataStub = DurableObjectStub & {
     options: ResponseStorePurgeOptions,
     invalidatedAt?: number,
   ): Promise<PurgeReservation>;
-  drainPendingTombstones(limit: number, keyHash?: string): Promise<TombstoneDrainResult>;
+  drainPendingTombstones(
+    limit: number,
+    keyHash?: string,
+    afterKeyHash?: string,
+  ): Promise<TombstoneDrainResult>;
   retryPendingTombstones(): Promise<boolean>;
   listPendingEdgePurges(limit: number): Promise<PurgedEntry[]>;
   markTombstonesEdgePurged(entries: PurgedEntry[]): Promise<void>;
@@ -536,7 +541,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     }
     const edgeEntries = this.listPendingEdgePurges(400);
     if (edgeEntries.length) {
-      await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries);
+      if (!(await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries))) {
+        throw new Error("Workers Response Store cache purge is unavailable");
+      }
       this.markTombstonesEdgePurged(edgeEntries);
     }
     return (
@@ -1078,14 +1085,29 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     );
   }
 
-  async drainPendingTombstones(limit: number, keyHash?: string): Promise<TombstoneDrainResult> {
+  async drainPendingTombstones(
+    limit: number,
+    keyHash?: string,
+    afterKeyHash?: string,
+  ): Promise<TombstoneDrainResult> {
+    const filters = ["r2_complete = 0"];
+    const parameters: (number | string)[] = [];
+    if (keyHash !== undefined) {
+      filters.push("key_hash = ?");
+      parameters.push(keyHash);
+    }
+    if (afterKeyHash !== undefined) {
+      filters.push("key_hash > ?");
+      parameters.push(afterKeyHash);
+    }
+    parameters.push(limit);
     const rows = this.ctx.storage.sql
       .exec<PendingTombstoneRow>(
         `SELECT key_hash, cache_key, object_key, revision, r2_complete, edge_purge_complete
         FROM pending_r2_tombstones
-        WHERE r2_complete = 0${keyHash === undefined ? "" : " AND key_hash = ?"}
+        WHERE ${filters.join(" AND ")}
         ORDER BY key_hash LIMIT ?`,
-        ...(keyHash === undefined ? [limit] : [keyHash, limit]),
+        ...parameters,
       )
       .toArray();
     const pending = rows.map((row) => ({
@@ -1115,6 +1137,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       this.finishCompletedTombstones();
     });
     return {
+      ...(rows.length ? { cursor: rows.at(-1)!.key_hash } : {}),
       failures: settled.flatMap((result) =>
         result.status === "rejected"
           ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]

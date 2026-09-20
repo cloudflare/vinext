@@ -984,17 +984,18 @@ test("a failed R2 purge remains queued and retryable after SQLite is tombstoned"
   assert.equal((await read("/retry-purge")).status, 404);
 });
 
-test("the Durable Object alarm finishes queued R2 and edge tombstones in order", async () => {
+test("autonomous cleanup retains edge work when cache purge is unavailable", async () => {
   await put("/alarm-purge", "old", { tags: ["alarm-purge"] });
   const stub = await metadataStub();
   const reserved = await stub.purgeMatching({ tags: ["alarm-purge"] });
   assert.equal(reserved.pendingTombstones, 1);
   assert.equal(await (await read("/alarm-purge")).text(), "old");
 
-  assert.equal(await stub.retryPendingTombstones(), false);
+  await assert.rejects(stub.retryPendingTombstones());
 
-  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
   assert.equal((await read("/alarm-purge")).status, 404);
+  await stub.markTombstonesEdgePurged(await stub.listPendingEdgePurges(1));
 });
 
 test("a failed R2 publication can be fenced with a newer tombstone", async () => {

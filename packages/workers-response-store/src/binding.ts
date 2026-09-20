@@ -487,8 +487,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return accepted;
   }
 
-  async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<void> {
-    await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry));
+  async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<boolean> {
+    return await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry));
   }
 
   private async purgePendingEdgeEntries(
@@ -612,7 +612,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   private async writeR2Revision(
     objectKey: string,
     revision: number,
-    body: ArrayBuffer | Uint8Array,
+    body: ArrayBuffer | Uint8Array | Blob,
     customMetadata: Record<string, string>,
     expectedEtag?: string | null,
   ): Promise<boolean> {
@@ -653,7 +653,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     this.invalidateEntryRead(entry.keyHash);
     try {
       const responseHeaders = JSON.stringify(entry.responseHeaders);
-      let storedBody: ArrayBuffer | Uint8Array = body;
+      let storedBody: ArrayBuffer | Uint8Array | Blob = body;
       let customMetadata: Record<string, string> = {
         status: String(status),
         createdAt: String(createdAt),
@@ -668,10 +668,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         const responseMetadata = new TextEncoder().encode(
           JSON.stringify({ statusText: entry.statusText, responseHeaders: entry.responseHeaders }),
         );
-        const envelope = new Uint8Array(responseMetadata.byteLength + body.byteLength);
-        envelope.set(responseMetadata);
-        envelope.set(new Uint8Array(body), responseMetadata.byteLength);
-        storedBody = envelope;
+        storedBody = new Blob([responseMetadata, body]);
         customMetadata = {
           status: String(status),
           createdAt: String(createdAt),
@@ -1125,8 +1122,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const pendingPutKey = `${this.getVersionId()}:${this.shardCount}:${keyHash}:${Boolean(options.purgeExisting)}`;
     let reservation: WriteReservation | undefined;
     if (options.coalesce) {
-      const pending = pendingPuts.get(pendingPutKey);
-      if (pending) {
+      for (;;) {
+        const pending = pendingPuts.get(pendingPutKey);
+        if (!pending) break;
         reservation ??= await this.reserveWrite(metadata, cacheKey, cacheTags);
         let result: StoreResult | undefined;
         try {
@@ -1136,6 +1134,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           if (pendingPuts.get(pendingPutKey) === pending) {
             pendingPuts.delete(pendingPutKey);
           }
+          continue;
         }
         if (result?.published && result.entry) {
           const objectKey = reservation.objectKey;
@@ -1274,9 +1273,15 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     );
     for (const { metadata, reservation } of reservations) {
       const batchCount = Math.ceil(reservation.pendingTombstones / PURGE_TOMBSTONE_BATCH_SIZE);
+      let cursor: string | undefined;
       for (let batch = 0; batch < batchCount; batch++) {
         try {
-          const drained = await metadata.drainPendingTombstones(PURGE_TOMBSTONE_BATCH_SIZE);
+          const drained = await metadata.drainPendingTombstones(
+            PURGE_TOMBSTONE_BATCH_SIZE,
+            undefined,
+            cursor,
+          );
+          cursor = drained.cursor;
           failures.push(...drained.failures.map((failure) => new Error(failure)));
         } catch (error) {
           failures.push(error);
