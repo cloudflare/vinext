@@ -1,0 +1,68 @@
+export const metadata = {
+  slug: "getting-started/migrating",
+  title: "Migrate a Next.js app",
+  description: "Add vinext alongside an existing Next.js setup without rewriting the application.",
+  section: "Getting Started",
+  sectionOrder: 1,
+  order: 3,
+  navTitle: "Migrate a Next.js app",
+  keywords: ["migrate Next.js to vinext", "vinext compatibility", "Next.js Vite migration"],
+}
+
+import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager";
+
+> Migration is non-destructive. `vinext init` leaves your Next.js scripts and source files in place, then adds parallel `*:vinext` scripts for evaluation.
+
+## 1. Check compatibility
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx vinext check",
+    npm: "npx vinext check",
+    yarn: "yarn dlx vinext check",
+    bun: "bunx vinext check",
+    vp: "vpx vinext check",
+  }}
+/>
+
+The scanner reports known unsupported configuration, imports, and project patterns. Also check the [compatibility dashboard](/compatibility) and open issues for behavior specific to your application.
+
+## 2. Initialize vinext
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx vinext init",
+    npm: "npx vinext init",
+    yarn: "yarn dlx vinext init",
+    bun: "bunx vinext init",
+    vp: "vpx vinext init",
+  }}
+/>
+
+Choose Cloudflare or Node when prompted. The command installs the required packages, adds ESM and Vite configuration, and creates deployment config for the selected platform.
+
+For a non-interactive run, select the target explicitly:
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx vinext init --platform=cloudflare\npnpm dlx vinext init --platform=node",
+    npm: "npx vinext init --platform=cloudflare\nnpx vinext init --platform=node",
+    yarn: "yarn dlx vinext init --platform=cloudflare\nyarn dlx vinext init --platform=node",
+    bun: "bunx vinext init --platform=cloudflare\nbunx vinext init --platform=node",
+    vp: "vpx vinext init --platform=cloudflare\nvpx vinext init --platform=node",
+  }}
+/>
+
+## 3. Run both toolchains
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dev:vinext\npnpm build:vinext\npnpm dev",
+    npm: "npm run dev:vinext\nnpm run build:vinext\nnpm run dev",
+    yarn: "yarn dev:vinext\nyarn build:vinext\nyarn dev",
+    bun: "bun run dev:vinext\nbun run build:vinext\nbun run dev",
+    vp: "vp run dev:vinext\nvp run build:vinext\nvp run dev",
+  }}
+/>
+
+Compare the routes and workflows your application depends on. Start with authentication, middleware, mutations, caching, and deployment bindings rather than only checking the home page.

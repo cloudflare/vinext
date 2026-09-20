@@ -4,9 +4,7 @@ Run Next.js applications on Vite, with Cloudflare Workers as the primary deploym
 
 **Website:** [vinext.dev](https://vinext.dev)
 
-**Documentation:**
-
-- [Caching](docs/caching.md)
+**Documentation:** [vinext.dev/docs](https://vinext.dev/docs)
 
 > **Read the announcement:** [How we rebuilt Next.js with AI in one week](https://blog.cloudflare.com/vinext/)
 

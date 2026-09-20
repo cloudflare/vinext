@@ -1,0 +1,27 @@
+export const metadata = {
+  slug: "",
+  title: "vinext documentation",
+  description: "Build Next.js applications with Vite and deploy them anywhere.",
+  section: "Getting Started",
+  sectionOrder: 1,
+  order: 1,
+  navTitle: "Introduction",
+  keywords: ["vinext documentation", "Next.js on Vite", "Vite framework"],
+}
+
+> **Already know Next.js?** Keep using the [Next.js documentation](https://nextjs.org/docs/app) for routing, rendering, data fetching, and the public API. These docs cover the parts that change when vinext replaces the Next.js toolchain.
+
+## Choose a path
+
+- **[Start a new app](/docs/getting-started)** — Create a TypeScript App Router project ready for Vite and Cloudflare Workers.
+- **[Migrate a Next.js app](/docs/getting-started/migrating)** — Scan compatibility, add vinext alongside Next.js, and verify both dev servers.
+
+## What stays the same
+
+Your `app/` or `pages/` routes, components, public assets, and most `next/*` imports stay in place. App Router, Pages Router, React Server Components, Server Actions, middleware, route handlers, static generation, and ISR are supported.
+
+## What changes
+
+Vite runs development and production builds. Deployment is handled by vinext's native Cloudflare integration, standalone Node output, or a Vite deployment plugin such as Nitro. Some newer and platform-specific Next.js behavior is still being implemented.
+
+Check the [live compatibility dashboard](/compatibility) before migrating a production application, then read [Differences from Next.js](/docs/reference/differences) for the boundaries that matter most.

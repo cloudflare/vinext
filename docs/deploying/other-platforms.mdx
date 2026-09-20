@@ -1,0 +1,44 @@
+export const metadata = {
+  slug: "deploying/other-platforms",
+  title: "Deploy to other platforms",
+  description: "Build a standalone Node server or use Nitro's Vite plugin for more deployment targets.",
+  section: "Deploying",
+  sectionOrder: 2,
+  order: 2,
+  navTitle: "Other platforms",
+  keywords: ["deploy vinext", "vinext Node.js", "vinext Nitro"],
+}
+
+import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager";
+
+## Standalone Node.js
+
+Set `output: "standalone"` in `next.config`. A production build then emits a self-contained server under `dist/standalone`.
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm exec vinext build\nnode dist/standalone/server.js",
+    npm: "npx vinext build\nnode dist/standalone/server.js",
+    yarn: "yarn exec vinext build\nnode dist/standalone/server.js",
+    bun: "bunx vinext build\nnode dist/standalone/server.js",
+    vp: "vp exec vinext build\nnode dist/standalone/server.js",
+  }}
+/>
+
+Set `PORT` and `HOST` to change the default bind address. Unlike Next.js standalone output, vinext uses `HOST`, not `HOSTNAME`.
+
+## Nitro adapters
+
+Add Nitro when you need a deployment preset for Vercel, Netlify, AWS, Deno Deploy, Azure, or another supported host.
+
+```ts
+import { nitro } from "nitro/vite";
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [vinext(), nitro()],
+});
+```
+
+Follow the [Nitro deployment guide](https://v3.nitro.build/deploy) for host-specific presets and output. On Cloudflare, prefer vinext's native integration for direct bindings, caching, image optimization, and the one-command deployment workflow.

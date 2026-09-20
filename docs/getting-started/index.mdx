@@ -1,0 +1,56 @@
+export const metadata = {
+  slug: "getting-started",
+  title: "Installation",
+  description: "Create a new vinext application and start the Vite development server.",
+  section: "Getting Started",
+  sectionOrder: 1,
+  order: 2,
+  navTitle: "Installation",
+  keywords: ["install vinext", "create vinext app", "Next.js Vite setup"],
+}
+
+import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager";
+
+## 1. Create a project
+
+Use the official starter to create a TypeScript App Router application:
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm create vinext-app@latest my-app",
+    npm: "npm create vinext-app@latest my-app",
+    yarn: "yarn create vinext-app@latest my-app",
+    bun: "bun create vinext-app@latest my-app",
+    vp: "vpx create-vinext-app@latest my-app",
+  }}
+/>
+
+The setup prompts for a deployment platform and configures the matching dependencies, scripts, and Vite integration. Node.js 22 or newer is required.
+
+## 2. Start development
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "cd my-app\npnpm dev",
+    npm: "cd my-app\nnpm run dev",
+    yarn: "cd my-app\nyarn dev",
+    bun: "cd my-app\nbun run dev",
+    vp: "cd my-app\nvp run dev",
+  }}
+/>
+
+Edit `app/page.tsx` to begin. The routing and component model is the same as Next.js, so continue with the [Next.js layouts and pages guide](https://nextjs.org/docs/app/getting-started/layouts-and-pages).
+
+## 3. Build and deploy
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm build\npnpm start",
+    npm: "npm run build\nnpm run start",
+    yarn: "yarn build\nyarn start",
+    bun: "bun run build\nbun run start",
+    vp: "vp run build\nvp run start",
+  }}
+/>
+
+For production, continue with [Cloudflare Workers](/docs/deploying/cloudflare) or [another platform](/docs/deploying/other-platforms).

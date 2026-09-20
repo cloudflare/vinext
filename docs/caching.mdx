@@ -1,3 +1,14 @@
+export const metadata = {
+  slug: "guides/caching",
+  title: "Caching on Cloudflare",
+  description: "Choose how vinext stores rendered responses and cached data on Cloudflare Workers.",
+  section: "Guides",
+  sectionOrder: 3,
+  order: 1,
+  navTitle: "Caching on Cloudflare",
+  keywords: ["vinext caching", "Workers Response Store", "Next.js ISR Cloudflare"],
+}
+
 # Caching
 
 Vinext supports several caching setups on Cloudflare. Caching is optional: if you do not enable it, your app still works without a shared response or data cache.
@@ -15,12 +26,53 @@ Static files and browser caching are separate from these options. Cloudflare can
 
 ## Options
 
-| Setup                                | Response storage           | Data storage           | Best for                                                                           | Main trade-off                                                                                               |
-| ------------------------------------ | -------------------------- | ---------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| No persistent cache                  | In-memory                  | In-memory              | Dynamic apps and initial migrations                                                | Every request may need to render and fetch its data                                                          |
-| Workers Response Store (recommended) | Workers Cache backed by R2 | Workers Response Store | Durable responses, SWR, cache warming, and one cache system for responses and data | Requires R2, a SQLite Durable Object, and either a separate cache Worker or extra bindings on the app Worker |
-| Workers Cache + data cache           | Workers Cache              | Workers KV             | Fast edge responses using Cloudflare's native caches                               | Cached responses have no durable backing store, and a hit in one region does not guarantee a hit elsewhere   |
-| Data cache                           | Workers KV                 | Workers KV             | A simple persistent cache without Workers Cache                                    | Requests still reach the Worker and KV is eventually consistent                                              |
+<table>
+  <thead>
+    <tr>
+      <th>Setup</th>
+      <th>Response storage</th>
+      <th>Data storage</th>
+      <th>Best for</th>
+      <th>Main trade-off</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>No persistent cache</td>
+      <td>In-memory</td>
+      <td>In-memory</td>
+      <td>Dynamic apps and initial migrations</td>
+      <td>Every request may need to render and fetch its data</td>
+    </tr>
+    <tr>
+      <td>Workers Response Store (recommended)</td>
+      <td>Workers Cache backed by R2</td>
+      <td>Workers Response Store</td>
+      <td>Durable responses, SWR, cache warming, and one cache system for responses and data</td>
+      <td>
+        Requires R2, a SQLite Durable Object, and either a separate cache Worker or extra bindings
+        on the app Worker
+      </td>
+    </tr>
+    <tr>
+      <td>Workers Cache + data cache</td>
+      <td>Workers Cache</td>
+      <td>Workers KV</td>
+      <td>Fast edge responses using Cloudflare's native caches</td>
+      <td>
+        Cached responses have no durable backing store, and a hit in one region does not guarantee a
+        hit elsewhere
+      </td>
+    </tr>
+    <tr>
+      <td>Data cache</td>
+      <td>Workers KV</td>
+      <td>Workers KV</td>
+      <td>A simple persistent cache without Workers Cache</td>
+      <td>Requests still reach the Worker and KV is eventually consistent</td>
+    </tr>
+  </tbody>
+</table>
 
 When caching is enabled through `vinext init`, Workers Response Store is the default choice.
 
