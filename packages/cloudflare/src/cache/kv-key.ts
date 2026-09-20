@@ -48,10 +48,7 @@ function buildStorageKey(prefix: string, categoryPrefix: string, logicalKey: str
   return `${prefix}${categoryPrefix}${HASHED_KEY_PREFIX}${fnv1a64(logicalKey)}`;
 }
 
-/**
- * Create the deterministic key namespace shared by runtime cache operations
- * and deploy-time prerender population.
- */
+/** Create the deterministic key namespace for runtime cache operations. */
 export function createKvKeySpace(appPrefix: string | undefined): KvKeySpace {
   const prefix = normalizeAppPrefix(appPrefix);
   return {

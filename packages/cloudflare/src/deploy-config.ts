@@ -4,10 +4,6 @@ import { fileURLToPath } from "node:url";
 import type { VinextCacheConfig } from "vinext/internal/cache-adapters";
 import { findViteConfigPath } from "vinext/internal/utils/project";
 import {
-  DEFAULT_KV_DATA_CACHE_BINDING,
-  type KvDataAdapterOptions,
-} from "./cache/kv-data-adapter.js";
-import {
   DEFAULT_CDN_VERSION_METADATA_BINDING,
   type CdnAdapterOptions,
 } from "./cache/cdn-adapter.js";
@@ -118,12 +114,6 @@ export function viteConfigHasCacheAdapter(root: string): boolean {
   return cacheFieldAssigned(block, "cdn") || cacheFieldAssigned(block, "data");
 }
 
-export type ResolvedKvDataAdapterConfig = {
-  binding: string;
-  appPrefix?: string;
-  ttlSeconds?: number;
-};
-
 export type ResolvedCdnAdapterConfig = {
   versionMetadataBinding: string;
 };
@@ -156,44 +146,6 @@ export function resolveCdnAdapterConfig(
       options.versionMetadataBinding.length > 0
         ? options.versionMetadataBinding
         : DEFAULT_CDN_VERSION_METADATA_BINDING,
-  };
-}
-
-function isCloudflareKvDataAdapterPath(adapter: string): boolean {
-  const normalized = adapter.replace(/\\/g, "/");
-  return (
-    normalized === "@vinext/cloudflare/cache/kv-data-adapter.runtime" ||
-    normalized === "@vinext/cloudflare/cache/kv-data-adapter.runtime.js" ||
-    normalized.endsWith("/cache/kv-data-adapter.runtime.js")
-  );
-}
-
-function readPositiveNumberOption(
-  options: KvDataAdapterOptions | undefined,
-  field: "ttlSeconds",
-): number | undefined {
-  const value = options?.[field];
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
-export function resolveKvDataAdapterConfig(
-  cache: VinextCacheConfig | null | undefined,
-): ResolvedKvDataAdapterConfig | null {
-  const data = cache?.data;
-  if (!data?.adapter || !isCloudflareKvDataAdapterPath(data.adapter)) return null;
-
-  const options = data.options as KvDataAdapterOptions | undefined;
-  return {
-    binding:
-      typeof options?.binding === "string" && options.binding.length > 0
-        ? options.binding
-        : DEFAULT_KV_DATA_CACHE_BINDING,
-    ...(typeof options?.appPrefix === "string" && options.appPrefix.length > 0
-      ? { appPrefix: options.appPrefix }
-      : {}),
-    ...(readPositiveNumberOption(options, "ttlSeconds") !== undefined
-      ? { ttlSeconds: readPositiveNumberOption(options, "ttlSeconds") }
-      : {}),
   };
 }
 

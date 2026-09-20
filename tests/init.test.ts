@@ -748,16 +748,13 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "vite.config.ts")).toContain('vinext({ prerender: { routes: "*" } })');
   });
 
-  it("generates Cloudflare vite.config.ts with prerender when opted in", async () => {
+  it("rejects prerender for Cloudflare init", async () => {
     setupProject(tmpDir, { router: "app" });
 
-    await runInit(tmpDir, { prerender: true });
-
-    const config = readFile(tmpDir, "vite.config.ts");
-    expect(config).toContain('prerender: { routes: "*" }');
-    expect(config).toContain("data: kvDataAdapter()");
-    expect(config).toContain("cdn: cdnAdapter()");
-    expect(config).toContain("images: { optimizer: imagesOptimizer() }");
+    await expect(runInit(tmpDir, { prerender: true })).rejects.toThrow(
+      "Cloudflare init does not configure prerendering",
+    );
+    expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
   });
 
   it("prints explicit steps to finish Cloudflare KV setup", async () => {
@@ -928,20 +925,19 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(readFile(tmpDir, "worker/index.ts")).toBe("export default { fetch() {} };\n");
   });
 
-  it("additively fills missing prerender config on rerun", async () => {
+  it("preserves existing prerender config on Cloudflare rerun", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(
       tmpDir,
       "vite.config.ts",
       `import vinext from "vinext";
 
-export default { plugins: [vinext({ cache: { data: customData() } })] };
+export default { plugins: [vinext({ cache: { data: customData() }, prerender: true })] };
 `,
     );
 
     await runInit(tmpDir, {
       platform: "cloudflare",
-      prerender: true,
       cloudflare: {
         dataCache: "kv",
         cdnCache: "data-cache",
@@ -951,7 +947,8 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
 
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain("cache: { data: customData() }");
-    expect(config).toContain('prerender: { routes: "*" }');
+    expect(config.match(/prerender/g)).toHaveLength(1);
+    expect(config).toContain("prerender: true");
   });
 
   it("rejects Wrangler TOML", async () => {
