@@ -10,7 +10,7 @@ type WranglerConfig = {
   env?: Record<string, WranglerEnvironmentConfig>;
 };
 
-type WranglerEnvironmentConfig = {
+export type WranglerEnvironmentConfig = {
   customDomain?: string;
   name?: string;
 };

@@ -14,7 +14,9 @@
  * gracefully skips when no custom domain, API token, or traffic data exists.
  */
 
-import { parseWranglerConfig } from "./wrangler-config.js";
+import { parseWranglerConfig, type WranglerEnvironmentConfig } from "./wrangler-config.js";
+
+export { parseWranglerConfig, type WranglerEnvironmentConfig };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

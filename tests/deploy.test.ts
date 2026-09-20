@@ -69,8 +69,7 @@ import {
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
 import { createStaticFileSignal } from "../packages/vinext/src/server/request-pipeline.js";
-import { domainCandidates } from "../packages/cloudflare/src/tpr.js";
-import { parseWranglerConfig } from "../packages/cloudflare/src/wrangler-config.js";
+import { domainCandidates, parseWranglerConfig } from "../packages/cloudflare/src/tpr.js";
 import {
   parseCdnWarmupDeploymentUrl,
   parseWorkerDeploymentUrl,
