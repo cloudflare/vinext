@@ -60,6 +60,13 @@ export type CacheMetadataStub = DurableObjectStub & {
     objectKeyPrefix: string,
     createdAt: number,
   ): Promise<WriteReservation>;
+  replaceFailedWrite(
+    keyHash: string,
+    cacheKey: string,
+    objectKeyPrefix: string,
+    failedObjectKey: string,
+    createdAt: number,
+  ): Promise<WriteReservation | null>;
   reserveRegeneration(
     keyHash: string,
     cacheKey: string,
@@ -675,6 +682,58 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return reservation;
   }
 
+  async replaceFailedWrite(
+    keyHash: string,
+    cacheKey: string,
+    objectKeyPrefix: string,
+    failedObjectKey: string,
+    createdAt: number,
+  ): Promise<WriteReservation | null> {
+    const reservation = this.ctx.storage.transactionSync(() => {
+      const pending = this.ctx.storage.sql
+        .exec<{ invalidation_sequence: number; publishable: number }>(
+          "SELECT invalidation_sequence, publishable FROM pending_objects WHERE object_key = ?",
+          failedObjectKey,
+        )
+        .toArray()[0];
+      const currentInvalidationSequence = this.ctx.storage.sql
+        .exec<{ tag_invalidation_sequence: number }>(
+          "SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1",
+        )
+        .one().tag_invalidation_sequence;
+      this.ctx.storage.sql.exec(
+        "DELETE FROM pending_objects WHERE object_key = ?",
+        failedObjectKey,
+      );
+      if (
+        !pending ||
+        pending.publishable !== 1 ||
+        pending.invalidation_sequence !== currentInvalidationSequence
+      ) {
+        return null;
+      }
+
+      const current = this.ctx.storage.sql
+        .exec<{ active_revision: number | null; latest_revision: number }>(
+          "SELECT active_revision, latest_revision FROM entries WHERE key_hash = ?",
+          keyHash,
+        )
+        .toArray()[0];
+      const revision = this.reserveRevision(keyHash, cacheKey, current);
+      const objectKey = `${objectKeyPrefix}/${revision}`;
+      this.ctx.storage.sql.exec(
+        `INSERT INTO pending_objects
+          (object_key, created_at, invalidation_sequence) VALUES (?, ?, ?)`,
+        objectKey,
+        createdAt,
+        currentInvalidationSequence,
+      );
+      return { objectKey, r2ObjectAbsent: false, revision };
+    });
+    if (reservation) await this.ensureCleanupAlarm(createdAt);
+    return reservation;
+  }
+
   async reserveRegeneration(
     keyHash: string,
     cacheKey: string,
@@ -976,12 +1035,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const matches = this.findMatchingEntryRows(options, true);
 
       const tags = normalizeTags(options.tags ?? []);
-      if (tags.length) {
-        this.ctx.storage.sql.exec(
-          `UPDATE metadata_state SET tag_invalidation_sequence = tag_invalidation_sequence + 1
-          WHERE singleton = 1`,
-        );
-      }
+      this.ctx.storage.sql.exec(
+        `UPDATE metadata_state SET tag_invalidation_sequence = tag_invalidation_sequence + 1
+        WHERE singleton = 1`,
+      );
       for (const batch of batches(tags, MAX_SQL_PARAMETERS / 2)) {
         this.ctx.storage.sql.exec(
           `INSERT INTO tag_invalidations

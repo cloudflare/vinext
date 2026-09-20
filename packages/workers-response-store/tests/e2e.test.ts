@@ -1329,6 +1329,33 @@ test("a write reserved after a tag purge is not rejected by its timestamp", asyn
   assert.equal(result.published, true);
 });
 
+test("a failed write replacement preserves an intervening purge fence", async () => {
+  const stub = await metadataStub();
+  const prefix = "runtime-cache/poc-v2/retry-fence";
+  const first = await stub.reserveWrite("retry-fence", "/retry-fence", prefix, Date.now());
+  const replacement = await stub.replaceFailedWrite(
+    "retry-fence",
+    "/retry-fence",
+    prefix,
+    first.objectKey,
+    Date.now(),
+  );
+  assert.ok(replacement);
+
+  await stub.purgeMatching({ purgeEverything: true });
+
+  assert.equal(
+    await stub.replaceFailedWrite(
+      "retry-fence",
+      "/retry-fence",
+      prefix,
+      replacement.objectKey,
+      Date.now(),
+    ),
+    null,
+  );
+});
+
 test("the previous metadata schema is upgraded in place", async () => {
   const persistencePath = await mkdtemp(path.join(tmpdir(), "response-store-migration-"));
   let legacy;

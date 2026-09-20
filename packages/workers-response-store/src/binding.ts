@@ -1141,11 +1141,22 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         } catch (error) {
           // Preserve this response as the fallback when the leading write fails.
           if (error instanceof R2PublicationError && reservation) {
-            await this.releaseFailedWrite(metadata, reservation);
-            reservation = undefined;
+            const replacement = await metadata.replaceFailedWrite(
+              keyHash,
+              cacheKey.cacheKey,
+              this.objectKeyPrefix(keyHash),
+              reservation.objectKey,
+              Date.now(),
+            );
+            reservation = replacement
+              ? { ...cacheKey, fenceTags: cacheTags, ...replacement }
+              : undefined;
           }
           if (pendingPuts.get(pendingPutKey) === pending) {
             pendingPuts.delete(pendingPutKey);
+          }
+          if (error instanceof R2PublicationError && !reservation) {
+            return { backingStoreUpdated: false, edgePurgeAccepted: false };
           }
           continue;
         }
