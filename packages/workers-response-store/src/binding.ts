@@ -1156,6 +1156,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             pendingPuts.delete(pendingPutKey);
           }
           if (error instanceof R2PublicationError && !reservation) {
+            void response.body?.cancel().catch(() => {});
             return { backingStoreUpdated: false, edgePurgeAccepted: false };
           }
           continue;
