@@ -2,9 +2,13 @@ import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   findVinextNextConfigInPlugins,
+  resolveNextConfig,
   resolveNextConfigInput,
 } from "../packages/vinext/src/config/next-config.js";
-import { PHASE_PRODUCTION_BUILD } from "../packages/vinext/src/shims/constants.js";
+import {
+  PHASE_DEVELOPMENT_SERVER,
+  PHASE_PRODUCTION_BUILD,
+} from "../packages/vinext/src/shims/constants.js";
 import {
   findVinextPrerenderConfigInPlugins,
   findVinextRouteRootConfigInPlugins,
@@ -82,6 +86,34 @@ describe("vinext prerender config", () => {
     const plugins = vinext({ nextConfig });
     expect(await findVinextNextConfigInPlugins(plugins)).toBe(nextConfig);
   });
+
+  it("resolves cacheLife from object-form vinext({ nextConfig })", async () => {
+    const nextConfig = { cacheLife: { blog: { stale: 60, revalidate: 300, expire: 3600 } } };
+    const input = await findVinextNextConfigInPlugins(vinext({ nextConfig }));
+    const raw = await resolveNextConfigInput(input!);
+    const resolved = await resolveNextConfig(raw);
+
+    expect(resolved.cacheLife.blog).toStrictEqual(nextConfig.cacheLife.blog);
+  });
+
+  it.each([PHASE_DEVELOPMENT_SERVER, PHASE_PRODUCTION_BUILD])(
+    "resolves cacheLife from async inline config for phase %s",
+    async (phase) => {
+      const nextConfig = async (currentPhase: string) => ({
+        cacheLife: {
+          blog: { revalidate: currentPhase === PHASE_DEVELOPMENT_SERVER ? 30 : 300, expire: 3600 },
+        },
+      });
+      const input = await findVinextNextConfigInPlugins(vinext({ nextConfig }));
+      const raw = await resolveNextConfigInput(input!, phase);
+      const resolved = await resolveNextConfig(raw);
+
+      expect(resolved.cacheLife.blog).toStrictEqual({
+        revalidate: phase === PHASE_DEVELOPMENT_SERVER ? 30 : 300,
+        expire: 3600,
+      });
+    },
+  );
 
   it("discovers inline Next.js config through promised plugin composition", async () => {
     const nextConfig = { output: "export" } as const;

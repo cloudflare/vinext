@@ -42,6 +42,7 @@ import {
   type CacheLifeConfig,
 } from "./cache-request-state.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
+import { fillCacheLifeDefaults } from "../utils/cache-life-profiles.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
@@ -409,7 +410,7 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
   }
 
   if (configs.length === 1) {
-    return { ...configs[0] };
+    return fillCacheLifeDefaults(configs[0], cacheLifeProfiles.default);
   }
 
   // Minimum-wins across all fields
@@ -432,7 +433,7 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
     }
   }
 
-  return result;
+  return fillCacheLifeDefaults(result, cacheLifeProfiles.default);
 }
 
 // ---------------------------------------------------------------------------
@@ -442,6 +443,11 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
 // ---------------------------------------------------------------------------
 export type PrivateCacheState = {
   _privateCache: Map<string, unknown> | null;
+};
+
+type PrivateCacheEntry<TResult> = {
+  result: TResult;
+  cacheLife: CacheLifeConfig;
 };
 
 const _PRIVATE_FALLBACK_KEY = Symbol.for("vinext.cacheRuntime.privateFallback");
@@ -708,11 +714,19 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         if (privateHit !== undefined) {
           // The private cache is heterogeneous across cached functions; the key
           // includes this function's stable id, so a hit belongs to this TResult.
-          return privateHit as TResult;
+          const entry = privateHit as PrivateCacheEntry<TResult>;
+          cacheContextStorage.getStore()?.lifeConfigs.push(entry.cacheLife);
+          recordRequestScopedCacheLife(entry.cacheLife);
+          return entry.result;
         }
 
         const execution = await executeWithContext(fn, callArgs, cacheVariant, rsc);
-        if (execution.cacheable) privateCache.set(cacheKey, execution.result);
+        if (execution.cacheable) {
+          privateCache.set(cacheKey, {
+            result: execution.result,
+            cacheLife: execution.cacheLife,
+          } satisfies PrivateCacheEntry<TResult>);
+        }
         return execution.result;
       }
 
@@ -1038,7 +1052,11 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   args: any[],
   variant: string,
   rsc?: RscModule | null,
-): Promise<{ result: Awaited<ReturnType<T>>; cacheable: boolean }> {
+): Promise<{
+  result: Awaited<ReturnType<T>>;
+  cacheable: boolean;
+  cacheLife: CacheLifeConfig;
+}> {
   const {
     result,
     ctx: _ctx,
@@ -1054,6 +1072,7 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   return {
     result: collectedResult ? collectedResult.result : result,
     cacheable: collectedResult?.cacheEntry !== null,
+    cacheLife: effectiveLife,
   };
 }
 
@@ -1233,12 +1252,10 @@ async function runCachedFunctionWithContext<
   // (e.g., `Math.min(60, 0) === 0`), so the threshold checks (`revalidate
   // === 0` / `expire < DYNAMIC_EXPIRE`) below remain `true`. What actually
   // suppresses the throw is the `!ctx.hasExplicitRevalidate` /
-  // `!ctx.hasExplicitExpire` guard: those flags are set whenever the
-  // outer calls `cacheLife()` at all (see cache.ts), so the outer's
-  // explicit choice opts it out of the error even though the merged
-  // effective life remains dynamic. The captured `cause` is then silently
-  // discarded, which is the desired behavior — the outer made an explicit
-  // choice that overrides the dynamic child. Do not remove the
+  // `!ctx.hasExplicitExpire` guard: those flags record fields supplied by
+  // the outer's `cacheLife()` calls (see cache.ts). A partial named profile
+  // opts out only for the fields it supplies, even if the merged effective
+  // life remains dynamic. Do not remove the
   // `hasExplicit*` guards under the assumption that minimum-wins alone
   // gates the throw; it does not.
   //

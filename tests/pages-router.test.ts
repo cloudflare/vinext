@@ -4589,7 +4589,10 @@ describe("Plugin config", () => {
     );
     await fsp.writeFile(
       path.join(tmpDir, "next.config.mjs"),
-      `export default { basePath: "/disk", env: { CONFIG_SOURCE: "disk" } };`,
+      `export default {
+        basePath: "/disk", env: { CONFIG_SOURCE: "disk" },
+        cacheLife: { diskOnly: { revalidate: 120, expire: 60 } },
+      };`,
     );
 
     try {
@@ -4597,6 +4600,7 @@ describe("Plugin config", () => {
         nextConfig: {
           basePath: "/inline",
           env: { CONFIG_SOURCE: "inline" },
+          cacheLife: { blog: { expire: 60 } },
         },
       }) as any[];
       const configPlugin = plugins.find((p) => p.name === "vinext:config");

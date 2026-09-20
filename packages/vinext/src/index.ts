@@ -2659,6 +2659,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
           nextConfig.cacheComponents ?? false,
         );
+        // Each environment parses its own profile table. A compile-time
+        // constant avoids sharing application configuration through process.env.
+        defines["__VINEXT_CACHE_LIFE_PROFILES__"] = JSON.stringify(
+          JSON.stringify(nextConfig.cacheLife),
+        );
 
         // User-defined compile-time constants from `compiler.define` in
         // next.config. Applied to BOTH client and server bundles via Vite's

@@ -25,6 +25,7 @@ import {
 } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { fnv1a64 } from "../utils/hash.js";
+import { fillCacheLifeDefaults } from "../utils/cache-life-profiles.js";
 import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
@@ -105,7 +106,7 @@ export function revalidateTag(tag: string, profile?: string | { expire?: number 
   if (typeof profile === "string") {
     const resolved = cacheLifeProfiles[profile];
     if (resolved) {
-      durations = { expire: resolved.expire };
+      durations = { expire: resolved.expire ?? cacheLifeProfiles.default.expire };
     }
   } else if (profile && typeof profile === "object") {
     durations = profile;
@@ -358,29 +359,10 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     const ctx = getRegisteredCacheContext();
     if (ctx) {
       ctx.lifeConfigs.push(resolvedConfig);
-      // Note: these flags are slightly misnamed — they really mean
-      // "cacheLife() was called and the resolved config includes this field"
-      // rather than "the user explicitly passed this field". Because we merge
-      // user input over the default profile (`{ ...default, ...profile }`),
-      // calling `cacheLife({ expire: 60 })` still resolves a `revalidate`
-      // from the default profile, so `hasExplicitRevalidate` becomes true.
-      // This matches Next.js, which tracks the flag at the work unit store
-      // level (set when `cacheLife()` is called at all), not per-field. The
-      // suppression semantics are correct: calling `cacheLife()` is itself
-      // the explicit choice that opts the outer out of the nested-dynamic
-      // throw, regardless of which fields the user specified.
-      //
-      // The `!== undefined` checks below are therefore effectively
-      // unconditional in normal use: `resolvedConfig` always merges over the
-      // default profile, which has both `revalidate` and `expire` set. They
-      // remain as defensive guards in case `cacheLifeProfiles.default` is
-      // ever overridden to omit a field, or a future refactor lets callers
-      // pass `resolvedConfig` without the default merge. If per-field
-      // suppression is ever desired (e.g. `cacheLife({ expire: 60 })`
-      // suppressing only the expire-side throw), the flags would need to
-      // inspect the *raw user input* rather than `resolvedConfig` — but
-      // that would also diverge from Next.js semantics, so it should be a
-      // deliberate, documented design change rather than an incidental one.
+      // Named profiles keep their omitted fields until the runtime resolves
+      // all calls. Inherited defaults must not count as explicit durations.
+      // Inline objects retain their existing default-merge behavior above.
+      // https://github.com/vercel/next.js/blob/f464e32ec092c5a00c967e64cba40121a2992224/packages/next/src/server/use-cache/cache-life.ts
       if (resolvedConfig.revalidate !== undefined) ctx.hasExplicitRevalidate = true;
       if (resolvedConfig.expire !== undefined) ctx.hasExplicitExpire = true;
       _setRequestScopedCacheLife(resolvedConfig);
@@ -392,7 +374,11 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
 
   // Outside a "use cache" context (e.g., page component with file-level "use cache"):
   // store as request-scoped so the server can read it after rendering.
-  _setRequestScopedCacheLife(resolvedConfig);
+  _setRequestScopedCacheLife(
+    typeof profile === "string"
+      ? fillCacheLifeDefaults(resolvedConfig, cacheLifeProfiles.default)
+      : resolvedConfig,
+  );
 }
 
 /**

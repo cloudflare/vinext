@@ -670,6 +670,8 @@ Override behavior:
 
 ### Caching
 
+Named `cacheLife` profiles can be configured in `next.config.*` or `vinext({ nextConfig })`, including overrides of built-in profiles and `default`. See [configuring cache lifetimes](docs/caching.md#configuring-cache-lifetimes) for examples.
+
 The cache is pluggable. The default `MemoryCacheHandler` works out of the box. Swap in your own backend for production.
 
 #### Configuring cache adapters from `vite.config`

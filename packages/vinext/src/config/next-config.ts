@@ -14,6 +14,7 @@ import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
+import { resolveCacheLifeProfiles, type CacheLifeConfig } from "../utils/cache-life-profiles.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
@@ -282,6 +283,8 @@ export type NextConfig = {
    * Replaces the removed experimental.ppr and experimental.dynamicIO flags.
    */
   cacheComponents?: boolean;
+  /** Named cache lifetime profiles, including overrides of built-in profiles. */
+  cacheLife?: Record<string, CacheLifeConfig>;
   /**
    * Enables source maps while generating static pages.
    * Helps with errors during the prerender phase in `vinext build`.
@@ -318,6 +321,8 @@ export type NextConfig = {
     defineServer?: Record<string, string | number | boolean>;
   };
   experimental?: {
+    /** @deprecated Use the top-level cacheLife option instead. */
+    cacheLife?: Record<string, CacheLifeConfig>;
     /** Enables hard-navigation recovery when App Router navigation rendering fails. */
     appNavFailHandling?: boolean;
     /**
@@ -412,6 +417,8 @@ export type ResolvedNextConfig = {
   serverResolveExtensions: string[] | null;
   instrumentationClientInject: string[];
   cacheComponents: boolean;
+  /** Built-in and configured profiles; ordinary profiles may have omitted fields. */
+  cacheLife: Record<string, CacheLifeConfig>;
   appNavFailHandling: boolean;
   /**
    * Enables the experimental App Router gesture transition API:
@@ -1586,6 +1593,7 @@ export async function resolveNextConfig(
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cacheLife: resolveCacheLifeProfiles(),
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -1727,8 +1735,30 @@ export async function resolveNextConfig(
 
   const allowedDevOrigins = Array.isArray(config.allowedDevOrigins) ? config.allowedDevOrigins : [];
 
-  // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
+  // Resolve cache profiles and their default-field fallbacks.
   const experimental = readOptionalRecord(config.experimental);
+  const staleTimes = resolveStaleTimes(experimental);
+  const expireTime =
+    typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME;
+
+  // Next.js's migration overwrites the entire top-level map, even when the
+  // legacy key is explicitly undefined. Preserve that precedence without
+  // mutating the user's configuration object.
+  // https://github.com/vercel/next.js/blob/f464e32ec092c5a00c967e64cba40121a2992224/packages/next/src/server/config.ts
+  const hasExperimentalCacheLife = experimental !== undefined && "cacheLife" in experimental;
+  if (hasExperimentalCacheLife) {
+    const configFileName = path.basename(findNextConfigPath(root) ?? "next.config.js");
+    warnConfigOnce(
+      "`experimental.cacheLife` has been moved to `cacheLife`. " +
+        `Please update your ${configFileName} file accordingly.`,
+    );
+  }
+  const cacheLife = resolveCacheLifeProfiles(
+    hasExperimentalCacheLife ? experimental.cacheLife : config.cacheLife,
+    { defaultStale: staleTimes.static, defaultExpire: expireTime },
+  );
+
+  // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config.
   const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
   const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
   const serverActionsBodySizeLimitConfig = readOptionalBodySizeLimit(
@@ -1951,6 +1981,7 @@ export async function resolveNextConfig(
         )
       : [],
     cacheComponents: config.cacheComponents ?? false,
+    cacheLife,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,
@@ -1975,7 +2006,7 @@ export async function resolveNextConfig(
     globalNotFound,
     serverActionsBodySizeLimit,
     serverActionsBodySizeLimitLabel,
-    expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
+    expireTime,
     reactMaxHeadersLength:
       typeof config.reactMaxHeadersLength === "number"
         ? config.reactMaxHeadersLength
@@ -2014,7 +2045,7 @@ export async function resolveNextConfig(
           (value): value is string => typeof value === "string",
         )
       : undefined,
-    staleTimes: resolveStaleTimes(experimental),
+    staleTimes,
     useLightningcss,
     lightningCssFeatures,
   };
