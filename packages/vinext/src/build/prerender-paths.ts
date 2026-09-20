@@ -1550,6 +1550,17 @@ export async function discoverPrerenderPathManifest(
         routePatterns: pagesWarmMetadata.routePatterns,
         rscPaths: [],
       };
+  for (const pathname of configuredCandidatePaths) {
+    if (appOwnedWarmPaths.routePatterns[pathname] || !routeMayResolveWarmPathSet.has(pathname)) {
+      continue;
+    }
+    appOwnedWarmPaths.htmlPaths.push(pathname);
+    (appDir ? appOwnedWarmPaths.appPaths : appOwnedWarmPaths.pagesPaths).push(pathname);
+    appOwnedWarmPaths.routePatterns[pathname] = {
+      kind: appDir ? "app-page" : "pages-page",
+      pattern: pathname,
+    };
+  }
   const warmPaths = appOwnedWarmPaths.htmlPaths;
   const pagesOwnedWarmPaths = appOwnedWarmPaths.pagesPaths;
   const resolvedPagesDataWarmPaths = pagesOwnedWarmPaths.filter((pathname) =>

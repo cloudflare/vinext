@@ -10,6 +10,9 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 const emitPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
 const discoverPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
+const resolveTPRRoutesMock = vi.hoisted(() =>
+  vi.fn(async () => ({ routes: [] as { path: string; requests: number }[] })),
+);
 const realWranglerUrl = pathToFileURL(
   createRequire(path.join(process.cwd(), "examples/app-router-cloudflare/package.json")).resolve(
     "wrangler",
@@ -18,6 +21,11 @@ const realWranglerUrl = pathToFileURL(
 
 vi.mock("vinext/internal/build/run-prerender", () => ({
   runPrerender: runPrerenderMock,
+}));
+
+vi.mock("../packages/cloudflare/src/tpr.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../packages/cloudflare/src/tpr.js")>()),
+  resolveTPRRoutes: resolveTPRRoutesMock,
 }));
 
 vi.mock("vinext/internal/build/prerender-paths", async (importOriginal) => {
@@ -216,6 +224,7 @@ describe("deploy prerender config wiring", () => {
     runPrerenderMock.mockClear();
     emitPrerenderPathManifestMock.mockClear();
     discoverPrerenderPathManifestMock.mockClear();
+    resolveTPRRoutesMock.mockClear();
     vi.mocked(execFileSync).mockClear();
     vi.mocked(spawn).mockClear();
   });
@@ -395,6 +404,53 @@ describe("deploy prerender config wiring", () => {
         return wranglerArgs.includes("versions") && wranglerArgs.includes("upload");
       }),
     ).toBe(true);
+  });
+
+  it("uses a normal deploy when TPR has no cache warmup identity", async () => {
+    writeProject("true");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, experimentalTPR: true });
+
+    expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
+      expect.stringContaining("wrangler"),
+      "deploy",
+    ]);
+  });
+
+  it("uses a normal deploy when a TPR warmup cannot be staged safely", async () => {
+    writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    writeFile(
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
+    );
+    writeFile(
+      "node_modules/wrangler/index.js",
+      `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+    );
+    resolveTPRRoutesMock.mockResolvedValueOnce({ routes: [{ path: "/hot", requests: 10 }] });
+    vi.mocked(execFileSync).mockImplementationOnce(() =>
+      JSON.stringify({
+        versions: [
+          { version_id: "11111111-1111-4111-8111-111111111111", percentage: 50 },
+          { version_id: "22222222-2222-4222-8222-222222222222", percentage: 50 },
+        ],
+      }),
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, experimentalTPR: true });
+
+    expect(resolveTPRRoutesMock).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => (args as string[]).includes("upload")),
+    ).toBe(false);
+    expect(vi.mocked(spawn).mock.calls.at(-1)?.[1]).toEqual([
+      expect.stringContaining("wrangler"),
+      "deploy",
+    ]);
   });
 
   it("runs static export during deploy when output export is configured inline", async () => {

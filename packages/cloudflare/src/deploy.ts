@@ -794,12 +794,20 @@ export function selectTPRWarmPlan(
       canonical(route.cacheabilityProbe?.concretePathname ?? pathname),
     ),
   );
+  const requestsByPath = new Map<string, number>();
+  for (const { path, requests } of traffic) {
+    const pathname = canonical(path);
+    if (!resolved.has(pathname)) continue;
+    requestsByPath.set(pathname, (requestsByPath.get(pathname) ?? 0) + requests);
+  }
   const selected = new Set(
     selectRoutes(
-      traffic.filter(({ path }) => resolved.has(canonical(path))),
+      Array.from(requestsByPath, ([path, requests]) => ({ path, requests })).sort(
+        (a, b) => b.requests - a.requests,
+      ),
       coverage,
       limit,
-    ).routes.map(({ path }) => canonical(path)),
+    ).routes.map(({ path }) => path),
   );
   const includes = (pathname: string): boolean =>
     selected.has(
@@ -2021,11 +2029,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
     viteConfigMetadata.cacheConfig,
   );
   const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
-  // Static export still needs local artifacts. Other pre-warm deploys render
-  // through the staged Worker so runtime-backed adapters populate themselves.
-  const shouldPrerenderLocally =
-    prerenderDecision &&
-    (options.warmCdnCache !== true || prerenderDecision.reason === "next-export");
   // Step 5: Build
   if (!options.skipBuild) {
     await runBuild(info, buildEnv);
@@ -2033,7 +2036,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  const tpr = options.experimentalTPR
+  const canWarmTpr = options.experimentalTPR && hasBuildIdentityHeader;
+  if (options.experimentalTPR && !hasBuildIdentityHeader) {
+    console.log("  TPR: Skipping pre-warm (configured cache does not expose build identity)");
+  }
+  const tpr = canWarmTpr
     ? await resolveTPRRoutes({
         root,
         config: options.config,
@@ -2044,7 +2051,29 @@ export async function deploy(options: DeployOptions): Promise<void> {
     : null;
   if (tpr?.skipped) console.log(`  TPR: Skipped (${tpr.skipped})`);
   const tprRoutes = tpr?.routes ?? [];
-  const shouldWarmCdnCache = options.warmCdnCache || tprRoutes.length > 0;
+  const wranglerOptions = {
+    env: deployEnv === "production" && !options.env ? undefined : deployEnv,
+    name: options.name,
+    config: options.config,
+    verbose: options.verbose,
+  };
+  let shouldWarmTpr = tprRoutes.length > 0;
+  if (shouldWarmTpr && !options.warmCdnCache) {
+    try {
+      const deployment = runWranglerDeploymentStatus(root, wranglerOptions);
+      shouldWarmTpr = getZeroPercentStagingTraffic(deployment, "tpr-preflight") !== null;
+    } catch {
+      shouldWarmTpr = false;
+    }
+    if (!shouldWarmTpr) {
+      console.log("  TPR: Skipping pre-warm (current deployment cannot be staged safely)");
+    }
+  }
+  const shouldWarmCdnCache = options.warmCdnCache || shouldWarmTpr;
+  // Static export still needs local artifacts. Other pre-warm deploys render
+  // through the staged Worker so runtime-backed adapters populate themselves.
+  const shouldPrerenderLocally =
+    prerenderDecision && (!shouldWarmCdnCache || prerenderDecision.reason === "next-export");
 
   if (shouldWarmCdnCache && cdnAdapterConfig) {
     const wrangler = await loadProjectWranglerApi(info.root);
@@ -2118,12 +2147,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   // Step 7: Deploy via wrangler
-  const wranglerOptions = {
-    env: deployEnv === "production" && !options.env ? undefined : deployEnv,
-    name: options.name,
-    config: options.config,
-    verbose: options.verbose,
-  };
   let url: string;
 
   if (shouldWarmCdnCache) {

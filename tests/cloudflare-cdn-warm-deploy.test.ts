@@ -350,6 +350,31 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ]);
   });
 
+  it("aggregates traffic aliases before applying TPR coverage and limits", async () => {
+    const { selectTPRWarmPlan } = await import("../packages/cloudflare/src/deploy.js");
+
+    const selected = selectTPRWarmPlan(
+      {
+        loadingShellPaths: [],
+        paths: ["/hot", "/cold"],
+        routePatterns: {
+          "/hot": { kind: "app-page", pattern: "/:slug" },
+          "/cold": { kind: "app-page", pattern: "/:slug" },
+        },
+        rscPaths: [],
+      },
+      [
+        { path: "/hot", requests: 40 },
+        { path: "/hot/", requests: 35 },
+        { path: "/cold", requests: 25 },
+      ],
+      90,
+      2,
+    );
+
+    expect(selected.paths).toEqual(["/hot", "/cold"]);
+  });
+
   it("rejects promotion delays that Node timers cannot represent before deploying", async () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 

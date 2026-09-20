@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { toSlash } from "pathslash";
+import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 
 const closeMock = vi.hoisted(() => vi.fn((callback: () => void) => callback()));
 const startProdServerMock = vi.hoisted(() =>
@@ -204,6 +205,42 @@ describe("prerender path manifest", () => {
     expect(manifest?.routePatterns?.["/cached/from-traffic"]).toMatchObject({
       kind: "app-page",
       pattern: "/cached/:slug",
+    });
+  });
+
+  it("keeps traffic paths that staged rewrites resolve to a route", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/layout.tsx",
+      "export default function Layout({ children }) { return children; }\n",
+    );
+    writeFile("app/actual/page.tsx", "export default function Page() { return null; }\n");
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      candidatePaths: ["/hot"],
+      nextConfig: await resolveNextConfig(
+        {
+          rewrites: () => ({
+            beforeFiles: [{ source: "/hot", destination: "/actual" }],
+            afterFiles: [],
+            fallback: [],
+          }),
+        },
+        tmpDir,
+      ),
+      requestRouting: "uncached-stage",
+    });
+
+    expect(manifest?.paths).toContain("/hot");
+    expect(manifest?.appPaths).toContain("/hot");
+    expect(manifest?.routePatterns?.["/hot"]?.cacheabilityProbe).toMatchObject({
+      routeMayResolve: true,
     });
   });
 
