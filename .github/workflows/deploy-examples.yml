@@ -304,13 +304,34 @@ jobs:
           vp exec vinext-cloudflare deploy "${args[@]}"
 
       - name: Deploy Preview Version
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !matrix.example.worker_name
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
-          command: versions upload --config ${{ matrix.example.wrangler_config }} ${{ matrix.example.worker_name && format('--name {0}', matrix.example.worker_name) || '' }} --preview-alias pr-${{ github.event.pull_request.number }}
+          command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
+
+      - name: Deploy Named Preview Version
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.worker_name
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_ALIAS: pr-${{ github.event.pull_request.number }}
+          WORKER_NAME: ${{ matrix.example.worker_name }}
+        run: |
+          upload=(vp exec wrangler versions upload --config "${{ matrix.example.wrangler_config }}" --name "$WORKER_NAME" --preview-alias "$PREVIEW_ALIAS")
+          if output=$("${upload[@]}" 2>&1); then
+            printf '%s\n' "$output"
+            exit 0
+          fi
+          printf '%s\n' "$output" >&2
+          if [[ "$output" != *"does not yet exist"* ]]; then
+            exit 1
+          fi
+          vp exec wrangler deploy --config "${{ matrix.example.wrangler_config }}" --name "$WORKER_NAME"
+          "${upload[@]}"
 
       # `versions upload` does not apply non-versioned workers.dev/preview URL
       # settings. A newly added assets-only Worker has no routes until this runs.
