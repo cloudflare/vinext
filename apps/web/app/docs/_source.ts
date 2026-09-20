@@ -1,5 +1,12 @@
 import type { ComponentType } from "react";
 
+declare global {
+  // oxlint-disable-next-line typescript/consistent-type-definitions -- ImportMeta augmentation requires interface merging.
+  interface ImportMeta {
+    glob<T>(pattern: string, options: { eager: true }): Record<string, T>;
+  }
+}
+
 export type DocPage = {
   slug: string;
   title: string;
