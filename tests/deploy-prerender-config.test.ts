@@ -111,7 +111,7 @@ function createMockChildProcess(output: string, code: number): ChildProcess {
   return child;
 }
 
-function writeProject(prerenderConfig: string, cacheConfig?: string): void {
+function writeProject(prerenderConfig: string | undefined, cacheConfig?: string): void {
   writeFile("package.json", JSON.stringify({ name: "prerender-config-app", type: "module" }));
   writeFile("app/page.tsx", "export default function Page() { return <div>home</div>; }\n");
   writeFile(
@@ -140,7 +140,12 @@ function writeProject(prerenderConfig: string, cacheConfig?: string): void {
         : []),
       "",
       "export default defineConfig({",
-      `  plugins: [vinext({ prerender: ${prerenderConfig}${cacheConfig ? `, cache: ${cacheConfig}` : ""} }), cloudflare()],`,
+      `  plugins: [vinext({ ${[
+        prerenderConfig ? `prerender: ${prerenderConfig}` : null,
+        cacheConfig ? `cache: ${cacheConfig}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ")} }), cloudflare()],`,
       "});",
       "",
     ].join("\n"),
@@ -333,8 +338,11 @@ describe("deploy prerender config wiring", () => {
     await expect(deploy({ root: tmpDir, skipBuild: true })).rejects.toThrow("vite config loaded");
   });
 
-  it("keeps all-route prerendering when TPR prewarms KV through the staged Worker", async () => {
-    writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+  it.each([
+    ["all-route prerendering", "true", false],
+    ["explicit CDN warming", undefined, true],
+  ])("keeps %s when TPR prewarms KV through the staged Worker", async (_, prerender, warmCdn) => {
+    writeProject(prerender, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     writeFile(
       "wrangler.jsonc",
       '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
@@ -385,6 +393,7 @@ describe("deploy prerender config wiring", () => {
       root: tmpDir,
       skipBuild: true,
       experimentalTPR: true,
+      warmCdnCache: warmCdn,
       warmCdnPromotionDelay: 0,
       warmCdnReadinessProbeDelay: 0,
       warmCdnReadinessProbes: 1,
@@ -412,6 +421,38 @@ describe("deploy prerender config wiring", () => {
         const wranglerArgs = args as string[];
         return wranglerArgs.includes("versions") && wranglerArgs.includes("upload");
       }),
+    ).toBe(true);
+  });
+
+  it("allows TPR no-promote deploys with no resolved warm routes", async () => {
+    writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    writeFile(
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
+    );
+    writeFile(
+      "node_modules/wrangler/index.js",
+      `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+    );
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    resolveTPRRoutesMock.mockResolvedValueOnce({
+      routes: [{ path: "/missing", requests: 10 }],
+    });
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deploy({
+        root: tmpDir,
+        skipBuild: true,
+        experimentalTPR: true,
+        warmCdnPromote: false,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => (args as string[]).includes("upload")),
     ).toBe(true);
   });
 

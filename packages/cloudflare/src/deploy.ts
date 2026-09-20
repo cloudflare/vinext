@@ -879,6 +879,8 @@ type CdnWarmDeployOptions = Pick<
     | "rscPaths"
     | "statusSource"
   > & {
+    /** Allow optional route selection to discover no warmable requests. */
+    allowEmptyWarmPlan?: boolean;
     /** Probe a staged Worker and upload the resulting manifest as a second version. */
     cacheabilityProbe?: boolean;
     discoverWarmPlan?: (target: {
@@ -1315,7 +1317,12 @@ async function deployUploadedVersionWithCdnWarmup(
       );
     }
     const remainingWarmRequests = countRemainingWarmRequests();
-    if (!hasPreparedWarmPlan && options.discoverWarmPlan && discoveredWarmRequests === 0) {
+    if (
+      !options.allowEmptyWarmPlan &&
+      !hasPreparedWarmPlan &&
+      options.discoverWarmPlan &&
+      discoveredWarmRequests === 0
+    ) {
       throw withStagedVersionCleanupNote(
         new Error(
           "CDN warmup cannot skip promotion because no build-discovered requests were found to warm.",
@@ -2154,6 +2161,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (shouldWarmCdnCache) {
     url = await deployWithCdnWarmup(root, [], {
       ...wranglerOptions,
+      allowEmptyWarmPlan: tprRoutes.length > 0 && !options.warmCdnCache,
       cacheabilityProbe: needsCacheabilityProbeManifest,
       discoverWarmPlan: async ({ headers, targetUrl }) => {
         const discovery = await discoverPrerenderPathManifest({
@@ -2182,7 +2190,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
           includeFallbackShells: options.warmCdnIncludeFallbacks,
           strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
         });
-        return tprRoutes.length > 0 && !prerenderDecision
+        return tprRoutes.length > 0 && !options.warmCdnCache && !prerenderDecision
           ? selectTPRWarmPlan(
               plan,
               tprRoutes,
