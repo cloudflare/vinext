@@ -487,6 +487,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return accepted;
   }
 
+  async purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<void> {
+    await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry));
+  }
+
   private async purgePendingEdgeEntries(
     metadata: CacheMetadataStub,
     purgeByTag: boolean,
@@ -1062,7 +1066,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       }
     }
 
-    await r2Read?.object?.body.cancel();
+    await r2Read?.object?.body.cancel().catch(() => {});
     const metadata = this.getMetadata(keyHash);
     const regeneration = await metadata.reserveRegeneration(
       keyHash,
@@ -1285,7 +1289,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       try {
         edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
         const acknowledged = await Promise.allSettled(
-          reservations.map(({ metadata }) => this.purgePendingEdgeEntries(metadata, false)),
+          reservations.map(({ metadata }) => this.purgePendingEdgeEntries(metadata, true)),
         );
         for (const result of acknowledged) {
           if (result.status === "rejected") failures.push(result.reason);

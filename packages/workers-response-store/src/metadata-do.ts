@@ -48,6 +48,10 @@ type TombstoneDrainResult = {
   purged: PurgedEntry[];
 };
 
+type R2TombstoneEdgePurger = {
+  purgeR2TombstoneEdges(entries: PurgedEntry[]): Promise<void>;
+};
+
 export type CacheMetadataStub = DurableObjectStub & {
   reserveWrite(
     keyHash: string,
@@ -95,6 +99,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     invalidatedAt?: number,
   ): Promise<PurgeReservation>;
   drainPendingTombstones(limit: number, keyHash?: string): Promise<TombstoneDrainResult>;
+  retryPendingTombstones(): Promise<boolean>;
   listPendingEdgePurges(limit: number): Promise<PurgedEntry[]>;
   markTombstonesEdgePurged(entries: PurgedEntry[]): Promise<void>;
   inspect(): Promise<StoredEntry[]>;
@@ -339,11 +344,35 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   private async ensureCleanupAlarm(createdAt: number): Promise<void> {
     if (this.cleanupAlarmKnown) return;
+    await this.scheduleCleanupAlarm(createdAt + ORPHAN_RETENTION_MS);
+  }
+
+  private async scheduleCleanupAlarm(scheduledTime: number): Promise<void> {
     const current = await this.ctx.storage.getAlarm();
-    if (current === null) {
-      await this.ctx.storage.setAlarm(createdAt + ORPHAN_RETENTION_MS);
+    if (current === null || current > scheduledTime) {
+      await this.ctx.storage.setAlarm(scheduledTime);
     }
     this.cleanupAlarmKnown = true;
+  }
+
+  private logCleanupFailure(error: unknown): void {
+    console.error(
+      JSON.stringify({
+        message: "Workers Response Store cleanup scheduling failed",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  }
+
+  private getR2TombstoneEdgePurger(): R2TombstoneEdgePurger {
+    const factory = Reflect.get(this.ctx.exports, "ResponseStoreBinding") as
+      | (R2TombstoneEdgePurger &
+          ((options: { props: Record<string, never> }) => R2TombstoneEdgePurger))
+      | undefined;
+    if (typeof factory !== "function") {
+      throw new Error("The ResponseStoreBinding entrypoint is not exported");
+    }
+    return factory({ props: {} });
   }
 
   private findMatchingEntryRows(
@@ -479,6 +508,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   async alarm(): Promise<void> {
     try {
+      if (await this.retryPendingTombstones()) {
+        await this.ctx.storage.setAlarm(Date.now());
+        this.cleanupAlarmKnown = true;
+        return;
+      }
       await this.sweepExpiredPendingObjects();
     } catch (error) {
       console.error(
@@ -490,6 +524,26 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       await this.ctx.storage.setAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS);
       this.cleanupAlarmKnown = true;
     }
+  }
+
+  async retryPendingTombstones(): Promise<boolean> {
+    const drained = await this.drainPendingTombstones(400);
+    if (drained.failures.length) {
+      throw new AggregateError(
+        drained.failures.map((failure) => new Error(failure)),
+        "R2 tombstone cleanup failed",
+      );
+    }
+    const edgeEntries = this.listPendingEdgePurges(400);
+    if (edgeEntries.length) {
+      await this.getR2TombstoneEdgePurger().purgeR2TombstoneEdges(edgeEntries);
+      this.markTombstonesEdgePurged(edgeEntries);
+    }
+    return (
+      this.ctx.storage.sql
+        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending_r2_tombstones")
+        .one().count > 0
+    );
   }
 
   async claimRevalidation(
@@ -800,6 +854,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     });
 
     if (!queued) return { failures: [], pending: [], purged: [] };
+    await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
+      this.logCleanupFailure(error),
+    );
     return this.drainPendingTombstones(1, keyHash);
   }
 
@@ -982,6 +1039,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         .one().count;
       return { backingStoreUpdated: matches.length > 0 || tags.length > 0, pendingTombstones };
     });
+    if (reservation.pendingTombstones > 0) {
+      await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
+        this.logCleanupFailure(error),
+      );
+    }
     return reservation;
   }
 
