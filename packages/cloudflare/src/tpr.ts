@@ -14,9 +14,9 @@
  * gracefully skips when no custom domain, API token, or traffic data exists.
  */
 
-import { parseWranglerConfig, type WranglerEnvironmentConfig } from "./wrangler-config.js";
+import { parseWranglerConfig } from "./wrangler-config.js";
 
-export { parseWranglerConfig, type WranglerEnvironmentConfig };
+export { parseWranglerConfig };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -108,7 +108,7 @@ async function resolveZoneId(domain: string, apiToken: string): Promise<string |
  * Query Cloudflare zone analytics for top page paths by request count
  * over the given time window.
  */
-export async function queryTraffic(
+async function queryTraffic(
   zoneTag: string,
   apiToken: string,
   windowHours: number,
