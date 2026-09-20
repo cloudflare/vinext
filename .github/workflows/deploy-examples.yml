@@ -133,7 +133,7 @@ jobs:
       deployments: write
     env:
       VINEXT_CACHE_BACKEND: ${{ matrix.example.cache_backend }}
-      VINEXT_KV_APP_PREFIX: ${{ matrix.example.cache_backend == 'kv' && github.event_name == 'pull_request' && format('pr-{0}-{1}-{2}', github.event.pull_request.number, github.run_id, github.run_attempt) || 'workers-cache' }}
+      VINEXT_KV_APP_PREFIX: ${{ matrix.example.cache_backend != 'response-store' && github.event_name == 'pull_request' && format('pr-{0}-{1}-{2}-{3}', github.event.pull_request.number, matrix.example.project, github.run_id, github.run_attempt) || matrix.example.project }}
     strategy:
       fail-fast: false
       matrix:
@@ -175,6 +175,13 @@ jobs:
             warm_cdn_cache: true
           - name: workers-cache
             project: workers-cache
+            working_directory: examples/response-store-demo
+            wrangler_config: dist/server/wrangler.json
+            cache_backend: workers-cache
+            prewarm_e2e: true
+            warm_cdn_cache: true
+          - name: kv
+            project: kv
             working_directory: examples/response-store-demo
             wrangler_config: dist/server/wrangler.json
             cache_backend: kv

@@ -22,6 +22,7 @@ import {
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
+  usesVinextCacheWarmupStatus,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
   VIRTUAL_CDN_CACHE_ADAPTER,
@@ -104,6 +105,21 @@ describe("generateCacheAdaptersModule", () => {
     expect(code).toContain(
       `registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: {"binding":"MY_KV"} }));`,
     );
+  });
+
+  it("adds build identity to the origin-managed adapter when the data adapter provides it", () => {
+    const code = generateCacheAdaptersModule({
+      data: {
+        adapter: "my-data-adapter",
+        capabilities: { buildIdentity: "response-header" },
+      },
+    });
+
+    expect(code).toContain('import { DefaultCdnCacheAdapter } from "vinext/shims/cdn-cache";');
+    expect(code).toContain(
+      "process.env.__VINEXT_RSC_BUILD_IDENTITY || process.env.__VINEXT_BUILD_ID",
+    );
+    expect(code).toContain("registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter(");
   });
 
   it("wires both adapters and guards against double registration", () => {
@@ -216,6 +232,18 @@ describe("kvDataAdapter builder", () => {
     expect(descriptor.adapter.endsWith("kv-data-adapter.runtime.js")).toBe(true);
     expect(descriptor.options).toEqual({ binding: "MY_KV", ttlSeconds: 60 });
     expect(kvDataAdapter().options).toBeUndefined();
+    expect(descriptor.capabilities).toEqual({
+      buildIdentity: "response-header",
+      warmup: "data-cache",
+    });
+    expect(hasBuildIdentityResponseHeader({ data: descriptor })).toBe(true);
+    expect(usesVinextCacheWarmupStatus({ data: descriptor })).toBe(true);
+    expect(
+      hasBuildIdentityResponseHeader({
+        cdn: { adapter: "custom-cdn" },
+        data: descriptor,
+      }),
+    ).toBe(false);
   });
 
   it("validates the binding option at config time", () => {

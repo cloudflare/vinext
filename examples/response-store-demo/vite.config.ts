@@ -6,7 +6,8 @@ import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-ad
 import { cloudflare } from "@cloudflare/vite-plugin";
 
 const selfContained = process.env.VINEXT_RESPONSE_STORE_MODE === "self-contained";
-const kv = process.env.VINEXT_CACHE_BACKEND === "kv";
+const cacheBackend = process.env.VINEXT_CACHE_BACKEND;
+const kv = cacheBackend === "kv" || cacheBackend === "workers-cache";
 const outputRoot = selfContained ? ".vinext/response-store-self-contained" : "dist";
 
 export default defineConfig({
@@ -14,8 +15,8 @@ export default defineConfig({
     vinext({
       cache: kv
         ? {
-            cdn: cdnAdapter(),
-            data: kvDataAdapter({ appPrefix: process.env.VINEXT_KV_APP_PREFIX ?? "workers-cache" }),
+            ...(cacheBackend === "workers-cache" ? { cdn: cdnAdapter() } : {}),
+            data: kvDataAdapter({ appPrefix: process.env.VINEXT_KV_APP_PREFIX ?? cacheBackend }),
           }
         : responseStoreAdapter({
             mode: selfContained ? "self-contained" : "service-binding",

@@ -325,13 +325,10 @@ describe("deploy prerender config wiring", () => {
   });
 
   it("loads Vite config once and prewarms configured KV through the staged Worker", async () => {
-    writeProject(
-      "true",
-      '{ data: kvDataAdapter({ binding: "MY_KV" }), cdn: { ...cdnAdapter(), capabilities: { buildIdentity: "response-header" } } }',
-    );
+    writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     writeFile(
       "wrangler.jsonc",
-      '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"},"version_metadata":{"binding":"CF_VERSION_METADATA"}}\n',
+      '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
     );
     writeFile(
       "node_modules/wrangler/package.json",
@@ -348,9 +345,9 @@ describe("deploy prerender config wiring", () => {
       async () =>
         new Response("<html>About</html>", {
           headers: {
-            "CF-Cache-Status": "MISS",
             "Content-Type": "text/html",
             "X-Vinext-Build-Id": "build-a",
+            "X-Vinext-Cache": "MISS",
           },
         }),
     );

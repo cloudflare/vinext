@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { cacheLife } from "next/cache";
 import { CacheStatusProbe } from "../../components/cache-status-probe";
 import { RevalidateControls } from "../../components/revalidate-controls";
+import { loadPrewarmProbe } from "../prewarm-probe";
 
 // ISR config — slugs are cached for 60 seconds with a 5-minute
 // stale-while-revalidate window. The data adapter persists the completed
@@ -36,12 +36,6 @@ async function loadPost(slug: string): Promise<{ title: string }> {
     next: { tags: [`post:${slug}`], revalidate: 60 },
   });
   return { title: `Post: ${slug}` };
-}
-
-async function loadPrewarmProbe(slug: string) {
-  "use cache";
-  cacheLife({ revalidate: 60, expire: 300 });
-  return { cacheId: crypto.randomUUID(), cachedAt: Date.now(), slug };
 }
 
 export default async function CachedSlugPage({

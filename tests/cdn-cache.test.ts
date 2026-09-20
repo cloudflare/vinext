@@ -263,6 +263,13 @@ describe("DefaultCdnCacheAdapter", () => {
     expect(headers).toEqual({ "Cache-Control": "s-maxage=60, stale-while-revalidate" });
   });
 
+  it("optionally identifies origin-managed responses for staged warmup", () => {
+    expect(new DefaultCdnCacheAdapter().buildResponseIdentityHeaders()).toEqual({});
+    expect(new DefaultCdnCacheAdapter("build-a").buildResponseIdentityHeaders()).toEqual({
+      "X-Vinext-Build-Id": "build-a",
+    });
+  });
+
   it("forces no-store while a streamed render's dynamic-ness is unproven", () => {
     const headers = new DefaultCdnCacheAdapter().buildResponseHeaders({
       cacheControl: "s-maxage=60, stale-while-revalidate",

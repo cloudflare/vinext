@@ -39,7 +39,7 @@ test("deployment pre-warming populates the configured data cache", async ({ base
   });
   const warmedHeaders = warmed.headers();
   expect(warmed.ok(), JSON.stringify(warmedHeaders)).toBe(true);
-  if (backend === "kv") {
+  if (backend === "workers-cache") {
     expect(["HIT", "MISS"], JSON.stringify(warmedHeaders)).toContain(
       warmedHeaders["cf-cache-status"],
     );
@@ -52,7 +52,7 @@ test("deployment pre-warming populates the configured data cache", async ({ base
   const cachedAt = Number(/data-cache-created-at[^>]*>([^<]+)</.exec(warmedBody)?.[1]);
   expect(cachedAt).toBeLessThan(testStartedAt + 1_000);
 
-  if (backend === "kv" && warmedHeaders["cf-cache-status"] === "MISS") {
+  if (backend === "workers-cache" && warmedHeaders["cf-cache-status"] === "MISS") {
     const reused = await request.get(`${baseURL}/cached/intro`, {
       headers: { accept: "text/html" },
     });
@@ -60,22 +60,20 @@ test("deployment pre-warming populates the configured data cache", async ({ base
     await reused.dispose();
   }
 
-  // A unique query misses either response cache while the nested "use cache"
-  // call retains the same data-cache key because it only receives the slug.
-  const originUrl = new URL("/cached/intro", baseURL);
-  originUrl.searchParams.set("cache-e2e", randomUUID());
-  const origin = await request.get(originUrl.href, {
-    headers: { accept: "text/html" },
+  // This route is explicitly no-store, so neither response-cache implementation
+  // can satisfy it. It calls the same cached function as the page and therefore
+  // proves that deployment warmup populated the configured data adapter.
+  const probe = await request.get(
+    `${baseURL}/api/cache-prewarm-probe/intro?cache-e2e=${randomUUID()}`,
+  );
+  const probeHeaders = probe.headers();
+  expect(probe.ok(), JSON.stringify(probeHeaders)).toBe(true);
+  expect(probeHeaders["x-vinext-build-id"]).toBe(rscBuildId);
+  expect(probeHeaders["cache-control"]).toContain("no-store");
+  const probeBody = (await probe.json()) as { cacheId: string; cachedAt: number; slug: string };
+  expect(probeBody).toEqual({
+    cacheId: warmedDataId,
+    cachedAt,
+    slug: "intro",
   });
-  const originHeaders = origin.headers();
-  expect(origin.ok(), JSON.stringify(originHeaders)).toBe(true);
-  expect(originHeaders["x-vinext-build-id"]).toBe(rscBuildId);
-  if (backend === "kv") {
-    expect(originHeaders["cf-cache-status"], JSON.stringify(originHeaders)).toBe("MISS");
-  } else {
-    expect(originHeaders["x-vinext-cache"], JSON.stringify(originHeaders)).toBe("MISS");
-  }
-  const originBody = await origin.text();
-  expect(originBody).toContain("Post: intro");
-  expect(/data-cache-id[^>]*>([^<]+)</.exec(originBody)?.[1]).toBe(warmedDataId);
 });
