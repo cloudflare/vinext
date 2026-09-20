@@ -4,6 +4,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 type WranglerConfig = {
+  accountId?: string;
+  kvNamespaceId?: string;
   customDomain?: string;
   name?: string;
   legacyEnv?: boolean;
@@ -180,6 +182,26 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
     result.legacyEnv = config.legacy_env;
   }
 
+  if (typeof config.account_id === "string") {
+    result.accountId = config.account_id;
+  }
+
+  if (Array.isArray(config.kv_namespaces)) {
+    const namespace = config.kv_namespaces.find(
+      (value: Record<string, unknown>) =>
+        value &&
+        typeof value === "object" &&
+        (value.binding === "VINEXT_KV_CACHE" || value.binding === "VINEXT_CACHE"),
+    );
+    if (
+      namespace &&
+      typeof namespace.id === "string" &&
+      namespace.id !== "<your-kv-namespace-id>"
+    ) {
+      result.kvNamespaceId = namespace.id;
+    }
+  }
+
   // Custom domain — check routes[] and custom_domains[]
   const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
@@ -272,6 +294,22 @@ function extractFromTOML(content: string): WranglerConfig {
 
   const legacyEnvMatch = content.match(/^legacy_env\s*=\s*(true|false)\s*$/m);
   if (legacyEnvMatch) result.legacyEnv = legacyEnvMatch[1] === "true";
+
+  const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
+  if (accountMatch) result.accountId = accountMatch[1];
+
+  for (const block of content.split(/\[\[kv_namespaces\]\]/).slice(1)) {
+    const section = block.split(/\[\[/)[0];
+    const binding = section.match(/binding\s*=\s*"([^"]+)"/)?.[1];
+    const id = section.match(/\bid\s*=\s*"([^"]+)"/)?.[1];
+    if (
+      (binding === "VINEXT_KV_CACHE" || binding === "VINEXT_CACHE") &&
+      id &&
+      id !== "<your-kv-namespace-id>"
+    ) {
+      result.kvNamespaceId = id;
+    }
+  }
 
   // routes — both string and table forms
   // route = "example.com/*"

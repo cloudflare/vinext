@@ -803,6 +803,64 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(JSON.parse(manifestJson)).toEqual({ buildId: "app-build-a", routes: {}, version: 1 });
   });
 
+  it("applies route selection after building the cacheability manifest", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    const probed: string[] = [];
+    const warmed: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pathname = new URL(formatFetchUrl(input)).pathname;
+      if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        probed.push(pathname);
+        return appPageProbeResponse("static-candidate", pathname);
+      }
+      if (isReadinessFetch(input)) return readinessResponse();
+      warmed.push(pathname);
+      return cacheableHtml();
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, [], {
+      cacheabilityProbe: true,
+      config: "dist/server/wrangler.json",
+      discoverWarmPlan: async () => ({
+        appPaths: ["/hot", "/cold"],
+        buildId: "app-build-a",
+        buildIdentity: "app-build-a",
+        loadingShellPaths: [],
+        paths: ["/hot", "/cold"],
+        routePatterns: {
+          ...appPageRoutePatterns(["/hot"], "/hot"),
+          ...appPageRoutePatterns(["/cold"], "/cold"),
+        },
+        rscPaths: [],
+      }),
+      selectWarmPlan: (plan) => ({
+        ...plan,
+        appPaths: ["/hot"],
+        paths: ["/hot"],
+        routePatterns: { "/hot": plan.routePatterns!["/hot"]! },
+      }),
+      warmCdnConcurrency: 1,
+      warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbes: 1,
+      warmCdnRetries: 0,
+    });
+
+    expect(probed).toEqual(["/hot", "/cold"]);
+    expect(warmed).toEqual(["/hot"]);
+    const source = wrangler.finalManifestSource!;
+    const manifest = JSON.parse(
+      JSON.parse(source.slice("export default ".length, -2)) as string,
+    ) as CacheabilityManifest;
+    expect(new Set(Object.keys(manifest.routes))).toEqual(
+      new Set([
+        cacheabilityManifestRouteKey("app-page", "/hot"),
+        cacheabilityManifestRouteKey("app-page", "/cold"),
+      ]),
+    );
+  });
+
   it("uses an explicit warm target for both stages of a cacheability-probed deploy", async () => {
     writeTwoStageWorkerArtifact();
     const wrangler = mockTwoStageWrangler();

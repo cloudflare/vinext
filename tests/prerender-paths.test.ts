@@ -234,11 +234,13 @@ describe("prerender path manifest", () => {
         },
         tmpDir,
       ),
+      includeCanonicalRsc: true,
       requestRouting: "uncached-stage",
     });
 
     expect(manifest?.paths).toContain("/hot");
     expect(manifest?.appPaths).toContain("/hot");
+    expect(manifest?.rscPaths).toContain("/hot");
     expect(manifest?.routePatterns?.["/hot"]?.cacheabilityProbe?.routeMayResolve).toBe(true);
   });
 

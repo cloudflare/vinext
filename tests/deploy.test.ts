@@ -3618,6 +3618,40 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.name).toBe("my-worker");
   });
 
+  it("preserves account and KV namespace fields in JSON config", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        account_id: "account-id",
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "namespace-id" }],
+      }),
+    );
+
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      accountId: "account-id",
+      kvNamespaceId: "namespace-id",
+    });
+  });
+
+  it("preserves account and KV namespace fields in TOML config", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `account_id = "account-id"
+
+[[kv_namespaces]]
+binding = "VINEXT_CACHE"
+id = "namespace-id"
+`,
+    );
+
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      accountId: "account-id",
+      kvNamespaceId: "namespace-id",
+    });
+  });
+
   it("reads an explicit Wrangler config path", () => {
     writeFile(tmpDir, "dist/server/wrangler.json", JSON.stringify({ name: "generated-worker" }));
     const config = parseWranglerConfig(tmpDir, "dist/server/wrangler.json");

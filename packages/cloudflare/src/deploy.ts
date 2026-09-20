@@ -887,6 +887,8 @@ type CdnWarmDeployOptions = Pick<
       headers?: HeadersInit;
       targetUrl: string;
     }) => Promise<PrerenderWarmPlan>;
+    /** Narrow the final warm requests without changing discovery or probe metadata. */
+    selectWarmPlan?: (plan: PrerenderWarmPlan) => PrerenderWarmPlan;
   };
 
 type PreparedCdnWarmDeployOptions = CdnWarmDeployOptions & {
@@ -1031,7 +1033,8 @@ async function deployUploadedVersionWithCdnWarmup(
 
   const discoverWarmPlan = async (targetUrl: string, headers?: HeadersInit): Promise<void> => {
     if (!options.discoverWarmPlan) return;
-    const plan = await options.discoverWarmPlan({ headers, targetUrl });
+    const discovered = await options.discoverWarmPlan({ headers, targetUrl });
+    const plan = options.selectWarmPlan?.(discovered) ?? discovered;
     deploymentId = plan.deploymentId;
     expectedBuildId = plan.buildIdentity;
     expectedRscBuildId = plan.rscBuildId;
@@ -1762,6 +1765,7 @@ async function deployWithCacheabilityProbe(
         .filter((target) => target.kind === "rsc-full")
         .map((target) => target.sourcePathname),
     };
+    const selectedFinalPlan = options.selectWarmPlan?.(finalPlan) ?? finalPlan;
     // A concurrent deployment invalidates the probe. Avoid creating an orphan
     // final version when the probe is already stale. The final deployment path
     // checks this state again immediately before it stages the uploaded version.
@@ -1782,7 +1786,7 @@ async function deployWithCacheabilityProbe(
     prepared = {
       optionalWarmTargetKeys: new Set(probe.speculativeTargets.map(cdnWarmTargetKey)),
       prerenderSecret,
-      plan: finalPlan,
+      plan: selectedFinalPlan,
       upload: finalUpload,
     };
   } catch (error) {
@@ -2185,20 +2189,22 @@ export async function deploy(options: DeployOptions): Promise<void> {
           },
         });
         if (!discovery) return { loadingShellPaths: [], paths: [], rscPaths: [] };
-        const plan = createPrerenderWarmPlan(root, discovery, {
+        return createPrerenderWarmPlan(root, discovery, {
           includeCanonicalRsc: hasCanonicalRscWarmup,
           includeFallbackShells: options.warmCdnIncludeFallbacks,
           strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
         });
-        return tprRoutes.length > 0 && !options.warmCdnCache && !prerenderDecision
-          ? selectTPRWarmPlan(
-              plan,
-              tprRoutes,
-              Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
-              Math.max(1, options.tprLimit ?? 1000),
-            )
-          : plan;
       },
+      selectWarmPlan:
+        tprRoutes.length > 0 && !options.warmCdnCache && !prerenderDecision
+          ? (plan) =>
+              selectTPRWarmPlan(
+                plan,
+                tprRoutes,
+                Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
+                Math.max(1, options.tprLimit ?? 1000),
+              )
+          : undefined,
       statusSource: warmupStatusSource,
       warmCdnConcurrency: options.warmCdnConcurrency,
       warmCdnTarget,

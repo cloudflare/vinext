@@ -1556,6 +1556,7 @@ export async function discoverPrerenderPathManifest(
     }
     appOwnedWarmPaths.htmlPaths.push(pathname);
     (appDir ? appOwnedWarmPaths.appPaths : appOwnedWarmPaths.pagesPaths).push(pathname);
+    if (appDir) appOwnedWarmPaths.rscPaths.push(pathname);
     appOwnedWarmPaths.routePatterns[pathname] = {
       kind: appDir ? "app-page" : "pages-page",
       pattern: pathname,
