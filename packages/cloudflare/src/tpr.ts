@@ -192,7 +192,7 @@ export function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
     if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path))
       return false;
     // API routes
-    if (e.path === "/api" || e.path.startsWith("/api/")) return false;
+    if (e.path.startsWith("/api/")) return false;
     // Internal routes
     if (e.path.startsWith("/_next/") || e.path.startsWith("/__vinext/")) return false;
     // RSC requests

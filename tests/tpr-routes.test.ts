@@ -20,13 +20,19 @@ describe("TPR route resolution", () => {
       { path: "/hot", requests: 70 },
       { path: "/warm", requests: 20 },
       { path: "/cold", requests: 10 },
-      { path: "/api", requests: 100 },
+      { path: "/api/users", requests: 100 },
       { path: "/_next/app.js", requests: 100 },
     ]);
 
     expect(selectRoutes(traffic, 80, 100).routes.map(({ path }) => path)).toEqual([
       "/hot",
       "/warm",
+    ]);
+  });
+
+  it("keeps exact /api App Router page candidates", () => {
+    expect(filterTrafficPaths([{ path: "/api", requests: 1 }])).toEqual([
+      { path: "/api", requests: 1 },
     ]);
   });
 
