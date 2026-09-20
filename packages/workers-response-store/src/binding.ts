@@ -286,13 +286,18 @@ async function readBodyPrefix(
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
-  while (length < prefixLength) {
-    const { done, value } = await reader.read();
-    if (done) {
-      throw new Error("R2 response metadata prefix is incomplete");
+  try {
+    while (length < prefixLength) {
+      const { done, value } = await reader.read();
+      if (done) {
+        throw new Error("R2 response metadata prefix is incomplete");
+      }
+      chunks.push(value);
+      length += value.byteLength;
     }
-    chunks.push(value);
-    length += value.byteLength;
+  } catch (error) {
+    await reader.cancel(error).catch(() => {});
+    throw error;
   }
 
   const buffered = new Uint8Array(length);
@@ -514,7 +519,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const responseMetadataBytes = metadataInteger(metadata.responseMetadataBytes);
     const responseHeaders = metadataJson(metadata.responseHeaders);
     const hasResponseMetadataPrefix =
-      responseMetadataBytes !== undefined && responseMetadataBytes > 0;
+      responseMetadataBytes !== undefined &&
+      responseMetadataBytes > 0 &&
+      responseMetadataBytes <= object.size;
     if (
       latestRevision === undefined ||
       freshUntil === undefined ||

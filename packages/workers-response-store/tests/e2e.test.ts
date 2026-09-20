@@ -980,9 +980,9 @@ test("a failed R2 purge remains queued and retryable after SQLite is tombstoned"
   assert.equal((await read("/retry-purge")).status, 404);
 });
 
-test("purge batches more entries than the SQL parameter limit", async () => {
+test("purge batches more entries than the SQL and R2 drain limits", async () => {
   await Promise.all(
-    Array.from({ length: 101 }, (_, index) => put(`/large-purge/${index}`, `${index}`)),
+    Array.from({ length: 401 }, (_, index) => put(`/large-purge/${index}`, `${index}`)),
   );
 
   assert.deepEqual((await purge({ pathPrefixes: ["/large-purge/"] })).json, {
@@ -990,7 +990,7 @@ test("purge batches more entries than the SQL parameter limit", async () => {
     edgePurgeAccepted: false,
   });
   assert.equal((await metadata()).length, 0);
-  assert.equal((await r2Objects()).objects.length, 101);
+  assert.equal((await r2Objects()).objects.length, 401);
 });
 
 test("a newer put wins and the superseded candidate is cleaned up", async () => {
