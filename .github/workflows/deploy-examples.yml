@@ -177,6 +177,7 @@ jobs:
             project: workers-cache
             working_directory: examples/response-store-demo
             wrangler_config: dist/server/wrangler.json
+            bootstrap_warm_cdn: true
             cache_backend: workers-cache
             prewarm_e2e: true
             warm_cdn_cache: true
@@ -185,6 +186,7 @@ jobs:
             worker_name: kv
             working_directory: examples/response-store-demo
             wrangler_config: dist/server/wrangler.json
+            bootstrap_warm_cdn: true
             cache_backend: kv
             prewarm_e2e: true
             warm_cdn_cache: true
@@ -284,6 +286,28 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: deploy --config ${{ matrix.example.wrangler_config }}
+
+      - name: Bootstrap CDN warmup Worker (Production)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.bootstrap_warm_cdn == true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: ${{ matrix.example.worker_name }}
+        run: |
+          args=(--config "${{ matrix.example.wrangler_config }}")
+          if [[ -n "$WORKER_NAME" ]]; then
+            args+=(--name "$WORKER_NAME")
+          fi
+          if output=$(vp exec wrangler versions list "${args[@]}" 2>&1); then
+            printf '%s\n' "$output"
+            exit 0
+          fi
+          printf '%s\n' "$output" >&2
+          if [[ "$output" != *"does not exist"* && "$output" != *"does not yet exist"* ]]; then
+            exit 1
+          fi
+          vp exec wrangler deploy "${args[@]}"
 
       - name: Deploy to Cloudflare Workers with CDN warmup (Production)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache == true
