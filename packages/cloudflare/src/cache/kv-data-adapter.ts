@@ -35,6 +35,9 @@ export type KvDataAdapterOptions = {
  * Cloudflare KV data cache.
  *
  * A KV namespace must be configured in your Wrangler config for this to work.
+ * This adapter only registers where the runtime supplies Worker bindings: on
+ * `vinext build`, `vinext start`, and Node dev it is skipped and the in-memory
+ * cache handler stays active.
  * ```jsonc
  * // wrangler.jsonc
  * {
@@ -51,5 +54,6 @@ export function kvDataAdapter(options?: KvDataAdapterOptions) {
   return {
     adapter: fileURLToPath(import.meta.resolve("./kv-data-adapter.runtime.js")),
     options,
+    requiresEnv: true,
   };
 }

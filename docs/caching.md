@@ -104,6 +104,8 @@ Add the matching namespace to `wrangler.jsonc`:
 }
 ```
 
+The adapter only applies where the runtime supplies Worker bindings, so Node runs (`vinext start`, `vinext build` prerender, and Node dev) skip it and keep the in-memory cache active.
+
 This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
 
 ## Which option should I choose?

@@ -5,9 +5,11 @@
  * The generated module exports `registerConfiguredCacheAdapters(env)`, which the
  * server entries call on each request. It self-guards (adapters instantiate once
  * per isolate) and is a no-op when nothing is configured. Registration is
- * resilient: a factory that throws (e.g. a KV adapter on the Node.js server,
- * where the binding can't exist) is logged and skipped rather than failing every
- * request, so the same config can be registered from every runtime/router entry.
+ * resilient on two paths: an adapter whose descriptor sets `requiresEnv` cannot
+ * be constructed without runtime bindings, so a caller that supplies no `env`
+ * skips the slot silently and keeps the default handler; any other factory that
+ * throws is logged and skipped rather than failing every request, so the same
+ * config can be registered from every runtime/router entry.
  *
  * Descriptor `options` are inlined into the generated module and forwarded to the
  * factory at runtime, so a config-time builder like `kvDataAdapter({ binding })`
@@ -89,6 +91,17 @@ export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<st
   adapter: string;
   /** JSON-serializable options forwarded to the factory at runtime. */
   options?: O;
+  /**
+   * The factory needs the runtime `env` (Worker bindings) to construct.
+   *
+   * A runtime that supplies no env cannot host such an adapter, so
+   * registration skips it and leaves the default handler in place instead of
+   * reporting a binding that cannot exist there: the Node.js server behind
+   * `vinext start`, the prod server `vinext build` prerenders through, and
+   * Node dev all call the registrar without an env. Worker entries always
+   * pass their env, so a missing binding on Workers still fails loudly.
+   */
+  requiresEnv?: boolean;
   /** Optional adapter-owned platform finalization or generic staged output. */
   output?: CacheAdapterBuildOutput | VinextMultiStageOutput;
   /** Build-time cache semantics used by shared request protocol code. */
@@ -235,8 +248,10 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
   lines.push(
     "",
-    "// A factory that throws (e.g. a missing binding on an incompatible runtime)",
-    "// is logged and skipped so the default handler stays in place.",
+    "// An adapter flagged `requiresEnv` is skipped silently when the caller has",
+    "// no env; any other factory that throws (e.g. a missing binding on an",
+    "// incompatible runtime) is logged and skipped so the default handler stays",
+    "// in place.",
     "function __vinextFormatAdapterError(error) {",
     "  if (error instanceof Error && error.message) return error.message;",
     "  try {",
@@ -253,30 +268,45 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
     "  if (__vinextCacheAdaptersRegistered) return;",
     "  __vinextCacheAdaptersRegistered = true;",
   );
+  // A slot whose descriptor sets `requiresEnv` cannot construct its factory
+  // without Worker bindings, so its registration is emitted inside an env guard.
+  const emitSlot = (body: string[], guarded: boolean) => {
+    if (!guarded) {
+      lines.push(...body);
+      return;
+    }
+    lines.push("  if (env != null) {", ...body.map((line) => `  ${line}`), "  }");
+  };
   if (data?.adapter) {
-    lines.push(
-      "  try {",
-      `    registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: ${inlineOptions(
-        data.adapter,
-        data.options,
-      )} }));`,
-      "  } catch (error) {",
-      '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
-        'using the default handler.\\n" + __vinextFormatAdapterError(error));',
-      "  }",
+    emitSlot(
+      [
+        "  try {",
+        `    registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: ${inlineOptions(
+          data.adapter,
+          data.options,
+        )} }));`,
+        "  } catch (error) {",
+        '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
+          'using the default handler.\\n" + __vinextFormatAdapterError(error));',
+        "  }",
+      ],
+      data.requiresEnv === true,
     );
   }
   if (cdn?.adapter) {
-    lines.push(
-      "  try {",
-      `    registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: ${inlineOptions(
-        cdn.adapter,
-        cdn.options,
-      )} }));`,
-      "  } catch (error) {",
-      '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
-        'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
-      "  }",
+    emitSlot(
+      [
+        "  try {",
+        `    registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: ${inlineOptions(
+          cdn.adapter,
+          cdn.options,
+        )} }));`,
+        "  } catch (error) {",
+        '    console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
+          'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
+        "  }",
+      ],
+      cdn.requiresEnv === true,
     );
   }
   lines.push("}", "");

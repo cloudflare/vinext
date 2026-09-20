@@ -6,6 +6,8 @@
  * tag-based invalidation). The default export is the adapter factory the
  * generated `virtual:vinext-cache-adapters` registration imports: it reads the
  * KV namespace from `env[binding]` at request time and constructs the handler.
+ * The generated registrar skips `requiresEnv` adapters when no env is supplied,
+ * so env-less Node callers never reach the factory.
  *
  * Configure it from vite.config via the {@link kvDataAdapter} builder in
  * `./kv-data-adapter.ts` (which `require.resolve`s this file). The legacy

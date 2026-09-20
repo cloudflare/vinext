@@ -5,13 +5,17 @@
  *  - generateCacheAdaptersModule() codegen for the `virtual:vinext-cache-adapters`
  *    module across the no-config / data-only / cdn-only / both permutations,
  *    including inlined descriptor options.
+ *  - The `requiresEnv` descriptor flag: the emitted env guard for slots that
+ *    cannot exist off-Workers, and the runtime behaviour of the generated
+ *    registrar on an env-less caller (the Node build/start warning regression).
  *  - The Cloudflare adapter modules: their config-time builders (kvDataAdapter,
  *    cdnAdapter) and their runtime factory default exports.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect } from "vite-plus/test";
+import { pathToFileURL } from "node:url";
+import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from "vite-plus/test";
 import {
   findVinextCacheConfigInPlugins,
   generateCdnCacheAdapterModule,
@@ -26,6 +30,10 @@ import {
   VIRTUAL_CACHE_ADAPTERS,
   VIRTUAL_CDN_CACHE_ADAPTER,
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
+import {
+  getDataCacheHandler,
+  MemoryCacheHandler,
+} from "../packages/vinext/src/shims/cache-handler.js";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateServerEntry } from "../packages/vinext/src/entries/pages-server-entry.js";
 import {
@@ -46,6 +54,30 @@ import createCloudflareCdnCacheAdapter, {
 } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 describe("generateCacheAdaptersModule", () => {
+  // Frozen generated shape of a slot whose descriptor sets `requiresEnv: true`:
+  // the whole try/catch is nested one level deeper inside an env guard, so an
+  // env-less caller (Node build/start) never even invokes the factory.
+  const guardedDataRegistration = [
+    "  if (env != null) {",
+    "    try {",
+    "      registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: undefined }));",
+    "    } catch (error) {",
+    '      console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
+      'using the default handler.\\n" + __vinextFormatAdapterError(error));',
+    "    }",
+    "  }",
+  ].join("\n");
+  const guardedCdnRegistration = [
+    "  if (env != null) {",
+    "    try {",
+    "      registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: undefined }));",
+    "    } catch (error) {",
+    '      console.warn("[vinext] failed to initialize the configured CDN cache adapter; ' +
+      'using the default adapter.\\n" + __vinextFormatAdapterError(error));',
+    "    }",
+    "  }",
+  ].join("\n");
+
   it("exposes the public virtual module id", () => {
     expect(VIRTUAL_CACHE_ADAPTERS).toBe("virtual:vinext-cache-adapters");
   });
@@ -158,6 +190,54 @@ describe("generateCacheAdaptersModule", () => {
     const code = generateCacheAdaptersModule({ data: { adapter: weird } });
     expect(code).toContain(`import __vinextDataAdapterFactory from ${JSON.stringify(weird)};`);
   });
+
+  it("skips an env-requiring data adapter when no env is available", () => {
+    const code = generateCacheAdaptersModule({
+      data: { adapter: "my-data-adapter", requiresEnv: true },
+    });
+
+    // Guard, try/catch, and the 6-space registration line form one contiguous block.
+    expect(code).toContain(guardedDataRegistration);
+    // The guard wraps only the data slot: a single guard, and the function still
+    // ends with its own closing brace right after the guard's.
+    expect(code.match(/if \(env != null\) \{/g)).toHaveLength(1);
+    expect(code.trimEnd().endsWith("  }\n}")).toBe(true);
+  });
+
+  it("wraps each env-requiring slot in its own env guard", () => {
+    const code = generateCacheAdaptersModule({
+      cdn: { adapter: "my-cdn-adapter", requiresEnv: true },
+      data: { adapter: "my-data-adapter", requiresEnv: true },
+    });
+
+    expect(code).toContain(guardedDataRegistration);
+    expect(code).toContain(guardedCdnRegistration);
+    expect(code.match(/if \(env != null\) \{/g)).toHaveLength(2);
+  });
+
+  it("leaves a slot that does not require env unguarded next to a guarded one", () => {
+    const code = generateCacheAdaptersModule({
+      cdn: { adapter: "my-cdn-adapter" },
+      data: { adapter: "my-data-adapter", requiresEnv: true },
+    });
+
+    expect(code).toContain(guardedDataRegistration);
+    // Leading newline pins the line start: the unguarded slot keeps its 2-space try.
+    expect(code).toContain(
+      "\n  try {\n    registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: undefined }));\n",
+    );
+    expect(code.match(/if \(env != null\) \{/g)).toHaveLength(1);
+  });
+
+  it("keeps today's unguarded registration for adapters without the flag", () => {
+    const code = generateCacheAdaptersModule({ data: { adapter: "my-data-adapter" } });
+
+    expect(code).not.toContain("if (env != null)");
+    // The registration stays directly in the function body at 4-space indent.
+    expect(code).toContain(
+      "\n  try {\n    registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: undefined }));\n",
+    );
+  });
 });
 
 describe("findVinextCacheConfigInPlugins", () => {
@@ -222,6 +302,13 @@ describe("kvDataAdapter builder", () => {
     // @ts-expect-error — binding must be a string
     expect(() => kvDataAdapter({ binding: 123 })).toThrow(/binding/);
   });
+
+  it("flags the descriptor as requiring the runtime env", () => {
+    // The KV factory reads a Worker binding, which cannot exist off-Workers, so
+    // the registrar must skip it rather than warn on every Node build/start.
+    expect(kvDataAdapter().requiresEnv).toBe(true);
+    expect(kvDataAdapter({ binding: "MY_KV" }).requiresEnv).toBe(true);
+  });
 });
 
 describe("Cloudflare kv-data-adapter factory", () => {
@@ -252,6 +339,147 @@ describe("Cloudflare kv-data-adapter factory", () => {
     ).toThrow(/`MY_KV` KV namespace binding/);
     expect(() => createKvDataCacheAdapter({ env: undefined, options: undefined })).toThrow(
       /KV namespace binding/,
+    );
+  });
+});
+
+/**
+ * The reported regression lives in the generated module, not in its text: this
+ * block builds the real registrar, imports it, and drives it the way the Node
+ * build/start path does (no env) and the way a Worker entry does (env).
+ */
+describe("generated registrar runtime behaviour", () => {
+  // The generated module resolves `vinext/shims/cache-handler` to the same
+  // source this file imports, and that module keeps its registry on globalThis
+  // under Symbol.for() keys. Deleting those keys is the only reliable reset:
+  // setDataCacheHandler() marks the handler explicit, which would turn every
+  // later declarative registration into a no-op.
+  const HANDLER_REGISTRY_KEYS = [
+    "vinext.cacheHandler",
+    "vinext.configuredCacheHandler",
+    "vinext.explicitCacheHandler",
+    "vinext.lazyCacheHandler",
+  ];
+
+  const STUB_ADAPTER_SOURCE = `export default function createStubAdapter(args) {
+  const calls = (globalThis.__vinextStubAdapterCalls ??= []);
+  calls.push(args);
+  if (!args?.env?.STUB_KV) throw new Error("missing binding");
+  const handler = { kind: "stub-cache-handler" };
+  globalThis.__vinextStubAdapterHandler = handler;
+  return handler;
+}
+`;
+
+  type StubAdapterCall = { env?: Record<string, unknown>; options?: unknown };
+  type StubAdapterGlobals = {
+    __vinextStubAdapterCalls?: StubAdapterCall[];
+    __vinextStubAdapterHandler?: { kind: string };
+  };
+
+  const tmpDirs: string[] = [];
+
+  function stubGlobals(): StubAdapterGlobals {
+    return globalThis as unknown as StubAdapterGlobals;
+  }
+
+  function stubCalls(): StubAdapterCall[] {
+    return stubGlobals().__vinextStubAdapterCalls ?? [];
+  }
+
+  function warnCalls(): unknown[][] {
+    return vi.mocked(console.warn).mock.calls;
+  }
+
+  function resetDataCacheRegistry(): void {
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    for (const key of HANDLER_REGISTRY_KEYS) delete globals[Symbol.for(key)];
+    delete globals.__vinextStubAdapterCalls;
+    delete globals.__vinextStubAdapterHandler;
+  }
+
+  beforeEach(() => {
+    resetDataCacheRegistry();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterAll(() => {
+    for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Build, import, and hand back the generated registrar for one case. Each
+   * case needs its own module instance (the registrar self-guards with a
+   * module-level flag), and the temp dir lives inside tests/ so Vite's
+   * workspace aliases still apply to the generated `vinext/shims/...` import.
+   */
+  async function loadRegistrar(
+    requiresEnv: boolean | undefined,
+  ): Promise<(env?: Record<string, unknown>) => void> {
+    const dir = fs.mkdtempSync(path.join(import.meta.dirname, "vinext-cache-adapters-"));
+    tmpDirs.push(dir);
+    const stubPath = path.join(dir, "stub-adapter.mjs");
+    fs.writeFileSync(stubPath, STUB_ADAPTER_SOURCE);
+    const descriptor =
+      requiresEnv === undefined ? { adapter: stubPath } : { adapter: stubPath, requiresEnv };
+    const modulePath = path.join(dir, "module.mjs");
+    fs.writeFileSync(modulePath, generateCacheAdaptersModule({ data: descriptor }));
+    const module = (await import(pathToFileURL(modulePath).href)) as {
+      registerConfiguredCacheAdapters: (env?: Record<string, unknown>) => void;
+    };
+    return module.registerConfiguredCacheAdapters;
+  }
+
+  it("skips the factory entirely when an env-requiring adapter runs without env", async () => {
+    const register = await loadRegistrar(true);
+
+    register();
+
+    expect(warnCalls()).toHaveLength(0);
+    expect(stubCalls()).toHaveLength(0);
+    expect(getDataCacheHandler()).toBeInstanceOf(MemoryCacheHandler);
+  });
+
+  it("registers the env-requiring adapter when its binding is present", async () => {
+    const register = await loadRegistrar(true);
+    const env = { STUB_KV: {} };
+
+    register(env);
+
+    expect(warnCalls()).toHaveLength(0);
+    expect(stubCalls()).toHaveLength(1);
+    expect(stubCalls()[0]?.env).toBe(env);
+    expect(getDataCacheHandler()).toBe(stubGlobals().__vinextStubAdapterHandler);
+  });
+
+  it("warns and keeps the default handler when the required binding is missing", async () => {
+    const register = await loadRegistrar(true);
+
+    register({});
+
+    // The factory is still called — env is present, so the binding is genuinely missing.
+    expect(stubCalls()).toHaveLength(1);
+    expect(warnCalls()).toHaveLength(1);
+    expect(String(warnCalls()[0]?.[0])).toContain(
+      "failed to initialize the configured data cache adapter",
+    );
+    expect(getDataCacheHandler()).toBeInstanceOf(MemoryCacheHandler);
+  });
+
+  it("still attempts and warns for adapters that never opted into env", async () => {
+    const register = await loadRegistrar(undefined);
+
+    register();
+
+    expect(stubCalls()).toHaveLength(1);
+    expect(stubCalls()[0]?.env).toBeUndefined();
+    expect(warnCalls()).toHaveLength(1);
+    expect(String(warnCalls()[0]?.[0])).toContain(
+      "failed to initialize the configured data cache adapter",
     );
   });
 });
