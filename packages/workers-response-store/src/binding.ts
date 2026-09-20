@@ -1285,7 +1285,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
     let edgePurgeAccepted = true;
 
-    if (options.purgeEverything) {
+    if (options.purgeEverything && failures.length === 0) {
       try {
         edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
         const acknowledged = await Promise.allSettled(
@@ -1299,6 +1299,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         failures.push(error);
       }
     } else {
+      if (options.purgeEverything) edgePurgeAccepted = false;
       const acknowledged = await Promise.allSettled(
         reservations.map(({ metadata }) => this.purgePendingEdgeEntries(metadata, true)),
       );
