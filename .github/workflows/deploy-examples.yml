@@ -312,26 +312,14 @@ jobs:
           workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
-      - name: Deploy Named Preview Version
+      - name: Deploy Named Preview Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.worker_name
         working-directory: ${{ matrix.example.working_directory }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          PREVIEW_ALIAS: pr-${{ github.event.pull_request.number }}
-          WORKER_NAME: ${{ matrix.example.worker_name }}
-        run: |
-          upload=(vp exec wrangler versions upload --config "${{ matrix.example.wrangler_config }}" --name "$WORKER_NAME" --preview-alias "$PREVIEW_ALIAS")
-          if output=$("${upload[@]}" 2>&1); then
-            printf '%s\n' "$output"
-            exit 0
-          fi
-          printf '%s\n' "$output" >&2
-          if [[ "$output" != *"does not yet exist"* ]]; then
-            exit 1
-          fi
-          vp exec wrangler deploy --config "${{ matrix.example.wrangler_config }}" --name "$WORKER_NAME"
-          "${upload[@]}"
+          WORKER_NAME: pr-${{ github.event.pull_request.number }}-${{ matrix.example.worker_name }}
+        run: vp exec wrangler deploy --config "${{ matrix.example.wrangler_config }}" --name "$WORKER_NAME"
 
       # `versions upload` does not apply non-versioned workers.dev/preview URL
       # settings. A newly added assets-only Worker has no routes until this runs.
@@ -360,14 +348,22 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           VINEXT_CDN_WARM_DEBUG: "1"
+          WARM_CDN_CERTIFY: ${{ matrix.example.cache_backend != 'kv' }}
           WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
-        run: >-
-          vp exec vinext-cloudflare deploy
-          --skip-build
-          --config ${{ matrix.example.wrangler_config }}
-          --name "$WORKER_NAME"
-          --experimental-warm-cdn-cache
-          --warm-cdn-certify
+        run: |
+          args=(
+            --skip-build
+            --config "${{ matrix.example.wrangler_config }}"
+            --name "$WORKER_NAME"
+            --experimental-warm-cdn-cache
+          )
+          # The shared demo contains an intentionally late-dynamic page. The
+          # origin-managed KV adapter cannot classify that streamed MISS as a
+          # BYPASS, so its live E2E proves the prewarmed data hit directly.
+          if [[ "$WARM_CDN_CERTIFY" == "true" ]]; then
+            args+=(--warm-cdn-certify)
+          fi
+          vp exec vinext-cloudflare deploy "${args[@]}"
 
       - name: Verify deployed cache prewarm
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
@@ -469,6 +465,14 @@ jobs:
           elif [[ -n "$SERVICE_NAME" ]]; then
             vp exec wrangler delete "$SERVICE_NAME" --force
           fi
+
+      - name: Delete named preview Workers
+        if: github.event.action == 'closed'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: pr-${{ github.event.pull_request.number }}-kv
+        run: vp exec wrangler delete "$WORKER_NAME" --force
 
   comment:
     name: Comment Preview URLs
