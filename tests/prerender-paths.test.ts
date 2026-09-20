@@ -177,6 +177,72 @@ describe("prerender path manifest", () => {
     expect(closeMock).toHaveBeenCalledOnce();
   });
 
+  it("resolves additional warm paths through the route graph", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/layout.tsx",
+      "export default function Layout({ children }) { return children; }\n",
+    );
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      "export const revalidate = 60; export default function Page() { return null; }\n",
+    );
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      candidatePaths: ["/cached/from-traffic"],
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toContain("/cached/from-traffic");
+    expect(manifest?.rscPaths).toContain("/cached/from-traffic");
+    expect(manifest?.routePatterns?.["/cached/from-traffic"]).toMatchObject({
+      kind: "app-page",
+      pattern: "/cached/:slug",
+    });
+  });
+
+  it.each([false, true])(
+    "adds Pages data warming for traffic-selected dynamic routes (hybrid: %s)",
+    async (hybrid) => {
+      // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      writeFile(
+        "pages/[slug].tsx",
+        "export async function getServerSideProps() { return { props: {} }; } export default function Page() { return null; }\n",
+      );
+      if (hybrid) {
+        writeFile(
+          "app/layout.tsx",
+          "export default function Layout({ children }) { return children; }\n",
+        );
+        writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+      }
+
+      const { discoverPrerenderPathManifest } =
+        await import("../packages/vinext/src/build/prerender-paths.js");
+      const manifest = await discoverPrerenderPathManifest({
+        root: tmpDir,
+        candidatePaths: ["/hot"],
+      });
+
+      expect(manifest?.paths).toContain("/hot");
+      expect(manifest?.pagesDataPaths).toContain("/_next/data/build-a/hot.json");
+      expect(
+        manifest?.routePatterns?.["/_next/data/build-a/hot.json"]?.cacheabilityProbe,
+      ).toMatchObject({ concretePathname: "/hot" });
+    },
+  );
+
   it("discovers response-store warm targets without writing a manifest", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

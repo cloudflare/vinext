@@ -126,6 +126,8 @@ function readDiscoveryUserFailure(response: Response, text: string): string | nu
 
 type PrerenderPathDiscoveryOptions = {
   root: string;
+  /** Additional concrete public paths to resolve through the route graph. */
+  candidatePaths?: readonly string[];
   /** Fully resolved Next.js config. Loaded from disk when omitted. */
   nextConfig?: ResolvedNextConfig;
   appDir?: string | null;
@@ -647,24 +649,35 @@ async function excludePagesApiWarmPaths(options: {
   });
 }
 
-async function resolvePagesWarmRoutePatterns(options: {
+async function resolvePagesWarmRouteMetadata(options: {
   i18n: ResolvedNextConfig["i18n"];
   pagesDir: string;
   pageExtensions: readonly string[];
   paths: readonly string[];
-}): Promise<Record<string, PrerenderRoutePattern>> {
+}): Promise<{
+  dataPaths: string[];
+  routePatterns: Record<string, PrerenderRoutePattern>;
+}> {
   const pageRoutes = await pagesRouter(options.pagesDir, options.pageExtensions);
-  return Object.fromEntries(
-    options.paths.flatMap((pathname) => {
-      const pagesPathname = options.i18n
-        ? extractLocaleFromUrl(pathname, options.i18n).url
-        : pathname;
-      const match = matchRoute(pagesPathname, pageRoutes);
-      return match
-        ? [[pathname, { kind: "pages-page" as const, pattern: match.route.pattern }] as const]
-        : [];
-    }),
-  );
+  const classifications = new Map<string, ReturnType<typeof classifyPagesRoute>>();
+  const dataPaths: string[] = [];
+  const routePatterns: Record<string, PrerenderRoutePattern> = {};
+  for (const pathname of options.paths) {
+    const pagesPathname = options.i18n
+      ? extractLocaleFromUrl(pathname, options.i18n).url
+      : pathname;
+    const match = matchRoute(pagesPathname, pageRoutes);
+    if (!match) continue;
+    routePatterns[pathname] = { kind: "pages-page", pattern: match.route.pattern };
+    let classification = classifications.get(match.route.filePath);
+    if (!classification) {
+      classification = classifyPagesRoute(match.route.filePath);
+      classifications.set(match.route.filePath, classification);
+    }
+    const { hasServerSideProps, hasStaticProps } = classification;
+    if (hasServerSideProps || hasStaticProps) dataPaths.push(pathname);
+  }
+  return { dataPaths, routePatterns };
 }
 
 function localizePagesPath(
@@ -715,7 +728,6 @@ async function collectAppPaths(options: {
   secretHeaders: Record<string, string>;
 }): Promise<{
   fallbackRoutePatterns: PrerenderRoutePattern[];
-  loadingShellPaths: string[];
   nonDynamicPaths: string[];
   paths: string[];
   routeHandlerPaths: string[];
@@ -723,8 +735,6 @@ async function collectAppPaths(options: {
   const routes = await appRouter(options.appDir, options.pageExtensions);
   const paths: string[] = [];
   const seen = new Set<string>();
-  const loadingShellPaths: string[] = [];
-  const seenLoadingShellPaths = new Set<string>();
   const routeHandlerPaths: string[] = [];
   const seenRouteHandlerPaths = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
@@ -798,16 +808,12 @@ async function collectAppPaths(options: {
       if (type === "api") continue;
     }
 
-    const hasMainTreeLoadingBoundary = appRouteHasMainTreeLoadingBoundary(route);
     const addDiscoveredPath = (pathname: string): void => {
       if (isRouteHandler) {
         addPath(routeHandlerPaths, seenRouteHandlerPaths, pathname);
         return;
       }
       addPath(paths, seen, pathname);
-      if (hasMainTreeLoadingBoundary) {
-        addPath(loadingShellPaths, seenLoadingShellPaths, pathname);
-      }
     };
 
     if (!route.isDynamic) {
@@ -912,7 +918,6 @@ async function collectAppPaths(options: {
 
   return {
     fallbackRoutePatterns,
-    loadingShellPaths,
     nonDynamicPaths,
     paths,
     routeHandlerPaths,
@@ -1316,12 +1321,8 @@ export async function discoverPrerenderPathManifest(
   const seenPagesPaths = new Set<string>();
   const discoveredPagesDataPaths: string[] = [];
   const seenPagesDataPaths = new Set<string>();
-  const discoveredAppPaths: string[] = [];
-  const seenAppPaths = new Set<string>();
   const discoveredRouteHandlerPaths: string[] = [];
   const seenRouteHandlerPaths = new Set<string>();
-  const discoveredLoadingShellPaths: string[] = [];
-  const seenLoadingShellPaths = new Set<string>();
   const discoveredNonDynamicPathSet = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   await withPrerenderEndpoints(async () => {
@@ -1391,10 +1392,6 @@ export async function discoverPrerenderPathManifest(
         });
         for (const pathname of appPathResult.paths) {
           addPath(paths, seen, pathname);
-          addPath(discoveredAppPaths, seenAppPaths, pathname);
-        }
-        for (const pathname of appPathResult.loadingShellPaths) {
-          addPath(discoveredLoadingShellPaths, seenLoadingShellPaths, pathname);
         }
         for (const pathname of appPathResult.routeHandlerPaths) {
           addPath(discoveredRouteHandlerPaths, seenRouteHandlerPaths, pathname);
@@ -1432,6 +1429,21 @@ export async function discoverPrerenderPathManifest(
       }
     }
   });
+
+  for (const publicPathname of options.candidatePaths ?? []) {
+    let pathname = normalizePathTrailingSlash(
+      new URL(publicPathname, "http://vinext.local").pathname,
+      false,
+    );
+    if (config.basePath) {
+      if (pathname === config.basePath) pathname = "/";
+      else if (pathname.startsWith(`${config.basePath}/`))
+        pathname = pathname.slice(config.basePath.length);
+      else continue;
+    }
+    addPath(paths, seen, pathname);
+    if (pagesDir) addPath(discoveredPagesPaths, seenPagesPaths, pathname);
+  }
 
   const hasStagedRequestRouting = options.requestRouting === "uncached-stage";
   const middlewarePath = hasStagedRequestRouting
@@ -1502,10 +1514,24 @@ export async function discoverPrerenderPathManifest(
           paths: configuredPagesWarmPaths,
         })
       : configuredPagesWarmPaths;
-  const discoveredPagesDataPathSet = new Set(discoveredPagesDataPaths);
   const configuredCandidatePaths = paths.filter((pathname) => !excludedWarmPathSet.has(pathname));
   const configuredRouteHandlerPaths = discoveredRouteHandlerPaths.filter(
     (pathname) => !excludedWarmPathSet.has(pathname),
+  );
+  const pagesWarmMetadata = pagesDir
+    ? await resolvePagesWarmRouteMetadata({
+        i18n: config.i18n,
+        pagesDir,
+        pageExtensions: config.pageExtensions,
+        paths: resolvedPagesWarmPaths,
+      })
+    : { dataPaths: [], routePatterns: {} };
+  for (const pathname of pagesWarmMetadata.dataPaths) {
+    addPath(discoveredPagesDataPaths, seenPagesDataPaths, pathname);
+  }
+  const discoveredPagesDataPathSet = new Set(discoveredPagesDataPaths);
+  const pagesOnlyWarmPaths = resolvedPagesWarmPaths.filter(
+    (pathname) => pagesWarmMetadata.routePatterns[pathname] !== undefined,
   );
   const appOwnedWarmPaths = appDir
     ? await resolveAppWarmPaths({
@@ -1518,21 +1544,14 @@ export async function discoverPrerenderPathManifest(
     : {
         appPaths: [],
         appRoutePaths: [],
-        htmlPaths: discoveredAppPaths,
-        loadingShellPaths: discoveredLoadingShellPaths,
-        pagesPaths: resolvedPagesWarmPaths,
-        routePatterns: pagesDir
-          ? await resolvePagesWarmRoutePatterns({
-              i18n: config.i18n,
-              pagesDir,
-              pageExtensions: config.pageExtensions,
-              paths: resolvedPagesWarmPaths,
-            })
-          : {},
-        rscPaths: discoveredAppPaths,
+        htmlPaths: pagesOnlyWarmPaths,
+        loadingShellPaths: [],
+        pagesPaths: pagesOnlyWarmPaths,
+        routePatterns: pagesWarmMetadata.routePatterns,
+        rscPaths: [],
       };
-  const warmPaths = appDir ? appOwnedWarmPaths.htmlPaths : resolvedPagesWarmPaths;
-  const pagesOwnedWarmPaths = appDir ? appOwnedWarmPaths.pagesPaths : resolvedPagesWarmPaths;
+  const warmPaths = appOwnedWarmPaths.htmlPaths;
+  const pagesOwnedWarmPaths = appOwnedWarmPaths.pagesPaths;
   const resolvedPagesDataWarmPaths = pagesOwnedWarmPaths.filter((pathname) =>
     discoveredPagesDataPathSet.has(pathname),
   );

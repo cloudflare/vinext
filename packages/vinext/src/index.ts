@@ -7049,7 +7049,7 @@ export const loadServerActionClient = ${
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
     // prod-server.ts reads at startup for SVG/security header config.
-    // Write BUILD_ID to dist/server/ so post-build tools (TPR, seed-cache) can
+    // Write BUILD_ID to dist/server/ so post-build tools such as seed-cache can
     // read the build identifier without depending on the prerender manifest.
     // Uses writeBundle (not closeBundle) with a one-time write guard so the file
     // is written exactly once per build regardless of how many environments are

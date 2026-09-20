@@ -68,16 +68,15 @@ export function formatDeployHelp(): string {
     -h, --help               Show this help
 
   Experimental:
-    --experimental-tpr               Enable Traffic-aware Pre-Rendering
+    --experimental-tpr               Select CDN pre-warm routes from traffic
     --tpr-coverage <pct>             Traffic coverage target, 0-100 (default: 90)
-    --tpr-limit <count>              Hard cap on pages to pre-render (default: 1000)
+    --tpr-limit <count>              Hard cap on selected routes (default: 1000)
     --tpr-window <hours>             Analytics lookback window in hours (default: 24)
 
-  TPR (Traffic-aware Pre-Rendering) uses Cloudflare zone analytics to determine
-  which pages get the most traffic and pre-renders them into KV cache during
-  deploy. This feature is experimental and must be explicitly enabled. Requires
-  a custom domain (zone analytics are unavailable on *.workers.dev) and the
-  CLOUDFLARE_API_TOKEN environment variable with Zone.Analytics read permission.
+  TPR uses Cloudflare zone analytics to select the highest-traffic routes, then
+  feeds those routes into the same staged CDN pre-warming flow used by
+  --experimental-warm-cdn-cache. It requires a custom domain and a
+  CLOUDFLARE_API_TOKEN with Zone Analytics read permission.
 
   Workers Cache automatically uses tiered caching. Warmed entries can therefore
   be reused outside the data center reached by the warmup request after cache
@@ -97,7 +96,7 @@ export function formatDeployHelp(): string {
                                                                           Warm an explicit production origin
     vinext-cloudflare deploy --experimental-tpr                        Enable TPR during deploy
     vinext-cloudflare deploy --experimental-tpr --tpr-coverage 95      Cover 95% of traffic
-    vinext-cloudflare deploy --experimental-tpr --tpr-limit 500        Cap at 500 pages
+    vinext-cloudflare deploy --experimental-tpr --tpr-limit 500        Cap at 500 routes
 `;
 }
 

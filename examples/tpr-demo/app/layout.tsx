@@ -1,9 +1,9 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "TPR Demo — Traffic-aware Pre-Rendering",
+  title: "TPR Demo — Traffic-aware Pre-Warming",
   description:
-    "A demo of vinext's TPR feature: pre-render only the pages that matter.",
+    "A demo of vinext's TPR feature: pre-warm only the routes that matter.",
 };
 
 export default function RootLayout({

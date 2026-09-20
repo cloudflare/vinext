@@ -8,7 +8,7 @@
  *
  * This is only useful for the MemoryCacheHandler (the default for Node.js
  * production). Persistent backends like KV already retain entries across
- * deploys and can be pre-populated via TPR or similar mechanisms.
+ * deploys and can be pre-populated from prerendered artifacts.
  *
  * Consistency model:
  * - The manifest is authoritative for which routes were pre-rendered and their

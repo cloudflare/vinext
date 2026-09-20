@@ -169,7 +169,7 @@ function TrafficChart({
         {coverage.pagesNeeded} pages
       </text>
 
-      {/* "Pre-rendered" label */}
+      {/* "Pre-warmed" label */}
       <text
         x={PAD.left + (thresholdX - PAD.left) / 2}
         y={PAD.top + chartH / 2}
@@ -179,7 +179,7 @@ function TrafficChart({
         fontWeight="600"
         opacity="0.7"
       >
-        Pre-rendered
+        Pre-warmed
       </text>
 
       {/* "SSR on demand" label */}
@@ -272,7 +272,7 @@ function ComparisonBars({
   return (
     <div className="bar-chart">
       <h3 style={{ marginBottom: 20 }}>
-        Pre-render time at deploy
+        Pre-warm time at deploy
       </h3>
       {rows.map((row) => (
         <div className="bar-row" key={row.label}>
@@ -308,7 +308,7 @@ function ComparisonBars({
 
 function LatencyComparison({ tprCoverage }: { tprCoverage: number }) {
   // For popular pages (within coverage threshold):
-  //   SSG = 0ms (pre-rendered), ISR = 0ms (pre-rendered), TPR = 0ms (pre-rendered), SSR = ~200ms
+  //   SSG = 0ms (pre-rendered), ISR = 0ms (cached), TPR = 0ms (pre-warmed), SSR = ~200ms
   // For rare pages (outside coverage):
   //   SSG = 0ms, ISR = 0ms, TPR = ~200ms (SSR fallback), SSR = ~200ms
   // Weighted average based on coverage:
@@ -323,7 +323,7 @@ function LatencyComparison({ tprCoverage }: { tprCoverage: number }) {
     },
     {
       label: "SSG / ISR",
-      desc: "All pages pre-rendered",
+      desc: "All pages pre-rendered at build",
       p50: 0,
       color: "var(--blue)",
     },
@@ -424,7 +424,7 @@ export default function TPRVisualization() {
                 {estimateBuildTime(coverage.pagesNeeded)}
               </div>
               <div className="desc">
-                Pre-render only the {coverage.pagesNeeded} pages that cover{" "}
+                Pre-warm only the {coverage.pagesNeeded} pages that cover{" "}
                 {Math.round(coverage.coveragePercent)}% of traffic.
                 Popular pages are instant. Everything else falls back to SSR
                 and gets cached.
@@ -477,11 +477,11 @@ export default function TPRVisualization() {
 
             <div className="stats">
               <div className="stat">
-                <div className="stat-label">Pages to pre-render</div>
+                <div className="stat-label">Routes to pre-warm</div>
                 <div className="stat-value">{coverage.pagesNeeded}</div>
               </div>
               <div className="stat">
-                <div className="stat-label">Pre-render time</div>
+                <div className="stat-label">Pre-warm time</div>
                 <div className="stat-value">
                   {estimateBuildTime(coverage.pagesNeeded)}
                 </div>
@@ -548,26 +548,23 @@ export default function TPRVisualization() {
             </div>
             <div className="step">
               <div className="step-num">03</div>
-              <div className="step-title">Pre-render</div>
+              <div className="step-title">Resolve routes</div>
               <div className="step-desc">
-                Spin up the built app locally, fetch each hot route to
-                produce HTML
+                Match the selected URLs to the built App and Pages route graph
               </div>
             </div>
             <div className="step">
               <div className="step-num">04</div>
-              <div className="step-title">Upload to KV</div>
+              <div className="step-title">Standard pre-warm</div>
               <div className="step-desc">
-                Write pre-rendered pages to KV cache in the same format
-                ISR uses at runtime
+                Stage the Worker, classify cacheability, and request the selected entries
               </div>
             </div>
             <div className="step">
               <div className="step-num">05</div>
-              <div className="step-title">Deploy</div>
+              <div className="step-title">Promote</div>
               <div className="step-desc">
-                Run wrangler deploy as normal. Popular pages are
-                instantly warm.
+                Promote the same warmed Worker version through the normal deploy flow
               </div>
             </div>
           </div>
@@ -592,17 +589,16 @@ export default function TPRVisualization() {
             {"\n"}
             <span className="green">
               {"  "}TPR: {traffic.length.toLocaleString()} unique paths —{" "}
-              {coverage.pagesNeeded} pages cover{" "}
+              {coverage.pagesNeeded} routes cover{" "}
               {Math.round(coverage.coveragePercent)}% of traffic
             </span>
             {"\n"}
             <span className="green">
-              {"  "}TPR: Pre-rendering {coverage.pagesNeeded} pages...
+              {"  "}CDN warmup: resolving {coverage.pagesNeeded} selected routes...
             </span>
             {"\n"}
             <span className="green">
-              {"  "}TPR: Pre-rendered {coverage.pagesNeeded} pages in{" "}
-              {estimateBuildTime(coverage.pagesNeeded)} → KV cache
+              {"  "}CDN warmup: {coverage.pagesNeeded} routes warmed.
             </span>
             {"\n\n"}
             <span className="blue">{"  "}Deploying to Cloudflare Workers...</span>
@@ -643,7 +639,7 @@ export default function TPRVisualization() {
               </div>
             </div>
             <div className="stat">
-              <div className="stat-label">TPR renders</div>
+              <div className="stat-label">TPR pre-warms</div>
               <div className="stat-value" style={{ color: "var(--green)" }}>
                 {coverage.pagesNeeded}
               </div>
@@ -652,7 +648,7 @@ export default function TPRVisualization() {
 
           <div style={{ marginTop: 32 }}>
             <h3 style={{ marginBottom: 12 }}>
-              Top pre-rendered pages
+              Top pre-warmed pages
             </h3>
             <div
               style={{

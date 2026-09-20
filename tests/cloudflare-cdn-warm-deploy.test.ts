@@ -301,6 +301,55 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
+  it("selects traffic-aware routes from a standard warm plan", async () => {
+    const { selectTPRWarmPlan } = await import("../packages/cloudflare/src/deploy.js");
+
+    const selected = selectTPRWarmPlan(
+      {
+        appPaths: ["/hot", "/cold"],
+        loadingShellPaths: ["/hot", "/cold"],
+        pagesDataPaths: ["/_next/data/build/hot.json", "/_next/data/build/cold.json"],
+        pagesPaths: ["/hot", "/cold"],
+        paths: ["/hot", "/cold"],
+        routePatterns: {
+          "/hot": { kind: "app-page", pattern: "/:slug" },
+          "/cold": { kind: "app-page", pattern: "/:slug" },
+          "/_next/data/build/hot.json": {
+            kind: "pages-page",
+            pattern: "/:slug",
+            cacheabilityProbe: { canPrunePattern: true, concretePathname: "/hot" },
+          },
+          "/_next/data/build/cold.json": {
+            kind: "pages-page",
+            pattern: "/:slug",
+            cacheabilityProbe: { canPrunePattern: true, concretePathname: "/cold" },
+          },
+        },
+        rscPaths: ["/hot", "/cold"],
+      },
+      [
+        { path: "/missing", requests: 90 },
+        { path: "/hot/", requests: 9 },
+        { path: "/cold", requests: 1 },
+      ],
+      90,
+      1,
+    );
+
+    expect(selected).toMatchObject({
+      appPaths: ["/hot"],
+      loadingShellPaths: ["/hot"],
+      pagesDataPaths: ["/_next/data/build/hot.json"],
+      pagesPaths: ["/hot"],
+      paths: ["/hot"],
+      rscPaths: ["/hot"],
+    });
+    expect(Object.keys(selected.routePatterns ?? {})).toEqual([
+      "/hot",
+      "/_next/data/build/hot.json",
+    ]);
+  });
+
   it("rejects promotion delays that Node timers cannot represent before deploying", async () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 

@@ -55,7 +55,8 @@ import {
   getMissingDeps,
   type ProjectInfo,
 } from "vinext/internal/utils/project";
-import { parseWranglerConfig, runTPR } from "./tpr.js";
+import { resolveTPRRoutes, selectRoutes, type TrafficEntry } from "./tpr.js";
+import { parseWranglerConfig } from "./wrangler-config.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "./version-headers.js";
 import {
   createCdnWarmTargets,
@@ -90,6 +91,7 @@ import {
 } from "./version-deploy.js";
 import { parseWorkerDeploymentUrl } from "./worker-deployment-url.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
+import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { cacheabilityRoutePathname } from "vinext/internal/server/cacheability-manifest";
 import { buildPrerenderKVPairs, type KVBulkPair } from "./prerender-kv-populate.js";
 import { writeCacheabilityManifestArtifact } from "./cacheability-artifact.js";
@@ -162,11 +164,11 @@ export type DeployOptions = {
   warmCdnPromotionDelay?: number;
   /** Include PPR fallback-shell placeholder paths during CDN warmup */
   warmCdnIncludeFallbacks?: boolean;
-  /** Enable experimental TPR (Traffic-aware Pre-Rendering) */
+  /** Select CDN pre-warm routes using traffic analytics */
   experimentalTPR?: boolean;
   /** TPR: traffic coverage percentage target (0–100, default: 90) */
   tprCoverage?: number;
-  /** TPR: hard cap on number of pages to pre-render (default: 1000) */
+  /** TPR: hard cap on selected routes (default: 1000) */
   tprLimit?: number;
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
@@ -770,6 +772,49 @@ export function hasCdnWarmRequests(
       plan.loadingShellPaths.length >
     0
   );
+}
+
+export function selectTPRWarmPlan(
+  plan: PrerenderWarmPlan,
+  traffic: readonly TrafficEntry[],
+  coverage: number,
+  limit: number,
+): PrerenderWarmPlan {
+  const canonical = (pathname: string): string => normalizePathTrailingSlash(pathname, false);
+  const resolved = new Set(
+    Object.entries(plan.routePatterns ?? {}).map(([pathname, route]) =>
+      canonical(route.cacheabilityProbe?.concretePathname ?? pathname),
+    ),
+  );
+  const selected = new Set(
+    selectRoutes(
+      traffic.filter(({ path }) => resolved.has(canonical(path))),
+      coverage,
+      limit,
+    ).routes.map(({ path }) => canonical(path)),
+  );
+  const includes = (pathname: string): boolean =>
+    selected.has(
+      canonical(plan.routePatterns?.[pathname]?.cacheabilityProbe?.concretePathname ?? pathname),
+    );
+  const filter = (pathnames: readonly string[] | undefined): string[] | undefined =>
+    pathnames?.filter(includes);
+
+  return {
+    ...plan,
+    appPaths: filter(plan.appPaths),
+    loadingShellPaths: filter(plan.loadingShellPaths) ?? [],
+    pagesDataPaths: filter(plan.pagesDataPaths),
+    pagesPaths: filter(plan.pagesPaths),
+    paths: filter(plan.paths) ?? [],
+    routeHandlerPaths: filter(plan.routeHandlerPaths),
+    routePatterns: plan.routePatterns
+      ? Object.fromEntries(
+          Object.entries(plan.routePatterns).filter(([pathname]) => includes(pathname)),
+        )
+      : undefined,
+    rscPaths: filter(plan.rscPaths) ?? [],
+  };
 }
 
 export function projectRequiresRouteCacheabilityProbeManifest(
@@ -1975,7 +2020,20 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  if (options.warmCdnCache && cdnAdapterConfig) {
+  const tpr = options.experimentalTPR
+    ? await resolveTPRRoutes({
+        root,
+        config: options.config,
+        env: buildEnv,
+        hostname: warmCdnTarget ? new URL(warmCdnTarget).hostname : undefined,
+        window: Math.max(1, options.tprWindow ?? 24),
+      })
+    : null;
+  if (tpr?.skipped) console.log(`  TPR: Skipped (${tpr.skipped})`);
+  const tprRoutes = tpr?.routes ?? [];
+  const shouldWarmCdnCache = options.warmCdnCache || tprRoutes.length > 0;
+
+  if (shouldWarmCdnCache && cdnAdapterConfig) {
     const wrangler = await loadProjectWranglerApi(info.root);
     const previousCwd = process.cwd();
     try {
@@ -2046,22 +2104,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
     }
   }
 
-  // Step 6b: TPR — pre-render hot pages into KV cache (experimental, opt-in)
-  if (options.experimentalTPR) {
-    console.log();
-    const tprResult = await runTPR({
-      root,
-      config: options.config,
-      coverage: Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
-      limit: Math.max(1, options.tprLimit ?? 1000),
-      window: Math.max(1, options.tprWindow ?? 24),
-    });
-
-    if (tprResult.skipped) {
-      console.log(`  TPR: Skipped (${tprResult.skipped})`);
-    }
-  }
-
   // Step 7: Deploy via wrangler
   const wranglerOptions = {
     env: deployEnv === "production" && !options.env ? undefined : deployEnv,
@@ -2071,13 +2113,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
   };
   let url: string;
 
-  if (options.warmCdnCache) {
+  if (shouldWarmCdnCache) {
     url = await deployWithCdnWarmup(root, [], {
       ...wranglerOptions,
       cacheabilityProbe: needsCacheabilityProbeManifest,
       discoverWarmPlan: async ({ headers, targetUrl }) => {
         const discovery = await discoverPrerenderPathManifest({
           root: info.root,
+          candidatePaths: tprRoutes.map(({ path }) => path),
           nextConfig,
           buildIdentity: hasBuildIdentityHeader ? "response-header" : undefined,
           includeCanonicalRsc: hasCanonicalRscWarmup,
@@ -2096,11 +2139,19 @@ export async function deploy(options: DeployOptions): Promise<void> {
           },
         });
         if (!discovery) return { loadingShellPaths: [], paths: [], rscPaths: [] };
-        return createPrerenderWarmPlan(root, discovery, {
+        const plan = createPrerenderWarmPlan(root, discovery, {
           includeCanonicalRsc: hasCanonicalRscWarmup,
           includeFallbackShells: options.warmCdnIncludeFallbacks,
           strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
         });
+        return tprRoutes.length > 0
+          ? selectTPRWarmPlan(
+              plan,
+              tprRoutes,
+              Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
+              Math.max(1, options.tprLimit ?? 1000),
+            )
+          : plan;
       },
       statusSource: hasVinextCacheWarmupStatus ? "vinext" : "cloudflare",
       warmCdnConcurrency: options.warmCdnConcurrency,

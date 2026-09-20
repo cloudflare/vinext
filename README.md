@@ -335,15 +335,15 @@ For TypeScript types, generate them with `wrangler types` and the `env` import w
 
 > **Note:** You do not need `getPlatformProxy()`, a custom worker entry with `fetch(request, env)`, or any other workaround. `cloudflare:workers` is the recommended way to access bindings in vinext.
 
-#### Traffic-aware Pre-Rendering (experimental)
+#### Traffic-aware pre-warming (experimental)
 
-TPR queries Cloudflare zone analytics at deploy time to find which pages actually get traffic, pre-renders only those, and uploads them to KV cache. The result is SSG-level latency for popular pages without pre-rendering your entire site.
+TPR queries Cloudflare zone analytics at deploy time to select the routes that actually get traffic. Those routes then go through vinext's standard staged CDN pre-warming flow, including route resolution, cacheability checks, and promotion.
 
 ```bash
-npx @vinext/cloudflare deploy --experimental-tpr                    # Pre-render pages covering 90% of traffic
+npx @vinext/cloudflare deploy --experimental-tpr                    # Pre-warm routes covering 90% of traffic
 vp exec vinext-cloudflare deploy --experimental-tpr                 # Same, with Vite+
 npx @vinext/cloudflare deploy --experimental-tpr --tpr-coverage 95  # More aggressive coverage
-npx @vinext/cloudflare deploy --experimental-tpr --tpr-limit 500    # Cap at 500 pages
+npx @vinext/cloudflare deploy --experimental-tpr --tpr-limit 500    # Cap at 500 routes
 npx @vinext/cloudflare deploy --experimental-tpr --tpr-window 48    # Use 48h of analytics
 ```
 
