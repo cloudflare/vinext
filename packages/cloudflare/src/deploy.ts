@@ -41,7 +41,7 @@ import {
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
-  usesVinextCacheWarmupStatus,
+  cacheWarmupStatusSource,
   requiresRouteCacheabilityProbeManifest,
   resolveVinextPrerenderDecision,
   type ResolvedVinextPrerenderConfig,
@@ -1962,7 +1962,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const hasStagedRequestRouting = hasUncachedRequestRouting(viteConfigMetadata.cacheConfig);
   const hasBuildIdentityHeader = hasBuildIdentityResponseHeader(viteConfigMetadata.cacheConfig);
   const hasCanonicalRscWarmup = supportsCanonicalRscWarmup(viteConfigMetadata.cacheConfig);
-  const hasVinextCacheWarmupStatus = usesVinextCacheWarmupStatus(viteConfigMetadata.cacheConfig);
+  const warmupStatusSource = cacheWarmupStatusSource(viteConfigMetadata.cacheConfig);
   const needsCacheabilityProbeManifest = projectRequiresRouteCacheabilityProbeManifest(
     info,
     viteConfigMetadata.cacheConfig,
@@ -2107,7 +2107,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
           strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
         });
       },
-      statusSource: hasVinextCacheWarmupStatus ? "vinext" : "cloudflare",
+      statusSource: warmupStatusSource,
       warmCdnConcurrency: options.warmCdnConcurrency,
       warmCdnTarget,
       warmCdnTimeout: options.warmCdnTimeout,

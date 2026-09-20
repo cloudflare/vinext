@@ -103,11 +103,14 @@ export function supportsCanonicalRscWarmup(cache?: VinextCacheConfig | null): bo
   return hasVerbatimResponseVary(cache);
 }
 
-export function usesVinextCacheWarmupStatus(cache?: VinextCacheConfig | null): boolean {
-  return (
-    cache?.cdn?.capabilities?.warmup === "response-store" ||
-    (!cache?.cdn?.adapter && cache?.data?.capabilities?.warmup === "data-cache")
-  );
+export function cacheWarmupStatusSource(
+  cache?: VinextCacheConfig | null,
+): "cloudflare" | "data-cache" | "vinext" {
+  if (cache?.cdn?.capabilities?.warmup === "response-store") return "vinext";
+  if (!cache?.cdn?.adapter && cache?.data?.capabilities?.warmup === "data-cache") {
+    return "data-cache";
+  }
+  return "cloudflare";
 }
 
 export function hasUncachedRequestRouting(cache?: VinextCacheConfig | null): boolean {

@@ -65,7 +65,7 @@ export type CdnWarmOptions = {
   requireCacheHit?: boolean;
   strict?: boolean;
   /** Cache-admission signal exposed by the deployed adapter. */
-  statusSource?: "cloudflare" | "vinext";
+  statusSource?: "cloudflare" | "data-cache" | "vinext";
   fetchImpl?: typeof fetch;
 };
 
@@ -857,7 +857,10 @@ function validateCachePolicy(
   return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
 }
 
-function validateVinextCacheStatus(response: Response): WarmValidation {
+function validateVinextCacheStatus(
+  response: Response,
+  missingStatus: "failed" | "skipped" = "failed",
+): WarmValidation {
   const status = response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase();
   if (status === "MISS" || status === "HIT" || status === "UPDATING") {
     return { outcome: "warmed" };
@@ -865,17 +868,19 @@ function validateVinextCacheStatus(response: Response): WarmValidation {
   if (status === "BYPASS" || status === "DYNAMIC") {
     return { outcome: "skipped", reason: `${VINEXT_CACHE_HEADER} is ${status}` };
   }
-  return { outcome: "failed", error: `response is missing ${VINEXT_CACHE_HEADER}` };
+  return missingStatus === "skipped"
+    ? { outcome: "skipped", reason: `response is missing ${VINEXT_CACHE_HEADER}` }
+    : { outcome: "failed", error: `response is missing ${VINEXT_CACHE_HEADER}` };
 }
 
 function validateWarmAdmission(
   response: Response,
-  statusSource: "cloudflare" | "vinext",
+  statusSource: "cloudflare" | "data-cache" | "vinext",
   requireCacheHit: boolean,
 ): WarmValidation {
-  return statusSource === "vinext"
-    ? validateVinextCacheStatus(response)
-    : validateCachePolicy(response, true, requireCacheHit);
+  if (statusSource === "vinext") return validateVinextCacheStatus(response);
+  if (statusSource === "data-cache") return validateVinextCacheStatus(response, "skipped");
+  return validateCachePolicy(response, true, requireCacheHit);
 }
 
 function validateBuildIdentity(
@@ -904,7 +909,7 @@ function validateRscWarmResponse(
   expectedBuildId?: string,
   expectedRscBuildId?: string,
   requireCacheHit = false,
-  statusSource: "cloudflare" | "vinext" = "cloudflare",
+  statusSource: "cloudflare" | "data-cache" | "vinext" = "cloudflare",
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
@@ -958,7 +963,7 @@ function validateHtmlWarmResponse(
   response: Response,
   expectedBuildId?: string,
   requireCacheHit = false,
-  statusSource: "cloudflare" | "vinext" = "cloudflare",
+  statusSource: "cloudflare" | "data-cache" | "vinext" = "cloudflare",
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
@@ -980,7 +985,7 @@ function validatePagesDataWarmResponse(
   response: Response,
   expectedBuildId?: string,
   requireCacheHit = false,
-  statusSource: "cloudflare" | "vinext" = "cloudflare",
+  statusSource: "cloudflare" | "data-cache" | "vinext" = "cloudflare",
 ): WarmValidation {
   const validation = validateHtmlWarmResponse(
     response,
@@ -1250,7 +1255,7 @@ async function warmOnePath(
     retrySkipped: boolean;
     phaseTimeoutMs?: number;
     requireCacheHit: boolean;
-    statusSource: "cloudflare" | "vinext";
+    statusSource: "cloudflare" | "data-cache" | "vinext";
   },
 ): Promise<
   | { path: string; ok: true; skipped: false }

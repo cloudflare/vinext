@@ -22,7 +22,7 @@ import {
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
-  usesVinextCacheWarmupStatus,
+  cacheWarmupStatusSource,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
   VIRTUAL_CDN_CACHE_ADAPTER,
@@ -237,7 +237,7 @@ describe("kvDataAdapter builder", () => {
       warmup: "data-cache",
     });
     expect(hasBuildIdentityResponseHeader({ data: descriptor })).toBe(true);
-    expect(usesVinextCacheWarmupStatus({ data: descriptor })).toBe(true);
+    expect(cacheWarmupStatusSource({ data: descriptor })).toBe("data-cache");
     expect(
       hasBuildIdentityResponseHeader({
         cdn: { adapter: "custom-cdn" },

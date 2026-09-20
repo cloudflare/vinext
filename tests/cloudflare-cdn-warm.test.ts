@@ -124,6 +124,29 @@ describe("Cloudflare CDN warmup", () => {
     );
   });
 
+  it("skips responses outside an origin-managed data cache", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("html", {
+          headers: {
+            "content-type": "text/html",
+            "x-vinext-build-id": "build-a",
+          },
+        }),
+    );
+
+    const result = await warmCdnCache({
+      expectedBuildId: "build-a",
+      fetchImpl,
+      paths: ["/uncached"],
+      statusSource: "data-cache",
+      strict: true,
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result).toMatchObject({ failed: 0, skipped: 1, total: 1, warmed: 0 });
+  });
+
   it("reads only build-discovered paths and does not require local prerender output", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
