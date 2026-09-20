@@ -18,6 +18,8 @@ export function formatDeployHelp(): string {
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
     --verbose                Print raw output from internal Wrangler commands
+    --no-promote             Do not promote the uploaded Worker version to 100%
+                             traffic
     --prerender-all          Pre-render discovered routes after building (future
                              releases will auto-populate the remote cache)
     --prerender-concurrency <count>
@@ -59,8 +61,6 @@ export function formatDeployHelp(): string {
     --dangerously-promote-on-cdn-warm-error
                              Promote even when ordinary staged warmup cannot be
                              verified (never bypasses --warm-cdn-certify)
-    --warm-cdn-no-promote    Leave the warmed Worker version staged at 0% traffic;
-                             production triggers are still applied before warming
     --warm-cdn-promotion-delay <ms>
                              Delay before promotion after warmup (default: 15000)
     --warm-cdn-include-fallbacks
@@ -91,6 +91,7 @@ export function formatDeployHelp(): string {
     vinext-cloudflare deploy --config dist/server/wrangler.json        Deploy using a generated Wrangler config
     vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
     vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name
+    vinext-cloudflare deploy --no-promote                              Upload a version without changing deployment traffic
     vinext-cloudflare deploy --experimental-warm-cdn-cache              Warm build-discovered paths during version deploy (experimental)
     vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://example.com
                                                                           Warm an explicit production origin

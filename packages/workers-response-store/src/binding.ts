@@ -1,6 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { deriveCachePolicy, edgeCacheControl, representationAge } from "./cache-policy";
+import { IsolateNegativeCache } from "./isolate-negative-cache";
 import type { CacheMetadataStub } from "./metadata-do";
 
 type RevalidatorDescriptor = {
@@ -207,10 +208,16 @@ const MISS_HEADERS = {
 
 const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
+const ISOLATE_MISS_CACHE_CAPACITY = 1_024;
+const ISOLATE_MISS_CACHE_TTL_MS = 1_000;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
 const pendingPuts = new Map<string, Promise<StoreResult>>();
+const entryReads = new IsolateNegativeCache<string, StoredEntry>(
+  ISOLATE_MISS_CACHE_CAPACITY,
+  ISOLATE_MISS_CACHE_TTL_MS,
+);
 
 export function validateResponseStoreShards(shards: number | undefined): number | undefined {
   if (shards !== undefined && (!Number.isSafeInteger(shards) || shards <= 1)) {
@@ -305,6 +312,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const shards = this.shardCount;
     const index = shards === 1 ? 0 : Number.parseInt(keyHash.slice(0, 8), 16) % shards;
     return this.getMetadataShard(index);
+  }
+
+  private entryReadKey(keyHash: string): string {
+    return `${this.getVersionId()}:${this.shardCount}:${keyHash}`;
   }
 
   private getMetadataShards(): CacheMetadataStub[] {
@@ -622,7 +633,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   async fetch(request: Request): Promise<Response> {
     const { keyHash } = await this.deriveCacheKey(request);
     const metadata = this.getMetadata(keyHash);
-    const entry = await metadata.getEntry(keyHash);
+    const entry = await entryReads.getOrLoad(this.entryReadKey(keyHash), () =>
+      metadata.getEntry(keyHash),
+    );
     if (!entry) {
       return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
     }
@@ -667,72 +680,78 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     options: ResponseStorePutOptions = {},
   ): Promise<ResponseStoreMutationResult> {
     const { cacheKey, keyHash } = await this.deriveCacheKey(request);
-    const metadata = this.getMetadata(keyHash);
-    const cacheTags = cacheTagsFromResponse(response);
-    const pendingPutKey = `${this.getVersionId()}:${this.shardCount}:${keyHash}:${Boolean(options.purgeExisting)}`;
-    let reservation: WriteReservation | undefined;
-    if (options.coalesce) {
-      for (;;) {
-        const pending = pendingPuts.get(pendingPutKey);
-        if (!pending) break;
+    const entryReadKey = this.entryReadKey(keyHash);
+    entryReads.delete(entryReadKey);
+    try {
+      const metadata = this.getMetadata(keyHash);
+      const cacheTags = cacheTagsFromResponse(response);
+      const pendingPutKey = `${this.getVersionId()}:${this.shardCount}:${keyHash}:${Boolean(options.purgeExisting)}`;
+      let reservation: WriteReservation | undefined;
+      if (options.coalesce) {
+        for (;;) {
+          const pending = pendingPuts.get(pendingPutKey);
+          if (!pending) break;
 
-        reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
-        let result: StoreResult;
-        try {
-          result = await pending;
-        } catch {
-          // Preserve this response as the fallback when the leading write fails.
+          reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
+          let result: StoreResult;
+          try {
+            result = await pending;
+          } catch {
+            // Preserve this response as the fallback when the leading write fails.
+            if (pendingPuts.get(pendingPutKey) === pending) {
+              pendingPuts.delete(pendingPutKey);
+            }
+            continue;
+          }
+          if (result.published && result.entry) {
+            const objectKey = reservation.objectKey;
+            await metadata
+              .finishPendingObjects([objectKey])
+              .catch((error) => this.logCleanupFailure(objectKey, error));
+            void response.body?.cancel().catch(() => {});
+            return {
+              backingStoreUpdated: true,
+              edgePurgeAccepted: options.purgeExisting
+                ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+                : true,
+            };
+          }
           if (pendingPuts.get(pendingPutKey) === pending) {
             pendingPuts.delete(pendingPutKey);
           }
-          continue;
         }
-        if (result.published && result.entry) {
-          const objectKey = reservation.objectKey;
-          await metadata
-            .finishPendingObjects([objectKey])
-            .catch((error) => this.logCleanupFailure(objectKey, error));
-          void response.body?.cancel().catch(() => {});
-          return {
-            backingStoreUpdated: true,
-            edgePurgeAccepted: options.purgeExisting
-              ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
-              : true,
-          };
+      }
+
+      const write = (async (): Promise<StoreResult> => {
+        reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
+        return this.storeResponse(
+          metadata,
+          request,
+          response,
+          options.revalidator,
+          reservation,
+          cacheTags,
+        );
+      })();
+      if (options.coalesce) pendingPuts.set(pendingPutKey, write);
+      try {
+        const result = await write;
+        if (!result.published || !result.entry) {
+          return { backingStoreUpdated: false, edgePurgeAccepted: false };
         }
-        if (pendingPuts.get(pendingPutKey) === pending) {
+        return {
+          backingStoreUpdated: true,
+          edgePurgeAccepted: options.purgeExisting
+            ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+            : true,
+        };
+      } finally {
+        if (options.coalesce && pendingPuts.get(pendingPutKey) === write) {
           pendingPuts.delete(pendingPutKey);
         }
       }
-    }
-
-    const write = (async (): Promise<StoreResult> => {
-      reservation ??= await this.reserveWrite(metadata, keyHash, cacheKey, cacheTags);
-      return this.storeResponse(
-        metadata,
-        request,
-        response,
-        options.revalidator,
-        reservation,
-        cacheTags,
-      );
-    })();
-    if (options.coalesce) pendingPuts.set(pendingPutKey, write);
-    try {
-      const result = await write;
-      if (!result.published || !result.entry) {
-        return { backingStoreUpdated: false, edgePurgeAccepted: false };
-      }
-      return {
-        backingStoreUpdated: true,
-        edgePurgeAccepted: options.purgeExisting
-          ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
-          : true,
-      };
     } finally {
-      if (options.coalesce && pendingPuts.get(pendingPutKey) === write) {
-        pendingPuts.delete(pendingPutKey);
-      }
+      entryReads.delete(entryReadKey);
     }
   }
 

@@ -34,3 +34,120 @@ body {
   display: block;
   min-width: max-content;
 }
+
+.docs-copy > :first-child {
+  margin-top: 0;
+}
+
+.docs-copy > h1 {
+  display: none;
+}
+
+.docs-copy h2 {
+  margin-top: 2.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--text-color-kumo-default);
+}
+
+.docs-copy h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.5rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-color-kumo-default);
+}
+
+.docs-copy p,
+.docs-copy ul,
+.docs-copy ol,
+.docs-copy blockquote {
+  margin-top: 1rem;
+  color: var(--text-color-kumo-subtle);
+  line-height: 1.75;
+}
+
+.docs-copy ul,
+.docs-copy ol {
+  padding-left: 1.5rem;
+}
+
+.docs-copy ul {
+  list-style: disc;
+}
+
+.docs-copy ol {
+  list-style: decimal;
+}
+
+.docs-copy a {
+  font-weight: 500;
+  color: var(--text-color-kumo-default);
+  text-decoration: underline;
+  text-decoration-color: var(--color-kumo-line);
+  text-underline-offset: 0.25rem;
+}
+
+.docs-copy a:hover {
+  text-decoration-color: var(--color-kumo-contrast);
+}
+
+.docs-copy blockquote {
+  margin-block: 1.5rem;
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 0.5rem;
+  background: var(--color-kumo-base);
+  padding: 1rem 1.25rem;
+}
+
+.docs-copy blockquote p {
+  margin: 0;
+}
+
+.docs-copy > pre {
+  margin-block: 1.25rem;
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  background: var(--color-kumo-contrast);
+  padding: 1rem;
+  color: var(--text-color-kumo-inverse);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.875rem;
+  line-height: 1.75;
+}
+
+.docs-copy table {
+  display: block;
+  margin-block: 1.75rem;
+  overflow-x: auto;
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--text-color-kumo-subtle);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.docs-copy th,
+.docs-copy td {
+  border-bottom: 1px solid var(--color-kumo-line);
+  padding: 0.75rem 1rem 0.75rem 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.docs-copy th {
+  color: var(--text-color-kumo-default);
+  font-weight: 600;
+}
+
+.docs-copy code:not(pre code) {
+  border: 1px solid var(--color-kumo-line);
+  border-radius: 0.25rem;
+  background: var(--color-kumo-base);
+  padding: 0.125rem 0.3rem;
+  color: var(--text-color-kumo-default);
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 0.875em;
+}

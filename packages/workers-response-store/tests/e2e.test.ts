@@ -5,13 +5,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { Miniflare } from "miniflare";
-import { afterEach, beforeEach, test } from "vitest";
+import { afterEach, beforeEach, test, vi } from "vitest";
 
 import type {
   ResponseStorePurgeOptions,
   ResponseStoreRefreshOptions,
   SerializableValue,
 } from "../src/index.js";
+import { IsolateNegativeCache } from "../src/isolate-negative-cache.js";
 
 const workerScript = fileURLToPath(new URL("../dist/worker/worker.js", import.meta.url));
 const metadataName = "poc-v2";
@@ -69,6 +70,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await mf.dispose();
 });
 
@@ -208,6 +210,75 @@ async function onePathPerShard(shards: number): Promise<string[]> {
   }
   return paths as string[];
 }
+
+test("isolate miss caching coalesces loads, expires, and evicts least-recently-used keys", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(0);
+  const cache = new IsolateNegativeCache<string, string>(2, 1_000);
+  let release!: (value: string | null) => void;
+  let loads = 0;
+  const pendingLoad = () => {
+    loads++;
+    return new Promise<string | null>((resolve) => {
+      release = resolve;
+    });
+  };
+
+  const first = cache.getOrLoad("coalesced", pendingLoad);
+  const second = cache.getOrLoad("coalesced", pendingLoad);
+  await Promise.resolve();
+  assert.equal(loads, 1);
+  release(null);
+  assert.deepEqual(await Promise.all([first, second]), [null, null]);
+  assert.equal(await cache.getOrLoad("coalesced", pendingLoad), null);
+  assert.equal(loads, 1);
+
+  await cache.getOrLoad("other", async () => null);
+  await cache.getOrLoad("coalesced", pendingLoad);
+  await cache.getOrLoad("newest", async () => null);
+  await cache.getOrLoad("other", async () => {
+    loads++;
+    return "evicted";
+  });
+  assert.equal(loads, 2);
+
+  vi.advanceTimersByTime(1_001);
+  assert.equal(
+    await cache.getOrLoad("newest", async () => {
+      loads++;
+      return "expired";
+    }),
+    "expired",
+  );
+  assert.equal(loads, 3);
+  vi.useRealTimers();
+});
+
+test("put invalidates an isolate-local cached miss", async () => {
+  assert.equal((await read("/miss-then-put")).status, 404);
+  await put("/miss-then-put", "stored-after-miss");
+
+  const stored = await read("/miss-then-put");
+  assert.equal(stored.status, 200);
+  assert.equal(await stored.text(), "stored-after-miss");
+});
+
+test("put clears a miss cached while the write is in flight", async () => {
+  const write = put("/miss-during-put", "stored-after-delayed-put", { bodyDelayMs: 200 });
+  let pendingObjects = 0;
+  for (let attempt = 0; attempt < 50; attempt++) {
+    pendingObjects = await metadataRowCount("pending_objects");
+    if (pendingObjects > 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(pendingObjects, 1);
+  assert.equal((await read("/miss-during-put")).status, 404);
+
+  await write;
+  const stored = await read("/miss-during-put");
+  assert.equal(stored.status, 200);
+  assert.equal(await stored.text(), "stored-after-delayed-put");
+});
 
 test("put and fetch use pathname plus query, excluding host", async () => {
   const result = await put("/identity?a=1", "first", { host: "one.example" });
@@ -1137,6 +1208,32 @@ test("retention sweep removes orphaned candidates without deleting active R2 obj
   await stub.trackPendingObjects(finishedKeys, 0);
   await stub.finishPendingObjects(finishedKeys);
   assert.deepEqual(await stub.listExpiredPendingObjects(1, finishedKeys.length), []);
+});
+
+test("retention cleanup uses the persistent active-object index", async () => {
+  await put("/cleanup-index", "active");
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const plan = await storage.exec(`
+    EXPLAIN QUERY PLAN
+    SELECT pending_objects.object_key
+    FROM pending_objects
+    LEFT JOIN entries
+      ON entries.object_key = pending_objects.object_key AND entries.tombstoned = 0
+    ORDER BY pending_objects.created_at
+    LIMIT 101
+  `);
+  const details = plan.map(({ detail }) => detail).filter((detail) => typeof detail === "string");
+
+  assert.ok(
+    details.some((detail) => detail.includes("COVERING INDEX entries_active_object_key")),
+    JSON.stringify(plan),
+  );
+  assert.ok(
+    details.every((detail) => !detail.includes("AUTOMATIC")),
+    JSON.stringify(plan),
+  );
 });
 
 test("retention cleanup fences a body recreated after its first delete", async () => {

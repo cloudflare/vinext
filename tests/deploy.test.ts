@@ -493,6 +493,25 @@ describe("resolveWranglerBin", () => {
     expect(observed?.[2]).toMatchObject({ shell: false });
   });
 
+  it("uploads a Worker version without promoting it", async () => {
+    const versionId = "095f00a7-23a7-43b7-a227-e4c97cab5f22";
+    const previewUrl = "https://app-preview.example.workers.dev";
+    writeWranglerPackage();
+    writeFile(
+      tmpDir,
+      "node_modules/wrangler/bin/wrangler.js",
+      `console.log(${JSON.stringify(JSON.stringify({ version_id: versionId, preview_url: previewUrl }))});`,
+    );
+    const execute = vi.fn() as unknown as typeof spawn;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await expect(runWranglerDeploy(tmpDir, { promote: false }, execute)).resolves.toBe(previewUrl);
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(`  Worker version ID: ${versionId}`);
+    log.mockRestore();
+  });
+
   it("streams Wrangler output before the process exits", async () => {
     writeWranglerPackage();
     const child = new EventEmitter() as ChildProcess;
@@ -754,6 +773,7 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnTarget).toBeUndefined();
     expect(parsed.warmCdnCertify).toBe(false);
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
+    expect(parsed.warmCdnPromote).toBe(true);
   });
 
   it("requires CDN warming when certification is requested", () => {
@@ -904,6 +924,12 @@ describe("parseDeployArgs", () => {
 
   it("promotes warmed Worker versions by default", () => {
     expect(parseDeployArgs([]).warmCdnPromote).toBe(true);
+  });
+
+  it("parses the general no-promote flag and keeps the warmup-specific alias", () => {
+    expect(parseDeployArgs(["--no-promote"]).warmCdnPromote).toBe(false);
+    expect(parseDeployArgs(["--warm-cdn-no-promote"]).warmCdnPromote).toBe(false);
+    expect(formatDeployHelp()).toContain("--no-promote");
   });
 
   it("allows the CDN warmup promotion delay to be set to zero", () => {

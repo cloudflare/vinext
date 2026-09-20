@@ -4,7 +4,7 @@
 
 This release includes a new caching library for apps targeting Cloudflare Workers, called Workers Response Store. It is designed to fill the gaps that our other Cloudflare cache adapters struggled with; efficient cache warming, durable backing stores, stable ISR and revalidation, and better internal control of the cache.
 
-To find out more, check out our [caching docs](https://github.com/cloudflare/vinext/blob/main/docs/caching.md). Going forward, the Workers Response Store will be our recommended choice for caching due to the flexibility it provides, and over the coming weeks it shall be stabilised following community feedback.
+To find out more, check out our [caching docs](https://github.com/cloudflare/vinext/blob/main/docs/caching.mdx). Going forward, the Workers Response Store will be our recommended choice for caching due to the flexibility it provides, and over the coming weeks it shall be stabilised following community feedback.
 
 ### Features
 

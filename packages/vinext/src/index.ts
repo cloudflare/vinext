@@ -1463,7 +1463,9 @@ export type VinextOptions = {
 
 type NitroSetupContext = {
   options: {
+    buildDir?: string;
     dev?: boolean;
+    exportConditions?: string[];
     routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
   };
@@ -1507,6 +1509,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
+  let nitroBuildDir: string | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
@@ -1520,6 +1523,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // initializer guards any unexpected hook ordering.
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
   let hasCloudflarePlugin = false;
+  let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
   const isMultiStageServerEnvironment = (environment: {
     config: { build: { ssr?: unknown }; consumer?: string };
@@ -1530,6 +1534,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   };
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+  let nitroHostRuntime: "node" | "worker" = "node";
   let resolvedServerExternalPackages: string[] = [];
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
@@ -2011,6 +2016,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const commonJsTransform = commonJsPlugin.transform;
   if (typeof commonJsTransform === "function") {
     commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+      const normalizedId = toSlash(stripViteModuleQuery(id));
+      const nitroServicePath =
+        this.environment.name === "nitro" && nitroBuildDir && normalizedId.endsWith("/entry.js")
+          ? path.relative(path.join(canonicalize(nitroBuildDir), "vite/services"), normalizedId)
+          : "";
+      // Nitro service entries are already bundled ESM. Inlined CommonJS
+      // wrappers must not make vite-plugin-commonjs add a second default export.
+      if (/^[^/]+\/entry\.js$/.test(nitroServicePath)) return null;
+
+      // The published runtime and its inlined dependencies were already
+      // converted to ESM by tsdown. Workspace links resolve them outside
+      // node_modules, where vite-plugin-commonjs would otherwise process them
+      // again and can append a duplicate default export.
+      if (isPathInside(__dirname, toSlash(stripViteModuleQuery(id)))) return null;
+
       // The independent optimizeDeps Rolldown build already converted these
       // files to ESM. Running vite-plugin-commonjs over its output would append
       // a second export facade (including a duplicate default export).
@@ -2800,8 +2820,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
         );
         const configuredMultiStageOutput = options.cache?.cdn?.output;
-        selectedMultiStageOutput =
-          !isServeCommand &&
+        matchedMultiStageOutput =
           configuredMultiStageOutput?.type === "multi-stage" &&
           (configuredMultiStageOutput.matchesBuild?.({
             plugins: pluginsFlat as { name?: string }[],
@@ -2809,6 +2828,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             true)
             ? configuredMultiStageOutput
             : undefined;
+        // Dev retains the ordinary single-stage request path, but the host
+        // entry still needs adapter-owned named exports (for example Durable
+        // Object classes declared in Wrangler configuration).
+        selectedMultiStageOutput = isServeCommand ? undefined : matchedMultiStageOutput;
         hasNitroPlugin = pluginsFlat.some(
           (p: unknown) =>
             p &&
@@ -3690,7 +3713,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               build: {
                 outDir: "dist/server",
                 ...withBuildBundlerOptions({
-                  input: { index: VIRTUAL_SERVER_ENTRY },
+                  // Nitro dispatches the SSR service as a WinterCG fetch handler;
+                  // the Node server instead consumes the generated context bag.
+                  input: {
+                    index: hasNitroPlugin ? VIRTUAL_WORKER_ENTRY : VIRTUAL_SERVER_ENTRY,
+                  },
                   output: {
                     entryFileNames: "entry.js",
                   },
@@ -4191,6 +4218,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const entry = hasAppDir
               ? "vinext/server/app-router-entry"
               : "vinext/server/pages-router-entry";
+            if (!hasAppDir && hasNitroPlugin) {
+              return [
+                `import worker from ${JSON.stringify(entry)};`,
+                "export default { fetch(request, env, ctx) {",
+                `  return worker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)} });`,
+                "} };",
+              ].join("\n");
+            }
             return `export { default } from ${JSON.stringify(entry)};`;
           }
           if (id === RESOLVED_REQUEST_STAGE) {
@@ -4610,7 +4645,6 @@ export const loadServerActionClient = ${
     },
     {
       name: "vinext:multi-stage-host-entry",
-      apply: "build",
 
       transform: {
         // The adapter owns entry matching. Do not pre-filter by an import
@@ -4619,7 +4653,7 @@ export const loadServerActionClient = ${
         // specifically so it can recognize those layouts.
         filter: { id: /virtual:|\.[cm]?[jt]sx?(?:\?|$)/ },
         handler(code, id) {
-          const transformed = selectedMultiStageOutput?.transformHostEntry?.({ code, id });
+          const transformed = matchedMultiStageOutput?.transformHostEntry?.({ code, id });
           return transformed == null ? null : { code: transformed, map: null };
         },
       },
@@ -7173,6 +7207,12 @@ export const loadServerActionClient = ${
       name: "vinext:nitro-route-rules",
       nitro: {
         setup: async (nitro: NitroSetupContext) => {
+          nitroBuildDir = nitro.options.buildDir
+            ? path.resolve(root, nitro.options.buildDir)
+            : undefined;
+          nitroHostRuntime = nitro.options.exportConditions?.includes("workerd")
+            ? "worker"
+            : "node";
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 

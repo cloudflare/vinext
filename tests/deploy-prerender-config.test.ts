@@ -124,8 +124,11 @@ function writeProject(prerenderConfig: string, cacheConfig?: string): void {
       'import { defineConfig } from "vite";',
       'import { cloudflare } from "@cloudflare/vite-plugin";',
       'import vinext from "../packages/vinext/src/index";',
-      ...(cacheConfig
+      ...(cacheConfig?.includes("kvDataAdapter")
         ? ['import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter";']
+        : []),
+      ...(cacheConfig?.includes("cdnAdapter")
+        ? ['import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";']
         : []),
       "",
       "export default defineConfig({",
@@ -218,6 +221,7 @@ describe("deploy prerender config wiring", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -320,22 +324,34 @@ describe("deploy prerender config wiring", () => {
     await expect(deploy({ root: tmpDir, skipBuild: true })).rejects.toThrow("vite config loaded");
   });
 
-  it("loads Vite config once for all deploy metadata", async () => {
+  it("loads Vite config once and prewarms configured KV through the staged Worker", async () => {
     writeProject("true", '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    writeFile(
+      "wrangler.jsonc",
+      '{"name":"test-worker","main":"vinext/server/app-router-entry","assets":{"directory":"dist/client"}}\n',
+    );
+    writeFile(
+      "node_modules/wrangler/package.json",
+      JSON.stringify({ name: "wrangler", type: "module", main: "index.js" }),
+    );
+    writeFile(
+      "node_modules/wrangler/index.js",
+      `export * from ${JSON.stringify(realWranglerUrl)};\n`,
+    );
     writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "build-a\n");
     writeFile("dist/server/index.js", "export default {};\n");
-    runPrerenderMock.mockImplementationOnce(async () => {
-      writeFile(
-        "dist/server/vinext-prerender.json",
-        JSON.stringify({
-          buildId: "build-a",
-          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("<html>About</html>", {
+          headers: {
+            "Content-Type": "text/html",
+            "X-Vinext-Build-Id": "build-a",
+            "X-Vinext-Cache": "MISS",
+          },
         }),
-      );
-      writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
-      writeFile("dist/server/prerendered-routes/about.rsc", "flight");
-      return { routes: [] };
-    });
+    );
+    vi.stubGlobal("fetch", fetchMock);
     writeFile(
       "count-config-load.js",
       [
@@ -357,15 +373,26 @@ describe("deploy prerender config wiring", () => {
       root: tmpDir,
       skipBuild: true,
       warmCdnCache: true,
-      dangerouslyPromoteOnCdnWarmError: true,
+      warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbeDelay: 0,
+      warmCdnReadinessProbes: 1,
     });
 
     expect(fs.readFileSync(path.join(tmpDir, "config-load-count.txt"), "utf8")).toBe("1");
+    expect(runPrerenderMock).not.toHaveBeenCalled();
     expect(fs.existsSync(path.join(tmpDir, "dist/server/vinext-prerender-paths.json"))).toBe(false);
+    expect(discoverPrerenderPathManifestMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalled();
     expect(
       vi.mocked(spawn).mock.calls.some(([, args]) => {
         const wranglerArgs = args as string[];
         return wranglerArgs.includes("kv") && wranglerArgs.includes("bulk");
+      }),
+    ).toBe(false);
+    expect(
+      vi.mocked(execFileSync).mock.calls.some(([, args]) => {
+        const wranglerArgs = args as string[];
+        return wranglerArgs.includes("versions") && wranglerArgs.includes("upload");
       }),
     ).toBe(true);
   });

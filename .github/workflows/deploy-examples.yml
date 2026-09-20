@@ -131,6 +131,9 @@ jobs:
     permissions:
       contents: read
       deployments: write
+    env:
+      VINEXT_CACHE_BACKEND: ${{ matrix.example.cache_backend }}
+      VINEXT_KV_APP_PREFIX: ${{ matrix.example.cache_backend != 'response-store' && github.event_name == 'pull_request' && format('pr-{0}-{1}-{2}-{3}', github.event.pull_request.number, matrix.example.project, github.run_id, github.run_attempt) || matrix.example.project }}
     strategy:
       fail-fast: false
       matrix:
@@ -167,6 +170,25 @@ jobs:
             project: response-store-demo
             working_directory: examples/response-store-demo
             wrangler_config: dist/server/wrangler.json
+            cache_backend: response-store
+            prewarm_e2e: true
+            warm_cdn_cache: true
+          - name: workers-cache
+            project: workers-cache
+            working_directory: examples/response-store-demo
+            wrangler_config: dist/server/wrangler.json
+            bootstrap_warm_cdn: true
+            cache_backend: workers-cache
+            prewarm_e2e: true
+            warm_cdn_cache: true
+          - name: kv
+            project: kv
+            worker_name: kv
+            working_directory: examples/response-store-demo
+            wrangler_config: dist/server/wrangler.json
+            bootstrap_warm_cdn: true
+            cache_backend: kv
+            prewarm_e2e: true
             warm_cdn_cache: true
           - name: static-export
             project: static-export
@@ -265,6 +287,28 @@ jobs:
           workingDirectory: ${{ matrix.example.working_directory }}
           command: deploy --config ${{ matrix.example.wrangler_config }}
 
+      - name: Bootstrap CDN warmup Worker (Production)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.bootstrap_warm_cdn == true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: ${{ matrix.example.worker_name }}
+        run: |
+          args=(--config "${{ matrix.example.wrangler_config }}")
+          if [[ -n "$WORKER_NAME" ]]; then
+            args+=(--name "$WORKER_NAME")
+          fi
+          if output=$(vp exec wrangler versions list "${args[@]}" 2>&1); then
+            printf '%s\n' "$output"
+            exit 0
+          fi
+          printf '%s\n' "$output" >&2
+          if [[ "$output" != *"does not exist"* && "$output" != *"does not yet exist"* ]]; then
+            exit 1
+          fi
+          vp exec wrangler deploy "${args[@]}"
+
       - name: Deploy to Cloudflare Workers with CDN warmup (Production)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache == true
         working-directory: ${{ matrix.example.working_directory }}
@@ -272,21 +316,34 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WARM_CDN_TARGET: ${{ matrix.example.warm_cdn_target }}
+          WORKER_NAME: ${{ matrix.example.worker_name }}
         run: |
           args=(--skip-build --config "${{ matrix.example.wrangler_config }}" --experimental-warm-cdn-cache)
+          if [[ -n "$WORKER_NAME" ]]; then
+            args+=(--name "$WORKER_NAME")
+          fi
           if [[ -n "$WARM_CDN_TARGET" ]]; then
             args+=(--warm-cdn-target "$WARM_CDN_TARGET")
           fi
           vp exec vinext-cloudflare deploy "${args[@]}"
 
       - name: Deploy Preview Version
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !matrix.example.worker_name
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
+
+      - name: Deploy Named Preview Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.worker_name
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: pr-${{ github.event.pull_request.number }}-${{ matrix.example.worker_name }}
+        run: vp exec wrangler deploy --config "${{ matrix.example.wrangler_config }}" --name "$WORKER_NAME"
 
       # `versions upload` does not apply non-versioned workers.dev/preview URL
       # settings. A newly added assets-only Worker has no routes until this runs.
@@ -298,6 +355,57 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: triggers deploy --config ${{ matrix.example.wrangler_config }}
+
+      - name: Seed cache prewarm E2E Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: vp exec wrangler deploy --config ../../tests/fixtures/rsc-prewarm-seed/wrangler.jsonc --name "$WORKER_NAME"
+
+      - name: Deploy cache prewarm E2E Worker
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VINEXT_CDN_WARM_DEBUG: "1"
+          WARM_CDN_CERTIFY: ${{ matrix.example.cache_backend != 'kv' }}
+          WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          args=(
+            --skip-build
+            --config "${{ matrix.example.wrangler_config }}"
+            --name "$WORKER_NAME"
+            --experimental-warm-cdn-cache
+          )
+          # The shared demo contains an intentionally late-dynamic page. The
+          # origin-managed KV adapter cannot classify that streamed MISS as a
+          # BYPASS, so its live E2E proves the prewarmed data hit directly.
+          if [[ "$WARM_CDN_CERTIFY" == "true" ]]; then
+            args+=(--warm-cdn-certify)
+          fi
+          vp exec vinext-cloudflare deploy "${args[@]}"
+
+      - name: Verify deployed cache prewarm
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-workers
+          VINEXT_E2E_CACHE_BACKEND: ${{ matrix.example.cache_backend }}
+          VINEXT_E2E_BASE_URL: https://prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}.vinext.workers.dev
+        run: vp exec playwright test tests/e2e/cloudflare-workers/cache-prewarm.spec.ts
+
+      - name: Delete cache prewarm E2E Worker
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        continue-on-error: true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: vp exec wrangler delete "$WORKER_NAME" --config ${{ matrix.example.wrangler_config }} --force
 
   smoke-test:
     name: Smoke Test Deployments
@@ -382,6 +490,14 @@ jobs:
             vp exec wrangler delete "$SERVICE_NAME" --force
           fi
 
+      - name: Delete named preview Workers
+        if: github.event.action == 'closed'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: pr-${{ github.event.pull_request.number }}-kv
+        run: vp exec wrangler delete "$WORKER_NAME" --force
+
   comment:
     name: Comment Preview URLs
     runs-on: ubuntu-latest
@@ -406,6 +522,8 @@ jobs:
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
               { name: 'response-store-demo', project: 'response-store-demo' },
+              { name: 'workers-cache', project: 'workers-cache' },
+              { name: 'kv', project: 'kv' },
               { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];
