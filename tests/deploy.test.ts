@@ -821,7 +821,7 @@ describe("parseDeployArgs", () => {
     const help = formatDeployHelp();
     expect(help).toContain("--verbose");
     expect(help).toContain("Abort when cacheability probing makes no progress");
-    expect(help).toContain("--experimental-traffic-aware-warming");
+    expect(help).toContain("--experimental-traffic-aware-warm-cache");
     expect(help).toContain("Legacy --experimental-tpr and --tpr-* aliases remain supported");
   });
 
@@ -833,7 +833,7 @@ describe("parseDeployArgs", () => {
       "20",
       "--tpr-window",
       "30",
-      "--experimental-traffic-aware-warming",
+      "--experimental-traffic-aware-warm-cache",
       "--traffic-aware-coverage",
       "95",
       "--traffic-aware-limit",

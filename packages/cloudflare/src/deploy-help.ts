@@ -68,7 +68,7 @@ export function formatDeployHelp(): string {
     -h, --help               Show this help
 
   Experimental:
-    --experimental-traffic-aware-warming
+    --experimental-traffic-aware-warm-cache
                                      Select CDN pre-warm routes from traffic
     --traffic-aware-coverage <pct>   Traffic coverage target, 0-100 (default: 90)
     --traffic-aware-limit <count>    Hard cap on selected routes (default: 1000)
@@ -98,11 +98,11 @@ export function formatDeployHelp(): string {
     vinext-cloudflare deploy --experimental-warm-cdn-cache              Warm build-discovered paths during version deploy (experimental)
     vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://example.com
                                                                           Warm an explicit production origin
-    vinext-cloudflare deploy --experimental-traffic-aware-warming
+    vinext-cloudflare deploy --experimental-traffic-aware-warm-cache
                                                                           Enable traffic-aware warming
-    vinext-cloudflare deploy --experimental-traffic-aware-warming --traffic-aware-coverage 95
+    vinext-cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-coverage 95
                                                                           Cover 95% of traffic
-    vinext-cloudflare deploy --experimental-traffic-aware-warming --traffic-aware-limit 500
+    vinext-cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-limit 500
                                                                           Cap at 500 routes
 `;
 }

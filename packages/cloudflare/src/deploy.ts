@@ -301,7 +301,7 @@ const deployArgOptions = {
   "warm-cdn-no-promote": { type: "boolean", default: false },
   "warm-cdn-promotion-delay": { type: "string" },
   "warm-cdn-include-fallbacks": { type: "boolean", default: false },
-  "experimental-traffic-aware-warming": { type: "boolean", default: false },
+  "experimental-traffic-aware-warm-cache": { type: "boolean", default: false },
   "traffic-aware-coverage": { type: "string" },
   "traffic-aware-limit": { type: "string" },
   "traffic-aware-window": { type: "string" },
@@ -431,7 +431,7 @@ export function parseDeployArgs(args: string[]) {
             values["warm-cdn-promotion-delay"],
           ),
     warmCdnIncludeFallbacks: values["warm-cdn-include-fallbacks"],
-    experimentalTPR: values["experimental-traffic-aware-warming"] || values["experimental-tpr"],
+    experimentalTPR: values["experimental-traffic-aware-warm-cache"] || values["experimental-tpr"],
     tprCoverage: parseIntArg(
       "traffic-aware-coverage",
       values["traffic-aware-coverage"] ?? values["tpr-coverage"],

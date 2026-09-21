@@ -11,7 +11,7 @@
  *   4. Return the ranked candidates for standard route resolution and selection
  *
  * TPR is an experimental feature enabled via
- * --experimental-traffic-aware-warming. It gracefully skips when no custom
+ * --experimental-traffic-aware-warm-cache. It gracefully skips when no custom
  * domain, API token, or traffic data exists.
  */
 
