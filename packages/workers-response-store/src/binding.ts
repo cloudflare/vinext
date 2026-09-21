@@ -200,6 +200,46 @@ export type ResponseStoreServiceBinding = Pick<
   "read" | "getTagExpiration" | "put" | "refresh" | "purge"
 >;
 
+export type ResponseStoreVersionStorageDeletion = {
+  versionId: string;
+  shards?: number;
+};
+
+export type ResponseStoreVersionStorageDeletionResult = {
+  versionId: string;
+  shardCount: number;
+  deletedBytes: number;
+};
+
+const WORKER_VERSION_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export class ResponseStoreAdmin extends WorkerEntrypoint<WorkersResponseStoreEnv> {
+  async deleteVersionStorage(
+    input: ResponseStoreVersionStorageDeletion,
+  ): Promise<ResponseStoreVersionStorageDeletionResult> {
+    if (!WORKER_VERSION_ID.test(input.versionId)) {
+      throw new TypeError("Workers Response Store requires a Worker version UUID");
+    }
+
+    const shardCount = validateResponseStoreShards(input.shards) ?? 1;
+    const deletedBytes = (
+      await Promise.all(
+        Array.from({ length: shardCount }, (_, index) => {
+          const name =
+            shardCount === 1
+              ? input.versionId
+              : `${input.versionId}:metadata-shard:${index}-of-${shardCount}`;
+          const stub = this.env.CACHE_METADATA.getByName(name) as CacheMetadataStub;
+          return stub.deleteAllStorage();
+        }),
+      )
+    ).reduce((total, bytes) => total + bytes, 0);
+
+    return { versionId: input.versionId, shardCount, deletedBytes };
+  }
+}
+
 const MISS_HEADERS = {
   "Cache-Control": "no-store",
   "Content-Type": "text/plain; charset=utf-8",

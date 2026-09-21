@@ -66,6 +66,7 @@ export type CacheMetadataStub = DurableObjectStub & {
   ): Promise<RefreshCandidate[]>;
   purgeMatching(options: ResponseStorePurgeOptions, invalidatedAt?: number): Promise<PurgedEntry[]>;
   inspect(): Promise<StoredEntry[]>;
+  deleteAllStorage(): Promise<number>;
 };
 
 type EntryRow = Record<string, SqlStorageValue> & {
@@ -938,5 +939,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       .exec<EntryRow>("SELECT * FROM entries ORDER BY cache_key")
       .toArray();
     return storedEntriesFromRows(rows);
+  }
+
+  async deleteAllStorage(): Promise<number> {
+    const bytes = this.ctx.storage.sql.databaseSize;
+    await this.ctx.storage.deleteAll();
+    return bytes;
   }
 }

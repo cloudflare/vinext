@@ -6,6 +6,7 @@ import {
 } from "@cloudflare/workers-response-store";
 import type {
   CacheMetadata as CacheMetadataClass,
+  ResponseStoreAdmin as ResponseStoreAdminClass,
   ResponseStoreBinding as ResponseStoreBindingClass,
 } from "@cloudflare/workers-response-store/service";
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -23,6 +24,8 @@ const responseStore = createWorkersResponseStore<WorkersResponseStoreEnv>(
 export const CacheMetadata: typeof CacheMetadataClass = responseStore.entrypoints.CacheMetadata;
 export const ResponseStoreBinding: typeof ResponseStoreBindingClass =
   responseStore.entrypoints.ResponseStoreBinding;
+export const ResponseStoreAdmin: typeof ResponseStoreAdminClass =
+  responseStore.entrypoints.ResponseStoreAdmin;
 export const ResponseStoreRevalidator: ResponseStoreRevalidatorEntrypoint<WorkersResponseStoreEnv> =
   responseStore.entrypoints.ResponseStoreRevalidator;
 

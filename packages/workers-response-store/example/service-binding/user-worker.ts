@@ -5,7 +5,17 @@ import {
   type SerializableValue,
   type WorkersResponseStoreClientEnv,
   type WorkersResponseStore,
+  type ResponseStoreVersionStorageDeletion,
+  type ResponseStoreVersionStorageDeletionResult,
 } from "@cloudflare/workers-response-store";
+
+type Env = WorkersResponseStoreClientEnv & {
+  RESPONSE_STORE_ADMIN: Service & {
+    deleteVersionStorage(
+      input: ResponseStoreVersionStorageDeletion,
+    ): Promise<ResponseStoreVersionStorageDeletionResult>;
+  };
+};
 
 type RevalidatorOptions = {
   body?: string;
@@ -75,7 +85,7 @@ const responseStore = createWorkersResponseStoreClient({
 export const { ResponseStoreRevalidator, ResponseStoreClient } = responseStore.entrypoints;
 
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     try {
@@ -110,9 +120,17 @@ export default {
         return json({ expiration: await responseStore.getTagExpiration(tags) });
       }
 
+      if (request.method === "POST" && url.pathname === "/admin/delete-version-storage") {
+        return json(
+          await env.RESPONSE_STORE_ADMIN.deleteVersionStorage(
+            (await request.json()) as ResponseStoreVersionStorageDeletion,
+          ),
+        );
+      }
+
       return new Response("Not found", { status: 404 });
     } catch (error) {
       return json({ error: error instanceof Error ? error.message : String(error) }, 500);
     }
   },
-} satisfies ExportedHandler<WorkersResponseStoreClientEnv>;
+} satisfies ExportedHandler<Env>;

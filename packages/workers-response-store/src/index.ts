@@ -2,6 +2,7 @@ import { exports as workerExports, WorkerEntrypoint } from "cloudflare:workers";
 
 import {
   getWorkersResponseStore,
+  ResponseStoreAdmin,
   ResponseStoreBinding,
   type RevalidationInput,
   type RevalidationService,
@@ -27,6 +28,7 @@ type WorkersResponseStoreDefinition<Env extends WorkersResponseStoreEnv = Worker
   WorkersResponseStore & {
     entrypoints: {
       CacheMetadata: typeof CacheMetadata;
+      ResponseStoreAdmin: typeof ResponseStoreAdmin;
       ResponseStoreRevalidator: ResponseStoreRevalidatorEntrypoint<Env>;
       ResponseStoreBinding: typeof ResponseStoreBinding;
     };
@@ -83,7 +85,12 @@ export function createWorkersResponseStore<
   const getStore = () => getWorkersResponseStore({ exports: workerExports }, { shards });
 
   return {
-    entrypoints: { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding },
+    entrypoints: {
+      CacheMetadata,
+      ResponseStoreAdmin,
+      ResponseStoreRevalidator,
+      ResponseStoreBinding,
+    },
     ...createStoreFacade(getStore),
   };
 }
@@ -180,6 +187,8 @@ export type {
   ResponseStoreRefreshOptions,
   RevalidationInput,
   RevalidationReason,
+  ResponseStoreVersionStorageDeletion,
+  ResponseStoreVersionStorageDeletionResult,
   SerializableValue,
   WorkersResponseStoreEnv,
   WorkersResponseStore,

@@ -35,7 +35,7 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
   );
   const entrypoints =
     mode === "self-contained"
-      ? "CacheMetadata, ResponseStoreBinding, ResponseStoreRevalidator"
+      ? "CacheMetadata, ResponseStoreAdmin, ResponseStoreBinding, ResponseStoreRevalidator"
       : "ResponseStoreClient, ResponseStoreRevalidator";
   return {
     cdn: {

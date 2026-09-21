@@ -486,7 +486,7 @@ describe("responseStoreAdapter builder", () => {
         id: "virtual:cloudflare/worker-entry",
       }),
     ).toBe(
-      `export default {};\nexport { CacheMetadata, ResponseStoreBinding, ResponseStoreRevalidator } from ${JSON.stringify(descriptor.cdn.output.entry)};\n`,
+      `export default {};\nexport { CacheMetadata, ResponseStoreAdmin, ResponseStoreBinding, ResponseStoreRevalidator } from ${JSON.stringify(descriptor.cdn.output.entry)};\n`,
     );
   });
 
