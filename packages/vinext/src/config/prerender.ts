@@ -8,7 +8,7 @@ export {
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
-  usesVinextCacheWarmupStatus,
+  cacheWarmupStatusSource,
   requiresRouteCacheabilityProbeManifest,
   loadVinextCacheConfigFromViteConfig,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,

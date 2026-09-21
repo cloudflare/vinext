@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { CacheStatusProbe } from "../../components/cache-status-probe";
 import { RevalidateControls } from "../../components/revalidate-controls";
+import { loadPrewarmProbe } from "../prewarm-probe";
 
 // ISR config — slugs are cached for 60 seconds with a 5-minute
 // stale-while-revalidate window. The data adapter persists the completed
-// vinext cache value in Workers Response Store.
+// vinext cache value.
 export const revalidate = 60;
 
 export async function generateStaticParams() {
@@ -46,6 +47,7 @@ export default async function CachedSlugPage({
   const path = `/cached/${slug}`;
   const tag = `post:${slug}`;
   const post = await loadPost(slug);
+  const prewarmProbe = await loadPrewarmProbe(slug);
 
   // Generated at render time. Embedded into the response so the client probe
   // can tell whether a subsequent fetch was actually re-rendered (new id) or
@@ -80,6 +82,12 @@ export default async function CachedSlugPage({
       </div>
       <p>
         Render ID: <code data-render-id-tag>{renderId}</code>
+      </p>
+      <p>
+        Data cache ID: <code data-cache-id>{prewarmProbe.cacheId}</code>
+      </p>
+      <p>
+        Data cached at: <code data-cache-created-at>{prewarmProbe.cachedAt}</code>
       </p>
       <p>
         Sample noise (re-rendered = re-randomised): <code>{random}</code>

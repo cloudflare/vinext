@@ -1,0 +1,72 @@
+export const metadata = {
+  slug: "deploying/cloudflare",
+  title: "Deploy to Cloudflare Workers",
+  description:
+    "Use vinext's native Workers integration for bindings, caching, and image optimization.",
+  section: "Deploying",
+  sectionOrder: 2,
+  order: 1,
+  navTitle: "Cloudflare Workers",
+  keywords: ["deploy vinext", "Cloudflare Workers", "Next.js Cloudflare"],
+};
+
+import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager";
+
+> The native Cloudflare integration is the most complete deployment target. It runs App Router server code in workerd and supports Workers bindings directly in your application.
+
+## 1. Configure the project
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx vinext init --platform=cloudflare",
+    npm: "npx vinext init --platform=cloudflare",
+    yarn: "yarn dlx vinext init --platform=cloudflare",
+    bun: "bunx vinext init --platform=cloudflare",
+    vp: "vpx vinext init --platform=cloudflare",
+  }}
+/>
+
+The initializer creates or updates `vite.config.ts` and `wrangler.jsonc`, then lets you choose caching and image optimization. Commit these generated config files.
+
+## 2. Authenticate
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx wrangler login",
+    npm: "npx wrangler login",
+    yarn: "yarn dlx wrangler login",
+    bun: "bunx wrangler login",
+    vp: "vpx wrangler login",
+  }}
+/>
+
+Add your Cloudflare account ID to `wrangler.jsonc`, or set `CLOUDFLARE_ACCOUNT_ID`. In CI, use a `CLOUDFLARE_API_TOKEN` instead of browser login.
+
+## 3. Deploy
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx @vinext/cloudflare deploy\npnpm dlx @vinext/cloudflare deploy --env staging",
+    npm: "npx @vinext/cloudflare deploy\nnpx @vinext/cloudflare deploy --env staging",
+    yarn: "yarn dlx @vinext/cloudflare deploy\nyarn dlx @vinext/cloudflare deploy --env staging",
+    bun: "bunx @vinext/cloudflare deploy\nbunx @vinext/cloudflare deploy --env staging",
+    vp: "vpx @vinext/cloudflare deploy\nvpx @vinext/cloudflare deploy --env staging",
+  }}
+/>
+
+The deploy command validates the initialized setup, builds all Vite environments, and deploys the Worker. Use `--preview` for the preview environment.
+
+## Use Workers bindings
+
+Import `env` from `cloudflare:workers` in Server Components, Route Handlers, and Server Actions. Configure each binding in Wrangler as usual.
+
+```tsx
+import { env } from "cloudflare:workers";
+
+export default async function Page() {
+  const posts = await env.DB.prepare("SELECT * FROM posts").all();
+  return <pre>{JSON.stringify(posts.results)}</pre>;
+}
+```
+
+See Cloudflare's [bindings documentation](https://developers.cloudflare.com/workers/runtime-apis/bindings/) for product-specific configuration, and the [Workers Vite plugin documentation](https://developers.cloudflare.com/workers/vite-plugin/) for the underlying development environment.

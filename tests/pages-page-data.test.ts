@@ -9,6 +9,18 @@ import {
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
 import type { IncrementalCacheValue } from "../packages/vinext/src/shims/cache-handler.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+
+let captureFrameworkSpans = false;
+const capturedFrameworkSpans: ResolvedFrameworkSpanDescriptor[] = [];
+registerFrameworkTracingIntegration({
+  id: "pages-page-data-test",
+  enterSpan(descriptor, callback) {
+    if (captureFrameworkSpans) capturedFrameworkSpans.push(descriptor);
+    return callback({ setAttribute() {} });
+  },
+});
 
 const expiredPagesRepresentations: Array<[string, IncrementalCacheValue | null]> = [
   [
@@ -1316,6 +1328,8 @@ describe("pages page data", () => {
       regenPromise = renderFn();
     });
 
+    capturedFrameworkSpans.length = 0;
+    captureFrameworkSpans = true;
     const result = await resolvePagesPageData(
       createOptions({
         applyRequestContexts,
@@ -1370,6 +1384,14 @@ describe("pages page data", () => {
 
     const pendingRegen: Promise<void> = regenPromise;
     await pendingRegen;
+    captureFrameworkSpans = false;
+
+    expect(capturedFrameworkSpans.map(({ name, type }) => ({ name, type }))).toEqual(
+      expect.arrayContaining([
+        { name: "getStaticProps /posts/[slug]", type: "Render.getStaticProps" },
+        { name: "render route (pages) /posts/[slug]", type: "Render.renderDocument" },
+      ]),
+    );
 
     expect(runInFreshUnifiedContext).toHaveBeenCalledOnce();
     expect(applyRequestContexts).toHaveBeenCalledOnce();

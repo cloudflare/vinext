@@ -759,6 +759,7 @@ describe("app page head resolution", () => {
           routeSegments: ["[locale]", "@modal", "(.)photos", "[photo]", "[comment]"],
         },
         notFoundModule: interceptNotFound,
+        notFoundModuleRouteSegments: ["[locale]", "@modal"],
         notFoundParams: { locale: "en", photo: "42", comment: "7" },
         ownerTreePosition: 1,
       },

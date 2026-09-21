@@ -21,6 +21,7 @@ import { finalizePagesPreviewResponse } from "../packages/vinext/src/server/page
 
 const stages = vi.hoisted(() => ({
   api: vi.fn(),
+  ensureInstrumentation: vi.fn(),
   getRuntimePageDataKind: vi.fn(() => "none"),
   registerCacheAdapters: vi.fn(),
   registerImageOptimizer: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("virtual:vinext-image-adapters", () => ({
 }));
 
 vi.mock("virtual:vinext-pages-response-entry", () => ({
+  __ensureInstrumentation: stages.ensureInstrumentation,
   authorizeOnDemandRevalidate: vi.fn(() => false),
   buildId: "test-build",
   getRuntimePageDataKind: stages.getRuntimePageDataKind,
@@ -57,6 +59,7 @@ describe("Pages Worker response stage", () => {
   beforeEach(() => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     stages.api.mockReset();
+    stages.ensureInstrumentation.mockReset();
     stages.getRuntimePageDataKind.mockReset();
     stages.getRuntimePageDataKind.mockReturnValue("none");
     stages.registerCacheAdapters.mockReset();
@@ -151,6 +154,7 @@ describe("Pages Worker response stage", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
+    expect(stages.ensureInstrumentation).toHaveBeenCalledOnce();
     expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
     expect(validateRequest).toHaveBeenCalledWith(request);
     expect(stages.renderPage).not.toHaveBeenCalled();

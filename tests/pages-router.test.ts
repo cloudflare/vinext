@@ -16,6 +16,18 @@ import {
   PHASE_PRODUCTION_BUILD,
 } from "../packages/vinext/src/shims/constants.js";
 import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+
+let captureFrameworkSpans = false;
+const capturedFrameworkSpans: ResolvedFrameworkSpanDescriptor[] = [];
+registerFrameworkTracingIntegration({
+  id: "pages-router-test",
+  enterSpan(descriptor, callback) {
+    if (captureFrameworkSpans) capturedFrameworkSpans.push(descriptor);
+    return callback({ setAttribute() {} });
+  },
+});
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps }) {
@@ -1121,16 +1133,23 @@ describe("Pages Router integration", () => {
     expect(body.pageProps?.__N_REDIRECT).toBe("https://example.com/landing");
   });
 
-  // Regression for #1458: when getServerSideProps throws, dev (and prod) must
-  // render the user's custom pages/500.tsx with status 500 rather than the
-  // plain "Internal Server Error" text. Mirrors Next.js test/e2e/getserversideprops
-  // "should handle throw ENOENT correctly".
-  it("getServerSideProps throwing renders custom 500 page (dev)", async () => {
-    const res = await fetch(`${baseUrl}/gssp-throw`);
-    expect(res.status).toBe(500);
-    const html = await res.text();
-    expect(html).toContain("custom pages/500");
-    expect(html).not.toBe("Internal Server Error");
+  // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
+  it("skips the custom 500 page for getServerSideProps errors in dev", async () => {
+    capturedFrameworkSpans.length = 0;
+    captureFrameworkSpans = true;
+    try {
+      const res = await fetch(`${baseUrl}/gssp-throw`);
+      expect(res.status).toBe(500);
+      expect(await res.text()).toContain("Internal Server Error");
+    } finally {
+      captureFrameworkSpans = false;
+    }
+    expect(
+      capturedFrameworkSpans
+        .filter(({ type }) => type === "NextNodeServer.findPageComponents")
+        .map(({ attributes }) => attributes["next.route"]),
+    ).toEqual(["/gssp-throw", "/_error"]);
   });
 
   it("renders dynamic routes with params", async () => {
@@ -1310,7 +1329,10 @@ export async function getStaticPaths() {
       const started = await startFixtureServer(tmpDir);
       tempServer = started.server;
 
+      capturedFrameworkSpans.length = 0;
+      captureFrameworkSpans = true;
       const first = await fetch(`${started.baseUrl}/first`);
+      captureFrameworkSpans = false;
       expect(first.status).toBe(404);
       expect(first.headers.get("x-nextjs-cache")).toBe("HIT");
       expect(first.headers.get("x-vinext-cache")).toBeNull();
@@ -1318,6 +1340,16 @@ export async function getStaticPaths() {
       const firstHtml = await first.text();
       expect(firstHtml).toContain('<p id="not-found">404 page 1</p>');
       expect(firstHtml).toContain('"paramsAreUndefined":true');
+      expect(
+        capturedFrameworkSpans
+          .filter(({ type }) => type === "Render.getStaticProps")
+          .map(({ name }) => name),
+      ).toEqual(["getStaticProps /[slug]", "getStaticProps /404"]);
+      expect(
+        capturedFrameworkSpans
+          .filter(({ type }) => type === "NextNodeServer.findPageComponents")
+          .map(({ attributes }) => attributes["next.route"]),
+      ).toEqual(["/[slug]", "/404"]);
 
       const second = await fetch(`${started.baseUrl}/first`);
       expect(second.status).toBe(404);
@@ -1328,6 +1360,7 @@ export async function getStaticPaths() {
       expect(secondHtml).toContain('<p id="not-found">404 page 2</p>');
       expect(secondHtml).toContain('"paramsAreUndefined":true');
     } finally {
+      captureFrameworkSpans = false;
       await tempServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

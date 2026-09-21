@@ -45,7 +45,10 @@ import type { AppSsrRenderResult } from "./app-page-stream.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
-import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
+import {
+  getClientTraceMetadataHTML,
+  markClientTraceMetadataBlock,
+} from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
 import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
@@ -56,6 +59,8 @@ import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
+import { isAppRenderAbortError } from "./app-rsc-errors.js";
+import { getNextErrorDigest } from "./next-error-digest.js";
 // @ts-expect-error — resolved by the vinext build plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
@@ -383,6 +388,8 @@ export async function handleSsr(
      * SSR head. Undefined or empty disables emission entirely.
      */
     clientTraceMetadata?: readonly string[];
+    /** Private marker used to identify only this render's injected trace tags. */
+    clientTraceMetadataMarker?: string;
     /**
      * Maximum total length (in characters) of the preload `Link` header React
      * emits during SSR. `0` disables emission. From `reactMaxHeadersLength` in
@@ -392,6 +399,8 @@ export async function handleSsr(
     rootParams?: RootParams;
     /** Dev-only: original server error to surface in the browser overlay. */
     initialDevServerError?: unknown;
+    /** Report an SSR/Fizz render failure through instrumentation. */
+    onSsrError?: (error: unknown) => unknown;
     /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
     mirrorNextFlight?: boolean;
     /** When true, wait for the full React tree (including Suspense boundaries)
@@ -610,12 +619,17 @@ export async function handleSsr(
             if (pprFallbackShellSignal && isPprFallbackShellAbortError(error)) {
               return undefined;
             }
+            if (isAppRenderAbortError(error)) return undefined;
 
             errorMetaRenderer.capture(error);
 
-            if (error && typeof error === "object" && "digest" in error) {
-              return String(error.digest);
+            const instrumentationDigest = options?.onSsrError?.(error);
+            if (typeof instrumentationDigest === "string") {
+              return instrumentationDigest;
             }
+
+            const existingDigest = getNextErrorDigest(error);
+            if (existingDigest !== null) return existingDigest;
 
             if (process.env.NODE_ENV === "production" && error) {
               const message = getErrorMessage(error);
@@ -628,6 +642,7 @@ export async function handleSsr(
         };
 
         let htmlStream: ReadableStream<Uint8Array>;
+        let renderComplete = Promise.resolve();
         let shellErrorRecovered = false;
         let shouldDelayInitialHtmlPull = false;
         if (pprFallbackShellSignal) {
@@ -645,6 +660,7 @@ export async function handleSsr(
             streamingHtmlStream = await renderToReadableStream(ssrRoot, {
               ...renderOptions,
             });
+            renderComplete = streamingHtmlStream.allReady;
 
             if (options?.waitForAllReady === true) {
               await streamingHtmlStream.allReady;
@@ -688,7 +704,10 @@ export async function handleSsr(
         let traceMetaHTML: string | null = null;
         const getTraceMetaHTML = (): string => {
           if (traceMetaHTML === null) {
-            traceMetaHTML = getClientTraceMetadataHTML(options?.clientTraceMetadata);
+            traceMetaHTML = markClientTraceMetadataBlock(
+              getClientTraceMetadataHTML(options?.clientTraceMetadata, options?.isStaticGeneration),
+              options?.clientTraceMetadataMarker,
+            );
           }
           return traceMetaHTML;
         };
@@ -756,6 +775,7 @@ export async function handleSsr(
           // *where* the blocking happens — do not move the `allReady` await onto
           // this promise expecting it to be load-bearing in production.
           metadataReady: Promise.resolve(),
+          renderComplete,
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
           shellErrorRecovered,
           linkHeader: reactLinkHeader,

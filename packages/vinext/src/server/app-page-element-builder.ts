@@ -21,11 +21,17 @@ import {
   type AppPageSlotOverride,
 } from "./app-page-route-wiring.js";
 import {
+  APP_PAGE_SEGMENT_KEY,
   isAppPageRouteGroupSegment,
   resolveAppPagePatternStateKey,
   resolveAppPageRouteStateKey,
   type AppPageSemanticSegment,
 } from "./app-page-segment-state.js";
+import {
+  resolveAppPageModuleTraceSegment,
+  traceCreateComponentTree,
+  traceGetLayoutOrPageModule,
+} from "./app-page-tracing.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
 import { resolveAppPageParentHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
 import { resolveAppPageSpecialError } from "./app-page-execution.js";
@@ -58,6 +64,41 @@ function resolveInterceptLayoutParams(
   params: AppPageParams,
 ): AppPageParams {
   return resolveAppPageBranchParams(branchSegments, layoutSegments.length, params, layoutSegments);
+}
+
+function traceAppPageLayoutModules(
+  modules: readonly (AppPageModule | null | undefined)[],
+  routeSegments: readonly string[],
+  treePositions: readonly number[] | null | undefined,
+): void {
+  for (const [index, module] of modules.entries()) {
+    if (!module) continue;
+    traceGetLayoutOrPageModule(
+      resolveAppPageModuleTraceSegment(routeSegments, treePositions?.[index] ?? 0),
+      () => module,
+    );
+  }
+}
+
+function resolveInterceptLayoutTraceSegment(
+  branchSegments: readonly string[] | null | undefined,
+  layoutSegments: readonly string[],
+): string {
+  return resolveAppPageModuleTraceSegment(branchSegments ?? layoutSegments, layoutSegments.length);
+}
+
+function traceAppPageInterceptLayoutModules(
+  modules: readonly (AppPageModule | null | undefined)[] | null | undefined,
+  branchSegments: readonly string[] | null | undefined,
+  layoutSegments: readonly (readonly string[])[] | null | undefined,
+): void {
+  for (const [index, module] of (modules ?? []).entries()) {
+    if (!module) continue;
+    traceGetLayoutOrPageModule(
+      resolveInterceptLayoutTraceSegment(branchSegments, layoutSegments?.[index] ?? []),
+      () => module,
+    );
+  }
 }
 
 export type { AppPageErrorModule, AppPageRouteWiringRoute } from "./app-page-route-wiring.js";
@@ -290,17 +331,32 @@ export async function buildPageElements<
       const treePosition = route.layoutTreePositions?.[0] ?? 0;
       noExportRootLayout = createAppPageTreePath(route.routeSegments, treePosition);
     }
-    return {
-      ...AppElementsWire.createMetadataEntries({
-        interception: renderIdentity.interception,
-        interceptionContext: renderIdentity.interceptionContext,
-        layoutIds: noExportLayoutIds,
-        rootLayoutTreePath: noExportRootLayout,
-        routeId: renderIdentity.routeId,
-        sourcePage: createAppPageSourcePage(sourcePageSegments),
-      }),
-      [renderIdentity.routeId]: createElement("div", null, "Page has no default export"),
-    };
+    return traceCreateComponentTree(() => {
+      traceGetLayoutOrPageModule(APP_PAGE_SEGMENT_KEY, () => effectivePageModule);
+      traceAppPageLayoutModules(
+        route.layouts,
+        route.routeSegments ?? [],
+        route.layoutTreePositions,
+      );
+      if (isSiblingIntercept) {
+        traceAppPageInterceptLayoutModules(
+          opts?.interceptLayouts,
+          opts?.interceptBranchSegments,
+          opts?.interceptLayoutSegments,
+        );
+      }
+      return {
+        ...AppElementsWire.createMetadataEntries({
+          interception: renderIdentity.interception,
+          interceptionContext: renderIdentity.interceptionContext,
+          layoutIds: noExportLayoutIds,
+          rootLayoutTreePath: noExportRootLayout,
+          routeId: renderIdentity.routeId,
+          sourcePage: createAppPageSourcePage(sourcePageSegments),
+        }),
+        [renderIdentity.routeId]: createElement("div", null, "Page has no default export"),
+      };
+    });
   }
 
   const activeParallelRouteHeadInputs = resolveActiveParallelRouteHeadInputs({
@@ -338,6 +394,12 @@ export async function buildPageElements<
         ...(opts?.interceptNotFound
           ? {
               notFoundModule: opts.interceptNotFound,
+              notFoundModuleRouteSegments: (
+                opts.interceptNotFoundBranchSegments ??
+                opts.interceptSourcePageSegments ??
+                route.routeSegments ??
+                []
+              ).slice(0, opts.interceptNotFoundTreePosition ?? 0),
               notFoundParams: resolveAppPageBranchParams(
                 opts.interceptNotFoundBranchSegments ??
                   opts.interceptBranchSegments ??
@@ -426,6 +488,8 @@ export async function buildPageElements<
     return {
       boundaryModule,
       boundaryParams,
+      boundaryRouteSegments: (route.routeSegments ?? []).slice(0, boundaryTreePosition ?? 0),
+      errorConvention: "not-found" as const,
       layoutModules: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
       parallelBranches: activeParallelRouteHeadInputs,
@@ -590,14 +654,16 @@ export async function buildPageElements<
   // slot-based path handles this inside buildSlotOverrides/app-page-route-wiring,
   // but sibling intercepts bypass that path entirely. We apply the wrapping here
   // so a layout.tsx adjacent to the (.) / (..) / (...) marker dir is respected.
-  let siblingInterceptElement: ReturnType<typeof createElement> | null =
-    isSiblingIntercept && EffectivePageComponent
-      ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
-      : null;
-  if (isSiblingIntercept && siblingInterceptElement !== null) {
+  const createSiblingInterceptElement = (): ReturnType<typeof createElement> | null => {
+    let element: ReturnType<typeof createElement> | null =
+      isSiblingIntercept && EffectivePageComponent
+        ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
+        : null;
+    if (!isSiblingIntercept || element === null) return element;
+
     const layoutIndexesByTreePosition = new Map<number, number[]>();
     for (const [index, layoutModule] of (opts?.interceptLayouts ?? []).entries()) {
-      if (!layoutModule?.default) continue;
+      if (!layoutModule) continue;
       const treePosition = opts?.interceptLayoutSegments?.[index]?.length ?? 0;
       const indexes = layoutIndexesByTreePosition.get(treePosition) ?? [];
       indexes.push(index);
@@ -619,75 +685,86 @@ export async function buildPageElements<
       const LoadingComponent =
         loadingIndex === undefined ? null : opts?.interceptLoadings?.[loadingIndex]?.default;
       if (LoadingComponent) {
-        siblingInterceptElement = createElement(
-          Suspense,
-          { fallback: createElement(LoadingComponent) },
-          siblingInterceptElement,
-        );
+        element = createElement(Suspense, { fallback: createElement(LoadingComponent) }, element);
       }
 
       const layoutIndexes = layoutIndexesByTreePosition.get(treePosition) ?? [];
       for (let layoutOffset = layoutIndexes.length - 1; layoutOffset >= 0; layoutOffset--) {
         const layoutIndex = layoutIndexes[layoutOffset];
-        const LayoutComponent = opts?.interceptLayouts?.[layoutIndex]?.default;
-        if (!LayoutComponent) continue;
+        const layoutModule = opts?.interceptLayouts?.[layoutIndex];
+        if (!layoutModule) continue;
         const interceptLayoutSegments = opts?.interceptLayoutSegments?.[layoutIndex] ?? [];
+        const LayoutComponent = traceGetLayoutOrPageModule(
+          resolveInterceptLayoutTraceSegment(
+            opts?.interceptBranchSegments,
+            interceptLayoutSegments,
+          ),
+          () => layoutModule.default,
+        );
+        if (!LayoutComponent) continue;
         const interceptLayoutParams = resolveInterceptLayoutParams(
           opts?.interceptBranchSegments ?? interceptLayoutSegments,
           interceptLayoutSegments,
           effectiveParams,
         );
-        siblingInterceptElement = createElement(
+        element = createElement(
           LayoutComponent,
           { params: makeThenableParams(interceptLayoutParams) },
-          siblingInterceptElement,
+          element,
         );
       }
     }
-  }
+    return element;
+  };
 
-  return buildAppPageElements({
-    element: isSiblingIntercept
-      ? siblingInterceptElement
-      : EffectivePageComponent
-        ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
-        : null,
-    createPageElement,
-    // Fall back to vinext's built-in default global error module so that
-    // uncaught client render errors are caught by the route-level
-    // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring
-    // Next.js's behavior when the user has not defined app/global-error.tsx.
-    globalErrorModule:
-      globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
-    isRscRequest,
-    interceptionId: opts?.interceptionId ?? null,
-    layoutParamAccess: options.layoutParamAccess,
-    mountedSlotIds,
-    makeThenableParams,
-    matchedParams: params,
-    pageRenderDependency,
-    metadataPlacement,
-    resolvedMetadata,
-    resolvedMetadataPathname: routePath,
-    resolvedViewport,
-    scriptNonce: options.scriptNonce,
-    streamingMetadata,
-    streamingMetadataOutlet,
-    streamingMetadataOutletSuspended: streamGeneratedHead,
-    streamingMetadataTags,
-    renderIdentity,
-    routePath,
-    semanticPageIdentity,
-    semanticInterceptionTargetRouteId: opts?.interceptTargetRouteGraphId ?? null,
-    sourcePageSegments,
-    rootNotFoundModule: rootNotFoundModule ?? null,
-    rootForbiddenModule: rootForbiddenModule ?? null,
-    rootUnauthorizedModule: rootUnauthorizedModule ?? null,
-    route,
-    searchParams: pageSearchParamsThenable,
-    slotOverrides,
-    renderMode,
-    trailingSlash: options.trailingSlash,
+  return traceCreateComponentTree(() => {
+    if (effectivePageModule) {
+      traceGetLayoutOrPageModule(APP_PAGE_SEGMENT_KEY, () => effectivePageModule);
+    }
+    const siblingInterceptElement = createSiblingInterceptElement();
+    return buildAppPageElements({
+      element: isSiblingIntercept
+        ? siblingInterceptElement
+        : EffectivePageComponent
+          ? createPageElement(EffectivePageComponent, pageProps, pageRenderDependency)
+          : null,
+      createPageElement,
+      // Fall back to vinext's built-in default global error module so that
+      // uncaught client render errors are caught by the route-level
+      // <ErrorBoundary> wrapper in app-page-route-wiring.tsx, mirroring
+      // Next.js's behavior when the user has not defined app/global-error.tsx.
+      globalErrorModule:
+        globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
+      isRscRequest,
+      interceptionId: opts?.interceptionId ?? null,
+      layoutParamAccess: options.layoutParamAccess,
+      mountedSlotIds,
+      makeThenableParams,
+      matchedParams: params,
+      pageRenderDependency,
+      metadataPlacement,
+      resolvedMetadata,
+      resolvedMetadataPathname: routePath,
+      resolvedViewport,
+      scriptNonce: options.scriptNonce,
+      streamingMetadata,
+      streamingMetadataOutlet,
+      streamingMetadataOutletSuspended: streamGeneratedHead,
+      streamingMetadataTags,
+      renderIdentity,
+      routePath,
+      semanticPageIdentity,
+      semanticInterceptionTargetRouteId: opts?.interceptTargetRouteGraphId ?? null,
+      sourcePageSegments,
+      rootNotFoundModule: rootNotFoundModule ?? null,
+      rootForbiddenModule: rootForbiddenModule ?? null,
+      rootUnauthorizedModule: rootUnauthorizedModule ?? null,
+      route,
+      searchParams: pageSearchParamsThenable,
+      slotOverrides,
+      renderMode,
+      trailingSlash: options.trailingSlash,
+    });
   });
 }
 

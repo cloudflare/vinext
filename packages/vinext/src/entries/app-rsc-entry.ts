@@ -8,9 +8,11 @@
  * Previously housed in server/app-dev-server.ts.
  */
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import { toSlash } from "pathslash";
+import { extractExportConstString } from "../build/report.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -150,6 +152,8 @@ const routePatternPath = resolveEntryPath("../routing/route-pattern.js", import.
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
 type AppRouterConfig = {
+  /** Register the application's direct OpenTelemetry ESM loader in Node builds. */
+  nodeOpenTelemetryLoader?: boolean;
   actionOwners?: Record<string, string[]> | null;
   redirects?: NextRedirect[];
   rewrites?: {
@@ -232,8 +236,42 @@ type AppRouterConfig = {
 };
 
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
+  const sourceCache = new Map<string, string | null>();
+  const forcesDynamic = (filePath: string | null | undefined): boolean => {
+    if (!filePath) return false;
+    let source = sourceCache.get(filePath);
+    if (source === undefined) {
+      try {
+        source = fs.readFileSync(filePath, "utf8");
+      } catch {
+        source = null;
+      }
+      sourceCache.set(filePath, source);
+    }
+    return source !== null && extractExportConstString(source, "dynamic") === "force-dynamic";
+  };
+
   return routes.map((route) => ({
     canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
+    forceDynamic: route.routePath
+      ? forcesDynamic(route.routePath)
+      : [
+          ...route.layouts,
+          route.pagePath,
+          ...route.parallelSlots.flatMap((slot) => [
+            slot.layoutPath,
+            ...(slot.configLayoutPaths ?? []),
+            slot.pagePath ?? slot.defaultPath,
+            ...slot.interceptingRoutes.flatMap((intercept) => [
+              ...intercept.layoutPaths,
+              intercept.pagePath,
+            ]),
+          ]),
+          ...route.siblingIntercepts.flatMap((intercept) => [
+            ...intercept.layoutPaths,
+            intercept.pagePath,
+          ]),
+        ].some(forcesDynamic),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,
@@ -326,16 +364,26 @@ import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stri
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 import { clearAppRequestStageContext as __clearRequestContext, setAppRequestStageNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestStageContextPath)};
 import { matchRoutePattern as __matchRoutePattern } from ${JSON.stringify(routePatternPath)};
-${
-  middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
-import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};`
-    : ""
-}
+${middlewarePath ? `import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};` : ""}
 ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
-import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
+import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};
+let __applicationInitialization;
+async function __initializeApplication() {
+  await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))});
+  ${middlewarePath ? `middlewareModule = await import(${JSON.stringify(toSlash(middlewarePath))});` : ""}
+}
+export function __ensureInstrumentation() {
+  return __applicationInitialization ??= __initializeApplication();
+}`
+    : "export function __ensureInstrumentation() {}"
+}
+${
+  middlewarePath
+    ? instrumentationPath
+      ? "let middlewareModule;"
+      : `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};`
     : ""
 }
 ${
@@ -347,6 +395,14 @@ import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromM
 import { decodePathParams as __decodePathParams } from ${JSON.stringify(normalizePathModulePath)};
 import { applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext } from ${JSON.stringify(appRouteHandlerMiddlewareContextPath)};`
     : ""
+}
+
+${
+  hasPagesDir
+    ? `export function __ensureHybridPagesApplication() {
+  return __pagesRequestEntry.__ensureInstrumentation?.();
+}`
+    : "export function __ensureHybridPagesApplication() {}"
 }
 
 const __basePath = ${JSON.stringify(bp)};
@@ -414,11 +470,7 @@ const __requestHandler = createAppRscRequestHandler({
   draftModeSecret: __draftModeSecret,
   dispatchMatchedPage() { throw new Error("App request stage attempted to render a page inline"); },
   dispatchMatchedRouteHandler() { throw new Error("App request stage attempted to render a route handler inline"); },
-  ${
-    instrumentationPath
-      ? `ensureInstrumentation() { return __ensureInstrumentationRegistered(_instrumentation); },`
-      : ""
-  }
+  ${instrumentationPath ? "ensureInstrumentation() { return __ensureInstrumentation(); }," : ""}
   i18nConfig: ${JSON.stringify(config?.i18n ?? null)},
   imageConfig: ${JSON.stringify(config?.imageConfig)},
   isMetadataRoute: __isMetadataPath,
@@ -580,6 +632,7 @@ export function generateRscEntry(
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
   };
   const manifestCode = buildAppRscManifestCode({
+    deferEagerImports: Boolean(instrumentationPath),
     routes,
     metadataRoutes,
     globalErrorPath,
@@ -588,6 +641,7 @@ export function generateRscEntry(
   });
   const {
     imports,
+    importInitializers,
     routeEntries,
     metaRouteEntries,
     generateStaticParamsEntries,
@@ -601,12 +655,39 @@ export function generateRscEntry(
   } = manifestCode;
   const loadPrerenderPagesRoutesCode = hasPagesDir
     ? `
+let __hybridPagesApplication;
+export function __ensureHybridPagesApplication() {
+  return __hybridPagesApplication ??= (async () => {
+    const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+    await __pagesEntry.__ensureInstrumentation?.();
+    return __pagesEntry;
+  })();
+}
 async function __loadPrerenderPagesRoutes() {
-  const __gspSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+  const __gspSsrEntry = await __ensureHybridPagesApplication();
   return __gspSsrEntry.pageRoutes;
 }
 `
-    : "";
+    : "export function __ensureHybridPagesApplication() {}";
+  const applicationInitializationCode = instrumentationPath
+    ? `let __applicationInitialization;
+async function __initializeApplication() {
+  await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(toSlash(instrumentationPath))});
+  ${middlewarePath ? `middlewareModule = await import(${JSON.stringify(toSlash(middlewarePath))});` : ""}
+  ${importInitializers.join("\n  ")}
+  metadataRoutes = [
+${metaRouteEntries.join(",\n")}
+  ];
+  rootNotFoundModule = ${rootNotFoundVar ?? "null"};
+  rootForbiddenModule = ${rootForbiddenVar ?? "null"};
+  rootUnauthorizedModule = ${rootUnauthorizedVar ?? "null"};
+  rootLayouts = [${rootLayoutVars.join(", ")}];
+  __fallbackRenderer = __createFallbackRenderer();
+}
+export function __ensureInstrumentation() {
+  return __applicationInitialization ??= __initializeApplication();
+}`
+    : "export function __ensureInstrumentation() {}";
 
   return `
 ${
@@ -648,15 +729,28 @@ import { getRequestExecutionContext as __getRequestExecutionContext } from "vine
 import { headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, consumeInvalidDynamicUsageError, setHeadersAccessPhase } from "next/headers";
 import { mergeMetadata, resolveModuleMetadata, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${
-  middlewarePath
-    ? `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};
-import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};`
+  config?.nodeOpenTelemetryLoader
+    ? `import { register as __registerOpenTelemetryLoader } from "node:module";
+const __openTelemetryLoaderKey = Symbol.for("vinext.openTelemetryLoader");
+if (process.env.VINEXT_PRERENDER !== "1" && !globalThis[__openTelemetryLoaderKey]) {
+  globalThis[__openTelemetryLoaderKey] = true;
+  __registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs", import.meta.url);
+}`
     : ""
 }
+${middlewarePath ? `import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};` : ""}
 ${
   instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(toSlash(instrumentationPath))};
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(instrumentationRuntimePath)};`
+    : ""
+}
+${applicationInitializationCode}
+${
+  middlewarePath
+    ? instrumentationPath
+      ? "let middlewareModule;"
+      : `import * as middlewareModule from ${JSON.stringify(toSlash(middlewarePath))};`
     : ""
 }
 ${
@@ -898,9 +992,13 @@ ${routeEntries.join(",\n")}
 ];
 const __routeMatcher = __createAppRscRouteMatcher(routes);
 
-const metadataRoutes = [
+${
+  instrumentationPath
+    ? "let metadataRoutes;"
+    : `const metadataRoutes = [
 ${metaRouteEntries.join(",\n")}
-];
+];`
+}
 
 // Hoisted ahead of __fallbackRenderer / buildPageElements so both can thread
 // the configured basePath through file-based metadata href emission.
@@ -920,10 +1018,17 @@ const __trailingSlash = ${JSON.stringify(ts)};
 // request user-agent. The later per-request references still read this const.
 const __htmlLimitedBots = ${JSON.stringify(htmlLimitedBots)};
 
-const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
+${
+  instrumentationPath
+    ? `let rootNotFoundModule;
+let rootForbiddenModule;
+let rootUnauthorizedModule;
+let rootLayouts;`
+    : `const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
 const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
-const rootLayouts = [${rootLayoutVars.join(", ")}];
+const rootLayouts = [${rootLayoutVars.join(", ")}];`
+}
 // Root-level app/global-not-found loader. When present, route-miss 404s render
 // this module standalone (it provides its own html/body) instead of wrapping
 // the not-found.tsx boundary inside the root layout. Page-triggered notFound()
@@ -940,10 +1045,11 @@ const __loadGlobalNotFoundModule = ${
     globalNotFoundImportSpecifier ? `() => import(${globalNotFoundImportSpecifier})` : "null"
   };
 
-const createRscOnErrorHandler = (request, pathname, routePath) =>
-  createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath);
+const createRscOnErrorHandler = (request, pathname, routePath, overrides) =>
+  createAppRscOnErrorHandler(_reportRequestError, request, pathname, routePath, overrides);
 
-const __fallbackRenderer = __createAppFallbackRenderer({
+function __createFallbackRenderer() {
+  return __createAppFallbackRenderer({
   ${(metadataRoutes?.length ?? 0) > 0 ? "applyFileBasedMetadata: __applyFileBasedMetadata," : ""}
   basePath: __basePath,
   trailingSlash: __trailingSlash,
@@ -976,10 +1082,16 @@ const __fallbackRenderer = __createAppFallbackRenderer({
   clearRequestContext() {
     __clearRequestContext();
   },
-  createRscOnErrorHandler(request, pathname, routePath) {
-    return createRscOnErrorHandler(request, pathname, routePath);
+  createRscOnErrorHandler(request, pathname, routePath, overrides) {
+    return createRscOnErrorHandler(request, pathname, routePath, overrides);
   },
-});
+  });
+}
+${
+  instrumentationPath
+    ? "let __fallbackRenderer;"
+    : "const __fallbackRenderer = __createFallbackRenderer();"
+}
 
 function matchRoute(url) {
   return __routeMatcher.matchRoute(url);
@@ -1208,8 +1320,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       clearRequestContext() {
         __clearRequestContext();
       },
-      createRscOnErrorHandler(pathname, routePath) {
-        return createRscOnErrorHandler(request, pathname, routePath);
+      createRscOnErrorHandler(pathname, routePath, overrides) {
+        return createRscOnErrorHandler(request, pathname, routePath, overrides);
       },
       debugClassification: __classDebug,
       draftModeSecret: __draftModeSecret,
@@ -1395,7 +1507,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   ${
     instrumentationPath
       ? `ensureInstrumentation() {
-    return __ensureInstrumentationRegistered(_instrumentation);
+    return __ensureInstrumentation();
   },`
       : ""
   }
@@ -1490,6 +1602,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       readFormDataWithLimit: __readFormDataWithLimit,
       reportRequestError: _reportRequestError,
       request,
+      routePattern: routeMatch?.route.pattern ?? cleanPathname,
       setHeadersAccessPhase,
     });
   },
@@ -1598,8 +1711,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       createPayloadRouteId(pathnameToRender, currentInterceptionContext) {
         return __AppElementsWire.encodeRouteId(pathnameToRender, currentInterceptionContext);
       },
-      createRscOnErrorHandler(actionRequest, actionPathname, routePattern) {
-        return createRscOnErrorHandler(actionRequest, actionPathname, routePattern);
+      createRscOnErrorHandler(actionRequest, actionPathname, routePattern, overrides) {
+        return createRscOnErrorHandler(actionRequest, actionPathname, routePattern, overrides);
       },
       createTemporaryReferenceSet,
       decodeReply,
@@ -1771,7 +1884,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
       {
         async loadPagesEntry() {
-          const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+          const __pagesEntry = await __ensureHybridPagesApplication();
           if (!dispatchPagesResponseStage) {
             return __pagesEntry;
           }

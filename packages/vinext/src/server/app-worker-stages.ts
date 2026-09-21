@@ -37,6 +37,7 @@ export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope 
   canUseCanonicalLoadingShell: boolean;
   canonicalPathname: string;
   cleanPathname: string;
+  forceDynamic?: boolean;
   interceptionContext: string | null;
   interceptionId: string | null;
   isRscRequest: boolean;
@@ -207,6 +208,7 @@ export function isAppWorkerResponseStageProps(
     props.canonicalPathname.startsWith("/") &&
     typeof props.cleanPathname === "string" &&
     props.cleanPathname.startsWith("/") &&
+    (props.forceDynamic === undefined || typeof props.forceDynamic === "boolean") &&
     (props.interceptionContext === null || typeof props.interceptionContext === "string") &&
     (props.interceptionId === null || typeof props.interceptionId === "string") &&
     typeof props.isRscRequest === "boolean" &&

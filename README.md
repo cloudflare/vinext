@@ -4,9 +4,7 @@ Run Next.js applications on Vite, with Cloudflare Workers as the primary deploym
 
 **Website:** [vinext.dev](https://vinext.dev)
 
-**Documentation:**
-
-- [Caching](docs/caching.md)
+**Documentation:** [vinext.dev/docs](https://vinext.dev/docs)
 
 > **Read the announcement:** [How we rebuilt Next.js with AI in one week](https://blog.cloudflare.com/vinext/)
 
@@ -122,7 +120,7 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
-`@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
+`@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-traffic-aware-warm-cache`.
 
 `vinext init` prompts for a deployment target, defaulting to Cloudflare. Agents must ask the
 user which target they want, then pass `--platform=cloudflare` or `--platform=node`.
@@ -335,19 +333,21 @@ For TypeScript types, generate them with `wrangler types` and the `env` import w
 
 > **Note:** You do not need `getPlatformProxy()`, a custom worker entry with `fetch(request, env)`, or any other workaround. `cloudflare:workers` is the recommended way to access bindings in vinext.
 
-#### Traffic-aware Pre-Rendering (experimental)
+#### Traffic-aware pre-warming (experimental)
 
-TPR queries Cloudflare zone analytics at deploy time to find which pages actually get traffic, pre-renders only those, and uploads them to KV cache. The result is SSG-level latency for popular pages without pre-rendering your entire site.
+Traffic-aware warming queries Cloudflare zone analytics at deploy time to select the routes that actually get traffic. Those routes then go through vinext's standard staged CDN pre-warming flow, including route resolution, cacheability checks, and promotion.
 
 ```bash
-npx @vinext/cloudflare deploy --experimental-tpr                    # Pre-render pages covering 90% of traffic
-vp exec vinext-cloudflare deploy --experimental-tpr                 # Same, with Vite+
-npx @vinext/cloudflare deploy --experimental-tpr --tpr-coverage 95  # More aggressive coverage
-npx @vinext/cloudflare deploy --experimental-tpr --tpr-limit 500    # Cap at 500 pages
-npx @vinext/cloudflare deploy --experimental-tpr --tpr-window 48    # Use 48h of analytics
+npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache                              # Pre-warm routes covering 90% of traffic
+vp exec vinext-cloudflare deploy --experimental-traffic-aware-warm-cache                           # Same, with Vite+
+npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-coverage 95  # More aggressive coverage
+npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-limit 500    # Cap at 500 routes
+npx @vinext/cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-window 48    # Use 48h of analytics
 ```
 
 Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
+
+The previous `--experimental-tpr` and `--tpr-*` names remain supported as aliases.
 
 #### Custom Vite configuration
 
@@ -598,7 +598,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | Standalone output (`output: 'standalone'`) | ✅  | Generates `dist/standalone` with `server.js`, build artifacts, and runtime deps             |
 | `connection()`                             | ✅  | Forces dynamic rendering                                                                    |
 | `"use cache"` directive                    | ✅  | File-level and function-level. `cacheLife()` profiles, `cacheTag()`, stale-while-revalidate |
-| `instrumentation.ts`                       | ✅  | `register()` and `onRequestError()` callbacks                                               |
+| `instrumentation.ts`                       | ✅  | `register()`, `onRequestError()`, and [framework tracing](docs/tracing.mdx)                 |
 | Route segment config                       | 🟡  | `revalidate`, `dynamic`, `dynamicParams`. `runtime` and `preferredRegion` are ignored       |
 
 ### Configuration

@@ -28,6 +28,8 @@ export interface CapturedRequestError {
 
 const REGISTER_KEY = "__vinext_pages_test_registerCalled__";
 const ERRORS_KEY = "__vinext_pages_test_capturedErrors__";
+const ERROR_REPORT_STARTED_KEY = "__vinext_pages_test_errorReportStarted__";
+const RELEASE_ERROR_REPORT_KEY = "__vinext_pages_test_releaseErrorReport__";
 
 function _errors(): CapturedRequestError[] {
   if (!(globalThis as any)[ERRORS_KEY]) {
@@ -56,8 +58,25 @@ export function recordRequestError(entry: CapturedRequestError): void {
   _errors().push(entry);
 }
 
+export function waitForRequestErrorRelease(): Promise<void> {
+  (globalThis as any)[ERROR_REPORT_STARTED_KEY] = true;
+  return new Promise((resolve) => {
+    (globalThis as any)[RELEASE_ERROR_REPORT_KEY] = resolve;
+  });
+}
+
+export function isRequestErrorReportStarted(): boolean {
+  return (globalThis as any)[ERROR_REPORT_STARTED_KEY] === true;
+}
+
+export function releaseRequestErrorReport(): void {
+  (globalThis as any)[RELEASE_ERROR_REPORT_KEY]?.();
+}
+
 /** Reset all state (used between test runs). */
 export function resetInstrumentationState(): void {
   (globalThis as any)[REGISTER_KEY] = false;
   (globalThis as any)[ERRORS_KEY] = [];
+  (globalThis as any)[ERROR_REPORT_STARTED_KEY] = false;
+  delete (globalThis as any)[RELEASE_ERROR_REPORT_KEY];
 }

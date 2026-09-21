@@ -37,7 +37,7 @@ import {
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "./headers.js";
-import type { ExecutionContextLike } from "vinext/shims/request-context";
+import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
 import { requestContextFromRequest } from "../config/request-context.js";
@@ -72,6 +72,8 @@ import {
   withResponseStageVary,
 } from "./response-stage-policy.js";
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
+import { traceFrameworkRequest } from "./request-tracing.js";
+import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import * as configuredCdnCacheAdapters from "virtual:vinext-cdn-cache-adapter";
@@ -209,7 +211,43 @@ export function handleRequestStageLocally(
   ).then((response) => applyCdnResponseIdentityHeaders(response, originalRequest));
 }
 
-async function handleRequest(
+function handleRequest(
+  request: Request,
+  env: PagesWorkerEnv | undefined,
+  platformCtx: PagesWorkerExecutionContext | ExecutionContextLike | undefined,
+  dispatchResponseStage: PagesStageRuntimeDispatch,
+  forceCacheBypass: boolean,
+  defaultHostRuntime: "node" | "worker",
+  assets: VinextAssetFetcher | undefined,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const trace = async () => {
+    await pagesEntry.__ensureInstrumentation?.();
+    return traceFrameworkRequest({
+      callback: () =>
+        handleRequestImpl(
+          request,
+          env,
+          platformCtx,
+          dispatchResponseStage,
+          forceCacheBypass,
+          defaultHostRuntime,
+          assets,
+        ),
+      getStatus: (response) => response?.status,
+      headers: request.headers,
+      method: request.method,
+      target: url.pathname + url.search,
+    });
+  };
+  return platformCtx &&
+    typeof platformCtx.waitUntil === "function" &&
+    (!forceCacheBypass || !Reflect.has(platformCtx, CACHEABILITY_REQUEST_STATE))
+    ? runWithExecutionContext(platformCtx as ExecutionContextLike, trace)
+    : trace();
+}
+
+async function handleRequestImpl(
   request: Request,
   env: PagesWorkerEnv | undefined,
   platformCtx: PagesWorkerExecutionContext | ExecutionContextLike | undefined,

@@ -22,10 +22,10 @@
  *
  * ## Prod path (cloudflare-pages-router)
  *
- * register() is baked into the generated virtual:vinext-server-entry as a
- * top-level await, so it runs inside the Worker bundle at module evaluation
- * time — before any request is handled. configureServer() is never called
- * during a prod build, so there is no double-invocation risk.
+ * register() is baked into the generated virtual:vinext-server-entry's cached
+ * request-time initializer, so it runs inside the Worker before middleware,
+ * page, or API modules are evaluated. configureServer() is never called during
+ * a prod build, so there is no double-invocation risk.
  */
 
 import { test, expect } from "@playwright/test";

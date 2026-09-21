@@ -8,7 +8,7 @@
  *
  * This is only useful for the MemoryCacheHandler (the default for Node.js
  * production). Persistent backends like KV already retain entries across
- * deploys and can be pre-populated via TPR or similar mechanisms.
+ * deploys and can be pre-populated from prerendered artifacts.
  *
  * Consistency model:
  * - The manifest is authoritative for which routes were pre-rendered and their
@@ -47,6 +47,7 @@ import {
 } from "../utils/prerender-output-paths.js";
 import {
   addPregeneratedConcretePath,
+  addPregeneratedRoute,
   clearPregeneratedConcretePaths,
   normalizePregeneratedPathname,
 } from "./pregenerated-concrete-paths.js";
@@ -118,6 +119,12 @@ export async function seedMemoryCacheFromPrerender(
   const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
   const writeAppRouteEntry = options?.writeAppRouteEntry ?? isrSet;
   let seeded = 0;
+
+  for (const route of routes) {
+    if (route.status === "skipped" && route.reason === "empty-static-params") {
+      addPregeneratedRoute(route.route);
+    }
+  }
 
   const appRoutes = getRenderedAppRoutes(routes);
 

@@ -11,6 +11,35 @@ import {
   type PagesApiRouteMatch,
 } from "../packages/vinext/src/server/pages-api-route.js";
 import { isVinextStreamedApiResponse } from "../packages/vinext/src/server/pages-node-compat.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type {
+  FrameworkTracingBackendSpan,
+  ResolvedFrameworkSpanDescriptor,
+} from "../packages/vinext/src/server/framework-tracer.js";
+
+const recordedApiHandlerErrors: unknown[] = [];
+let recordedApiHandlerErrorStatus = false;
+let captureApiHandlerErrors = false;
+registerFrameworkTracingIntegration({
+  id: "pages-api-route-error-status-test",
+  enterSpan<T>(
+    descriptor: ResolvedFrameworkSpanDescriptor,
+    callback: (span: FrameworkTracingBackendSpan) => T,
+  ): T {
+    if (!captureApiHandlerErrors || descriptor.type !== "Node.runHandler") {
+      return callback({ setAttribute() {} });
+    }
+    return callback({
+      recordException(error) {
+        recordedApiHandlerErrors.push(error);
+      },
+      setAttribute() {},
+      setErrorStatus() {
+        recordedApiHandlerErrorStatus = true;
+      },
+    });
+  },
+});
 
 type PagesApiRouteModule = PagesApiRouteMatch["route"]["module"];
 
@@ -200,22 +229,40 @@ describe("pages api route", () => {
     expect(Buffer.from(await response.arrayBuffer()).equals(Buffer.from([1, 2, 3]))).toBe(true);
   });
 
-  it("reports thrown handler errors and returns a 500 response", async () => {
-    const reportRequestError = vi.fn();
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  it.each([
+    { edgeRuntime: "node" as const, marksHandlerSpanFailed: false },
+    { edgeRuntime: "worker" as const, marksHandlerSpanFailed: true },
+  ])(
+    "reports thrown $edgeRuntime handler errors with runtime-specific span status",
+    async ({ edgeRuntime, marksHandlerSpanFailed }) => {
+      const reportRequestError = vi.fn();
+      recordedApiHandlerErrors.length = 0;
+      recordedApiHandlerErrorStatus = false;
+      captureApiHandlerErrors = true;
 
-    const response = await handlePagesApiRoute({
-      match: createMatch(() => {
-        throw new Error("boom");
-      }),
-      reportRequestError,
-      request: new Request("https://example.com/api/fail"),
-      url: "/api/fail",
-    });
+      try {
+        const response = await handlePagesApiRoute({
+          edgeRuntime,
+          match: createMatch(() => {
+            throw new Error("boom");
+          }),
+          reportRequestError,
+          request: new Request("https://example.com/api/fail"),
+          url: "/api/fail",
+        });
 
-    expect(response.status).toBe(500);
-    await expect(response.text()).resolves.toBe("Internal Server Error");
-    expect(reportRequestError).toHaveBeenCalledWith(expect.any(Error), "/api/test");
-  });
+        expect(response.status).toBe(500);
+        await expect(response.text()).resolves.toBe("Internal Server Error");
+        expect(reportRequestError).toHaveBeenCalledWith(expect.any(Error), "/api/test");
+        expect(recordedApiHandlerErrors).toHaveLength(marksHandlerSpanFailed ? 1 : 0);
+        expect(recordedApiHandlerErrorStatus).toBe(marksHandlerSpanFailed);
+      } finally {
+        captureApiHandlerErrors = false;
+      }
+    },
+  );
 
   it("returns 413 when the API body exceeds the default size limit", async () => {
     const response = await handlePagesApiRoute({
@@ -910,9 +957,14 @@ describe("pages api route", () => {
   });
 
   it("returns a 500 when the response stream is destroyed with an error before any body has been written", async () => {
-    const reportRequestError = vi.fn();
+    let finishReporting!: () => void;
+    const reportingFinished = new Promise<void>((resolve) => {
+      finishReporting = resolve;
+    });
+    const reportRequestError = vi.fn(() => reportingFinished);
+    let responseSettled = false;
 
-    const response = await handlePagesApiRoute({
+    const responsePromise = handlePagesApiRoute({
       match: createMatch(
         (_req, res) => {
           // Simulate a proxy handler where the upstream errors and the
@@ -932,8 +984,17 @@ describe("pages api route", () => {
         body: "some-body",
       }),
       url: "/api/stream-error",
+    }).then((response) => {
+      responseSettled = true;
+      return response;
     });
 
+    // Ported from Next.js: packages/next/src/server/api-utils/node/api-resolver.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/api-utils/node/api-resolver.ts
+    await vi.waitFor(() => expect(reportRequestError).toHaveBeenCalledOnce());
+    expect(responseSettled).toBe(false);
+    finishReporting();
+    const response = await responsePromise;
     expect(response.status).toBe(500);
     await expect(response.text()).resolves.toBe("Internal Server Error");
     expect(reportRequestError).toHaveBeenCalledWith(expect.any(Error), "/api/test");
@@ -1117,11 +1178,21 @@ describe("pages api route", () => {
   });
 
   it("unwinds a parked write when an active streaming handler rejects", async () => {
-    const reportRequestError = vi.fn();
+    let finishReporting!: () => void;
+    const reportingFinished = new Promise<void>((resolve) => {
+      finishReporting = resolve;
+    });
+    const reportRequestError = vi.fn(() => reportingFinished);
     const failure = new Error("handler failed after writing");
     let writeError: Error | null | undefined;
+    const waitUntilPromises: Promise<unknown>[] = [];
 
     const response = await handlePagesApiRoute({
+      ctx: {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      },
       match: createMatch(async (_req, res) => {
         res.write(Buffer.alloc(64 * 1024), (error: Error | null | undefined) => {
           writeError = error;
@@ -1135,8 +1206,20 @@ describe("pages api route", () => {
 
     expect(response.status).toBe(200);
     await expect(response.text()).rejects.toThrow(failure.message);
-    await vi.waitFor(() => expect(writeError).toBe(failure));
-    expect(reportRequestError).toHaveBeenCalledWith(failure, "/api/test");
+    await vi.waitFor(() => {
+      expect(writeError).toBe(failure);
+      expect(reportRequestError).toHaveBeenCalledWith(failure, "/api/test");
+    });
+    expect(waitUntilPromises).toHaveLength(1);
+    let lifecycleSettled = false;
+    void waitUntilPromises[0].then(() => {
+      lifecycleSettled = true;
+    });
+    await Promise.resolve();
+    expect(lifecycleSettled).toBe(false);
+    finishReporting();
+    await waitUntilPromises[0];
+    expect(lifecycleSettled).toBe(true);
   });
 
   it("passes cancellation errors to a parked write callback", async () => {

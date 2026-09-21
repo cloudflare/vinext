@@ -12,6 +12,12 @@
 
 import type { AsyncLocalStorage } from "node:async_hooks";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import {
+  isFullyBufferedBody,
+  markFullyBufferedBody,
+  preserveFullyBufferedBodyMetadata,
+} from "../server/fully-buffered-response.js";
+
 import type {
   CacheState,
   ExecutionContextLike,
@@ -24,6 +30,8 @@ import type {
   RootParamsState,
   VinextHeadersShimState,
 } from "./request-state-types.js";
+
+export { markFullyBufferedBody, preserveFullyBufferedBodyMetadata };
 
 // ---------------------------------------------------------------------------
 // Unified context shape
@@ -125,6 +133,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     refreshStaleFetchesInForeground: false,
     isFetchDedupeActive: false,
     currentFetchDedupeEntries: new Map(),
+    nextFetchId: 1,
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     requestCache: new WeakMap(),
     afterContext: {
@@ -256,36 +265,6 @@ export function requiresResponseCloseTracking(ctx: UnifiedRequestContext): boole
     state.pendingPromises > 0 ||
     state.resolveCompletion !== null
   );
-}
-
-type ResponseWithFullyBufferedBodyMetadata = Response & {
-  __vinextFullyBufferedBody?: boolean;
-};
-
-/**
- * Mark a response whose body vinext constructed from a fully in-memory string
- * or byte array, as opposed to a body handed back by user code, which could
- * still be producing. With no producer left, no `after()` call can originate
- * from this body — the one signal that makes it safe for
- * `closeAfterResponseWithBody()` to skip close tracking.
- *
- * Not set for a metadata route's `result instanceof Response` passthrough (a
- * user `icon.tsx`/`opengraph-image.tsx` can return a streaming
- * `ImageResponse`) or any handler-returned `new Response(stream)` — those
- * bodies can still be producing and must keep close tracking.
- */
-export function markFullyBufferedBody(response: Response): Response {
-  (response as ResponseWithFullyBufferedBodyMetadata).__vinextFullyBufferedBody = true;
-  return response;
-}
-
-function isFullyBufferedBody(response: Response): boolean {
-  return (response as ResponseWithFullyBufferedBodyMetadata).__vinextFullyBufferedBody === true;
-}
-
-/** Preserve the internal buffered-body signal when response metadata is rebuilt. */
-export function preserveFullyBufferedBodyMetadata(source: Response, target: Response): Response {
-  return isFullyBufferedBody(source) ? markFullyBufferedBody(target) : target;
 }
 
 /**

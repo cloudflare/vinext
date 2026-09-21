@@ -30,10 +30,6 @@
       "types": "./dist/deploy-config.d.ts",
       "import": "./dist/deploy-config.js"
     },
-    "./internal/tpr": {
-      "types": "./dist/tpr.d.ts",
-      "import": "./dist/tpr.js"
-    },
     "./internal/cdn-warm": {
       "types": "./dist/cdn-warm.d.ts",
       "import": "./dist/cdn-warm.js"

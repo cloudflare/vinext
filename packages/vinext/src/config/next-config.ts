@@ -5,7 +5,8 @@
  * Unsupported options are logged as warnings.
  */
 import path, { toSlash } from "pathslash";
-import { createRequire } from "node:module";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createRequire, Module } from "node:module";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
@@ -20,6 +21,107 @@ import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 export const VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY = "__vinextNextConfig";
+
+type ResolveFilename = (
+  request: string,
+  parent?: Module | null,
+  isMain?: boolean,
+  options?: { paths?: string[] },
+) => string;
+
+const CommonJsModule = Module as typeof Module & { _resolveFilename: ResolveFilename };
+const vinextNextPackageJson = fileURLToPath(new URL("../../next-package.json", import.meta.url));
+let nextPackageIdentityUsers = 0;
+let originalResolveFilename: ResolveFilename | undefined;
+type ConfigRootState = {
+  storage: AsyncLocalStorage<ConfigRootLease>;
+  queue: Promise<void>;
+};
+type ConfigRootLease = {
+  active: boolean;
+  queue: Promise<void>;
+};
+const processWithConfigRootState = process as NodeJS.Process & {
+  __vinextConfigRootState?: ConfigRootState;
+};
+const configRootState = (processWithConfigRootState.__vinextConfigRootState ??= {
+  storage: new AsyncLocalStorage<ConfigRootLease>(),
+  queue: Promise.resolve(),
+});
+
+// Next.js config wrappers commonly scan with relative fs/glob calls, so changing
+// process.cwd itself is required; overriding process.cwd() would not root those
+// operations. Serialize top-level loads because cwd is process-wide. Each ALS
+// lease owns a child queue so nested sibling loads are serialized, while an
+// escaped descendant of a completed load falls back to the process queue.
+async function withConfigRoot<T>(root: string, callback: () => T | Promise<T>): Promise<T> {
+  const inheritedLease = configRootState.storage.getStore();
+  const lock = inheritedLease?.active ? inheritedLease : configRootState;
+  const waitForTurn = lock.queue;
+  let release = () => {};
+  lock.queue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await waitForTurn;
+
+  const lease: ConfigRootLease = { active: true, queue: Promise.resolve() };
+  const run = async () => {
+    const previousCwd = process.cwd();
+    process.chdir(root);
+    try {
+      return await callback();
+    } finally {
+      lease.active = false;
+      await lease.queue;
+      process.chdir(previousCwd);
+    }
+  };
+
+  try {
+    return await configRootState.storage.run(lease, run);
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Let Next.js config wrappers inspect the framework compatibility version even
+ * after an app has replaced the `next` package with vinext.
+ *
+ * Existing `next` installations always win. The fallback is active only while
+ * evaluating next.config, where wrappers such as next-intl and Sentry call
+ * `require.resolve("next/package.json")` synchronously.
+ */
+async function withNextPackageIdentity<T>(callback: () => T | Promise<T>): Promise<T> {
+  if (nextPackageIdentityUsers++ === 0) {
+    originalResolveFilename = CommonJsModule._resolveFilename;
+    CommonJsModule._resolveFilename = function resolveFilename(request, ...args) {
+      try {
+        return originalResolveFilename!.call(this, request, ...args);
+      } catch (error) {
+        if (
+          request === "next/package.json" &&
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "MODULE_NOT_FOUND"
+        ) {
+          return vinextNextPackageJson;
+        }
+        throw error;
+      }
+    };
+  }
+
+  try {
+    return await callback();
+  } finally {
+    nextPackageIdentityUsers -= 1;
+    if (nextPackageIdentityUsers === 0 && originalResolveFilename) {
+      CommonJsModule._resolveFilename = originalResolveFilename;
+      originalResolveFilename = undefined;
+    }
+  }
+}
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -411,6 +513,10 @@ export type ResolvedNextConfig = {
   resolveExtensions: string[] | null;
   serverResolveExtensions: string[] | null;
   instrumentationClientInject: string[];
+  /** Route manifest injected by Next.js-compatible instrumentation plugins. */
+  instrumentationClientRouteManifest: string | undefined;
+  /** Server globals injected into instrumentation.ts by wrapped webpack configs. */
+  instrumentationServerValueInjections: Record<string, unknown>;
   cacheComponents: boolean;
   appNavFailHandling: boolean;
   /**
@@ -993,6 +1099,15 @@ async function loadConfigViaRequire(
 export async function loadNextConfig(
   root: string,
   phase: string = DEFAULT_PHASE,
+): Promise<NextConfig | null> {
+  return withConfigRoot(root, () =>
+    withNextPackageIdentity(() => loadNextConfigWithPackageIdentity(root, phase)),
+  );
+}
+
+async function loadNextConfigWithPackageIdentity(
+  root: string,
+  phase: string,
 ): Promise<NextConfig | null> {
   const configPath = findNextConfigPath(root);
   if (!configPath) return null;
@@ -1626,6 +1741,8 @@ export async function resolveNextConfig(
       compilerDefine: {},
       compilerDefineServer: {},
       instrumentationClientInject: [],
+      instrumentationClientRouteManifest: undefined,
+      instrumentationServerValueInjections: {},
       clientTraceMetadata: undefined,
       staleTimes: { ...DEFAULT_STALE_TIMES },
       useLightningcss: false,
@@ -1855,11 +1972,12 @@ export async function resolveNextConfig(
     if (
       mdx ||
       Object.keys(webpackProbe.aliases).length > 0 ||
-      webpackProbe.resolveExtensionsCustomized
+      webpackProbe.resolveExtensionsCustomized ||
+      webpackProbe.instrumentationClientRouteManifest !== undefined
     ) {
       console.warn(
         '[vinext] next.config option "webpack" is only partially supported. ' +
-          "vinext preserves resolve.alias, resolve.extensions, and MDX loader settings, but other webpack customization is ignored",
+          "vinext preserves resolve.alias, resolve.extensions, MDX loader settings, and instrumentation-client route manifests, but other webpack customization is ignored",
       );
     } else {
       console.warn(
@@ -1950,6 +2068,8 @@ export async function resolveNextConfig(
           (x): x is string => typeof x === "string",
         )
       : [],
+    instrumentationClientRouteManifest: webpackProbe.instrumentationClientRouteManifest,
+    instrumentationServerValueInjections: webpackProbe.instrumentationServerValueInjections,
     cacheComponents: config.cacheComponents ?? false,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
@@ -2102,6 +2222,8 @@ async function probeWebpackConfig(
   resolveExtensions: string[] | null;
   serverResolveExtensions: string[] | null;
   resolveExtensionsCustomized: boolean;
+  instrumentationClientRouteManifest: string | undefined;
+  instrumentationServerValueInjections: Record<string, unknown>;
 }> {
   if (typeof config.webpack !== "function") {
     return {
@@ -2110,6 +2232,8 @@ async function probeWebpackConfig(
       resolveExtensions: null,
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
+      instrumentationClientRouteManifest: undefined,
+      instrumentationServerValueInjections: {},
     };
   }
 
@@ -2135,6 +2259,13 @@ async function probeWebpackConfig(
       serverResolveExtensions: serverProbe.resolveExtensions,
       resolveExtensionsCustomized:
         clientProbe.resolveExtensions !== null || serverProbe.resolveExtensions !== null,
+      instrumentationClientRouteManifest: extractInstrumentationClientRouteManifest(
+        clientProbe.rules,
+      ),
+      instrumentationServerValueInjections: extractInstrumentationServerValueInjections(
+        serverProbe.rules,
+        root,
+      ),
     };
   } catch {
     return {
@@ -2143,8 +2274,103 @@ async function probeWebpackConfig(
       resolveExtensions: null,
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
+      instrumentationClientRouteManifest: undefined,
+      instrumentationServerValueInjections: {},
     };
   }
+}
+
+// Sentry's unchanged `withSentryConfig` emits its route manifest through the
+// same webpack value-injection loader it uses with Next.js. Vinext does not run
+// webpack loaders, so preserve that already-computed value during our existing
+// config probe rather than independently rebuilding the manifest.
+function isValueInjectionLoader(use: unknown): use is { options?: { values?: unknown } } {
+  if (!isUnknownRecord(use) || typeof use.loader !== "string") return false;
+  return /(?:^|[/\\])value-?injection-?loader\.[cm]?[jt]s$/i.test(use.loader);
+}
+
+// oxlint-disable-next-line typescript/no-explicit-any
+function extractInstrumentationClientRouteManifest(rules: any[]): string | undefined {
+  let manifest: string | undefined;
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const visit = (rule: any): void => {
+    if (!rule || typeof rule !== "object") return;
+    if (Array.isArray(rule)) {
+      for (const child of rule) visit(child);
+      return;
+    }
+    if (Array.isArray(rule.oneOf)) for (const child of rule.oneOf) visit(child);
+    if (Array.isArray(rule.rules)) for (const child of rule.rules) visit(child);
+    const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
+    for (const use of uses) {
+      if (!isValueInjectionLoader(use) || !isUnknownRecord(use.options?.values)) continue;
+      const value = use.options.values._sentryRouteManifest;
+      if (typeof value === "string") manifest = value;
+    }
+  };
+
+  for (const rule of rules) visit(rule);
+  return manifest;
+}
+
+// Preserve generic value-injection rules that wrapped Next.js configs target at
+// the standard server instrumentation module. Vinext does not execute webpack
+// loaders, so its Vite transform applies the already-computed JSON values.
+function matchesWebpackCondition(condition: unknown, value: string): boolean {
+  if (typeof condition === "string") return value.startsWith(condition);
+  if (condition instanceof RegExp) {
+    condition.lastIndex = 0;
+    const matches = condition.test(value);
+    condition.lastIndex = 0;
+    return matches;
+  }
+  if (Array.isArray(condition)) {
+    return condition.some((child) => matchesWebpackCondition(child, value));
+  }
+  return false;
+}
+
+function extractInstrumentationServerValueInjections(
+  rules: unknown[],
+  root: string,
+): Record<string, unknown> {
+  const values: Record<string, unknown> = {};
+  const candidates = ["instrumentation.ts", "src/instrumentation.ts"].flatMap((candidate) => [
+    candidate,
+    path.join(root, candidate),
+  ]);
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const visit = (rule: any): void => {
+    if (!rule || typeof rule !== "object") return;
+    if (Array.isArray(rule)) {
+      for (const child of rule) visit(child);
+      return;
+    }
+    if (Array.isArray(rule.oneOf)) for (const child of rule.oneOf) visit(child);
+    if (Array.isArray(rule.rules)) for (const child of rule.rules) visit(child);
+
+    const applies = candidates.some(
+      (candidate) =>
+        matchesWebpackCondition(rule.test, candidate) &&
+        (rule.include === undefined || matchesWebpackCondition(rule.include, candidate)) &&
+        (rule.exclude === undefined || !matchesWebpackCondition(rule.exclude, candidate)),
+    );
+    if (!applies) return;
+
+    const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
+    for (const use of uses) {
+      if (!isValueInjectionLoader(use)) continue;
+      const injected = use.options?.values;
+      if (isUnknownRecord(injected)) {
+        Object.assign(values, injected);
+      }
+    }
+  };
+
+  for (const rule of rules) visit(rule);
+  return values;
 }
 
 const DEFAULT_WEBPACK_RESOLVE_EXTENSIONS = [".js", ".mjs", ".tsx", ".ts", ".jsx", ".json", ".wasm"];
@@ -2162,6 +2388,9 @@ async function runWebpackConfigProbe(
 }> {
   // oxlint-disable-next-line typescript/no-explicit-any
   const rules: any[] = [];
+  class WebpackPluginStub {
+    constructor(_options: unknown) {}
+  }
   const mockConfig = {
     context: root,
     resolve: {
@@ -2174,9 +2403,11 @@ async function runWebpackConfigProbe(
   };
   // oxlint-disable-next-line typescript/no-unsafe-function-type
   const result = await (config.webpack as Function)(mockConfig, {
+    config,
     defaultLoaders: { babel: { loader: "next-babel-loader" } },
     ...options,
     dir: root,
+    webpack: new Proxy({}, { get: () => WebpackPluginStub }),
   });
   const finalConfig = result ?? mockConfig;
   // oxlint-disable-next-line typescript/no-explicit-any

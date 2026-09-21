@@ -107,6 +107,53 @@ afterEach(async () => {
 });
 
 describe("Cloudflare Workers Response Store adapter", () => {
+  test("does not invoke Response Store for a force-dynamic route", async () => {
+    let responseStoreRequests = 0;
+    const isolated = new Miniflare({
+      workers: [
+        {
+          bindings: {
+            CF_VERSION_METADATA: {
+              id: crypto.randomUUID(),
+              tag: "test",
+              timestamp: new Date().toISOString(),
+            },
+          },
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          modules: await modules(appOutput, "index.js"),
+          name: "app",
+          serviceBindings: {
+            ASSETS: async () => new Response(null, { status: 404 }),
+            RESPONSE_STORE: async () => {
+              responseStoreRequests++;
+              return new Response("Response Store must not be invoked", { status: 500 });
+            },
+          },
+        },
+      ],
+    } satisfies MiniflareOptions);
+
+    try {
+      const first = await isolated.dispatchFetch("https://app.test/force-dynamic");
+      const firstBody = await first.text();
+      const second = await isolated.dispatchFetch("https://app.test/force-dynamic");
+      const secondBody = await second.text();
+
+      assert.equal(first.status, 200);
+      assert.equal(second.status, 200);
+      assert.equal(first.headers.get("x-vinext-cache"), "BYPASS");
+      assert.equal(second.headers.get("x-vinext-cache"), "BYPASS");
+      assert.notEqual(
+        htmlValue(firstBody, "force-dynamic-render-id"),
+        htmlValue(secondBody, "force-dynamic-render-id"),
+      );
+      assert.equal(responseStoreRequests, 0);
+    } finally {
+      await isolated.dispose();
+    }
+  });
+
   test("runs cold fills, hits, and SWR loopback in one Worker", async () => {
     const inline = new Miniflare({
       unsafeEphemeralDurableObjects: true,

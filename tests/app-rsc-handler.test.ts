@@ -71,11 +71,50 @@ import {
   markFrameworkLinkHeaders,
   serializeResponseStageLinkProvenance,
 } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+import { workUnitAsyncStorage } from "../packages/vinext/src/shims/internal/work-unit-async-storage.js";
+
+const capturedFindPageComponentsSpans: ResolvedFrameworkSpanDescriptor[] = [];
+let captureFindPageComponentsSpans = false;
+const capturedNotFoundSpans: Array<{
+  descriptor: ResolvedFrameworkSpanDescriptor;
+  parentType: string | undefined;
+}> = [];
+let captureNotFoundSpans = false;
+let activeCapturedSpan: ResolvedFrameworkSpanDescriptor | undefined;
+registerFrameworkTracingIntegration({
+  id: "app-rsc-handler-find-page-components-test",
+  enterSpan(descriptor, callback) {
+    if (captureFindPageComponentsSpans && descriptor.type === "NextNodeServer.findPageComponents") {
+      capturedFindPageComponentsSpans.push(descriptor);
+    }
+    return callback({ setAttribute() {} });
+  },
+});
+registerFrameworkTracingIntegration({
+  id: "app-rsc-handler-not-found-test",
+  enterSpan(descriptor, callback) {
+    if (!captureNotFoundSpans) return callback({ setAttribute() {} });
+    const parent = activeCapturedSpan;
+    capturedNotFoundSpans.push({ descriptor, parentType: parent?.type });
+    activeCapturedSpan = descriptor;
+    const result = callback({ setAttribute() {} });
+    if (result instanceof Promise) {
+      return result.finally(() => {
+        activeCapturedSpan = parent;
+      }) as typeof result;
+    }
+    activeCapturedSpan = parent;
+    return result;
+  },
+});
 
 type TestRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
+  forceDynamic?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -127,12 +166,14 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
       beforeFiles: [],
       fallback: [],
     },
+    createPprFallbackShells: overrides.createPprFallbackShells,
     draftModeSecret: overrides.draftModeSecret ?? "test-draft-secret",
     dispatchMatchedPage:
       overrides.dispatchMatchedPage ??
       (async () => new Response("page", { status: 200, headers: { "x-from-dispatch": "page" } })),
     dispatchMatchedRouteHandler:
       overrides.dispatchMatchedRouteHandler ?? (async () => new Response("route", { status: 200 })),
+    ensureRouteLoaded: overrides.ensureRouteLoaded,
     ensureInstrumentation: overrides.ensureInstrumentation,
     handleProgressiveActionRequest:
       "handleProgressiveActionRequest" in overrides
@@ -231,6 +272,153 @@ function useSplitPolicyAdapter(): void {
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 describe("createAppRscHandler", () => {
+  it("traces direct App route misses through the internal /404 render", async () => {
+    const handler = createHandler({
+      renderNotFound: async () => new Response("not found", { status: 404 }),
+    });
+    capturedNotFoundSpans.length = 0;
+    captureNotFoundSpans = true;
+    try {
+      const response = await handler(new Request("https://example.test/docs/missing"), null, false);
+      expect(response.status).toBe(404);
+      await response.text();
+    } finally {
+      captureNotFoundSpans = false;
+      activeCapturedSpan = undefined;
+    }
+
+    expect(
+      capturedNotFoundSpans.filter(
+        ({ descriptor }) => descriptor.type === "AppRender.getBodyResult",
+      ),
+    ).toEqual([
+      {
+        descriptor: expect.objectContaining({
+          attributes: expect.objectContaining({ "next.route": "/404" }),
+          name: "render route (app) /404",
+          type: "AppRender.getBodyResult",
+        }),
+        parentType: "BaseServer.handleRequest",
+      },
+    ]);
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  it("traces App route component resolution before dispatch", async () => {
+    const ensureRouteLoaded = vi.fn();
+    const handler = createHandler({ ensureRouteLoaded });
+    capturedFindPageComponentsSpans.length = 0;
+    captureFindPageComponentsSpans = true;
+    try {
+      const response = await handler(new Request("https://example.test/docs/about"), null, false);
+      expect(response.status).toBe(200);
+    } finally {
+      captureFindPageComponentsSpans = false;
+    }
+
+    expect(ensureRouteLoaded).toHaveBeenCalledOnce();
+    expect(capturedFindPageComponentsSpans).toEqual([
+      expect.objectContaining({
+        attributes: expect.objectContaining({ "next.route": "/about" }),
+        name: "resolve page components",
+        type: "NextNodeServer.findPageComponents",
+      }),
+    ]);
+  });
+
+  it("traces App route component resolution in the split response stage", async () => {
+    const ensureRouteLoaded = vi.fn();
+    const handler = createHandler({ ensureRouteLoaded });
+    capturedFindPageComponentsSpans.length = 0;
+    captureFindPageComponentsSpans = true;
+    try {
+      const response = await handler.handleResponseStage(
+        new Request("https://example.test/docs/about"),
+        null,
+        {
+          kind: "app-page",
+          buildId: "build-id",
+          cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
+          bypassInterceptionContextCache: false,
+          canUseCanonicalLoadingShell: false,
+          canonicalPathname: "/about",
+          cleanPathname: "/about",
+          draftModeCookie: null,
+          interceptionContext: null,
+          interceptionId: null,
+          isRscRequest: false,
+          matchKind: "resolved",
+          middlewareCookieOverlay: null,
+          mountedSlotsHeader: null,
+          params: {},
+          protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+          requestOrigin: "https://example.test",
+          renderMode: "navigation",
+          resolvedUrl: "/about",
+          routePattern: "/about",
+          routePathname: "/about",
+          scriptNonce: null,
+        },
+      );
+      expect(response.status).toBe(200);
+    } finally {
+      captureFindPageComponentsSpans = false;
+    }
+
+    expect(ensureRouteLoaded).toHaveBeenCalledOnce();
+    expect(capturedFindPageComponentsSpans).toEqual([
+      expect.objectContaining({
+        attributes: expect.objectContaining({ "next.route": "/about" }),
+        name: "resolve page components",
+        type: "NextNodeServer.findPageComponents",
+      }),
+    ]);
+  });
+
+  it("establishes the Cache Components request work unit in the split response stage", async () => {
+    let workUnitType: string | undefined;
+    const handler = createHandler({
+      createPprFallbackShells: () => [],
+      dispatchMatchedPage: async () => {
+        workUnitType = workUnitAsyncStorage.getStore()?.type;
+        return new Response("page");
+      },
+    });
+
+    const response = await handler.handleResponseStage(
+      new Request("https://example.test/docs/about"),
+      null,
+      {
+        kind: "app-page",
+        buildId: "build-id",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
+        bypassInterceptionContextCache: false,
+        canUseCanonicalLoadingShell: false,
+        canonicalPathname: "/about",
+        cleanPathname: "/about",
+        draftModeCookie: null,
+        interceptionContext: null,
+        interceptionId: null,
+        isRscRequest: false,
+        matchKind: "resolved",
+        middlewareCookieOverlay: null,
+        mountedSlotsHeader: null,
+        params: {},
+        protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: "https://example.test",
+        renderMode: "navigation",
+        resolvedUrl: "/about",
+        routePattern: "/about",
+        routePathname: "/about",
+        scriptNonce: null,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(workUnitType).toBe("request");
+  });
+
   it("normalizes a direct contextual RSC request before shared response-stage dispatch", async () => {
     const route = createPageRoute();
     const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);
@@ -697,6 +885,59 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("Vary")).toContain("x-visitor");
     expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
     expect(state.forcedDynamicReason).toBeUndefined();
+  });
+
+  it("bypasses the shared response stage for a statically known force-dynamic route", async () => {
+    const route = createPageRoute({ forceDynamic: true });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("dynamic stage")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: () => ({ params: {}, route }),
+      matchRoute: () => ({ params: {}, route }),
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    await expect(response.text()).resolves.toBe("dynamic stage");
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({ forceDynamic: true });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
+  it("keeps a force-dynamic route shared when next.config supplies a public cache policy", async () => {
+    const route = createPageRoute({ forceDynamic: true });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("configured stage")),
+    );
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: "Cache-Control", value: "s-maxage=60" }],
+        },
+      ],
+      matchRequestRoute: () => ({ params: {}, route }),
+      matchRoute: () => ({ params: {}, route }),
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    await expect(response.text()).resolves.toBe("configured stage");
+    expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
+      ["Cache-Control", "s-maxage=60"],
+    ]);
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
   });
 
   it("transports matched config cache policy to a hybrid Pages response stage", async () => {

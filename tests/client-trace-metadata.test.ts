@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   filterClientTraceMetadata,
   getClientTraceMetadataHTML,
+  markClientTraceMetadataBlock,
   renderClientTraceMetadataTags,
+  stripClientTraceMetadataBlock,
   type ClientTraceDataEntry,
 } from "../packages/vinext/src/server/client-trace-metadata.js";
 
@@ -45,6 +47,19 @@ describe("client trace metadata: filterClientTraceMetadata", () => {
   it("excludes keys that are not in the allow-list", () => {
     const result = filterClientTraceMetadata(entries, ["my-test-key-1"]);
     expect(result).toEqual([{ key: "my-test-key-1", value: "my-test-value-1" }]);
+  });
+});
+
+describe("client trace metadata cache marker", () => {
+  it("removes only the marked framework-injected block", () => {
+    const authored = '<meta name="baggage" content="application-policy"/>';
+    const injected = renderClientTraceMetadataTags([
+      { key: "baggage", value: "tenant=alice" },
+      { key: "sentry-trace", value: "abc-def-1" },
+    ]);
+    const html = `<head>${authored}${markClientTraceMetadataBlock(injected, "private")}</head>`;
+
+    expect(stripClientTraceMetadataBlock(html, "private")).toBe(`<head>${authored}</head>`);
   });
 });
 
@@ -150,7 +165,7 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
     expect(html).not.toContain("non-metadata-key-3");
   });
 
-  it("reads the ESM OpenTelemetry global registry and creates a request span when needed", () => {
+  it("injects non-span metadata without creating a synthetic request span", () => {
     const rootContext = {
       values: new Map<symbol, unknown>(),
       getValue(key: symbol) {
@@ -163,7 +178,7 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
       },
     };
     let currentContext = rootContext;
-    const endedSpans: string[] = [];
+    const startSpan = vi.fn();
     (globalThis as Record<symbol, unknown>)[apiSymbol] = {
       version: "1.9.0",
       context: {
@@ -185,33 +200,21 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
           setter: { set(carrier: ClientTraceDataEntry[], key: string, value: string): void },
         ) {
           setter.set(carrier, "my-test-key-1", "my-test-value-1");
-          const span = context.getValue(spanSymbol) as { spanContext(): { spanId: string } };
-          setter.set(carrier, "my-parent-span-id", span.spanContext().spanId);
+          const span = context.getValue(spanSymbol) as
+            | { spanContext(): { spanId: string } }
+            | undefined;
+          if (span) setter.set(carrier, "my-parent-span-id", span.spanContext().spanId);
         },
       },
       trace: {
-        getTracer: () => ({
-          startSpan: () => {
-            const spanId = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
-            return {
-              spanContext: () => ({ spanId }),
-              end: () => endedSpans.push(spanId),
-            };
-          },
-        }),
+        getTracer: () => ({ startSpan }),
       },
     };
 
-    const first = getClientTraceMetadataHTML(["my-test-key-1", "my-parent-span-id"]);
-    const second = getClientTraceMetadataHTML(["my-test-key-1", "my-parent-span-id"]);
-
-    expect(first).toContain('<meta name="my-test-key-1" content="my-test-value-1"/>');
-    const firstSpanId = first.match(/my-parent-span-id" content="([a-f0-9]{16})"/)?.[1];
-    const secondSpanId = second.match(/my-parent-span-id" content="([a-f0-9]{16})"/)?.[1];
-    expect(firstSpanId).toMatch(/^[a-f0-9]{16}$/);
-    expect(secondSpanId).toMatch(/^[a-f0-9]{16}$/);
-    expect(secondSpanId).not.toBe(firstSpanId);
-    expect(endedSpans).toEqual([firstSpanId, secondSpanId]);
+    expect(getClientTraceMetadataHTML(["my-test-key-1", "my-parent-span-id"])).toBe(
+      '<meta name="my-test-key-1" content="my-test-value-1"/>',
+    );
+    expect(startSpan).not.toHaveBeenCalled();
   });
 
   it("preserves an existing active span instead of starting another one", () => {
@@ -268,8 +271,8 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
     );
   });
 
-  it("fails open and ends a created span when registry propagation throws", () => {
-    const end = vi.fn();
+  it("fails open without creating a span when registry propagation throws", () => {
+    const startSpan = vi.fn();
     const rootContext = {
       getValue: () => undefined,
       setValue: () => rootContext,
@@ -283,12 +286,12 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
         },
       },
       trace: {
-        getTracer: () => ({ startSpan: () => ({ end }) }),
+        getTracer: () => ({ startSpan }),
       },
     };
 
     expect(getClientTraceMetadataHTML(["my-parent-span-id"])).toBe("");
-    expect(end).toHaveBeenCalledOnce();
+    expect(startSpan).not.toHaveBeenCalled();
   });
 
   it("does not emit trace metadata while prerendering", () => {
@@ -307,5 +310,19 @@ describe("client trace metadata: getClientTraceMetadataHTML", () => {
     });
 
     expect(getClientTraceMetadataHTML(["my-test-key-1"])).toBe("");
+  });
+
+  it("does not emit trace metadata for runtime static generation", () => {
+    const inject = vi.fn();
+    (globalThis as Record<symbol, unknown>)[apiSymbol] = {
+      context: {
+        active: () => ({ getValue: () => ({}) }),
+        with: (_context: unknown, fn: () => unknown) => fn(),
+      },
+      propagation: { inject },
+    };
+
+    expect(getClientTraceMetadataHTML(["my-test-key-1"], true)).toBe("");
+    expect(inject).not.toHaveBeenCalled();
   });
 });

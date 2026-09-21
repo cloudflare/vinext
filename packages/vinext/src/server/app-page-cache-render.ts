@@ -18,11 +18,14 @@ import {
 } from "./app-page-execution.js";
 import {
   buildAppPageLinkHeader,
+  createAppPageSsrErrorHandler,
   isAppSsrRenderResult,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
+import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
+import type { FrameworkSpan } from "./framework-tracer.js";
 
 type AppPageRenderableElement = ReactNode | Record<string, ReactNode>;
 type AppPageCacheRoute = {
@@ -43,7 +46,9 @@ export type RenderAppPageCacheArtifactsOptions = {
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   mountedSlotsHeader?: string | null;
   navigationParams: Record<string, unknown>;
+  isCapturedRscError?: (error: unknown) => boolean;
   onError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
+  onSsrError?: (error: unknown) => unknown;
   reactMaxHeadersLength?: number;
   renderToReadableStream: (
     element: AppPageRenderableElement,
@@ -74,8 +79,20 @@ export type RenderAppPageCacheArtifactsResult = {
 export async function renderAppPageCacheArtifacts(
   options: RenderAppPageCacheArtifactsOptions,
 ): Promise<RenderAppPageCacheArtifactsResult> {
+  return traceAppPageRender(options.route.pattern, "prerender", (renderSpan) =>
+    renderAppPageCacheArtifactsImpl(options, renderSpan),
+  );
+}
+
+async function renderAppPageCacheArtifactsImpl(
+  options: RenderAppPageCacheArtifactsOptions,
+  renderSpan: FrameworkSpan,
+): Promise<RenderAppPageCacheArtifactsResult> {
   const rscStream = options.renderToReadableStream(options.element, {
-    onError: options.onError,
+    onError(error, requestInfo, errorContext) {
+      recordAppPageRenderError(renderSpan, error);
+      return options.onError(error, requestInfo, errorContext);
+    },
   });
   const rscCapture = teeAppPageRscStreamForCapture(rscStream, options.captureRscData);
   const capturedRscDataRef: { value: Promise<ArrayBuffer> | null } = { value: null };
@@ -97,6 +114,18 @@ export async function renderAppPageCacheArtifacts(
       waitForAllReady: options.waitForAllReady,
       isStaticGeneration: true,
       isForceStatic: options.isForceStatic,
+      onSsrError:
+        options.onSsrError && options.isCapturedRscError
+          ? createAppPageSsrErrorHandler((error) => {
+              recordAppPageRenderError(renderSpan, error);
+              return options.onSsrError?.(error);
+            }, options.isCapturedRscError)
+          : options.onSsrError
+            ? (error) => {
+                recordAppPageRenderError(renderSpan, error);
+                return options.onSsrError?.(error);
+              }
+            : undefined,
       ...(rscCapture.sideStream
         ? {
             sideStream: rscCapture.sideStream,

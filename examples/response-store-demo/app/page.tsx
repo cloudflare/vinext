@@ -6,11 +6,11 @@ export const revalidate = 0;
 export default function HomePage() {
   return (
     <main>
-      <h1>Workers Response Store cache adapter</h1>
+      <h1>vinext cache adapters</h1>
       <p className="tagline">
-        vinext persists ISR and <code>&quot;use cache&quot;</code> values through Workers Response Store.
-        The application Worker stays uncached; a service-bound cache Worker owns Workers Cache,
-        R2 bodies, and SQLite Durable Object metadata.
+        vinext persists ISR and <code>&quot;use cache&quot;</code> values through the configured Cloudflare
+        cache adapters. This demo is deployed with both Workers Response Store and Workers Cache +
+        KV.
       </p>
 
       <CacheStatusProbe path="/cached/intro" />
@@ -57,7 +57,7 @@ export default function HomePage() {
           </h3>
           <p>
             A dynamic page runs for every request while a <code>&quot;use cache&quot;</code> function keeps
-            the same UUID in the response store.
+            the same UUID in the configured data cache.
           </p>
           <Link prefetch={false} href="/use-cache">Open /use-cache &rarr;</Link>
         </div>
@@ -71,6 +71,17 @@ export default function HomePage() {
             personalized stream privately on every request without writing an ISR entry.
           </p>
           <Link prefetch={false} href="/dynamic">Open /dynamic &rarr;</Link>
+        </div>
+
+        <div className="card">
+          <h3>
+            <span className="badge">Dynamic</span> Build-time bypass
+          </h3>
+          <p>
+            An explicit <code>dynamic = &quot;force-dynamic&quot;</code> route bypasses the response
+            cache lookup and renders a fresh UUID on every request.
+          </p>
+          <Link prefetch={false} href="/force-dynamic">Open /force-dynamic &rarr;</Link>
         </div>
       </section>
     </main>

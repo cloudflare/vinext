@@ -41,6 +41,37 @@ main {
   padding: 48px 24px 96px;
 }
 
+.deployment-nav {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 20px 24px 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.deployment-nav span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin-right: 4px;
+}
+
+.deployment-nav a {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.deployment-nav a:hover {
+  background: rgba(139, 92, 246, 0.2);
+  text-decoration: none;
+}
+
 h1 {
   font-size: 2.25rem;
   margin: 0 0 8px;

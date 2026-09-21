@@ -1,0 +1,28 @@
+export const metadata = {
+  slug: "reference/differences",
+  title: "Differences from Next.js",
+  description: "The compatibility boundaries to understand before adopting vinext.",
+  section: "Reference",
+  sectionOrder: 4,
+  order: 1,
+  navTitle: "Differences from Next.js",
+  keywords: ["vinext compatibility", "vinext vs Next.js", "Next.js Vite differences"],
+};
+
+> vinext targets the stable Next.js 16 API surface, not undocumented Vercel behavior or every experimental feature. Run `vinext check` against your own application before adopting it.
+
+## Toolchain
+
+Development, bundling, and production builds run on Vite 8 instead of the Next.js compiler toolchain. Vite plugins can extend the build, while webpack plugins and framework-specific build internals do not carry over automatically.
+
+## Deployment
+
+Cloudflare Workers is the primary native target. Standalone Node output and Nitro adapters cover other hosts. Next.js route config values such as `runtime` and `preferredRegion` are currently ignored because runtime placement belongs to the selected deployment adapter.
+
+## Compatibility
+
+App Router, Pages Router, RSC, Server Actions, middleware, Route Handlers, static generation, ISR, and the commonly used `next/*` modules are implemented. Cache Components and Partial Prerendering remain incomplete, and build-time image and font optimization do not yet reproduce the full Next.js pipeline.
+
+## How to read the docs
+
+If a feature is not listed as a vinext difference, start with the corresponding [Next.js documentation](https://nextjs.org/docs/app). For adoption decisions, the [compatibility dashboard](/compatibility) is the live view of test coverage, and the [issue tracker](https://github.com/cloudflare/vinext/issues) records known gaps and focused reproductions.

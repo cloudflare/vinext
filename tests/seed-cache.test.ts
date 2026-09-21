@@ -969,6 +969,26 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(paths!.size).toBe(1);
   });
 
+  it("retains empty static-param route markers without seeding an artifact", async () => {
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId: "empty-static-params",
+        routes: [
+          {
+            route: "/blog/:slug",
+            status: "skipped",
+            reason: "empty-static-params",
+          },
+        ],
+      },
+      {},
+    );
+
+    await expect(seedMemoryCacheFromPrerender(serverDir)).resolves.toBe(0);
+    expect(getRenderedConcreteUrlPathsForRoute("/blog/:slug")).toEqual(new Set());
+  });
+
   it("clears pregenerated concrete paths when manifest is absent from a subsequent build", async () => {
     setupPrerenderFixture(
       serverDir,

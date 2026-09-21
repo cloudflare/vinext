@@ -13,16 +13,19 @@ type RscRequestInfo = {
 type RscErrorContext = {
   routerKind: "App Router";
   routePath: string;
-  routeType: "render";
+  routeType: "render" | "action";
+  renderSource?: "react-server-components" | "react-server-components-payload" | "server-rendering";
+  revalidateReason: "on-demand" | "stale" | undefined;
 };
 
 type RscErrorReporter = (
-  error: Error,
+  error: unknown,
   requestInfo: RscRequestInfo,
   errorContext: RscErrorContext,
 ) => void;
 
 type CreateRscOnErrorHandlerOptions = {
+  attachDigest?: boolean;
   errorContext: RscErrorContext | null;
   nodeEnv?: string;
   reportRequestError: RscErrorReporter;
@@ -36,7 +39,7 @@ export function hasDigest(error: unknown): error is { digest: unknown } {
 const BAILOUT_TO_CSR_DIGEST = "BAILOUT_TO_CLIENT_SIDE_RENDERING";
 const DYNAMIC_SERVER_USAGE_DIGEST = "DYNAMIC_SERVER_USAGE";
 
-function isAbortError(error: unknown): boolean {
+export function isAppRenderAbortError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const name = Reflect.get(error, "name");
   return name === "AbortError" || name === "ResponseAborted";
@@ -120,7 +123,7 @@ export function createRscOnErrorHandler(
 
     // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
     // Expected response/HMR cancellations are not render failures.
-    if (isAbortError(error)) {
+    if (isAppRenderAbortError(error)) {
       return undefined;
     }
 
@@ -164,13 +167,7 @@ export function createRscOnErrorHandler(
         typeof error === "object" && ORIGINAL_SERVER_ERROR in error
           ? Reflect.get(error, ORIGINAL_SERVER_ERROR)
           : error;
-      options.reportRequestError(
-        reportableError instanceof Error
-          ? reportableError
-          : new Error(getThrownValueMessage(reportableError)),
-        options.requestInfo,
-        options.errorContext,
-      );
+      options.reportRequestError(reportableError, options.requestInfo, options.errorContext);
     }
 
     // Surface the error on the dev-server terminal. In Next.js the instrumentation
@@ -197,7 +194,7 @@ export function createRscOnErrorHandler(
 
     if (error) {
       const digest = errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
-      if (error instanceof Error) {
+      if (options.attachDigest !== false && error instanceof Error) {
         try {
           Object.assign(error, { digest });
         } catch {

@@ -4162,7 +4162,7 @@ describe("instrumentation.ts support", () => {
       }),
     };
 
-    await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
+    await runInstrumentation(mockRunner, "/fake/register-instrumentation.ts");
 
     expect(registerCalled).toBe(true);
     expect(getOnRequestErrorHandler()).toBe(mockOnRequestError);
@@ -4183,13 +4183,18 @@ describe("instrumentation.ts support", () => {
       }),
     };
 
-    await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
+    await runInstrumentation(mockRunner, "/fake/report-error-instrumentation.ts");
 
     const testError = new Error("test error");
     await reportRequestError(
       testError,
       { path: "/blog/1", method: "GET", headers: {} },
-      { routerKind: "Pages Router", routePath: "/blog/[slug]", routeType: "render" },
+      {
+        routerKind: "Pages Router",
+        routePath: "/blog/[slug]",
+        routeType: "render",
+        revalidateReason: undefined,
+      },
     );
 
     expect(reportedErrors.length).toBe(1);
@@ -4214,7 +4219,12 @@ describe("instrumentation.ts support", () => {
     await reportRequestError(
       new Error("test"),
       { path: "/", method: "GET", headers: {} },
-      { routerKind: "App Router", routePath: "/", routeType: "render" },
+      {
+        routerKind: "App Router",
+        routePath: "/",
+        routeType: "render",
+        revalidateReason: undefined,
+      },
     );
   });
 
@@ -4230,24 +4240,89 @@ describe("instrumentation.ts support", () => {
     await runInstrumentation(mockRunner, "/fake/empty-instrumentation.ts");
   });
 
-  it("runInstrumentation handles import errors gracefully", async () => {
+  it("runInstrumentation propagates import errors", async () => {
     const { runInstrumentation } = await import("../packages/vinext/src/server/instrumentation.js");
     const mockRunner = {
       import: async (_id: string) => {
         throw new TypeError("Cannot read properties of undefined (reading 'outsideEmitter')");
       },
     };
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        "[vinext] Failed to load instrumentation:",
-        "Cannot read properties of undefined (reading 'outsideEmitter')",
-      );
-    } finally {
-      consoleErrorSpy.mockRestore();
-    }
+    await expect(runInstrumentation(mockRunner, "/fake/instrumentation.ts")).rejects.toThrow(
+      "Cannot read properties of undefined (reading 'outsideEmitter')",
+    );
   });
+
+  // Next.js propagates instrumentation registration failures during server preparation.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/dev/next-dev-server.ts
+  it("does not serve Pages dev requests when instrumentation registration fails", async () => {
+    const fs = await import("node:fs/promises");
+    const tmpDir = await createIsolatedFixture(PAGES_FIXTURE_DIR, "vinext-inst-failure-");
+    await fs.writeFile(
+      path.join(tmpDir, "instrumentation.ts"),
+      'export async function register() { throw new Error("instrumentation failed") }',
+    );
+
+    let server: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir, { appDir: null });
+      server = started.server;
+      for (const [path, method] of [
+        ["/api/hello", "GET"],
+        ["/dedupe-script.js", "POST"],
+      ] as const) {
+        const response = await fetch(started.baseUrl + path, { method });
+        expect(response.status).toBe(500);
+        await expect(response.text()).resolves.toContain("instrumentation failed");
+      }
+    } finally {
+      await server?.close();
+      await fs.rm(tmpDir, { recursive: true });
+    }
+  }, 30_000);
+
+  // Ported from Next.js: packages/next/src/server/route-modules/pages/pages-handler.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+  it("awaits Pages dev render error reporting before completing the response", async () => {
+    const fs = await import("node:fs/promises");
+    const tmpDir = await createIsolatedFixture(PAGES_FIXTURE_DIR, "vinext-pages-error-report-");
+    let server: ViteDevServer | undefined;
+    let baseUrl: string | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir, { appDir: null });
+      server = started.server;
+      baseUrl = started.baseUrl;
+      await fetch(`${started.baseUrl}/api/instrumentation-test`, { method: "DELETE" });
+
+      let responseSettled = false;
+      const responsePromise = fetch(`${started.baseUrl}/gssp-throw`, {
+        headers: { "x-vinext-test-deferred-error": "1" },
+      }).then((response) => {
+        responseSettled = true;
+        return response;
+      });
+      await vi.waitFor(async () => {
+        const state = await fetch(`${started.baseUrl}/api/instrumentation-test`).then((value) =>
+          value.json(),
+        );
+        expect(state.errorReportStarted).toBe(true);
+      });
+      expect(responseSettled).toBe(false);
+      await fetch(`${started.baseUrl}/api/instrumentation-test`, { method: "PATCH" });
+
+      const response = await responsePromise;
+      expect(response.status).toBe(500);
+      const state = await fetch(`${started.baseUrl}/api/instrumentation-test`).then((value) =>
+        value.json(),
+      );
+      expect(state.errors).toContainEqual(expect.objectContaining({ path: "/gssp-throw" }));
+    } finally {
+      if (baseUrl) {
+        await fetch(`${baseUrl}/api/instrumentation-test`, { method: "PATCH" }).catch(() => {});
+      }
+      await server?.close();
+      await fs.rm(tmpDir, { recursive: true });
+    }
+  }, 30_000);
 });
 
 describe("production server compression", () => {
@@ -4826,6 +4901,58 @@ describe("Set-Cookie header preservation in prod-server", () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers["Vary"]).toBeUndefined();
     expect(Buffer.concat(chunks).toString()).toBe("encoded");
+  });
+
+  it("sendWebResponse resolves after the response body finishes", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+    let release!: () => void;
+    const response = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("first"));
+          release = () => {
+            controller.enqueue(new TextEncoder().encode("last"));
+            controller.close();
+          };
+        },
+      }),
+    );
+    const res = new CapturingNodeResponse();
+    res.resume();
+    let resolved = false;
+
+    const sending = sendWebResponse(
+      response,
+      { method: "GET", headers: {} } as any,
+      res as any,
+      false,
+    ).then(() => {
+      resolved = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(resolved).toBe(false);
+    release();
+    await sending;
+    expect(resolved).toBe(true);
+  });
+
+  it("keeps the Node request boundary open for an asynchronously piped response", async () => {
+    const { waitForNodeResponseCompletion } =
+      await import("../packages/vinext/src/server/prod-server.js");
+    const res = new CapturingNodeResponse();
+    res.resume();
+    let resolved = false;
+
+    const waiting = waitForNodeResponseCompletion(res as any).then(() => {
+      resolved = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(resolved).toBe(false);
+
+    res.end("static body");
+    await waiting;
+    expect(resolved).toBe(true);
   });
 
   it("sendWebResponse varies identity responses by Accept-Encoding", async () => {

@@ -65,7 +65,7 @@ export type CdnWarmOptions = {
   requireCacheHit?: boolean;
   strict?: boolean;
   /** Cache-admission signal exposed by the deployed adapter. */
-  statusSource?: "cloudflare" | "vinext";
+  statusSource?: "cloudflare" | "data-cache" | "vinext";
   fetchImpl?: typeof fetch;
 };
 
@@ -727,6 +727,7 @@ const REQUIRED_RSC_VARY_HEADERS = VINEXT_RSC_VARY_HEADER.split(",").map((name) =
 );
 const ADMITTED_CF_CACHE_STATUSES = new Set(["HIT", "MISS", "EXPIRED", "REVALIDATED", "UPDATING"]);
 const REUSABLE_CF_CACHE_STATUSES = new Set(["HIT", "REVALIDATED", "UPDATING"]);
+const TRANSITIONAL_VINEXT_CACHE_STATUSES = new Set(["MISS", "UPDATING"]);
 const NON_CACHEABLE_CF_CACHE_STATUSES = new Set(["BYPASS"]);
 const CDN_CACHE_POLICY_HEADERS = [
   "Cloudflare-CDN-Cache-Control",
@@ -857,25 +858,41 @@ function validateCachePolicy(
   return { outcome: "failed", error: `CF-Cache-Status is ${cacheStatus}` };
 }
 
-function validateVinextCacheStatus(response: Response): WarmValidation {
+function validateVinextCacheStatus(
+  response: Response,
+  missingStatus: "failed" | "skipped" = "failed",
+  requireCacheHit = false,
+): WarmValidation {
   const status = response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase();
+  if (requireCacheHit && status !== "HIT") {
+    return {
+      outcome: "failed",
+      error: `${VINEXT_CACHE_HEADER} is ${status ?? "missing"}; the cache fill is not reusable`,
+    };
+  }
   if (status === "MISS" || status === "HIT" || status === "UPDATING") {
     return { outcome: "warmed" };
   }
   if (status === "BYPASS" || status === "DYNAMIC") {
     return { outcome: "skipped", reason: `${VINEXT_CACHE_HEADER} is ${status}` };
   }
-  return { outcome: "failed", error: `response is missing ${VINEXT_CACHE_HEADER}` };
+  return missingStatus === "skipped"
+    ? { outcome: "skipped", reason: `response is missing ${VINEXT_CACHE_HEADER}` }
+    : { outcome: "failed", error: `response is missing ${VINEXT_CACHE_HEADER}` };
 }
 
 function validateWarmAdmission(
   response: Response,
-  statusSource: "cloudflare" | "vinext",
+  statusSource: "cloudflare" | "data-cache" | "vinext",
   requireCacheHit: boolean,
 ): WarmValidation {
-  return statusSource === "vinext"
-    ? validateVinextCacheStatus(response)
-    : validateCachePolicy(response, true, requireCacheHit);
+  if (statusSource === "vinext") {
+    return validateVinextCacheStatus(response, "failed", requireCacheHit);
+  }
+  if (statusSource === "data-cache") {
+    return validateVinextCacheStatus(response, "skipped", requireCacheHit);
+  }
+  return validateCachePolicy(response, true, requireCacheHit);
 }
 
 function validateBuildIdentity(
@@ -904,7 +921,7 @@ function validateRscWarmResponse(
   expectedBuildId?: string,
   expectedRscBuildId?: string,
   requireCacheHit = false,
-  statusSource: "cloudflare" | "vinext" = "cloudflare",
+  statusSource: "cloudflare" | "data-cache" | "vinext" = "cloudflare",
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
@@ -958,7 +975,7 @@ function validateHtmlWarmResponse(
   response: Response,
   expectedBuildId?: string,
   requireCacheHit = false,
-  statusSource: "cloudflare" | "vinext" = "cloudflare",
+  statusSource: "cloudflare" | "data-cache" | "vinext" = "cloudflare",
 ): WarmValidation {
   const buildIdentityValidation = validateBuildIdentity(response, expectedBuildId);
   if (buildIdentityValidation) return buildIdentityValidation;
@@ -980,7 +997,7 @@ function validatePagesDataWarmResponse(
   response: Response,
   expectedBuildId?: string,
   requireCacheHit = false,
-  statusSource: "cloudflare" | "vinext" = "cloudflare",
+  statusSource: "cloudflare" | "data-cache" | "vinext" = "cloudflare",
 ): WarmValidation {
   const validation = validateHtmlWarmResponse(
     response,
@@ -1236,6 +1253,22 @@ function shouldRetryValidationFailure(
   return isRetryableStatus(response.status, options.retryNotFound);
 }
 
+function isRetryableCertificationFailure(
+  response: Response,
+  statusSource: "cloudflare" | "data-cache" | "vinext",
+  retryPropagationFailures: boolean,
+): boolean {
+  if (statusSource === "cloudflare") {
+    const status = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
+    return (
+      !REUSABLE_CF_CACHE_STATUSES.has(status ?? "") &&
+      (retryPropagationFailures || ADMITTED_CF_CACHE_STATUSES.has(status ?? ""))
+    );
+  }
+  const status = response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase();
+  return TRANSITIONAL_VINEXT_CACHE_STATUSES.has(status ?? "");
+}
+
 async function warmOnePath(
   target: CdnWarmTarget,
   options: Required<Pick<CdnWarmOptions, "targetUrl" | "timeoutMs" | "retries">> & {
@@ -1250,7 +1283,7 @@ async function warmOnePath(
     retrySkipped: boolean;
     phaseTimeoutMs?: number;
     requireCacheHit: boolean;
-    statusSource: "cloudflare" | "vinext";
+    statusSource: "cloudflare" | "data-cache" | "vinext";
   },
 ): Promise<
   | { path: string; ok: true; skipped: false }
@@ -1346,11 +1379,13 @@ async function warmOnePath(
         }
         lastSkippedReason = null;
         lastError = validation.error;
-        const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
         lastRetryable =
           (options.requireCacheHit &&
-            ADMITTED_CF_CACHE_STATUSES.has(cacheStatus ?? "") &&
-            !REUSABLE_CF_CACHE_STATUSES.has(cacheStatus ?? "")) ||
+            isRetryableCertificationFailure(
+              response,
+              options.statusSource,
+              options.retryPropagationFailures,
+            )) ||
           shouldRetryValidationFailure(response, target, options);
         if (!lastRetryable) break;
         if (!canRetry(attempt)) break;
@@ -1391,11 +1426,13 @@ async function warmOnePath(
       }
       lastSkippedReason = null;
       lastError = validation.error;
-      const cacheStatus = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
       lastRetryable =
         (options.requireCacheHit &&
-          ADMITTED_CF_CACHE_STATUSES.has(cacheStatus ?? "") &&
-          !REUSABLE_CF_CACHE_STATUSES.has(cacheStatus ?? "")) ||
+          isRetryableCertificationFailure(
+            response,
+            options.statusSource,
+            options.retryPropagationFailures,
+          )) ||
         shouldRetryValidationFailure(response, target, options);
       if (!lastRetryable) break;
     } catch (error) {

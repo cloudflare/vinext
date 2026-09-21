@@ -99,7 +99,10 @@ import {
   type ResolvedNextConfig,
 } from "./config/next-config.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { mergeServerExternalPackages } from "./config/server-external-packages.js";
+import {
+  findOpenTelemetryPackages,
+  mergeServerExternalPackages,
+} from "./config/server-external-packages.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { validateMiddlewareMatcherPatterns } from "./server/middleware-matcher-pattern.js";
@@ -143,6 +146,7 @@ import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
+import { traceFrameworkRequest } from "./server/request-tracing.js";
 
 import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
 
@@ -182,7 +186,10 @@ import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
-import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
+import {
+  createInstrumentationClientTransformPlugin,
+  createInstrumentationServerTransformPlugin,
+} from "./plugins/instrumentation-client.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
@@ -1144,6 +1151,10 @@ const APP_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("app-request-stage-ind
 const APP_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("app-response-stage-entry");
 const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage-entry");
 const PAGES_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("pages-response-stage-entry");
+const WORKER_ROUTER_ENTRIES = new Set([
+  resolveRuntimeEntryModule("app-router-entry"),
+  resolveRuntimeEntryModule("pages-router-entry"),
+]);
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
 const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
 /** CDN-only registrar kept out of the data-cache response graph. */
@@ -1536,6 +1547,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
   let resolvedServerExternalPackages: string[] = [];
+  let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
@@ -1655,7 +1667,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
-      { prerenderSecret },
+      { nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader, prerenderSecret },
     );
   }
 
@@ -2892,9 +2904,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig?.optimizePackageImports ?? []),
         ];
         pagesBundledPackages = new Set(serverTranspilePackages);
+        const openTelemetryPackages = findOpenTelemetryPackages(root);
+        registerNodeOpenTelemetryLoader =
+          env.command === "build" &&
+          !hasCloudflarePlugin &&
+          !hasNitroPlugin &&
+          instrumentationPath !== null &&
+          openTelemetryPackages.includes("@opentelemetry/instrumentation") &&
+          !serverTranspilePackages.includes("@opentelemetry/instrumentation") &&
+          (() => {
+            try {
+              createRequire(path.join(root, "package.json")).resolve(
+                "@opentelemetry/instrumentation/hook.mjs",
+              );
+              return true;
+            } catch {
+              return false;
+            }
+          })();
         const nextServerExternal = mergeServerExternalPackages(
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
+          openTelemetryPackages,
         );
         resolvedServerExternalPackages = nextServerExternal;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
@@ -4354,6 +4385,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 bodySizeLimitLabel: nextConfig?.serverActionsBodySizeLimitLabel,
                 htmlLimitedBots: nextConfig?.htmlLimitedBots,
                 clientTraceMetadata: nextConfig?.clientTraceMetadata,
+                nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
                 assetPrefix: nextConfig?.assetPrefix,
                 expireTime: nextConfig?.expireTime,
                 reactMaxHeadersLength: nextConfig?.reactMaxHeadersLength,
@@ -4564,6 +4596,21 @@ export const loadServerActionClient = ${
           // consumed, so nulling the map is safe and prevents stale-map
           // confusion in tooling.
           return { code: nextCode, map: null };
+        },
+      },
+    },
+    {
+      name: "vinext:cloudflare-framework-tracing",
+      transform: {
+        filter: { id: /(?:app|pages)-router-entry\.[cm]?[jt]s(?:\?|$)/ },
+        handler(code, id) {
+          if (!hasCloudflarePlugin) return null;
+          const cleanId = toSlash(stripViteModuleQuery(id));
+          if (!WORKER_ROUTER_ENTRIES.has(cleanId)) return null;
+          return {
+            code: `import "vinext/internal/server/cloudflare-workers-tracing";\n${code}`,
+            map: null,
+          };
         },
       },
     },
@@ -4858,7 +4905,14 @@ export const loadServerActionClient = ${
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
-    createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
+    createInstrumentationClientTransformPlugin(
+      () => instrumentationClientPath,
+      () => nextConfig.instrumentationClientRouteManifest,
+    ),
+    createInstrumentationServerTransformPlugin(
+      () => instrumentationPath,
+      () => nextConfig.instrumentationServerValueInjections,
+    ),
     {
       name: "vinext:instrumentation-client-inject",
       enforce: "pre",
@@ -5434,7 +5488,7 @@ export const loadServerActionClient = ${
           if (!hasPagesDir || !handlePagesMiddleware || !isUnsupportedDevPublicRequest(req)) {
             return next();
           }
-          void handlePagesMiddleware(req, res, next);
+          void handlePagesMiddleware(req, res, next).catch(next);
         });
 
         installDevStackSourcemapMiddleware(server);
@@ -5559,11 +5613,15 @@ export const loadServerActionClient = ${
           // server.ssrLoadModule() to crash with outsideEmitter. The runner
           // calls environment.fetchModule() directly and never touches the hot
           // channel, making it safe with all Vite plugin combinations.
-          if (instrumentationPath && !hasAppDir) {
-            runInstrumentation(getPagesRunner(), instrumentationPath).catch((err) => {
-              console.error("[vinext] Instrumentation error:", err);
-            });
-          }
+          const pagesInstrumentationReady =
+            instrumentationPath && (!hasAppDir || !hasCloudflarePlugin)
+              ? runInstrumentation(getPagesRunner(), instrumentationPath)
+              : Promise.resolve();
+          // Vite's post-configure hook is synchronous. Attach a rejection
+          // handler immediately, then let every Pages request await the original
+          // promise so startup failures are propagated instead of serving
+          // requests without instrumentation.
+          void pagesInstrumentationReady.catch(() => {});
           // App Router request logging in dev server
           //
           // For App Router, the RSC plugin handles requests internally.
@@ -5694,33 +5752,14 @@ export const loadServerActionClient = ${
             });
           }
 
-          handlePagesMiddleware = async (
+          const handlePagesRequest = async (
             req: import("node:http").IncomingMessage,
             res: import("node:http").ServerResponse,
-            next: (err?: unknown) => void,
+            next: (err?: unknown) => void | Promise<void>,
           ): Promise<void> => {
             try {
               let url: string = req.url ?? "/";
               const originalRequestUrl = url;
-
-              // If no pages directory, skip this middleware entirely
-              // (app router is handled by @vitejs/plugin-rsc's built-in middleware)
-              if (!hasPagesDir) return next();
-
-              // Skip Vite internal requests and static files
-              if (
-                url.startsWith("/@") ||
-                url.startsWith("/__vite") ||
-                url.startsWith("/node_modules")
-              ) {
-                return next();
-              }
-
-              // Skip .rsc requests — those are for the App Router RSC handler
-              if (url.split("?")[0].endsWith(".rsc")) {
-                return next();
-              }
-
               // ── Cross-origin request protection (defense-in-depth) ──────
               // The pre-Vite middleware above already blocks cross-origin
               // requests before Vite serves any content. This second check
@@ -6262,7 +6301,10 @@ export const loadServerActionClient = ${
                       nextConfig.images?.qualities,
                     );
                     return encodedLocation
-                      ? new Response(null, { status: 302, headers: { Location: encodedLocation } })
+                      ? new Response(null, {
+                          status: 302,
+                          headers: { Location: encodedLocation },
+                        })
                       : new Response("Invalid image optimization parameters", { status: 400 });
                   }
                   const isRetrievalMethod = req.method === "GET" || req.method === "HEAD";
@@ -6479,12 +6521,76 @@ export const loadServerActionClient = ${
                 );
               }
             } catch (e) {
-              next(e);
+              return next(e);
             }
           };
 
+          handlePagesMiddleware = async (req, res, next): Promise<void> => {
+            const url = req.url ?? "/";
+
+            // If no pages directory, skip this middleware entirely
+            // (app router is handled by @vitejs/plugin-rsc's built-in middleware)
+            if (!hasPagesDir) return next();
+
+            // Skip Vite internal requests and static files
+            if (
+              url.startsWith("/@") ||
+              url.startsWith("/__vite") ||
+              url.startsWith("/node_modules")
+            ) {
+              return next();
+            }
+
+            // Skip .rsc requests — those are for the App Router RSC handler
+            if (url.split("?")[0].endsWith(".rsc")) return next();
+
+            // The Cloudflare dev proxy owns request execution and tracing in
+            // workerd. Do not create a second Node-side request root here.
+            if (hasCloudflarePlugin) return next();
+
+            await pagesInstrumentationReady;
+            const traceHeaders = new Headers();
+            for (const [name, value] of Object.entries(req.headers)) {
+              if (value === undefined || name.startsWith(":")) continue;
+              traceHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
+            }
+
+            const continueRequest = (error?: unknown): Promise<void> =>
+              new Promise((resolve, reject) => {
+                const finish = () => {
+                  res.off("finish", finish);
+                  res.off("close", finish);
+                  res.off("error", fail);
+                  resolve();
+                };
+                const fail = (responseError: unknown) => {
+                  res.off("finish", finish);
+                  res.off("close", finish);
+                  res.off("error", fail);
+                  reject(responseError);
+                };
+                res.once("finish", finish);
+                res.once("close", finish);
+                res.once("error", fail);
+                try {
+                  next(error);
+                  if (res.writableFinished || res.destroyed) finish();
+                } catch (nextError) {
+                  fail(nextError);
+                }
+              });
+
+            return traceFrameworkRequest({
+              callback: () => handlePagesRequest(req, res, continueRequest),
+              getStatus: () => res.statusCode,
+              headers: traceHeaders,
+              method: req.method ?? "GET",
+              target: url,
+            });
+          };
+
           server.middlewares.use((req, res, next) => {
-            void handlePagesMiddleware!(req, res, next);
+            void handlePagesMiddleware!(req, res, next).catch(next);
           });
         };
       },
@@ -7083,7 +7189,7 @@ export const loadServerActionClient = ${
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
     // prod-server.ts reads at startup for SVG/security header config.
-    // Write BUILD_ID to dist/server/ so post-build tools (TPR, seed-cache) can
+    // Write BUILD_ID to dist/server/ so post-build tools such as seed-cache can
     // read the build identifier without depending on the prerender manifest.
     // Uses writeBundle (not closeBundle) with a one-time write guard so the file
     // is written exactly once per build regardless of how many environments are

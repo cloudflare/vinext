@@ -141,6 +141,7 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
 
     runWranglerVersionUpload("/tmp/app", {}, execute as never);
     expect(log).not.toHaveBeenCalledWith(`  ${output}`);
+    expect(log).toHaveBeenCalledWith("  Worker version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22");
 
     log.mockClear();
     runWranglerVersionUpload("/tmp/app", { verbose: true }, execute as never);
@@ -163,7 +164,7 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     expect(log).toHaveBeenCalledWith(`  ${output}`);
   });
 
-  it("asks for an initial deploy without CDN pre-warm when the Worker does not exist yet", () => {
+  it("asks for an initial normal deploy when the Worker does not exist yet", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     const execute = vi.fn(() => {
       throw Object.assign(new Error("Command failed"), {
@@ -173,7 +174,7 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
     });
 
     expect(() => runWranglerVersionUpload("/tmp/app", {}, execute as never)).toThrow(
-      "Run `vinext-cloudflare deploy` once without `--experimental-warm-cdn-cache` to create the Worker",
+      "Run `vinext-cloudflare deploy` once normally to create the Worker",
     );
   });
 
