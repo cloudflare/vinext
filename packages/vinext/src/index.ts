@@ -680,7 +680,7 @@ function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFrom
       const resolved = await resolve(specifier, cleanModulePath, { skipSelf: true });
       if (!resolved?.id) continue;
 
-      if (isStylesheetSpecifier(specifier)) {
+      if (isStylesheetSpecifier(specifier) || isStylesheetSpecifier(resolved.id)) {
         const asset = resolvedStylesheetToDevManifestAsset(root, resolved.id);
         if (asset) dependencies.push({ type: "stylesheet", asset });
       } else if (
