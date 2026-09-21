@@ -678,6 +678,7 @@ Instead of wiring up cache handlers imperatively from a worker entry, you can de
 
 - **`kvDataAdapter()`** (`@vinext/cloudflare/cache/kv-data-adapter`) — backs the `"use cache"` data cache with a Workers KV namespace.
 - **`cdnAdapter()`** (`@vinext/cloudflare/cache/cdn-adapter`) — serves page-level ISR from the Cloudflare Workers Cache (`ctx.cache`) instead of from the origin.
+- **`staticAssetsAdapter()`** (`@vinext/cloudflare/cache/static-assets-adapter`) — packages locally prerendered App Router HTML/RSC into Workers Static Assets and serves it through a read-only page cache.
 
 The two fill different slots and can be used together:
 
@@ -708,6 +709,8 @@ The KV data adapter reads `env[binding]` at runtime, so add the matching KV name
 ```
 
 `binding` defaults to `VINEXT_KV_CACHE`, so `kvDataAdapter()` with no options works as long as that's your binding name. Other options: `appPrefix` (namespace cache keys to isolate multiple apps in one KV namespace), `ttlSeconds` (default KV `expirationTtl`, default 30 days), `tagCacheTtlMs` (in-memory tag-invalidation cache TTL, default 5s), and `entryCacheTtlSeconds` (optional KV edge-cache TTL for entry reads; tag markers keep KV's default).
+
+For immutable build output, configure `prerender: true` with `cache: { cdn: staticAssetsAdapter() }`. The adapter copies prerendered HTML, RSC, and metadata responses into `dist/client` and reads them from the `ASSETS` binding at runtime. Writes and invalidations are no-ops; a new deployment replaces the cached responses.
 
 When `cdnAdapter()` is used in a Cloudflare build, vinext emits two Worker
 entrypoints and configures Workers Cache only on the response entrypoint. The

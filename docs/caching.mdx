@@ -81,6 +81,13 @@ This matches Next.js behavior and lets vinext identify the route at build time, 
       <td>A simple persistent cache without Workers Cache</td>
       <td>Requests still reach the Worker and KV is eventually consistent</td>
     </tr>
+    <tr>
+      <td>Static Assets</td>
+      <td>Workers Static Assets</td>
+      <td>Separately configured</td>
+      <td>Immutable sites that should render during the build but still run as a Worker</td>
+      <td>Read-only until the next deployment; runtime writes and invalidations are ignored</td>
+    </tr>
   </tbody>
 </table>
 
@@ -166,6 +173,23 @@ Add the matching namespace to `wrangler.jsonc`:
 
 This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
 
+## Static Assets response cache
+
+For immutable routes, `staticAssetsAdapter()` packages locally prerendered App Router HTML, RSC payloads, and metadata responses into `dist/client`. The Worker reads those artifacts through its `ASSETS` binding:
+
+```ts
+import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";
+
+vinext({
+  prerender: true,
+  cache: {
+    cdn: staticAssetsAdapter(),
+  },
+});
+```
+
+This is deliberately read-only. Cache writes, `revalidatePath()`, and `revalidateTag()` do not change the packaged responses; deploying a new build replaces them. Routes that were not prerendered continue to render normally, but this adapter does not persist their responses. Configure a separate `cache.data` adapter if the app also uses cached data.
+
 ## Cache warming
 
 Cache warming is optional during Cloudflare deploys. With a configured cache adapter, run:
@@ -186,6 +210,7 @@ Only discoverable, cacheable route identities are warmed; dynamic parameters and
 - Choose **Workers Response Store (recommended)** for the most complete Cloudflare caching setup and durable response storage.
 - Choose **Workers Cache + KV** when you specifically want the existing native Workers Cache architecture and accept that responses have no backing store.
 - Choose **KV only** when you want the simplest persistent cache and do not need Workers Cache to serve responses.
+- Choose **Static Assets** when response content is immutable for the lifetime of a deployment and should be produced during the build.
 
 You can run `vinext init --platform=cloudflare` to configure these choices. The generated Vite and Wrangler files are normal source files and can be adjusted later.
 

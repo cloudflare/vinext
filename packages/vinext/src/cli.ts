@@ -68,6 +68,7 @@ import {
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
+  finalizeCacheAdapterPrerenderOutput,
   type VinextCacheConfig,
 } from "./cache/cache-adapters-virtual.js";
 
@@ -738,6 +739,9 @@ async function buildApp() {
       nextConfig: resolvedNextConfig,
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
+    if (resolvedNextConfig.output !== "export") {
+      await finalizeCacheAdapterPrerenderOutput(buildConfigMetadata.cacheConfig, root);
+    }
     await emitPrerenderPathManifest({
       root,
       nextConfig: resolvedNextConfig,

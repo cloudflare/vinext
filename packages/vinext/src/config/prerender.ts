@@ -9,6 +9,8 @@ export {
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
   cacheWarmupStatusSource,
+  hasCacheAdapterPrerenderOutput,
+  finalizeCacheAdapterPrerenderOutput,
   requiresRouteCacheabilityProbeManifest,
   loadVinextCacheConfigFromViteConfig,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,

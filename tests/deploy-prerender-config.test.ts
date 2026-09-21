@@ -126,6 +126,11 @@ function writeProject(prerenderConfig: string | undefined, cacheConfig?: string)
       ...(cacheConfig?.includes("cdnAdapter")
         ? ['import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter";']
         : []),
+      ...(cacheConfig?.includes("staticAssetsAdapter")
+        ? [
+            'import { staticAssetsAdapter } from "../packages/cloudflare/src/cache/static-assets-adapter";',
+          ]
+        : []),
       "",
       "export default defineConfig({",
       `  plugins: [vinext({ ${[
@@ -609,6 +614,20 @@ describe("deploy prerender config wiring", () => {
         root: tmpDir,
         concurrency: undefined,
         nextConfig: expect.objectContaining({ output: "export" }),
+      }),
+    );
+  });
+
+  it("packages local prerender output when the CDN adapter consumes it", async () => {
+    writeProject("true", "{ cdn: staticAssetsAdapter() }");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        root: tmpDir,
+        nextConfig: expect.not.objectContaining({ output: "export" }),
       }),
     );
   });
