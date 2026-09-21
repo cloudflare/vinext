@@ -68,5 +68,6 @@ declare module "virtual:vinext-app-response-entry" {
     ): Promise<Response>;
   };
   export const __cacheabilityManifest: string | null;
+  export function __ensureInstrumentation(): void | Promise<void>;
   export default handler;
 }

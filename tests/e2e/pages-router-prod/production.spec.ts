@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import fs from "node:fs";
 
 /**
  * Production build E2E tests for Pages Router.
@@ -90,6 +91,22 @@ test.describe("Pages Router Production Build", () => {
     expect(response.headers()["content-type"]).toContain("application/json");
     const data = await response.json();
     expect(data).toEqual({ message: "Hello from API!" });
+  });
+
+  test("discovers getStaticPaths after request-time instrumentation", async ({ request }) => {
+    const { prerenderSecret } = JSON.parse(
+      fs.readFileSync("tests/fixtures/pages-basic/dist/server/vinext-server.json", "utf8"),
+    ) as { prerenderSecret: string };
+    const response = await request.get(
+      `${BASE}/__vinext/prerender/pages-static-paths?pattern=%2Fblog%2F%3Aslug&locales=%5B%5D&defaultLocale=`,
+      { headers: { "x-vinext-prerender-secret": prerenderSecret } },
+    );
+
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual({
+      paths: [{ params: { slug: "hello-world" } }, { params: { slug: "getting-started" } }],
+      fallback: false,
+    });
   });
 
   test("404 page for non-existent route", async ({ page }) => {

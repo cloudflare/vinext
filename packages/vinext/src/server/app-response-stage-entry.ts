@@ -1,6 +1,9 @@
 /** Cacheable App response stage. This is the only multi-stage App entry that imports user routes. */
 
-import rscHandler, { __cacheabilityManifest } from "virtual:vinext-app-response-entry";
+import rscHandler, {
+  __cacheabilityManifest,
+  __ensureInstrumentation,
+} from "virtual:vinext-app-response-entry";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
@@ -39,6 +42,7 @@ export async function invokeCacheFunction(
   platformCtx: ExecutionContextLike | undefined,
   dispatchRequestStage: VinextRequestStageTransport,
 ): Promise<void> {
+  await __ensureInstrumentation();
   const [{ loadServerAction }, { invokeCacheFunction: invokeRegisteredCacheFunction }] =
     await Promise.all([
       import("@vitejs/plugin-rsc/core/rsc"),

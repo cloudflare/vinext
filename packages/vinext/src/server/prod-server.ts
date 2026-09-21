@@ -1957,7 +1957,8 @@ function isPagesServerEntryPageRoute(value: unknown): value is PagesServerEntryP
 
   if (!("module" in value) || value.module === undefined) return true;
   const pageModule = value.module;
-  if (!pageModule || typeof pageModule !== "object") return false;
+  if (pageModule === null) return true;
+  if (typeof pageModule !== "object") return false;
 
   return !("getStaticPaths" in pageModule) || typeof pageModule.getStaticPaths === "function";
 }
@@ -2056,8 +2057,18 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Build the static file metadata cache at startup (same as App Router).
   const staticCache = await StaticFileCache.create(clientDir);
 
-  const handleRequest = (req: IncomingMessage, res: ServerResponse): Promise<void> =>
-    traceFrameworkRequest({
+  const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      await ensureInstrumentation();
+    } catch (error) {
+      console.error("[vinext] Instrumentation error:", error);
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end("Internal Server Error");
+      }
+      return;
+    }
+    return traceFrameworkRequest({
       callback: async () => {
         await handleRequestImpl(req, res);
         await waitForNodeResponseCompletion(res);
@@ -2067,9 +2078,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       method: req.method ?? "GET",
       target: req.url ?? "/",
     });
+  };
 
   const handleRequestImpl = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    await ensureInstrumentation();
     const rawUrl = req.url ?? "/";
     const rawPagesPathnameBeforeNormalize = rawUrl.split("?")[0];
 

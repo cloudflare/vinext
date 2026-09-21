@@ -21,6 +21,9 @@ import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-resp
 import { setFrameworkRequestRoute } from "../packages/vinext/src/server/request-tracing.js";
 
 const stages = vi.hoisted(() => ({
+  ensureInstrumentation: vi.fn(),
+  invokeCacheFunction: vi.fn(),
+  loadServerAction: vi.fn(),
   renderFullRequest: vi.fn(),
   registerCacheAdapters: vi.fn(),
   registerImageOptimizer: vi.fn(),
@@ -37,7 +40,16 @@ vi.mock("virtual:vinext-image-adapters", () => ({
 
 vi.mock("virtual:vinext-app-response-entry", () => ({
   __cacheabilityManifest: null,
+  __ensureInstrumentation: stages.ensureInstrumentation,
   default: { handleResponseStage: stages.renderResponse },
+}));
+
+vi.mock("@vitejs/plugin-rsc/core/rsc", () => ({
+  loadServerAction: stages.loadServerAction,
+}));
+
+vi.mock("vinext/shims/cache-callable-runtime", () => ({
+  invokeCacheFunction: stages.invokeCacheFunction,
 }));
 
 vi.mock("virtual:vinext-rsc-entry", () => ({
@@ -64,14 +76,36 @@ const notFoundStage = {
 describe("App Worker response stage", () => {
   beforeEach(() => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    stages.ensureInstrumentation.mockReset();
+    stages.invokeCacheFunction.mockReset();
+    stages.loadServerAction.mockReset();
     stages.registerCacheAdapters.mockReset();
     stages.registerImageOptimizer.mockReset();
     stages.renderFullRequest.mockReset();
     stages.renderResponse.mockReset();
   });
 
-  it("exposes targeted cache-function invocation", () => {
-    expect(invokeCacheFunction).toBeTypeOf("function");
+  it("initializes instrumentation before targeted cache-function invocation", async () => {
+    await invokeCacheFunction(
+      {
+        encryptedArgs: "[]",
+        referenceId: "test#cached",
+        rootParams: {},
+        softTags: [],
+      },
+      undefined,
+      undefined,
+      async () => new Response(),
+    );
+
+    expect(stages.ensureInstrumentation).toHaveBeenCalledOnce();
+    expect(stages.invokeCacheFunction).toHaveBeenCalledWith(
+      expect.objectContaining({ referenceId: "test#cached" }),
+      stages.loadServerAction,
+    );
+    expect(stages.ensureInstrumentation.mock.invocationCallOrder[0]).toBeLessThan(
+      stages.invokeCacheFunction.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("validates readiness from inside the App response stage", async () => {
