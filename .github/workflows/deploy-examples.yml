@@ -372,6 +372,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           VINEXT_CDN_WARM_DEBUG: "1"
+          PROMOTE_ON_WARM_ERROR: ${{ matrix.example.cache_backend == 'workers-cache' }}
           WARM_CDN_CERTIFY: ${{ matrix.example.cache_backend == 'response-store' }}
           WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
@@ -386,6 +387,12 @@ jobs:
           # the live E2E below, avoiding CDN propagation races in this deploy step.
           if [[ "$WARM_CDN_CERTIFY" == "true" ]]; then
             args+=(--warm-cdn-certify)
+          fi
+          # Workers Cache can transiently omit CF-Cache-Status for an otherwise
+          # private response while the staged version propagates. Promote this
+          # temporary test Worker so the live E2E can make the authoritative check.
+          if [[ "$PROMOTE_ON_WARM_ERROR" == "true" ]]; then
+            args+=(--dangerously-promote-on-cdn-warm-error)
           fi
           vp exec vinext-cloudflare deploy "${args[@]}"
 
