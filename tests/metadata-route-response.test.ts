@@ -214,6 +214,39 @@ describe("handleMetadataRouteRequest", () => {
     expect(response?.headers.has("x-vinext-metadata-route-cache")).toBe(false);
   });
 
+  it("rejects excluded dynamic metadata images before reading ISR", async () => {
+    let cacheReads = 0;
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/drafts/private/twitter-image",
+      isrRouteKey: (pathname) => pathname,
+      async isrGet() {
+        cacheReads++;
+        throw new Error("excluded metadata routes must not read cached content");
+      },
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "twitter-image",
+          isDynamic: true,
+          filePath: "/tmp/app/drafts/[slug]/twitter-image.tsx",
+          routePrefix: "/drafts/[slug]",
+          routeSegments: ["drafts", "[slug]"],
+          servedUrl: "/drafts/[slug]/twitter-image",
+          patternParts: ["drafts", ":slug", "twitter-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams: () => [{ slug: "public" }],
+            default: () => new Response("private image"),
+          },
+        },
+      ],
+    });
+
+    expect(response?.status).toBe(404);
+    expect(cacheReads).toBe(0);
+  });
+
   it("does not add an outer metadata cache around shared use-cache functions in development", async () => {
     let metadataCalls = 0;
     let outerReads = 0;

@@ -173,6 +173,29 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("s-maxage=60");
     expect(cc).toContain("stale-while-revalidate");
   });
+
+  test("dynamic metadata images honor dynamicParams=false", async ({ request }) => {
+    const publicImage = await request.get(
+      `${baseUrl()}/metadata-static-params/public-post/opengraph-image`,
+    );
+    expect(publicImage.status()).toBe(200);
+    expect(await publicImage.text()).toBe("PUBLIC");
+
+    const encodedPublicImage = await request.get(
+      `${baseUrl()}/metadata-static-params/public%20post/opengraph-image`,
+    );
+    expect(encodedPublicImage.status()).toBe(200);
+    expect(await encodedPublicImage.text()).toBe("PUBLIC ENCODED");
+
+    const privatePage = await request.get(`${baseUrl()}/metadata-static-params/unlisted-draft`);
+    expect(privatePage.status()).toBe(404);
+
+    const privateImage = await request.get(
+      `${baseUrl()}/metadata-static-params/unlisted-draft/opengraph-image`,
+    );
+    expect(privateImage.status()).toBe(404);
+    expect(await privateImage.text()).not.toContain("UNLISTED_METADATA");
+  });
 });
 
 /**

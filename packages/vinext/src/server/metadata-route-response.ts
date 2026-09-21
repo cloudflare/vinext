@@ -41,6 +41,7 @@ import { buildPageCacheTags } from "./implicit-tags.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { VINEXT_METADATA_ROUTE_CACHE_HEADER } from "./headers.js";
 import { isMetadataResponseCacheable } from "./metadata-route-cache-policy.js";
+import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;
@@ -82,7 +83,9 @@ type MatchedMetadataRoute = {
 
 type MetadataRouteFunctions = {
   defaultExport: MetadataRouteFunction | null;
+  dynamicParams: boolean | undefined;
   generateImageMetadata: MetadataRouteFunction | null;
+  generateStaticParams: MetadataRouteFunction | null;
   generateSitemaps: MetadataRouteFunction | null;
   hasGeneratedImageMetadata: boolean;
 };
@@ -184,7 +187,14 @@ function getMetadataRouteFunctions(route: MetadataRuntimeRoute): MetadataRouteFu
       : null;
   const functions = {
     defaultExport: route.isDynamic ? readFunction(route.module, "default") : null,
+    dynamicParams:
+      route.isDynamic && typeof route.module?.dynamicParams === "boolean"
+        ? route.module.dynamicParams
+        : undefined,
     generateImageMetadata,
+    generateStaticParams: route.isDynamic
+      ? readFunction(route.module, "generateStaticParams")
+      : null,
     generateSitemaps:
       route.type === "sitemap" && route.isDynamic
         ? readFunction(route.module, "generateSitemaps")
@@ -758,6 +768,19 @@ export async function handleMetadataRouteRequest(
     const match = matchMetadataRoute(route, options.cleanPathname, functions, getUrlParts);
     if (!match) {
       continue;
+    }
+
+    if (route.isDynamic && isImageMetadataRoute(route) && functions.dynamicParams === false) {
+      const validationParams = { ...match.params };
+      canonicalizeAppPageParams(validationParams);
+      const { validateAppPageDynamicParams } = await import("./app-page-request.js");
+      const dynamicParamsResponse = await validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams: functions.generateStaticParams,
+        isDynamicRoute: Boolean(route.patternParts),
+        params: validationParams,
+      });
+      if (dynamicParamsResponse) return dynamicParamsResponse;
     }
 
     const render = async (): Promise<RenderedMetadataRoute> => {
