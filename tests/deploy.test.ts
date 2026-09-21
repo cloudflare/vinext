@@ -821,9 +821,33 @@ describe("parseDeployArgs", () => {
     const help = formatDeployHelp();
     expect(help).toContain("--verbose");
     expect(help).toContain("Abort when cacheability probing makes no progress");
+    expect(help).toContain("--experimental-traffic-aware-warming");
+    expect(help).toContain("Legacy --experimental-tpr and --tpr-* aliases remain supported");
   });
 
-  it("parses numeric TPR flags from string values", () => {
+  it("parses traffic-aware warming flags", () => {
+    const parsed = parseDeployArgs([
+      "--tpr-coverage",
+      "10",
+      "--tpr-limit",
+      "20",
+      "--tpr-window",
+      "30",
+      "--experimental-traffic-aware-warming",
+      "--traffic-aware-coverage",
+      "95",
+      "--traffic-aware-limit",
+      "500",
+      "--traffic-aware-window",
+      "48",
+    ]);
+    expect(parsed.experimentalTPR).toBe(true);
+    expect(parsed.tprCoverage).toBe(95);
+    expect(parsed.tprLimit).toBe(500);
+    expect(parsed.tprWindow).toBe(48);
+  });
+
+  it("keeps the old TPR flags as aliases", () => {
     const parsed = parseDeployArgs([
       "--experimental-tpr",
       "--tpr-coverage",

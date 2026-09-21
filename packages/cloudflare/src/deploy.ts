@@ -301,6 +301,11 @@ const deployArgOptions = {
   "warm-cdn-no-promote": { type: "boolean", default: false },
   "warm-cdn-promotion-delay": { type: "string" },
   "warm-cdn-include-fallbacks": { type: "boolean", default: false },
+  "experimental-traffic-aware-warming": { type: "boolean", default: false },
+  "traffic-aware-coverage": { type: "string" },
+  "traffic-aware-limit": { type: "string" },
+  "traffic-aware-window": { type: "string" },
+  // Backwards-compatible aliases.
   "experimental-tpr": { type: "boolean", default: false },
   "tpr-coverage": { type: "string" },
   "tpr-limit": { type: "string" },
@@ -426,10 +431,19 @@ export function parseDeployArgs(args: string[]) {
             values["warm-cdn-promotion-delay"],
           ),
     warmCdnIncludeFallbacks: values["warm-cdn-include-fallbacks"],
-    experimentalTPR: values["experimental-tpr"],
-    tprCoverage: parseIntArg("tpr-coverage", values["tpr-coverage"]),
-    tprLimit: parseIntArg("tpr-limit", values["tpr-limit"]),
-    tprWindow: parseIntArg("tpr-window", values["tpr-window"]),
+    experimentalTPR: values["experimental-traffic-aware-warming"] || values["experimental-tpr"],
+    tprCoverage: parseIntArg(
+      "traffic-aware-coverage",
+      values["traffic-aware-coverage"] ?? values["tpr-coverage"],
+    ),
+    tprLimit: parseIntArg(
+      "traffic-aware-limit",
+      values["traffic-aware-limit"] ?? values["tpr-limit"],
+    ),
+    tprWindow: parseIntArg(
+      "traffic-aware-window",
+      values["traffic-aware-window"] ?? values["tpr-window"],
+    ),
   };
 }
 

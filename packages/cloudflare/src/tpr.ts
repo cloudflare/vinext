@@ -10,8 +10,9 @@
  *   3. Query zone analytics (GraphQL) for top pages by request count
  *   4. Return the ranked candidates for standard route resolution and selection
  *
- * TPR is an experimental feature enabled via --experimental-tpr. It
- * gracefully skips when no custom domain, API token, or traffic data exists.
+ * TPR is an experimental feature enabled via
+ * --experimental-traffic-aware-warming. It gracefully skips when no custom
+ * domain, API token, or traffic data exists.
  */
 
 import { parseWranglerConfig } from "./wrangler-config.js";

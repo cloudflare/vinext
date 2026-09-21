@@ -68,15 +68,18 @@ export function formatDeployHelp(): string {
     -h, --help               Show this help
 
   Experimental:
-    --experimental-tpr               Select CDN pre-warm routes from traffic
-    --tpr-coverage <pct>             Traffic coverage target, 0-100 (default: 90)
-    --tpr-limit <count>              Hard cap on selected routes (default: 1000)
-    --tpr-window <hours>             Analytics lookback window in hours (default: 24)
+    --experimental-traffic-aware-warming
+                                     Select CDN pre-warm routes from traffic
+    --traffic-aware-coverage <pct>   Traffic coverage target, 0-100 (default: 90)
+    --traffic-aware-limit <count>    Hard cap on selected routes (default: 1000)
+    --traffic-aware-window <hours>   Analytics lookback window in hours (default: 24)
 
-  TPR uses Cloudflare zone analytics to select the highest-traffic routes, then
-  feeds those routes into the same staged CDN pre-warming flow used by
-  --experimental-warm-cdn-cache. It requires a custom domain and a
-  CLOUDFLARE_API_TOKEN with Zone Analytics read permission.
+  Traffic-aware warming uses Cloudflare zone analytics to select the
+  highest-traffic routes, then feeds those routes into the same staged CDN
+  pre-warming flow used by --experimental-warm-cdn-cache. It requires a custom
+  domain and a CLOUDFLARE_API_TOKEN with Zone Analytics read permission.
+
+  Legacy --experimental-tpr and --tpr-* aliases remain supported.
 
   Workers Cache automatically uses tiered caching. Warmed entries can therefore
   be reused outside the data center reached by the warmup request after cache
@@ -95,9 +98,12 @@ export function formatDeployHelp(): string {
     vinext-cloudflare deploy --experimental-warm-cdn-cache              Warm build-discovered paths during version deploy (experimental)
     vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://example.com
                                                                           Warm an explicit production origin
-    vinext-cloudflare deploy --experimental-tpr                        Enable TPR during deploy
-    vinext-cloudflare deploy --experimental-tpr --tpr-coverage 95      Cover 95% of traffic
-    vinext-cloudflare deploy --experimental-tpr --tpr-limit 500        Cap at 500 routes
+    vinext-cloudflare deploy --experimental-traffic-aware-warming
+                                                                          Enable traffic-aware warming
+    vinext-cloudflare deploy --experimental-traffic-aware-warming --traffic-aware-coverage 95
+                                                                          Cover 95% of traffic
+    vinext-cloudflare deploy --experimental-traffic-aware-warming --traffic-aware-limit 500
+                                                                          Cap at 500 routes
 `;
 }
 
