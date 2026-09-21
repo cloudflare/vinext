@@ -28,6 +28,7 @@ import {
   createServer,
   resolveConfig,
   type PluginOption,
+  type UserConfig,
   type ViteDevServer,
 } from "vite";
 import fsp from "node:fs/promises";
@@ -197,13 +198,17 @@ describe("optimizeDeps: JSX in plain .js files", () => {
   it("configures Pages Router client optimizers before cold startup", async () => {
     const tmpDir = await setupPagesProject();
     try {
-      const getConfig = async (plugins: PluginOption[]): Promise<VinextConfigResult> =>
+      const getConfig = async (
+        plugins: PluginOption[],
+        build?: UserConfig["build"],
+      ): Promise<VinextConfigResult> =>
         (await resolveConfig(
           {
             root: tmpDir,
             configFile: false,
             logLevel: "silent",
             plugins: [vinext({ appDir: tmpDir }), ...plugins],
+            build,
             optimizeDeps: { include: ["top-level-user-dependency"] },
             environments: {
               client: { optimizeDeps: { include: ["client-user-dependency"] } },
@@ -215,6 +220,11 @@ describe("optimizeDeps: JSX in plain .js files", () => {
 
       for (const [label, config] of [
         ["plain", await getConfig([])],
+        [
+          "plain with explicit build input",
+          await getConfig([], { rolldownOptions: { input: path.join(tmpDir, "pages/index.js") } }),
+        ],
+        ["plain with SSR build config", await getConfig([], { ssr: true })],
         ["cloudflare", await getConfig([{ name: "vite-plugin-cloudflare" }])],
       ] as const) {
         const clientOptimizeDeps = config.environments?.client?.optimizeDeps;
