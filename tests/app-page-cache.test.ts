@@ -26,6 +26,8 @@ import {
   markClientTraceMetadataBlock,
   renderClientTraceMetadataTags,
 } from "../packages/vinext/src/server/client-trace-metadata.js";
+import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -1244,6 +1246,47 @@ describe("app page cache helpers", () => {
     await expect(response.text()).resolves.toContain("encoded catch-all");
     expect(isrSet).not.toHaveBeenCalled();
     expect(waitUntil).not.toHaveBeenCalled();
+  });
+
+  it("keeps config Link values before framework preloads on bypassed HTML", async () => {
+    const rendered = new Response("<h1>encoded catch-all</h1>", {
+      headers: { Link: '</framework.woff2>; rel="preload"; as="font"' },
+    });
+    markFrameworkLinkHeaders(rendered.headers, rendered.headers.get("link"));
+
+    const response = finalizeAppPageHtmlCacheResponse(rendered, {
+      bypassInterceptionContextCache: true,
+      capturedRscDataPromise: null,
+      cleanPathname: "/about",
+      consumeDynamicUsage: () => false,
+      getPageTags: () => ["/about"],
+      isrHtmlKey: (pathname) => `html:${pathname}`,
+      isrRscKey: (pathname) => `rsc:${pathname}`,
+      isrSet: vi.fn(),
+      revalidateSeconds: 3600,
+      linkHeader: rendered.headers.get("link"),
+    });
+
+    await finalizeAppRscResponse(response, new Request("https://example.com/about"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: {
+        cookies: {},
+        headers: new Headers(),
+        host: "example.com",
+        query: new URLSearchParams(),
+      },
+    });
+
+    expect(response.headers.get("link")).toBe(
+      '</config>; rel="describedby", </framework.woff2>; rel="preload"; as="font"',
+    );
   });
 
   it("keeps request trace metadata on the live response but not its shared cache copy", async () => {

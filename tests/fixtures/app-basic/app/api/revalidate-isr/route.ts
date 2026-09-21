@@ -10,6 +10,7 @@ const RESETTABLE_ISR_PATHS = new Set([
   "/route-cache-identity/about",
   "/route-cache-identity/nested/about",
   "/route-handler-cache-identity/about",
+  "/route-handler-cache-identity/dynamic/alpha",
 ]);
 
 export async function GET(request: Request) {

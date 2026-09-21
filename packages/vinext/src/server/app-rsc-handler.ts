@@ -2161,14 +2161,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   if (cleanPathnameIsRequestPathname && options.matchRequestRoute) {
     const cachePathMatch = options.matchRoute(cleanPathname);
     if (
+      requestCleanPathname !== cleanPathname ||
       !cachePathMatch ||
       cachePathMatch.route.pattern !== route.pattern ||
       !haveSamePageParams(cachePathMatch.params, params)
     ) {
-      // The raw request selected this route, while the normalized pathname used
-      // by ISR/CDN identity selects another route (or different params). Reuse
-      // the existing internal bypass channel so every local and split response
-      // stage skips shared reads/writes without changing the worker protocol.
+      // The raw request spelling remains observable to Route Handlers, while
+      // ISR/CDN identity uses the normalized pathname. Reuse the existing
+      // internal bypass channel when either the spelling or semantic route
+      // differs so every local and split response stage skips shared reads and
+      // writes without changing the worker protocol.
       bypassInterceptionContextCache = true;
       setInterceptionResponseUncacheable(true);
     }

@@ -1617,6 +1617,41 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("Cache-Control")).toContain("no-store");
   });
 
+  it("bypasses shared caches when raw and normalized paths share route params", async () => {
+    const route = createPageRoute({
+      isDynamic: true,
+      params: ["slug"],
+      pattern: "/:slug+",
+      routeSegments: ["[...slug]"],
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("encoded route")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: (pathname) =>
+        pathname === "/%61bout" ? { params: { slug: ["about"] }, route } : null,
+      matchRoute: (pathname) =>
+        pathname === "/about" ? { params: { slug: ["about"] }, route } : null,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/%61bout"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      bypassInterceptionContextCache: true,
+      cleanPathname: "/about",
+      routePattern: "/:slug+",
+    });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+  });
+
   it.each([
     ["Cache-Control", "private, no-store"],
     ["CDN-Cache-Control", "no-cache"],

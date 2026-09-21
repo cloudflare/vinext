@@ -282,11 +282,13 @@ export function finalizeAppPageHtmlCacheResponse(
     applyUncacheableVariantNoStoreHeaders(headers, {
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
-    return new Response(response.body, {
+    const clientResponse = new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
       headers,
     });
+    markFrameworkLinkHeaders(clientResponse.headers, options.linkHeader);
+    return clientResponse;
   }
   if (!response.body) {
     return response;

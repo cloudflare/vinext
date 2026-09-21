@@ -223,11 +223,32 @@ test.describe("App Router ISR", () => {
 
     const attacker = await request.get(`${baseUrl()}/route-handler-cache-identity/%61bout`);
     expect(attacker.status()).toBe(200);
-    expect(await attacker.text()).toBe("CACHE_IDENTITY_ROUTE_CATCH_ALL:about");
+    expect(await attacker.text()).toBe(
+      "CACHE_IDENTITY_ROUTE_CATCH_ALL:about:/route-handler-cache-identity/%61bout",
+    );
     expect(attacker.headers()["cache-control"]).toContain("no-store");
 
     const victim = await waitForCacheHit(request, staticPath);
     expect(await victim.text()).toBe("CACHE_IDENTITY_STATIC_ROUTE_HANDLER");
+  });
+
+  test("does not share differently spelled paths for one dynamic route handler", async ({
+    request,
+  }) => {
+    const decodedPath = "/route-handler-cache-identity/dynamic/alpha";
+    await resetIsrPath(request, decodedPath);
+
+    const encoded = await request.get(`${baseUrl()}/route-handler-cache-identity/dynamic/%61lpha`);
+    expect(encoded.status()).toBe(200);
+    expect(await encoded.text()).toBe(
+      "CACHE_IDENTITY_ROUTE_CATCH_ALL:dynamic:alpha:/route-handler-cache-identity/dynamic/%61lpha",
+    );
+    expect(encoded.headers()["cache-control"]).toContain("no-store");
+
+    const decoded = await waitForCacheHit(request, decodedPath);
+    expect(await decoded.text()).toBe(
+      "CACHE_IDENTITY_ROUTE_CATCH_ALL:dynamic:alpha:/route-handler-cache-identity/dynamic/alpha",
+    );
   });
 });
 
