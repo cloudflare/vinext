@@ -883,11 +883,13 @@ test("refresh and purge select entries from their stored tags", async () => {
   });
 
   assert.deepEqual((await metadata())[0].cacheTags, ["Original", "Shared"]);
+  assert.equal(await metadataRowCount("entry_tags"), 2);
   assert.deepEqual((await refreshSelectors({ tags: ["ORIGINAL"] })).json, {
     backingStoreUpdated: true,
     edgePurgeAccepted: false,
   });
   assert.deepEqual((await metadata())[0].cacheTags, ["Replacement"]);
+  assert.equal(await metadataRowCount("entry_tags"), 1);
   assert.deepEqual((await refreshSelectors({ tags: ["original"] })).json, {
     backingStoreUpdated: false,
     edgePurgeAccepted: false,
@@ -895,6 +897,7 @@ test("refresh and purge select entries from their stored tags", async () => {
 
   await purge({ tags: ["REPLACEMENT"] });
   assert.equal((await read("/tag-index")).status, 404);
+  assert.equal(await metadataRowCount("entry_tags"), 0);
   assert.ok((await (await metadataStub()).getTagExpiration(["replacement"])) > 0);
 });
 
@@ -934,10 +937,12 @@ test("the internal purge tag is first and large tag sets remain selectable", asy
     (_, index) => `cache-tag-${String(index).padStart(4, "0")}-abcdefgh`,
   );
   await put("/many-cache-tags", "tagged", { tags });
+  assert.equal(await metadataRowCount("entry_tags"), 1_001);
 
   await purge({ tags: [tags.at(-1)!] });
   assert.equal((await read("/many-cache-tags")).status, 404);
   assert.equal(await (await read("/cache-tag-order")).text(), "tagged");
+  assert.equal(await metadataRowCount("entry_tags"), 1);
 });
 
 test("purge supports tags, path prefixes, and purgeEverything", async () => {
@@ -1037,18 +1042,20 @@ test("a broad purge only acknowledges tombstones in its snapshot", async () => {
 });
 
 test("a failed R2 publication can be fenced with a newer tombstone", async () => {
-  await put("/failed-publication", "possibly-committed");
+  await put("/failed-publication", "possibly-committed", { tags: ["failed-publication"] });
   await put("/unrelated-pending-tombstone", "unrelated", { tags: ["unrelated"] });
   const entry = (await metadata()).find(({ cacheKey }) => cacheKey === "/failed-publication");
   assert.ok(entry);
   const stub = await metadataStub();
   await stub.purgeMatching({ tags: ["unrelated"] });
+  assert.equal(await metadataRowCount("entry_tags"), 1);
 
   const reconciled = await stub.invalidatePublishedRevision(entry.keyHash, entry.activeRevision);
 
   assert.deepEqual(reconciled.failures, []);
   assert.equal(reconciled.purged.length, 1);
   assert.equal(reconciled.pending[0].keyHash, entry.keyHash);
+  assert.equal(await metadataRowCount("entry_tags"), 0);
   await stub.markTombstonesEdgePurged(reconciled.pending);
   assert.deepEqual(await metadata(), []);
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
@@ -1444,6 +1451,21 @@ test("the previous metadata schema is upgraded in place", async () => {
                     tag TEXT PRIMARY KEY,
                     invalidated_at INTEGER NOT NULL
                   ) WITHOUT ROWID;
+                  CREATE TABLE entries (
+                    key_hash TEXT PRIMARY KEY,
+                    cache_key TEXT NOT NULL,
+                    active_revision INTEGER,
+                    latest_revision INTEGER NOT NULL,
+                    object_key TEXT,
+                    status_text TEXT,
+                    response_headers TEXT,
+                    fresh_until INTEGER,
+                    swr_until INTEGER,
+                    revalidator_id TEXT,
+                    revalidator_args TEXT,
+                    cache_tags TEXT,
+                    tombstoned INTEGER NOT NULL DEFAULT 0
+                  );
                   CREATE TABLE metadata_schema_migrations (version INTEGER PRIMARY KEY);
                   INSERT INTO metadata_schema_migrations (version) VALUES (1);
                   CREATE TABLE metadata_state (
@@ -1466,6 +1488,9 @@ test("the previous metadata schema is upgraded in place", async () => {
               seed() {
                 this.ctx.storage.sql.exec(
                   "INSERT INTO tag_invalidations (tag, invalidated_at) VALUES ('old-tag', 123)"
+                );
+                this.ctx.storage.sql.exec(
+                  "INSERT INTO entries (key_hash, cache_key, active_revision, latest_revision, object_key, status_text, response_headers, fresh_until, swr_until, cache_tags, tombstoned) VALUES ('legacy-entry', '/legacy-entry', 1, 1, 'legacy-object', '', '[]', 1, 1, json_array('Legacy-Entry-Tag', 'ÜBER'), 0)"
                 );
               }
             }
@@ -1490,6 +1515,7 @@ test("the previous metadata schema is upgraded in place", async () => {
       compatibilityFlags: ["nodejs_compat"],
       resourcePersistencePath: persistencePath,
       unsafeEphemeralDurableObjects: true,
+      unsafeInspectDurableObjects: true,
       workers: [
         {
           name: "migration-worker",
@@ -1503,7 +1529,7 @@ test("the previous metadata schema is upgraded in place", async () => {
           r2Buckets: { CACHE_BODIES: "migration-test" },
           bindings: {
             CF_VERSION_METADATA: {
-              id: metadataName,
+              id: versionId,
               tag: "test",
               timestamp: "2026-09-04T00:00:00Z",
             },
@@ -1511,23 +1537,51 @@ test("the previous metadata schema is upgraded in place", async () => {
         },
       ],
     });
-    const upgradedNamespace = await upgraded.getDurableObjectNamespace(
-      "CACHE_METADATA",
+    const purgeResponse = await upgraded.dispatchFetch("https://user.test/admin/purge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags: ["ÜBER", "new-tag"] }),
+    });
+    assert.equal(purgeResponse.status, 200);
+    assert.deepEqual(await purgeResponse.json(), {
+      backingStoreUpdated: true,
+      edgePurgeAccepted: false,
+    });
+    const storage = await upgraded.unsafeGetDurableObjectStorage(
       "migration-worker",
+      "CacheMetadata",
+      { name: metadataName },
     );
-    const stub = upgradedNamespace.getByName(metadataName) as any;
-    const reservation = await stub.reserveWrite(
-      "migrated-write",
-      "/migrated-write",
-      "runtime-cache/poc-v2/migrated-write",
-      Date.now(),
+    assert.deepEqual(
+      await storage.exec("SELECT version FROM metadata_schema_migrations ORDER BY version"),
+      [
+        { version: 1 },
+        { version: 2 },
+        { version: 3 },
+        { version: 4 },
+        { version: 5 },
+        { version: 6 },
+      ],
     );
-    const purge = await stub.purgeMatching({ tags: ["new-tag"] });
-    await stub.markTombstonesEdgePurgedThrough(purge.tombstoneSequence);
-
-    assert.ok(reservation.objectKey);
-    assert.equal(await stub.getTagExpiration(["old-tag"]), 123);
-    assert.ok((await stub.getTagExpiration(["new-tag"])) > 123);
+    assert.deepEqual(await storage.exec("SELECT tag, key_hash FROM entry_tags"), []);
+    assert.deepEqual(
+      await storage.exec("SELECT tombstoned FROM entries WHERE key_hash = ?", "legacy-entry"),
+      [{ tombstoned: 1 }],
+    );
+    assert.deepEqual(
+      await storage.exec("SELECT r2_complete, edge_purge_complete FROM pending_r2_tombstones"),
+      [{ edge_purge_complete: 0, r2_complete: 1 }],
+    );
+    const invalidations = await storage.exec(
+      "SELECT tag, invalidated_at FROM tag_invalidations WHERE tag IN ('old-tag', 'new-tag') ORDER BY tag",
+    );
+    assert.equal(invalidations[0]?.tag, "new-tag");
+    assert.ok(Number(invalidations[0]?.invalidated_at) > 123);
+    assert.deepEqual(invalidations[1], { invalidated_at: 123, tag: "old-tag" });
+    assert.deepEqual(
+      await storage.exec("SELECT invalidation_sequence, publishable FROM pending_objects"),
+      [],
+    );
   } finally {
     await legacy?.dispose();
     await upgraded?.dispose();
