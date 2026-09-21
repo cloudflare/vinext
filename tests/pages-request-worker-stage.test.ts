@@ -40,6 +40,7 @@ import {
 const mocks = vi.hoisted(() => ({
   authorizeOnDemandRevalidate: vi.fn<(value: string | null) => boolean>(() => false),
   configHeaders: [] as Array<Record<string, unknown>>,
+  ensureInstrumentation: vi.fn(),
   matchApiRoute: vi.fn((url: string) =>
     url === "/api/hello"
       ? { route: { dataKind: "dynamic", isDynamic: false, pattern: "/api/hello" } }
@@ -91,6 +92,7 @@ vi.mock("virtual:vinext-image-adapters", () => ({
 vi.mock("virtual:vinext-cacheability-manifest", () => ({ default: null }));
 
 vi.mock("virtual:vinext-pages-request-entry", () => ({
+  __ensureInstrumentation: mocks.ensureInstrumentation,
   authorizeOnDemandRevalidate: mocks.authorizeOnDemandRevalidate,
   buildId: "request-build",
   hasMiddleware: false,
@@ -125,6 +127,7 @@ describe("Pages Worker request stage", () => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
     mocks.authorizeOnDemandRevalidate.mockReset();
     mocks.authorizeOnDemandRevalidate.mockReturnValue(false);
+    mocks.ensureInstrumentation.mockReset();
     mocks.matchApiRoute.mockReset();
     mocks.matchPageRoute.mockClear();
     mocks.configHeaders.length = 0;
@@ -316,6 +319,7 @@ describe("Pages Worker request stage", () => {
     );
 
     expect(response.status).toBe(204);
+    expect(mocks.ensureInstrumentation).toHaveBeenCalledOnce();
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.any(Request),
       {
