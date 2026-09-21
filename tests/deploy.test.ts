@@ -643,7 +643,7 @@ describe("runWranglerKVBulkPut", () => {
         env: "staging",
         pairs: [
           {
-            key: "cache:app:build:/about:html",
+            key: "cache:app:v2:build:/about:html",
             value: '{"value":{"kind":"APP_PAGE"}}',
             expiration_ttl: 86400,
             metadata: { tags: ["/about"] },
@@ -671,7 +671,7 @@ describe("runWranglerKVBulkPut", () => {
     expect(observed?.[2]).toMatchObject({ cwd: tmpDir, shell: false, stdio: "inherit" });
     expect(bulkFileContent).toEqual([
       {
-        key: "cache:app:build:/about:html",
+        key: "cache:app:v2:build:/about:html",
         value: '{"value":{"kind":"APP_PAGE"}}',
         expiration_ttl: 86400,
         metadata: { tags: ["/about"] },
@@ -694,7 +694,7 @@ describe("runWranglerKVBulkPut", () => {
       {
         binding: "VINEXT_KV_CACHE",
         pairs: Array.from({ length: 26 }, (_, i) => ({
-          key: `cache:app:build:/route-${i}:html`,
+          key: `cache:app:v2:build:/route-${i}:html`,
           value: String(i),
         })),
         tempDir: tmpDir,
@@ -706,12 +706,12 @@ describe("runWranglerKVBulkPut", () => {
     expect(bulkFileContents).toHaveLength(2);
     expect(bulkFileContents).toEqual([
       Array.from({ length: 25 }, (_, i) => ({
-        key: `cache:app:build:/route-${i}:html`,
+        key: `cache:app:v2:build:/route-${i}:html`,
         value: String(i),
       })),
       [
         {
-          key: "cache:app:build:/route-25:html",
+          key: "cache:app:v2:build:/route-25:html",
           value: "25",
         },
       ],

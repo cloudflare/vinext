@@ -368,7 +368,8 @@ export function appIsrCacheKey(
   suffix: string,
   buildId = process.env.__VINEXT_BUILD_ID,
 ): string {
-  const prefix = buildId ? `app:${buildId}` : "app";
+  // Keep incompatible App cache identities unreachable even when generateBuildId is stable.
+  const prefix = buildId ? `app:v2:${buildId}` : "app:v2";
   return buildCacheKey(prefix, pathname, suffix);
 }
 

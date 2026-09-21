@@ -188,20 +188,41 @@ describe("App Router ISR cache key primitives", () => {
   it("builds separate html, rsc, and route keys from the normalized pathname", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
-    expect(appIsrHtmlKey("/about/")).toBe("app:/about:html");
-    expect(appIsrRscKey("/about/")).toBe("app:/about:rsc");
-    expect(appIsrRouteKey("/api/feed")).toBe("app:/api/feed:route");
-    expect(appIsrRouteKey("/api/feed/")).toBe("app:/api/feed:route:trailing-slash");
+    expect(appIsrHtmlKey("/about/")).toBe("app:v2:/about:html");
+    expect(appIsrRscKey("/about/")).toBe("app:v2:/about:rsc");
+    expect(appIsrRouteKey("/api/feed")).toBe("app:v2:/api/feed:route");
+    expect(appIsrRouteKey("/api/feed/")).toBe("app:v2:/api/feed:route:trailing-slash");
   });
 
   it("includes the build id when present", () => {
     process.env.__VINEXT_BUILD_ID = "build-42";
 
-    expect(appIsrHtmlKey("/dashboard")).toBe("app:build-42:/dashboard:html");
+    expect(appIsrHtmlKey("/dashboard")).toBe("app:v2:build-42:/dashboard:html");
   });
 
   it("supports explicit build ids when deriving suffixed app keys", () => {
-    expect(appIsrCacheKey("/dashboard", "html", "build-42")).toBe("app:build-42:/dashboard:html");
+    expect(appIsrCacheKey("/dashboard", "html", "build-42")).toBe(
+      "app:v2:build-42:/dashboard:html",
+    );
+  });
+
+  it("does not read pre-v2 App entries when the build id stays stable", async () => {
+    process.env.__VINEXT_BUILD_ID = "stable-build";
+    setCacheHandler(new MemoryCacheHandler());
+    const legacyValue = buildAppPageCacheValue("<html>legacy</html>");
+    for (const legacyKey of [
+      "app:stable-build:/dashboard:html",
+      "app:stable-build:/dashboard:rsc",
+      "app:stable-build:/api/feed:route",
+      "app:stable-build:/api/feed:route:trailing-slash",
+    ]) {
+      await isrSet(legacyKey, legacyValue, { cacheControl: { revalidate: 3600 } });
+    }
+
+    await expect(isrGet(appIsrHtmlKey("/dashboard"))).resolves.toBeNull();
+    await expect(isrGet(appIsrRscKey("/dashboard"))).resolves.toBeNull();
+    await expect(isrGet(appIsrRouteKey("/api/feed"))).resolves.toBeNull();
+    await expect(isrGet(appIsrRouteKey("/api/feed/"))).resolves.toBeNull();
   });
 
   it("hashes long pathname keys while preserving the cache entry suffix", () => {
@@ -209,7 +230,7 @@ describe("App Router ISR cache key primitives", () => {
 
     const key = appIsrRscKey("/" + "a".repeat(250));
 
-    expect(key).toMatch(/^app:__hash:[a-z0-9]+:rsc$/);
+    expect(key).toMatch(/^app:v2:__hash:[a-z0-9]+:rsc$/);
   });
 
   it("keys mounted-slot RSC variants by normalized mounted-slot header", () => {
@@ -219,7 +240,7 @@ describe("App Router ISR cache key primitives", () => {
     const second = appIsrRscKey("/feed", "slot:sidebar:/ slot:modal:/");
 
     expect(first).toBe(second);
-    expect(first).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+$/);
+    expect(first).toMatch(/^app:v2:\/feed:rsc:slots:[a-z0-9]+$/);
   });
 
   it("bounds RSC cache-key cardinality against attacker-supplied mounted-slot values", () => {
@@ -236,7 +257,7 @@ describe("App Router ISR cache key primitives", () => {
     }
     // All 1000 distinct attacker values collapse to the same "no slots" key.
     expect(keys.size).toBe(1);
-    expect(keys.values().next().value).toBe("app:/feed:rsc");
+    expect(keys.values().next().value).toBe("app:v2:/feed:rsc");
   });
 
   it("caps cache-key cardinality when an attacker pads the mounted-slots header", () => {
@@ -252,7 +273,7 @@ describe("App Router ISR cache key primitives", () => {
       keys.add(appIsrRscKey("/feed", tokens));
     }
     expect(keys.size).toBe(1);
-    expect(keys.values().next().value).toBe("app:/feed:rsc");
+    expect(keys.values().next().value).toBe("app:v2:/feed:rsc");
   });
 
   it("keys intercepted RSC variants by source context", () => {
@@ -264,7 +285,7 @@ describe("App Router ISR cache key primitives", () => {
 
     expect(fromFeed).not.toBe(fromGallery);
     expect(fromFeed).not.toBe(direct);
-    expect(fromFeed).toMatch(/^app:\/photos\/42:rsc:source:[a-z0-9]+:slots:[a-z0-9]+$/);
+    expect(fromFeed).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:slots:[a-z0-9]+$/);
   });
 
   it("keys supplemental RSC variants by their verified interception id", () => {
@@ -286,7 +307,7 @@ describe("App Router ISR cache key primitives", () => {
     );
 
     expect(modal).not.toBe(drawer);
-    expect(modal).toMatch(/^app:\/photos\/42:rsc:source:[a-z0-9]+:selector:[a-z0-9]+$/);
+    expect(modal).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:selector:[a-z0-9]+$/);
   });
 
   it("normalizes source context before keying intercepted RSC variants", () => {
@@ -313,11 +334,11 @@ describe("App Router ISR cache key primitives", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
     expect(appIsrRscKey("/feed", null, APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL)).toBe(
-      "app:/feed:rsc:prefetch-loading-shell",
+      "app:v2:/feed:rsc:prefetch-loading-shell",
     );
     expect(
       appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
-    ).toMatch(/^app:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
+    ).toMatch(/^app:v2:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
   });
 });
 

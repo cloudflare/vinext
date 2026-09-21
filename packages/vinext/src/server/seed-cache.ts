@@ -34,7 +34,6 @@ import path from "pathslash";
 import type { CachedAppPageValue, CachedRouteValue } from "vinext/shims/cache-handler";
 import {
   appIsrCacheKey,
-  isrCacheKey,
   isrSet,
   isrSetPrerenderedAppPage,
   type IsrWritePolicy,
@@ -139,9 +138,11 @@ export async function seedMemoryCacheFromPrerender(
     // Fallback keys support older generated entries that do not export their
     // runtime key builders. Current App Router entries inject buildAppPage*Key
     // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
-    const baseKey = isrCacheKey("app", cachePathname, buildId);
-    const htmlKey = options?.buildAppPageHtmlKey?.(cachePathname) ?? baseKey + ":html";
-    const rscKey = options?.buildAppPageRscKey?.(cachePathname) ?? baseKey + ":rsc";
+    const htmlKey =
+      options?.buildAppPageHtmlKey?.(cachePathname) ??
+      appIsrCacheKey(cachePathname, "html", buildId);
+    const rscKey =
+      options?.buildAppPageRscKey?.(cachePathname) ?? appIsrCacheKey(cachePathname, "rsc", buildId);
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
     const staleSeconds =
