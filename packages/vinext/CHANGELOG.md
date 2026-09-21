@@ -4,8 +4,8 @@
 
 ### Features
 
-- feat(tracing): emit built-in request, rendering, fetch, metadata, and response spans across the App and Pages Routers (#3296)
-- feat(tracing): add Next.js-compatible OpenTelemetry instrumentation with Sentry and Cloudflare Workers tracing support (#3261)
+- **Tracing:** emit built-in request, rendering, fetch, metadata, and response spans across the App and Pages Routers (#3296)
+- **Tracing:** add Next.js-compatible OpenTelemetry instrumentation with Sentry and Cloudflare Workers tracing support (#3261)
 - **Response Store:** support for sharded durable objects (#3301)
 
 ### Bug Fixes
