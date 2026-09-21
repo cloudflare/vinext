@@ -28,6 +28,7 @@ import rscHandler, {
   __basePath as __rscBasePath,
   __cacheabilityManifest as __rscCacheabilityManifest,
   __ensureInstrumentation,
+  __ensureHybridPagesApplication,
   __imageAllowedWidths as __rscImageAllowedWidths,
   __imageConfig as __rscImageConfig,
   __prerenderSecret as __rscPrerenderSecret,
@@ -147,6 +148,7 @@ async function handleRequest(
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   if (readinessResponse) {
+    if (readinessResponse.status === 204) await __ensureHybridPagesApplication();
     return (await validateCdnRequest(request)) ?? readinessResponse;
   }
   let finalizeCacheabilityResponse:

@@ -52,7 +52,12 @@ async function handleSingleStageRequest(
   );
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   if (readinessResponse) {
-    await Promise.all([ensureRequestStageInstrumentation(), ensureResponseStageInstrumentation()]);
+    if (readinessResponse.status === 204) {
+      await Promise.all([
+        ensureRequestStageInstrumentation(),
+        ensureResponseStageInstrumentation(),
+      ]);
+    }
     return (await validateCdnRequest(request)) ?? readinessResponse;
   }
 

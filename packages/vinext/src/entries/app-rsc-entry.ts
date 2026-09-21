@@ -361,6 +361,14 @@ import { applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareCont
     : ""
 }
 
+${
+  hasPagesDir
+    ? `export function __ensureHybridPagesApplication() {
+  return __pagesRequestEntry.__ensureInstrumentation?.();
+}`
+    : "export function __ensureHybridPagesApplication() {}"
+}
+
 const __basePath = ${JSON.stringify(bp)};
 const __trailingSlash = ${JSON.stringify(ts)};
 const __draftModeSecret = ${JSON.stringify(config?.draftModeSecret ?? "")};
@@ -611,13 +619,20 @@ export function generateRscEntry(
   } = manifestCode;
   const loadPrerenderPagesRoutesCode = hasPagesDir
     ? `
+let __hybridPagesApplication;
+export function __ensureHybridPagesApplication() {
+  return __hybridPagesApplication ??= (async () => {
+    const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+    await __pagesEntry.__ensureInstrumentation?.();
+    return __pagesEntry;
+  })();
+}
 async function __loadPrerenderPagesRoutes() {
-  const __gspSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  await __gspSsrEntry.__ensureInstrumentation?.();
+  const __gspSsrEntry = await __ensureHybridPagesApplication();
   return __gspSsrEntry.pageRoutes;
 }
 `
-    : "";
+    : "export function __ensureHybridPagesApplication() {}";
   const applicationInitializationCode = instrumentationPath
     ? `let __applicationInitialization;
 async function __initializeApplication() {
@@ -1833,7 +1848,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
       {
         async loadPagesEntry() {
-          const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+          const __pagesEntry = await __ensureHybridPagesApplication();
           if (!dispatchPagesResponseStage) {
             return __pagesEntry;
           }

@@ -149,6 +149,8 @@ describe("Pages Router production Worker readiness", () => {
       );
       expect(unauthorizedResponse.status).toBe(404);
       expect(unauthorizedResponse.headers.get("cache-control")).toBe("no-store");
+      expect(requestEntry.instrumentationCalls).toBe(1);
+      expect(responseEntry.instrumentationCalls).toBe(1);
     } finally {
       await server.close();
     }

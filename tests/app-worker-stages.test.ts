@@ -21,6 +21,7 @@ import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-resp
 import { setFrameworkRequestRoute } from "../packages/vinext/src/server/request-tracing.js";
 
 const stages = vi.hoisted(() => ({
+  ensureHybridPagesApplication: vi.fn(),
   ensureInstrumentation: vi.fn(),
   invokeCacheFunction: vi.fn(),
   loadServerAction: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock("virtual:vinext-image-adapters", () => ({
 
 vi.mock("virtual:vinext-app-response-entry", () => ({
   __cacheabilityManifest: null,
+  __ensureHybridPagesApplication: stages.ensureHybridPagesApplication,
   __ensureInstrumentation: stages.ensureInstrumentation,
   default: { handleResponseStage: stages.renderResponse },
 }));
@@ -76,6 +78,7 @@ const notFoundStage = {
 describe("App Worker response stage", () => {
   beforeEach(() => {
     setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    stages.ensureHybridPagesApplication.mockReset();
     stages.ensureInstrumentation.mockReset();
     stages.invokeCacheFunction.mockReset();
     stages.loadServerAction.mockReset();
@@ -157,6 +160,7 @@ describe("App Worker response stage", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
+    expect(stages.ensureHybridPagesApplication).toHaveBeenCalledOnce();
     expect(stages.ensureInstrumentation).toHaveBeenCalledOnce();
     expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
     expect(validateRequest).toHaveBeenCalledWith(request);

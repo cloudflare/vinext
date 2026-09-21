@@ -2,6 +2,7 @@
 
 import rscHandler, {
   __cacheabilityManifest,
+  __ensureHybridPagesApplication,
   __ensureInstrumentation,
 } from "virtual:vinext-app-response-entry";
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
@@ -80,6 +81,9 @@ export async function handleResponseStage(
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
   await __ensureInstrumentation();
+  if (props.kind === "app-full-request" && props.prerenderDiscovery) {
+    await __ensureHybridPagesApplication();
+  }
   registerConfiguredImageOptimizer(env);
   let ctx = createWorkerRevalidationContext(
     platformCtx,

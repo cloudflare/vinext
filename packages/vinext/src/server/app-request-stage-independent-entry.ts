@@ -4,6 +4,7 @@ import "./server-globals.js";
 import requestRscHandler, {
   __assetPrefix,
   __basePath,
+  __ensureHybridPagesApplication,
   __ensureInstrumentation,
   __imageAllowedWidths,
   __imageConfig,
@@ -126,6 +127,7 @@ async function handleRequest(
     // dispatcher so independently hosted stages are proven ready as a unit.
     // Failed capability checks stay inside the framework-owned namespace.
     if (readinessResponse.status !== 204) return readinessResponse;
+    await __ensureHybridPagesApplication();
   }
 
   let probeMode: VinextCacheabilityProbeMode | null = null;
