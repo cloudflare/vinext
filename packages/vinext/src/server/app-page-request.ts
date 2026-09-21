@@ -50,6 +50,7 @@ export type ValidateAppPageDynamicParamsOptions = {
     | readonly (GenerateStaticParams | GenerateStaticParamsSource | null | undefined)[]
     | null;
   isDynamicRoute: boolean;
+  optionalCatchAllParamNames?: readonly string[];
   params: AppPageParams;
   requiredParamNames?: readonly string[];
 };
@@ -392,6 +393,7 @@ function areStaticParamsAllowed(
   staticParams: readonly Record<string, unknown>[],
   allowMissingValues = false,
   paramKeys: readonly string[] = Object.keys(params),
+  optionalCatchAllParamNames: readonly string[] = [],
 ): boolean {
   // Next.js compares the concrete request pathname against generated encoded
   // pathnames exactly. This generated-path gate is case-sensitive even though
@@ -408,11 +410,17 @@ function areStaticParamsAllowed(
       const staticValue = staticParamSet[key];
 
       if (!Object.hasOwn(staticParamSet, key)) {
-        return value === undefined || allowMissingValues;
+        return allowMissingValues;
       }
 
       if (value === undefined) {
-        return Array.isArray(staticValue) && staticValue.length === 0;
+        return (
+          optionalCatchAllParamNames.includes(key) &&
+          (staticValue === undefined ||
+            staticValue === null ||
+            staticValue === false ||
+            (Array.isArray(staticValue) && staticValue.length === 0))
+        );
       }
 
       if (Array.isArray(value)) {
@@ -613,6 +621,7 @@ export async function validateAppPageDynamicParams(
           result.staticParams,
           options.requiredParamNames === undefined,
           options.requiredParamNames,
+          options.optionalCatchAllParamNames,
         )
       ) {
         return notFoundResponse();

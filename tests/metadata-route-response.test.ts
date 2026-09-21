@@ -275,6 +275,72 @@ describe("handleMetadataRouteRequest", () => {
   });
 
   it.each([
+    ["public%20post", "public%2520post"],
+    ["public%2Fpost", "public%252Fpost"],
+  ])("uses one decoded param identity for %s", async (generatedSlug, requestSlug) => {
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: `/drafts/${generatedSlug}/twitter-image`,
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "twitter-image",
+          isDynamic: true,
+          filePath: "/tmp/app/drafts/[slug]/twitter-image.tsx",
+          routePrefix: "/drafts/[slug]",
+          routeSegments: ["drafts", "[slug]"],
+          servedUrl: "/drafts/[slug]/twitter-image",
+          patternParts: ["drafts", ":slug", "twitter-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams: () => [{ slug: generatedSlug }],
+            default: async ({ params }: { params: Promise<{ slug: string }> }) =>
+              new Response((await params).slug),
+          },
+        },
+      ],
+      routePathname: `/drafts/${requestSlug}/twitter-image`,
+    });
+
+    expect(response?.status).toBe(200);
+    await expect(response?.text()).resolves.toBe(generatedSlug);
+  });
+
+  it.each([
+    ["undefined", undefined, 200],
+    ["null", null, 200],
+    ["false", false, 200],
+    ["empty array", [], 200],
+    ["omitted", Symbol("omitted"), 404],
+  ])("handles %s optional catch-all static params", async (_label, value, status) => {
+    const staticParams =
+      typeof value === "symbol" ? [{}] : [{ path: value as undefined | null | false | never[] }];
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/docs/twitter-image",
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "twitter-image",
+          isDynamic: true,
+          filePath: "/tmp/app/docs/[[...path]]/twitter-image.tsx",
+          routePrefix: "/docs/[[...path]]",
+          routeSegments: ["docs", "[[...path]]"],
+          servedUrl: "/docs/[[...path]]/twitter-image",
+          patternParts: ["docs", ":path*", "twitter-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams: () => staticParams,
+            default: () => new Response("empty optional"),
+          },
+        },
+      ],
+    });
+
+    expect(response?.status).toBe(status);
+  });
+
+  it.each([
     ["incomplete", () => [{ slug: "public" }]],
     ["non-array", () => null],
   ])("rejects %s metadata static params", async (_label, generateStaticParams) => {
