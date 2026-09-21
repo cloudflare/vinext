@@ -415,5 +415,6 @@ export function appIsrRscKey(
 }
 
 export function appIsrRouteKey(pathname: string): string {
-  return appIsrCacheKey(pathname, "route");
+  const suffix = pathname !== "/" && pathname.endsWith("/") ? "route:trailing-slash" : "route";
+  return appIsrCacheKey(pathname, suffix);
 }

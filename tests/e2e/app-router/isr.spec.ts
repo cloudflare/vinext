@@ -250,6 +250,38 @@ test.describe("App Router ISR", () => {
       "CACHE_IDENTITY_ROUTE_CATCH_ALL:dynamic:alpha:/route-handler-cache-identity/dynamic/alpha",
     );
   });
+
+  test("keeps rewritten route handler output out of the destination cache", async ({ request }) => {
+    const destinationPath = "/route-handler-cache-identity/rewrite";
+    await resetIsrPath(request, destinationPath);
+
+    const rewritten = await request.get(`${baseUrl()}/route-cache-rewrite/rewrite`);
+    expect(rewritten.status()).toBe(200);
+    expect(await rewritten.text()).toBe(
+      "CACHE_IDENTITY_ROUTE_CATCH_ALL:rewrite:/route-cache-rewrite/rewrite",
+    );
+    expect(rewritten.headers()["cache-control"]).toContain("no-store");
+
+    const destination = await waitForCacheHit(request, destinationPath);
+    expect(await destination.text()).toBe(
+      "CACHE_IDENTITY_ROUTE_CATCH_ALL:rewrite:/route-handler-cache-identity/rewrite",
+    );
+  });
+
+  test("keeps trailing-slash route handler cache entries distinct", async ({ request }) => {
+    const plainPath = "/api/route-cache-identity/trailing";
+    const trailingPath = `${plainPath}/`;
+    await resetIsrPath(request, plainPath);
+    await resetIsrPath(request, trailingPath);
+
+    const trailing = await waitForCacheHit(request, trailingPath);
+    expect(await trailing.text()).toBe(`CACHE_IDENTITY_API_ROUTE:${plainPath}`);
+
+    const initialPlain = await request.get(`${baseUrl()}${plainPath}`);
+    expect(initialPlain.headers()["x-vinext-cache"]).toBe("MISS");
+    const plain = await waitForCacheHit(request, plainPath);
+    expect(await plain.text()).toBe(`CACHE_IDENTITY_API_ROUTE:${plainPath}`);
+  });
 });
 
 /**

@@ -1652,6 +1652,43 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("Cache-Control")).toContain("no-store");
   });
 
+  it("bypasses shared caches when a rewrite changes the request pathname", async () => {
+    const route = createPageRoute();
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(
+        new Response("rewritten route", {
+          headers: { "Cache-Control": "public, s-maxage=3600" },
+        }),
+      ),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/alias", destination: "/about" }],
+        afterFiles: [],
+        fallback: [],
+      },
+      matchRequestRoute: () => null,
+      matchRoute: (pathname) => (pathname === "/about" ? { params: {}, route } : null),
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/alias"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      bypassInterceptionContextCache: true,
+      canonicalPathname: "/alias",
+      cleanPathname: "/about",
+    });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+  });
+
   it.each([
     ["Cache-Control", "private, no-store"],
     ["CDN-Cache-Control", "no-cache"],

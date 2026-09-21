@@ -103,6 +103,10 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return {
       beforeFiles: [
+        {
+          source: "/route-cache-rewrite/:slug*",
+          destination: "/route-handler-cache-identity/:slug*",
+        },
         // Encoded App Page params must have the same canonical representation
         // on direct requests and config rewrites.
         {

@@ -190,7 +190,8 @@ describe("App Router ISR cache key primitives", () => {
 
     expect(appIsrHtmlKey("/about/")).toBe("app:/about:html");
     expect(appIsrRscKey("/about/")).toBe("app:/about:rsc");
-    expect(appIsrRouteKey("/api/feed/")).toBe("app:/api/feed:route");
+    expect(appIsrRouteKey("/api/feed")).toBe("app:/api/feed:route");
+    expect(appIsrRouteKey("/api/feed/")).toBe("app:/api/feed:route:trailing-slash");
   });
 
   it("includes the build id when present", () => {
