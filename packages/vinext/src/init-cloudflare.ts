@@ -55,6 +55,9 @@ export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): void {
+  if (cloudflare.cdnCache === "static-assets" && !context.isAppRouter) {
+    throw new Error("The Static Assets cache currently requires an App Router project.");
+  }
   const tomlPath = path.join(context.root, "wrangler.toml");
   if (fs.existsSync(tomlPath)) {
     throw new Error(
@@ -1027,6 +1030,11 @@ function cacheImports(options: CloudflareInitOptions): string[] {
   if (options.cdnCache === "workers-cache") {
     imports.push('import { cdnAdapter } from "@vinext/cloudflare/cache/cdn-adapter";');
   }
+  if (options.cdnCache === "static-assets") {
+    imports.push(
+      'import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";',
+    );
+  }
   if (options.cdnCache === "response-store") {
     imports.push(
       'import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";',
@@ -1058,6 +1066,9 @@ function vinextExpression(
         : `{ versionMetadataBinding: ${JSON.stringify(versionMetadataBinding)} }`;
     cacheEntries.push(`cdn: cdnAdapter(${adapterOptions})`);
   }
+  if (options.cdnCache === "static-assets") {
+    cacheEntries.push("cdn: staticAssetsAdapter()");
+  }
   const optionEntries: string[] = [];
   if (responseStore) {
     optionEntries.push(
@@ -1065,6 +1076,9 @@ function vinextExpression(
     );
   } else if (cacheEntries.length > 0) {
     optionEntries.push(`cache: { ${cacheEntries.join(", ")} }`);
+  }
+  if (options.cdnCache === "static-assets") {
+    optionEntries.push('prerender: { routes: "*" }');
   }
   if (options.imageOptimization === "cloudflare-images") {
     const adapterOptions =
@@ -1884,6 +1898,35 @@ function ensureVinextImageOptimizer(
   }
 }
 
+function ensureVinextPrerender(
+  output: MagicString,
+  config: AstObject,
+  vinextBinding: string,
+  code: string,
+): void {
+  const call = findPluginCall(config, vinextBinding);
+  const firstArgument = call?.arguments[0];
+  if (!call || !firstArgument || firstArgument.type === "SpreadElement") return;
+  if (firstArgument.type !== "ObjectExpression") {
+    throw new Error(
+      "The vinext() plugin options must be a static object for vinext init to configure build-time prerendering.",
+    );
+  }
+  const optionsObject = firstArgument as AstObject;
+  const prerender = findProperty(optionsObject, "prerender");
+  if (!prerender) {
+    insertObjectProperty(output, optionsObject, '    prerender: { routes: "*" },', code);
+    return;
+  }
+  const value = prerender.value as AstNode & { name?: string; value?: unknown };
+  if (
+    (value.type === "Literal" && (value.value === false || value.value === null)) ||
+    (value.type === "Identifier" && value.name === "undefined")
+  ) {
+    output.overwrite(value.start, value.end, '{ routes: "*" }');
+  }
+}
+
 function indentBlock(source: string, indent: string): string {
   return source
     .split("\n")
@@ -2218,6 +2261,29 @@ export function updateViteConfigForCloudflare(
       }
     }
   }
+  if (configureCaches && cacheOptions.cdnCache === "static-assets") {
+    const imported = "staticAssetsAdapter";
+    const source = "@vinext/cloudflare/cache/static-assets-adapter";
+    const existing = commonJs
+      ? findRequiredBinding(program, source, imported)
+      : findImportedBinding(program, source, imported);
+    const existingCdnSlot = getVinextCacheSlot(existingVinextCall, "cdn");
+    const existingUsesStaticAssets = Boolean(
+      existing &&
+      existingCdnSlot?.value.type === "CallExpression" &&
+      existingCdnSlot.value.callee.type === "Identifier" &&
+      existingCdnSlot.value.callee.name === existing,
+    );
+    if (!existingCdnSlot || existingUsesStaticAssets) {
+      const local = existing ?? allocateBinding(bindings, imported);
+      const binding = commonJs
+        ? ensureNamedRequire(program, output, source, imported, local)
+        : ensureNamedImport(program, output, source, imported, local);
+      if (!existingCdnSlot) {
+        cacheAdditions.push({ name: "cdn", expression: `${binding}()` });
+      }
+    }
+  }
   let imageOptimizerExpression: string | undefined;
   if (cacheOptions.imageOptimization === "cloudflare-images") {
     const source = "@vinext/cloudflare/images/images-optimizer";
@@ -2278,7 +2344,10 @@ export function updateViteConfigForCloudflare(
   if (existingVinextCall) {
     if (
       existingVinextCall.arguments.length === 0 &&
-      (responseStoreExpression || cacheAdditions.length > 0 || imageOptimizerExpression)
+      (responseStoreExpression ||
+        cacheAdditions.length > 0 ||
+        imageOptimizerExpression ||
+        cacheOptions.cdnCache === "static-assets")
     ) {
       const properties: string[] = [];
       if (responseStoreExpression) {
@@ -2290,6 +2359,9 @@ export function updateViteConfigForCloudflare(
       }
       if (imageOptimizerExpression) {
         properties.push(`images: { optimizer: ${imageOptimizerExpression} }`);
+      }
+      if (cacheOptions.cdnCache === "static-assets") {
+        properties.push('prerender: { routes: "*" }');
       }
       const plugins = findProperty(config, "plugins");
       const propertyIndent = plugins
@@ -2309,6 +2381,9 @@ export function updateViteConfigForCloudflare(
       ensureVinextResponseStore(output, config, vinextBinding, responseStoreExpression, code);
       ensureVinextCache(output, config, vinextBinding, cacheAdditions, code);
       ensureVinextImageOptimizer(output, config, vinextBinding, imageOptimizerExpression, code);
+      if (cacheOptions.cdnCache === "static-assets") {
+        ensureVinextPrerender(output, config, vinextBinding, code);
+      }
     }
   }
 

@@ -740,6 +740,40 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "vite.config.ts")).not.toContain("prerender:");
   });
 
+  it("configures prerendering when the Cloudflare Static Assets cache is selected", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "static-assets",
+        imageOptimization: "none",
+      },
+    });
+
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toContain("cdn: staticAssetsAdapter()");
+    expect(config).toContain('prerender: { routes: "*" }');
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+      assets: { directory: "dist/client", binding: "ASSETS" },
+    });
+  });
+
+  it("rejects the Static Assets cache for Pages Router projects", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    await expect(
+      runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "static-assets",
+          imageOptimization: "none",
+        },
+      }),
+    ).rejects.toThrow("Static Assets cache currently requires an App Router project");
+    expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
+  });
+
   it("generates Node vite.config.ts with prerender when opted in", async () => {
     setupProject(tmpDir, { router: "pages" });
 

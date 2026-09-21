@@ -4,7 +4,12 @@ import { isAgent } from "am-i-vibing";
 
 export type InitPlatform = "cloudflare" | "node";
 export type InitDataCache = "kv" | "none";
-export type InitCdnCache = "data-cache" | "none" | "response-store" | "workers-cache";
+export type InitCdnCache =
+  | "data-cache"
+  | "none"
+  | "response-store"
+  | "static-assets"
+  | "workers-cache";
 export type InitImageOptimization = "cloudflare-images" | "none";
 export type InitResponseStoreMode = "self-contained" | "service-binding";
 
@@ -117,6 +122,7 @@ export function parseCdnCacheArg(args: string[]): InitCdnCache | undefined {
     "none",
     "response-store",
     "workers-cache",
+    "static-assets",
     "data-cache",
   ]);
 }
@@ -228,7 +234,7 @@ export async function resolveInitOptions(
   const explicitPrerender = parsePrerenderArg(args);
   if (platform === "cloudflare" && explicitPrerender === true) {
     throw new Error(
-      "--prerender is only supported by Node init. For Cloudflare, use --experimental-warm-cdn-cache with Workers Cache or Workers Response Store.",
+      "--prerender is only supported by Node init. For Cloudflare, choose --cdn-cache=static-assets for build-time prerendering or use --experimental-warm-cdn-cache with Workers Cache or Workers Response Store.",
     );
   }
   const supportsWarmCdnCache =
@@ -388,7 +394,7 @@ export async function resolveCloudflareInitOptions(
   const env = options.env ?? process.env;
   if (isAgentEnvironment(env)) {
     throw new Error(
-      "vinext init needs Cloudflare cache and image choices. Ask the user whether they want no cache or which CDN cache (response-store, workers-cache, or data-cache), the Response Store mode when selected (service-binding or self-contained), data cache (kv or none), and image optimization (cloudflare-images or none) they want, then re-run with --cdn-cache=..., --response-store-mode=..., --data-cache=..., and --image-optimization=....",
+      "vinext init needs Cloudflare cache and image choices. Ask the user whether they want no cache or which CDN cache (response-store, workers-cache, static-assets, or data-cache), the Response Store mode when selected (service-binding or self-contained), data cache (kv or none), and image optimization (cloudflare-images or none) they want, then re-run with --cdn-cache=..., --response-store-mode=..., --data-cache=..., and --image-optimization=....",
     );
   }
 
@@ -454,7 +460,7 @@ export async function resolveCloudflareInitOptions(
     }
     const cdnCache = await promptChoice(
       selectedCdnCache,
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
       {
         "1": "response-store",
         "response-store": "response-store",
@@ -464,9 +470,12 @@ export async function resolveCloudflareInitOptions(
         "3": "data-cache",
         "data-cache": "data-cache",
         data: "data-cache",
+        "4": "static-assets",
+        "static-assets": "static-assets",
+        static: "static-assets",
       },
       "response-store",
-      "Please choose Workers Response Store (1), Workers Cache (2), or Data cache (3).",
+      "Please choose Workers Response Store (1), Workers Cache (2), Data cache (3), or Static Assets (4).",
     );
     if ((cdnCache === "response-store" || cdnCache === "none") && explicitDataCache === "kv") {
       throw new Error(`--cdn-cache=${cdnCache} cannot be combined with --data-cache=kv.`);

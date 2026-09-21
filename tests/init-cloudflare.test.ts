@@ -88,6 +88,60 @@ export default { plugins: [vinext()] };
     expect(output).toContain('cache: responseStoreAdapter({ mode: "self-contained" })');
   });
 
+  it("configures build-time prerendering for the Static Assets cache", () => {
+    const options = {
+      dataCache: "none" as const,
+      cdnCache: "static-assets" as const,
+      imageOptimization: "none" as const,
+    };
+    const generated = generateAppRouterViteConfig(undefined, options);
+    expectValidConfig(generated);
+    expect(generated).toContain(
+      'import { staticAssetsAdapter } from "@vinext/cloudflare/cache/static-assets-adapter";',
+    );
+    expect(generated).toContain("cache: { cdn: staticAssetsAdapter() }");
+    expect(generated).toContain('prerender: { routes: "*" }');
+
+    const input = `import vinext from "vinext";
+export default { plugins: [vinext()] };
+`;
+    const updated = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: true,
+      nativeModulesToStub: [],
+      cache: options,
+    });
+    expectValidConfig(updated);
+    expect(updated).toContain("cache: { cdn: staticAssetsAdapter() }");
+    expect(updated).toContain('prerender: { routes: "*" }');
+    expect(
+      updateViteConfigForCloudflare("vite.config.ts", updated, {
+        isAppRouter: true,
+        nativeModulesToStub: [],
+        cache: options,
+      }),
+    ).toBe(updated);
+  });
+
+  it("enables prerendering when adding Static Assets to an existing vinext config", () => {
+    const input = `import vinext from "vinext";
+export default { plugins: [vinext({ prerender: false })] };
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: true,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "kv",
+        cdnCache: "static-assets",
+        imageOptimization: "none",
+      },
+    });
+    expectValidConfig(output);
+    expect(output).toContain("data: kvDataAdapter()");
+    expect(output).toContain("cdn: staticAssetsAdapter()");
+    expect(output).toContain('prerender: { routes: "*" }');
+    expect(output).not.toContain("prerender: false");
+  });
+
   it("configures the application and separate Response Store Workers", () => {
     const options = {
       dataCache: "none" as const,

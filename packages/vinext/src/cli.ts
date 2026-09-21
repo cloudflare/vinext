@@ -1025,7 +1025,8 @@ function printHelp(cmd?: string) {
     --experimental-warm-cdn-cache
                          Add experimental CDN pre-warming to the Cloudflare deploy script
                          (Response Store or Workers Cache, default: prompt with No)
-    --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache, or data-cache
+    --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache,
+                         static-assets, or data-cache
                          (default: none; response-store is the default cache choice)
     --response-store-mode <type>
                          Workers Response Store mode: service-binding or self-contained
@@ -1041,6 +1042,8 @@ function printHelp(cmd?: string) {
                                 Configure Workers Response Store (recommended)
     vinext init --platform=cloudflare --cdn-cache=data-cache
                                 Fall through CDN caching to the data cache
+    vinext init --platform=cloudflare --cdn-cache=static-assets
+                                Package prerendered routes as read-only Static Assets
     vinext init --platform=cloudflare --data-cache=kv
                                 Configure the default Cloudflare cache handlers
     vinext init --platform=cloudflare --image-optimization=none
