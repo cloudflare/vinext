@@ -372,7 +372,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           VINEXT_CDN_WARM_DEBUG: "1"
-          WARM_CDN_CERTIFY: ${{ matrix.example.cache_backend != 'kv' }}
+          WARM_CDN_CERTIFY: ${{ matrix.example.cache_backend == 'response-store' }}
           WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
           args=(
@@ -381,9 +381,9 @@ jobs:
             --name "$WORKER_NAME"
             --experimental-warm-cdn-cache
           )
-          # The shared demo contains an intentionally late-dynamic page. The
-          # origin-managed KV adapter cannot classify that streamed MISS as a
-          # BYPASS, so its live E2E proves the prewarmed data hit directly.
+          # Response Store has a stable cache-status contract during staged
+          # certification. Workers Cache and KV are verified after promotion by
+          # the live E2E below, avoiding CDN propagation races in this deploy step.
           if [[ "$WARM_CDN_CERTIFY" == "true" ]]; then
             args+=(--warm-cdn-certify)
           fi
