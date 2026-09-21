@@ -102,6 +102,9 @@ export async function handleResponseStage(
       buildId: process.env.__VINEXT_BUILD_ID,
       cache: options.cache,
       context: ctx,
+      forceDynamic:
+        (props.kind === "app-page" || props.kind === "app-route-handler") &&
+        props.forceDynamic === true,
       policyHeaders: props.cacheability.policyHeaders,
       probeMode: props.cacheability.probeMode,
       rawManifest: __cacheabilityManifest,

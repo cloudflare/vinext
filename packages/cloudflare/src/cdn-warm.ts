@@ -1253,23 +1253,18 @@ function shouldRetryValidationFailure(
   return isRetryableStatus(response.status, options.retryNotFound);
 }
 
-function isRetryableAdmissionFailure(
+function isRetryableCertificationFailure(
   response: Response,
   statusSource: "cloudflare" | "data-cache" | "vinext",
-  requireCacheHit: boolean,
   retryPropagationFailures: boolean,
 ): boolean {
   if (statusSource === "cloudflare") {
     const status = response.headers.get("CF-Cache-Status")?.trim().toUpperCase();
-    if (requireCacheHit && ADMITTED_CF_CACHE_STATUSES.has(status ?? "")) {
-      return !REUSABLE_CF_CACHE_STATUSES.has(status ?? "");
-    }
     return (
-      retryPropagationFailures &&
-      (requireCacheHit ? !REUSABLE_CF_CACHE_STATUSES.has(status ?? "") : status === undefined)
+      !REUSABLE_CF_CACHE_STATUSES.has(status ?? "") &&
+      (retryPropagationFailures || ADMITTED_CF_CACHE_STATUSES.has(status ?? ""))
     );
   }
-  if (!requireCacheHit) return false;
   const status = response.headers.get(VINEXT_CACHE_HEADER)?.trim().toUpperCase();
   return TRANSITIONAL_VINEXT_CACHE_STATUSES.has(status ?? "");
 }
@@ -1385,12 +1380,13 @@ async function warmOnePath(
         lastSkippedReason = null;
         lastError = validation.error;
         lastRetryable =
-          isRetryableAdmissionFailure(
-            response,
-            options.statusSource,
-            options.requireCacheHit,
-            options.retryPropagationFailures,
-          ) || shouldRetryValidationFailure(response, target, options);
+          (options.requireCacheHit &&
+            isRetryableCertificationFailure(
+              response,
+              options.statusSource,
+              options.retryPropagationFailures,
+            )) ||
+          shouldRetryValidationFailure(response, target, options);
         if (!lastRetryable) break;
         if (!canRetry(attempt)) break;
         if (!(await waitBeforeRetry())) {
@@ -1431,12 +1427,13 @@ async function warmOnePath(
       lastSkippedReason = null;
       lastError = validation.error;
       lastRetryable =
-        isRetryableAdmissionFailure(
-          response,
-          options.statusSource,
-          options.requireCacheHit,
-          options.retryPropagationFailures,
-        ) || shouldRetryValidationFailure(response, target, options);
+        (options.requireCacheHit &&
+          isRetryableCertificationFailure(
+            response,
+            options.statusSource,
+            options.retryPropagationFailures,
+          )) ||
+        shouldRetryValidationFailure(response, target, options);
       if (!lastRetryable) break;
     } catch (error) {
       lastSkippedReason = null;

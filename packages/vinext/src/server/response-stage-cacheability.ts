@@ -12,6 +12,7 @@ export type ResponseStageCacheabilityOptions = {
   buildId: string | null | undefined;
   cache: VinextResponseStageDispatchOptions["cache"];
   context: ExecutionContextLike;
+  forceDynamic?: boolean;
   probeMode?: WorkerCacheabilityProbeMode | null;
   policyHeaders?: ReadonlyArray<readonly [string, string]> | null;
   /** The renderer receives policy before user Pages code and applies it itself. */
@@ -71,15 +72,18 @@ export async function withResponseStageCacheability(
   if (options.policyHeadersAppliedBeforeRender) {
     cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);
   }
+  const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as
+    | RouteCacheabilityState
+    | undefined;
+  if (options.probeMode && options.forceDynamic && !options.policyHeaders?.length && state) {
+    state.patternDynamicReason = 'dynamic = "force-dynamic"';
+  }
   const rendered = await render(context);
   const response = options.policyHeadersAppliedBeforeRender
     ? rendered
     : cacheability.applyResponseStageCachePolicy(rendered, context, options.policyHeaders);
   const complete = (candidate: Response) =>
     cacheability.finalizeWorkerCacheabilityResponse(candidate, context);
-  const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as
-    | RouteCacheabilityState
-    | undefined;
   const route = state?.route;
   if (
     !options.probeMode &&

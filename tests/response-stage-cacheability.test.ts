@@ -273,6 +273,36 @@ describe("response-stage cacheability", () => {
     });
   });
 
+  it("preserves a statically known force-dynamic segment during probing", async () => {
+    const response = await withResponseStageCacheability(
+      {
+        buildId: "build-a",
+        cache: "bypass",
+        context: baseContext(),
+        forceDynamic: true,
+        probeMode: "probe",
+        rawManifest: null,
+        registerCacheAdapters: registerAdapter,
+        request: new Request("https://example.com/client-page"),
+        resolvedRoutePathname: "/client-page",
+      },
+      async (context) => {
+        const state = contextState(context)!;
+        state.route = { kind: "app-page", pattern: "/client-page" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        return new Response("rendered");
+      },
+    );
+
+    await expect(response.json()).resolves.toMatchObject({
+      kind: "app-page",
+      pattern: "/client-page",
+      reason: 'dynamic = "force-dynamic"',
+      scope: "pattern",
+      state: "dynamic",
+    });
+  });
+
   it("uses the rewritten route pathname without changing public request identity", async () => {
     const route = {
       kind: "app-page" as const,
