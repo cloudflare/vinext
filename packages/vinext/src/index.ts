@@ -1078,9 +1078,10 @@ const tsconfigAliasCustomResolver = async function (
 function buildResolveAliasEntries(
   aliasMap: Record<string, string>,
   tsconfigPathAliases: Record<string, string>,
+  explicitAliases: Record<string, string>,
 ): Alias[] {
   return Object.entries(aliasMap).map(([find, replacement]) =>
-    tsconfigPathAliases[find] === replacement
+    Object.hasOwn(tsconfigPathAliases, find) && !Object.hasOwn(explicitAliases, find)
       ? { find, replacement, customResolver: tsconfigAliasCustomResolver }
       : { find, replacement },
   );
@@ -2971,6 +2972,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ? {}
             : { modules: { Loader: sassComposesLoader.Loader } as CSSModulesOptions };
 
+        // Vite prepends aliases returned by config hooks. Move the existing
+        // explicit entries into our result so they stay ahead of inferred paths,
+        // preserving array order, RegExp matchers, and custom resolvers.
+        const explicitViteAliases = config.resolve?.alias;
+        const userAliasEntries: Alias[] = Array.isArray(explicitViteAliases)
+          ? explicitViteAliases
+          : Object.entries(explicitViteAliases ?? {}).map(([find, replacement]) => ({
+              find,
+              replacement,
+            }));
+        if (config.resolve) delete config.resolve.alias;
+
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
@@ -3196,16 +3209,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
             // tsconfig-derived entries carry a customResolver that keeps them out
             // of stylesheet resolution (see tsconfigAliasCustomResolver).
-            alias: buildResolveAliasEntries(
-              {
-                ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
-                ...tsconfigPathAliases,
-                ...nextConfig.aliases,
-                ...nextShimMap,
-                "vinext/server/pages-client-assets": _pagesClientAssetsPath,
-              },
-              tsconfigPathAliases,
-            ),
+            alias: [
+              ...userAliasEntries,
+              ...buildResolveAliasEntries(
+                {
+                  ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
+                  ...tsconfigPathAliases,
+                  ...nextConfig.aliases,
+                  ...nextShimMap,
+                  "vinext/server/pages-client-assets": _pagesClientAssetsPath,
+                },
+                tsconfigPathAliases,
+                { ...nextConfig.aliases, ...nextShimMap },
+              ),
+            ],
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
