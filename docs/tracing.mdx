@@ -43,16 +43,74 @@ The request root uses `BaseServer.handleRequest`. It starts with `http.method` a
 
 The stable built-in child span types are:
 
-| App Router                             | Pages Router                        |
-| -------------------------------------- | ----------------------------------- |
-| `AppRender.getBodyResult`              | `Render.getServerSideProps`         |
-| `AppRender.fetch`                      | `Render.getStaticProps`             |
-| `AppRouteRouteHandlers.runHandler`     | `Render.renderDocument`             |
-| `ResolveMetadata.generateMetadata`     | `Node.runHandler`                   |
-| `NextNodeServer.findPageComponents`    | `NextNodeServer.findPageComponents` |
-| `NextNodeServer.getLayoutOrPageModule` |                                     |
-| `NextNodeServer.createComponentTree`   |                                     |
-| `NextNodeServer.startResponse`         |                                     |
+<table>
+  <thead>
+    <tr>
+      <th>App Router</th>
+      <th>Pages Router</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <code>AppRender.getBodyResult</code>
+      </td>
+      <td>
+        <code>Render.getServerSideProps</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>AppRender.fetch</code>
+      </td>
+      <td>
+        <code>Render.getStaticProps</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>AppRouteRouteHandlers.runHandler</code>
+      </td>
+      <td>
+        <code>Render.renderDocument</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>ResolveMetadata.generateMetadata</code>
+      </td>
+      <td>
+        <code>Node.runHandler</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>NextNodeServer.findPageComponents</code>
+      </td>
+      <td>
+        <code>NextNodeServer.findPageComponents</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>NextNodeServer.getLayoutOrPageModule</code>
+      </td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        <code>NextNodeServer.createComponentTree</code>
+      </td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        <code>NextNodeServer.startResponse</code>
+      </td>
+      <td></td>
+    </tr>
+  </tbody>
+</table>
 
 `NEXT_OTEL_FETCH_DISABLED=1` disables vinext's `AppRender.fetch` span when another agent already instruments `fetch`. `NEXT_OTEL_VERBOSE=1` does not currently enable additional vinext spans; the stable set above is unchanged.
 
