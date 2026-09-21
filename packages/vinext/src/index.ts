@@ -2982,7 +2982,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               find,
               replacement,
             }));
-        if (config.resolve) delete config.resolve.alias;
+        if (config.resolve) {
+          // Vite retains the inline resolve object for server.restart(). Do not
+          // remove aliases from that shared object when arranging this result.
+          config.resolve = { ...config.resolve };
+          delete config.resolve.alias;
+        }
 
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing

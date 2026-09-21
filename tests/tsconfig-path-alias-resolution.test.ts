@@ -347,7 +347,7 @@ export default function Layout({ children }) { return <html><body>{children}</bo
   }
 
   it.each(["object", "regexp", "custom", "next"] as const)(
-    "dev: resolves CSS URLs with an explicit %s alias",
+    "dev: preserves an explicit %s alias across server restarts",
     async (kind) => {
       const { root, alias } = fixture(kind);
       const server = await createServer({
@@ -362,6 +362,10 @@ export default function Layout({ children }) { return <html><body>{children}</bo
         const result = await server.transformRequest("/style.css");
         expect(result?.code).not.toContain("~@/");
         expect(result?.code).toContain("icon.svg");
+        await server.restart();
+        const restarted = await server.transformRequest("/style.css");
+        expect(restarted?.code).not.toContain("~@/");
+        expect(restarted?.code).toContain("icon.svg");
       } finally {
         await server.close();
       }
