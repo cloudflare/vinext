@@ -1057,7 +1057,7 @@ export function getWranglerImagesBinding(code: string): string {
     : "IMAGES";
 }
 
-export function getWranglerAssetsBinding(code: string): string {
+function getWranglerAssetsBinding(code: string): string {
   const property = findTopLevelJsonProperty(code, "assets");
   if (!property) return "ASSETS";
   const assets = JSON.parse(
@@ -1068,7 +1068,7 @@ export function getWranglerAssetsBinding(code: string): string {
     : "ASSETS";
 }
 
-export function getWranglerAssetsDirectory(code: string): string {
+function getWranglerAssetsDirectory(code: string): string {
   const property = findTopLevelJsonProperty(code, "assets");
   if (!property) return "dist/client";
   const assets = JSON.parse(
