@@ -191,7 +191,14 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // dispatcher as well as page rendering.
     const code = generateSsrEntry(true);
 
-    expect(code).toContain("handleApiRoute, matchApiRoute, matchPageRoute, pageRoutes, renderPage");
+    expect(code).toContain(`export {
+  __ensureInstrumentation,
+  handleApiRoute,
+  matchApiRoute,
+  matchPageRoute,
+  pageRoutes,
+  renderPage,
+} from "virtual:vinext-server-entry";`);
   });
 
   it("embeds basePath and trailingSlash alongside config", () => {
