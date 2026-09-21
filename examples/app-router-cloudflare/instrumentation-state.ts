@@ -72,5 +72,4 @@ export function resetInstrumentationState(): void {
   const state = getInstrumentationState();
   state.registerCalled = false;
   state.capturedErrors.length = 0;
-  state.capturedSpans.length = 0;
 }
