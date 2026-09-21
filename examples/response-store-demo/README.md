@@ -29,6 +29,7 @@ vinext({ cache: responseStoreAdapter({ shards: 4 }) });
 - `/use-cache-expired` verifies that hard-expired data blocks on loopback regeneration.
 - `/api/now` exercises cached App Route responses.
 - `/pages-prewarm` exercises Pages Router ISR.
+- `/force-dynamic` verifies that explicit build-time dynamic config bypasses response-cache lookup.
 - `/dynamic` and `/vary` verify that unsafe completed responses bypass shared storage.
 
 Canonical App Router RSC requests use the same response-stage transport:

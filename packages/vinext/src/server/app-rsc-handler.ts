@@ -265,6 +265,7 @@ export type AppRscHandlerRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
+  forceDynamic?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -1098,11 +1099,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const transportedResponseStage: RenderAppWorkerResponseStageLocally | undefined =
     dispatchResponseStage
       ? async (stageRequest, props) => {
+          const responseStagePolicy = await loadResponseStagePolicy();
           const cache =
             responseStageProbeMode ||
             isOnDemandRevalidate ||
             ((props.kind === "app-page" || props.kind === "app-route-handler") &&
-              props.bypassInterceptionContextCache)
+              (props.bypassInterceptionContextCache ||
+                // Next.js lets an explicit next.config public policy cache a
+                // force-dynamic route, so only bypass when no such policy matched.
+                (props.forceDynamic === true && responseStagePolicy === null)))
               ? "bypass"
               : canUseSharedWorkerResponseStage
                 ? "shared"
@@ -1144,7 +1149,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               ...props,
               cacheability: {
                 ...props.cacheability,
-                policyHeaders: await loadResponseStagePolicy(),
+                policyHeaders: responseStagePolicy,
               },
             },
             { cache },
@@ -2235,6 +2240,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         canonicalPathname,
         cleanPathname,
         draftModeCookie,
+        forceDynamic: route.forceDynamic === true,
         interceptionContext: interceptionContextHeader,
         interceptionId: interceptionIdHeader,
         isRscRequest,
@@ -2280,6 +2286,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         canonicalPathname,
         cleanPathname,
         draftModeCookie,
+        forceDynamic: route.forceDynamic === true,
         interceptionContext: isRscRequest ? interceptionContextHeader : null,
         interceptionId: interceptionIdHeader,
         isRscRequest,

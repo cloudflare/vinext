@@ -72,6 +72,17 @@ export default function HomePage() {
           </p>
           <Link prefetch={false} href="/dynamic">Open /dynamic &rarr;</Link>
         </div>
+
+        <div className="card">
+          <h3>
+            <span className="badge">Dynamic</span> Build-time bypass
+          </h3>
+          <p>
+            An explicit <code>dynamic = &quot;force-dynamic&quot;</code> route bypasses the response
+            cache lookup and renders a fresh UUID on every request.
+          </p>
+          <Link prefetch={false} href="/force-dynamic">Open /force-dynamic &rarr;</Link>
+        </div>
       </section>
     </main>
   );

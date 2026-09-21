@@ -8,9 +8,11 @@
  * Previously housed in server/app-dev-server.ts.
  */
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import { toSlash } from "pathslash";
+import { extractExportConstString } from "../build/report.js";
 import type {
   NextHeader,
   NextI18nConfig,
@@ -234,8 +236,34 @@ type AppRouterConfig = {
 };
 
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
+  const sourceCache = new Map<string, string | null>();
+  const forcesDynamic = (filePath: string | null | undefined): boolean => {
+    if (!filePath) return false;
+    let source = sourceCache.get(filePath);
+    if (source === undefined) {
+      try {
+        source = fs.readFileSync(filePath, "utf8");
+      } catch {
+        source = null;
+      }
+      sourceCache.set(filePath, source);
+    }
+    return source !== null && extractExportConstString(source, "dynamic") === "force-dynamic";
+  };
+
   return routes.map((route) => ({
     canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
+    forceDynamic: route.routePath
+      ? forcesDynamic(route.routePath)
+      : [
+          ...route.layouts,
+          route.pagePath,
+          ...route.parallelSlots.flatMap((slot) => [
+            slot.layoutPath,
+            ...(slot.configLayoutPaths ?? []),
+            slot.pagePath ?? slot.defaultPath,
+          ]),
+        ].some(forcesDynamic),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,

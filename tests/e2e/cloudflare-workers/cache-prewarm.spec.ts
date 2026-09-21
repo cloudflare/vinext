@@ -4,7 +4,10 @@ import { randomUUID } from "node:crypto";
 
 const backend = process.env.VINEXT_E2E_CACHE_BACKEND;
 
-test("deployment pre-warming populates the configured data cache", async ({ baseURL, request }) => {
+test("deployment pre-warming and force-dynamic bypass work with the configured cache", async ({
+  baseURL,
+  request,
+}) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   if (!baseURL) throw new Error("deployed test requires a base URL");
   test.setTimeout(90_000);
@@ -76,4 +79,25 @@ test("deployment pre-warming populates the configured data cache", async ({ base
     cachedAt,
     slug: "intro",
   });
+
+  const dynamicUrl = `${baseURL}/force-dynamic?cache-e2e=${randomUUID()}`;
+  const firstDynamic = await request.get(dynamicUrl);
+  const secondDynamic = await request.get(dynamicUrl);
+  const firstDynamicHeaders = firstDynamic.headers();
+  const secondDynamicHeaders = secondDynamic.headers();
+  expect(firstDynamic.ok(), JSON.stringify(firstDynamicHeaders)).toBe(true);
+  expect(secondDynamic.ok(), JSON.stringify(secondDynamicHeaders)).toBe(true);
+  expect(firstDynamicHeaders["cache-control"]).toContain("no-store");
+  expect(secondDynamicHeaders["cache-control"]).toContain("no-store");
+  expect(firstDynamicHeaders["x-vinext-cache"]).not.toBe("HIT");
+  expect(secondDynamicHeaders["x-vinext-cache"]).not.toBe("HIT");
+  expect(firstDynamicHeaders["cf-cache-status"]).not.toBe("HIT");
+  expect(secondDynamicHeaders["cf-cache-status"]).not.toBe("HIT");
+  const renderId = /force-dynamic-render-id[^>]*>([^<]+)</.exec(await firstDynamic.text())?.[1];
+  const nextRenderId = /force-dynamic-render-id[^>]*>([^<]+)</.exec(
+    await secondDynamic.text(),
+  )?.[1];
+  expect(renderId).toBeTruthy();
+  expect(nextRenderId).toBeTruthy();
+  expect(nextRenderId).not.toBe(renderId);
 });

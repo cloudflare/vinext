@@ -114,6 +114,7 @@ type TestRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
+  forceDynamic?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -884,6 +885,59 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("Vary")).toContain("x-visitor");
     expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
     expect(state.forcedDynamicReason).toBeUndefined();
+  });
+
+  it("bypasses the shared response stage for a statically known force-dynamic route", async () => {
+    const route = createPageRoute({ forceDynamic: true });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("dynamic stage")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: () => ({ params: {}, route }),
+      matchRoute: () => ({ params: {}, route }),
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    await expect(response.text()).resolves.toBe("dynamic stage");
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({ forceDynamic: true });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
+  it("keeps a force-dynamic route shared when next.config supplies a public cache policy", async () => {
+    const route = createPageRoute({ forceDynamic: true });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("configured stage")),
+    );
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: "Cache-Control", value: "s-maxage=60" }],
+        },
+      ],
+      matchRequestRoute: () => ({ params: {}, route }),
+      matchRoute: () => ({ params: {}, route }),
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/about"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    await expect(response.text()).resolves.toBe("configured stage");
+    expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
+      ["Cache-Control", "s-maxage=60"],
+    ]);
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
   });
 
   it("transports matched config cache policy to a hybrid Pages response stage", async () => {
