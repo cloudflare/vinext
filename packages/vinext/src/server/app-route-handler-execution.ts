@@ -220,6 +220,7 @@ export function applyDraftModeCachePolicy(response: Response, isDraftMode: boole
 
 type ExecuteAppRouteHandlerOptions = {
   buildPageCacheTags: (pathname: string, extraTags: string[]) => string[];
+  bypassSharedCache?: boolean;
   clearRequestContext: () => void;
   cleanPathname: string;
   executionContext: ExecutionContextLike | null;
@@ -428,6 +429,7 @@ async function executeAppRouteHandlerImpl(
 
     const requestCacheabilityVeto = getRouteCacheabilityDynamicReason();
     const responseMustStayPrivate = Boolean(
+      options.bypassSharedCache === true ||
       options.handler.dynamic === "force-dynamic" ||
       dynamicUsedInHandler ||
       requestCacheabilityVeto ||
@@ -534,7 +536,7 @@ async function executeAppRouteHandlerImpl(
     const preserveHandlerPolicy = isRouteCacheabilityEvaluation()
       ? hasExplicitCacheablePolicy
       : handlerSetCachePolicy;
-    if (responseMustStayPrivate && !preserveHandlerPolicy) {
+    if (options.bypassSharedCache === true || (responseMustStayPrivate && !preserveHandlerPolicy)) {
       const headers = new Headers(finalized.headers);
       applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
       finalized = new Response(finalized.body, {

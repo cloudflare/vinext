@@ -57,6 +57,7 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
 };
 
 type FinalizeAppPageHtmlCacheResponseOptions = {
+  bypassInterceptionContextCache?: boolean;
   capturedDynamicUsageBeforeContextCleanup?: () => boolean;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
@@ -116,7 +117,7 @@ function applyPendingDynamicCdnHeaders(
   finalizePendingCacheStateHeaders(headers, options);
 }
 
-function applyUncacheableRscVariantNoStoreHeaders(
+function applyUncacheableVariantNoStoreHeaders(
   headers: Headers,
   options: { omitCacheState?: boolean } = {},
 ): void {
@@ -275,6 +276,18 @@ export function finalizeAppPageHtmlCacheResponse(
     }
     return probeResponse;
   }
+  if (options.bypassInterceptionContextCache === true) {
+    void options.capturedRscDataPromise?.catch(() => {});
+    const headers = new Headers(response.headers);
+    applyUncacheableVariantNoStoreHeaders(headers, {
+      omitCacheState: options.omitPendingDynamicCacheState === true,
+    });
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
   if (!response.body) {
     return response;
   }
@@ -402,7 +415,7 @@ export function finalizeAppPageRscCacheResponse(
 
   const clientHeaders = new Headers(response.headers);
   if (isUncacheableVariant) {
-    applyUncacheableRscVariantNoStoreHeaders(clientHeaders, {
+    applyUncacheableVariantNoStoreHeaders(clientHeaders, {
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
   } else {

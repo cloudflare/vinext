@@ -439,6 +439,47 @@ describe("app route handler dispatch", () => {
     expect(didClearRequestContext).toBe(true);
   });
 
+  it("keeps route-identity-divergent handlers out of origin and CDN caches", async () => {
+    const isrGet = vi.fn(async () => buildISRCacheEntry(buildCachedRouteValue("victim")));
+    const isrSet = vi.fn();
+    const handlerSpy = vi.fn(
+      () =>
+        new Response("encoded catch-all", {
+          headers: { "Cache-Control": "public, s-maxage=3600" },
+        }),
+    );
+
+    const response = await dispatchAppRouteHandler({
+      bypassSharedCache: true,
+      cleanPathname: "/api/about",
+      clearRequestContext() {},
+      draftModeSecret: "test-draft-secret",
+      i18n: null,
+      isDevelopment: false,
+      isProduction: true,
+      isrGet,
+      isrRouteKey: (pathname) => `route:${pathname}`,
+      isrSet,
+      middlewareContext: { headers: null, status: null },
+      middlewareRequestHeaders: null,
+      params: { slug: ["about"] },
+      request: new Request("https://example.com/api/%61bout"),
+      route: {
+        pattern: "/api/:slug+",
+        routeHandler: { GET: handlerSpy, revalidate: 3600 },
+        routeSegments: ["api", "[...slug]"],
+      },
+      scheduleBackgroundRegeneration() {},
+      searchParams: new URLSearchParams(),
+    });
+
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(handlerSpy).toHaveBeenCalledOnce();
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("encoded catch-all");
+  });
+
   it("keeps mixed-method handlers out of the normal ISR cache path", async () => {
     const isrGet = vi.fn(async () => buildISRCacheEntry(buildCachedRouteValue("unsafe-hit")));
     const isrSet = vi.fn();

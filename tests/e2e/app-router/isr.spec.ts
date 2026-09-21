@@ -173,6 +173,62 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("s-maxage=60");
     expect(cc).toContain("stale-while-revalidate");
   });
+
+  // A request spelling that selects a catch-all route must not publish that
+  // artifact under a static sibling's ISR key. Encoded delimiters and /index
+  // remain distinct cache identities.
+  for (const { attackPath, expectedVictim, label, mustBypassCache, victimPath } of [
+    {
+      attackPath: "/route-cache-identity/%61bout",
+      expectedVictim: "CACHE_IDENTITY_STATIC_PAGE",
+      label: "encoded literal route divergence",
+      mustBypassCache: true,
+      victimPath: "/route-cache-identity/about",
+    },
+    {
+      attackPath: "/route-cache-identity/nested%2Fabout",
+      expectedVictim: "CACHE_IDENTITY_NESTED_STATIC_PAGE",
+      label: "encoded separator",
+      mustBypassCache: false,
+      victimPath: "/route-cache-identity/nested/about",
+    },
+    {
+      attackPath: "/route-cache-identity/index",
+      expectedVictim: "CACHE_IDENTITY_ROOT_STATIC_PAGE",
+      label: "/index alias",
+      mustBypassCache: false,
+      victimPath: "/route-cache-identity",
+    },
+  ]) {
+    test(`keeps ${label} catch-all output out of a static route`, async ({ request }) => {
+      await resetIsrPath(request, victimPath);
+
+      const attacker = await request.get(`${baseUrl()}${attackPath}`);
+      expect(attacker.status()).toBe(200);
+      expect(await attacker.text()).toContain("CACHE_IDENTITY_CATCH_ALL:");
+      if (mustBypassCache) {
+        expect(attacker.headers()["cache-control"]).toContain("no-store");
+      }
+
+      const victim = await waitForCacheHit(request, victimPath);
+      expect(await victim.text()).toContain(expectedVictim);
+    });
+  }
+
+  test("does not let an encoded catch-all request poison a static route handler", async ({
+    request,
+  }) => {
+    const staticPath = "/route-handler-cache-identity/about";
+    await resetIsrPath(request, staticPath);
+
+    const attacker = await request.get(`${baseUrl()}/route-handler-cache-identity/%61bout`);
+    expect(attacker.status()).toBe(200);
+    expect(await attacker.text()).toBe("CACHE_IDENTITY_ROUTE_CATCH_ALL:about");
+    expect(attacker.headers()["cache-control"]).toContain("no-store");
+
+    const victim = await waitForCacheHit(request, staticPath);
+    expect(await victim.text()).toBe("CACHE_IDENTITY_STATIC_ROUTE_HANDLER");
+  });
 });
 
 /**

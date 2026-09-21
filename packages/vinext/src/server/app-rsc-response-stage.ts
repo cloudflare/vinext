@@ -376,6 +376,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
             );
           }
           return options.dispatchMatchedRouteHandler({
+            bypassInterceptionContextCache: props.bypassInterceptionContextCache,
             cleanPathname: props.cleanPathname,
             middlewareContext,
             params: route.isDynamic ? renderParams : null,

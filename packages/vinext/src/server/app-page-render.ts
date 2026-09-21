@@ -1363,6 +1363,7 @@ async function renderAppPageLifecycleImpl(
     }
 
     return finalizeAppPageHtmlCacheResponse(isrResponse, {
+      bypassInterceptionContextCache: options.bypassInterceptionContextCache,
       capturedDynamicUsageBeforeContextCleanup() {
         return dynamicUsedBeforeContextCleanup;
       },

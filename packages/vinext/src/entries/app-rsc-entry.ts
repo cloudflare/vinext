@@ -1474,6 +1474,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     });
   },
   async dispatchMatchedRouteHandler({
+    bypassInterceptionContextCache,
     cleanPathname,
     middlewareContext,
     params,
@@ -1485,6 +1486,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       await __loadAppRouteHandlerDispatch();
     return __dispatchAppRouteHandler({
       basePath: __basePath,
+      bypassSharedCache: bypassInterceptionContextCache,
       cleanPathname,
       clearRequestContext() {
         __clearRequestContext();

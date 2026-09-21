@@ -1215,6 +1215,37 @@ describe("app page cache helpers", () => {
     expect(debugCalls).toEqual([["HTML cache written", "html:/fresh"]]);
   });
 
+  it("keeps route-identity-divergent HTML out of origin and CDN caches", async () => {
+    const isrSet = vi.fn();
+    const waitUntil = vi.fn();
+    const response = finalizeAppPageHtmlCacheResponse(
+      new Response("<h1>encoded catch-all</h1>", {
+        headers: {
+          "Cache-Control": "public, s-maxage=3600",
+          "X-Vinext-Cache": "MISS",
+        },
+      }),
+      {
+        bypassInterceptionContextCache: true,
+        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        cleanPathname: "/about",
+        consumeDynamicUsage: () => false,
+        getPageTags: () => ["/about"],
+        isrHtmlKey: (pathname) => `html:${pathname}`,
+        isrRscKey: (pathname) => `rsc:${pathname}`,
+        isrSet,
+        revalidateSeconds: 3600,
+        linkHeader: null,
+        waitUntil,
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toContain("encoded catch-all");
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(waitUntil).not.toHaveBeenCalled();
+  });
+
   it("keeps request trace metadata on the live response but not its shared cache copy", async () => {
     const marker = "private-render-marker";
     const authored = '<meta name="baggage" content="application-policy"/>';

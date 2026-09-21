@@ -352,6 +352,11 @@ type DispatchMatchedPageOptions<TRoute> = {
 };
 
 type DispatchMatchedRouteHandlerOptions<TRoute> = {
+  /**
+   * Legacy transported cache-bypass bit. Also covers request/cache route-identity
+   * divergence so the response cannot be published under another route's key.
+   */
+  bypassInterceptionContextCache: boolean;
   cleanPathname: string;
   middlewareContext: AppRscMiddlewareContext;
   /**
@@ -2153,6 +2158,21 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
+  if (cleanPathnameIsRequestPathname && options.matchRequestRoute) {
+    const cachePathMatch = options.matchRoute(cleanPathname);
+    if (
+      !cachePathMatch ||
+      cachePathMatch.route.pattern !== route.pattern ||
+      !haveSamePageParams(cachePathMatch.params, params)
+    ) {
+      // The raw request selected this route, while the normalized pathname used
+      // by ISR/CDN identity selects another route (or different params). Reuse
+      // the existing internal bypass channel so every local and split response
+      // stage skips shared reads/writes without changing the worker protocol.
+      bypassInterceptionContextCache = true;
+      setInterceptionResponseUncacheable(true);
+    }
+  }
   setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
@@ -2263,6 +2283,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       buildPageCacheTags(cleanPathname, [], [...route.routeSegments], "route"),
     );
     return options.dispatchMatchedRouteHandler({
+      bypassInterceptionContextCache,
       cleanPathname,
       middlewareContext,
       // Non-dynamic routes report params as `null` to match Next.js. Internal

@@ -85,6 +85,7 @@ type RouteHandlerBackgroundRegenerator = (
 
 type DispatchAppRouteHandlerOptions = {
   basePath?: string;
+  bypassSharedCache?: boolean;
   cleanPathname: string;
   clearRequestContext: () => void;
   draftModeSecret: string;
@@ -254,6 +255,7 @@ async function dispatchAppRouteHandlerImpl(
 
   const resolvedHandlerFn = isAppRouteHandlerFunction(handlerFn) ? handlerFn : undefined;
   const shouldReadRouteCache =
+    options.bypassSharedCache !== true &&
     revalidateSeconds !== null &&
     !getRouteCacheabilityDynamicReason() &&
     shouldReadAppRouteHandlerCache({
@@ -346,6 +348,7 @@ async function dispatchAppRouteHandlerImpl(
   if (resolvedHandlerFn) {
     const response = await executeAppRouteHandler({
       basePath: options.basePath,
+      bypassSharedCache: options.bypassSharedCache,
       buildPageCacheTags(pathname, extraTags) {
         return buildRouteHandlerPageCacheTags(pathname, extraTags, route.routeSegments);
       },
