@@ -79,6 +79,7 @@ export async function handleResponseStage(
   if (props.requestOrigin !== new URL(request.url).origin) {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
+  await __ensureInstrumentation();
   registerConfiguredImageOptimizer(env);
   let ctx = createWorkerRevalidationContext(
     platformCtx,

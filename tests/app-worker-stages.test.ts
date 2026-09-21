@@ -157,6 +157,7 @@ describe("App Worker response stage", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
+    expect(stages.ensureInstrumentation).toHaveBeenCalledOnce();
     expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
     expect(validateRequest).toHaveBeenCalledWith(request);
     expect(stages.renderResponse).not.toHaveBeenCalled();
