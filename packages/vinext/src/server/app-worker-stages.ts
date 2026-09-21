@@ -34,6 +34,8 @@ type AppFullRequestWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
 export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   kind: "app-page" | "app-route-handler";
   bypassInterceptionContextCache: boolean;
+  /** Origin-cache pathname; differs from cleanPathname after an internal rewrite. */
+  cachePathname?: string;
   canUseCanonicalLoadingShell: boolean;
   canonicalPathname: string;
   cleanPathname: string;
@@ -203,6 +205,8 @@ export function isAppWorkerResponseStageProps(
   return (
     (props.kind === "app-page" || props.kind === "app-route-handler") &&
     typeof props.bypassInterceptionContextCache === "boolean" &&
+    (props.cachePathname === undefined ||
+      (typeof props.cachePathname === "string" && props.cachePathname.startsWith("/"))) &&
     typeof props.canUseCanonicalLoadingShell === "boolean" &&
     typeof props.canonicalPathname === "string" &&
     props.canonicalPathname.startsWith("/") &&

@@ -1617,11 +1617,15 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("Cache-Control")).toContain("no-store");
   });
 
-  it("bypasses shared caches when raw and normalized paths share route params", async () => {
+  it("bypasses shared caches when route-handler raw and normalized paths share params", async () => {
     const route = createPageRoute({
+      __loadPage: undefined,
+      __loadRouteHandler() {},
       isDynamic: true,
+      page: null,
       params: ["slug"],
       pattern: "/:slug+",
+      routeHandler: { GET: () => new Response("route") },
       routeSegments: ["[...slug]"],
     });
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
@@ -1652,7 +1656,46 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("Cache-Control")).toContain("no-store");
   });
 
-  it("bypasses shared caches when a rewrite changes the request pathname", async () => {
+  it("keeps equivalent encoded App Page params on the shared cache path", async () => {
+    const route = createPageRoute({
+      isDynamic: true,
+      params: ["slug"],
+      pattern: "/:slug+",
+      routeSegments: ["[...slug]"],
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(
+        new Response("encoded page", {
+          headers: { "Cache-Control": "public, s-maxage=3600" },
+        }),
+      ),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: (pathname) =>
+        pathname === "/%61bout" ? { params: { slug: ["about"] }, route } : null,
+      matchRoute: (pathname) =>
+        pathname === "/about" ? { params: { slug: ["about"] }, route } : null,
+    });
+
+    const response = await handler(
+      new Request("https://example.test/docs/%61bout"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage).toHaveBeenCalledOnce();
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      bypassInterceptionContextCache: false,
+      cleanPathname: "/about",
+      routePattern: "/:slug+",
+    });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=3600");
+  });
+
+  it("uses a source-specific cache identity when a rewrite changes the request pathname", async () => {
     const route = createPageRoute();
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
       Promise.resolve(
@@ -1681,12 +1724,13 @@ describe("createAppRscHandler", () => {
 
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
     expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
-      bypassInterceptionContextCache: true,
+      bypassInterceptionContextCache: false,
+      cachePathname: "/alias",
       canonicalPathname: "/alias",
       cleanPathname: "/about",
     });
-    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
-    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=3600");
   });
 
   it.each([

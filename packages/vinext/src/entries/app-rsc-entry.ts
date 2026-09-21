@@ -1239,6 +1239,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   draftModeSecret: __draftModeSecret,
   dispatchMatchedPage({
     bypassInterceptionContextCache,
+    cachePathname,
     clientReuseManifest,
     cleanPathname,
     displayPathname,
@@ -1366,8 +1367,18 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isRscRequest,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
-      isrHtmlKey: __isrHtmlKey,
-      isrRscKey: __isrRscKey,
+      isrHtmlKey(pathname) {
+        return __isrHtmlKey(pathname === cleanPathname ? cachePathname : pathname);
+      },
+      isrRscKey(pathname, mountedSlots, requestedRenderMode, requestedInterceptionContext, requestedInterceptionId) {
+        return __isrRscKey(
+          pathname === cleanPathname ? cachePathname : pathname,
+          mountedSlots,
+          requestedRenderMode,
+          requestedInterceptionContext,
+          requestedInterceptionId,
+        );
+      },
       isrSet: __isrSet,
       loadSsrHandler() {
         return import.meta.viteRsc.loadModule("ssr", "index");
@@ -1475,6 +1486,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   },
   async dispatchMatchedRouteHandler({
     bypassInterceptionContextCache,
+    cachePathname,
     cleanPathname,
     middlewareContext,
     params,
@@ -1496,7 +1508,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       trailingSlash: __trailingSlash,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
-      isrRouteKey: __isrRouteKey,
+      isrRouteKey(pathname) {
+        return __isrRouteKey(pathname === cleanPathname ? cachePathname : pathname);
+      },
       isrSet: __isrSet,
       middlewareContext,
       middlewareRequestHeaders: middlewareContext.requestHeaders,
