@@ -268,6 +268,27 @@ test.describe("App Router ISR", () => {
     );
   });
 
+  test("keeps query-selected rewrite destinations in distinct cache entries", async ({
+    request,
+  }) => {
+    await resetIsrPath(request, "/route-cache-identity/about");
+    await resetIsrPath(request, "/route-cache-identity/nested/about");
+
+    const aboutPath = "/route-cache-choice?view=about";
+    const nestedPath = "/route-cache-choice?view=nested";
+    const about = await waitForCacheHit(request, aboutPath);
+    expect(await about.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+
+    const initialNested = await request.get(`${baseUrl()}${nestedPath}`);
+    expect(await initialNested.text()).toContain("CACHE_IDENTITY_NESTED_STATIC_PAGE");
+
+    const nested = await waitForCacheHit(request, nestedPath);
+    expect(await nested.text()).toContain("CACHE_IDENTITY_NESTED_STATIC_PAGE");
+
+    const cachedAbout = await waitForCacheHit(request, aboutPath);
+    expect(await cachedAbout.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+  });
+
   test("keeps trailing-slash route handler cache entries distinct", async ({ request }) => {
     const plainPath = "/api/route-cache-identity/trailing";
     const trailingPath = `${plainPath}/`;

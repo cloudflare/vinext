@@ -104,6 +104,16 @@ const nextConfig: NextConfig = {
     return {
       beforeFiles: [
         {
+          source: "/route-cache-choice",
+          destination: "/route-cache-identity/about",
+          has: [{ type: "query", key: "view", value: "about" }],
+        },
+        {
+          source: "/route-cache-choice",
+          destination: "/route-cache-identity/nested/about",
+          has: [{ type: "query", key: "view", value: "nested" }],
+        },
+        {
           source: "/route-cache-rewrite/:slug*",
           destination: "/route-handler-cache-identity/:slug*",
         },

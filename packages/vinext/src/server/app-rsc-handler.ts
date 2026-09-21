@@ -229,6 +229,10 @@ function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolea
   return true;
 }
 
+function rewriteCachePathname(sourcePathname: string, resolvedPathname: string): string {
+  return `${sourcePathname}?__vinext_rewrite=${encodeURIComponent(resolvedPathname)}`;
+}
+
 function requestOptsOutOfWorkerResponseStage(
   request: Request,
   options: Pick<CreateAppRscHandlerOptions<AppRscHandlerRoute>, "draftModeSecret">,
@@ -2182,10 +2186,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       setInterceptionResponseUncacheable(true);
     }
   }
-  // Rewrites render the resolved destination while user code observes the
-  // public source pathname. Keep those artifacts in a source-specific origin
-  // cache entry; direct requests continue to use the normalized route path.
-  const cachePathname = cleanPathnameIsRequestPathname ? cleanPathname : canonicalPathname;
+  // Next.js keys App ISR by the resolved pathname:
+  // packages/next/src/build/templates/app-route.ts
+  // Keep that resolved identity while also partitioning by the public source
+  // pathname that user code observes through usePathname().
+  const cachePathname = cleanPathnameIsRequestPathname
+    ? cleanPathname
+    : rewriteCachePathname(canonicalPathname, cleanPathname);
   setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.

@@ -1725,7 +1725,7 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
     expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
       bypassInterceptionContextCache: false,
-      cachePathname: "/alias",
+      cachePathname: "/alias?__vinext_rewrite=%2Fabout",
       canonicalPathname: "/alias",
       cleanPathname: "/about",
     });
