@@ -1,3 +1,15 @@
+export const metadata = {
+  slug: "guides/tracing",
+  title: "OpenTelemetry and Workers tracing",
+  description:
+    "Configure Next.js-compatible tracing with OpenTelemetry, Sentry, and Cloudflare Workers.",
+  section: "Guides",
+  sectionOrder: 3,
+  order: 2,
+  navTitle: "Tracing and observability",
+  keywords: ["vinext tracing", "OpenTelemetry", "Sentry", "Cloudflare Workers tracing"],
+};
+
 # OpenTelemetry and Workers tracing
 
 Vinext emits Next.js-compatible server traces for App Router and Pages Router requests. Existing Next.js instrumentation continues to use the standard `instrumentation.ts` or `instrumentation.js` entry point; vinext does not add a tracing API or require a vinext-specific adapter.
