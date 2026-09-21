@@ -5,7 +5,7 @@
 ### Features
 
 - **Response Store:** read response metadata from R2 (#3339)
-- feat(tracing): add Next.js-compatible OpenTelemetry instrumentation with Sentry and Cloudflare Workers tracing support (#3261)
+- **Tracing:** add Next.js-compatible OpenTelemetry instrumentation with Sentry and Cloudflare Workers tracing support (#3261)
 - **Cloudflare:** allow version uploads without promotion (#3337)
 - **Response Store:** support for sharded durable objects (#3301)
 
