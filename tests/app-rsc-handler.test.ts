@@ -3169,6 +3169,39 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("keeps verified interception-only route matches cacheable", async () => {
+    const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const dispatchMatchedPage = vi.fn(
+      async () =>
+        new Response("page", {
+          headers: { "Cache-Control": "public, max-age=3600" },
+        }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed"
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
+      matchRequestRoute: () => null,
+      matchRoute: (pathname) => (pathname === "/feed" ? { params: {}, route: sourceRoute } : null),
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bypassInterceptionContextCache: false,
+        route: sourceRoute,
+      }),
+    );
+  });
+
   it("keeps nonexistent interception descendants out of shared caches", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });

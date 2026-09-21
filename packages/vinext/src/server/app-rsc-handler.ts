@@ -2158,7 +2158,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
-  if (cleanPathnameIsRequestPathname && options.matchRequestRoute) {
+  if (!isInterceptionMatch && cleanPathnameIsRequestPathname && options.matchRequestRoute) {
     const cachePathMatch = options.matchRoute(cleanPathname);
     if (
       requestCleanPathname !== cleanPathname ||
