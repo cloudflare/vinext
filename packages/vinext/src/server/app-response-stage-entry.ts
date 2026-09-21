@@ -80,6 +80,10 @@ export async function handleResponseStage(
   if (props.requestOrigin !== new URL(request.url).origin) {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
+  const currentBuildId = process.env.__VINEXT_BUILD_ID ?? null;
+  if (props.buildId !== currentBuildId) {
+    return new Response("Incompatible vinext App response stage", { status: 409 });
+  }
   await __ensureInstrumentation();
   if (props.kind === "app-full-request" && props.prerenderDiscovery) {
     await __ensureHybridPagesApplication();
@@ -108,10 +112,6 @@ export async function handleResponseStage(
     },
     async (cacheabilityContext) => {
       if (props.kind === "app-full-request") {
-        const currentBuildId = process.env.__VINEXT_BUILD_ID ?? null;
-        if (props.buildId !== currentBuildId) {
-          return new Response("Incompatible vinext App response stage", { status: 409 });
-        }
         if (props.prerenderDiscovery) {
           const readinessResponse = createWorkerPrerenderReadinessResponse(
             cacheabilityContext,

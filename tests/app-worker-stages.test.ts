@@ -265,6 +265,25 @@ describe("App Worker response stage", () => {
     expect(stages.renderResponse).not.toHaveBeenCalled();
   });
 
+  it("rejects a stale response-stage build before initializing user modules", async () => {
+    const currentBuildId = process.env.__VINEXT_BUILD_ID ?? null;
+    const response = await handleResponseStage(
+      new Request("https://example.com/missing"),
+      { binding: "value" },
+      undefined,
+      { ...notFoundStage, buildId: currentBuildId === "stale" ? "older" : "stale" },
+      async () => new Response("request-stage"),
+      { cache: "shared" },
+    );
+
+    expect(response.status).toBe(409);
+    expect(stages.ensureInstrumentation).not.toHaveBeenCalled();
+    expect(stages.ensureHybridPagesApplication).not.toHaveBeenCalled();
+    expect(stages.registerImageOptimizer).not.toHaveBeenCalled();
+    expect(stages.registerCacheAdapters).not.toHaveBeenCalled();
+    expect(stages.renderResponse).not.toHaveBeenCalled();
+  });
+
   it("requires a transport proof on full-request stage payloads", () => {
     const fullStage = {
       buildId: null,

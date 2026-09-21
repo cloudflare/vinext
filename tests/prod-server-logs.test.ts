@@ -183,12 +183,14 @@ describe("startProdServer logging", () => {
       host: "127.0.0.1",
       outDir: path.join(root, "dist"),
       noCompression: true,
+      purpose: "prerender",
       silent: true,
     });
 
     try {
       const response = await fetch(`http://127.0.0.1:${port}/`);
       expect(response.status).toBe(500);
+      expect(response.headers.get("x-vinext-prerender-render-error")).toBe("1");
       await expect(response.text()).resolves.toBe("Internal Server Error");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -206,12 +208,14 @@ describe("startProdServer logging", () => {
       host: "127.0.0.1",
       outDir: path.join(root, "dist"),
       noCompression: true,
+      purpose: "prerender",
       silent: true,
     });
 
     try {
       const response = await fetch(`http://127.0.0.1:${port}/`);
       expect(response.status).toBe(500);
+      expect(response.headers.get("x-vinext-prerender-render-error")).toBe("1");
       await expect(response.text()).resolves.toBe("Internal Server Error");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));

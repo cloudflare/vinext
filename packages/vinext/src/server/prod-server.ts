@@ -1893,6 +1893,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     } catch (error) {
       console.error("[vinext] Instrumentation error:", error);
       if (!res.headersSent) {
+        if (purpose === "prerender") {
+          res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+        }
         res.writeHead(500);
         res.end("Internal Server Error");
       }
@@ -2063,6 +2066,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     } catch (error) {
       console.error("[vinext] Instrumentation error:", error);
       if (!res.headersSent) {
+        if (purpose === "prerender") {
+          res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+        }
         res.writeHead(500);
         res.end("Internal Server Error");
       }
