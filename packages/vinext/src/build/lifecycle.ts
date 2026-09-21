@@ -301,7 +301,9 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
       routeRootConfig: context.routeRootConfig,
     });
     if (context.nextConfig.output !== "export") {
-      await finalizeCacheAdapterPrerenderOutput(context.cacheConfig, context.root);
+      await finalizeCacheAdapterPrerenderOutput(context.cacheConfig, context.root, {
+        clientOutDir: context.routeRootConfig?.clientOutDir,
+      });
     }
     await emitPrerenderPathManifest({
       root: context.root,

@@ -9,6 +9,7 @@ import type {
   CdnCacheableHeaderInput,
   CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
+import { DefaultCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import type { StaticAssetsAdapterOptions } from "./static-assets-adapter.js";
 import {
   STATIC_ASSET_CACHE_PATH,
@@ -124,6 +125,11 @@ export default function createStaticAssetsCacheAdapter({
   env?: Record<string, unknown>;
   options?: StaticAssetsAdapterOptions;
 } = {}): CdnCacheAdapter {
+  if (process.env.VINEXT_PRERENDER === "1") {
+    return new DefaultCdnCacheAdapter(
+      process.env.__VINEXT_RSC_BUILD_IDENTITY || process.env.__VINEXT_BUILD_ID,
+    );
+  }
   const binding = options?.binding ?? "ASSETS";
   const assets = env?.[binding];
   if (

@@ -61,10 +61,16 @@ function writeCacheAsset(
 }
 
 /** Package App Router prerender output as immutable Workers Static Assets. */
-export function finalizeStaticAssetsPrerenderOutput(root: string): number {
+export function finalizeStaticAssetsPrerenderOutput(
+  root: string,
+  options: { clientOutDir?: string } = {},
+): number {
   const serverDir = path.join(root, "dist", "server");
   const prerenderDir = path.join(serverDir, "prerendered-routes");
-  const outputDir = path.join(root, "dist", "client", STATIC_ASSET_CACHE_PATH.replace(/^\//, ""));
+  const outputDir = path.join(
+    options.clientOutDir ?? path.join(root, "dist", "client"),
+    STATIC_ASSET_CACHE_PATH.replace(/^\//, ""),
+  );
   fs.rmSync(outputDir, { recursive: true, force: true });
 
   const manifest = readPrerenderManifest(path.join(serverDir, "vinext-prerender.json"));

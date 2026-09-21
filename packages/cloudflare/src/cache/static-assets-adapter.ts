@@ -26,8 +26,8 @@ export function staticAssetsAdapter(options?: StaticAssetsAdapterOptions) {
     adapter: fileURLToPath(import.meta.resolve("./static-assets-adapter.runtime.js")),
     options,
     output: {
-      finalizePrerenderOutput({ root }: { root: string }) {
-        finalizeStaticAssetsPrerenderOutput(root);
+      finalizePrerenderOutput({ root, clientOutDir }: { root: string; clientOutDir: string }) {
+        finalizeStaticAssetsPrerenderOutput(root, { clientOutDir });
       },
     },
     capabilities: {
