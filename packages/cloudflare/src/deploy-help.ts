@@ -21,10 +21,11 @@ export function formatDeployHelp(): string {
     --no-promote             Do not promote the uploaded Worker version to 100%
                              traffic
     --prerender-all          Deprecated for Worker deployments; use
-                             --warm-cache instead (still
-                             honored with next.config output: "export")
+                             --warm-cache instead (still honored for static
+                             export and cache adapters that package local
+                             prerender output)
     --prerender-concurrency <count>
-                             Maximum parallel routes for output: "export"
+                             Maximum parallel routes for local prerendering
     --warm-cache             Upload a Worker version, warm build-discovered paths
                              through the production URL, then promote it
     --warm-cache-target <origin>

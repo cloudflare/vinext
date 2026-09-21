@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import path from "pathslash";
 import type { Logger, Plugin, PluginOption, ResolvedConfig, UserConfig, ViteBuilder } from "vite";
 import {
+  finalizeCacheAdapterPrerenderOutput,
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
@@ -299,6 +300,9 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
       nextConfig: context.nextConfig,
       routeRootConfig: context.routeRootConfig,
     });
+    if (context.nextConfig.output !== "export") {
+      await finalizeCacheAdapterPrerenderOutput(context.cacheConfig, context.root);
+    }
     await emitPrerenderPathManifest({
       root: context.root,
       nextConfig: context.nextConfig,

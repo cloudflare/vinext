@@ -45,6 +45,9 @@ import {
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
   cacheWarmupStatusSource,
+  finalizeCacheAdapterPrerenderOutput,
+  hasCacheAdapterPrerenderOutput,
+  formatVinextPrerenderLabel,
   requiresRouteCacheabilityProbeManifest,
   resolveVinextPrerenderDecision,
   type ResolvedVinextPrerenderConfig,
@@ -2206,7 +2209,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
     vinextPrerenderConfig,
     nextOutput: nextConfig.output,
   });
-  const shouldPrerenderLocally = nextConfig.output === "export";
+  const shouldPrerenderLocally = Boolean(
+    prerenderDecision &&
+    (nextConfig.output === "export" ||
+      hasCacheAdapterPrerenderOutput(viteConfigMetadata.cacheConfig)),
+  );
   const hasStrictResponseVary = hasVerbatimResponseVary(viteConfigMetadata.cacheConfig);
   const warmupStatusSource = cacheWarmupStatusSource(viteConfigMetadata.cacheConfig);
   const hasStagedRequestRouting =
@@ -2334,11 +2341,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
     });
   }
 
-  // Step 6a: static export still requires local prerendered artifacts. Worker
-  // deployments render through the deployed Worker during cache warming.
+  // Step 6a: static exports and adapters that package prerender output still
+  // require local artifacts. Other Worker deployments render during cache warming.
   let prerenderResult: Awaited<ReturnType<typeof runPrerender>> | undefined = undefined;
-  if (shouldPrerenderLocally) {
-    console.log("\n  Pre-rendering all routes (output: 'export')...");
+  if (shouldPrerenderLocally && prerenderDecision) {
+    console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
@@ -2349,6 +2356,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
       nextConfig,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
+    if (nextConfig.output !== "export") {
+      await finalizeCacheAdapterPrerenderOutput(viteConfigMetadata.cacheConfig, info.root);
+    }
   }
 
   if (!options.skipBuild) {
