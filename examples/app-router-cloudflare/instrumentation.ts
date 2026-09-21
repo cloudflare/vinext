@@ -5,16 +5,16 @@
  *
  * ## How it works (new approach)
  *
- * register() is emitted as a top-level `await` inside the generated RSC entry
- * module by `generateRscEntry` in `entries/app-rsc-entry.ts`. This means it runs:
+ * The generated RSC entry awaits register() from its cached request-time
+ * initializer before importing application modules. This means it runs:
  *
  *   - Inside the Cloudflare Worker subprocess (miniflare) when
  *     @cloudflare/vite-plugin is present — the same process as the API routes.
  *   - Inside the RSC Vite environment when @vitejs/plugin-rsc is used standalone.
  *
  * In both cases, register() runs in the same process/environment as request
- * handling, which is exactly what Next.js specifies: "called once when the
- * server starts, before any request handling."
+ * handling, which preserves Next.js's guarantee that registration completes
+ * before user modules and request handling.
  *
  * ## State visibility
  *

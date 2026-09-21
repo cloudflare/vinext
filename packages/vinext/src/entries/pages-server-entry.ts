@@ -122,15 +122,23 @@ export async function generatePagesRequestEntry(
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};`
     : "";
   const instrumentationInitCode = instrumentationPath
-    ? `await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});`
-    : "";
+    ? `let __applicationInitialization;
+async function __initializeApplication() {
+  await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});
+  ${middlewarePath ? `middlewareModule = await import(${JSON.stringify(middlewarePath)});` : ""}
+}
+export function __ensureInstrumentation() {
+  return __applicationInitialization ??= __initializeApplication();
+}`
+    : "export function __ensureInstrumentation() {}";
   const middlewareImportCode = middlewarePath
     ? instrumentationPath
-      ? `const middlewareModule = await import(${JSON.stringify(middlewarePath)});`
+      ? "let middlewareModule;"
       : `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
     : "";
   const middlewareExportCode = middlewarePath
     ? `export async function runMiddleware(request, ctx, options) {
+  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
@@ -144,6 +152,7 @@ import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } 
   });
 }`
     : `export async function runMiddleware() {
+  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
   return { continue: true };
 }`;
 
@@ -265,27 +274,33 @@ export async function generateServerEntry(
   // modules don't have a real file location for relative resolution.
   const pageImports = pageRoutes.map((r: Route, i: number) =>
     instrumentationPath
-      ? `const page_${i} = await import(${JSON.stringify(r.filePath)});`
+      ? `let page_${i};`
       : `import * as page_${i} from ${JSON.stringify(r.filePath)};`,
+  );
+  const pageImportInitializers = pageRoutes.map(
+    (r: Route, i: number) => `page_${i} = await import(${JSON.stringify(r.filePath)});`,
   );
 
   const apiImports = apiRoutes.map((r: Route, i: number) =>
     instrumentationPath
-      ? `const api_${i} = await import(${JSON.stringify(r.filePath)});`
+      ? `let api_${i};`
       : `import * as api_${i} from ${JSON.stringify(r.filePath)};`,
+  );
+  const apiImportInitializers = apiRoutes.map(
+    (r: Route, i: number) => `api_${i} = await import(${JSON.stringify(r.filePath)});`,
   );
 
   // Build the route table — include filePath for SSR manifest lookup
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (r: Route, i: number) => {
       const dataKind = await getPagesDataKind(r.filePath);
-      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(r.filePath)}, dataKind: ${JSON.stringify(dataKind)} }`;
+      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: ${instrumentationPath ? "null" : `page_${i}`}, filePath: ${JSON.stringify(r.filePath)}, dataKind: ${JSON.stringify(dataKind)} }`;
     }),
   );
 
   const apiRouteEntries = apiRoutes.map(
     (r: Route, i: number) =>
-      `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`,
+      `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: ${instrumentationPath ? "null" : `api_${i}`} }`,
   );
 
   // Check for _app, _document, and _error.
@@ -301,14 +316,14 @@ export async function generateServerEntry(
   const appImportCode =
     appFilePath !== null
       ? instrumentationPath
-        ? `const { default: AppComponent } = await import(${JSON.stringify(appFilePath)});`
+        ? "let AppComponent;"
         : `import { default as AppComponent } from ${JSON.stringify(appFilePath)};`
       : `const AppComponent = null;`;
 
   const docImportCode =
     docFilePath !== null
       ? instrumentationPath
-        ? `const { default: DocumentComponent } = await import(${JSON.stringify(docFilePath)});`
+        ? "let DocumentComponent;"
         : `import { default as DocumentComponent } from ${JSON.stringify(docFilePath)};`
       : `const DocumentComponent = null;`;
 
@@ -316,10 +331,10 @@ export async function generateServerEntry(
   const errorImportCode =
     errorFilePath !== null
       ? instrumentationPath
-        ? `const ErrorPageModule = await import(${JSON.stringify(errorFilePath)});`
+        ? "let ErrorPageModule;"
         : `import * as ErrorPageModule from ${JSON.stringify(errorFilePath)};`
       : instrumentationPath
-        ? `const ErrorPageModule = await import("next/error");`
+        ? "let ErrorPageModule;"
         : `import * as ErrorPageModule from "next/error";`;
 
   // Serialize i18n config for embedding in the server entry
@@ -370,10 +385,9 @@ export async function generateServerEntry(
 
   // Generate instrumentation code if instrumentation.ts exists.
   // For production (Cloudflare Workers), instrumentation.ts is bundled into the
-  // Worker and register() is called as a top-level await at module evaluation time —
-  // before any request is handled. This mirrors App Router behavior (generateRscEntry)
-  // and matches Next.js semantics: register() runs once on startup in the process
-  // that handles requests.
+  // Worker and register() is awaited by the cached request-time initializer before
+  // any user module is imported. This mirrors App Router behavior (generateRscEntry)
+  // without making Worker module evaluation depend on an asynchronous user graph.
   //
   // The onRequestError handler is stored on globalThis so it is visible across
   // all code within the Worker (same global scope).
@@ -382,11 +396,34 @@ export async function generateServerEntry(
 import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};`
     : "";
 
+  const specialModuleInitializers = instrumentationPath
+    ? [
+        appFilePath
+          ? `({ default: AppComponent } = await import(${JSON.stringify(appFilePath)}));`
+          : "",
+        docFilePath
+          ? `({ default: DocumentComponent } = await import(${JSON.stringify(docFilePath)}));`
+          : "",
+        `ErrorPageModule = await import(${JSON.stringify(errorFilePath ?? "next/error")});`,
+      ].filter(Boolean)
+    : [];
   const instrumentationInitCode = instrumentationPath
-    ? `// Both halves of a multi-stage output share this idempotent initializer,
-// so instrumentation still registers exactly once per runtime.
-await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});`
-    : "";
+    ? `let __applicationInitialization;
+async function __initializeApplication() {
+  await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});
+  ${includeMiddlewareRuntime && middlewarePath ? `middlewareModule = await import(${JSON.stringify(middlewarePath)});` : ""}
+  ${pageImportInitializers.join("\n  ")}
+  ${apiImportInitializers.join("\n  ")}
+  ${specialModuleInitializers.join("\n  ")}
+  ${pageRoutes.map((_, index) => `pageRoutes[${index}].module = page_${index};`).join("\n  ")}
+  ${apiRoutes.map((_, index) => `apiRoutes[${index}].module = api_${index};`).join("\n  ")}
+  _errorPageRoute.module = ErrorPageModule;
+  _renderPage = __createRenderPage();
+}
+export function __ensureInstrumentation() {
+  return __applicationInitialization ??= __initializeApplication();
+}`
+    : "export function __ensureInstrumentation() {}";
   const openTelemetryLoaderCode = options.nodeOpenTelemetryLoader
     ? `import { register as __registerOpenTelemetryLoader } from "node:module";
 const __openTelemetryLoaderKey = Symbol.for("vinext.openTelemetryLoader");
@@ -400,7 +437,7 @@ if (process.env.VINEXT_PRERENDER !== "1" && !globalThis[__openTelemetryLoaderKey
   const middlewareImportCode =
     includeMiddlewareRuntime && middlewarePath
       ? instrumentationPath
-        ? `const middlewareModule = await import(${JSON.stringify(middlewarePath)});`
+        ? "let middlewareModule;"
         : `import * as middlewareModule from ${JSON.stringify(middlewarePath)};`
       : "";
   const middlewareRuntimeImportCode = includeMiddlewareRuntime
@@ -415,6 +452,7 @@ if (process.env.VINEXT_PRERENDER !== "1" && !globalThis[__openTelemetryLoaderKey
     ? middlewarePath
       ? `
 export async function runMiddleware(request, ctx, options) {
+  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
@@ -430,6 +468,7 @@ export async function runMiddleware(request, ctx, options) {
 `
       : `
 export async function runMiddleware(request) {
+  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
   return { continue: true };
 }
 `
@@ -569,7 +608,7 @@ const _errorPageRoute = {
   patternParts: ["_error"],
   isDynamic: false,
   params: [],
-  module: ErrorPageModule,
+  module: ${instrumentationPath ? "null" : "ErrorPageModule"},
   filePath: ${errorAssetPathJson},
 };
 
@@ -628,7 +667,8 @@ export function matchApiRoute(url, request) {
 // stays importable in test environments (the root vite.config.ts only
 // aliases vinext/shims/*, not next/*).
 __setPagesClientAssets(__pagesClientAssets);
-const _renderPage = __createPagesPageHandler({
+function __createRenderPage() {
+  return __createPagesPageHandler({
   pageRoutes,
   errorPageRoute: _errorPageRoute,
   matchRoute: (url) => matchRoute(url, pageRoutes),
@@ -719,9 +759,12 @@ const _renderPage = __createPagesPageHandler({
   },
   AppComponent,
   DocumentComponent,
-});
+  });
+}
+${instrumentationPath ? "let _renderPage;" : "const _renderPage = __createRenderPage();"}
 
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options, initialResponseHeaders) {
+  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
   __registerConfiguredCacheAdapters();
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options, initialResponseHeaders));
   return _renderPage(request, url, manifest, middlewareHeaders, options, initialResponseHeaders);
@@ -730,6 +773,7 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker", initialResponseHeaders) {
+  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({

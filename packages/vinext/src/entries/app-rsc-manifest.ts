@@ -10,6 +10,7 @@ import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
 type AppRscManifestCode = {
   imports: string[];
+  importInitializers: string[];
   routeEntries: string[];
   metaRouteEntries: string[];
   generateStaticParamsEntries: string[];
@@ -95,10 +96,12 @@ type ImportAllocator = {
   getLazyLoaderVar(filePath: string): string;
   importMap: ReadonlyMap<string, string>;
   imports: string[];
+  importInitializers: string[];
 };
 
 function createImportAllocator(deferEagerImports: boolean): ImportAllocator {
   const imports: string[] = [];
+  const importInitializers: string[] = [];
   const importMap = new Map<string, string>();
   const lazyMap = new Map<string, string>();
   let importIdx = 0;
@@ -107,17 +110,19 @@ function createImportAllocator(deferEagerImports: boolean): ImportAllocator {
   return {
     importMap,
     imports,
+    importInitializers,
     getImportVar(filePath) {
       const existing = importMap.get(filePath);
       if (existing) return existing;
 
       const varName = `mod_${importIdx++}`;
       const absPath = toSlash(filePath);
-      imports.push(
-        deferEagerImports
-          ? `const ${varName} = await import(${JSON.stringify(absPath)});`
-          : `import * as ${varName} from ${JSON.stringify(absPath)};`,
-      );
+      if (deferEagerImports) {
+        imports.push(`let ${varName};`);
+        importInitializers.push(`${varName} = await import(${JSON.stringify(absPath)});`);
+      } else {
+        imports.push(`import * as ${varName} from ${JSON.stringify(absPath)};`);
+      }
       importMap.set(filePath, varName);
       return varName;
     },
@@ -581,6 +586,7 @@ export function buildAppRscManifestCode(
 
   return {
     imports: imports.imports,
+    importInitializers: imports.importInitializers,
     routeEntries,
     metaRouteEntries: createMetadataRouteEntriesSource(metadataRoutes, imports.importMap),
     generateStaticParamsEntries: buildGenerateStaticParamsEntries(

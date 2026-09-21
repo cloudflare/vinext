@@ -17,9 +17,9 @@
  *
  * ## Next.js semantics
  *
- * Next.js calls `register()` once when the server process starts, before user
- * server modules are evaluated and before any request handling. Production
- * entries await this helper before dynamically importing those user modules.
+ * Next.js calls `register()` once before user server modules are evaluated and
+ * before request handling. Production entries await this helper from a cached
+ * request-time initializer before dynamically importing those user modules.
  *
  * References:
  * - https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation

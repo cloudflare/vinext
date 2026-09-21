@@ -1349,12 +1349,15 @@ describe("App Router entry templates", () => {
     const loaderIndex = code.indexOf(
       '__registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs"',
     );
-    const registrationIndex = code.indexOf("await __ensureInstrumentation();");
-    const userModuleIndex = code.indexOf("const mod_0 = await import(");
+    const registrationIndex = code.indexOf("await __ensureInstrumentationRegistered(");
+    const userModuleIndex = code.indexOf("mod_0 = await import(");
 
     expect(loaderIndex).toBeGreaterThanOrEqual(0);
     expect(registrationIndex).toBeGreaterThan(loaderIndex);
     expect(userModuleIndex).toBeGreaterThan(registrationIndex);
+    expect(code).toContain("async function __initializeApplication()");
+    expect(code).toContain("return __applicationInitialization ??= __initializeApplication()");
+    expect(code).not.toContain("const mod_0 = await import(");
     expect(
       generateRscEntry(
         "/tmp/test/app",
@@ -1977,13 +1980,14 @@ describe("Pages Router entry template", () => {
         '__registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs"',
       );
       const registrationIndex = code.indexOf("await __ensureInstrumentationRegistered(");
-      const userModuleIndex = code.indexOf(
-        `const page_0 = await import(${JSON.stringify(pagePath)})`,
-      );
+      const userModuleIndex = code.indexOf(`page_0 = await import(${JSON.stringify(pagePath)})`);
 
       expect(loaderIndex).toBeGreaterThanOrEqual(0);
       expect(registrationIndex).toBeGreaterThan(loaderIndex);
       expect(userModuleIndex).toBeGreaterThan(registrationIndex);
+      expect(code).toContain("async function __initializeApplication()");
+      expect(code).toContain("return __applicationInitialization ??= __initializeApplication()");
+      expect(code).not.toContain(`const page_0 = await import(${JSON.stringify(pagePath)})`);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

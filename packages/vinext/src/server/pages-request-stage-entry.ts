@@ -254,6 +254,7 @@ async function handleRequestImpl(
   defaultHostRuntime: "node" | "worker",
   assets: VinextAssetFetcher | undefined,
 ): Promise<Response> {
+  await pagesEntry.__ensureInstrumentation?.();
   let sharedResponseHeaders: Headers | null = null;
   let sharedOuterPolicyHeaders: Headers | null = null;
   let ctx = createWorkerRevalidationContext(

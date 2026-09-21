@@ -1998,6 +1998,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     typeof serverEntry.matchPageRoute === "function" ? serverEntry.matchPageRoute : undefined;
   const matchApiRoute =
     typeof serverEntry.matchApiRoute === "function" ? serverEntry.matchApiRoute : undefined;
+  const ensureInstrumentation =
+    typeof serverEntry.__ensureInstrumentation === "function"
+      ? () => serverEntry.__ensureInstrumentation()
+      : () => undefined;
   const hasMiddleware = serverEntry.hasMiddleware === true;
   const pageRoutes = readPagesServerEntryPageRoutes(serverEntry.pageRoutes);
 
@@ -2065,6 +2069,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     });
 
   const handleRequestImpl = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    await ensureInstrumentation();
     const rawUrl = req.url ?? "/";
     const rawPagesPathnameBeforeNormalize = rawUrl.split("?")[0];
 
