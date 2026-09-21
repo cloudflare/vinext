@@ -59,6 +59,7 @@ export const metadata: Metadata = {
  * route over a query param so the URL is explicit and ISR caching keys cleanly.
  */
 const KIND = "deploy" as const;
+const TREND_START = Date.parse("2026-05-15T00:00:00Z");
 
 const CARD = "flex w-full flex-col gap-3 rounded-lg bg-kumo-base p-6 ring ring-kumo-hairline";
 
@@ -113,7 +114,7 @@ async function runQueries(
   latestFiles: GridCell[];
   trend: TrendPoint[];
 }> {
-  // The "latest run" and all-time trend queries are independent —
+  // The "latest run" and trend queries are independent —
   // issue them in parallel to save one D1 round-trip on every page load.
   // The file-results query depends on the latest run id, so that stays
   // sequential.
@@ -225,7 +226,7 @@ async function runQueries(
       JOIN compat_file_results f ON f.run_id = r.id
       LEFT JOIN compat_suite_meta m ON m.suite = f.suite
       LEFT JOIN out_of_scope o ON o.suite = f.suite
-      WHERE r.kind = ${kind}
+      WHERE r.kind = ${kind} AND r.created_at >= ${TREND_START}
       GROUP BY r.id
       ORDER BY r.created_at DESC
     `) as unknown as Promise<TrendRow[]>,
