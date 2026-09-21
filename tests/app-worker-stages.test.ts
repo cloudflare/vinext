@@ -217,6 +217,7 @@ describe("App Worker response stage", () => {
     const matchedStage = {
       ...notFoundStage,
       bypassInterceptionContextCache: false,
+      cachePathname: "/missing",
       canUseCanonicalLoadingShell: false,
       interceptionContext: null,
       interceptionId: null,
@@ -227,13 +228,30 @@ describe("App Worker response stage", () => {
       routePathname: "/missing",
     } satisfies AppWorkerResponseStageProps;
     const { bypassInterceptionContextCache: _bypass, ...withoutBypassProof } = matchedStage;
+    const { cachePathname: _cachePathname, ...withoutCachePathname } = matchedStage;
     const { canUseCanonicalLoadingShell: _loading, ...withoutLoadingCapability } = matchedStage;
     const { interceptionId: _interceptionId, ...withoutInterceptionId } = matchedStage;
 
     expect(isAppWorkerResponseStageProps(matchedStage)).toBe(true);
     expect(isAppWorkerResponseStageProps(withoutBypassProof)).toBe(false);
+    expect(isAppWorkerResponseStageProps(withoutCachePathname)).toBe(false);
     expect(isAppWorkerResponseStageProps(withoutLoadingCapability)).toBe(false);
     expect(isAppWorkerResponseStageProps(withoutInterceptionId)).toBe(false);
+  });
+
+  it("rejects response-stage payloads from the previous protocol", async () => {
+    const response = await handleResponseStage(
+      new Request("https://example.com/missing"),
+      undefined,
+      undefined,
+      { ...notFoundStage, protocolVersion: 8 } as unknown as AppWorkerResponseStageProps,
+      async () => new Response("request-stage"),
+      { cache: "shared" },
+    );
+
+    expect(response.status).toBe(400);
+    expect(stages.ensureInstrumentation).not.toHaveBeenCalled();
+    expect(stages.renderResponse).not.toHaveBeenCalled();
   });
 
   it.each([
