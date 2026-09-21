@@ -982,7 +982,9 @@ describe("App Router Production server (startProdServer)", () => {
     }
   }, 60000);
 
-  it("preloads rendered next/dynamic chunks with absolute assetPrefix and the CSP nonce", async () => {
+  it("applies configured crossOrigin to App Router assets with absolute assetPrefix", async () => {
+    // Ported from Next.js: test/e2e/app-dir/app-config-crossorigin/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-config-crossorigin/index.test.ts
     const tmpDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "vinext-app-dynamic-absolute-asset-prefix-"),
     );
@@ -1025,7 +1027,7 @@ describe("App Router Production server (startProdServer)", () => {
         nextConfigPath,
         nextConfig.replace(
           "const nextConfig: NextConfig = {",
-          'const nextConfig: NextConfig = {\n  assetPrefix: "https://cdn.example.com",',
+          'const nextConfig: NextConfig = {\n  assetPrefix: "https://cdn.example.com",\n  crossOrigin: "use-credentials",',
         ),
       );
 
@@ -1066,16 +1068,27 @@ describe("App Router Production server (startProdServer)", () => {
         expect(tag).toMatch(
           /\bhref="https:\/\/cdn\.example\.com\/_next\/static\/chunks\/[^"]+\.js"/,
         );
+        expect(tag).toContain('crossorigin="use-credentials"');
       }
 
-      const cdnAssetLinks = (html.match(/<link\b[^>]*>/g) ?? []).filter(
-        (tag) =>
-          (/\brel="modulepreload"/i.test(tag) || /\brel="stylesheet"/i.test(tag)) &&
-          tag.includes("https://cdn.example.com/_next/static/"),
+      // @vitejs/plugin-rsc owns additional client-reference hints. This parity port covers
+      // the bootstrap and next/dynamic assets emitted by vinext in this PR.
+      const cdnAssetScripts = (html.match(/<script\b[^>]*>/g) ?? []).filter((tag) =>
+        tag.includes('src="https://cdn.example.com/_next/static/'),
       );
-      expect(cdnAssetLinks.length).toBeGreaterThan(0);
-      for (const tag of cdnAssetLinks) {
-        expect(tag).toMatch(/\bcrossorigin/i);
+      expect(cdnAssetScripts.length).toBeGreaterThan(0);
+      for (const tag of cdnAssetScripts) {
+        expect(tag).toContain('crossorigin="use-credentials"');
+      }
+
+      const bootstrapSrc = /\bsrc="([^"]+)"/.exec(cdnAssetScripts[0])?.[1];
+      expect(bootstrapSrc).toBeTruthy();
+      const bootstrapPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+        (tag) => /\brel="modulepreload"/i.test(tag) && tag.includes('href="' + bootstrapSrc + '"'),
+      );
+      expect(bootstrapPreloads.length).toBeGreaterThan(0);
+      for (const tag of bootstrapPreloads) {
+        expect(tag).toContain('crossorigin="use-credentials"');
       }
 
       const cssRes = await fetch(
@@ -1095,7 +1108,7 @@ describe("App Router Production server (startProdServer)", () => {
       for (const tag of dynamicStylesheets) {
         expect(tag).toContain('nonce="vinext-test-nonce"');
         expect(tag).not.toContain('as="style"');
-        expect(tag).toMatch(/\bcrossorigin/i);
+        expect(tag).toContain('crossorigin="use-credentials"');
       }
     } finally {
       assetPrefixServer?.close();

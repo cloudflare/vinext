@@ -66,7 +66,7 @@ import {
   isAbsoluteAssetPrefix,
 } from "../utils/asset-prefix.js";
 import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
-import { setPagesClientAssets } from "./pages-client-assets.js";
+import { setPagesClientAssets, type AssetCrossOrigin } from "./pages-client-assets.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { ExecutionContextLike } from "vinext/shims/request-context";
@@ -476,12 +476,14 @@ function installClientBuildManifestGlobals(
   clientDir: string,
   assetBase: string,
   assetPrefix: string,
+  crossOrigin: AssetCrossOrigin,
 ): void {
   const metadata = computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix });
   setPagesClientAssets({
     appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
     lazyChunks: metadata.lazyChunks,
     dynamicPreloads: metadata.dynamicPreloads,
+    crossOrigin,
   });
 }
 function isNoBodyResponseStatus(status: number): boolean {
@@ -1524,6 +1526,7 @@ function installPagesClientAssets(options: {
   assetPrefix: string;
   assetBase: string;
   clientEntryLookup: PagesClientEntryLookup;
+  crossOrigin?: AssetCrossOrigin;
 }): Record<string, string[]> {
   const ssrManifest = readSsrManifest(options.clientDir);
   const metadata = computeClientRuntimeMetadata({
@@ -1540,6 +1543,7 @@ function installPagesClientAssets(options: {
     ssrManifest: Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined,
     lazyChunks: metadata.lazyChunks,
     dynamicPreloads: metadata.dynamicPreloads,
+    crossOrigin: options.crossOrigin,
   });
 
   return ssrManifest;
@@ -1585,6 +1589,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // continue to work with the historical asset layout.
   const appRouterAssetPrefix: string =
     typeof rscModule.__assetPrefix === "string" ? rscModule.__assetPrefix : "";
+  const appRouterCrossOrigin: AssetCrossOrigin =
+    rscModule.__crossOrigin === "anonymous" || rscModule.__crossOrigin === "use-credentials"
+      ? rscModule.__crossOrigin
+      : "";
   const appRouterBasePath: string =
     typeof rscModule.__basePath === "string" ? rscModule.__basePath : "";
   const appRouterInlineCss = rscModule.__inlineCss === true;
@@ -1626,9 +1634,15 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       assetPrefix: appRouterAssetPrefix,
       assetBase: appAssetBase,
       clientEntryLookup: "pages-client-entry",
+      crossOrigin: appRouterCrossOrigin,
     });
   } else {
-    installClientBuildManifestGlobals(clientDir, appAssetBase, appRouterAssetPrefix);
+    installClientBuildManifestGlobals(
+      clientDir,
+      appAssetBase,
+      appRouterAssetPrefix,
+      appRouterCrossOrigin,
+    );
   }
 
   // Seed the memory cache with pre-rendered routes so the first request to
@@ -1985,6 +1999,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     assetPrefix,
     assetBase,
     clientEntryLookup: "any-client-entry",
+    crossOrigin: vinextConfig?.crossOrigin ?? "",
   });
 
   // Build the static file metadata cache at startup (same as App Router).

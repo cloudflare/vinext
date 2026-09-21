@@ -201,6 +201,16 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("/old");
   });
 
+  it("embeds App Router crossOrigin for the production server", () => {
+    // Ported from Next.js: test/e2e/app-dir/app-config-crossorigin/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-config-crossorigin/index.test.ts
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      crossOrigin: "use-credentials",
+    });
+
+    expect(code).toContain('export const __crossOrigin = "use-credentials";');
+  });
+
   it("includes config pattern matching function for regex patterns", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [{ source: "/docs/:path*", destination: "/wiki/:path*", permanent: false }],

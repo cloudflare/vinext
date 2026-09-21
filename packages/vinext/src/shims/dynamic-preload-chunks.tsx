@@ -77,6 +77,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
   if (typeof window !== "undefined") return null;
   const files = resolveDynamicPreloadFiles(props.moduleIds);
   if (files.length === 0) return null;
+  const crossOrigin = getPagesClientAssets().crossOrigin ?? "";
 
   const preloadLinks: React.ReactNode[] = [];
   for (const file of files) {
@@ -88,7 +89,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
           key: href,
           rel: "stylesheet",
           href,
-          crossOrigin: "",
+          crossOrigin,
           nonce,
           precedence: "dynamic",
         }),
@@ -107,7 +108,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
           rel: "modulepreload",
           href: assetHref,
           as: "script",
-          crossOrigin: "",
+          crossOrigin,
           fetchPriority: "low",
           nonce,
         }),

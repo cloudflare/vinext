@@ -4260,7 +4260,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const metadata: {
               clientEntry: string;
               ssrManifest?: Record<string, string[]>;
-            } = { clientEntry: DEV_PAGES_CLIENT_ENTRY };
+              crossOrigin: "" | "anonymous" | "use-credentials";
+            } = {
+              clientEntry: DEV_PAGES_CLIENT_ENTRY,
+              crossOrigin: nextConfig?.crossOrigin ?? "",
+            };
             const ssrManifest: Record<string, string[]> = {};
             const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
             const pagesRoutes = await pagesRouter(
@@ -4355,6 +4359,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 htmlLimitedBots: nextConfig?.htmlLimitedBots,
                 clientTraceMetadata: nextConfig?.clientTraceMetadata,
                 assetPrefix: nextConfig?.assetPrefix,
+                crossOrigin: nextConfig?.crossOrigin,
                 expireTime: nextConfig?.expireTime,
                 reactMaxHeadersLength: nextConfig?.reactMaxHeadersLength,
                 cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
@@ -7447,6 +7452,7 @@ export const loadServerActionClient = ${
               ssrManifest,
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
+              crossOrigin: nextConfig.crossOrigin ?? "",
             });
             const buildSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
             if (hasAppDir && hasPagesDir && buildSession) {
