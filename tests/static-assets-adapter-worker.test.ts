@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { staticAssetsAdapter } from "../packages/cloudflare/src/cache/static-assets-adapter.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
 import { finalizeCacheAdapterPrerenderOutput } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
@@ -77,7 +77,17 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
       logLevel: "silent",
     });
     await builder.buildApp();
-    await runPrerender({ root });
+    const warn = vi.spyOn(console, "warn");
+    try {
+      await runPrerender({ root });
+      expect(
+        warn.mock.calls.filter(([message]) =>
+          String(message).includes("failed to initialize the configured CDN cache adapter"),
+        ),
+      ).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
     await finalizeCacheAdapterPrerenderOutput({ cdn: descriptor }, root);
 
     const wranglerPath = path.join(root, "node_modules/wrangler/wrangler-dist/cli.js");

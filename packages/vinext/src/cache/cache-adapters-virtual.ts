@@ -14,6 +14,7 @@
  * never touches the Workers runtime — instantiation is deferred to the first
  * request.
  */
+import path from "pathslash";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import type { VinextMultiStageOutput } from "../server/multi-stage.js";
 
@@ -80,7 +81,10 @@ export type CacheAdapterBuildOutput = {
     isPrimaryServerOutput: boolean;
   }) => Promise<void> | void;
   /** Package locally prerendered artifacts after the prerender phase completes. */
-  finalizePrerenderOutput?: (output: { root: string }) => Promise<void> | void;
+  finalizePrerenderOutput?: (output: {
+    root: string;
+    clientOutDir: string;
+  }) => Promise<void> | void;
 };
 
 export type CacheAdapterDescriptor<O extends Record<string, unknown> = Record<string, unknown>> = {
@@ -136,9 +140,13 @@ export function hasCacheAdapterPrerenderOutput(cache?: VinextCacheConfig | null)
 export async function finalizeCacheAdapterPrerenderOutput(
   cache: VinextCacheConfig | null | undefined,
   root: string,
+  output: { clientOutDir?: string } = {},
 ): Promise<void> {
   for (const finalize of new Set(prerenderOutputFinalizers(cache))) {
-    await finalize({ root });
+    await finalize({
+      root,
+      clientOutDir: path.resolve(root, output.clientOutDir ?? "dist/client"),
+    });
   }
 }
 

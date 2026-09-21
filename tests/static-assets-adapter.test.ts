@@ -47,6 +47,7 @@ describe("staticAssetsAdapter", () => {
 
   it("packages prerendered HTML and RSC and reads them through the Assets binding", async () => {
     const root = createRoot();
+    const clientOutDir = path.join(root, "build/client");
     write(
       root,
       "dist/server/vinext-prerender.json",
@@ -67,14 +68,16 @@ describe("staticAssetsAdapter", () => {
     write(root, "dist/server/prerendered-routes/index.rsc", "rsc payload");
 
     const descriptor = staticAssetsAdapter();
-    await finalizeCacheAdapterPrerenderOutput({ cdn: descriptor }, root);
+    await finalizeCacheAdapterPrerenderOutput({ cdn: descriptor }, root, {
+      clientOutDir,
+    });
 
     const assets = {
       async fetch(input: RequestInfo | URL) {
         const url = new URL(
           typeof input === "string" ? input : input instanceof URL ? input : input.url,
         );
-        const file = path.join(root, "dist/client", url.pathname.replace(/^\//, ""));
+        const file = path.join(clientOutDir, url.pathname.replace(/^\//, ""));
         return fs.existsSync(file)
           ? new Response(fs.readFileSync(file))
           : new Response("not found", { status: 404 });

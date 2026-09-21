@@ -740,7 +740,9 @@ async function buildApp() {
       routeRootConfig: buildConfigMetadata.routeRootConfig,
     });
     if (resolvedNextConfig.output !== "export") {
-      await finalizeCacheAdapterPrerenderOutput(buildConfigMetadata.cacheConfig, root);
+      await finalizeCacheAdapterPrerenderOutput(buildConfigMetadata.cacheConfig, root, {
+        clientOutDir: buildConfigMetadata.routeRootConfig?.clientOutDir,
+      });
     }
     await emitPrerenderPathManifest({
       root,

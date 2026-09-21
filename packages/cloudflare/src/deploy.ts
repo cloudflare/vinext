@@ -2078,7 +2078,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
     if (nextConfig.output !== "export") {
-      await finalizeCacheAdapterPrerenderOutput(viteConfigMetadata.cacheConfig, info.root);
+      await finalizeCacheAdapterPrerenderOutput(viteConfigMetadata.cacheConfig, info.root, {
+        clientOutDir: viteConfigMetadata.routeRootConfig?.clientOutDir,
+      });
     }
   }
 

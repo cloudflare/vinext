@@ -618,8 +618,27 @@ describe("deploy prerender config wiring", () => {
     );
   });
 
-  it("packages local prerender output when the CDN adapter consumes it", async () => {
+  it("packages local prerender output in the configured client directory", async () => {
     writeProject("true", "{ cdn: staticAssetsAdapter() }");
+    const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+    fs.writeFileSync(
+      viteConfigPath,
+      fs
+        .readFileSync(viteConfigPath, "utf8")
+        .replace("vinext({ prerender:", 'vinext({ clientOutDir: "build/client", prerender:'),
+    );
+    runPrerenderMock.mockImplementationOnce(async () => {
+      writeFile(
+        "dist/server/vinext-prerender.json",
+        JSON.stringify({
+          buildId: "build-1",
+          routes: [{ route: "/", status: "rendered", revalidate: false, router: "app" }],
+        }),
+      );
+      writeFile("dist/server/prerendered-routes/index.html", "<html>Home</html>");
+      writeFile("dist/server/prerendered-routes/index.rsc", "flight");
+      return { routes: [] };
+    });
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true });
@@ -629,6 +648,12 @@ describe("deploy prerender config wiring", () => {
         root: tmpDir,
         nextConfig: expect.not.objectContaining({ output: "export" }),
       }),
+    );
+    expect(fs.existsSync(path.join(tmpDir, "build/client/_vinext/static-cache/index.json"))).toBe(
+      true,
+    );
+    expect(fs.existsSync(path.join(tmpDir, "dist/client/_vinext/static-cache/index.json"))).toBe(
+      false,
     );
   });
 
