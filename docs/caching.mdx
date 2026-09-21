@@ -24,6 +24,16 @@ There are two main kinds of cache:
 
 Static files and browser caching are separate from these options. Cloudflare can cache built assets without enabling a vinext cache adapter.
 
+## Opting a route out of response caching
+
+If an App Router page or Route Handler must render for every request and should not consult the shared response cache, prefer an explicit route segment config:
+
+```ts
+export const dynamic = "force-dynamic";
+```
+
+This matches Next.js behavior and lets vinext identify the route at build time, before a configured Response Store or Workers Cache lookup. Use it for an unconditional opt-out instead of relying on request APIs such as `cookies()` or `headers()` to make the route dynamic during rendering. A matching public cache policy from `next.config` still takes precedence when one is deliberately configured.
+
 ## Options
 
 <table>
