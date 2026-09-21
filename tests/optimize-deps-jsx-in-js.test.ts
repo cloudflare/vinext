@@ -23,7 +23,13 @@
  */
 
 import { describe, it, expect } from "vite-plus/test";
-import { createLogger, createServer, type ViteDevServer } from "vite";
+import {
+  createLogger,
+  createServer,
+  resolveConfig,
+  type PluginOption,
+  type ViteDevServer,
+} from "vite";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -35,6 +41,7 @@ type VinextPlugin = {
 };
 
 type OptimizerConfig = {
+  include?: string[];
   rolldownOptions?: { moduleTypes?: Record<string, string> };
 };
 
@@ -187,21 +194,24 @@ describe("optimizeDeps: JSX in plain .js files", () => {
     }
   }, 20_000);
 
-  it("configures Pages Router build client optimizers to treat .js as JSX", async () => {
+  it("configures Pages Router client optimizers before cold startup", async () => {
     const tmpDir = await setupPagesProject();
     try {
-      const getConfig = async (plugins: unknown[]): Promise<VinextConfigResult> => {
-        const vinextPlugins = vinext({ appDir: tmpDir }) as VinextPlugin[];
-        const mainPlugin = vinextPlugins.find(
-          (p) => p.name === "vinext:config" && typeof p.config === "function",
-        );
-        expect(mainPlugin).toBeDefined();
-
-        return (await mainPlugin!.config!(
-          { root: tmpDir, build: {}, plugins, optimizeDeps: {} },
-          { command: "build" },
+      const getConfig = async (plugins: PluginOption[]): Promise<VinextConfigResult> =>
+        (await resolveConfig(
+          {
+            root: tmpDir,
+            configFile: false,
+            logLevel: "silent",
+            plugins: [vinext({ appDir: tmpDir }), ...plugins],
+            optimizeDeps: { include: ["top-level-user-dependency"] },
+            environments: {
+              client: { optimizeDeps: { include: ["client-user-dependency"] } },
+            },
+          },
+          "serve",
+          "development",
         )) as VinextConfigResult;
-      };
 
       for (const [label, config] of [
         ["plain", await getConfig([])],
@@ -210,6 +220,13 @@ describe("optimizeDeps: JSX in plain .js files", () => {
         const clientOptimizeDeps = config.environments?.client?.optimizeDeps;
         expect(clientOptimizeDeps, `${label} client optimizeDeps`).toBeDefined();
         expect(clientOptimizeDeps?.entries).toContain("pages/**/*.{tsx,ts,jsx,js}");
+        expect(clientOptimizeDeps?.include).toEqual(
+          expect.arrayContaining([
+            "top-level-user-dependency",
+            "client-user-dependency",
+            "react-dom/client",
+          ]),
+        );
         expectJsxDotJs(clientOptimizeDeps!);
       }
     } finally {

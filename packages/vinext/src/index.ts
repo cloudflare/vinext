@@ -3694,6 +3694,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: {
               consumer: "client",
               optimizeDeps: {
+                include: ["react-dom/client"],
                 ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
                 ...depOptimizeNodeEnvOptions,
               },
@@ -3722,6 +3723,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: {
               consumer: "client",
               optimizeDeps: {
+                include: ["react-dom/client"],
                 ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
                 ...depOptimizeNodeEnvOptions,
               },

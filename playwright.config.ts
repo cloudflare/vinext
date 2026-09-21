@@ -276,7 +276,7 @@ const projectServers = {
     ],
     use: { baseURL: "http://localhost:4179" },
     server: {
-      command: "npx vp dev --port 4179",
+      command: "npx vp dev --force --port 4179",
       cwd: "./examples/pages-router-cloudflare",
       port: 4179,
       reuseExistingServer: !process.env.CI,
