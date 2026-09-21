@@ -6,7 +6,7 @@ import type {
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 8;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 9;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -68,6 +68,7 @@ type AppMetadataWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   mountedSlotsHeader: string | null;
   renderMode: AppRscRenderMode;
   resolvedUrl: string;
+  routePathname: string;
 };
 
 type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
@@ -194,6 +195,8 @@ export function isAppWorkerResponseStageProps(
       (special.mountedSlotsHeader === null || typeof special.mountedSlotsHeader === "string") &&
       typeof special.resolvedUrl === "string" &&
       special.resolvedUrl.startsWith("/") &&
+      (props.kind !== "app-metadata" ||
+        (typeof props.routePathname === "string" && props.routePathname.startsWith("/"))) &&
       (special.renderMode === "navigation" ||
         special.renderMode === "prefetch-empty" ||
         special.renderMode === "prefetch-dynamic-shell" ||

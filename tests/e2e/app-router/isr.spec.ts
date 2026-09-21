@@ -187,6 +187,16 @@ test.describe("App Router ISR", () => {
     expect(encodedPublicImage.status()).toBe(200);
     expect(await encodedPublicImage.text()).toBe("PUBLIC ENCODED");
 
+    const doubleEncodedImage = await request.get(
+      `${baseUrl()}/metadata-static-params/public%2520post/opengraph-image`,
+    );
+    expect(doubleEncodedImage.status()).toBe(404);
+
+    const incompleteParamsImage = await request.get(
+      `${baseUrl()}/metadata-static-params-multi/private/public/opengraph-image`,
+    );
+    expect(incompleteParamsImage.status()).toBe(404);
+
     const privatePage = await request.get(`${baseUrl()}/metadata-static-params/unlisted-draft`);
     expect(privatePage.status()).toBe(404);
 

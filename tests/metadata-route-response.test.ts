@@ -247,6 +247,69 @@ describe("handleMetadataRouteRequest", () => {
     expect(cacheReads).toBe(0);
   });
 
+  it("keeps double-encoded metadata params distinct from generated params", async () => {
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/drafts/public%20post/twitter-image",
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "twitter-image",
+          isDynamic: true,
+          filePath: "/tmp/app/drafts/[slug]/twitter-image.tsx",
+          routePrefix: "/drafts/[slug]",
+          routeSegments: ["drafts", "[slug]"],
+          servedUrl: "/drafts/[slug]/twitter-image",
+          patternParts: ["drafts", ":slug", "twitter-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams: () => [{ slug: "public post" }],
+            default: () => new Response("encoded alias"),
+          },
+        },
+      ],
+      routePathname: "/drafts/public%2520post/twitter-image",
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it.each([
+    ["incomplete", () => [{ slug: "public" }]],
+    ["non-array", () => null],
+  ])("rejects %s metadata static params", async (_label, generateStaticParams) => {
+    let cacheReads = 0;
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/teams/private/public/opengraph-image",
+      async isrGet() {
+        cacheReads++;
+        return null;
+      },
+      isrRouteKey: (pathname) => pathname,
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "opengraph-image",
+          isDynamic: true,
+          filePath: "/tmp/app/teams/[team]/[slug]/opengraph-image.tsx",
+          routePrefix: "/teams/[team]/[slug]",
+          routeSegments: ["teams", "[team]", "[slug]"],
+          servedUrl: "/teams/[team]/[slug]/opengraph-image",
+          patternParts: ["teams", ":team", ":slug", "opengraph-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams,
+            default: () => new Response("private team"),
+          },
+        },
+      ],
+    });
+
+    expect(response?.status).toBe(404);
+    expect(cacheReads).toBe(0);
+  });
+
   it("does not add an outer metadata cache around shared use-cache functions in development", async () => {
     let metadataCalls = 0;
     let outerReads = 0;

@@ -73,6 +73,7 @@ type MetadataRouteRequestOptions = {
   isrRouteKey?: (pathname: string) => string;
   isrSet?: MetadataRouteCacheSetter;
   makeThenableParams: MetadataRouteMakeThenableParams;
+  routePathname?: string;
   scheduleBackgroundRegeneration?: MetadataRouteBackgroundRegenerator;
 };
 
@@ -458,6 +459,47 @@ function matchMetadataRoute(
   return cleanPathname === route.servedUrl ? { params: null, imageId: null } : null;
 }
 
+function metadataRouteParamNames(patternParts: readonly string[]): string[] {
+  return patternParts.flatMap((part) => {
+    if (!part.startsWith(":")) return [];
+    return [part.slice(1, part.endsWith("+") || part.endsWith("*") ? -1 : undefined)];
+  });
+}
+
+function metadataRouteValidationParams(
+  route: MetadataRuntimeRoute,
+  match: MatchedMetadataRoute,
+  routePathname: string,
+): AppPageParams {
+  const urlParts = routePathname.split("/").filter(Boolean);
+  if (match.imageId !== null) urlParts.pop();
+
+  const params: AppPageParams = Object.create(null);
+  let urlIndex = 0;
+  for (const part of route.patternParts ?? []) {
+    if (!part.startsWith(":")) {
+      urlIndex++;
+      continue;
+    }
+
+    const isCatchAll = part.endsWith("+") || part.endsWith("*");
+    const name = part.slice(1, isCatchAll ? -1 : undefined);
+    if (!isCatchAll) {
+      const value = urlParts[urlIndex++];
+      if (value !== undefined) params[name] = value;
+      continue;
+    }
+
+    const matchedValue = match.params?.[name];
+    const valueCount = Array.isArray(matchedValue) ? matchedValue.length : matchedValue ? 1 : 0;
+    if (valueCount > 0) params[name] = urlParts.slice(urlIndex, urlIndex + valueCount);
+    urlIndex += valueCount;
+  }
+
+  canonicalizeAppPageParams(params);
+  return params;
+}
+
 function findGeneratedSitemapId(entries: unknown, rawId: string): string | null {
   if (!Array.isArray(entries)) {
     return null;
@@ -771,14 +813,18 @@ export async function handleMetadataRouteRequest(
     }
 
     if (route.isDynamic && isImageMetadataRoute(route) && functions.dynamicParams === false) {
-      const validationParams = { ...match.params };
-      canonicalizeAppPageParams(validationParams);
+      const validationParams = metadataRouteValidationParams(
+        route,
+        match,
+        options.routePathname ?? options.cleanPathname,
+      );
       const { validateAppPageDynamicParams } = await import("./app-page-request.js");
       const dynamicParamsResponse = await validateAppPageDynamicParams({
         enforceStaticParamsOnly: true,
         generateStaticParams: functions.generateStaticParams,
         isDynamicRoute: Boolean(route.patternParts),
         params: validationParams,
+        requiredParamNames: metadataRouteParamNames(route.patternParts ?? []),
       });
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }

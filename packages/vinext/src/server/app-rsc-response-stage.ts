@@ -256,7 +256,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
             return new Response("Invalid vinext App response stage", { status: 400 });
           }
           let response =
-            (await options.handleMetadataRouteRequest(props.cleanPathname)) ??
+            (await options.handleMetadataRouteRequest(props.cleanPathname, props.routePathname)) ??
             new Response(null, {
               status: 204,
               headers: { [APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER]: "1" },

@@ -41,6 +41,21 @@ describe("app page request helpers", () => {
     await expect(response?.text()).resolves.toBe("This page could not be found");
   });
 
+  it.each([
+    ["incomplete", () => [{ slug: "public" }]],
+    ["non-array", () => null],
+  ])("returns 404 when complete static params are required but results are %s", async (_, fn) => {
+    const response = await validateAppPageDynamicParams({
+      enforceStaticParamsOnly: true,
+      generateStaticParams: fn,
+      isDynamicRoute: true,
+      params: { team: "private", slug: "public" },
+      requiredParamNames: ["team", "slug"],
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
   it("allows matching static params, including nested parent params", async () => {
     const response = await validateAppPageDynamicParams({
       enforceStaticParamsOnly: true,
