@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   isRegisterCalled,
   getCapturedErrors,
+  getCapturedSpans,
   resetInstrumentationState,
 } from "../../../instrumentation-state";
 
@@ -20,6 +21,7 @@ export async function GET() {
   return NextResponse.json({
     registerCalled: isRegisterCalled(),
     errors: getCapturedErrors(),
+    spans: getCapturedSpans(),
   });
 }
 

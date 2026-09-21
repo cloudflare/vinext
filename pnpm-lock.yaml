@@ -33,6 +33,9 @@ catalogs:
     '@next/mdx':
       specifier: 16.2.7
       version: 16.2.7
+    '@opentelemetry/api':
+      specifier: 1.9.1
+      version: 1.9.1
     '@phosphor-icons/react':
       specifier: ^2.1.10
       version: 2.1.10
@@ -90,6 +93,9 @@ catalogs:
     '@vercel/og':
       specifier: ^0.8.6
       version: 0.8.6
+    '@vercel/otel':
+      specifier: 2.1.3
+      version: 2.1.3
     '@vitejs/plugin-react':
       specifier: ^6.1.0
       version: 6.1.0
@@ -467,9 +473,15 @@ importers:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
         version: 1.50.0(@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(wrangler@4.118.0(@cloudflare/workers-types@4.20260313.1))
+      '@opentelemetry/api':
+        specifier: 'catalog:'
+        version: 1.9.1
       '@vinext/cloudflare':
         specifier: workspace:*
         version: link:../../packages/cloudflare
+      '@vercel/otel':
+        specifier: 'catalog:'
+        version: 2.1.3(@opentelemetry/api@1.9.1)
       '@vitejs/plugin-react':
         specifier: 'catalog:'
         version: 6.1.0(@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(oxc-transform-react@0.145.0)
@@ -6317,6 +6329,18 @@ packages:
   '@vercel/og@0.8.6':
     resolution: {integrity: sha512-hBcWIOppZV14bi+eAmCZj8Elj8hVSUZJTpf1lgGBhVD85pervzQ1poM/qYfFUlPraYSZYP+ASg6To5BwYmUSGQ==}
     engines: {node: '>=16'}
+
+  '@vercel/otel@2.1.3':
+    resolution: {integrity: sha512-Ofvzs9qhftRD1YMLuPnhbXjQZG6IKrJ9AmEKmRHRGfoWlV89ed2gAOkvddkFiZDFZJm2rrFNdeZKRVxoCdnWiw==}
+    engines: {node: ^18.19.0 || >=20.6.0}
+    peerDependencies:
+      '@opentelemetry/api': '>=1.9.0 <2.0.0'
+      '@opentelemetry/api-logs': '>=0.200.0 <0.300.0'
+      '@opentelemetry/instrumentation': '>=0.200.0 <0.300.0'
+      '@opentelemetry/resources': '>=2.0.0 <3.0.0'
+      '@opentelemetry/sdk-logs': '>=0.200.0 <0.300.0'
+      '@opentelemetry/sdk-metrics': '>=2.0.0 <3.0.0'
+      '@opentelemetry/sdk-trace-base': '>=2.0.0 <3.0.0'
 
   '@vercel/oidc@3.8.7':
     resolution: {integrity: sha512-fRu59npOu+1vsV570tiLKskfuRyOJ1MqceAkXbTIfWPnM+c9ve1tSK81oj4umKKirymlGUss3V60Lm5I38rKDw==}
@@ -14139,6 +14163,10 @@ snapshots:
     dependencies:
       '@resvg/resvg-wasm': 2.4.0
       satori: 0.16.0
+
+  '@vercel/otel@2.1.3(@opentelemetry/api@1.9.1)':
+    dependencies:
+      '@opentelemetry/api': 1.9.1
 
   '@vercel/oidc@3.8.7':
     dependencies:

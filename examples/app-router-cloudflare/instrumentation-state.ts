@@ -15,8 +15,16 @@ export type CapturedRequestError = {
   routeType: string;
 }
 
+export type CapturedSpan = {
+  name: string;
+  serviceName: unknown;
+  spanId: string;
+  traceId: string;
+};
+
 type InstrumentationState = {
   capturedErrors: CapturedRequestError[];
+  capturedSpans: CapturedSpan[];
   registerCalled: boolean;
 };
 
@@ -28,6 +36,7 @@ function getInstrumentationState(): InstrumentationState {
   if (!scopedGlobal.__VINEXT_CLOUDFLARE_INSTRUMENTATION_STATE__) {
     scopedGlobal.__VINEXT_CLOUDFLARE_INSTRUMENTATION_STATE__ = {
       capturedErrors: [],
+      capturedSpans: [],
       registerCalled: false,
     };
   }
@@ -43,6 +52,10 @@ export function getCapturedErrors(): CapturedRequestError[] {
   return [...getInstrumentationState().capturedErrors];
 }
 
+export function getCapturedSpans(): CapturedSpan[] {
+  return [...getInstrumentationState().capturedSpans];
+}
+
 export function markRegisterCalled(): void {
   getInstrumentationState().registerCalled = true;
 }
@@ -51,8 +64,13 @@ export function recordRequestError(entry: CapturedRequestError): void {
   getInstrumentationState().capturedErrors.push(entry);
 }
 
+export function recordSpan(entry: CapturedSpan): void {
+  getInstrumentationState().capturedSpans.push(entry);
+}
+
 export function resetInstrumentationState(): void {
   const state = getInstrumentationState();
   state.registerCalled = false;
   state.capturedErrors.length = 0;
+  state.capturedSpans.length = 0;
 }

@@ -4,7 +4,8 @@
  * Next.js calls register() once at server startup and onRequestError() whenever
  * an unhandled error occurs during request handling.
  *
- * The app-basic fixture has instrumentation.ts at the project root which:
+ * The app-router-cloudflare fixture has instrumentation.ts at the project root which:
+ *   - Registers @vercel/otel and captures a test span
  *   - Sets a flag when register() is called
  *   - Records errors passed to onRequestError()
  *
@@ -12,6 +13,7 @@
  *
  * References:
  * - https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation
+ * - https://github.com/vercel/next.js/blob/canary/test/e2e/on-request-error/otel/otel.test.ts
  */
 
 import { test, expect } from "@playwright/test";
@@ -22,7 +24,7 @@ import { test, expect } from "@playwright/test";
  * re-set after a DELETE reset.
  */
 test.describe("instrumentation.ts startup", () => {
-  test("register() was called before the first request", async ({ request }) => {
+  test("@vercel/otel records a span before the first request", async ({ request }) => {
     // Do NOT reset first — we want to see the state from server startup.
     const res = await request.get("/api/instrumentation-test");
     expect(res.status()).toBe(200);
@@ -31,6 +33,15 @@ test.describe("instrumentation.ts startup", () => {
     // register() must have been invoked once when the dev server started.
     expect(data.registerCalled).toBe(true);
     expect(Array.isArray(data.errors)).toBe(true);
+
+    expect(
+      data.spans.find((span: { name: string }) => span.name === "vinext.otel.registration"),
+    ).toMatchObject({
+      name: "vinext.otel.registration",
+      serviceName: "vinext-app-router-cloudflare",
+      spanId: expect.stringMatching(/^[0-9a-f]{16}$/),
+      traceId: expect.stringMatching(/^[0-9a-f]{32}$/),
+    });
   });
 });
 
