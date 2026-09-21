@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
   authorizeOnDemandRevalidate: vi.fn<(value: string | null) => boolean>(() => false),
   configHeaders: [] as Array<Record<string, unknown>>,
   ensureInstrumentation: vi.fn(),
+  ensureResponseInstrumentation: vi.fn(),
   matchApiRoute: vi.fn((url: string) =>
     url === "/api/hello"
       ? { route: { dataKind: "dynamic", isDynamic: false, pattern: "/api/hello" } }
@@ -109,6 +110,10 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   },
 }));
 
+vi.mock("virtual:vinext-pages-response-entry", () => ({
+  __ensureInstrumentation: mocks.ensureResponseInstrumentation,
+}));
+
 vi.mock("../packages/vinext/src/server/pages-response-stage-entry.js", () => ({
   renderPagesResponse: mocks.renderResponse,
 }));
@@ -128,6 +133,7 @@ describe("Pages Worker request stage", () => {
     mocks.authorizeOnDemandRevalidate.mockReset();
     mocks.authorizeOnDemandRevalidate.mockReturnValue(false);
     mocks.ensureInstrumentation.mockReset();
+    mocks.ensureResponseInstrumentation.mockReset();
     mocks.matchApiRoute.mockReset();
     mocks.matchPageRoute.mockClear();
     mocks.configHeaders.length = 0;

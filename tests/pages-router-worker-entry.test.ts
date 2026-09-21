@@ -22,6 +22,10 @@ export const matchApiRoute = () => null;
 export const matchPageRoute = () => ({ route: { dataKind: "static", isDynamic: false, pattern: "/page" } });
 export const normalizeDataRequest = (request) => ({ isDataReq: false, normalizedPathname: null, notFoundResponse: null, request });
 export const prerenderSecret = "worker-prerender-secret";
+export let instrumentationCalls = 0;
+export function __ensureInstrumentation() {
+  instrumentationCalls++;
+}
 export const publicFiles = new Set();
 export const runMiddleware = null;
 export const vinextConfig = {};
@@ -32,6 +36,10 @@ export const vinextConfig = {};
       `
 import { CACHEABILITY_REQUEST_STATE } from "vinext/shims/cacheability-classification";
 export const buildId = "worker-build";
+export let instrumentationCalls = 0;
+export function __ensureInstrumentation() {
+  instrumentationCalls++;
+}
 export const pageRoutes = [];
 export const getRuntimePageDataKind = () => "static";
 export async function renderPage(request, _resolvedUrl, _route, ctx) {
@@ -105,6 +113,12 @@ describe("Pages Router production Worker readiness", () => {
           fetch(request: Request, env?: unknown, ctx?: { waitUntil(): void }): Promise<Response>;
         };
       };
+      const requestEntry = (await server.ssrLoadModule("virtual:vinext-pages-request-entry")) as {
+        instrumentationCalls: number;
+      };
+      const responseEntry = (await server.ssrLoadModule("virtual:vinext-pages-response-entry")) as {
+        instrumentationCalls: number;
+      };
 
       const response = await entry.default.fetch(
         new Request("https://example.com/__vinext/prerender/readiness", {
@@ -117,6 +131,12 @@ describe("Pages Router production Worker readiness", () => {
         undefined,
         { waitUntil() {} },
       );
+      expect(response.status).toBe(204);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("x-vinext-prerender-readiness")).toBe("1");
+      expect(requestEntry.instrumentationCalls).toBe(1);
+      expect(responseEntry.instrumentationCalls).toBe(1);
+
       const unauthorizedResponse = await entry.default.fetch(
         new Request("https://example.com/__vinext/prerender/readiness", {
           headers: {
@@ -127,10 +147,6 @@ describe("Pages Router production Worker readiness", () => {
         undefined,
         { waitUntil() {} },
       );
-
-      expect(response.status).toBe(204);
-      expect(response.headers.get("cache-control")).toBe("no-store");
-      expect(response.headers.get("x-vinext-prerender-readiness")).toBe("1");
       expect(unauthorizedResponse.status).toBe(404);
       expect(unauthorizedResponse.headers.get("cache-control")).toBe("no-store");
     } finally {
