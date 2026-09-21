@@ -262,6 +262,14 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
             slot.layoutPath,
             ...(slot.configLayoutPaths ?? []),
             slot.pagePath ?? slot.defaultPath,
+            ...slot.interceptingRoutes.flatMap((intercept) => [
+              ...intercept.layoutPaths,
+              intercept.pagePath,
+            ]),
+          ]),
+          ...route.siblingIntercepts.flatMap((intercept) => [
+            ...intercept.layoutPaths,
+            intercept.pagePath,
           ]),
         ].some(forcesDynamic),
     ids: route.ids ?? null,

@@ -1188,6 +1188,54 @@ describe("App Router entry templates", () => {
         },
         {
           ...minimalAppRoutes[0],
+          pattern: "/slot-intercept",
+          pagePath: staticPage,
+          layouts: [],
+          parallelSlots: [
+            {
+              key: "modal@slot-intercept/@modal",
+              name: "modal",
+              ownerDir: tmpDir,
+              ownerTreePath: "/slot-intercept",
+              hasPage: false,
+              pagePath: null,
+              defaultPath: null,
+              layoutPath: null,
+              loadingPath: null,
+              errorPath: null,
+              interceptingRoutes: [
+                {
+                  convention: ".",
+                  targetPattern: "/slot-intercept/photo",
+                  sourceMatchPattern: "/slot-intercept",
+                  pagePath: dynamicPage,
+                  layoutPaths: [],
+                  params: [],
+                },
+              ],
+              layoutIndex: 0,
+              routeSegments: null,
+            },
+          ],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/sibling-intercept",
+          pagePath: staticPage,
+          layouts: [],
+          siblingIntercepts: [
+            {
+              convention: ".",
+              targetPattern: "/sibling-intercept/photo",
+              sourceMatchPattern: "/sibling-intercept",
+              pagePath: staticPage,
+              layoutPaths: [dynamicLayout],
+              params: [],
+            },
+          ],
+        },
+        {
+          ...minimalAppRoutes[0],
           pattern: "/api",
           pagePath: null,
           routePath: dynamicHandler,
@@ -1207,6 +1255,8 @@ describe("App Router entry templates", () => {
         "/api": true,
         "/layout": true,
         "/page": true,
+        "/sibling-intercept": true,
+        "/slot-intercept": true,
         "/static": false,
       });
     } finally {
