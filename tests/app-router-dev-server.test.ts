@@ -2170,6 +2170,22 @@ describe("App Router integration", () => {
     expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
   });
 
+  it("invokes every export alias for the same server action", async () => {
+    for (const exportName of ["firstAliasedAction", "secondAliasedAction"]) {
+      const res = await fetch(`${baseUrl}/actions.rsc`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "x-rsc-action": `/app/actions/actions.ts#${exportName}`,
+        },
+        body: JSON.stringify([exportName]),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain(`aliased:${exportName}`);
+    }
+  });
+
   it("rejects hidden cache functions' original dev export names", async () => {
     const anonymous = await fetch(`${baseUrl}/use-cache-hidden-reference?record=victim`);
     expect(anonymous.status).toBe(200);

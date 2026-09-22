@@ -883,11 +883,13 @@ function matchesRegisteredServerReference(
   const normalizedActionId = normalizeDevServerReferenceId(actionId);
   if (normalizedRegisteredId === normalizedActionId) return true;
 
-  // plugin-rsc hoists a function-level `"use server"` export under a generated
-  // reference name while preserving the source export as the module binding.
-  // A file-level `"use cache"` proxy therefore requests `#action`, but the
-  // loaded function is registered as `#$$hoist_<index>_action`. Keep the module
-  // identity and source export exact while accepting that compiler-owned name.
+  // React stores only the most recently registered ID on a function. When one
+  // ordinary Server Action is exported under multiple names, plugin-rsc
+  // registers every alias on the same function object, so `$$id` alone cannot
+  // tell which aliases are valid. Loading any same-module alias still proves
+  // that it resolves to that registered Server Action. Cache references are the
+  // exception: their opaque export deliberately must not authorize a source
+  // export name that happens to resolve to the same wrapper.
   const registeredSeparator = normalizedRegisteredId.indexOf("#");
   const actionSeparator = normalizedActionId.indexOf("#");
   if (registeredSeparator === -1 || actionSeparator === -1) return false;
@@ -898,11 +900,7 @@ function matchesRegisteredServerReference(
     return false;
   }
   const registeredExport = normalizedRegisteredId.slice(registeredSeparator + 1);
-  const requestedExport = normalizedActionId.slice(actionSeparator + 1);
-  const hoistedExport = /^\$\$hoist_\d+_(.*)$/.exec(registeredExport)?.[1];
-  return requestedExport === "default"
-    ? hoistedExport !== undefined
-    : hoistedExport === requestedExport;
+  return !registeredExport.startsWith("$$vinext_cache_");
 }
 
 function getServerActionFailureMessage(error: unknown): string {

@@ -14,6 +14,12 @@ export async function getLikes(): Promise<number> {
   return likeCount;
 }
 
+async function aliasedAction(value: string): Promise<string> {
+  return `aliased:${value}`;
+}
+
+export { aliasedAction as firstAliasedAction, aliasedAction as secondAliasedAction };
+
 export async function addMessage(formData: FormData): Promise<string> {
   const message = formData.get("message") as string;
   return `Received: ${message}`;
