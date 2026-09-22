@@ -39,6 +39,50 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type {
+  FrameworkTracingBackendSpan,
+  ResolvedFrameworkSpanDescriptor,
+} from "../packages/vinext/src/server/framework-tracer.js";
+import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
+
+type RecordedRouteSpan = {
+  errors: unknown[];
+  status?: string;
+  type: string;
+};
+
+const recordedRouteSpans: RecordedRouteSpan[] = [];
+let activeRouteSpanCount = 0;
+registerFrameworkTracingIntegration({
+  id: "app-route-handler-execution-test",
+  enterSpan<T>(
+    descriptor: ResolvedFrameworkSpanDescriptor,
+    callback: (span: FrameworkTracingBackendSpan) => T,
+  ): T {
+    const recorded: RecordedRouteSpan = { errors: [], type: descriptor.type };
+    recordedRouteSpans.push(recorded);
+    activeRouteSpanCount++;
+    let result: T;
+    try {
+      result = callback({
+        recordException: (error) => recorded.errors.push(error),
+        setAttribute() {},
+        setErrorStatus: (message) => {
+          recorded.status = message ?? "error";
+        },
+      });
+    } catch (error) {
+      activeRouteSpanCount--;
+      throw error;
+    }
+    if (isPromiseLike(result)) {
+      return Promise.resolve(result).finally(() => activeRouteSpanCount--) as T;
+    }
+    activeRouteSpanCount--;
+    return result;
+  },
+});
 
 // The fetch-cache shim captures `originalFetch` from globalThis at import
 // time, so stub fetch BEFORE importing it (same pattern as
@@ -219,7 +263,7 @@ describe("app route handler execution helpers", () => {
       tags: string[];
     }> = [];
     const phaseCalls: string[] = [];
-    const reportCalls: Error[] = [];
+    const reportCalls: unknown[] = [];
     let didClearRequestContext = false;
 
     const response = await executeAppRouteHandler({
@@ -1022,89 +1066,101 @@ describe("app route handler execution helpers", () => {
 
   // Route Handler revalidation is finalized by Next.js' App Route module:
   // packages/next/src/server/route-modules/app-route/module.ts
-  it("finishes tag invalidation before finalizing a route handler response", async () => {
-    const dynamicUsage = createDynamicUsageState();
-    const previousHandler = getDataCacheHandler();
-    let markInvalidationStarted!: () => void;
-    const invalidationStarted = new Promise<void>((resolve) => {
-      markInvalidationStarted = resolve;
-    });
-    let releaseInvalidation!: () => void;
-    const invalidationGate = new Promise<void>((resolve) => {
-      releaseInvalidation = resolve;
-    });
-    let invalidationFinished = false;
-    let didClearRequestContext = false;
+  it.each([
+    { handlerFails: false, expectedStatus: 200 },
+    { handlerFails: true, expectedStatus: 500 },
+  ])(
+    "finishes tag invalidation before finalizing a route handler response ($handlerFails)",
+    async ({ handlerFails, expectedStatus }) => {
+      const dynamicUsage = createDynamicUsageState();
+      const previousHandler = getDataCacheHandler();
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      let markInvalidationStarted!: () => void;
+      const invalidationStarted = new Promise<void>((resolve) => {
+        markInvalidationStarted = resolve;
+      });
+      let releaseInvalidation!: () => void;
+      const invalidationGate = new Promise<void>((resolve) => {
+        releaseInvalidation = resolve;
+      });
+      let invalidationFinished = false;
+      let didClearRequestContext = false;
 
-    setDataCacheHandler({
-      get: previousHandler.get.bind(previousHandler),
-      set: previousHandler.set.bind(previousHandler),
-      async revalidateTag() {
-        markInvalidationStarted();
-        await invalidationGate;
-        invalidationFinished = true;
-      },
-    });
+      setDataCacheHandler({
+        get: previousHandler.get.bind(previousHandler),
+        set: previousHandler.set.bind(previousHandler),
+        async revalidateTag() {
+          markInvalidationStarted();
+          await invalidationGate;
+          expect(activeRouteSpanCount).toBe(0);
+          invalidationFinished = true;
+        },
+      });
 
-    try {
-      const responsePromise = runWithRequestContext(createRequestContext(), () =>
-        executeAppRouteHandler({
-          buildPageCacheTags(pathname, extraTags) {
-            return [pathname, ...extraTags];
-          },
-          cleanPathname: "/api/revalidate",
-          clearRequestContext() {
-            expect(invalidationFinished).toBe(true);
-            didClearRequestContext = true;
-          },
-          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
-          executionContext: null,
-          getAndClearPendingCookies() {
-            return [];
-          },
-          getCollectedFetchTags() {
-            return [];
-          },
-          getDraftModeCookieHeader() {
-            return null;
-          },
-          handler: { dynamic: "auto" },
-          handlerFn() {
-            expect(revalidateTag("dashboard", { expire: 0 })).toBeUndefined();
-            return new Response("revalidated");
-          },
-          isAutoHead: false,
-          isProduction: true,
-          isrRouteKey(pathname) {
-            return "route:" + pathname;
-          },
-          async isrSet() {},
-          markDynamicUsage: dynamicUsage.markDynamicUsage,
-          method: "POST",
-          middlewareContext: { headers: null, status: null },
-          params: {},
-          reportRequestError() {},
-          request: new Request("https://example.com/api/revalidate", { method: "POST" }),
-          revalidateSeconds: null,
-          routePattern: "/api/revalidate",
-          setHeadersAccessPhase() {
-            return "render";
-          },
-        }),
-      );
+      try {
+        const responsePromise = runWithRequestContext(createRequestContext(), () =>
+          executeAppRouteHandler({
+            buildPageCacheTags(pathname, extraTags) {
+              return [pathname, ...extraTags];
+            },
+            cleanPathname: "/api/revalidate",
+            clearRequestContext() {
+              expect(invalidationFinished).toBe(true);
+              didClearRequestContext = true;
+            },
+            consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+            executionContext: null,
+            getAndClearPendingCookies() {
+              return [];
+            },
+            getCollectedFetchTags() {
+              return [];
+            },
+            getDraftModeCookieHeader() {
+              return null;
+            },
+            handler: { dynamic: "auto" },
+            handlerFn() {
+              expect(revalidateTag("dashboard", { expire: 0 })).toBeUndefined();
+              if (handlerFails) throw new Error("handler failed after revalidation");
+              return new Response("revalidated");
+            },
+            isAutoHead: false,
+            isProduction: true,
+            isrRouteKey(pathname) {
+              return "route:" + pathname;
+            },
+            async isrSet() {},
+            markDynamicUsage: dynamicUsage.markDynamicUsage,
+            method: "POST",
+            middlewareContext: { headers: null, status: null },
+            params: {},
+            reportRequestError() {},
+            request: new Request("https://example.com/api/revalidate", { method: "POST" }),
+            revalidateSeconds: null,
+            routePattern: "/api/revalidate",
+            setHeadersAccessPhase() {
+              return "render";
+            },
+          }),
+        );
 
-      await invalidationStarted;
-      expect(didClearRequestContext).toBe(false);
-      releaseInvalidation();
+        await invalidationStarted;
+        await expect.poll(() => activeRouteSpanCount).toBe(0);
+        expect(didClearRequestContext).toBe(false);
+        releaseInvalidation();
 
-      const response = await responsePromise;
-      expect(didClearRequestContext).toBe(true);
-      await expect(response.text()).resolves.toBe("revalidated");
-    } finally {
-      releaseInvalidation();
-      setDataCacheHandler(previousHandler);
-    }
-  });
+        const response = await responsePromise;
+        expect(didClearRequestContext).toBe(true);
+        expect(response.status).toBe(expectedStatus);
+        await expect(response.text()).resolves.toBe(handlerFails ? "" : "revalidated");
+      } finally {
+        releaseInvalidation();
+        errorSpy.mockRestore();
+        setDataCacheHandler(previousHandler);
+      }
+    },
+  );
 
   it("skips cache writes and marks the route dynamic when a revalidating handler fetches with no-store", async () => {
     // Regression test for the patched fetch's explicit no-store branch
@@ -1192,9 +1248,10 @@ describe("app route handler execution helpers", () => {
 
   it("maps special route handler errors and reports generic failures", async () => {
     const dynamicUsage = createDynamicUsageState();
-    const reportedErrors: Error[] = [];
+    const reportedErrors: unknown[] = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
+    recordedRouteSpans.length = 0;
     const redirectResponse = await executeAppRouteHandler({
       buildPageCacheTags(pathname, extraTags) {
         return [pathname, ...extraTags];
@@ -1228,6 +1285,7 @@ describe("app route handler execution helpers", () => {
       middlewareContext: { headers: null, status: null },
       params: {},
       reportRequestError(error) {
+        expect(activeRouteSpanCount).toBe(0);
         reportedErrors.push(error);
       },
       request: new Request("https://example.com/api/redirect"),
@@ -1244,8 +1302,20 @@ describe("app route handler execution helpers", () => {
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
     expect(reportedErrors).toEqual([]);
+    expect(recordedRouteSpans).toContainEqual({
+      errors: [],
+      type: "AppRouteRouteHandlers.runHandler",
+    });
 
-    const errorResponse = await executeAppRouteHandler({
+    let finishReporting!: () => void;
+    const reportingFinished = new Promise<void>((resolve) => {
+      finishReporting = resolve;
+    });
+    const reportRequestError = vi.fn(() => reportingFinished);
+    const failure = new Error("boom");
+    recordedRouteSpans.length = 0;
+    let responseSettled = false;
+    const errorResponsePromise = executeAppRouteHandler({
       buildPageCacheTags(pathname, extraTags) {
         return [pathname, ...extraTags];
       },
@@ -1264,7 +1334,7 @@ describe("app route handler execution helpers", () => {
       },
       handler: { dynamic: "auto" },
       handlerFn() {
-        throw new Error("boom");
+        throw failure;
       },
       isAutoHead: false,
       isProduction: true,
@@ -1276,19 +1346,42 @@ describe("app route handler execution helpers", () => {
       method: "GET",
       middlewareContext: { headers: null, status: null },
       params: {},
-      reportRequestError(error) {
-        reportedErrors.push(error);
-      },
+      reportRequestError,
       request: new Request("https://example.com/api/error"),
       revalidateSeconds: 60,
+      revalidateReason: "on-demand",
       routePattern: "/api/error",
       setHeadersAccessPhase() {
         return "render";
       },
+    }).then((response) => {
+      responseSettled = true;
+      return response;
     });
 
+    // Ported from Next.js: packages/next/src/build/templates/app-route.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/app-route.ts
+    await vi.waitFor(() => expect(reportRequestError).toHaveBeenCalledOnce());
+    expect(responseSettled).toBe(false);
+    finishReporting();
+    const errorResponse = await errorResponsePromise;
+
     expect(errorResponse.status).toBe(500);
-    expect(reportedErrors.map((error) => error.message)).toEqual(["boom"]);
+    expect(reportRequestError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "boom" }),
+      expect.objectContaining({ path: "/api/error" }),
+      {
+        routerKind: "App Router",
+        routePath: "/api/error",
+        routeType: "route",
+        revalidateReason: "on-demand",
+      },
+    );
+    expect(recordedRouteSpans).toContainEqual({
+      errors: [failure],
+      status: "boom",
+      type: "AppRouteRouteHandlers.runHandler",
+    });
 
     errorSpy.mockRestore();
   });
@@ -1318,10 +1411,11 @@ describe("app route handler execution helpers", () => {
     try {
       for (const testCase of cases) {
         const dynamicUsage = createDynamicUsageState();
-        const reportedErrors: Error[] = [];
+        const reportedErrors: unknown[] = [];
         let wroteCache = false;
         let didClearRequestContext = false;
 
+        recordedRouteSpans.length = 0;
         const response = await executeAppRouteHandler({
           buildPageCacheTags(pathname, extraTags) {
             return [pathname, ...extraTags];
@@ -1360,6 +1454,7 @@ describe("app route handler execution helpers", () => {
           middlewareContext: { headers: null, status: null },
           params: {},
           reportRequestError(error) {
+            expect(activeRouteSpanCount).toBe(0);
             reportedErrors.push(error);
           },
           request: new Request("https://example.com/api/middleware-control"),
@@ -1372,8 +1467,14 @@ describe("app route handler execution helpers", () => {
 
         expect(response.status).toBe(500);
         await expect(response.text()).resolves.toBe("");
-        expect(reportedErrors.map((error) => error.message)).toEqual([testCase.message]);
+        expect(
+          reportedErrors.map((error) => (error instanceof Error ? error.message : String(error))),
+        ).toEqual([testCase.message]);
         expect(wroteCache).toBe(false);
+        expect(recordedRouteSpans).toContainEqual({
+          errors: [],
+          type: "AppRouteRouteHandlers.runHandler",
+        });
         expect(didClearRequestContext).toBe(true);
       }
     } finally {

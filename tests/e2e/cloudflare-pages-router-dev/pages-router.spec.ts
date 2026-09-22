@@ -3,13 +3,41 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4179";
 
 test.describe("Pages Router on Cloudflare Workers (vite dev)", () => {
-  test("client bootstrap hydrates the server-rendered page", async ({ page }) => {
-    await page.goto(`${BASE}/`);
+  test.describe("cold client optimizer", () => {
+    test.describe.configure({ retries: 0 });
 
-    await expect(page.locator("#count")).toHaveText("0");
-    await page.waitForFunction(() => window.__VINEXT_HYDRATED_AT !== undefined);
-    await page.locator("#increment").click();
-    await expect(page.locator("#count")).toHaveText("1");
+    test("client bootstrap hydrates the server-rendered page", async ({ page }) => {
+      const documentRequests: string[] = [];
+      page.on("request", (request) => {
+        if (request.resourceType() === "document") documentRequests.push(request.url());
+      });
+
+      await page.goto(`${BASE}/`);
+
+      await expect(page.locator("#count")).toHaveText("0");
+      await page.waitForFunction(() => window.__VINEXT_HYDRATED_AT !== undefined);
+      await page.locator("#increment").click();
+      await expect(page.locator("#count")).toHaveText("1");
+
+      // A client dependency discovered after the initial crawl makes Vite issue
+      // a full reload. Give that optimizer update time to arrive, then verify the
+      // initial document and the hydrated counter state both survived.
+      await page.evaluate(() => {
+        (window as typeof window & { __vinextColdStartCanary?: boolean }).__vinextColdStartCanary =
+          true;
+      });
+      await page.waitForTimeout(1_000);
+
+      expect(documentRequests).toHaveLength(1);
+      expect(
+        await page.evaluate(
+          () =>
+            (window as typeof window & { __vinextColdStartCanary?: boolean })
+              .__vinextColdStartCanary,
+        ),
+      ).toBe(true);
+      await expect(page.locator("#count")).toHaveText("1");
+    });
   });
 
   test("client bootstrap does not load server runtime modules", async ({ page }) => {

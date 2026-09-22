@@ -62,9 +62,28 @@ const { consumeDynamicUsage, setHeadersContext } =
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
 const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
+const { registerFrameworkTracingIntegration } =
+  await import("../packages/vinext/src/server/tracer.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
+  let tracedFetchSpans: Array<{ attributes: Record<string, boolean | number | string> }> = [];
+
+  function startTracingRecorder(): void {
+    tracedFetchSpans = [];
+    registerFrameworkTracingIntegration({
+      id: "fetch-cache-outcomes-test",
+      enterSpan(descriptor, callback) {
+        const recorded = { attributes: { ...descriptor.attributes } };
+        tracedFetchSpans.push(recorded);
+        return callback({
+          setAttribute(key, value) {
+            recorded.attributes[key] = value;
+          },
+        });
+      },
+    });
+  }
 
   function startNewFetchCacheScope(): void {
     cleanup?.();
@@ -3753,6 +3772,65 @@ describe("fetch cache shim", () => {
       });
       expect(res2.headers.get("set-cookie")).toBeNull();
       expect(res2.headers.get("x-custom")).toBe("keep-me");
+    });
+  });
+
+  describe("fetch tracing outcomes", () => {
+    // Ported from Next.js: packages/next/src/server/lib/patch-fetch.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/patch-fetch.test.ts
+    it("records cache miss and hit outcomes", async () => {
+      startTracingRecorder();
+
+      await fetch("https://api.example.com/traced-cache", { next: { revalidate: 60 } });
+      await fetch("https://api.example.com/traced-cache", { next: { revalidate: 60 } });
+
+      expect(tracedFetchSpans.map(({ attributes }) => attributes)).toEqual([
+        expect.objectContaining({
+          "next.fetch.idx": 2,
+          "next.fetch.cache_status": "miss",
+          "next.fetch.cache_reason": "revalidate: 60",
+        }),
+        expect.objectContaining({
+          "next.fetch.idx": 3,
+          "next.fetch.cache_status": "hit",
+          "next.fetch.cache_reason": "revalidate: 60",
+        }),
+      ]);
+    });
+
+    it("records explicit no-store as a skipped fetch", async () => {
+      startTracingRecorder();
+
+      await fetch("https://api.example.com/traced-no-store", { cache: "no-store" });
+
+      expect(tracedFetchSpans[0]?.attributes).toMatchObject({
+        "next.fetch.idx": 2,
+        "next.fetch.cache_status": "skip",
+        "next.fetch.cache_reason": "cache: no-store",
+      });
+    });
+
+    it("does not record cache outcomes outside a request work context", async () => {
+      cleanup?.();
+      cleanup = null;
+      startTracingRecorder();
+
+      await fetch("https://api.example.com/outside-request", { cache: "no-store" });
+
+      expect(tracedFetchSpans[0]?.attributes).not.toHaveProperty("next.fetch.idx");
+      expect(tracedFetchSpans[0]?.attributes).not.toHaveProperty("next.fetch.cache_status");
+      expect(tracedFetchSpans[0]?.attributes).not.toHaveProperty("next.fetch.cache_reason");
+    });
+
+    it("keeps internal fetches out of public framework tracing and caching", async () => {
+      startTracingRecorder();
+      const init = { next: { internal: true } } as unknown as RequestInit;
+
+      await fetch("https://api.example.com/internal", init);
+
+      expect(tracedFetchSpans).toEqual([]);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect((fetchMock.mock.calls[0]?.[1]?.next as { internal?: boolean })?.internal).toBe(true);
     });
   });
 });

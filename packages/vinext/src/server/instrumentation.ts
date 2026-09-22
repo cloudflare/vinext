@@ -14,12 +14,12 @@
  *
  * ## App Router
  *
- * For App Router, `register()` is baked directly into the generated RSC entry
- * as a top-level `await` at module evaluation time (see `entries/app-rsc-entry.ts`
- * `generateRscEntry`). This means it runs inside the Worker process (or RSC
- * Vite environment) — the same process that handles requests — before any
- * request is served. `runInstrumentation()` is NOT called from `configureServer`
- * for App Router.
+ * Node development eagerly calls `runInstrumentation()` through the same RSC
+ * runner used for requests. The generated RSC entry also awaits the shared
+ * registration promise before importing user server modules. This preserves
+ * react-server conditions, module state, and initialization order.
+ * Workers and production initialize through the generated entry in their own
+ * runtime, without an extra registration in the Node development host.
  *
  * The `onRequestError` handler is stored on `globalThis` so it is visible across
  * the RSC and SSR Vite environments (separate module graphs, same Node.js process).
@@ -40,6 +40,8 @@ import fs from "node:fs";
 import path from "pathslash";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { ValidFileMatcher } from "../routing/file-matcher.js";
+import { patternToNextFormat } from "../routing/route-validation.js";
+import { ensureInstrumentationRegistered } from "./instrumentation-runtime.js";
 /**
  * Minimal duck-typed interface for the module runner passed to
  * `runInstrumentation`. Only `.import()` is used — this avoids requiring
@@ -110,20 +112,26 @@ export function findInstrumentationClientFile(
  * Provides the error, the request info, and an error context.
  */
 export type OnRequestErrorContext = {
-  /** The route path (e.g., '/blog/[slug]') */
+  /** The router which handled the request. */
   routerKind: "Pages Router" | "App Router";
-  /** The matched route pattern */
+  /** The matched route pattern. */
   routePath: string;
-  /** The route type */
-  routeType: "render" | "route" | "action" | "middleware";
-  /** HTTP status code that will be sent */
-  revalidateReason?: "on-demand" | "stale" | undefined;
+  /** The request operation which failed. */
+  routeType: "render" | "route" | "action" | "proxy";
+  /** The App Router render phase which failed. */
+  renderSource?: "react-server-components" | "react-server-components-payload" | "server-rendering";
+  /** Why a static route was being regenerated. */
+  revalidateReason: "on-demand" | "stale" | undefined;
 };
 
 export type OnRequestErrorHandler = (
-  error: Error,
-  request: { path: string; method: string; headers: Record<string, string> },
-  context: OnRequestErrorContext,
+  error: unknown,
+  request: Readonly<{
+    path: string;
+    method: string;
+    headers: Record<string, string | string[] | undefined>;
+  }>,
+  context: Readonly<OnRequestErrorContext>,
 ) => void | Promise<void>;
 
 /**
@@ -138,46 +146,24 @@ export function getOnRequestErrorHandler(): OnRequestErrorHandler | null {
 /**
  * Load and execute the instrumentation file via a ModuleRunner.
  *
- * Called once during Pages Router server startup (`configureServer`). It:
+ * Called during Node development startup (`configureServer`). It:
  * 1. Loads the instrumentation module via `runner.import()`.
  * 2. Calls the `register()` function if exported.
  * 3. Stores the `onRequestError()` handler on `globalThis` so it is visible
  *    to all Vite environment module graphs (SSR and the host process share
  *    the same Node.js `globalThis`).
  *
- * **App Router** does not use this function. For App Router, `register()` is
- * emitted as a top-level `await` inside the generated RSC entry module so it
- * runs in the same Worker/environment as request handling.
- *
- * @param runner - A ModuleRunner created via `createDirectRunner()`. Must be
- *   the same long-lived runner used for middleware and SSR so the module graph
- *   is shared. Safe with all Vite plugin combinations, including
- *   `@cloudflare/vite-plugin`, because it never touches the hot channel.
+ * @param runner - The existing RSC runner for App Router, or the long-lived
+ *   direct runner for Pages-only apps. Reusing the request runner preserves
+ *   module state initialized by `register()`.
  * @param instrumentationPath - Absolute path to the instrumentation file
  */
 export async function runInstrumentation(
   runner: ModuleImporter,
   instrumentationPath: string,
 ): Promise<void> {
-  try {
-    const mod = (await runner.import(instrumentationPath)) as Record<string, unknown>;
-
-    // Call register() if exported
-    if (typeof mod.register === "function") {
-      await mod.register();
-    }
-
-    // Store onRequestError handler on globalThis so environments can reach the
-    // same handler.
-    if (typeof mod.onRequestError === "function") {
-      globalThis.__VINEXT_onRequestErrorHandler__ = mod.onRequestError as OnRequestErrorHandler;
-    }
-  } catch (err) {
-    console.error(
-      "[vinext] Failed to load instrumentation:",
-      err instanceof Error ? err.message : String(err),
-    );
-  }
+  const mod = (await runner.import(instrumentationPath)) as Record<string, unknown>;
+  await ensureInstrumentationRegistered(mod, instrumentationPath);
 }
 
 /**
@@ -189,8 +175,12 @@ export async function runInstrumentation(
  * of which environment it is called from.
  */
 export function reportRequestError(
-  error: Error,
-  request: { path: string; method: string; headers: Record<string, string> },
+  error: unknown,
+  request: Readonly<{
+    path: string;
+    method: string;
+    headers: Record<string, string | string[] | undefined>;
+  }>,
   context: OnRequestErrorContext,
 ): Promise<void> {
   const handler = getOnRequestErrorHandler();
@@ -198,7 +188,10 @@ export function reportRequestError(
 
   const promise = (async () => {
     try {
-      await handler(error, request, context);
+      await handler(error, request, {
+        ...context,
+        routePath: patternToNextFormat(context.routePath),
+      });
     } catch (reportErr) {
       console.error(
         "[vinext] onRequestError handler threw:",
@@ -209,8 +202,8 @@ export function reportRequestError(
 
   // On Cloudflare Workers, register with ctx.waitUntil() so the isolate
   // stays alive until the report completes (e.g. Sentry HTTP request).
-  // On Node.js (dev or vinext start), getRequestExecutionContext() returns
-  // null — fire-and-forget is fine because the process doesn't die.
+  // Awaiting callers get Next.js request-lifecycle parity. Non-blocking
+  // post-commit callers still retain the task through Workers waitUntil().
   getRequestExecutionContext()?.waitUntil(promise);
 
   return promise;

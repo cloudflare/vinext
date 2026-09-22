@@ -51,5 +51,9 @@ export function kvDataAdapter(options?: KvDataAdapterOptions) {
   return {
     adapter: fileURLToPath(import.meta.resolve("./kv-data-adapter.runtime.js")),
     options,
+    capabilities: {
+      buildIdentity: "response-header" as const,
+      warmup: "data-cache" as const,
+    },
   };
 }

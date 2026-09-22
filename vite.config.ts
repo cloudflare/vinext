@@ -30,6 +30,8 @@ export default defineConfig({
     singleQuote: false,
     trailingComma: "all",
     ignorePatterns: [
+      // Kept byte-for-byte comparable with Sentry's upstream Next.js fixture.
+      "tests/e2e/sentry-nextjs-16-static/fixture/**",
       "tests/fixtures/ecosystem/**",
       "examples/**",
       "packages/types/next/upstream/**",
@@ -38,6 +40,8 @@ export default defineConfig({
   lint: {
     ignorePatterns: [
       "fixtures/ecosystem/**",
+      // Kept byte-for-byte comparable with Sentry's upstream Next.js fixture.
+      "tests/e2e/sentry-nextjs-16-static/fixture/**",
       "tests/fixtures/**",
       "tests/fixtures/ecosystem/**",
       "examples/**",
@@ -176,7 +180,8 @@ export default defineConfig({
           // are pure-logic and have no fixture/server dependencies.
           include: ["tests/**/*.test.ts", "scripts/**/*.test.ts"],
           exclude: [
-            "tests/fixtures/**/node_modules/**",
+            "tests/**/node_modules/**",
+            "tests/e2e/**",
             // Integration tests spin up Vite dev servers against shared fixture
             // dirs and use per-worker optimizer caches in their own project.
             // When adding a test that calls startFixtureServer() or createServer(),
@@ -206,6 +211,7 @@ export default defineConfig({
             "tests/cjs.test.ts",
             "tests/client-global-define.test.ts",
             "tests/dev-route-discovery.test.ts",
+            "tests/dynamic-requests-build.test.ts",
             "tests/ecosystem.test.ts",
             "tests/entry-templates.test.ts",
             "tests/esm-externals.test.ts",
@@ -213,6 +219,7 @@ export default defineConfig({
             "tests/favicon-short-circuit.test.ts",
             "tests/hybrid-i18n-api-handoff.test.ts",
             "tests/image-optimization-parity.test.ts",
+            "tests/instrumentation-dev.test.ts",
             "tests/middleware-matcher-auth.test.ts",
             "tests/node-modules-css.test.ts",
             "tests/optimize-deps-jsx-in-js.test.ts",
@@ -220,6 +227,7 @@ export default defineConfig({
             "tests/pages-i18n-prod.test.ts",
             "tests/pages-isr-query-context.test.ts",
             "tests/pages-router-concurrency.test.ts",
+            "tests/pages-router-nitro.test.ts",
             "tests/pages-router.test.ts",
             "tests/process-browser-define.test.ts",
             "tests/postcss-resolve.test.ts",
@@ -281,6 +289,7 @@ export default defineConfig({
             "tests/cjs.test.ts",
             "tests/client-global-define.test.ts",
             "tests/dev-route-discovery.test.ts",
+            "tests/dynamic-requests-build.test.ts",
             "tests/ecosystem.test.ts",
             "tests/entry-templates.test.ts",
             "tests/esm-externals.test.ts",
@@ -288,6 +297,7 @@ export default defineConfig({
             "tests/features.test.ts",
             "tests/hybrid-i18n-api-handoff.test.ts",
             "tests/image-optimization-parity.test.ts",
+            "tests/instrumentation-dev.test.ts",
             "tests/kv-cache-handler.test.ts",
             "tests/middleware-matcher-auth.test.ts",
             "tests/node-modules-css.test.ts",
@@ -296,6 +306,7 @@ export default defineConfig({
             "tests/pages-i18n-prod.test.ts",
             "tests/pages-isr-query-context.test.ts",
             "tests/pages-router-concurrency.test.ts",
+            "tests/pages-router-nitro.test.ts",
             "tests/pages-router.test.ts",
             "tests/process-browser-define.test.ts",
             "tests/postcss-resolve.test.ts",

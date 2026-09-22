@@ -5,16 +5,19 @@
  *
  * ## How it works (new approach)
  *
- * register() is emitted as a top-level `await` inside the generated RSC entry
- * module by `generateRscEntry` in `entries/app-rsc-entry.ts`. This means it runs:
+ * The generated RSC entry awaits register() from its cached request-time
+ * initializer before importing application modules. This means it runs:
  *
  *   - Inside the Cloudflare Worker subprocess (miniflare) when
  *     @cloudflare/vite-plugin is present — the same process as the API routes.
  *   - Inside the RSC Vite environment when @vitejs/plugin-rsc is used standalone.
  *
  * In both cases, register() runs in the same process/environment as request
- * handling, which is exactly what Next.js specifies: "called once when the
- * server starts, before any request handling."
+ * handling, which preserves Next.js's guarantee that registration completes
+ * before user modules and request handling.
+ *
+ * The @vercel/otel registration mirrors Next.js's on-request-error OTel E2E:
+ * https://github.com/vercel/next.js/blob/canary/test/e2e/on-request-error/otel/instrumentation.js
  *
  * ## State visibility
  *
@@ -23,12 +26,35 @@
  * them. No temp-file bridge or globalThis tricks are needed.
  */
 
+import { registerOTel } from "@vercel/otel";
+import { trace } from "@opentelemetry/api";
 import {
   markRegisterCalled,
   recordRequestError,
+  recordSpan,
 } from "./instrumentation-state";
 
 export async function register(): Promise<void> {
+  registerOTel({
+    serviceName: "vinext-app-router-cloudflare",
+    spanProcessors: [
+      {
+        onStart() {},
+        onEnd(span) {
+          recordSpan({
+            name: span.name,
+            serviceName: span.resource.attributes["service.name"],
+            spanId: span.spanContext().spanId,
+            traceId: span.spanContext().traceId,
+          });
+        },
+        async forceFlush() {},
+        async shutdown() {},
+      },
+    ],
+  });
+
+  trace.getTracer("vinext-otel-e2e").startSpan("vinext.otel.registration").end();
   markRegisterCalled();
 }
 

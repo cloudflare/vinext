@@ -355,9 +355,7 @@ export function detectProject(root: string): ProjectInfo {
   // root rather than the app root.
   const hasCloudflarePlugin = findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
   const hasRscPlugin = findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
-  const hasWrangler =
-    findInNodeModules(root, ".bin/wrangler") !== null ||
-    findInNodeModules(root, ".bin/cf") !== null;
+  const hasWrangler = isPackageResolvable(root, "wrangler/package.json");
 
   const pkgPath = path.join(root, "package.json");
   let pkg: Record<string, unknown> | null = null;

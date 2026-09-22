@@ -9,6 +9,18 @@ import {
   type ResolvePagesPageDataOptions,
 } from "../packages/vinext/src/server/pages-page-data.js";
 import type { IncrementalCacheValue } from "../packages/vinext/src/shims/cache-handler.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+
+let captureFrameworkSpans = false;
+const capturedFrameworkSpans: ResolvedFrameworkSpanDescriptor[] = [];
+registerFrameworkTracingIntegration({
+  id: "pages-page-data-test",
+  enterSpan(descriptor, callback) {
+    if (captureFrameworkSpans) capturedFrameworkSpans.push(descriptor);
+    return callback({ setAttribute() {} });
+  },
+});
 
 const expiredPagesRepresentations: Array<[string, IncrementalCacheValue | null]> = [
   [
@@ -1309,13 +1321,15 @@ describe("pages page data", () => {
     let regenPromise: Promise<void> | null = null;
     const applyRequestContexts = vi.fn();
     const isrSet = vi.fn<ResolvePagesPageDataOptions["isrSet"]>(async () => {});
-    const runInFreshUnifiedContext = vi.fn(
-      async <T>(callback: () => Promise<T>): Promise<T> => callback(),
+    const runInFreshUnifiedContext = vi.fn(async <T>(callback: () => Promise<T>): Promise<T> =>
+      callback(),
     ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
     const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
       regenPromise = renderFn();
     });
 
+    capturedFrameworkSpans.length = 0;
+    captureFrameworkSpans = true;
     const result = await resolvePagesPageData(
       createOptions({
         applyRequestContexts,
@@ -1370,6 +1384,14 @@ describe("pages page data", () => {
 
     const pendingRegen: Promise<void> = regenPromise;
     await pendingRegen;
+    captureFrameworkSpans = false;
+
+    expect(capturedFrameworkSpans.map(({ name, type }) => ({ name, type }))).toEqual(
+      expect.arrayContaining([
+        { name: "getStaticProps /posts/[slug]", type: "Render.getStaticProps" },
+        { name: "render route (pages) /posts/[slug]", type: "Render.renderDocument" },
+      ]),
+    );
 
     expect(runInFreshUnifiedContext).toHaveBeenCalledOnce();
     expect(applyRequestContexts).toHaveBeenCalledOnce();
@@ -1939,8 +1961,8 @@ describe("pages page data", () => {
   it("passes revalidateReason: 'stale' to getStaticProps during stale-while-revalidate regeneration", async () => {
     let received: unknown = "untouched";
     let regenPromise: Promise<void> | null = null;
-    const runInFreshUnifiedContext = vi.fn(
-      async <T>(callback: () => Promise<T>): Promise<T> => callback(),
+    const runInFreshUnifiedContext = vi.fn(async <T>(callback: () => Promise<T>): Promise<T> =>
+      callback(),
     ) as ResolvePagesPageDataOptions["runInFreshUnifiedContext"];
     const triggerBackgroundRegeneration = vi.fn((_key: string, renderFn: () => Promise<void>) => {
       regenPromise = renderFn();

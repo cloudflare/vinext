@@ -20,7 +20,12 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
+import { applyRouteHandlerRevalidateHeader } from "../packages/vinext/src/server/app-route-handler-response.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
+  markClientTraceMetadataBlock,
+  renderClientTraceMetadataTags,
+} from "../packages/vinext/src/server/client-trace-metadata.js";
 
 const encoder = new TextEncoder();
 
@@ -250,6 +255,69 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("static");
   });
 
+  it("removes request trace metadata only from admitted shared HTML", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    const marker = "2d533650-6016-42c8-baf4-3f7e4e65e65c";
+    state.clientTraceMetadataMarker = marker;
+    const authored = '<meta name="baggage" content="application-policy"/>';
+    const authoredMarker = "c4490dbd-8e67-4971-8622-7b10731db1e7";
+    const authoredMarkedBlock = markClientTraceMetadataBlock(
+      '<meta name="author-trace" content="keep"/>',
+      authoredMarker,
+    );
+    const injected = markClientTraceMetadataBlock(
+      renderClientTraceMetadataTags([{ key: "baggage", value: "tenant=alice" }]),
+      marker,
+    );
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response(`<head>${authored}${authoredMarkedBlock}${injected}</head>`, {
+        headers: { "Content-Length": "999" },
+      }),
+      context,
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("s-maxage=60");
+    expect(response.headers.get("Content-Length")).toBeNull();
+    await expect(response.text()).resolves.toBe(`<head>${authored}${authoredMarkedBlock}</head>`);
+  });
+
+  it("does not scan admitted HTML without an exact framework trace marker", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    const authoredMarkedBlock = markClientTraceMetadataBlock(
+      '<meta name="author-trace" content="keep"/>',
+      "2d533650-6016-42c8-baf4-3f7e4e65e65c",
+    );
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response(`<head>${authoredMarkedBlock}</head>`, {
+        headers: { "Content-Length": "999" },
+      }),
+      context,
+    );
+
+    expect(response.headers.get("Content-Length")).toBe("999");
+    await expect(response.text()).resolves.toBe(`<head>${authoredMarkedBlock}</head>`);
+  });
+
   it("admits a completed static response larger than the former 4 MiB probe limit", async () => {
     const context = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },
@@ -312,9 +380,16 @@ describe("single-request cacheability admission", () => {
     state.route = { kind: "app-page", pattern: "/page" };
     state.outcome = { cacheable: false, dynamicUsage: true };
 
-    const response = await finalizeWorkerCacheabilityResponse(new Response("dynamic"), context);
+    const markedDynamic = markClientTraceMetadataBlock(
+      renderClientTraceMetadataTags([{ key: "sentry-trace", value: "abc-def-1" }]),
+      "2d533650-6016-42c8-baf4-3f7e4e65e65c",
+    );
+    const response = await finalizeWorkerCacheabilityResponse(
+      new Response(`dynamic${markedDynamic}`),
+      context,
+    );
     expect(response.headers.get("Cache-Control")).toContain("no-store");
-    await expect(response.text()).resolves.toBe("dynamic");
+    await expect(response.text()).resolves.toContain('name="sentry-trace"');
   });
 
   it("honors a final public config policy for a completed dynamic App Page", async () => {
@@ -331,13 +406,21 @@ describe("single-request cacheability admission", () => {
     state.route = { kind: "app-page", pattern: "/page" };
     state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
     state.completion = Promise.resolve({ cacheable: false, dynamicUsage: true });
+    const marker = "2d533650-6016-42c8-baf4-3f7e4e65e65c";
+    state.clientTraceMetadataMarker = marker;
+    const tracedHtml = markClientTraceMetadataBlock(
+      renderClientTraceMetadataTags([{ key: "sentry-trace", value: "abc-def-1" }]),
+      marker,
+    );
 
     const response = await finalizeWorkerCacheabilityResponse(
-      new Response("dynamic", { headers: { "Cache-Control": "s-maxage=32" } }),
+      new Response(`<head>${tracedHtml}</head><main>dynamic</main>`, {
+        headers: { "Cache-Control": "s-maxage=32" },
+      }),
       context,
     );
     expect(response.headers.get("Cache-Control")).toBe("s-maxage=32");
-    await expect(response.text()).resolves.toBe("dynamic");
+    await expect(response.text()).resolves.toBe("<head></head><main>dynamic</main>");
   });
 
   it("probes a dynamic App Page with a final public config policy as cacheable", async () => {
@@ -522,6 +605,39 @@ describe("single-request cacheability admission", () => {
 
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
     await expect(response.text()).resolves.toBe("public");
+  });
+
+  it("admits a completed Route Handler with an exported revalidate policy", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        new Request("https://example.com/api/data", { headers: { Accept: "*/*" } }),
+        null,
+        "build-a",
+        true,
+        undefined,
+        undefined,
+        undefined,
+        { applyCompletedResponsePolicy: true },
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-route", pattern: "/api/data" };
+      state.completedResponseBody = true;
+
+      const response = await runWithExecutionContext(context, async () => {
+        const rendered = new Response("public");
+        applyRouteHandlerRevalidateHeader(rendered, 60, 600);
+        return finalizeWorkerCacheabilityResponse(rendered, context);
+      });
+
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe(
+        "public, max-age=60, stale-while-revalidate=540",
+      );
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("admits an unmanifested Route Handler only with an explicit response policy", async () => {

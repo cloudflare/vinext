@@ -35,6 +35,7 @@ import {
   type PagesReqResRequest,
   type PagesReqResResponse,
 } from "./pages-node-compat.js";
+import { tracePagesApiHandler } from "./pages-execution-tracing.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -416,7 +417,9 @@ export async function handleApiRoute(
             }
           : undefined,
       );
-      const handlerResponse = await apiModule.default(nextRequest);
+      const handlerResponse = await tracePagesApiHandler(route.pattern, () =>
+        apiModule.default(nextRequest),
+      );
       if (!(handlerResponse instanceof Response)) {
         throw new Error("Edge API route did not return a Response");
       }
@@ -473,7 +476,7 @@ export async function handleApiRoute(
     );
 
     // Call the handler
-    await handler(apiReq, apiRes);
+    await tracePagesApiHandler(route.pattern, () => handler(apiReq, apiRes));
     return true;
   } catch (e) {
     if (e instanceof PagesBodyParseError) {
@@ -486,8 +489,8 @@ export async function handleApiRoute(
     // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
     // when using ModuleRunner — no stack trace fixup is needed here.
     console.error(e);
-    void reportRequestError(
-      e instanceof Error ? e : new Error(String(e)),
+    await reportRequestError(
+      e,
       {
         path: url,
         method: req.method ?? "GET",
@@ -495,11 +498,15 @@ export async function handleApiRoute(
           Object.entries(req.headers)
             // Exclude HTTP/2 pseudo-headers (RFC 7540 §8.1.2.1) — they are not
             // real request headers. See: cloudflare/vinext#2013
-            .filter(([k]) => !k.startsWith(":"))
-            .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v ?? "")]),
+            .filter(([k]) => !k.startsWith(":")),
         ),
       },
-      { routerKind: "Pages Router", routePath: match.route.pattern, routeType: "route" },
+      {
+        routerKind: "Pages Router",
+        routePath: match.route.pattern,
+        routeType: "route",
+        revalidateReason: undefined,
+      },
     );
     if (!res.headersSent) {
       res.statusCode = 500;

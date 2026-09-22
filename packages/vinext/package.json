@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "1.0.0-beta.9",
+  "version": "1.0.0-beta.11",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "homepage": "https://vinext.dev/",
   "license": "MIT",
@@ -12,7 +12,9 @@
     "vinext": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_LICENSES.md",
+    "next-package.json"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -104,6 +106,10 @@
       "types": "./dist/server/app-rsc-cache-busting.d.ts",
       "import": "./dist/server/app-rsc-cache-busting.js"
     },
+    "./internal/server/app-rsc-vary": {
+      "types": "./dist/server/app-rsc-vary.d.ts",
+      "import": "./dist/server/app-rsc-vary.js"
+    },
     "./internal/server/prerender-manifest": {
       "types": "./dist/server/prerender-manifest.d.ts",
       "import": "./dist/server/prerender-manifest.js"
@@ -115,6 +121,14 @@
     "./internal/server/cacheability-manifest": {
       "types": "./dist/server/cacheability-manifest.d.ts",
       "import": "./dist/server/cacheability-manifest.js"
+    },
+    "./internal/server/cloudflare-workers-tracing": {
+      "types": "./dist/server/cloudflare-workers-tracing.d.ts",
+      "import": "./dist/server/cloudflare-workers-tracing.js"
+    },
+    "./internal/server/response-start-tracing": {
+      "types": "./dist/server/response-start-tracing.d.ts",
+      "import": "./dist/server/response-start-tracing.js"
     },
     "./internal/build/run-prerender": {
       "types": "./dist/build/run-prerender.d.ts",
@@ -211,12 +225,15 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "@types/ua-parser-js": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
     "am-i-vibing": "catalog:",
+    "ignore": "catalog:",
     "image-size": "catalog:",
     "pathslash": "catalog:",
     "react-server-dom-webpack": "catalog:",
+    "ua-parser-js": "catalog:",
     "vite": "catalog:",
     "vite-plus": "catalog:"
   },

@@ -38,10 +38,12 @@ export type CdnCacheAdapterCapabilities = {
    * The shared cache selects response variants using every request header
    * named by `Vary`, comparing the header values verbatim.
    *
-   * Vinext only uses the canonical deploy-warmed RSC request shape when this
-   * guarantee is present. URL-only caches retain the contextual `_rsc` digest.
+   * Deploy warmup can address the canonical full-route and loading-shell RSC
+   * variants when this guarantee is present.
    */
   responseVary?: "verbatim";
+  /** Warm by observing framework `X-Vinext-Cache` admission instead of an edge-cache header. */
+  warmup?: "data-cache" | "response-store";
   /**
    * Rewrites and other request routing run before the shared response stage,
    * and the resolved response-stage invocation participates in cache identity.
@@ -97,12 +99,29 @@ export function hasVerbatimResponseVary(cache?: VinextCacheConfig | null): boole
   return cache?.cdn?.capabilities?.responseVary === "verbatim";
 }
 
+export function supportsCanonicalRscWarmup(cache?: VinextCacheConfig | null): boolean {
+  return hasVerbatimResponseVary(cache);
+}
+
+export function cacheWarmupStatusSource(
+  cache?: VinextCacheConfig | null,
+): "cloudflare" | "data-cache" | "vinext" {
+  if (cache?.cdn?.capabilities?.warmup === "response-store") return "vinext";
+  if (!cache?.cdn?.adapter && cache?.data?.capabilities?.warmup === "data-cache") {
+    return "data-cache";
+  }
+  return "cloudflare";
+}
+
 export function hasUncachedRequestRouting(cache?: VinextCacheConfig | null): boolean {
   return cache?.cdn?.capabilities?.requestRouting === "uncached-stage";
 }
 
 export function hasBuildIdentityResponseHeader(cache?: VinextCacheConfig | null): boolean {
-  return cache?.cdn?.capabilities?.buildIdentity === "response-header";
+  return (
+    cache?.cdn?.capabilities?.buildIdentity === "response-header" ||
+    (!cache?.cdn?.adapter && cache?.data?.capabilities?.buildIdentity === "response-header")
+  );
 }
 
 export function requiresRouteCacheabilityProbeManifest(cache?: VinextCacheConfig | null): boolean {
@@ -199,6 +218,8 @@ function inlineOptions(adapter: string, options: Record<string, unknown> | undef
 export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   const data = cache?.data;
   const cdn = cache?.cdn;
+  const dataProvidesBuildIdentity =
+    !cdn?.adapter && data?.capabilities?.buildIdentity === "response-header";
 
   // Nothing configured → a no-op so the unconditional import in the server
   // entries stays valid and tree-shakes to almost nothing.
@@ -221,6 +242,11 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
   if (cdn?.adapter) {
     lines.push(`import __vinextCdnAdapterFactory from ${JSON.stringify(cdn.adapter)};`);
     lines.push(`import { registerCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`);
+  } else if (dataProvidesBuildIdentity) {
+    lines.push(
+      `import { DefaultCdnCacheAdapter } from "vinext/shims/cdn-cache";`,
+      `import { registerCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`,
+    );
   }
 
   lines.push(
@@ -250,6 +276,15 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
         data.adapter,
         data.options,
       )} }));`,
+    );
+    if (dataProvidesBuildIdentity) {
+      lines.push(
+        "    registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter(",
+        "      process.env.__VINEXT_RSC_BUILD_IDENTITY || process.env.__VINEXT_BUILD_ID,",
+        "    ));",
+      );
+    }
+    lines.push(
       "  } catch (error) {",
       '    console.warn("[vinext] failed to initialize the configured data cache adapter; ' +
         'using the default handler.\\n" + __vinextFormatAdapterError(error));',
@@ -276,5 +311,5 @@ export function generateCacheAdaptersModule(cache?: VinextCacheConfig): string {
 
 /** Generate request-stage registration without importing a configured data adapter. */
 export function generateCdnCacheAdapterModule(cache?: VinextCacheConfig): string {
-  return `${generateCacheAdaptersModule(cache?.cdn ? { cdn: cache.cdn } : undefined)}export const hasConfiguredDataCache = ${Boolean(cache?.data?.adapter)};\n`;
+  return `${generateCacheAdaptersModule(cache?.cdn ? { cdn: cache.cdn } : undefined)}export const hasConfiguredDataCache = ${Boolean(cache?.data?.adapter)};\nexport const configuredCdnCacheAdapterOptions = ${inlineOptions(cache?.cdn?.adapter ?? "cdn", cache?.cdn?.options)};\n`;
 }

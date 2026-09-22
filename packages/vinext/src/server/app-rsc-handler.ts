@@ -7,6 +7,8 @@ import type {
 import type { BasePathMatchState } from "../config/config-matchers.js";
 import { requestContextFromRequest } from "../config/request-context.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import { patternToNextFormat } from "../routing/route-validation.js";
+import { traceFindPageComponents } from "./pages-execution-tracing.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
   getEffectiveRequestCookieHeader,
@@ -61,6 +63,10 @@ import type {
   AppPrerenderStaticParamsMap,
 } from "./app-prerender-endpoints.js";
 import {
+  canonicalizeLoadingShellRscRequestHeaders,
+  canonicalizePrewarmableRscRequestHeaders,
+  createCanonicalRscRequestUrl,
+  createRscRequestUrl,
   createRscRedirectLocation,
   hasRscCacheBustingSearchParam,
   resolveInvalidRscCacheBustingRequest,
@@ -151,6 +157,8 @@ import {
   consumeResponseStageLinkProvenance,
   copyLinkHeaderProvenance,
 } from "./app-response-header-provenance.js";
+import { traceAppPageRender } from "./app-page-tracing.js";
+import { setFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -221,6 +229,10 @@ function haveSamePageParams(first: AppPageParams, second: AppPageParams): boolea
   return true;
 }
 
+function rewriteCachePathname(sourcePathname: string, resolvedPathname: string): string {
+  return `${sourcePathname}?__vinext_rewrite=${encodeURIComponent(resolvedPathname)}`;
+}
+
 function requestOptsOutOfWorkerResponseStage(
   request: Request,
   options: Pick<CreateAppRscHandlerOptions<AppRscHandlerRoute>, "draftModeSecret">,
@@ -256,6 +268,8 @@ type RunAppMiddlewareOptions = {
 export type AppRscHandlerRoute = {
   __loadPage?: unknown;
   __loadRouteHandler?: unknown;
+  canUseCanonicalLoadingShell?: boolean;
+  forceDynamic?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -303,6 +317,7 @@ function applyMiddlewareContextToResponse(
 
 type DispatchMatchedPageOptions<TRoute> = {
   bypassInterceptionContextCache: boolean;
+  cachePathname: string;
   clientReuseManifest: ClientReuseManifestParseResult;
   cleanPathname: string;
   displayPathname: string;
@@ -342,6 +357,12 @@ type DispatchMatchedPageOptions<TRoute> = {
 };
 
 type DispatchMatchedRouteHandlerOptions<TRoute> = {
+  /**
+   * Legacy transported cache-bypass bit. Also covers request/cache route-identity
+   * divergence so the response cannot be published under another route's key.
+   */
+  bypassInterceptionContextCache: boolean;
+  cachePathname: string;
   cleanPathname: string;
   middlewareContext: AppRscMiddlewareContext;
   /**
@@ -477,7 +498,10 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   handleProgressiveActionRequest?: (
     options: HandleProgressiveActionRequestOptions<TRoute>,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
-  handleMetadataRouteRequest?: (cleanPathname: string) => Promise<Response | null>;
+  handleMetadataRouteRequest?: (
+    cleanPathname: string,
+    routePathname: string,
+  ) => Promise<Response | null>;
   isMetadataRoutePath?: (cleanPathname: string) => boolean | Promise<boolean>;
   getPrerenderMetadataRoutePaths?: () => Promise<unknown>;
   createPprFallbackShells?: (
@@ -758,6 +782,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     clientReuseManifest,
     hadBasePath,
   } = normalized;
+  setFrameworkRequestRoute(undefined, isRscRequest);
   const hasRawInterceptionContext =
     isRscRequest && request.headers.has(VINEXT_INTERCEPTION_CONTEXT_HEADER);
   if (hasRawInterceptionContext) {
@@ -1088,24 +1113,57 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const transportedResponseStage: RenderAppWorkerResponseStageLocally | undefined =
     dispatchResponseStage
       ? async (stageRequest, props) => {
+          const responseStagePolicy = await loadResponseStagePolicy();
           const cache =
             responseStageProbeMode ||
             isOnDemandRevalidate ||
             ((props.kind === "app-page" || props.kind === "app-route-handler") &&
-              props.bypassInterceptionContextCache)
+              (props.bypassInterceptionContextCache ||
+                // Next.js lets an explicit next.config public policy cache a
+                // force-dynamic route, so only bypass when no such policy matched.
+                (props.forceDynamic === true && responseStagePolicy === null)))
               ? "bypass"
               : canUseSharedWorkerResponseStage
                 ? "shared"
                 : "bypass";
-          let response = await dispatchResponseStage(
+          let dispatchRequest =
             props.kind === "app-page"
               ? prepareSharedAppPageDispatch(stageRequest, cache)
-              : stageRequest,
+              : stageRequest;
+          if (
+            cache === "shared" &&
+            props.kind === "app-page" &&
+            props.isRscRequest &&
+            props.matchKind === "request" &&
+            props.interceptionContext === null &&
+            props.interceptionId === null &&
+            props.mountedSlotsHeader === null
+          ) {
+            const headers = new Headers(dispatchRequest.headers);
+            const canonicalized =
+              props.renderMode === "navigation"
+                ? canonicalizePrewarmableRscRequestHeaders(headers)
+                : props.renderMode === "prefetch-loading-shell" && props.canUseCanonicalLoadingShell
+                  ? canonicalizeLoadingShellRscRequestHeaders(headers)
+                  : false;
+            if (canonicalized) {
+              const rscPath =
+                props.renderMode === "navigation"
+                  ? createCanonicalRscRequestUrl(dispatchRequest.url)
+                  : await createRscRequestUrl(dispatchRequest.url, headers);
+              dispatchRequest = cloneRequestWithUrl(
+                cloneRequestWithHeaders(dispatchRequest, headers),
+                new URL(rscPath, dispatchRequest.url).toString(),
+              );
+            }
+          }
+          let response = await dispatchResponseStage(
+            dispatchRequest,
             {
               ...props,
               cacheability: {
                 ...props.cacheability,
-                policyHeaders: await loadResponseStagePolicy(),
+                policyHeaders: responseStagePolicy,
               },
             },
             { cache },
@@ -1159,6 +1217,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     ) {
       return null;
     }
+    const metadataRoutePathname = cleanPathnameIsRequestPathname
+      ? requestCleanPathname
+      : cleanPathname;
     const metadataResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     if (metadataResponseStage) {
       const response = await metadataResponseStage(responseStageRequest(), {
@@ -1175,6 +1236,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         requestOrigin: url.origin,
         renderMode,
         resolvedUrl,
+        routePathname: metadataRoutePathname,
         scriptNonce: scriptNonce ?? null,
       });
       if (response.headers.get(APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER) === "1") {
@@ -1183,7 +1245,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }
       return response;
     }
-    return options.handleMetadataRouteRequest?.(cleanPathname) ?? null;
+    return options.handleMetadataRouteRequest?.(cleanPathname, metadataRoutePathname) ?? null;
   };
   const applyConfigHeadersToResponseStage = async (
     response: Response,
@@ -2069,6 +2131,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return new Response("", { status: 404 });
     }
 
+    setFrameworkRequestRoute("/404", isRscRequest);
     const notFoundResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     if (notFoundResponseStage) {
       const response = await notFoundResponseStage(responseStageRequest(), {
@@ -2090,13 +2153,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return composeResponseStageResponse(response);
     }
 
-    const renderedNotFoundResponse = await options.renderNotFound({
-      isRscRequest,
-      middlewareContext,
-      request,
-      route: null,
-      scriptNonce,
-    });
+    const renderedNotFoundResponse = await traceAppPageRender("/404", "render", () =>
+      options.renderNotFound({
+        isRscRequest,
+        middlewareContext,
+        request,
+        route: null,
+        scriptNonce,
+      }),
+    );
     if (renderedNotFoundResponse) return renderedNotFoundResponse;
 
     options.clearRequestContext();
@@ -2106,9 +2171,41 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   }
 
   const { route, params } = match;
+  const requestPathnameDiffersFromCachePath = requestCleanPathname !== cleanPathname;
+  const rawRequestPathnameIsObservable =
+    isInterceptionMatch ||
+    route.routeHandler != null ||
+    typeof route.__loadRouteHandler === "function";
+  if ((!isInterceptionMatch || requestPathnameDiffersFromCachePath) && options.matchRequestRoute) {
+    const cachePathMatch = options.matchRoute(cleanPathname);
+    if (
+      (requestPathnameDiffersFromCachePath && rawRequestPathnameIsObservable) ||
+      !cachePathMatch ||
+      cachePathMatch.route.pattern !== route.pattern ||
+      !haveSamePageParams(cachePathMatch.params, params)
+    ) {
+      // The raw request spelling remains observable to Route Handlers, while
+      // ISR/CDN identity uses the normalized pathname. Reuse the existing
+      // internal bypass channel when either the spelling or semantic route
+      // differs so every local and split response stage skips shared reads and
+      // writes without changing the worker protocol.
+      bypassInterceptionContextCache = true;
+      setInterceptionResponseUncacheable(true);
+    }
+  }
+  // Next.js keys App ISR by the resolved pathname:
+  // packages/next/src/build/templates/app-route.ts
+  // Keep that resolved identity while also partitioning by the public source
+  // pathname that user code observes through usePathname().
+  const cachePathname = cleanPathnameIsRequestPathname
+    ? cleanPathname
+    : rewriteCachePathname(canonicalPathname, cleanPathname);
+  setFrameworkRequestRoute(patternToNextFormat(route.pattern), isRscRequest);
   // Hydrate lazy page/route-handler modules before the page-vs-handler dispatch
   // branch and any downstream synchronous module reads.
-  if (options.ensureRouteLoaded) await options.ensureRouteLoaded(route);
+  if (options.ensureRouteLoaded) {
+    await traceFindPageComponents(route.pattern, () => options.ensureRouteLoaded!(route));
+  }
   const resolvedSearchParams = getResolvedSearchParams();
   if (isRouteTreePrefetchRequest(request) && !route.routeHandler) {
     const response = await createRouteTreePrefetchResponse(route, {
@@ -2186,9 +2283,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         buildId: options.buildId,
         cacheability: responseStageCacheability(resolvedUrl),
         bypassInterceptionContextCache,
+        cachePathname,
+        canUseCanonicalLoadingShell: route.canUseCanonicalLoadingShell === true,
         canonicalPathname,
         cleanPathname,
         draftModeCookie,
+        forceDynamic: route.forceDynamic === true,
         interceptionContext: interceptionContextHeader,
         interceptionId: interceptionIdHeader,
         isRscRequest,
@@ -2211,6 +2311,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       buildPageCacheTags(cleanPathname, [], [...route.routeSegments], "route"),
     );
     return options.dispatchMatchedRouteHandler({
+      bypassInterceptionContextCache,
+      cachePathname,
       cleanPathname,
       middlewareContext,
       // Non-dynamic routes report params as `null` to match Next.js. Internal
@@ -2230,9 +2332,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         buildId: options.buildId,
         cacheability: responseStageCacheability(resolvedUrl),
         bypassInterceptionContextCache,
+        cachePathname,
+        canUseCanonicalLoadingShell: route.canUseCanonicalLoadingShell === true,
         canonicalPathname,
         cleanPathname,
         draftModeCookie,
+        forceDynamic: route.forceDynamic === true,
         interceptionContext: isRscRequest ? interceptionContextHeader : null,
         interceptionId: interceptionIdHeader,
         isRscRequest,
@@ -2250,6 +2355,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }).then(composeResponseStageResponse)
     : await options.dispatchMatchedPage({
         bypassInterceptionContextCache,
+        cachePathname,
         clientReuseManifest,
         cleanPathname,
         displayPathname: canonicalPathname,
@@ -2359,21 +2465,14 @@ export type AppRscRequestHandler = (
 export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): AppRscRequestHandler {
-  const appRscHandler = async function appRscHandler(
+  const handleAppRscRequestLifecycle = async (
     rawRequest: Request,
     ctx: unknown,
     allowInternalRscDocumentFallback = false,
     dispatchResponseStage?: DispatchAppWorkerResponseStage,
     responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
     transportedPrerenderState?: TrustedPrerenderState | null,
-  ): Promise<Response> {
-    // Register config-driven cache adapters before anything touches the cache.
-    // On the Cloudflare worker the entry already registered them with `env` (this
-    // guarded call is a no-op); on Node/dev this is where they get wired, with no
-    // bindings available.
-    options.registerCacheAdapters();
-    await options.ensureInstrumentation?.();
-
+  ): Promise<Response> => {
     // Strip forged internal headers at the App Router request boundary.
     // Must happen BEFORE headersContextFromRequest() and
     // requestContextFromRequest() so the captured context never contains
@@ -2510,6 +2609,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
                   dispatchResponseStage,
                   responseStageProbeMode,
                   trustedPrerenderState,
+                  true,
                 ),
               allowInternalRscDocumentFallback,
               dispatchResponseStage,
@@ -2551,6 +2651,42 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
       throw error;
     }
     return closeAfterResponseWithBody(response, requestContext);
+  };
+
+  const appRscHandler = async function appRscHandler(
+    rawRequest: Request,
+    ctx: unknown,
+    allowInternalRscDocumentFallback = false,
+    dispatchResponseStage?: DispatchAppWorkerResponseStage,
+    responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
+    transportedPrerenderState?: TrustedPrerenderState | null,
+    detachedTrace = false,
+  ): Promise<Response> {
+    // Register config-driven cache adapters before anything touches the cache.
+    // On the Cloudflare worker the entry already registered them with `env` (this
+    // guarded call is a no-op); on Node/dev this is where they get wired, with no
+    // bindings available.
+    options.registerCacheAdapters();
+    await options.ensureInstrumentation?.();
+
+    const traceUrl = new URL(rawRequest.url);
+    return traceFrameworkRequest({
+      callback: () =>
+        handleAppRscRequestLifecycle(
+          rawRequest,
+          ctx,
+          allowInternalRscDocumentFallback,
+          dispatchResponseStage,
+          responseStageProbeMode,
+          transportedPrerenderState,
+        ),
+      detached: detachedTrace,
+      getStatus: (response) => response?.status,
+      headers: rawRequest.headers,
+      isRsc: traceUrl.pathname.endsWith(".rsc") || rawRequest.headers.get(RSC_HEADER) === "1",
+      method: rawRequest.method,
+      target: traceUrl.pathname + traceUrl.search,
+    });
   };
 
   return appRscHandler;

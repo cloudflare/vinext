@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
-import { getReportedSentryErrors, resetSentryReports } from "../../../sentry-test-state";
+import {
+  getReportedSentryErrors,
+  getReportedSentryTransactions,
+  resetSentryReports,
+} from "../../../sentry-test-state";
 
 export async function GET() {
   return NextResponse.json({
     errors: getReportedSentryErrors(),
+    transactions: getReportedSentryTransactions(),
   });
 }
 

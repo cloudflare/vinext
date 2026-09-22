@@ -1,4 +1,8 @@
 import type { ExecutionContextLike } from "vinext/shims/request-context";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "vinext/shims/cacheability-classification";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import type { VinextResponseStageDispatchOptions } from "./multi-stage.js";
 import type { WorkerCacheabilityProbeMode } from "./cacheability-request.js";
@@ -8,6 +12,7 @@ export type ResponseStageCacheabilityOptions = {
   buildId: string | null | undefined;
   cache: VinextResponseStageDispatchOptions["cache"];
   context: ExecutionContextLike;
+  forceDynamic?: boolean;
   probeMode?: WorkerCacheabilityProbeMode | null;
   policyHeaders?: ReadonlyArray<readonly [string, string]> | null;
   /** The renderer receives policy before user Pages code and applies it itself. */
@@ -67,9 +72,26 @@ export async function withResponseStageCacheability(
   if (options.policyHeadersAppliedBeforeRender) {
     cacheability.recordResponseStageCachePolicy(context, options.policyHeaders);
   }
+  const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as
+    | RouteCacheabilityState
+    | undefined;
+  if (options.probeMode && options.forceDynamic && !options.policyHeaders?.length && state) {
+    state.patternDynamicReason = 'dynamic = "force-dynamic"';
+  }
   const rendered = await render(context);
   const response = options.policyHeadersAppliedBeforeRender
     ? rendered
     : cacheability.applyResponseStageCachePolicy(rendered, context, options.policyHeaders);
-  return cacheability.finalizeWorkerCacheabilityResponse(response, context);
+  const complete = (candidate: Response) =>
+    cacheability.finalizeWorkerCacheabilityResponse(candidate, context);
+  const route = state?.route;
+  if (
+    !options.probeMode &&
+    state?.admission?.policy !== "manifest" &&
+    (route?.kind === "app-page" || route?.kind === "pages-page")
+  ) {
+    const deferred = adapter.deferCompletedPageResponseAdmission?.(response, complete);
+    if (deferred) return deferred;
+  }
+  return complete(response);
 }

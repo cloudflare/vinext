@@ -17,6 +17,8 @@
     "@vitejs/plugin-rsc": "catalog:",
     "react-server-dom-webpack": "catalog:",
     "@cloudflare/vite-plugin": "catalog:",
+    "@opentelemetry/api": "catalog:",
+    "@vercel/otel": "catalog:",
     "wrangler": "catalog:"
   },
   "devDependencies": {

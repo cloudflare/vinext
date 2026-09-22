@@ -3,6 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 const getDb = vi.fn();
 
 vi.mock("../apps/web/app/lib/db/client", () => ({ getDb }));
+vi.mock("cloudflare:workers", () => ({
+  tracing: {
+    enterSpan: (_name: string, callback: (span: { setAttribute(): void }) => unknown) =>
+      callback({ setAttribute() {} }),
+  },
+}));
 
 const { GET } = await import("../apps/web/app/api/compatibility/failures/route");
 

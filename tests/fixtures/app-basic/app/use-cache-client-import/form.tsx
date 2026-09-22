@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import getDefaultMessage from "./actions";
 import { getCachedMessage, getUncachedMessage } from "./actions";
 
 export function ClientCacheCaller() {
@@ -31,6 +32,18 @@ export function ClientCacheCaller() {
     );
   }
 
+  function callDefaultMessage(value: string) {
+    void getDefaultMessage(value).then(
+      (result) => {
+        setMessage(result);
+        setCompletedCalls((count) => count + 1);
+      },
+      (error) => {
+        setMessage(`error:${error instanceof Error ? error.message : String(error)}`);
+      },
+    );
+  }
+
   return (
     <div>
       <button id="call-client-imported-cache" onClick={() => callCachedMessage("direct")}>
@@ -41,6 +54,9 @@ export function ClientCacheCaller() {
       </button>
       <button id="call-client-imported-server" onClick={() => callUncachedMessage("direct")}>
         Call server function
+      </button>
+      <button id="call-client-imported-default" onClick={() => callDefaultMessage("direct")}>
+        Call default server function
       </button>
       <output data-testid="client-imported-cache-result">{message}</output>
       <output data-testid="client-imported-cache-call-count">{completedCalls}</output>

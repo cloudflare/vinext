@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "app-router-cloudflare-response-store-e2e",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "assets": {
+    "not_found_handling": "none",
+    "binding": "ASSETS",
+  },
+  "images": {
+    "binding": "IMAGES",
+  },
+  "cache": { "enabled": true },
+  "exports": {
+    "default": { "type": "worker", "cache": { "enabled": false } },
+    "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },
+    "CacheMetadata": { "type": "durable-object", "storage": "sqlite" },
+  },
+  "r2_buckets": [
+    {
+      "binding": "CACHE_BODIES",
+      "bucket_name": "app-router-cloudflare-response-store-e2e",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "CACHE_METADATA", "class_name": "CacheMetadata" }],
+  },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+}

@@ -15,6 +15,7 @@ import {
   compareVersions,
   decideGeneration,
   findOverride,
+  hasPendingPublish,
   latestTagVersionFromTags,
   latestPackageTagVersionFromTags,
   loadOverrides,
@@ -169,9 +170,28 @@ describe("decideGeneration (THE CORRECTNESS RULE)", () => {
     expect(decideGeneration("0.0.1", null).action).toBe("generate");
   });
 
+  it("skips a tagless package whose first prerelease is awaiting publish", () => {
+    expect(decideGeneration("0.1.0-beta.0", null, "0.0.0").action).toBe("skip");
+  });
+
+  it("generates for a tagless package before its first prerelease is versioned", () => {
+    expect(decideGeneration("0.0.0", null, "0.0.0").action).toBe("generate");
+  });
+
   it("generates when package.json somehow lags the tag (not a skip case)", () => {
     // Only strictly-greater package version triggers the publish guard.
     expect(decideGeneration("0.0.5", "0.0.55").action).toBe("generate");
+  });
+});
+
+describe("hasPendingPublish", () => {
+  it("keeps the workspace on the publish path when any package is awaiting a tag", () => {
+    expect(
+      hasPendingPublish([
+        { action: "skip", reason: "awaiting publish" },
+        { action: "generate", reason: "unreleased commits" },
+      ]),
+    ).toBe(true);
   });
 });
 

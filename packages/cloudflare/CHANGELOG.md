@@ -1,5 +1,68 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.9
+
+### Features
+
+- **Response Store:** read response metadata from R2 (#3339)
+- **Tracing:** add Next.js-compatible OpenTelemetry instrumentation with Sentry and Cloudflare Workers tracing support (#3261)
+- **Cloudflare:** allow version uploads without promotion (#3337)
+- **Response Store:** support for sharded durable objects (#3301)
+
+### Bug Fixes
+
+- **Cache:** bypass shared lookup for force-dynamic routes (#3346)
+- **Cloudflare:** prewarm KV through deployed Workers (#3324)
+- **Response Store:** stabilize cached variant selection (#3308)
+
+### Contributors
+
+- @james-elicx
+
+## 1.0.0-beta.8
+
+### Features
+
+#### Cache
+
+- support self-contained response store (#3246)
+- lazily resolve response store tag expirations (#3203)
+- stream response-store cache misses (#3200)
+- seed RSC during response-store warmup (#3196)
+- add Workers Response Store POC (#3192)
+
+#### Cloudflare
+
+- scaffold Response Store Wrangler config (#3249)
+- isolate cached response entrypoint (#3152)
+- summarize CDN warmup by route (#3163)
+
+### Bug Fixes
+
+#### Cloudflare
+
+- declare response store durable object export (#3262)
+- restore bounded probe scheduling (#3171)
+- reduce staged CDN probe work (#3168)
+- prewarm routed response stages (#3153)
+- wait for per-route version propagation (#3164)
+
+#### Misc
+
+- **Cache:** align response store HTML identity (#3209)
+- **Cache:** preserve staged cache invalidation parity (#3158)
+- **Build:** preserve staged prerender routing (#3151)
+
+### Performance
+
+- **Cache:** reduce response store Durable Object load (#3213)
+- **Cloudflare:** cut KV data cache round trips from 3 to 2 per tagged hit (#3187)
+
+### Contributors
+
+- @james-elicx
+- @LubomirGeorgiev
+
 ## 1.0.0-beta.7
 
 ### Features

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import * as Sentry from "@sentry/nextjs";
-import { createServer } from "vite-plus";
+import { createServer, parseAst } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
 import {
   findInstrumentationClientFile,
@@ -13,6 +13,10 @@ import {
 import { toSlash } from "pathslash";
 import { generateInstrumentationClientInjectModule } from "../packages/vinext/src/client/instrumentation-client-inject.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
+import {
+  createInstrumentationClientTransformPlugin,
+  createInstrumentationServerTransformPlugin,
+} from "../packages/vinext/src/plugins/instrumentation-client.js";
 
 const RESOLVED_INSTRUMENTATION_CLIENT = "\0private-next-instrumentation-client.mjs";
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "..", "node_modules");
@@ -57,6 +61,14 @@ function parseSentryEnvelopeEvents(envelope: unknown): SentryEnvelopeEvent[] {
     }
   }
   return events;
+}
+
+function getTransformHandler(
+  plugin: ReturnType<typeof createInstrumentationClientTransformPlugin>,
+) {
+  if (typeof plugin.transform === "function") return plugin.transform;
+  if (plugin.transform?.handler) return plugin.transform.handler;
+  throw new Error("transform hook missing");
 }
 
 function setupInjectProject(options: {
@@ -180,6 +192,115 @@ describe("findInstrumentationFile", () => {
   });
 });
 
+describe("instrumentation-client transform", () => {
+  const path = "/project/instrumentation-client.ts";
+  const source = 'import "./setup.js";\ninitialize();\n';
+
+  it("injects a wrapped config route manifest in production without the dev timer", async () => {
+    const manifest = JSON.stringify({ dynamicRoutes: ["/products/:id"] });
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => manifest,
+    );
+    const transform = getTransformHandler(plugin);
+    const result = await transform.call({} as never, source, path);
+    const code = getLoadedCode(result);
+
+    expect(code).toContain(`globalThis["_sentryRouteManifest"] = ${JSON.stringify(manifest)};`);
+    expect(code.indexOf("_sentryRouteManifest")).toBeLessThan(code.indexOf("initialize()"));
+    expect(code).not.toContain("__vinextInstrumentationClientStart");
+  });
+
+  it("injects the route manifest alongside the timer in development", async () => {
+    const manifest = JSON.stringify({ dynamicRoutes: ["/products/:id"] });
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => manifest,
+    );
+    const configResolved =
+      typeof plugin.configResolved === "function"
+        ? plugin.configResolved
+        : plugin.configResolved?.handler;
+    await configResolved?.call({} as never, { command: "serve" } as never);
+
+    const code = getLoadedCode(await getTransformHandler(plugin).call({} as never, source, path));
+    expect(code).toContain(`globalThis["_sentryRouteManifest"] = ${JSON.stringify(manifest)};`);
+    expect(code).toContain("__vinextInstrumentationClientStart");
+  });
+
+  it("injects before executable statements without breaking directives", async () => {
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => "manifest",
+    );
+    const sourceWithLateImport = '"use strict";\ninitialize();\nimport "./setup.js";\n';
+    const code = getLoadedCode(
+      await getTransformHandler(plugin).call({} as never, sourceWithLateImport, path),
+    );
+
+    expect(parseAst(code).body[0]).toMatchObject({ directive: "use strict" });
+    expect(code.indexOf('globalThis["_sentryRouteManifest"]')).toBeGreaterThan(
+      code.indexOf('"use strict"'),
+    );
+    expect(code.indexOf('globalThis["_sentryRouteManifest"]')).toBeLessThan(
+      code.indexOf("initialize()"),
+    );
+  });
+
+  it("keeps route manifest injection disabled when a wrapped config omits it", async () => {
+    const plugin = createInstrumentationClientTransformPlugin(
+      () => path,
+      () => undefined,
+    );
+    const transform = getTransformHandler(plugin);
+    expect(await transform.call({} as never, source, path)).toBeNull();
+  });
+});
+
+describe("server instrumentation value transform", () => {
+  const path = "/project/instrumentation.ts";
+  const source = 'import "./setup.js";\nexport function register() {}\n';
+
+  it("injects wrapped-config values into the instrumentation module", async () => {
+    const plugin = createInstrumentationServerTransformPlugin(
+      () => path,
+      () => ({ objectValue: { enabled: true }, stringValue: "value", unsetValue: undefined }),
+    );
+    const code = getLoadedCode(await getTransformHandler(plugin).call({} as never, source, path));
+
+    expect(code).toContain('globalThis["objectValue"] = {"enabled":true};');
+    expect(code).toContain('globalThis["stringValue"] = "value";');
+    expect(code).toContain('globalThis["unsetValue"] = undefined;');
+    expect(code.indexOf("__vinextInstrumentationServerValues")).toBeLessThan(
+      code.indexOf("export function register"),
+    );
+  });
+
+  it("ignores unrelated modules and empty value maps", async () => {
+    const values: Record<string, unknown> = {};
+    const plugin = createInstrumentationServerTransformPlugin(
+      () => path,
+      () => values,
+    );
+    const transform = getTransformHandler(plugin);
+
+    expect(await transform.call({} as never, source, "/project/other.ts")).toBeNull();
+    expect(await transform.call({} as never, source, path)).toBeNull();
+  });
+
+  it("does not apply server value injection to the client environment", () => {
+    const plugin = createInstrumentationServerTransformPlugin(
+      () => path,
+      () => ({ serverOnly: true }),
+    );
+    const apply = plugin.applyToEnvironment!;
+
+    expect(apply({ name: "client" } as never)).toBe(false);
+    expect(apply({ name: "rsc" } as never)).toBe(true);
+    expect(apply({ name: "ssr" } as never)).toBe(true);
+  });
+});
+
 describe("findInstrumentationClientFile", () => {
   let tmpDir: string;
 
@@ -231,12 +352,14 @@ describe("runInstrumentation", () => {
 
   beforeEach(async () => {
     vi.resetModules();
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.instrumentation.state")];
     const mod = await import("../packages/vinext/src/server/instrumentation.js");
     runInstrumentation = mod.runInstrumentation;
     getOnRequestErrorHandler = mod.getOnRequestErrorHandler;
   });
 
   afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.instrumentation.state")];
     delete globalThis.__VINEXT_onRequestErrorHandler__;
   });
 
@@ -273,20 +396,14 @@ describe("runInstrumentation", () => {
     expect(getOnRequestErrorHandler()).toBeNull();
   });
 
-  it("logs error and continues when import fails", async () => {
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  it("propagates instrumentation import failures", async () => {
     const runner = {
       import: vi.fn().mockRejectedValue(new Error("Module not found")),
     };
 
-    // Should not throw
-    await runInstrumentation(runner, "/fake/instrumentation.ts");
-
-    expect(consoleSpy).toHaveBeenCalledWith(
-      "[vinext] Failed to load instrumentation:",
+    await expect(runInstrumentation(runner, "/fake/instrumentation.ts")).rejects.toThrow(
       "Module not found",
     );
-    consoleSpy.mockRestore();
   });
 });
 
@@ -299,10 +416,12 @@ describe("ensureInstrumentationRegistered", () => {
     routerKind: "App Router" as const,
     routePath: "/test",
     routeType: "render" as const,
+    revalidateReason: undefined,
   };
 
   beforeEach(async () => {
     vi.resetModules();
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.instrumentation.state")];
     delete globalThis.__VINEXT_onRequestErrorHandler__;
     delete process.env.VINEXT_PRERENDER;
     const mod = await import("../packages/vinext/src/server/instrumentation-runtime.js");
@@ -312,6 +431,7 @@ describe("ensureInstrumentationRegistered", () => {
   });
 
   afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.instrumentation.state")];
     delete globalThis.__VINEXT_onRequestErrorHandler__;
     delete process.env.VINEXT_PRERENDER;
   });
@@ -357,6 +477,40 @@ describe("ensureInstrumentationRegistered", () => {
     expect(register).toHaveBeenCalledOnce();
   });
 
+  it("is idempotent across duplicate bundled module instances", async () => {
+    const register = vi.fn();
+    const instrumentationModule = { register };
+
+    await ensureInstrumentationRegistered(instrumentationModule);
+    vi.resetModules();
+    const duplicate = await import("../packages/vinext/src/server/instrumentation-runtime.js");
+    await duplicate.ensureInstrumentationRegistered(instrumentationModule);
+
+    expect(register).toHaveBeenCalledOnce();
+  });
+
+  it("deduplicates separate environment module instances by instrumentation path", async () => {
+    const firstRegister = vi.fn();
+    const secondRegister = vi.fn();
+
+    await ensureInstrumentationRegistered({ register: firstRegister }, "/app/instrumentation.ts");
+    await ensureInstrumentationRegistered({ register: secondRegister }, "/app/instrumentation.ts");
+
+    expect(firstRegister).toHaveBeenCalledOnce();
+    expect(secondRegister).not.toHaveBeenCalled();
+  });
+
+  it("registers distinct instrumentation modules independently", async () => {
+    const firstRegister = vi.fn();
+    const secondRegister = vi.fn();
+
+    await ensureInstrumentationRegistered({ register: firstRegister });
+    await ensureInstrumentationRegistered({ register: secondRegister });
+
+    expect(firstRegister).toHaveBeenCalledOnce();
+    expect(secondRegister).toHaveBeenCalledOnce();
+  });
+
   it("no-ops when VINEXT_PRERENDER is set", async () => {
     process.env.VINEXT_PRERENDER = "1";
     const register = vi.fn();
@@ -384,10 +538,12 @@ describe("reportRequestError", () => {
     routerKind: "App Router" as const,
     routePath: "/test",
     routeType: "render" as const,
+    revalidateReason: undefined,
   };
 
   beforeEach(async () => {
     vi.resetModules();
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.instrumentation.state")];
     const mod = await import("../packages/vinext/src/server/instrumentation.js");
     runInstrumentation = mod.runInstrumentation;
     reportRequestError = mod.reportRequestError;
@@ -396,6 +552,7 @@ describe("reportRequestError", () => {
   });
 
   afterEach(() => {
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for("vinext.instrumentation.state")];
     delete globalThis.__VINEXT_onRequestErrorHandler__;
   });
 
@@ -410,6 +567,23 @@ describe("reportRequestError", () => {
     await reportRequestError(error, sampleRequest, sampleContext);
 
     expect(onRequestError).toHaveBeenCalledWith(error, sampleRequest, sampleContext);
+  });
+
+  it("reports route patterns in Next.js format", async () => {
+    const onRequestError = vi.fn();
+    const runner = {
+      import: vi.fn().mockResolvedValue({ onRequestError }),
+    };
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
+
+    await reportRequestError(new Error("boom"), sampleRequest, {
+      ...sampleContext,
+      routePath: "/blog/:slug/:rest+/:optional*",
+    });
+
+    expect(onRequestError.mock.calls[0]?.[2].routePath).toBe(
+      "/blog/[slug]/[...rest]/[[...optional]]",
+    );
   });
 
   it("no-ops when no handler is registered", async () => {
@@ -497,6 +671,7 @@ describe("reportRequestError", () => {
           routerKind: "App Router" as const,
           routePath: "/error-server-test",
           routeType: "render" as const,
+          revalidateReason: undefined,
         },
       },
       {
@@ -506,6 +681,17 @@ describe("reportRequestError", () => {
           routerKind: "Pages Router" as const,
           routePath: "/api/error-route",
           routeType: "route" as const,
+          revalidateReason: undefined,
+        },
+      },
+      {
+        error: new Error("Proxy error"),
+        request: { path: "/proxy-error", method: "GET", headers: {} },
+        context: {
+          routerKind: "Pages Router" as const,
+          routePath: "/proxy",
+          routeType: "proxy" as const,
+          revalidateReason: undefined,
         },
       },
     ];
@@ -516,13 +702,14 @@ describe("reportRequestError", () => {
       );
     }
 
-    expect(waitUntil).toHaveBeenCalledTimes(4);
+    expect(waitUntil).toHaveBeenCalledTimes(6);
     await Promise.all(waitUntil.mock.calls.map(([promise]) => promise));
 
     const events = envelopes.flatMap(parseSentryEnvelopeEvents);
     expect(events.map((event) => event.exception?.values?.[0]?.value)).toEqual([
       "Server component error",
       "Pages API error",
+      "Proxy error",
     ]);
     expect(events.map((event) => event.contexts?.nextjs)).toEqual([
       {
@@ -536,6 +723,12 @@ describe("reportRequestError", () => {
         router_kind: "Pages Router",
         router_path: "/api/error-route",
         route_type: "route",
+      },
+      {
+        request_path: "/proxy-error",
+        router_kind: "Pages Router",
+        router_path: "/proxy",
+        route_type: "proxy",
       },
     ]);
 

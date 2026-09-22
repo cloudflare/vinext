@@ -379,6 +379,11 @@ describe("computeClientRuntimeMetadata", () => {
     },
   };
 
+  const expectedCssGraph = (prefix = "") => ({
+    "entry.js": { imports: ["shared.js"] },
+    LazyComponent: { css: [`${prefix}_next/static/lazy-jkl012.css`] },
+  });
+
   it("returns empty metadata when no manifest exists", () => {
     const result = computeClientRuntimeMetadata({
       clientDir,
@@ -411,6 +416,7 @@ describe("computeClientRuntimeMetadata", () => {
     });
     expect(result).toEqual({
       clientEntryFile: "_next/static/entry-abc123.js",
+      cssGraph: expectedCssGraph(),
       lazyChunks: ["_next/static/lazy-ghi789.js"],
       dynamicPreloads: {
         LazyComponent: ["_next/static/lazy-ghi789.js", "_next/static/lazy-jkl012.css"],
@@ -491,6 +497,7 @@ describe("computeClientRuntimeMetadata", () => {
     });
     expect(result).toEqual({
       clientEntryFile: "docs/_next/static/entry-abc123.js",
+      cssGraph: expectedCssGraph("docs/"),
       lazyChunks: ["docs/_next/static/lazy-ghi789.js"],
       dynamicPreloads: {
         LazyComponent: ["docs/_next/static/lazy-ghi789.js", "docs/_next/static/lazy-jkl012.css"],
@@ -513,6 +520,7 @@ describe("computeClientRuntimeMetadata", () => {
     // exclusion); only dynamicPreloads get the assetPrefix.
     expect(result).toEqual({
       clientEntryFile: "_next/static/entry-abc123.js",
+      cssGraph: expectedCssGraph(),
       lazyChunks: ["_next/static/lazy-ghi789.js"],
       dynamicPreloads: {
         LazyComponent: ["cdn/_next/static/lazy-ghi789.js", "cdn/_next/static/lazy-jkl012.css"],
@@ -537,6 +545,7 @@ describe("computeClientRuntimeMetadata", () => {
     // Only dynamicPreloads (real <link> hrefs) get the absolute prefix.
     expect(result).toEqual({
       clientEntryFile: "_next/static/entry-abc123.js",
+      cssGraph: expectedCssGraph(),
       lazyChunks: ["_next/static/lazy-ghi789.js"],
       dynamicPreloads: {
         LazyComponent: [
@@ -575,6 +584,7 @@ describe("computeClientRuntimeMetadata", () => {
     });
     expect(result).toEqual({
       clientEntryFile: "cdn/_next/static/entry-abc123.js",
+      cssGraph: expectedCssGraph("cdn/"),
       lazyChunks: ["cdn/_next/static/lazy-ghi789.js"],
       dynamicPreloads: {
         LazyComponent: ["cdn/_next/static/lazy-ghi789.js", "cdn/_next/static/lazy-jkl012.css"],

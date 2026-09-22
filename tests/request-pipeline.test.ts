@@ -32,6 +32,9 @@ import {
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
+  VINEXT_TRACE_BUFFERED_BODY_HEADER,
+  VINEXT_TRACE_ERROR_HEADER,
+  VINEXT_TRACE_ROUTE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import {
   buildRequestHeadersFromMiddlewareResponse,
@@ -978,6 +981,9 @@ describe("filterInternalHeaders", () => {
       [VINEXT_PRERENDER_SPECULATIVE_HEADER]: "forged",
       [VINEXT_REVALIDATED_CACHE_TAG_HEADER]: "forged",
       [VINEXT_REVALIDATE_HOST_HEADER]: "example.fr",
+      [VINEXT_TRACE_BUFFERED_BODY_HEADER]: "forged",
+      [VINEXT_TRACE_ERROR_HEADER]: "forged",
+      [VINEXT_TRACE_ROUTE_HEADER]: "forged",
       "user-agent": "test",
     });
 
@@ -995,6 +1001,9 @@ describe("filterInternalHeaders", () => {
       VINEXT_PRERENDER_CACHE_LIFE_HEADER,
       VINEXT_REVALIDATE_HOST_HEADER,
       VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+      VINEXT_TRACE_ERROR_HEADER.toLowerCase(),
+      VINEXT_TRACE_BUFFERED_BODY_HEADER.toLowerCase(),
+      VINEXT_TRACE_ROUTE_HEADER.toLowerCase(),
     ]);
     for (const name of VINEXT_INTERNAL_HEADERS) {
       expect(name).toBe(name.toLowerCase());
@@ -1007,6 +1016,9 @@ describe("filterInternalHeaders", () => {
     expect(result.has(VINEXT_PRERENDER_CACHE_LIFE_HEADER)).toBe(false);
     expect(result.has(VINEXT_REVALIDATE_HOST_HEADER)).toBe(false);
     expect(result.has(VINEXT_REVALIDATED_CACHE_TAG_HEADER)).toBe(false);
+    expect(result.has(VINEXT_TRACE_BUFFERED_BODY_HEADER)).toBe(false);
+    expect(result.has(VINEXT_TRACE_ERROR_HEADER)).toBe(false);
+    expect(result.has(VINEXT_TRACE_ROUTE_HEADER)).toBe(false);
     expect(result.get("cloudflare-workers-version-overrides")).toBe('downstream="version-id"');
     expect(result.get("user-agent")).toBe("test");
   });

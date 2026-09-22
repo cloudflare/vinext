@@ -28,6 +28,8 @@ export type RouteCacheabilityState = {
   completion?: Promise<RouteCacheabilityOutcome>;
   /** Canonical framework tags most recently handed to the active CDN adapter. */
   cdnCacheTags?: readonly string[];
+  /** Private marker surrounding this render's injected client trace metadata. */
+  clientTraceMetadataMarker?: string;
   completedResponseBody?: boolean;
   /** Whether admission must translate a completed response through the active adapter. */
   applyCompletedResponsePolicy?: boolean;
@@ -41,6 +43,8 @@ export type RouteCacheabilityState = {
   mode: "admit" | "identity" | "probe";
   outcome?: RouteCacheabilityOutcome;
   preserveResponseCachePolicy?: boolean;
+  /** Whether an API request carried credentials that must not enter shared caching. */
+  credentialedRequest?: boolean;
   /** Cache-key behavior declared by the active CDN adapter. */
   responseVary?: "verbatim";
   /** Concrete pathname resolved by the trusted request stage before rendering. */
@@ -61,6 +65,13 @@ export function recordRouteCacheabilityCdnTags(tags: readonly string[] | undefin
   const state = readRouteCacheabilityState();
   if (state?.mode !== "admit") return;
   state.cdnCacheTags = [...tags];
+}
+
+/** Retain the exact trace metadata marker for completed shared-response admission. */
+export function recordRouteCacheabilityClientTraceMetadataMarker(marker: string): void {
+  const state = readRouteCacheabilityState();
+  if (state?.mode !== "admit") return;
+  state.clientTraceMetadataMarker = marker;
 }
 
 /** Preserve the existing policy when hybrid routing hands the request to Pages Router. */

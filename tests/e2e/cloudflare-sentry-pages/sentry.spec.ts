@@ -1,7 +1,11 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import type {
+  ReportedSentryError as ReportedError,
+  ReportedSentryTransaction as ReportedTransaction,
+} from "../../fixtures/sentry-test-state";
 
 async function expectReportedError(request: APIRequestContext, message: string) {
-  const state: { errors: Array<{ message?: string }> } = { errors: [] };
+  const state: { errors: ReportedError[] } = { errors: [] };
 
   await expect
     .poll(async () => {
@@ -15,7 +19,74 @@ async function expectReportedError(request: APIRequestContext, message: string) 
   return state;
 }
 
+async function expectErrorTraceCorrelation(
+  request: APIRequestContext,
+  error: ReportedError,
+): Promise<void> {
+  expect(error.traceId).toMatch(/^[0-9a-f]{32}$/);
+  expect(error.spanId).toMatch(/^[0-9a-f]{16}$/);
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      return state.transactions.some(
+        (transaction) =>
+          transaction.traceId === error.traceId &&
+          [transaction.spanId, ...transaction.spans.map(({ spanId }) => spanId)].includes(
+            error.spanId ?? "",
+          ),
+      );
+    })
+    .toBe(true);
+}
+
+async function expectReportedTransaction(
+  request: APIRequestContext,
+  name: string,
+  predicate: (transaction: ReportedTransaction) => boolean = () => true,
+) {
+  let transaction: ReportedTransaction | undefined;
+
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      transaction = state.transactions.find(
+        (candidate) => candidate.name === name && predicate(candidate),
+      );
+      return transaction !== undefined;
+    })
+    .toBe(true);
+
+  if (!transaction) throw new Error(`Sentry transaction was not reported: ${name}`);
+  return transaction;
+}
+
+async function expectReportedTransactionMatching(
+  request: APIRequestContext,
+  predicate: (transaction: ReportedTransaction) => boolean,
+): Promise<ReportedTransaction> {
+  let transaction: ReportedTransaction | undefined;
+
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      transaction = state.transactions.find(predicate);
+      return transaction !== undefined;
+    })
+    .toBe(true);
+
+  if (!transaction) throw new Error("Matching Sentry transaction was not reported");
+  return transaction;
+}
+
 test.describe("Sentry on Cloudflare Workers Pages Router", () => {
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
   test.beforeEach(async ({ request }) => {
     const res = await request.delete("/api/sentry-test-state");
     expect(res.status()).toBe(200);
@@ -38,6 +109,293 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         sdkName: "sentry.javascript.nextjs",
       }),
     );
+    await expectErrorTraceCorrelation(
+      request,
+      state.errors.find(({ message }) => message === "Intentional Sentry Pages Router error")!,
+    );
+    const transaction = await expectReportedTransaction(request, "GET /api/error-route");
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Node.runHandler",
+    );
+    expect(handlerSpan).toMatchObject({ status: expect.any(String) });
+    expect(handlerSpan?.status).not.toBe("ok");
+  });
+
+  test("reports proxy errors with Next.js context and trace correlation", async ({ request }) => {
+    const errorRes = await request.get("/proxy-error");
+    expect(errorRes.status()).toBe(500);
+
+    const state = await expectReportedError(request, "Intentional Sentry Pages Router proxy error");
+    const error = state.errors.find(
+      ({ message }) => message === "Intentional Sentry Pages Router proxy error",
+    )!;
+    expect(error).toMatchObject({
+      projectId: "1",
+      requestPath: "/proxy-error",
+      routerKind: "Pages Router",
+      routerPath: "/proxy",
+      routeType: "proxy",
+      sdkName: "sentry.javascript.nextjs",
+    });
+    await expectErrorTraceCorrelation(request, error);
+  });
+
+  // Next.js render.ts updates the request root to the selected Pages error route.
+  // This fixture has no pages/404, so an unmatched request renders /_error.
+  // https://github.com/vercel/next.js/blob/b421cadefd31c1b59d117842021ded7c1ebaf5b4/packages/next/src/server/render.tsx
+  test("traces an unmatched Pages request through the internal error route", async ({
+    request,
+  }) => {
+    const response = await request.get("/missing-pages-route");
+    expect(response.status()).toBe(404);
+
+    const transaction = await expectReportedTransaction(request, "GET /_error");
+    expect(transaction).toMatchObject({
+      attributes: expect.objectContaining({
+        "http.route": "/_error",
+        "http.status_code": 404,
+        "next.route": "/_error",
+      }),
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/_error",
+          "next.span_type": "Render.renderDocument",
+        }),
+        name: "render route (pages) /_error",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  test("records transaction envelopes and nested application spans", async ({ request }) => {
+    const traceRes = await request.get("/api/trace/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /api/trace/[slug]");
+    expect(transaction).toMatchObject({
+      attributes: expect.objectContaining({
+        "http.route": "/api/trace/[slug]",
+        "http.status_code": 200,
+        "next.route": "/api/trace/[slug]",
+        "next.span_type": "BaseServer.handleRequest",
+      }),
+    });
+    expect(transaction.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(transaction.spanId).toMatch(/^[0-9a-f]{16}$/);
+
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Node.runHandler",
+    );
+    expect(handlerSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.span_name": "executing api route (pages) /api/trace/[slug]",
+        "next.span_type": "Node.runHandler",
+      }),
+      name: "executing api route (pages) /api/trace/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        name: "fixture.pages.child",
+        traceId: transaction.traceId,
+        parentSpanId: handlerSpan?.spanId,
+        operation: "fixture.child",
+        attributes: expect.objectContaining({
+          "fixture.router": "pages",
+          "fixture.slug": "product-42",
+        }),
+      }),
+    );
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  test("parents getServerSideProps application spans beneath the framework span", async ({
+    request,
+  }) => {
+    const traceRes = await request.get("/trace-gssp/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-gssp/[slug]");
+    const dataSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Render.getServerSideProps",
+    );
+    expect(dataSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.route": "/trace-gssp/[slug]",
+        "next.span_name": "getServerSideProps /trace-gssp/[slug]",
+        "next.span_type": "Render.getServerSideProps",
+      }),
+      name: "getServerSideProps /trace-gssp/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({ "fixture.slug": "product-42" }),
+        name: "fixture.pages.gssp.child",
+        operation: "fixture.gssp",
+        parentSpanId: dataSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+    const documentSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Render.renderDocument",
+    );
+    expect(documentSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.route": "/trace-gssp/[slug]",
+        "next.span_name": "render route (pages) /trace-gssp/[slug]",
+        "next.span_type": "Render.renderDocument",
+      }),
+      name: "render route (pages) /trace-gssp/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/trace-gssp/[slug]",
+          "next.span_name": "resolve page components",
+          "next.span_type": "NextNodeServer.findPageComponents",
+        }),
+        name: "resolve page components",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  test("traces request-time getStaticProps for a blocking fallback", async ({ request }) => {
+    const slug = `runtime-${Date.now()}`;
+    const traceRes = await request.get(`/trace-gsp/${slug}`);
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-gsp/[slug]");
+    const dataSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "Render.getStaticProps",
+    );
+    expect(dataSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.route": "/trace-gsp/[slug]",
+        "next.span_name": "getStaticProps /trace-gsp/[slug]",
+        "next.span_type": "Render.getStaticProps",
+      }),
+      name: "getStaticProps /trace-gsp/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({ "fixture.slug": slug }),
+        name: "fixture.pages.gsp.child",
+        operation: "fixture.gsp",
+        parentSpanId: dataSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/trace-gsp/[slug]",
+          "next.span_name": "render route (pages) /trace-gsp/[slug]",
+          "next.span_type": "Render.renderDocument",
+        }),
+        name: "render route (pages) /trace-gsp/[slug]",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+
+    const resetRes = await request.delete("/api/sentry-test-state");
+    expect(resetRes.status()).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const staleRes = await request.get(`/trace-gsp/${slug}`);
+    expect(staleRes.status()).toBe(200);
+    expect(staleRes.headers()["x-nextjs-cache"]).toBe("STALE");
+
+    const staleTransaction = await expectReportedTransaction(request, "GET /trace-gsp/[slug]");
+    expect(staleTransaction.spans.map(({ attributes }) => attributes["next.span_type"])).toEqual(
+      expect.arrayContaining(["Render.getStaticProps", "Render.renderDocument"]),
+    );
+  });
+
+  // Next.js resolves the built-in Pages-only 404 through /_error when there is
+  // no app directory: packages/next/src/server/base-server.ts.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/base-server.ts
+  test("traces the Pages document span for the built-in production 404", async ({ request }) => {
+    const traceRes = await request.get("/trace-not-found");
+    expect(traceRes.status()).toBe(404);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-not-found");
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/trace-not-found",
+          "next.span_type": "Render.getServerSideProps",
+        }),
+      }),
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/_error",
+          "next.span_name": "render route (pages) /_error",
+          "next.span_type": "Render.renderDocument",
+        }),
+        name: "render route (pages) /_error",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+    expect(
+      transaction.spans
+        .filter(
+          ({ attributes }) => attributes["next.span_type"] === "NextNodeServer.findPageComponents",
+        )
+        .map(({ attributes }) => attributes["next.route"])
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(["/_error", "/trace-not-found"]);
+  });
+
+  test("continues incoming Sentry traces without leaking parallel request context", async ({
+    request,
+  }) => {
+    const firstTraceId = "11111111111111111111111111111111";
+    const secondTraceId = "22222222222222222222222222222222";
+    await Promise.all([
+      request.get("/api/trace/first", {
+        headers: { "sentry-trace": `${firstTraceId}-aaaaaaaaaaaaaaaa-1` },
+      }),
+      request.get("/api/trace/second", {
+        headers: { "sentry-trace": `${secondTraceId}-bbbbbbbbbbbbbbbb-1` },
+      }),
+    ]);
+
+    await expect
+      .poll(async () => {
+        const stateRes = await request.get("/api/sentry-test-state");
+        expect(stateRes.status()).toBe(200);
+        const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+        return state.transactions
+          .filter(({ name }) => name === "GET /api/trace/[slug]")
+          .map(({ traceId }) => traceId)
+          .sort();
+      })
+      .toEqual([firstTraceId, secondTraceId]);
+  });
+
+  test("marks 500 framework transactions as failed", async ({ request }) => {
+    const res = await request.get("/api/trace-failure/test");
+    expect(res.status()).toBe(500);
+
+    const transaction = await expectReportedTransaction(request, "GET /api/trace-failure/[slug]");
+    expect(transaction).toMatchObject({ status: expect.any(String) });
+    expect(transaction.status).not.toBe("ok");
   });
 
   test("reports a thrown render error through real @sentry/nextjs", async ({ request }) => {
@@ -60,6 +418,80 @@ test.describe("Sentry on Cloudflare Workers Pages Router", () => {
         sdkName: "sentry.javascript.nextjs",
       }),
     );
+    await expectErrorTraceCorrelation(
+      request,
+      state.errors.find(
+        ({ message }) => message === "Intentional Sentry Pages Router render error",
+      )!,
+    );
+    const transaction = await expectReportedTransaction(request, "GET /render-error");
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/_error",
+          "next.span_type": "Render.renderDocument",
+        }),
+        name: "render route (pages) /_error",
+      }),
+    );
+    expect(
+      transaction.spans
+        .filter(
+          ({ attributes }) => attributes["next.span_type"] === "NextNodeServer.findPageComponents",
+        )
+        .map(({ attributes }) => attributes["next.route"])
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(["/_error", "/500", "/render-error"]);
+  });
+
+  // Ported from Next.js:
+  // test/e2e/opentelemetry/client-trace-metadata/client-trace-metadata.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/client-trace-metadata/client-trace-metadata.test.ts
+  test("continues dynamic server traces into browser pageloads", async ({ page, request }) => {
+    const firstSlug = `browser-first-${Date.now()}`;
+    await page.goto(`/trace-gssp/${firstSlug}`);
+    await page.waitForFunction(() => window.__VINEXT_HYDRATED_AT !== undefined);
+
+    const firstMetadata = await page.locator('meta[name="sentry-trace"]').getAttribute("content");
+    expect(firstMetadata).toMatch(/^[0-9a-f]{32}-[0-9a-f]{16}-[01]$/);
+    await expect(page.locator('meta[name="baggage"]')).toHaveCount(1);
+
+    const firstServer = await expectReportedTransaction(
+      request,
+      "GET /trace-gssp/[slug]",
+      ({ spans }) => spans.some(({ attributes }) => attributes["fixture.slug"] === firstSlug),
+    );
+    await expectReportedTransactionMatching(
+      request,
+      (transaction) =>
+        transaction.operation === "pageload" && transaction.traceId === firstServer.traceId,
+    );
+
+    const readTraceMetadata = () =>
+      page
+        .locator('meta[name="sentry-trace"], meta[name="baggage"]')
+        .evaluateAll((elements) => elements.map((element) => element.getAttribute("content")));
+    const initialTraceMetadata = await readTraceMetadata();
+    await page.getByRole("link", { name: "Navigate within Pages trace fixture" }).click();
+    await expect(page.getByText(`GSSP trace: ${firstSlug}-next`)).toBeVisible();
+    await expect(readTraceMetadata()).resolves.toEqual(initialTraceMetadata);
+
+    const secondSlug = `browser-second-${Date.now()}`;
+    await page.goto(`/trace-gssp/${secondSlug}`);
+    await page.waitForFunction(() => window.__VINEXT_HYDRATED_AT !== undefined);
+    const secondServer = await expectReportedTransaction(
+      request,
+      "GET /trace-gssp/[slug]",
+      ({ spans }) => spans.some(({ attributes }) => attributes["fixture.slug"] === secondSlug),
+    );
+    await expectReportedTransactionMatching(
+      request,
+      (transaction) =>
+        transaction.operation === "pageload" && transaction.traceId === secondServer.traceId,
+    );
+
+    expect(secondServer.spanId).not.toBe(firstServer.spanId);
+    expect(secondServer.traceId).not.toBe(firstServer.traceId);
   });
 
   test("reports a browser error through instrumentation-client Sentry.init", async ({

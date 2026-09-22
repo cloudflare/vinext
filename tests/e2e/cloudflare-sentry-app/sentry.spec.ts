@@ -1,8 +1,12 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import type {
+  ReportedSentryError as ReportedError,
+  ReportedSentryTransaction as ReportedTransaction,
+} from "../../fixtures/sentry-test-state";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 async function expectReportedError(request: APIRequestContext, message: string) {
-  const state: { errors: Array<{ message?: string }> } = { errors: [] };
+  const state: { errors: ReportedError[] } = { errors: [] };
 
   await expect
     .poll(async () => {
@@ -16,7 +20,74 @@ async function expectReportedError(request: APIRequestContext, message: string) 
   return state;
 }
 
+async function expectErrorTraceCorrelation(
+  request: APIRequestContext,
+  error: ReportedError,
+): Promise<void> {
+  expect(error.traceId).toMatch(/^[0-9a-f]{32}$/);
+  expect(error.spanId).toMatch(/^[0-9a-f]{16}$/);
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      return state.transactions.some(
+        (transaction) =>
+          transaction.traceId === error.traceId &&
+          [transaction.spanId, ...transaction.spans.map(({ spanId }) => spanId)].includes(
+            error.spanId ?? "",
+          ),
+      );
+    })
+    .toBe(true);
+}
+
+async function expectReportedTransaction(
+  request: APIRequestContext,
+  name: string,
+  predicate: (transaction: ReportedTransaction) => boolean = () => true,
+) {
+  let transaction: ReportedTransaction | undefined;
+
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      transaction = state.transactions.find(
+        (candidate) => candidate.name === name && predicate(candidate),
+      );
+      return transaction !== undefined;
+    })
+    .toBe(true);
+
+  if (!transaction) throw new Error(`Sentry transaction was not reported: ${name}`);
+  return transaction;
+}
+
+async function expectReportedTransactionMatching(
+  request: APIRequestContext,
+  predicate: (transaction: ReportedTransaction) => boolean,
+): Promise<ReportedTransaction> {
+  let transaction: ReportedTransaction | undefined;
+
+  await expect
+    .poll(async () => {
+      const stateRes = await request.get("/api/sentry-test-state");
+      expect(stateRes.status()).toBe(200);
+      const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+      transaction = state.transactions.find(predicate);
+      return transaction !== undefined;
+    })
+    .toBe(true);
+
+  if (!transaction) throw new Error("Matching Sentry transaction was not reported");
+  return transaction;
+}
+
 test.describe("Sentry on Cloudflare Workers App Router", () => {
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
   test.beforeEach(async ({ request }) => {
     const res = await request.delete("/api/sentry-test-state");
     expect(res.status()).toBe(200);
@@ -39,6 +110,502 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
         sdkName: "sentry.javascript.nextjs",
       }),
     );
+    await expectErrorTraceCorrelation(
+      request,
+      state.errors.find(({ message }) => message === "Intentional Sentry App Router error")!,
+    );
+    const transaction = await expectReportedTransaction(request, "GET /api/error-route");
+    expect(transaction).toMatchObject({
+      attributes: expect.objectContaining({ "error.type": "500" }),
+      status: expect.any(String),
+    });
+    expect(transaction.status).not.toBe("Intentional Sentry App Router error");
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRouteRouteHandlers.runHandler",
+    );
+    expect(handlerSpan?.status).toEqual(expect.any(String));
+    expect(handlerSpan?.status).not.toBe("ok");
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/api/error-route",
+          "next.span_name": "resolve page components",
+          "next.span_type": "NextNodeServer.findPageComponents",
+        }),
+        name: "resolve page components",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  test("reports proxy errors with Next.js context and trace correlation", async ({ request }) => {
+    const errorRes = await request.get("/proxy-error");
+    expect(errorRes.status()).toBe(500);
+
+    const state = await expectReportedError(request, "Intentional Sentry App Router proxy error");
+    const error = state.errors.find(
+      ({ message }) => message === "Intentional Sentry App Router proxy error",
+    )!;
+    expect(error).toMatchObject({
+      projectId: "1",
+      requestPath: "/proxy-error",
+      routerKind: "Pages Router",
+      routerPath: "/proxy",
+      routeType: "proxy",
+      sdkName: "sentry.javascript.nextjs",
+    });
+    await expectErrorTraceCorrelation(request, error);
+  });
+
+  // Next.js sets route-miss App renders to its internal /404 route.
+  // https://github.com/vercel/next.js/blob/b421cadefd31c1b59d117842021ded7c1ebaf5b4/packages/next/src/server/base-server.ts
+  // https://github.com/vercel/next.js/blob/b421cadefd31c1b59d117842021ded7c1ebaf5b4/packages/next/src/server/app-render/app-render.tsx
+  test("traces an unmatched App request through the internal 404 route", async ({ request }) => {
+    const response = await request.get("/missing-app-route");
+    expect(response.status()).toBe(404);
+
+    const transaction = await expectReportedTransaction(request, "GET /404");
+    expect(transaction).toMatchObject({
+      attributes: expect.objectContaining({
+        "http.route": "/404",
+        "http.status_code": 404,
+        "next.route": "/404",
+      }),
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/404",
+          "next.span_type": "AppRender.getBodyResult",
+        }),
+        name: "render route (app) /404",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  test("parents Route Handler application spans beneath the framework span", async ({
+    request,
+  }) => {
+    const traceRes = await request.get("/api/trace/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /api/trace/[slug]");
+    expect(transaction).toMatchObject({
+      attributes: expect.objectContaining({
+        "http.route": "/api/trace/[slug]",
+        "http.status_code": 200,
+        "next.route": "/api/trace/[slug]",
+        "next.span_type": "BaseServer.handleRequest",
+      }),
+    });
+    expect(transaction.traceId).toMatch(/^[0-9a-f]{32}$/);
+    expect(transaction.spanId).toMatch(/^[0-9a-f]{16}$/);
+
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRouteRouteHandlers.runHandler",
+    );
+    expect(handlerSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.route": "/api/trace/[slug]",
+        "next.span_name": "executing api route (app) /api/trace/[slug]",
+        "next.span_type": "AppRouteRouteHandlers.runHandler",
+      }),
+      name: "executing api route (app) /api/trace/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
+
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        name: "fixture.app.child",
+        traceId: transaction.traceId,
+        parentSpanId: handlerSpan?.spanId,
+        operation: "fixture.child",
+        attributes: expect.objectContaining({
+          "fixture.router": "app",
+          "fixture.slug": "product-42",
+        }),
+      }),
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.span_name": "start response",
+          "next.span_type": "NextNodeServer.startResponse",
+        }),
+        name: "start response",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  test("retains application spans created while streaming the response", async ({ request }) => {
+    const traceRes = await request.get("/api/trace-stream");
+    expect(traceRes.status()).toBe(200);
+    expect(await traceRes.text()).toBe("streamed");
+
+    const transaction = await expectReportedTransaction(request, "GET /api/trace-stream");
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRouteRouteHandlers.runHandler",
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        name: "fixture.app.stream.child",
+        operation: "fixture.stream",
+        parentSpanId: handlerSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  test("parents App Page application spans beneath the render framework span", async ({
+    request,
+  }) => {
+    const traceRes = await request.get("/trace-page/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-page/[slug]");
+    const renderSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+    );
+    expect(renderSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.route": "/trace-page/[slug]",
+        "next.span_name": "render route (app) /trace-page/[slug]",
+        "next.span_type": "AppRender.getBodyResult",
+      }),
+      name: "render route (app) /trace-page/[slug]",
+      parentSpanId: transaction.spanId,
+      traceId: transaction.traceId,
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.route": "/trace-page/[slug]",
+          "next.span_name": "resolve page components",
+          "next.span_type": "NextNodeServer.findPageComponents",
+        }),
+        name: "resolve page components",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+    const componentTreeSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "NextNodeServer.createComponentTree",
+    );
+    expect(componentTreeSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.span_name": "build component tree",
+        "next.span_type": "NextNodeServer.createComponentTree",
+      }),
+      name: "build component tree",
+      parentSpanId: renderSpan?.spanId,
+      traceId: transaction.traceId,
+    });
+    for (const segment of ["__PAGE__", "[slug]"]) {
+      expect(transaction.spans).toContainEqual(
+        expect.objectContaining({
+          attributes: expect.objectContaining({
+            "next.segment": segment,
+            "next.span_name": "resolve segment modules",
+            "next.span_type": "NextNodeServer.getLayoutOrPageModule",
+          }),
+          name: "resolve segment modules",
+          parentSpanId: componentTreeSpan?.spanId,
+          traceId: transaction.traceId,
+        }),
+      );
+    }
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "fixture.router": "app-page",
+          "fixture.slug": "product-42",
+        }),
+        name: "fixture.app.page.child",
+        operation: "fixture.page",
+        parentSpanId: renderSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.span_name": "start response",
+          "next.span_type": "NextNodeServer.startResponse",
+        }),
+        name: "start response",
+        parentSpanId: renderSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  test("reports App Page fetches beneath the render framework span", async ({ request }) => {
+    const traceRes = await request.get("/trace-fetch/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-fetch/[slug]");
+    const renderSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+    );
+    const fetchSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.fetch",
+    );
+    expect(fetchSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "http.method": "GET",
+        "http.status_code": 200,
+        "http.url": "https://example.com/",
+        "net.peer.name": "example.com",
+        "next.fetch.cache_reason": "cache: no-store",
+        "next.fetch.cache_status": "skip",
+        "next.fetch.idx": 2,
+        "next.span_name": "fetch GET https://example.com/",
+        "next.span_type": "AppRender.fetch",
+      }),
+      // Sentry derives the display name from the HTTP semantic attributes;
+      // next.span_name above retains the framework's Next.js-compatible name.
+      name: "GET https://example.com/",
+      operation: "http.client",
+      parentSpanId: renderSpan?.spanId,
+      traceId: transaction.traceId,
+    });
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  test("reports generated metadata beneath the render framework span", async ({ request }) => {
+    const traceRes = await request.get("/trace-metadata/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(
+      request,
+      "GET /trace-metadata/[slug]",
+      ({ spans }) =>
+        spans.some(
+          ({ attributes }) => attributes["next.span_type"] === "ResolveMetadata.generateMetadata",
+        ),
+    );
+    const renderSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+    );
+    const metadataSpan = transaction.spans.find(
+      ({ attributes }) =>
+        attributes["next.span_type"] === "ResolveMetadata.generateMetadata" &&
+        attributes["next.page"] === "/trace-metadata/[slug]/page",
+    );
+    expect(metadataSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.page": "/trace-metadata/[slug]/page",
+        "next.span_name": "generateMetadata /trace-metadata/[slug]/page",
+        "next.span_type": "ResolveMetadata.generateMetadata",
+      }),
+      name: "generateMetadata /trace-metadata/[slug]/page",
+      parentSpanId: renderSpan?.spanId,
+      traceId: transaction.traceId,
+    });
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({ "fixture.slug": "product-42" }),
+        name: "fixture.app.metadata.child",
+        operation: "fixture.metadata",
+        parentSpanId: metadataSpan?.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  test("does not emit App render or response spans for a cached RSC payload", async ({
+    request,
+  }) => {
+    const slug = `cached-rsc-${Date.now()}`;
+    const path = `/trace-static/${slug}?_rsc`;
+    const traceRes = await request.get(path, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(traceRes.status()).toBe(200);
+    expect(traceRes.headers()["x-vinext-cache"]).toBe("MISS");
+    await expectReportedTransaction(request, "GET /trace-static/[slug]");
+
+    const clearRes = await request.delete("/api/sentry-test-state");
+    expect(clearRes.status()).toBe(200);
+    const cachedRes = await request.get(path, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    expect(cachedRes.status()).toBe(200);
+    expect(cachedRes.headers()["x-vinext-cache"]).toBe("HIT");
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-static/[slug]");
+    expect(transaction.attributes["next.span_name"]).toBe("RSC GET /trace-static/[slug]");
+    expect(transaction.spans).not.toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.span_type": "AppRender.getBodyResult",
+        }),
+      }),
+    );
+    expect(transaction.spans).not.toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.span_type": "NextNodeServer.startResponse",
+        }),
+      }),
+    );
+  });
+
+  test("uses the prerender span for an on-demand static App Page", async ({ request }) => {
+    const traceRes = await request.get("/trace-static/product-42");
+    expect(traceRes.status()).toBe(200);
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-static/[slug]");
+    const renderSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+    );
+    expect(renderSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.route": "/trace-static/[slug]",
+        "next.span_name": "prerender route (app) /trace-static/[slug]",
+      }),
+      name: "prerender route (app) /trace-static/[slug]",
+      parentSpanId: transaction.spanId,
+    });
+  });
+
+  // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
+  test("reports response start for an App Page cache hit", async ({ request }) => {
+    const slug = `cached-${Date.now()}`;
+    const name = "GET /trace-static/[slug]";
+    const first = await request.get(`/trace-static/${slug}`);
+    expect(first.status()).toBe(200);
+    await expectReportedTransaction(request, name, ({ spans }) =>
+      spans.some(({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult"),
+    );
+
+    const second = await request.get(`/trace-static/${slug}`);
+    expect(second.status()).toBe(200);
+    const transaction = await expectReportedTransaction(
+      request,
+      name,
+      ({ spans }) =>
+        !spans.some(
+          ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+        ) &&
+        spans.some(
+          ({ attributes }) => attributes["next.span_type"] === "NextNodeServer.startResponse",
+        ),
+    );
+    expect(transaction.spans).toContainEqual(
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          "next.span_name": "start response",
+          "next.span_type": "NextNodeServer.startResponse",
+        }),
+        name: "start response",
+        parentSpanId: transaction.spanId,
+        traceId: transaction.traceId,
+      }),
+    );
+  });
+
+  test("continues an auto-dynamic App Page trace into the browser", async ({ page, request }) => {
+    await page
+      .context()
+      .addCookies([{ domain: "localhost", name: "fixture", path: "/", value: "present" }]);
+    await page.goto(`/trace-auto/product-${Date.now()}`);
+    await waitForAppRouterHydration(page);
+    await expect(page.getByText(/Traced auto-dynamic App Page: .* \(present\)/)).toBeVisible();
+
+    const transaction = await expectReportedTransaction(request, "GET /trace-auto/[slug]");
+    const renderSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+    );
+    expect(renderSpan).toMatchObject({
+      attributes: expect.objectContaining({
+        "next.span_name": "render route (app) /trace-auto/[slug]",
+      }),
+      name: "render route (app) /trace-auto/[slug]",
+    });
+    await expectReportedTransactionMatching(
+      request,
+      (candidate) =>
+        candidate.operation === "pageload" && candidate.traceId === transaction.traceId,
+    );
+  });
+
+  test("keeps Route Handler control responses successful inside the framework span", async ({
+    request,
+  }) => {
+    const traceRes = await request.get("/api/trace-redirect", { maxRedirects: 0 });
+    expect(traceRes.status()).toBe(307);
+
+    const transaction = await expectReportedTransaction(request, "GET /api/trace-redirect");
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRouteRouteHandlers.runHandler",
+    );
+    expect(handlerSpan).toMatchObject({
+      name: "executing api route (app) /api/trace-redirect",
+      parentSpanId: transaction.spanId,
+    });
+    expect([undefined, "ok"]).toContain(handlerSpan?.status);
+  });
+
+  test("keeps the handler span successful when response validation fails afterward", async ({
+    request,
+  }) => {
+    const traceRes = await request.get("/api/trace-invalid-response");
+    expect(traceRes.status()).toBe(500);
+
+    const transaction = await expectReportedTransaction(request, "GET /api/trace-invalid-response");
+    const handlerSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRouteRouteHandlers.runHandler",
+    );
+    expect([undefined, "ok"]).toContain(handlerSpan?.status);
+  });
+
+  test("continues incoming Sentry traces without leaking parallel request context", async ({
+    request,
+  }) => {
+    const firstTraceId = "11111111111111111111111111111111";
+    const secondTraceId = "22222222222222222222222222222222";
+    await Promise.all([
+      request.get("/api/trace/first", {
+        headers: { "sentry-trace": `${firstTraceId}-aaaaaaaaaaaaaaaa-1` },
+      }),
+      request.get("/api/trace/second", {
+        headers: { "sentry-trace": `${secondTraceId}-bbbbbbbbbbbbbbbb-1` },
+      }),
+    ]);
+
+    await expect
+      .poll(async () => {
+        const stateRes = await request.get("/api/sentry-test-state");
+        expect(stateRes.status()).toBe(200);
+        const state = (await stateRes.json()) as { transactions: ReportedTransaction[] };
+        return state.transactions
+          .filter(({ name }) => name === "GET /api/trace/[slug]")
+          .map(({ traceId }) => traceId)
+          .sort();
+      })
+      .toEqual([firstTraceId, secondTraceId]);
+  });
+
+  test("marks 500 framework transactions as failed", async ({ request }) => {
+    const res = await request.get("/api/trace-failure/test");
+    expect(res.status()).toBe(500);
+
+    const transaction = await expectReportedTransaction(request, "GET /api/trace-failure/[slug]");
+    expect(transaction).toMatchObject({ status: expect.any(String) });
+    expect(transaction.status).not.toBe("ok");
   });
 
   test("reports a thrown render error through real @sentry/nextjs", async ({ request }) => {
@@ -57,6 +624,119 @@ test.describe("Sentry on Cloudflare Workers App Router", () => {
         routeType: "render",
         sdkName: "sentry.javascript.nextjs",
       }),
+    );
+    await expectErrorTraceCorrelation(
+      request,
+      state.errors.find(({ message }) => message === "Intentional Sentry App Router render error")!,
+    );
+    const transaction = await expectReportedTransaction(request, "GET /render-error");
+    const renderSpan = transaction.spans.find(
+      ({ attributes }) => attributes["next.span_type"] === "AppRender.getBodyResult",
+    );
+    expect(renderSpan?.status).toEqual(expect.any(String));
+    expect(renderSpan?.status).not.toBe("ok");
+  });
+
+  // Ported from Next.js: test/e2e/on-request-error/basic/basic.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/on-request-error/basic/basic.test.ts
+  test("reports client component SSR errors in the request trace", async ({ request }) => {
+    const errorRes = await request.get("/ssr-render-error");
+    expect(errorRes.status()).toBe(500);
+
+    const state = await expectReportedError(
+      request,
+      "Intentional Sentry App Router SSR render error",
+    );
+    const error = state.errors.find(
+      ({ message }) => message === "Intentional Sentry App Router SSR render error",
+    )!;
+    expect(error).toMatchObject({
+      projectId: "1",
+      requestPath: "/ssr-render-error",
+      routerKind: "App Router",
+      routerPath: "/ssr-render-error",
+      routeType: "render",
+      sdkName: "sentry.javascript.nextjs",
+    });
+    await expectErrorTraceCorrelation(request, error);
+  });
+
+  test("continues dynamic server traces into browser pageloads", async ({ page, request }) => {
+    const firstSlug = `browser-first-${Date.now()}`;
+    await page.goto(`/trace-page/${firstSlug}`);
+    await waitForAppRouterHydration(page);
+
+    const firstMetadata = await page.locator('meta[name="sentry-trace"]').getAttribute("content");
+    expect(firstMetadata).toMatch(/^[0-9a-f]{32}-[0-9a-f]{16}-[01]$/);
+    await expect(page.locator('meta[name="baggage"]')).toHaveCount(1);
+
+    const firstServer = await expectReportedTransaction(
+      request,
+      "GET /trace-page/[slug]",
+      ({ spans }) => spans.some(({ attributes }) => attributes["fixture.slug"] === firstSlug),
+    );
+    const firstPageload = await expectReportedTransactionMatching(
+      request,
+      (transaction) =>
+        transaction.operation === "pageload" && transaction.traceId === firstServer.traceId,
+    );
+    expect(firstPageload.traceId).toBe(firstServer.traceId);
+
+    const initialTraceMetadata = await page
+      .locator('meta[name="sentry-trace"], meta[name="baggage"]')
+      .evaluateAll((elements) => elements.map((element) => element.getAttribute("content")));
+    const navigatedPath = `/trace-page/${firstSlug}-next`;
+    const navigationResponse = page.waitForResponse((response) =>
+      isAppRouterRscRequestForPath(response.request(), navigatedPath),
+    );
+    await page.getByRole("link", { name: "Navigate within trace fixture" }).click();
+    await navigationResponse;
+    await expect(page.getByText(`Traced App Page: ${firstSlug}-next`)).toBeVisible();
+    const readTraceMetadata = () =>
+      page
+        .locator('meta[name="sentry-trace"], meta[name="baggage"]')
+        .evaluateAll((elements) => elements.map((element) => element.getAttribute("content")));
+    await expect(readTraceMetadata()).resolves.toEqual(initialTraceMetadata);
+    await page.waitForTimeout(250);
+    await expect(readTraceMetadata()).resolves.toEqual(initialTraceMetadata);
+
+    const secondSlug = `browser-second-${Date.now()}`;
+    await page.goto(`/trace-page/${secondSlug}`);
+    await waitForAppRouterHydration(page);
+    const secondServer = await expectReportedTransaction(
+      request,
+      "GET /trace-page/[slug]",
+      ({ spans }) => spans.some(({ attributes }) => attributes["fixture.slug"] === secondSlug),
+    );
+    await expectReportedTransactionMatching(
+      request,
+      (transaction) =>
+        transaction.operation === "pageload" && transaction.traceId === secondServer.traceId,
+    );
+
+    expect(secondServer.spanId).not.toBe(firstServer.spanId);
+    expect(secondServer.traceId).not.toBe(firstServer.traceId);
+  });
+
+  test("does not replay trace metadata from static HTML", async ({ request }) => {
+    const slug = `metadata-cache-${Date.now()}`;
+    const path = `/trace-static/${slug}`;
+    const firstResponse = await request.get(path);
+    expect(firstResponse.status()).toBe(200);
+    expect(firstResponse.headers()["x-vinext-cache"]).toBe("MISS");
+    const firstHtml = await firstResponse.text();
+    expect(firstHtml).toContain('<meta name="sentry-trace"');
+    expect(firstHtml).toContain('<meta name="baggage"');
+
+    const secondResponse = await request.get(path);
+    expect(secondResponse.status()).toBe(200);
+    expect(secondResponse.headers()["x-vinext-cache"]).toBe("HIT");
+    const secondHtml = await secondResponse.text();
+    expect(secondHtml).not.toContain('<meta name="sentry-trace"');
+    expect(secondHtml).not.toContain('<meta name="baggage"');
+
+    await expectReportedTransaction(request, "GET /trace-static/[slug]", ({ spans }) =>
+      spans.some(({ attributes }) => attributes["fixture.slug"] === slug),
     );
   });
 

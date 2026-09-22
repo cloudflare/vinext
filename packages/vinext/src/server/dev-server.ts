@@ -86,6 +86,12 @@ import {
   type PagesPreviewState,
 } from "./pages-preview.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
+import {
+  tracePagesData,
+  tracePagesDocument,
+  tracePagesDocumentStream,
+  traceFindPageComponents,
+} from "./pages-execution-tracing.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -264,7 +270,8 @@ function stripDevPagesNotFoundFramingHeaders(res: ServerResponse): void {
  * deferring them reduces TTFB and lets the browser start parsing the
  * shell sooner).
  */
-async function streamPageToResponse(
+async function streamPageToResponseImpl(
+  routePattern: string,
   res: ServerResponse,
   element: React.ReactElement,
   options: {
@@ -310,6 +317,7 @@ async function streamPageToResponse(
     bufferBodyBeforeHeaders?: boolean;
     /** Keep a response Content-Type set before rendering a notFound page. */
     preserveExistingContentType?: boolean;
+    onDocumentBody?: (stream: ReadableStream<Uint8Array>) => void;
   },
 ): Promise<void> {
   const {
@@ -330,6 +338,7 @@ async function streamPageToResponse(
     crossOrigin,
     bufferBodyBeforeHeaders = false,
     preserveExistingContentType = false,
+    onDocumentBody,
   } = options;
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
@@ -339,47 +348,50 @@ async function streamPageToResponse(
   // streaming path stays as the default for the common case. The contract
   // (including `withScriptNonce` and `styles` rendering) lives in the shared
   // helper so dev and prod stay in lockstep.
-  const documentRenderPage = await runDocumentRenderPage({
-    DocumentComponent,
-    enhancePageElement,
-    renderToReadableStream,
-    renderStylesToString: renderToStringAsync,
-    scriptNonce,
-    context: documentContext,
-  });
-  if (res.headersSent || res.writableEnded) return;
-
-  let bodyStream: ReadableStream<Uint8Array>;
-  if (documentRenderPage.status === "rendered") {
-    const synthesised = documentRenderPage.bodyHtml;
-    bodyStream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(synthesised));
-        controller.close();
-      },
+  const renderDocument = async () => {
+    const documentRenderPage = await runDocumentRenderPage({
+      DocumentComponent,
+      enhancePageElement,
+      renderToReadableStream,
+      renderStylesToString: renderToStringAsync,
+      scriptNonce,
+      context: documentContext,
     });
-  } else {
-    // Start the React body stream FIRST — the promise resolves when the
-    // shell is ready (synchronous content outside Suspense boundaries).
-    // This triggers the render which populates <Head> tags.
-    bodyStream = await renderToReadableStream(element);
-  }
+    if (res.headersSent || res.writableEnded) return { documentRenderPage, responseSent: true };
 
-  // Fold any head tags returned by `_document.getInitialProps()` into the same
-  // dedupe pipeline as user `next/head` tags. Matches Next.js's `_document`
-  // contract. `runDocumentRenderPage` already invokes `getInitialProps` for the
-  // renderPage contract, so reuse the head it surfaced
-  // rather than calling it a second time. Only the `skipped` path (no override,
-  // or no `enhancePageElement` wired) falls back to the standalone helper, which
-  // itself skips the unmodified default from vinext's `next/document` shim —
-  // extending Document without overriding the method inherits the base
-  // implementation, and the default returns no head tags, so dispatching it on
-  // every render is wasted work.
-  if (documentRenderPage.status === "skipped") {
-    await callDocumentGetInitialProps(DocumentComponent, setDocumentInitialHead);
-  } else {
-    setDocumentInitialHead?.(documentRenderPage.head);
-  }
+    let bodyStream: ReadableStream<Uint8Array>;
+    if (documentRenderPage.status === "rendered") {
+      const synthesised = documentRenderPage.bodyHtml;
+      bodyStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(synthesised));
+          controller.close();
+        },
+      });
+    } else {
+      // Start the body render before collecting its head state, then let the
+      // tracing adapter keep the span alive without delaying the response.
+      bodyStream = await renderToReadableStream(element);
+    }
+
+    if (documentRenderPage.status === "skipped") {
+      await callDocumentGetInitialProps(DocumentComponent, setDocumentInitialHead);
+    } else {
+      setDocumentInitialHead?.(documentRenderPage.head);
+    }
+
+    return {
+      bodyStream,
+      documentRenderPage,
+      responseSent: false,
+      waitForBody: documentRenderPage.status === "skipped",
+    };
+  };
+  const documentResult = await tracePagesDocumentStream(routePattern, renderDocument);
+  if (documentResult.responseSent) return;
+  const { bodyStream, documentRenderPage } = documentResult;
+  if (!bodyStream) throw new Error("Pages document render did not produce a body stream");
+  onDocumentBody?.(bodyStream);
 
   // Now that the shell has rendered (and any _document.getInitialProps
   // has injected its tags), collect head HTML.
@@ -552,6 +564,23 @@ async function streamPageToResponse(
 
   // Write the document suffix (closing tags, scripts)
   res.end(suffix);
+}
+
+async function streamPageToResponse(
+  ...args: Parameters<typeof streamPageToResponseImpl>
+): Promise<void> {
+  let bodyStream: ReadableStream<Uint8Array> | undefined;
+  try {
+    await streamPageToResponseImpl(args[0], args[1], args[2], {
+      ...args[3],
+      onDocumentBody(stream) {
+        bodyStream = stream;
+      },
+    });
+  } catch (error) {
+    if (bodyStream && !bodyStream.locked) await bodyStream.cancel(error).catch(() => {});
+    throw error;
+  }
 }
 
 /**
@@ -775,6 +804,7 @@ export function createSSRHandler(
     let query = mergeRouteParamsIntoQuery(parseQuery(url), params);
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
     const requestContext = createRequestContext();
+    let isStaticPropsRender = false;
     const closeRequest = () => void closeAfterResponse(requestContext);
     res.on("finish", closeRequest);
     res.on("close", closeRequest);
@@ -812,10 +842,27 @@ export function createSSRHandler(
           }
         }
 
-        // Load the page module through Vite's SSR pipeline
-        // This gives us HMR and transform support for free
-        const pageModule = await importModule(runner, route.filePath);
-        const isStaticPropsRender =
+        // Match Next.js loadComponents: resolve the page, _app, and _document
+        // beneath one findPageComponents span before data methods run.
+        const { pageModule, AppComponent, appFilePath, DocumentComponent } =
+          await traceFindPageComponents(route.pattern, async () => {
+            const pageModule = await importModule(runner, route.filePath);
+            const appFilePath = findFileWithExts(pagesDir, "_app", matcher);
+            const appModule = appFilePath ? await importModule(runner, appFilePath) : null;
+            const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
+            const docModule = docFilePath
+              ? ((await runner.import(docFilePath)) as Record<string, unknown>)
+              : null;
+            return {
+              pageModule,
+              // oxlint-disable-next-line typescript/no-explicit-any
+              AppComponent: (appModule?.default ?? null) as any,
+              appFilePath,
+              // oxlint-disable-next-line typescript/no-explicit-any
+              DocumentComponent: (docModule?.default ?? null) as any,
+            };
+          });
+        isStaticPropsRender =
           typeof pageModule.getStaticProps === "function" &&
           typeof pageModule.getServerSideProps !== "function";
         if (isStaticPropsRender) {
@@ -835,19 +882,6 @@ export function createSSRHandler(
             })
           : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const requestPreviewData = requestPreview.data;
-        // Try to load _app.tsx if it exists. This happens before the readiness
-        // predicate so app-level getInitialProps participates in the same
-        // initial Pages Router state as the client __NEXT_DATA__ payload.
-        // oxlint-disable-next-line typescript/no-explicit-any
-        let AppComponent: any = null;
-        // Import the resolved file (extension included): the module runner
-        // does not apply custom resolve.extensions (e.g. ".page.tsx" from
-        // pageExtensions) to extensionless ids.
-        const appFilePath = findFileWithExts(pagesDir, "_app", matcher);
-        if (appFilePath) {
-          const appModule = await importModule(runner, appFilePath);
-          AppComponent = appModule.default ?? null;
-        }
         const pagesNextData = {
           ...buildPagesReadinessNextData({
             pageModule,
@@ -1099,7 +1133,9 @@ export function createSSRHandler(
             defaultLocale: currentDefaultLocale,
             ...previewContext,
           };
-          const result = await pageModule.getServerSideProps(context);
+          const result = await tracePagesData("getServerSideProps", route.pattern, () =>
+            pageModule.getServerSideProps!(context),
+          );
           // If gSSP called res.end() directly (short-circuit pattern),
           // the response is already sent. Do not continue rendering.
           // Note: middleware headers are already on `res` (middleware runs
@@ -1257,7 +1293,9 @@ export function createSSRHandler(
             return;
           }
 
-          const result = await pageModule.getStaticProps(context);
+          const result = await tracePagesData("getStaticProps", route.pattern, () =>
+            pageModule.getStaticProps!(context),
+          );
           const routePattern = patternToNextFormat(route.pattern);
           assertPages404DoesNotReturnNotFound(routePattern, result);
           if (result) {
@@ -1561,17 +1599,6 @@ export function createSSRHandler(
           },
         )}</script>`;
 
-        // Try to load custom _document.tsx (import the resolved file — the
-        // module runner does not apply custom resolve.extensions to
-        // extensionless ids)
-        const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
-        // oxlint-disable-next-line typescript/no-explicit-any
-        let DocumentComponent: any = null;
-        if (docFilePath) {
-          const docModule = (await runner.import(docFilePath)) as Record<string, unknown>;
-          DocumentComponent = docModule.default ?? null;
-        }
-
         // Expose page route patterns on window before hydration so the
         // next/navigation compat hooks can resolve a dynamic pattern from a
         // resolved path, matching the production client entry. Kept in its own
@@ -1613,7 +1640,7 @@ export function createSSRHandler(
         // Stream the page using progressive SSR.
         // The shell (layouts, non-suspended content) arrives immediately.
         // Suspense content streams in as it resolves.
-        await streamPageToResponse(res, withScriptNonce(element, scriptNonce), {
+        await streamPageToResponse(route.pattern, res, withScriptNonce(element, scriptNonce), {
           url,
           server,
           fontHeadHTML,
@@ -1693,8 +1720,8 @@ export function createSSRHandler(
         // when using ModuleRunner — no stack trace fixup is needed here.
         console.error(e);
         // Report error via instrumentation hook if registered
-        reportRequestError(
-          e instanceof Error ? e : new Error(String(e)),
+        await reportRequestError(
+          e,
           {
             path: url,
             method: req.method ?? "GET",
@@ -1702,18 +1729,24 @@ export function createSSRHandler(
               Object.entries(req.headers)
                 // Exclude HTTP/2 pseudo-headers (RFC 7540 §8.1.2.1) — they are
                 // not real request headers. See: cloudflare/vinext#2013
-                .filter(([k]) => !k.startsWith(":"))
-                .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v ?? "")]),
+                .filter(([k]) => !k.startsWith(":")),
             ),
           },
           {
             routerKind: "Pages Router",
             routePath: route.pattern,
             routeType: "render",
+            revalidateReason: isOnDemandRevalidateRequest(
+              Array.isArray(req.headers[PRERENDER_REVALIDATE_HEADER])
+                ? req.headers[PRERENDER_REVALIDATE_HEADER]?.[0]
+                : req.headers[PRERENDER_REVALIDATE_HEADER],
+            )
+              ? "on-demand"
+              : isStaticPropsRender
+                ? "stale"
+                : undefined,
           },
-        ).catch(() => {
-          /* ignore reporting errors */
-        });
+        );
         // Try to render custom 500 error page
         try {
           await renderErrorPage(
@@ -1779,8 +1812,7 @@ async function renderErrorPage(
   attachPagesRequestCookies(req);
   const matcher = fileMatcher ?? createValidFileMatcher();
   // Try specific status page first, then _error, then fallback
-  const candidates =
-    statusCode === 404 ? ["404", "_error"] : statusCode === 500 ? ["500", "_error"] : ["_error"];
+  const candidates = statusCode === 404 ? ["404", "_error"] : ["_error"];
 
   for (const candidate of candidates) {
     // oxlint-disable-next-line typescript/no-explicit-any
@@ -1791,23 +1823,29 @@ async function renderErrorPage(
       errorAssetPath = findFileWithExts(pagesDir, candidate, matcher);
       if (!errorAssetPath && candidate !== "_error") continue;
 
-      const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
+      const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
+      const { errorModule, AppComponent, appAssetPath, DocumentComponent } =
+        await traceFindPageComponents(errorPage, async () => {
+          const errorModule = await importModule(runner, errorAssetPath ?? "next/error");
+          const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
+          const appModule = appAssetPath ? await importModule(runner, appAssetPath) : null;
+          const docFilePath = findFileWithExts(pagesDir, "_document", matcher);
+          const docModule = docFilePath ? await importModule(runner, docFilePath) : null;
+          return {
+            errorModule,
+            // oxlint-disable-next-line typescript/no-explicit-any
+            AppComponent: (appModule?.default ?? null) as any,
+            appAssetPath,
+            // oxlint-disable-next-line typescript/no-explicit-any
+            DocumentComponent: (docModule?.default ?? null) as any,
+          };
+        });
       candidateLoaded = true;
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
-      // Try to load _app.tsx to wrap the error page
-      // oxlint-disable-next-line typescript/no-explicit-any
-      let AppComponent: any = null;
-      const appAssetPath = findFileWithExts(pagesDir, "_app", matcher);
-      if (appAssetPath) {
-        const appModule = await importModule(runner, appAssetPath);
-        AppComponent = appModule.default ?? null;
-      }
-
       const createElement = React.createElement;
       res.statusCode = statusCode;
-      const errorPage = candidate === "_error" ? "/_error" : `/${candidate}`;
       const errorRouter = {
         pathname: errorPage,
         query: parseQuery(url),
@@ -1840,12 +1878,14 @@ async function renderErrorPage(
         const isOnDemandRevalidate = isOnDemandRevalidateRequest(
           req.headers[PRERENDER_REVALIDATE_HEADER],
         );
-        const staticResult = await errorModule.getStaticProps({
-          locale: context.locale,
-          locales: context.locales,
-          defaultLocale: context.defaultLocale,
-          revalidateReason: isOnDemandRevalidate ? "on-demand" : "stale",
-        });
+        const staticResult = await tracePagesData("getStaticProps", errorPage, () =>
+          errorModule.getStaticProps({
+            locale: context.locale,
+            locales: context.locales,
+            defaultLocale: context.defaultLocale,
+            revalidateReason: isOnDemandRevalidate ? "on-demand" : "stale",
+          }),
+        );
         assertPages404DoesNotReturnNotFound(errorPage, staticResult);
         if (staticResult?.redirect) {
           applyDevPagesCacheHeaders(
@@ -1909,16 +1949,6 @@ async function renderErrorPage(
           : appRenderProps;
       } else {
         renderProps = { pageProps: errorProps };
-      }
-
-      // Try custom _document (import the resolved file — the module runner
-      // does not apply custom resolve.extensions to extensionless ids)
-      // oxlint-disable-next-line typescript/no-explicit-any
-      let DocumentComponent: any = null;
-      const docFilePathErr = findFileWithExts(pagesDir, "_document", matcher);
-      if (docFilePathErr) {
-        const docModule = await importModule(runner, docFilePathErr);
-        DocumentComponent = docModule.default ?? null;
       }
 
       const createErrorElement = (
@@ -1988,7 +2018,7 @@ async function renderErrorPage(
       const errorScripts = `${errorNextDataScript}\n${errorHydrationScript}`;
       if (statusCode === 404) stripDevPagesNotFoundFramingHeaders(res);
       if (DocumentComponent) {
-        await streamPageToResponse(res, element, {
+        await streamPageToResponse(errorPage, res, element, {
           url,
           server,
           fontHeadHTML: "",
@@ -2026,7 +2056,7 @@ async function renderErrorPage(
           preserveExistingContentType: statusCode === 404,
         });
       } else {
-        const bodyHtml = await renderToStringAsync(element);
+        const bodyHtml = await tracePagesDocument(errorPage, () => renderToStringAsync(element));
         const traceMetaHTML = getClientTraceMetadataHTML(context.clientTraceMetadata);
         const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
         const protectAssetTags = (assetHtml: string): string =>

@@ -129,6 +129,19 @@ export type CdnCacheAdapter = {
   readonly requiresCompletedResponseAdmission?: boolean;
 
   /**
+   * Optionally return a foreground page response while completed-response
+   * admission continues on an independent body branch. Returning `null` keeps
+   * the normal blocking admission path. API responses are never passed here.
+   */
+  deferCompletedPageResponseAdmission?(
+    response: Response,
+    complete: (response: Response) => Promise<Response>,
+  ): Response | null;
+
+  /** Capture the full-route RSC side stream while admitting a completed HTML response. */
+  captureAppPageRscData?(rscData: Promise<ArrayBuffer>): void;
+
+  /**
    * Validate provider-specific request routing before the application handles
    * the request. Returning a response short-circuits the request pipeline;
    * returning `null` continues normally.
@@ -207,6 +220,8 @@ const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
 export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
 
+  constructor(private readonly buildIdentity?: string) {}
+
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const { getDataCacheHandler } = await import("./cache-handler.js");
     return getDataCacheHandler().get(key, ctx);
@@ -229,6 +244,10 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
       return { "Cache-Control": PENDING_DYNAMIC_CACHE_CONTROL };
     }
     return { "Cache-Control": input.cacheControl };
+  }
+
+  buildResponseIdentityHeaders(): CdnResponseHeaders {
+    return this.buildIdentity ? { "X-Vinext-Build-Id": this.buildIdentity } : {};
   }
 
   async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {

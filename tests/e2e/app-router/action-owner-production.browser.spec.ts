@@ -88,6 +88,15 @@ function findActionIds(source: string, exportName: string): string[] {
   return [...new Set(matches)];
 }
 
+function findOnlyCacheActionId(source: string): string {
+  const matches = [
+    ...source.matchAll(/["'`]([0-9a-f]{12})["'`]\s*,\s*["'`](\$\$vinext_cache_[0-9a-f]{64})["'`]/g),
+  ].map((match) => `${match[1]}#${match[2]}`);
+  const ids = [...new Set(matches)];
+  if (ids.length !== 1) throw new Error(`Expected one built cache action id, found ${ids.length}`);
+  return ids[0]!;
+}
+
 async function buildAndServeFixture(): Promise<ProductionApp> {
   const fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-action-owner-e2e-"));
   await fs.cp(FIXTURE_DIR, fixtureRoot, { recursive: true });
@@ -112,7 +121,7 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
       adminOnly: findActionId(builtSource, "$$hoist_0_adminOnly"),
       adminShared: findActionId(builtSource, "adminSharedAction"),
       boundaryOnly: findActionId(builtSource, "boundaryOnlyAction"),
-      cachedProtected: findActionId(builtSource, "cachedProtectedAction"),
+      cachedProtected: findOnlyCacheActionId(builtSource),
       cookieOwner: findActionId(builtSource, "$$hoist_0_readForwardedCredentials"),
       dynamicProtected: findActionId(builtSource, "$$hoist_0_dynamicProtectedAction"),
       globalErrorOnly: findActionId(builtSource, "globalErrorOnlyAction"),

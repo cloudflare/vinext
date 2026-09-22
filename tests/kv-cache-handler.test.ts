@@ -1995,7 +1995,7 @@ describe("KVCacheHandler", () => {
     // -------------------------------------------------------------------------
     // Regression: prerender-seeded entries must carry path tags so
     // revalidatePath() can invalidate them. Pre-#1486 fix, `isrSetPrerenderedAppPage`
-    // (and TPR uploads) wrote entries with `tags: []`, so revalidatePath would
+    // wrote entries with `tags: []`, so revalidatePath would
     // mark `__tag:_N_T_/foo` but the cached entry had no matching tag — leaving
     // the stale entry served forever (until natural revalidateAt expiry).
     // -------------------------------------------------------------------------

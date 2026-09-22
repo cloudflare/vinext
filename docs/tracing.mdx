@@ -1,0 +1,184 @@
+export const metadata = {
+  slug: "guides/tracing",
+  title: "OpenTelemetry and Workers tracing",
+  description:
+    "Configure Next.js-compatible tracing with OpenTelemetry, Sentry, and Cloudflare Workers.",
+  section: "Guides",
+  sectionOrder: 3,
+  order: 2,
+  navTitle: "Tracing and observability",
+  keywords: ["vinext tracing", "OpenTelemetry", "Sentry", "Cloudflare Workers tracing"],
+};
+
+# OpenTelemetry and Workers tracing
+
+Vinext emits Next.js-compatible server traces for App Router and Pages Router requests. Existing Next.js instrumentation continues to use the standard `instrumentation.ts` or `instrumentation.js` entry point; vinext does not add a tracing API or require a vinext-specific adapter.
+
+## Application setup
+
+Register your OpenTelemetry SDK or vendor integration exactly as you would in a Next.js application:
+
+```ts
+// instrumentation.ts
+import { registerOTel } from "@vercel/otel";
+
+export function register() {
+  registerOTel({ serviceName: "my-app" });
+}
+```
+
+The OpenTelemetry packages and exporter belong to the application. They are not vinext dependencies, so an application that does not install an SDK has no missing-package error and uses a cheap no-op OpenTelemetry path. Standard integrations such as `@sentry/nextjs` can register their provider through the same global OpenTelemetry API and keep their existing `register()` and `onRequestError` setup.
+
+Vinext completes `register()` before traced production user modules evaluate. In ordinary Node builds, when the application directly installs a resolvable, non-transpiled `@opentelemetry/instrumentation`, vinext also registers its ESM loader before those modules evaluate. Other instrumentation loaders remain application-owned.
+
+## Framework spans
+
+Every framework span includes these stable Next.js attributes:
+
+- `next.span_category`: `nextjs`
+- `next.span_name`: the final span name
+- `next.span_type`: one of the types below
+
+The request root uses `BaseServer.handleRequest`. It starts with `http.method` and `http.target`, then records the parameterized `http.route` and `next.route`, `next.rsc`, `http.status_code`, and `error.type` when applicable. Its final `next.span_name` follows Next.js, for example `GET /blog/[slug]` or `RSC GET /blog/[slug]`. OpenTelemetry also updates the span's display name; the current Workers custom-span API cannot rename a started span, so its display name remains the initial method while its final `next.span_name` attribute is route-qualified.
+
+The stable built-in child span types are:
+
+<table>
+  <thead>
+    <tr>
+      <th>App Router</th>
+      <th>Pages Router</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        <code>AppRender.getBodyResult</code>
+      </td>
+      <td>
+        <code>Render.getServerSideProps</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>AppRender.fetch</code>
+      </td>
+      <td>
+        <code>Render.getStaticProps</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>AppRouteRouteHandlers.runHandler</code>
+      </td>
+      <td>
+        <code>Render.renderDocument</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>ResolveMetadata.generateMetadata</code>
+      </td>
+      <td>
+        <code>Node.runHandler</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>NextNodeServer.findPageComponents</code>
+      </td>
+      <td>
+        <code>NextNodeServer.findPageComponents</code>
+      </td>
+    </tr>
+    <tr>
+      <td>
+        <code>NextNodeServer.getLayoutOrPageModule</code>
+      </td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        <code>NextNodeServer.createComponentTree</code>
+      </td>
+      <td></td>
+    </tr>
+    <tr>
+      <td>
+        <code>NextNodeServer.startResponse</code>
+      </td>
+      <td></td>
+    </tr>
+  </tbody>
+</table>
+
+`NEXT_OTEL_FETCH_DISABLED=1` disables vinext's `AppRender.fetch` span when another agent already instruments `fetch`. `NEXT_OTEL_VERBOSE=1` does not currently enable additional vinext spans; the stable set above is unchanged.
+
+Incoming context is extracted with the propagator registered by the application's OpenTelemetry SDK. Application-created OpenTelemetry spans inside a request therefore inherit the vinext request span. `experimental.clientTraceMetadata` is also supported through the normal Next.js configuration and integration wrappers; static or cached HTML does not retain another request's propagation metadata.
+
+## Sentry
+
+Existing Next.js applications can keep their standard Sentry setup. Vinext uses the same `instrumentation.ts`, `onRequestError`, and `withSentryConfig` public API; there is no vinext-specific Sentry integration:
+
+```ts
+// instrumentation.ts
+import * as Sentry from "@sentry/nextjs";
+
+export function register() {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    tracesSampleRate: 1,
+  });
+}
+
+export const onRequestError = Sentry.captureRequestError;
+```
+
+```ts
+// next.config.ts
+import { withSentryConfig } from "@sentry/nextjs/config";
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {};
+
+export default withSentryConfig(nextConfig, {
+  silent: !process.env.CI,
+});
+```
+
+The Sentry SDK registers its OpenTelemetry provider through that existing setup and receives the request root and built-in child spans listed above. Sentry remains application-owned and optional; installing vinext does not install Sentry or OpenTelemetry packages.
+
+## Cloudflare Workers traces
+
+On Cloudflare Workers, the same framework call sites also use the native Workers tracing context. There is no separate Workers implementation of the request lifecycle. A custom application span can surround vinext, and custom spans, fetches, or binding calls made inside vinext or route code inherit the currently active span:
+
+```ts
+import { tracing } from "cloudflare:workers";
+import handler from "vinext/server/fetch-handler";
+
+export default {
+  fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext) {
+    return tracing.enterSpan("app.request", () => handler.fetch(request, env, ctx));
+  },
+};
+```
+
+Enable trace recording deliberately in `wrangler.jsonc`:
+
+```jsonc
+{
+  "observability": {
+    "traces": {
+      "enabled": true,
+    },
+  },
+}
+```
+
+The resulting native hierarchy can contain the Workers handler root, an application custom span, vinext's `BaseServer.handleRequest` and built-in child spans, another application span in route code, and automatic fetch, KV, D1, R2, or other binding spans. Workers Observability can retain the trace or export it through a configured OpenTelemetry destination, including Sentry, without adding an in-process Sentry SDK solely for Workers-native tracing.
+
+Vinext defines each logical framework span once and enters every available tracing context around the same callback. If an application uses both a registered OpenTelemetry provider and native Workers tracing, both consumers see the same built-in child-span names and stable `next.*` attributes, but they retain their own generated trace and span IDs.
+
+Workers tracing does not currently propagate W3C trace context automatically to services outside Cloudflare. Use application-owned OpenTelemetry fetch/HTTP instrumentation or explicit propagator injection when that cross-service propagation is required.
+
+Sampling, retention, and export destinations remain deployment choices. Vinext does not silently enable trace recording or configure an exporter in generated projects.

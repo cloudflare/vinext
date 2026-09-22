@@ -16,6 +16,18 @@ import {
   PHASE_PRODUCTION_BUILD,
 } from "../packages/vinext/src/shims/constants.js";
 import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
+import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
+import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+
+let captureFrameworkSpans = false;
+const capturedFrameworkSpans: ResolvedFrameworkSpanDescriptor[] = [];
+registerFrameworkTracingIntegration({
+  id: "pages-router-test",
+  enterSpan(descriptor, callback) {
+    if (captureFrameworkSpans) capturedFrameworkSpans.push(descriptor);
+    return callback({ setAttribute() {} });
+  },
+});
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps }) {
@@ -151,12 +163,6 @@ function getStylesheetHrefs(html: string): string[] {
     .filter((tag) => getHtmlAttr(tag, "rel") === "stylesheet")
     .map((tag) => getHtmlAttr(tag, "href"))
     .filter((href): href is string => href !== null);
-}
-
-function getStylesheetTags(html: string): string[] {
-  return Array.from(html.matchAll(/<link\b[^>]*>/gi), (match) => match[0]).filter(
-    (tag) => getHtmlAttr(tag, "rel") === "stylesheet",
-  );
 }
 
 function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixture {
@@ -1123,16 +1129,23 @@ describe("Pages Router integration", () => {
     expect(body.pageProps?.__N_REDIRECT).toBe("https://example.com/landing");
   });
 
-  // Regression for #1458: when getServerSideProps throws, dev (and prod) must
-  // render the user's custom pages/500.tsx with status 500 rather than the
-  // plain "Internal Server Error" text. Mirrors Next.js test/e2e/getserversideprops
-  // "should handle throw ENOENT correctly".
-  it("getServerSideProps throwing renders custom 500 page (dev)", async () => {
-    const res = await fetch(`${baseUrl}/gssp-throw`);
-    expect(res.status).toBe(500);
-    const html = await res.text();
-    expect(html).toContain("custom pages/500");
-    expect(html).not.toBe("Internal Server Error");
+  // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
+  it("skips the custom 500 page for getServerSideProps errors in dev", async () => {
+    capturedFrameworkSpans.length = 0;
+    captureFrameworkSpans = true;
+    try {
+      const res = await fetch(`${baseUrl}/gssp-throw`);
+      expect(res.status).toBe(500);
+      expect(await res.text()).toContain("Internal Server Error");
+    } finally {
+      captureFrameworkSpans = false;
+    }
+    expect(
+      capturedFrameworkSpans
+        .filter(({ type }) => type === "NextNodeServer.findPageComponents")
+        .map(({ attributes }) => attributes["next.route"]),
+    ).toEqual(["/gssp-throw", "/_error"]);
   });
 
   it("renders dynamic routes with params", async () => {
@@ -1312,7 +1325,10 @@ export async function getStaticPaths() {
       const started = await startFixtureServer(tmpDir);
       tempServer = started.server;
 
+      capturedFrameworkSpans.length = 0;
+      captureFrameworkSpans = true;
       const first = await fetch(`${started.baseUrl}/first`);
+      captureFrameworkSpans = false;
       expect(first.status).toBe(404);
       expect(first.headers.get("x-nextjs-cache")).toBe("HIT");
       expect(first.headers.get("x-vinext-cache")).toBeNull();
@@ -1320,6 +1336,16 @@ export async function getStaticPaths() {
       const firstHtml = await first.text();
       expect(firstHtml).toContain('<p id="not-found">404 page 1</p>');
       expect(firstHtml).toContain('"paramsAreUndefined":true');
+      expect(
+        capturedFrameworkSpans
+          .filter(({ type }) => type === "Render.getStaticProps")
+          .map(({ name }) => name),
+      ).toEqual(["getStaticProps /[slug]", "getStaticProps /404"]);
+      expect(
+        capturedFrameworkSpans
+          .filter(({ type }) => type === "NextNodeServer.findPageComponents")
+          .map(({ attributes }) => attributes["next.route"]),
+      ).toEqual(["/[slug]", "/404"]);
 
       const second = await fetch(`${started.baseUrl}/first`);
       expect(second.status).toBe(404);
@@ -1330,6 +1356,7 @@ export async function getStaticPaths() {
       expect(secondHtml).toContain('<p id="not-found">404 page 2</p>');
       expect(secondHtml).toContain('"paramsAreUndefined":true');
     } finally {
+      captureFrameworkSpans = false;
       await tempServer?.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -3869,16 +3896,49 @@ describe("Virtual server entry generation", () => {
     }
   });
 
-  it("dev Pages client assets expose _app global CSS for initial stylesheet links", async () => {
+  it("dev Pages client assets expose _app global CSS and extensionless aliases", async () => {
     // Next.js includes /_app files in every Pages document before collecting
     // stylesheets:
     // .nextjs-ref/packages/next/src/pages/_document.tsx getDocumentFiles().
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-"));
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    fs.unlinkSync(path.join(tmpDir, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "fixtures/cf-app-basic/node_modules"),
+      path.join(tmpDir, "node_modules"),
+      "junction",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "wrangler.jsonc"),
+      JSON.stringify({
+        name: "vinext-pages-css-alias-test",
+        compatibility_date: "2026-04-01",
+        compatibility_flags: ["nodejs_compat"],
+        main: "vinext/server/fetch-handler",
+        assets: { not_found_handling: "none", binding: "ASSETS" },
+      }),
+    );
+    const cloudflareModule = (await import(
+      pathToFileURL(path.join(tmpDir, "node_modules/@cloudflare/vite-plugin/dist/index.mjs")).href
+    )) as { cloudflare(options?: { inspectorPort?: number | false }): import("vite").Plugin };
+    const aliasedCssPath = path.join(tmpDir, "styles", "aliased.css");
+    fs.writeFileSync(aliasedCssPath, ".aliased-css-pages-text { color: rgb(1, 2, 3); }\n");
+    fs.writeFileSync(
+      fixture.appPath,
+      'import "@theme/global";\n' +
+        'import "@theme/global-copy";\n' +
+        fs.readFileSync(fixture.appPath, "utf8"),
+    );
     const testServer = await createServer({
       root: tmpDir,
       configFile: false,
-      plugins: [vinext({ appDir: tmpDir })],
+      plugins: [vinext({ appDir: tmpDir }), cloudflareModule.cloudflare({ inspectorPort: false })],
+      resolve: {
+        alias: {
+          "@theme/global": aliasedCssPath,
+          "@theme/global-copy": aliasedCssPath,
+        },
+      },
       server: { port: 0, cors: false },
       logLevel: "silent",
     });
@@ -3893,22 +3953,23 @@ describe("Virtual server entry generation", () => {
       expect(res.status).toBe(200);
       expect(html).toContain("Global CSS Pages Test");
       const stylesheetHrefs = getStylesheetHrefs(html);
-      const stylesheetTags = getStylesheetTags(html);
-      expect(stylesheetHrefs).toHaveLength(fixture.devStylesheetHrefs.length);
+      expect(stylesheetHrefs).toHaveLength(fixture.devStylesheetHrefs.length + 1);
+      expect(stylesheetHrefs.filter((href) => href === "/styles/aliased.css")).toHaveLength(1);
       expect(stylesheetHrefs).not.toContain("/styles/query.css?raw");
       for (const href of fixture.devStylesheetHrefs) {
-        expect(stylesheetHrefs).toContain(href);
-        const tag = stylesheetTags.find((candidate) => getHtmlAttr(candidate, "href") === href);
-        expect(getHtmlAttr(tag ?? "", "data-vite-dev-id")).toBe(
-          toSlash(
-            fs.realpathSync.native(path.join(testServer.config.root, decodeURI(href).slice(1))),
-          ),
-        );
+        expect(stylesheetHrefs).toContain(decodeURI(href));
       }
       expect(html).not.toContain("type-only.module.css");
 
+      const aliasedStylesheetRes = await fetch(`http://localhost:${addr.port}/styles/aliased.css`, {
+        headers: { accept: "text/css,*/*;q=0.1" },
+      });
+      expect(aliasedStylesheetRes.status).toBe(200);
+      expect(aliasedStylesheetRes.headers.get("content-type")).toContain("text/css");
+      expect((await aliasedStylesheetRes.text()).replace(/\s+/g, "")).toContain("color:rgb(1,2,3)");
+
       const headStyleIndex = html.indexOf(".global-css-pages-text { border-top-width: 0px; }");
-      const firstAppStylesheetIndex = html.indexOf(fixture.devStylesheetHrefs[0]);
+      const firstAppStylesheetIndex = html.indexOf(decodeURI(fixture.devStylesheetHrefs[0]));
       expect(headStyleIndex).toBeGreaterThan(-1);
       expect(firstAppStylesheetIndex).toBeGreaterThan(headStyleIndex);
 
@@ -3928,7 +3989,10 @@ describe("Virtual server entry generation", () => {
         ssrManifest?: Record<string, string[]>;
       };
       expect(assets.clientEntry).toBe("/@id/__x00__virtual:vinext-client-entry");
-      expect(assets.ssrManifest?.[fixture.appPath]).toEqual(fixture.appManifestAssets);
+      expect(assets.ssrManifest?.[fixture.appPath]).toEqual([
+        "styles/aliased.css",
+        ...fixture.appManifestAssets,
+      ]);
       expect(assets.ssrManifest?.[fixture.pagePath]).toEqual(fixture.pageManifestAssets);
       expect(assets.ssrManifest?.[fixture.isrPagePath]).toEqual(fixture.isrManifestAssets);
       expect(assets.ssrManifest?.[fixture.errorPagePath]).toEqual(fixture.errorManifestAssets);

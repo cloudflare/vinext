@@ -4,4 +4,7 @@ declare module "virtual:vinext-request-stage" {
 
 declare module "virtual:vinext-response-stage" {
   export const handleResponseStage: import("./server/multi-stage.js").VinextResponseStageHandler;
+  export const invokeCacheFunction:
+    | import("./server/multi-stage.js").VinextResponseStageModule["invokeCacheFunction"]
+    | undefined;
 }

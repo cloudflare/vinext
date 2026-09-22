@@ -3,9 +3,11 @@ import {
   encryptActionBoundArgs,
 } from "@vitejs/plugin-rsc/utils/encryption-runtime";
 import {
+  isUseCacheFunction,
   registerCachedFunction as registerCachedFunctionBase,
   type RegisterCachedFunctionOptions,
 } from "./cache-runtime.js";
+import type { VinextCacheFunctionInvocation } from "../server/multi-stage.js";
 
 const CACHE_CAPTURE_TYPE = "use-cache-captures";
 
@@ -52,5 +54,20 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   return registerCachedFunctionBase(fn, id, variant, {
     ...options,
     decryptCaptures: decryptCacheCaptures,
+    encodeInvocationArgs: encryptActionBoundArgs,
   });
+}
+
+/** Load and invoke one transformed cache function through its server-reference identity. */
+export async function invokeCacheFunction(
+  invocation: VinextCacheFunctionInvocation,
+  loadServerAction: (id: string) => Promise<unknown>,
+): Promise<void> {
+  const fn = await loadServerAction(invocation.referenceId);
+  if (!isUseCacheFunction(fn)) {
+    throw new Error(`Server reference ${invocation.referenceId} is not a cache function`);
+  }
+  const args = await decryptActionBoundArgs(Promise.resolve(invocation.encryptedArgs));
+  if (!Array.isArray(args)) throw new Error("Invalid cache function arguments");
+  await fn(...args);
 }

@@ -421,74 +421,68 @@ describe("App Router RSC cache-busting", () => {
 
   // Ported from Next.js: test/e2e/app-dir/segment-cache/cdn-cache-busting/cdn-cache-busting.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/cdn-cache-busting/cdn-cache-busting.test.ts
-  it("accepts only definitive canonical request identities for strict-Vary adapters", async () => {
-    await withEnvVar("__VINEXT_CANONICAL_RSC_REQUESTS", "1", async () => {
-      const fullHeaders = createCanonicalRscRequestHeaders();
-      const fullRequest = new Request("https://example.com/photos/42?_rsc", {
-        headers: fullHeaders,
-      });
-      await expect(
-        resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request: fullRequest }),
-      ).resolves.toBeNull();
-
-      const loadingHeaders = createCanonicalLoadingShellRscRequestHeaders();
-      const loadingPath = await createRscRequestUrl("/photos/42", loadingHeaders);
-      expect(loadingPath).toBe("/photos/42?_rsc=9qLBDIU2NgN178cB");
-      const loadingRequest = new Request(`https://example.com${loadingPath}`, {
-        headers: loadingHeaders,
-      });
-      await expect(
-        resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request: loadingRequest }),
-      ).resolves.toBeNull();
-
-      const bareLoadingResponse = await resolveInvalidRscCacheBustingRequest({
-        isRscRequest: true,
-        request: new Request("https://example.com/photos/42?_rsc", { headers: loadingHeaders }),
-      });
-      expect(bareLoadingResponse?.status).toBe(307);
-      expect(bareLoadingResponse?.headers.get("location")).toBe(loadingPath);
-
-      const contextual = createCanonicalLoadingShellRscRequestHeaders();
-      contextual.set("next-url", "/source");
-      const response = await resolveInvalidRscCacheBustingRequest({
-        isRscRequest: true,
-        request: new Request("https://example.com/photos/42?_rsc", { headers: contextual }),
-      });
-      expect(response?.status).toBe(307);
-      expect(response?.headers.get("location")).toMatch(/_rsc=.+/);
+  it("accepts only definitive canonical request identities", async () => {
+    const fullHeaders = createCanonicalRscRequestHeaders();
+    const fullRequest = new Request("https://example.com/photos/42?_rsc", {
+      headers: fullHeaders,
     });
+    await expect(
+      resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request: fullRequest }),
+    ).resolves.toBeNull();
+
+    const loadingHeaders = createCanonicalLoadingShellRscRequestHeaders();
+    const loadingPath = await createRscRequestUrl("/photos/42", loadingHeaders);
+    expect(loadingPath).toBe("/photos/42?_rsc=9qLBDIU2NgN178cB");
+    const loadingRequest = new Request(`https://example.com${loadingPath}`, {
+      headers: loadingHeaders,
+    });
+    await expect(
+      resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request: loadingRequest }),
+    ).resolves.toBeNull();
+
+    const bareLoadingResponse = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request: new Request("https://example.com/photos/42?_rsc", { headers: loadingHeaders }),
+    });
+    expect(bareLoadingResponse?.status).toBe(307);
+    expect(bareLoadingResponse?.headers.get("location")).toBe(loadingPath);
+
+    const contextual = createCanonicalLoadingShellRscRequestHeaders();
+    contextual.set("next-url", "/source");
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request: new Request("https://example.com/photos/42?_rsc", { headers: contextual }),
+    });
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toMatch(/_rsc=.+/);
   });
 
   it("preserves full and loading-shell identities across same-origin RSC redirects", async () => {
-    await withEnvVar("__VINEXT_CANONICAL_RSC_REQUESTS", "1", async () => {
-      const fullHeaders = createCanonicalRscRequestHeaders();
-      await expect(
-        createRscRedirectLocation(
-          "/redirected?tab=1",
-          new Request("https://example.com/photos/42?_rsc", { headers: fullHeaders }),
-        ),
-      ).resolves.toBe("https://example.com/redirected?tab=1&_rsc");
+    const fullHeaders = createCanonicalRscRequestHeaders();
+    await expect(
+      createRscRedirectLocation(
+        "/redirected?tab=1",
+        new Request("https://example.com/photos/42?_rsc", { headers: fullHeaders }),
+      ),
+    ).resolves.toBe("https://example.com/redirected?tab=1&_rsc");
 
-      const loadingHeaders = createCanonicalLoadingShellRscRequestHeaders();
-      await expect(
-        createRscRedirectLocation(
-          "/redirected?tab=1",
-          new Request("https://example.com/photos/42?_rsc", { headers: loadingHeaders }),
-        ),
-      ).resolves.toBe("https://example.com/redirected?tab=1&_rsc=9qLBDIU2NgN178cB");
-    });
+    const loadingHeaders = createCanonicalLoadingShellRscRequestHeaders();
+    await expect(
+      createRscRedirectLocation(
+        "/redirected?tab=1",
+        new Request("https://example.com/photos/42?_rsc", { headers: loadingHeaders }),
+      ),
+    ).resolves.toBe("https://example.com/redirected?tab=1&_rsc=9qLBDIU2NgN178cB");
   });
 
-  it("redirects bare loading-shell requests for adapters without strict Vary", async () => {
-    await withEnvVar("__VINEXT_CANONICAL_RSC_REQUESTS", undefined, async () => {
-      const headers = createCanonicalLoadingShellRscRequestHeaders();
-      const response = await resolveInvalidRscCacheBustingRequest({
-        isRscRequest: true,
-        request: new Request("https://example.com/photos/42?_rsc", { headers }),
-      });
-      expect(response?.status).toBe(307);
-      expect(response?.headers.get("location")).toMatch(/_rsc=.+/);
+  it("redirects bare loading-shell requests to their varying identity", async () => {
+    const headers = createCanonicalLoadingShellRscRequestHeaders();
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request: new Request("https://example.com/photos/42?_rsc", { headers }),
     });
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("location")).toMatch(/_rsc=.+/);
   });
 
   it("accepts legacy FNV cache-busting params during rolling upgrades", async () => {

@@ -372,9 +372,6 @@ declare global {
        */
       __VINEXT_RSC_BUILD_IDENTITY?: string;
 
-      /** Enable stable deploy-warmed RSC request identities for a shared cache. */
-      __VINEXT_CANONICAL_RSC_REQUESTS?: string;
-
       /**
        * Build-only coordination variable set by the `vinext build` CLI so that
        * every vinext() plugin instance in a single build resolves the same RSC
@@ -511,6 +508,7 @@ declare module "virtual:vinext-cache-adapters" {
 }
 
 declare module "virtual:vinext-cdn-cache-adapter" {
+  export const configuredCdnCacheAdapterOptions: Record<string, unknown> | undefined;
   export const hasConfiguredDataCache: boolean;
   export function registerConfiguredCacheAdapters(env?: Record<string, unknown>): void;
 }

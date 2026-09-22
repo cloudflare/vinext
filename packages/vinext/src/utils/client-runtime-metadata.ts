@@ -20,9 +20,29 @@ import { isAbsoluteAssetPrefix, resolveAssetsDir } from "./asset-prefix.js";
 type ClientRuntimeMetadata = {
   clientEntryFile?: string;
   appBootstrapPreinitModules?: string[];
+  cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
 };
+
+function collectCssGraph(
+  buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
+  applyBase: (file: string) => string,
+): NonNullable<ClientRuntimeMetadata["cssGraph"]> | undefined {
+  const cssGraph: NonNullable<ClientRuntimeMetadata["cssGraph"]> = {};
+
+  for (const [key, chunk] of Object.entries(buildManifest)) {
+    const imports = chunk.imports ?? [];
+    const css = (chunk.css ?? []).map(applyBase);
+    if (imports.length === 0 && css.length === 0) continue;
+    cssGraph[key] = {
+      ...(imports.length > 0 ? { imports } : {}),
+      ...(css.length > 0 ? { css } : {}),
+    };
+  }
+
+  return Object.keys(cssGraph).length > 0 ? cssGraph : undefined;
+}
 
 function collectAppBootstrapPreinitModules(
   buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
@@ -69,6 +89,8 @@ function collectAppBootstrapPreinitModules(
  *   from modulepreload hints.
  * - `dynamicPreloads` — per-module JS/CSS files for rendered `next/dynamic()`
  *   boundaries, injected as preload links during SSR.
+ * - `cssGraph` — static chunk imports and stylesheets used to preserve Pages
+ *   Router module-graph order in the initial HTML.
  * - `clientEntryFile` — the client entry chunk filename (optional, only
  *   needed for Pages Router).
  *
@@ -104,6 +126,12 @@ export function computeClientRuntimeMetadata(opts: {
   }
 
   if (!buildManifest) return metadata;
+
+  if (opts.includeClientEntry) {
+    metadata.cssGraph = collectCssGraph(buildManifest, (file) =>
+      manifestFileWithBase(file, opts.assetBase),
+    );
+  }
 
   metadata.appBootstrapPreinitModules = collectAppBootstrapPreinitModules(
     buildManifest,

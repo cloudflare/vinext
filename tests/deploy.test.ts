@@ -69,7 +69,7 @@ import {
   resolveStaticAssetSignal,
 } from "../packages/vinext/src/server/worker-utils.js";
 import { createStaticFileSignal } from "../packages/vinext/src/server/request-pipeline.js";
-import { domainCandidates, parseWranglerConfig, runTPR } from "../packages/cloudflare/src/tpr.js";
+import { domainCandidates, parseWranglerConfig } from "../packages/cloudflare/src/tpr.js";
 import {
   parseCdnWarmupDeploymentUrl,
   parseWorkerDeploymentUrl,
@@ -492,6 +492,25 @@ describe("resolveWranglerBin", () => {
     expect(observed?.[2]).toMatchObject({ shell: false });
   });
 
+  it("uploads a Worker version without promoting it", async () => {
+    const versionId = "095f00a7-23a7-43b7-a227-e4c97cab5f22";
+    const previewUrl = "https://app-preview.example.workers.dev";
+    writeWranglerPackage();
+    writeFile(
+      tmpDir,
+      "node_modules/wrangler/bin/wrangler.js",
+      `console.log(${JSON.stringify(JSON.stringify({ version_id: versionId, preview_url: previewUrl }))});`,
+    );
+    const execute = vi.fn() as unknown as typeof spawn;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await expect(runWranglerDeploy(tmpDir, { promote: false }, execute)).resolves.toBe(previewUrl);
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(`  Worker version ID: ${versionId}`);
+    log.mockRestore();
+  });
+
   it("streams Wrangler output before the process exits", async () => {
     writeWranglerPackage();
     const child = new EventEmitter() as ChildProcess;
@@ -624,7 +643,7 @@ describe("runWranglerKVBulkPut", () => {
         env: "staging",
         pairs: [
           {
-            key: "cache:app:build:/about:html",
+            key: "cache:app:v2:build:/about:html",
             value: '{"value":{"kind":"APP_PAGE"}}',
             expiration_ttl: 86400,
             metadata: { tags: ["/about"] },
@@ -652,7 +671,7 @@ describe("runWranglerKVBulkPut", () => {
     expect(observed?.[2]).toMatchObject({ cwd: tmpDir, shell: false, stdio: "inherit" });
     expect(bulkFileContent).toEqual([
       {
-        key: "cache:app:build:/about:html",
+        key: "cache:app:v2:build:/about:html",
         value: '{"value":{"kind":"APP_PAGE"}}',
         expiration_ttl: 86400,
         metadata: { tags: ["/about"] },
@@ -675,7 +694,7 @@ describe("runWranglerKVBulkPut", () => {
       {
         binding: "VINEXT_KV_CACHE",
         pairs: Array.from({ length: 26 }, (_, i) => ({
-          key: `cache:app:build:/route-${i}:html`,
+          key: `cache:app:v2:build:/route-${i}:html`,
           value: String(i),
         })),
         tempDir: tmpDir,
@@ -687,12 +706,12 @@ describe("runWranglerKVBulkPut", () => {
     expect(bulkFileContents).toHaveLength(2);
     expect(bulkFileContents).toEqual([
       Array.from({ length: 25 }, (_, i) => ({
-        key: `cache:app:build:/route-${i}:html`,
+        key: `cache:app:v2:build:/route-${i}:html`,
         value: String(i),
       })),
       [
         {
-          key: "cache:app:build:/route-25:html",
+          key: "cache:app:v2:build:/route-25:html",
           value: "25",
         },
       ],
@@ -753,6 +772,7 @@ describe("parseDeployArgs", () => {
     expect(parsed.warmCdnTarget).toBeUndefined();
     expect(parsed.warmCdnCertify).toBe(false);
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(false);
+    expect(parsed.warmCdnPromote).toBe(true);
   });
 
   it("requires CDN warming when certification is requested", () => {
@@ -801,9 +821,33 @@ describe("parseDeployArgs", () => {
     const help = formatDeployHelp();
     expect(help).toContain("--verbose");
     expect(help).toContain("Abort when cacheability probing makes no progress");
+    expect(help).toContain("--experimental-traffic-aware-warm-cache");
+    expect(help).toContain("Legacy --experimental-tpr and --tpr-* aliases remain supported");
   });
 
-  it("parses numeric TPR flags from string values", () => {
+  it("parses traffic-aware warming flags", () => {
+    const parsed = parseDeployArgs([
+      "--tpr-coverage",
+      "10",
+      "--tpr-limit",
+      "20",
+      "--tpr-window",
+      "30",
+      "--experimental-traffic-aware-warm-cache",
+      "--traffic-aware-coverage",
+      "95",
+      "--traffic-aware-limit",
+      "500",
+      "--traffic-aware-window",
+      "48",
+    ]);
+    expect(parsed.experimentalTPR).toBe(true);
+    expect(parsed.tprCoverage).toBe(95);
+    expect(parsed.tprLimit).toBe(500);
+    expect(parsed.tprWindow).toBe(48);
+  });
+
+  it("keeps the old TPR flags as aliases", () => {
     const parsed = parseDeployArgs([
       "--experimental-tpr",
       "--tpr-coverage",
@@ -903,6 +947,12 @@ describe("parseDeployArgs", () => {
 
   it("promotes warmed Worker versions by default", () => {
     expect(parseDeployArgs([]).warmCdnPromote).toBe(true);
+  });
+
+  it("parses the general no-promote flag and keeps the warmup-specific alias", () => {
+    expect(parseDeployArgs(["--no-promote"]).warmCdnPromote).toBe(false);
+    expect(parseDeployArgs(["--warm-cdn-no-promote"]).warmCdnPromote).toBe(false);
+    expect(formatDeployHelp()).toContain("--no-promote");
   });
 
   it("allows the CDN warmup promotion delay to be set to zero", () => {
@@ -1046,6 +1096,20 @@ describe("detectProject", () => {
     writeFile(tmpDir, "wrangler.toml", "[vars]");
     const info = detectProject(tmpDir);
     expect(info.hasWranglerConfig).toBe(true);
+  });
+
+  it("detects Wrangler independently of its executable shim", () => {
+    mkdir(tmpDir, "app");
+    writeWranglerPackageForTest(tmpDir);
+    expect(detectProject(tmpDir).hasWrangler).toBe(true);
+  });
+
+  it("does not mistake the separate cf package for Wrangler", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "node_modules/cf/package.json", JSON.stringify({ name: "cf" }));
+    writeFile(tmpDir, "node_modules/.bin/cf.exe", "");
+    writeFile(tmpDir, "node_modules/.bin/cf.bunx", "");
+    expect(detectProject(tmpDir).hasWrangler).toBe(false);
   });
 
   it("detects cloudflare.config.ts", () => {
@@ -1198,7 +1262,7 @@ describe("generateWranglerConfig", () => {
     expect(parsed.compatibility_date).toBe(today);
   });
 
-  it("includes the default KV namespace", () => {
+  it("does not require a KV namespace for the default Response Store", () => {
     mkdir(tmpDir, "app");
     writeFile(
       tmpDir,
@@ -1209,8 +1273,9 @@ describe("generateWranglerConfig", () => {
     const config = generateWranglerConfig(info);
     const parsed = JSON.parse(config);
 
-    expect(parsed.kv_namespaces).toBeDefined();
-    expect(parsed.kv_namespaces[0].binding).toBe("VINEXT_KV_CACHE");
+    expect(parsed.kv_namespaces).toBeUndefined();
+    expect(parsed.cache).toBeUndefined();
+    expect(parsed.version_metadata).toBeUndefined();
   });
 
   it("omits KV namespace when KV caches are disabled", () => {
@@ -1276,6 +1341,15 @@ describe("viteConfigHasCacheAdapter", () => {
       `export default {
          plugins: [vinext({ cache: { data: { adapter: "./x.js", options: {} } } })],
        };`,
+    );
+    expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
+  });
+
+  it("detects a cache config returned by an adapter factory", () => {
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `export default { plugins: [vinext({ cache: responseStoreAdapter() })] };`,
     );
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
   });
@@ -3295,8 +3369,8 @@ describe("client asset sidecar generation", () => {
       "docs/assets/mermaid-vendor.js",
     ]);
     expect(metadata.dynamicPreloads?.["src/components/MermaidChart.tsx"]).toEqual([
-      "cdn-prefix/_next/static/assets/mermaid-chart.js",
       "cdn-prefix/_next/static/assets/mermaid-vendor.js",
+      "cdn-prefix/_next/static/assets/mermaid-chart.js",
     ]);
   });
 
@@ -3606,13 +3680,47 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.name).toBe("my-worker");
   });
 
+  it("preserves account and KV namespace fields in JSON config", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        account_id: "account-id",
+        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "namespace-id" }],
+      }),
+    );
+
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      accountId: "account-id",
+      kvNamespaceId: "namespace-id",
+    });
+  });
+
+  it("preserves account and KV namespace fields in TOML config", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `account_id = "account-id"
+
+[[kv_namespaces]]
+binding = "VINEXT_CACHE"
+id = "namespace-id"
+`,
+    );
+
+    expect(parseWranglerConfig(tmpDir)).toMatchObject({
+      accountId: "account-id",
+      kvNamespaceId: "namespace-id",
+    });
+  });
+
   it("reads an explicit Wrangler config path", () => {
     writeFile(tmpDir, "dist/server/wrangler.json", JSON.stringify({ name: "generated-worker" }));
     const config = parseWranglerConfig(tmpDir, "dist/server/wrangler.json");
     expect(config?.name).toBe("generated-worker");
   });
 
-  it("uses an explicit Wrangler config path during TPR", async () => {
+  it("reads TPR's custom domain from an explicit Wrangler config path", () => {
     writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ name: "source-worker" }));
     writeFile(
       tmpDir,
@@ -3623,22 +3731,9 @@ describe("parseWranglerConfig — custom domain extraction", () => {
       }),
     );
 
-    const previousToken = process.env.CLOUDFLARE_API_TOKEN;
-    process.env.CLOUDFLARE_API_TOKEN = "token";
-    try {
-      const result = await runTPR({
-        root: tmpDir,
-        config: "dist/server/wrangler.json",
-        coverage: 90,
-        limit: 100,
-        window: 24,
-      });
-
-      expect(result.skipped).toBe("no VINEXT_KV_CACHE KV namespace configured");
-    } finally {
-      if (previousToken === undefined) delete process.env.CLOUDFLARE_API_TOKEN;
-      else process.env.CLOUDFLARE_API_TOKEN = previousToken;
-    }
+    expect(parseWranglerConfig(tmpDir, "dist/server/wrangler.json")?.customDomain).toBe(
+      "app.example.com",
+    );
   });
 
   it("parses JSONC comments and trailing commas", () => {
@@ -3649,9 +3744,6 @@ describe("parseWranglerConfig — custom domain extraction", () => {
         // Wrangler accepts JSONC comments and trailing commas.
         "name": "my-worker",
         "custom_domains": ["app.example.com",],
-        "kv_namespaces": [
-          { "binding": "VINEXT_KV_CACHE", "id": "abc123", },
-        ],
         "env": {
           "staging": {
             "name": "my-worker-staging",
@@ -3664,7 +3756,6 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     const config = parseWranglerConfig(tmpDir);
     expect(config?.name).toBe("my-worker");
     expect(config?.customDomain).toBe("app.example.com");
-    expect(config?.kvNamespaceId).toBe("abc123");
     expect(config?.env?.staging).toEqual({
       name: "my-worker-staging",
       customDomain: "staging.example.com",
@@ -3677,6 +3768,28 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     expect(config?.customDomain).toBe("example.co.uk");
   });
 
+  it("preserves route object domain precedence", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      JSON.stringify({
+        routes: [{ pattern: "app.example.com/*", zone_name: "example.com" }],
+      }),
+    );
+    expect(parseWranglerConfig(tmpDir)?.customDomain).toBe("example.com");
+
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `[[routes]]
+zone_name = "example.com"
+pattern = "toml.example.com/*"
+`,
+    );
+    fs.rmSync(path.join(tmpDir, "wrangler.jsonc"));
+    expect(parseWranglerConfig(tmpDir)?.customDomain).toBe("toml.example.com");
+  });
+
   it("extracts custom domain from custom_domains array", () => {
     writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
     const config = parseWranglerConfig(tmpDir);
@@ -3687,18 +3800,6 @@ describe("parseWranglerConfig — custom domain extraction", () => {
     writeFile(tmpDir, "wrangler.json", JSON.stringify({ routes: ["my-app.workers.dev/*"] }));
     const config = parseWranglerConfig(tmpDir);
     expect(config?.customDomain).toBeUndefined();
-  });
-
-  it("extracts KV namespace ID for VINEXT_KV_CACHE", () => {
-    writeFile(
-      tmpDir,
-      "wrangler.json",
-      JSON.stringify({
-        kv_namespaces: [{ binding: "VINEXT_KV_CACHE", id: "abc123" }],
-      }),
-    );
-    const config = parseWranglerConfig(tmpDir);
-    expect(config?.kvNamespaceId).toBe("abc123");
   });
 
   it("extracts environment Worker names and custom domains", () => {

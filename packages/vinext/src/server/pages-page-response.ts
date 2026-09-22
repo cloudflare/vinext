@@ -177,11 +177,20 @@ type RenderPagesPageResponseOptions = {
   query?: Record<string, unknown>;
   renderDocumentToString: (element: ReactNode) => Promise<string>;
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
+  traceDocument?: <
+    T extends {
+      bodyStream?: ReadableStream<Uint8Array>;
+      waitForBody?: boolean;
+    },
+  >(
+    callback: () => Promise<T>,
+  ) => Promise<T>;
   resetSSRHead?: (() => void) | undefined;
   routePattern: string;
   routeUrl: string;
   safeJsonStringify: (value: unknown) => string;
   scriptNonce?: string;
+  initialStylesheetHrefs?: ReadonlySet<string>;
   crossOrigin?: string;
   disableOptimizedLoading: boolean;
   statusCode?: number;
@@ -420,12 +429,13 @@ async function reportPagesIsrCacheWriteError(
   console.error(`[vinext] Pages ISR cache write failed for ${cacheKey}:`, error);
   try {
     await reportRequestError(
-      error instanceof Error ? error : new Error(String(error)),
+      error,
       { path: cacheKey, method: "GET", headers: {} },
       {
         routerKind: "Pages Router",
         routePath: routePattern,
         routeType: "render",
+        revalidateReason: undefined,
       },
     );
   } catch {
@@ -548,67 +558,69 @@ export async function renderPagesPageResponse(
   // user does not define `getInitialProps`. The contract (including
   // `withScriptNonce` and `styles` rendering) lives in the shared helper so
   // prod and dev stay in lockstep.
-  const documentRenderPage = await runDocumentRenderPage({
-    DocumentComponent: options.DocumentComponent,
-    enhancePageElement: options.enhancePageElement,
-    renderToReadableStream: options.renderToReadableStream,
-    // Render the collected `styles` fragment with the plain stream renderer
-    // rather than the full `<Document>` shell renderer — the styles tree is a
-    // standalone fragment, so it doesn't need the heavier document pipeline.
-    // Mirrors the dev path, which passes its `renderToStringAsync` wrapper.
-    renderStylesToString: async (element) =>
-      readStreamAsText(await options.renderToReadableStream(element)),
-    scriptNonce: options.scriptNonce,
-    context: {
-      err: options.err,
-      req: options.documentReqRes?.req,
-      res: options.documentReqRes?.res,
-      pathname: options.routePattern,
-      query: options.query ?? options.params,
-      asPath: options.routeUrl,
-    },
-  });
-  if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {
-    return options.documentReqRes.responsePromise;
-  }
-
-  let bodyStream: ReadableStream<Uint8Array>;
-  if (documentRenderPage.status === "rendered") {
-    bodyStream = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(documentRenderPage.bodyHtml));
-        controller.close();
+  const traceDocument = options.traceDocument ?? ((callback) => callback());
+  const documentResult = await traceDocument(async () => {
+    const documentRenderPage = await runDocumentRenderPage({
+      DocumentComponent: options.DocumentComponent,
+      enhancePageElement: options.enhancePageElement,
+      renderToReadableStream: options.renderToReadableStream,
+      // Render the collected `styles` fragment with the plain stream renderer
+      // rather than the full `<Document>` shell renderer — the styles tree is a
+      // standalone fragment, so it doesn't need the heavier document pipeline.
+      renderStylesToString: async (element) =>
+        readStreamAsText(await options.renderToReadableStream(element)),
+      scriptNonce: options.scriptNonce,
+      initialStylesheetHrefs: options.initialStylesheetHrefs,
+      context: {
+        err: options.err,
+        req: options.documentReqRes?.req,
+        res: options.documentReqRes?.res,
+        pathname: options.routePattern,
+        query: options.query ?? options.params,
+        asPath: options.routeUrl,
       },
     });
-  } else {
-    // Render the page FIRST so that <Head> and other SSR state collectors
-    // (e.g. styled-jsx, useServerInsertedHTML) are populated before we read
-    // them. This fixes a race condition where head styles were silently dropped
-    // because they were collected before the page had finished rendering.
-    // Mirrors Next.js fix: vercel/next.js@9853944
-    //
-    // Built lazily here: when the renderPage contract produced the body
-    // (`rendered`), this element is never used, so there's no point
-    // constructing the tree on that path.
-    const pageElement = withScriptNonce(
-      React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
-      options.scriptNonce,
-    );
-    bodyStream = await options.renderToReadableStream(pageElement);
-  }
+    if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {
+      return { documentRenderPage, responseSent: true };
+    }
 
-  // Fold any head tags returned by `_document.getInitialProps()` into the
-  // dedupe pipeline before getSSRHeadHTML serialises the final <head>. Mirrors
-  // Next.js's `_document` contract. `runDocumentRenderPage` already invokes
-  // `getInitialProps` for the renderPage contract, so reuse
-  // the head it surfaced rather than calling it a second time. Only the
-  // `skipped` path (no override, or no `enhancePageElement` wired) falls back to
-  // the standalone helper — which itself skips the unmodified default shim.
-  if (documentRenderPage.status === "skipped") {
-    await callDocumentGetInitialProps(options.DocumentComponent, options.setDocumentInitialHead);
-  } else {
-    options.setDocumentInitialHead?.(documentRenderPage.head);
+    let bodyStream: ReadableStream<Uint8Array>;
+    if (documentRenderPage.status === "rendered") {
+      bodyStream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(documentRenderPage.bodyHtml));
+          controller.close();
+        },
+      });
+    } else {
+      // Start the body render before collecting its head state, then let the
+      // tracing adapter keep the span alive without delaying the response.
+      const pageElement = withScriptNonce(
+        React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
+        options.scriptNonce,
+        options.initialStylesheetHrefs,
+      );
+      bodyStream = await options.renderToReadableStream(pageElement);
+    }
+
+    if (documentRenderPage.status === "skipped") {
+      await callDocumentGetInitialProps(options.DocumentComponent, options.setDocumentInitialHead);
+    } else {
+      options.setDocumentInitialHead?.(documentRenderPage.head);
+    }
+
+    return {
+      bodyStream,
+      documentRenderPage,
+      responseSent: false,
+      waitForBody: documentRenderPage.status === "skipped",
+    };
+  });
+  if (documentResult.responseSent && options.documentReqRes?.responsePromise) {
+    return options.documentReqRes.responsePromise;
   }
+  const { bodyStream, documentRenderPage } = documentResult;
+  if (!bodyStream) throw new Error("Pages document render did not produce a body stream");
 
   const headFromShim = options.getSSRHeadHTML?.() ?? "";
   // Trace meta tags from the active OpenTelemetry context. When the

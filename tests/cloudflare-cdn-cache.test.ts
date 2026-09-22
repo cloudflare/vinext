@@ -495,6 +495,45 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(isrSet).not.toHaveBeenCalled();
   });
 
+  it("keeps route-identity-divergent HTML out of the Cloudflare CDN cache", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const isrSet = vi.fn();
+    const waitUntil = vi.fn();
+
+    const response = finalizeAppPageHtmlCacheResponse(
+      new Response("<h1>encoded catch-all</h1>", {
+        headers: {
+          "Cache-Control": "s-maxage=3600",
+          "CDN-Cache-Control": "public, max-age=3600",
+          "Cloudflare-CDN-Cache-Control": "public, max-age=3600",
+          "Cache-Tag": "stale",
+          "X-Vinext-Cache": "MISS",
+        },
+      }),
+      {
+        bypassInterceptionContextCache: true,
+        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        cleanPathname: "/about",
+        consumeDynamicUsage: () => false,
+        getPageTags: () => ["/about"],
+        isrHtmlKey: (pathname) => `html:${pathname}`,
+        isrRscKey: (pathname) => `rsc:${pathname}`,
+        isrSet,
+        revalidateSeconds: 3600,
+        linkHeader: null,
+        waitUntil,
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+    expect(response.headers.get("Cache-Tag")).toBeNull();
+    await expect(response.text()).resolves.toContain("encoded catch-all");
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(waitUntil).not.toHaveBeenCalled();
+  });
+
   it.each(["MISS", "STATIC"] as const)(
     "keeps mounted-slot %s RSC responses out of the edge cache",
     async (cacheState) => {

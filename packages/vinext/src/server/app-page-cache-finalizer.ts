@@ -26,6 +26,7 @@ import {
   isRouteCacheabilityEvaluation,
   type RouteCacheabilityOutcome,
 } from "vinext/shims/cacheability-classification";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 
 type AppPageDebugLogger = (event: string, detail: string) => void;
 type AppPageRscCacheKeyBuilder = (
@@ -56,9 +57,12 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
 };
 
 type FinalizeAppPageHtmlCacheResponseOptions = {
+  bypassInterceptionContextCache?: boolean;
   capturedDynamicUsageBeforeContextCleanup?: () => boolean;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
+  /** Private marker surrounding this render's injected client trace metadata. */
+  clientTraceMetadataMarker?: string;
   consumeDynamicUsage: () => boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
   createHtmlRenderObservation?: BuildAppPageCacheRenderObservation;
@@ -113,7 +117,7 @@ function applyPendingDynamicCdnHeaders(
   finalizePendingCacheStateHeaders(headers, options);
 }
 
-function applyUncacheableRscVariantNoStoreHeaders(
+function applyUncacheableVariantNoStoreHeaders(
   headers: Headers,
   options: { omitCacheState?: boolean } = {},
 ): void {
@@ -262,8 +266,29 @@ export function finalizeAppPageHtmlCacheResponse(
 ): Response {
   const probeResponse = finalizeEvaluatedAppPageResponse(response, options);
   if (probeResponse) {
-    void options.capturedRscDataPromise?.catch(() => {});
+    if (options.capturedRscDataPromise) {
+      const adapter = getCdnCacheAdapter();
+      if (adapter.captureAppPageRscData) {
+        adapter.captureAppPageRscData(options.capturedRscDataPromise);
+      } else {
+        void options.capturedRscDataPromise.catch(() => {});
+      }
+    }
     return probeResponse;
+  }
+  if (options.bypassInterceptionContextCache === true) {
+    void options.capturedRscDataPromise?.catch(() => {});
+    const headers = new Headers(response.headers);
+    applyUncacheableVariantNoStoreHeaders(headers, {
+      omitCacheState: options.omitPendingDynamicCacheState === true,
+    });
+    const clientResponse = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+    markFrameworkLinkHeaders(clientResponse.headers, options.linkHeader);
+    return clientResponse;
   }
   if (!response.body) {
     return response;
@@ -287,7 +312,7 @@ export function finalizeAppPageHtmlCacheResponse(
 
   const cachePromise = (async () => {
     try {
-      const cachedHtml = await readStreamAsText(streamForCache);
+      let cachedHtml = await readStreamAsText(streamForCache);
 
       if (
         options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
@@ -305,6 +330,11 @@ export function finalizeAppPageHtmlCacheResponse(
       if (!cacheControl) {
         options.isrDebug?.("HTML cache write skipped (no cache policy)", htmlKey);
         return;
+      }
+
+      if (options.clientTraceMetadataMarker) {
+        const { stripClientTraceMetadataBlock } = await import("./client-trace-metadata.js");
+        cachedHtml = stripClientTraceMetadataBlock(cachedHtml, options.clientTraceMetadataMarker);
       }
 
       const pageTags = options.getPageTags();
@@ -387,7 +417,7 @@ export function finalizeAppPageRscCacheResponse(
 
   const clientHeaders = new Headers(response.headers);
   if (isUncacheableVariant) {
-    applyUncacheableRscVariantNoStoreHeaders(clientHeaders, {
+    applyUncacheableVariantNoStoreHeaders(clientHeaders, {
       omitCacheState: options.omitPendingDynamicCacheState === true,
     });
   } else {

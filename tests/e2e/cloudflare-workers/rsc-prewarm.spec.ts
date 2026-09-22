@@ -228,12 +228,14 @@ test("deploy-prewarmed variants are reused and late-dynamic HTML stays private",
   if (!baseURL) throw new Error("deployed test requires a base URL");
   test.setTimeout(240_000);
 
-  const buildId = fs.readFileSync("examples/workers-cache/dist/server/BUILD_ID", "utf-8").trim();
+  const buildId = fs
+    .readFileSync("examples/response-store-demo/dist/server/BUILD_ID", "utf-8")
+    .trim();
   const rscBuildId = fs
-    .readFileSync("examples/workers-cache/dist/server/RSC_BUILD_ID", "utf-8")
+    .readFileSync("examples/response-store-demo/dist/server/RSC_BUILD_ID", "utf-8")
     .trim();
   const { prerenderSecret } = JSON.parse(
-    fs.readFileSync("examples/workers-cache/dist/server/vinext-server.json", "utf-8"),
+    fs.readFileSync("examples/response-store-demo/dist/server/vinext-server.json", "utf-8"),
   ) as { prerenderSecret: string };
 
   // Match a browser navigation and the HTML request emitted by cdn-warm.ts.

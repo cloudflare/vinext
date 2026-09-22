@@ -66,6 +66,10 @@ import {
 } from "./app-page-segment-state.js";
 import { createAppPageSegmentPlan } from "./app-page-segment-plan.js";
 import type { AppPageRenderIdentity } from "./app-page-render-identity.js";
+import {
+  resolveAppPageModuleTraceSegment,
+  traceGetLayoutOrPageModule,
+} from "./app-page-tracing.js";
 
 export { resolveAppPageChildSegments } from "./app-page-segment-state.js";
 
@@ -78,6 +82,7 @@ type AppPageComponentProps = {
 
 type AppPageComponent = ComponentType<AppPageComponentProps>;
 type AppPageErrorComponent = ComponentType<{ error: unknown; reset: () => void }>;
+const APP_PAGE_SLOT_SEGMENT_KEY = "(__SLOT__)";
 const APP_PAGE_LAYOUT_PROBE_CHILD = <Fragment />;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageErrorComponent;
 const DEFAULT_NOT_FOUND_COMPONENT = DefaultNotFound as AppPageComponent;
@@ -1148,10 +1153,12 @@ export function buildAppPageElements<
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(layoutEntry.treePosition)) {
       continue;
     }
-    const layoutComponent = getDefaultExport(layoutEntry.layoutModule);
-    if (!layoutComponent) {
-      continue;
-    }
+    if (!layoutEntry.layoutModule) continue;
+    const layoutComponent = traceGetLayoutOrPageModule(
+      resolveAppPageModuleTraceSegment(routeSegments, layoutEntry.treePosition),
+      () => getDefaultExport(layoutEntry.layoutModule),
+    );
+    if (!layoutComponent) continue;
     const layoutParams = resolveAppPageSegmentParams(
       options.route.routeSegments,
       layoutEntry.treePosition,
@@ -1249,24 +1256,30 @@ export function buildAppPageElements<
     if (isPrefetchLoadingShell && prefetchSlotLoadingEntry === null) {
       continue;
     }
-    const overrideOrPageComponent =
-      getDefaultExport(slotOverride?.pageModule) ?? getDefaultExport(slot.page);
-    const defaultComponent = getDefaultExport(slot.default);
+    const resolvedOverrideOrPageComponent =
+      slotOverride?.pageModule || slot.page
+        ? traceGetLayoutOrPageModule(
+            APP_PAGE_SEGMENT_KEY,
+            () => getDefaultExport(slotOverride?.pageModule) ?? getDefaultExport(slot.page),
+          )
+        : null;
+    const resolvedDefaultComponent = getDefaultExport(slot.default);
 
     // On soft nav (RSC): omit key when only default.tsx exists and the slot is
     // already mounted on the client. Absent key means the browser retains prior
     // slot content rather than replacing it. When the slot is not yet mounted
     // (first entry into this layout), include the key so default.tsx renders.
     if (
-      !overrideOrPageComponent &&
-      defaultComponent &&
+      !resolvedOverrideOrPageComponent &&
+      resolvedDefaultComponent &&
       options.isRscRequest &&
       options.mountedSlotIds?.has(slotId)
     ) {
       continue;
     }
 
-    const slotComponent = overrideOrPageComponent ?? defaultComponent;
+    const slotComponent = resolvedOverrideOrPageComponent ?? resolvedDefaultComponent;
+    const overrideOrPageComponent = resolvedOverrideOrPageComponent;
 
     if (!slotComponent && !isOwnedAtRoutePrefetchCutoff) {
       elements[slotId] = AppElementsWire.unmatchedSlotValue;
@@ -1319,10 +1332,14 @@ export function buildAppPageElements<
 
     if (hasSlotTreeOverride) {
       for (const [layoutIndex, layoutModule] of (slotOverride?.layoutModules ?? []).entries()) {
-        const component = getDefaultExport(layoutModule);
-        if (!component) continue;
+        if (!layoutModule) continue;
         const treePosition =
           slotOverride?.layoutSegments?.[layoutIndex]?.length ?? branchSegments.length;
+        const component = traceGetLayoutOrPageModule(
+          resolveAppPageModuleTraceSegment(branchSegments, treePosition),
+          () => getDefaultExport(layoutModule),
+        );
+        if (!component) continue;
         addBranchLayout(treePosition, {
           component,
           params: resolveSlotLayoutParams(branchSegments, treePosition, slotParams),
@@ -1330,9 +1347,13 @@ export function buildAppPageElements<
       }
     } else {
       for (const [layoutIndex, layoutModule] of (slot.configLayouts ?? []).entries()) {
-        const component = getDefaultExport(layoutModule);
-        if (!component) continue;
+        if (!layoutModule) continue;
         const treePosition = slot.configLayoutTreePositions?.[layoutIndex] ?? 0;
+        const component = traceGetLayoutOrPageModule(
+          resolveAppPageModuleTraceSegment(slotRouteSegments, treePosition),
+          () => getDefaultExport(layoutModule),
+        );
+        if (!component) continue;
         addBranchLayout(treePosition, {
           component,
           params: {
@@ -1343,7 +1364,10 @@ export function buildAppPageElements<
       }
     }
 
-    const slotLayoutComponent = overrideOrPageComponent ? getDefaultExport(slot.layout) : null;
+    const slotLayoutComponent =
+      overrideOrPageComponent && slot.layout
+        ? traceGetLayoutOrPageModule(APP_PAGE_SLOT_SEGMENT_KEY, () => getDefaultExport(slot.layout))
+        : null;
     if (slotLayoutComponent) {
       const rootEntries = branchLayouts.get(0) ?? [];
       branchLayouts.set(0, [

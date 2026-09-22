@@ -6,6 +6,32 @@ import {
 } from "../packages/vinext/src/server/app-page-http-access-fallback-metadata.js";
 
 describe("HTTP-access fallback metadata planning", () => {
+  it.each([
+    { convention: "not-found" as const, expected: "/docs/not-found" },
+    { convention: "forbidden" as const, expected: "/docs/forbidden" },
+    { convention: "unauthorized" as const, expected: "/docs/unauthorized" },
+  ])("uses the $convention convention and module owner route", ({ convention, expected }) => {
+    const rootLayout = {};
+    const nestedLayout = {};
+    const boundary = {};
+    const plan = createHttpAccessFallbackMetadataPlan({
+      boundaryModule: boundary,
+      boundaryParams: {},
+      boundaryRouteSegments: ["docs"],
+      errorConvention: convention,
+      layoutModules: [rootLayout, nestedLayout],
+      layoutTreePositions: [0, 1],
+      params: {},
+      routeSegments: ["docs", "missing"],
+    });
+
+    expect(plan.map(({ moduleRoute }) => moduleRoute)).toEqual([
+      `/${convention}`,
+      `/docs/${convention}`,
+      expected,
+    ]);
+  });
+
   it("places the fallback convention at every active leaf in owner order", () => {
     const rootLayout = {};
     const nestedLayout = {};
@@ -17,6 +43,7 @@ describe("HTTP-access fallback metadata planning", () => {
     const plan = createHttpAccessFallbackMetadataPlan({
       boundaryModule: boundary,
       boundaryParams: { locale: "en" },
+      errorConvention: "not-found",
       layoutModules: [rootLayout, nestedLayout],
       layoutTreePositions: [0, 1],
       parallelBranches: [
@@ -84,6 +111,7 @@ describe("HTTP-access fallback metadata planning", () => {
     const viewport = await resolveHttpAccessFallbackViewport<Record<string, unknown>>({
       boundaryModule: boundary,
       boundaryParams: { locale: "en" },
+      errorConvention: "not-found",
       layoutModules: [],
       parallelBranches: [
         {
@@ -119,6 +147,7 @@ describe("HTTP-access fallback metadata planning", () => {
     const plan = createHttpAccessFallbackMetadataPlan({
       boundaryModule: boundary,
       boundaryParams: {},
+      errorConvention: "not-found",
       layoutModules: [rootLayout],
       layoutTreePositions: [0],
       parallelBranches: [
@@ -175,6 +204,7 @@ describe("HTTP-access fallback metadata planning", () => {
     const metadataPromise = resolveHttpAccessFallbackMetadata<Record<string, unknown>>({
       boundaryModule: boundary,
       boundaryParams: {},
+      errorConvention: "not-found",
       layoutModules: [rootLayout],
       metadataRoutes: [],
       params: {},

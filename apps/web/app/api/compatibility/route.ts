@@ -20,6 +20,7 @@
  *     vinextRef?: string,
  *     nextRef?: string,
  *     commitSha?: string,
+ *     createdAt?: number,     // Unix millis; authenticated historical backfills only
  *     files: Array<{
  *       suite: string,        // test file path; joins to compat_suite_meta.suite
  *       total: number,
@@ -51,6 +52,7 @@ type SubmitBody = {
   vinextRef?: string;
   nextRef?: string;
   commitSha?: string;
+  createdAt?: number;
   files: SubmitFile[];
 };
 
@@ -73,6 +75,27 @@ function isValidBody(body: unknown): body is SubmitBody {
   const b = body as Record<string, unknown>;
   if (typeof b.kind !== "string" || b.kind.length === 0) return false;
   if (typeof b.runKey !== "string" || b.runKey.length === 0) return false;
+  if (b.createdAt === undefined && b.runKey.startsWith("backfill:")) return false;
+  if (b.createdAt !== undefined) {
+    if (
+      typeof b.createdAt !== "number" ||
+      !Number.isSafeInteger(b.createdAt) ||
+      b.createdAt <= 0 ||
+      b.createdAt > Date.now()
+    ) {
+      return false;
+    }
+    const timestamp = new Date(b.createdAt).toISOString();
+    if (
+      !timestamp.endsWith("T02:00:00.000Z") ||
+      typeof b.vinextRef !== "string" ||
+      !/^[0-9a-f]{40}$/i.test(b.vinextRef) ||
+      b.commitSha !== b.vinextRef ||
+      b.runKey !== `backfill:${timestamp.slice(0, 10)}:${b.vinextRef}`
+    ) {
+      return false;
+    }
+  }
   if (!Array.isArray(b.files)) return false;
   if (b.files.length > MAX_FILES) return false;
   for (const f of b.files) {
@@ -113,7 +136,7 @@ export async function POST(request: Request): Promise<Response> {
 
 async function writeRun(body: SubmitBody): Promise<Response> {
   const db = getDb();
-  const now = Date.now();
+  const createdAt = body.createdAt ?? Date.now();
 
   // Aggregate totals.
   let total = 0;
@@ -138,7 +161,7 @@ async function writeRun(body: SubmitBody): Promise<Response> {
       vinextRef: body.vinextRef ?? null,
       nextRef: body.nextRef ?? null,
       commitSha: body.commitSha ?? null,
-      createdAt: now,
+      createdAt,
       total,
       passed,
       failed,
@@ -150,7 +173,7 @@ async function writeRun(body: SubmitBody): Promise<Response> {
         vinextRef: body.vinextRef ?? null,
         nextRef: body.nextRef ?? null,
         commitSha: body.commitSha ?? null,
-        createdAt: now,
+        createdAt,
         total,
         passed,
         failed,

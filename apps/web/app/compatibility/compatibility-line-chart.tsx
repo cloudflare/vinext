@@ -28,6 +28,7 @@ type SeriesCounts = {
 
 export type TrendPoint = {
   createdAt: number;
+  reconstructed: boolean;
   /**
    * Counts per router bucket for this run. "app" and "pages" include parity
    * suites; "both" is parity-only; "all" is the run-level totals (matches
@@ -89,13 +90,14 @@ export function CompatibilityLineChart({
   const [hover, setHover] = useState<{ index: number; x: number; y: number } | null>(null);
 
   // Reduce TrendPoint to both pass-rate definitions for the selected router.
-  // Recomputed when filter changes, but that's a cheap O(n) over <=90 points.
+  // Recomputed when filter changes, but that's a cheap O(n) over the recorded runs.
   const series = useMemo(
     () =>
       points.map((p) => {
         const counts = p.byRouter[filter];
         return {
           createdAt: p.createdAt,
+          reconstructed: p.reconstructed,
           counts,
           overallPassRate: computePassRateRatio(counts.passed, counts.failed),
           supportedPassRate: computePassRateRatio(counts.supportedPassed, counts.supportedFailed),
@@ -258,6 +260,9 @@ export function CompatibilityLineChart({
                   {p.counts.skipped > 0 ? `, ${p.counts.skipped} skipped` : ""}
                 </div>
                 <div className="mt-1 text-kumo-subtle">{formatDateTime(p.createdAt)}</div>
+                {p.reconstructed ? (
+                  <div className="text-kumo-subtle">Reconstructed from a historical commit</div>
+                ) : null}
               </>
             );
           })()}

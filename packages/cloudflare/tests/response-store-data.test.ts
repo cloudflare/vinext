@@ -1,0 +1,463 @@
+import { expect, test, vi } from "vitest";
+
+import type {
+  ResponseStoreMutationResult,
+  WorkersResponseStore,
+} from "@cloudflare/workers-response-store";
+import {
+  captureResponseStoreRscData,
+  deferResponseStoreAdmission,
+  runWithResponseStoreInvocation,
+  WorkersResponseStoreCacheHandler,
+  type ResponseStoreInvocationCapture,
+} from "../src/cache/response-store-data.runtime";
+import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+
+class TestStore implements WorkersResponseStore {
+  response?: Response;
+  options?: Parameters<WorkersResponseStore["put"]>[2];
+  putResult: ResponseStoreMutationResult = {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  };
+  mutationResult = this.putResult;
+  mutationError?: Error;
+  tagExpiration = 0;
+  tagExpirationCalls: string[][] = [];
+
+  async fetch(): Promise<Response> {
+    return (
+      this.response?.clone() ??
+      new Response("miss", {
+        status: 404,
+        headers: { "X-Workers-Response-Store": "MISS" },
+      })
+    );
+  }
+
+  async getTagExpiration(tags: string[]): Promise<number> {
+    this.tagExpirationCalls.push(tags);
+    return this.tagExpiration;
+  }
+
+  async put(
+    _request: Request,
+    response: Response,
+    options?: Parameters<WorkersResponseStore["put"]>[2],
+  ): Promise<ResponseStoreMutationResult> {
+    if (this.mutationError) throw this.mutationError;
+    this.response = response.clone();
+    this.response.headers.set("X-Workers-Response-Store", "BLOB-FRESH");
+    this.options = options;
+    return this.putResult;
+  }
+
+  async refresh(): Promise<ResponseStoreMutationResult> {
+    if (this.mutationError) throw this.mutationError;
+    return this.mutationResult;
+  }
+
+  async purge(): Promise<ResponseStoreMutationResult> {
+    if (this.mutationError) throw this.mutationError;
+    return this.mutationResult;
+  }
+}
+
+test("only attaches loopback regeneration to replayable requests", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+
+  await runWithResponseStoreInvocation("safe-get", true, () =>
+    handler.set("get", null, { cacheControl: { revalidate: 1, expire: 2 } }),
+  );
+  expect(store.options).toMatchObject({
+    coalesce: true,
+    purgeExisting: true,
+    revalidator: { id: "vinext:data", args: ["get", "safe-get"] },
+  });
+  expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBe("1");
+
+  await runWithResponseStoreInvocation("unsafe-post", false, () =>
+    handler.set("post", null, { cacheControl: { revalidate: 1, expire: 2 } }),
+  );
+  expect(store.options).toEqual({ coalesce: true, purgeExisting: true });
+  expect(store.response?.headers.get("X-Vinext-Response-Store-Replayable")).toBeNull();
+  expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
+});
+
+test("prefers a cache function invocation over route replay", async () => {
+  const store = new TestStore();
+  const invocation = {
+    encryptedArgs: "encrypted",
+    referenceId: "module#cached",
+    rootParams: {},
+    softTags: ["path-tag"],
+  };
+
+  await runWithResponseStoreInvocation("route", true, () =>
+    new WorkersResponseStoreCacheHandler(store).set("key", null, {
+      cacheControl: { revalidate: 1, expire: 2 },
+      cacheFunctionInvocation: invocation,
+    }),
+  );
+
+  expect(store.options?.revalidator).toEqual({
+    id: "vinext:cache-function",
+    args: ["key", JSON.stringify(invocation)],
+  });
+});
+
+test("captures App page RSC data for one-request warmup", async () => {
+  const capture: ResponseStoreInvocationCapture = { captureRscData: true };
+  const rscData = new TextEncoder().encode("flight").buffer;
+
+  runWithResponseStoreInvocation(
+    "route",
+    true,
+    () => captureResponseStoreRscData(Promise.resolve(rscData)),
+    capture,
+  );
+
+  await expect(capture.rscData?.then((body) => new Response(body).text())).resolves.toBe("flight");
+});
+
+test("does not retain App page RSC data for ordinary requests", () => {
+  const capture: ResponseStoreInvocationCapture = {};
+
+  runWithResponseStoreInvocation(
+    "route",
+    true,
+    () => captureResponseStoreRscData(Promise.resolve(new ArrayBuffer(0))),
+    capture,
+  );
+
+  expect(capture.rscData).toBeUndefined();
+});
+
+test("paces concurrent admission with each foreground consumer", async () => {
+  const pulls = [0, 0];
+  const captures: ResponseStoreInvocationCapture[] = [
+    { streamResponse: true },
+    { streamResponse: true },
+  ];
+  const foreground = captures.map((capture, index) =>
+    runWithResponseStoreInvocation(
+      `route-${index}`,
+      true,
+      () =>
+        deferResponseStoreAdmission(
+          new Response(
+            new ReadableStream<Uint8Array>(
+              {
+                pull(controller) {
+                  pulls[index]++;
+                  controller.enqueue(new Uint8Array([pulls[index]]));
+                  if (pulls[index] === 2) controller.close();
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+          ),
+          async (response) => new Response(await response.arrayBuffer()),
+        ),
+      capture,
+    ),
+  );
+
+  await Promise.resolve();
+  expect(pulls).toEqual([0, 0]);
+
+  const readers = foreground.map((response) => response?.body?.getReader());
+  expect((await readers[0]?.read())?.value).toEqual(new Uint8Array([1]));
+  await Promise.resolve();
+  expect(pulls).toEqual([1, 0]);
+
+  expect((await readers[1]?.read())?.value).toEqual(new Uint8Array([1]));
+  expect((await readers[0]?.read())?.value).toEqual(new Uint8Array([2]));
+  expect((await readers[1]?.read())?.value).toEqual(new Uint8Array([2]));
+  await Promise.all(readers.map(async (reader) => reader?.read()));
+  await Promise.all(captures.map(async (capture) => capture.admittedResponse));
+});
+
+test("continues the foreground stream when admission rejects without reading", async () => {
+  const capture: ResponseStoreInvocationCapture = { streamResponse: true };
+  const chunks = ["first", "second"];
+  const foreground = runWithResponseStoreInvocation(
+    "route",
+    true,
+    () =>
+      deferResponseStoreAdmission(
+        new Response(
+          new ReadableStream<Uint8Array>(
+            {
+              pull(controller) {
+                controller.enqueue(new TextEncoder().encode(chunks.shift()));
+                if (chunks.length === 0) controller.close();
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+        ),
+        async () => {
+          throw new Error("admission failed");
+        },
+      ),
+    capture,
+  );
+
+  await expect(capture.admittedResponse).rejects.toThrow("admission failed");
+  await expect(foreground?.text()).resolves.toBe("firstsecond");
+});
+
+test.each(["rejects", "is cancelled"] as const)(
+  "cancels a blocked source when foreground stops and admission %s",
+  async (admissionFailure) => {
+    const capture: ResponseStoreInvocationCapture = { streamResponse: true };
+    let resolvePullStarted!: () => void;
+    const pullStarted = new Promise<void>((resolve) => {
+      resolvePullStarted = resolve;
+    });
+    let rejectAdmission!: (reason: unknown) => void;
+    const rejectedAdmission = new Promise<Response>((_resolve, reject) => {
+      rejectAdmission = reject;
+    });
+    let cancelReason: unknown;
+    const foreground = runWithResponseStoreInvocation(
+      "route",
+      true,
+      () =>
+        deferResponseStoreAdmission(
+          new Response(
+            new ReadableStream<Uint8Array>(
+              {
+                pull() {
+                  resolvePullStarted();
+                  return new Promise(() => {});
+                },
+                cancel(reason) {
+                  cancelReason = reason;
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+          ),
+          (response) =>
+            admissionFailure === "rejects" ? rejectedAdmission : Promise.resolve(response),
+        ),
+      capture,
+    );
+
+    await foreground?.body?.cancel("visitor left");
+    await pullStarted;
+    if (admissionFailure === "rejects") {
+      rejectAdmission(new Error("admission failed"));
+      await expect(capture.admittedResponse).rejects.toThrow("admission failed");
+    } else {
+      const admitted = await capture.admittedResponse;
+      await admitted?.body?.cancel();
+    }
+    expect(cancelReason).toBe("visitor left");
+  },
+);
+
+test("treats a superseded write as a successful no-op", async () => {
+  const store = new TestStore();
+  store.putResult = { backingStoreUpdated: false, edgePurgeAccepted: false };
+  await expect(
+    new WorkersResponseStoreCacheHandler(store).set("key", null),
+  ).resolves.toBeUndefined();
+});
+
+// Matches Next.js's lazy custom-handler expiration lookup:
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-custom-handler/use-cache-custom-handler.test.ts
+test("lazily resolves soft-tag expiration once per request after a candidate hit", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    await handler.set("key", null);
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      await expect(
+        Promise.all([
+          handler.get("key", { softTags: ["path", "layout"] }),
+          handler.get("key", { softTags: ["layout", "path"] }),
+        ]),
+      ).resolves.not.toContain(null);
+    });
+
+    expect(store.tagExpirationCalls).toHaveLength(1);
+    expect(store.tagExpirationCalls[0]).toHaveLength(2);
+
+    await runWithRequestContext(createRequestContext(), () =>
+      handler.get("key", { softTags: ["path", "layout"] }),
+    );
+    expect(store.tagExpirationCalls).toHaveLength(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("does not resolve soft-tag expiration when the data entry misses", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+
+  await expect(handler.get("missing", { softTags: ["path"] })).resolves.toBeNull();
+  expect(store.tagExpirationCalls).toHaveLength(0);
+});
+
+test("observes an eager soft-tag failure after finishing the response body", async () => {
+  let releaseBody!: () => void;
+  const bodyBlocked = new Promise<void>((resolve) => {
+    releaseBody = resolve;
+  });
+  let markBodyConsumed!: () => void;
+  const bodyConsumed = new Promise<void>((resolve) => {
+    markBodyConsumed = resolve;
+  });
+  let rejectExpiration!: (error: Error) => void;
+  const expirationBlocked = new Promise<number>((_resolve, reject) => {
+    rejectExpiration = reject;
+  });
+  const store = new TestStore();
+  store.response = new Response(
+    new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          await bodyBlocked;
+          controller.enqueue(
+            new TextEncoder().encode(JSON.stringify({ lastModified: 10_000, value: null })),
+          );
+          controller.close();
+          markBodyConsumed();
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Workers-Response-Store": "BLOB-STALE",
+      },
+    },
+  );
+  store.getTagExpiration = async (tags) => {
+    store.tagExpirationCalls.push(tags);
+    return expirationBlocked;
+  };
+
+  const result = new WorkersResponseStoreCacheHandler(store).get("key", {
+    softTags: ["path"],
+  });
+  let settled = false;
+  void result.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  const rejected = expect(result).rejects.toThrow("expiration unavailable");
+  await vi.waitFor(() => expect(store.tagExpirationCalls).toHaveLength(1));
+
+  rejectExpiration(new Error("expiration unavailable"));
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  releaseBody();
+  await bodyConsumed;
+  await rejected;
+  expect(settled).toBe(true);
+});
+
+test("retries a suppressed soft-tag failure after purging a corrupt blob", async () => {
+  const store = new TestStore();
+  const purge = vi.spyOn(store, "purge");
+  store.response = new Response("invalid", {
+    headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
+  });
+  let expirationCalls = 0;
+  store.getTagExpiration = (tags) => {
+    store.tagExpirationCalls.push(tags);
+    if (expirationCalls++ === 0) throw new Error("expiration unavailable");
+    return Promise.resolve(0);
+  };
+
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  await runWithRequestContext(createRequestContext(), async () => {
+    await expect(handler.get("corrupt", { softTags: ["path"] })).resolves.toBeNull();
+
+    store.response = new Response(JSON.stringify({ lastModified: 10_000, value: null }), {
+      headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
+    });
+    await expect(handler.get("valid", { softTags: ["path"] })).resolves.not.toBeNull();
+  });
+
+  expect(store.tagExpirationCalls).toHaveLength(2);
+  expect(purge).toHaveBeenCalledOnce();
+});
+
+test("does not speculate soft-tag expiration for invalid or non-ok responses", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+
+  store.response = new Response("invalid");
+  await expect(handler.get("invalid", { softTags: ["path"] })).resolves.toBeNull();
+
+  store.response = new Response("unavailable", {
+    status: 503,
+    headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
+  });
+  await expect(handler.get("unavailable", { softTags: ["path"] })).rejects.toThrow(
+    "Workers Response Store returned 503",
+  );
+
+  expect(store.tagExpirationCalls).toHaveLength(0);
+});
+
+test("rejects a candidate older than the latest soft-tag invalidation", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    await handler.set("key", null);
+    store.tagExpiration = 10_000;
+
+    await expect(handler.get("key", { softTags: ["path"] })).resolves.toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("honors a shorter revalidate requested by a later read", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    await handler.set("key", null, { cacheControl: { revalidate: 60, expire: 120 } });
+
+    vi.setSystemTime(12_000);
+    await expect(handler.get("key", { revalidate: 1 })).resolves.toMatchObject({
+      cacheState: "stale",
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("propagates mutation errors without treating an unavailable local edge cache as fatal", async () => {
+  const store = new TestStore();
+  store.putResult = { backingStoreUpdated: true, edgePurgeAccepted: false };
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  await expect(handler.set("key", null)).resolves.toBeUndefined();
+
+  store.mutationResult = { backingStoreUpdated: false, edgePurgeAccepted: false };
+  await expect(handler.revalidateTag("missing", { expire: 60 })).resolves.toBeUndefined();
+
+  store.mutationError = new Error("edge purge failed");
+  await expect(handler.set("key", null)).rejects.toThrow("edge purge failed");
+  await expect(handler.revalidateTag("posts", { expire: 60 })).rejects.toThrow("edge purge failed");
+});

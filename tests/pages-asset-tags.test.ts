@@ -215,6 +215,38 @@ describe("collectAssetTags", () => {
     expect(preloadTags).toHaveLength(2);
   });
 
+  it("emits static dependency CSS before importer CSS", () => {
+    setPagesClientAssets({
+      cssGraph: {
+        "pages/_app.tsx": { imports: ["shared"], css: ["reset.css"] },
+        "pages/index.tsx": {
+          imports: ["shared"],
+          css: ["page.css"],
+        },
+        shared: { imports: ["deep"], css: ["base.css"] },
+        deep: { css: ["deep.css"] },
+        lazy: { css: ["lazy.css"] },
+      },
+    });
+    const result = collectAssetTags({
+      manifest: makeManifest({
+        "pages/_app.tsx": ["reset.css", "app.js"],
+        "pages/index.tsx": ["page.css", "page.js"],
+      }),
+      moduleIds: ["/project/pages/_app.tsx", "/project/pages/index.tsx"],
+      disableOptimizedLoading: true,
+    });
+    const stylesheetTags = parseTags(result).filter((tag) => tag.includes('rel="stylesheet"'));
+
+    expect(stylesheetTags).toEqual([
+      '<link rel="stylesheet" href="/deep.css" />',
+      '<link rel="stylesheet" href="/base.css" />',
+      '<link rel="stylesheet" href="/reset.css" />',
+      '<link rel="stylesheet" href="/page.css" />',
+    ]);
+    expect(result).not.toContain("lazy.css");
+  });
+
   it("includes all manifest assets when moduleIds is empty", () => {
     const manifest = makeManifest({
       "page.tsx": ["page.js"],
