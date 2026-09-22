@@ -7,12 +7,18 @@ describe("Next.js deploy harness", () => {
   it("initializes cloned ecosystem repos before invoking Vite", () => {
     const workflow = fs.readFileSync(path.resolve(".github/workflows/ecosystem-run.yml"), "utf8");
     const script = fs.readFileSync(path.resolve("scripts/test-repos.sh"), "utf8");
-    const initCommand = "vinext init --platform=node --skip-check";
+    const initCommand = "vinext init --platform=node --skip-check --no-install";
 
     expect(workflow.indexOf(initCommand)).toBeGreaterThan(workflow.indexOf("Install vinext"));
     expect(workflow.indexOf(initCommand)).toBeLessThan(workflow.indexOf("vite build"));
     expect(script.indexOf(initCommand)).toBeGreaterThan(script.indexOf("npm install vinext"));
     expect(script.indexOf(initCommand)).toBeLessThan(script.indexOf("npx vite dev"));
+    expect(workflow.slice(workflow.indexOf(initCommand))).toMatch(
+      /vinext init[^\n]+--no-install\n\s+npm install --legacy-peer-deps/,
+    );
+    expect(script.slice(script.indexOf(initCommand))).toMatch(
+      /vinext init[^\n]+--no-install[^\n]*\n[\s\S]*?npm install --legacy-peer-deps/,
+    );
   });
 
   it("enables Next.js test-only client instrumentation in deploy shards", () => {

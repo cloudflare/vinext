@@ -104,7 +104,9 @@ jobs:
 
       - name: Initialize vinext in target repo
         working-directory: target-repo
-        run: ./node_modules/.bin/vinext init --platform=node --skip-check
+        run: |
+          ./node_modules/.bin/vinext init --platform=node --skip-check --no-install
+          npm install --legacy-peer-deps
 
       - name: Build with Vite
         working-directory: target-repo

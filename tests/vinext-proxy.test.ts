@@ -441,3 +441,25 @@ describe("thin vinext command proxies", () => {
     await waitFor(() => (fs.existsSync(getLockfilePath(root)) ? undefined : true));
   }, 60_000);
 });
+
+describe("vinext init", () => {
+  it("configures a pnpm-locked project without running pnpm when --no-install is set", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-init-no-install-"));
+    roots.push(root);
+    write(root, "package.json", '{"name":"init-no-install","private":true}\n');
+    write(root, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    write(root, "pages/index.tsx", "export default function Page() { return null; }\n");
+
+    const result = spawnSync(
+      process.execPath,
+      [CLI_PATH, "init", "--platform=node", "--skip-check", "--no-install"],
+      { cwd: root, encoding: "utf-8", timeout: 10_000 },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(path.join(root, "vite.config.ts"))).toBe(true);
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"));
+    expect(pkg.devDependencies).toMatchObject({ vite: "latest", "@vitejs/plugin-react": "latest" });
+    expect(fs.existsSync(path.join(root, "node_modules"))).toBe(false);
+  });
+});

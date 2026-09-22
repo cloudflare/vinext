@@ -238,6 +238,7 @@ async function initCommand() {
   // Parse init-specific flags
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
+  const install = !rawArgs.includes("--no-install");
   const initOptions = await resolveInitOptions(rawArgs);
 
   await runInit({
@@ -245,6 +246,7 @@ async function initCommand() {
     port: parsed.port,
     skipCheck,
     force,
+    install,
     ...initOptions,
   });
 }
@@ -303,6 +305,7 @@ function printHelp(cmd?: string) {
   Options:
     -p, --port <port>    Dev server port for the generated Vite script (default: 3001)
     --skip-check         Skip the compatibility check step
+    --no-install         Update dependency entries without installing them
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
     --prerender          Configure Vite builds to pre-render all static routes
