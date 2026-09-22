@@ -25,10 +25,13 @@ export type VinextPrerenderConfig =
        * App Router and Pages Router route that vinext can statically render.
        */
       routes: "*";
+      /** Maximum number of routes to render concurrently. */
+      concurrency?: number;
     };
 
 export type ResolvedVinextPrerenderConfig = {
   routes: "*";
+  concurrency?: number;
 };
 
 export type VinextPrerenderDecisionReason = "flag" | "next-export" | "vinext-config";
@@ -68,7 +71,18 @@ export function normalizeVinextPrerenderConfig(
     throw new Error('[vinext] Invalid `prerender` config. Use `true` or `{ routes: "*" }`.');
   }
 
-  if (config.routes === "*") return { routes: "*" };
+  if (config.routes === "*") {
+    if (
+      config.concurrency !== undefined &&
+      (!Number.isInteger(config.concurrency) || config.concurrency <= 0)
+    ) {
+      throw new Error("[vinext] `prerender.concurrency` must be a positive integer.");
+    }
+    return {
+      routes: "*",
+      ...(config.concurrency === undefined ? {} : { concurrency: config.concurrency }),
+    };
+  }
 
   throw new Error(
     '[vinext] Unsupported `prerender.routes` config. Currently only `routes: "*"` is supported.',
