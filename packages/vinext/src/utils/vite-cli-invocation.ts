@@ -57,6 +57,32 @@ const BOOLEAN_OPTIONS = new Set([
   "-w",
 ]);
 const VALUELESS_OPTIONS = new Set(["--help", "-h", "--version", "-v"]);
+const COMMAND_ONLY_OPTIONS: Record<ViteCliCommand, Set<string>> = {
+  dev: new Set([
+    "--host",
+    "--port",
+    "--open",
+    "--cors",
+    "--strictPort",
+    "--force",
+    "--experimentalBundle",
+  ]),
+  build: new Set([
+    "--target",
+    "--outDir",
+    "--assetsDir",
+    "--assetsInlineLimit",
+    "--ssr",
+    "--sourcemap",
+    "--minify",
+    "--manifest",
+    "--ssrManifest",
+    "--emptyOutDir",
+    "--watch",
+    "-w",
+    "--app",
+  ]),
+};
 
 function optionName(arg: string): string {
   const equalsIndex = arg.indexOf("=");
@@ -85,12 +111,15 @@ function optionConsumesNext(arg: string, next: string | undefined): boolean {
   return BOOLEAN_OPTIONS.has(option) && /^(?:true|false)$/.test(next ?? "");
 }
 
-export function findViteRoot(args: string[]): string | undefined | null {
+export function findViteRoot(command: ViteCliCommand, args: string[]): string | undefined | null {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--") break;
     const option = optionName(arg);
     if (VALUELESS_OPTIONS.has(option)) continue;
+    const otherCommand = command === "dev" ? "build" : "dev";
+    const normalizedOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
+    if (COMMAND_ONLY_OPTIONS[otherCommand].has(normalizedOption)) return null;
     if (optionConsumesNext(arg, args[index + 1])) {
       index++;
       continue;

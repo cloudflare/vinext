@@ -92,6 +92,21 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).toContain("No Vite config was found for this project");
   });
 
+  it.each([
+    ["build", ["--host", "127.0.0.1"], "host"],
+    ["dev", ["--outDir", "dist"], "outDir"],
+  ] as const)("lets Vite reject %s options from the other command", (command, args, option) => {
+    const root = createRoot();
+    const result = spawnSync(process.execPath, [CLI_PATH, command, ...args], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain(`Unknown option \`--${option}\``);
+    expect(result.stderr).not.toContain("No Vite config was found");
+  });
+
   it("resolves project-local Vite when help precedes the root", () => {
     const root = createRoot();
     writeProject(path.join(root, "project"));

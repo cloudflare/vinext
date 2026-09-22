@@ -41,7 +41,7 @@ type ViteCommand = "dev" | "build";
 
 function configPreflight(command: ViteCommand): string {
   const cwd = process.cwd();
-  const positionalRoot = findViteRoot(rawArgs);
+  const positionalRoot = findViteRoot(command, rawArgs);
   const root = positionalRoot ? path.resolve(cwd, positionalRoot) : cwd;
   if (
     positionalRoot === null ||
