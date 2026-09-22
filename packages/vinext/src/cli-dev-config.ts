@@ -135,9 +135,12 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
       }
     }
   };
-  server.httpServer?.once("listening", () => {
-    if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1") return;
-    const port = server.config.server.port ?? 3000;
+  const listenServer = server.listen.bind(server);
+  server.listen = async (port?: number, isRestart?: boolean) => {
+    if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1") {
+      return listenServer(port, isRestart);
+    }
+    const configuredPort = port ?? server.config.server.port ?? 3000;
     const hostname = normalizeDevServerHostname(server.config.server.host);
     const displayHostname = hostname === "0.0.0.0" ? "localhost" : hostname;
     activeLock = activeDevServerLocks.get(root);
@@ -147,9 +150,9 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
         root,
         info: {
           pid: process.pid,
-          port,
+          port: configuredPort,
           hostname,
-          appUrl: `http://${displayHostname}:${port}`,
+          appUrl: `http://${displayHostname}:${configuredPort}`,
           startedAt,
           cwd: root,
         },
@@ -167,6 +170,18 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
       activeDevServerLocks.set(root, activeLock);
     }
     activeLock.servers++;
+    try {
+      return await listenServer(port, isRestart);
+    } catch (error) {
+      releaseLifecycle();
+      throw error;
+    }
+  };
+  server.httpServer?.once("listening", () => {
+    if (!activeLock) return;
+    const port = server.config.server.port ?? 3000;
+    const hostname = normalizeDevServerHostname(server.config.server.host);
+    const displayHostname = hostname === "0.0.0.0" ? "localhost" : hostname;
     const lock = activeLock;
     setImmediate(() => {
       if (released) return;
