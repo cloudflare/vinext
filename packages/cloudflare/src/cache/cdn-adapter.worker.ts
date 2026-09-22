@@ -64,6 +64,7 @@ const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CACHE_CONTROL_TRANSPORT_HEADER = "x-vinext-internal-request-cache-control";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const REQUEST_PRAGMA_TRANSPORT_HEADER = "x-vinext-internal-request-pragma";
+const QUERY_TRANSPORT_HEADER = "x-vinext-internal-render-query";
 const CLOUDFLARE_EDGE_POLICY_HEADER = "Cloudflare-CDN-Cache-Control";
 const SHARED_RESPONSE_STAGE_HEADER = "x-vinext-cloudflare-shared-response-stage";
 const RESPONSE_STAGE_WIRE_CACHE = {
@@ -142,7 +143,8 @@ function stripUntrustedTransportHeaders(request: Request): Request {
     !request.headers.has(AUTHORIZATION_TRANSPORT_HEADER) &&
     !request.headers.has(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER) &&
     !request.headers.has(REQUEST_CF_TRANSPORT_HEADER) &&
-    !request.headers.has(REQUEST_PRAGMA_TRANSPORT_HEADER)
+    !request.headers.has(REQUEST_PRAGMA_TRANSPORT_HEADER) &&
+    !request.headers.has(QUERY_TRANSPORT_HEADER)
   ) {
     return request;
   }
@@ -151,6 +153,7 @@ function stripUntrustedTransportHeaders(request: Request): Request {
   headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
+  headers.delete(QUERY_TRANSPORT_HEADER);
   const sanitized = new Request(request, { headers });
   const requestCf = Reflect.get(request, "cf");
   if (requestCf !== undefined) {
@@ -380,6 +383,77 @@ function restoreResponseStageRequest(
   };
 }
 
+/** Select the shared App Page entry before rendering, but carry the original
+ * query outside the entrypoint URL and props for a cold render. The certificate
+ * comes from the trusted request stage, never from an inbound request header.
+ */
+function queryIndependentAppPageInvocation(
+  requestUrl: string,
+  props: unknown,
+): { requestUrl: string; props: unknown; restore: string | null } {
+  if (!props || typeof props !== "object") return { requestUrl, props, restore: null };
+  const page = props as Record<string, unknown>;
+  const cacheability = page.cacheability;
+  if (
+    page.kind !== "app-page" ||
+    typeof page.resolvedUrl !== "string" ||
+    !cacheability ||
+    typeof cacheability !== "object" ||
+    Reflect.get(cacheability, "queryIndependent") !== true ||
+    Reflect.get(cacheability, "policyHeaders") !== null
+  ) {
+    return { requestUrl, props, restore: null };
+  }
+  const request = new URL(requestUrl);
+  const resolved = new URL(page.resolvedUrl, request);
+  const requestSearch = request.search;
+  const resolvedSearch = resolved.search;
+  const restore = JSON.stringify([requestSearch, resolvedSearch]);
+  // A Workers header cannot carry an unbounded query. Falling back to the
+  // original full-query identity is safe and preserves ordinary large URLs.
+  if (restore.length > 8192) return { requestUrl, props, restore: null };
+  request.search = "";
+  resolved.search = "";
+  return {
+    requestUrl: request.toString(),
+    props: { ...page, resolvedUrl: resolved.pathname + resolved.hash },
+    restore: requestSearch || resolvedSearch ? restore : null,
+  };
+}
+
+function restoreQueryIndependentAppPageInvocation(
+  invocation: CloudflareResponseStageInvocation,
+  serialized: string | null,
+): CloudflareResponseStageInvocation | null {
+  if (serialized === null) return invocation;
+  try {
+    const searches = JSON.parse(serialized) as unknown;
+    if (
+      !Array.isArray(searches) ||
+      searches.length !== 2 ||
+      !searches.every(
+        (search) => typeof search === "string" && (search === "" || search.startsWith("?")),
+      ) ||
+      !invocation.props ||
+      typeof invocation.props !== "object"
+    )
+      return null;
+    const props = invocation.props as Record<string, unknown>;
+    if (props.kind !== "app-page" || typeof props.resolvedUrl !== "string") return null;
+    const request = new URL(invocation.requestUrl);
+    request.search = searches[0];
+    const resolved = new URL(props.resolvedUrl, request);
+    resolved.search = searches[1];
+    return {
+      ...invocation,
+      requestUrl: request.toString(),
+      props: { ...props, resolvedUrl: resolved.pathname + resolved.search + resolved.hash },
+    };
+  } catch {
+    return null;
+  }
+}
+
 function preventResponseCaching(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", "no-store");
@@ -581,7 +655,13 @@ async function invokeResponseStage(
 export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
   async fetch(request: Request): Promise<Response> {
     const context = withWorkerHostRuntime(this.ctx, this.env);
-    const invocation = getResponseStageInvocation(context.props, "shared");
+    const parsed = getResponseStageInvocation(context.props, "shared");
+    const invocation = parsed
+      ? restoreQueryIndependentAppPageInvocation(
+          parsed,
+          request.headers.get(QUERY_TRANSPORT_HEADER),
+        )
+      : null;
     if (!invocation) {
       return stampResponseStageBuildIdentity(
         new Response("Invalid vinext response-stage invocation", {
@@ -663,14 +743,18 @@ export default {
       options,
     ) => {
       const expectedResponseStageBuildIdentity = getVinextCdnBuildIdentity();
+      const identity =
+        options.cache === "shared"
+          ? queryIndependentAppPageInvocation(stageRequest.url, props)
+          : { requestUrl: stageRequest.url, props, restore: null };
       const invocation = {
         ...(expectedResponseStageBuildIdentity === null
           ? {}
           : { expectedResponseStageBuildIdentity }),
         options,
-        props,
+        props: identity.props,
         requestMethod: stageRequest.method,
-        requestUrl: stageRequest.url,
+        requestUrl: identity.requestUrl,
       };
       const usesSharedCache = options.cache === "shared";
       try {
@@ -692,9 +776,19 @@ export default {
         if (!binding) {
           return responseStageUnavailable();
         }
-        const entrypointRequest = usesSharedCache
-          ? await createCacheFacingRequest(stageRequest, serializedInvocation)
+        let entrypointRequest = usesSharedCache
+          ? await createCacheFacingRequest(
+              identity.restore === null
+                ? stageRequest
+                : new Request(identity.requestUrl, stageRequest),
+              serializedInvocation,
+            )
           : stageRequest;
+        if (identity.restore !== null) {
+          const headers = new Headers(entrypointRequest.headers);
+          headers.set(QUERY_TRANSPORT_HEADER, identity.restore);
+          entrypointRequest = new Request(entrypointRequest, { headers });
+        }
         const response = validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
         return usesSharedCache
           ? markSharedResponseStage(response, sharedResponseStageProvenance, props, true)

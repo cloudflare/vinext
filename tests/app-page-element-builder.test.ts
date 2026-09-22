@@ -1083,7 +1083,9 @@ describe("buildPageElements", () => {
     await expect(renderElementEntry(result, "slot:modal:/")).resolves.toContain("memo slot");
   });
 
-  it("records serialized queryless searchParams without marking client pages dynamic", async () => {
+  it("marks a client page dynamic when it consumes searchParams with an empty query", async () => {
+    // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
     const ClientPage = Object.assign(() => null, {
       $$typeof: Symbol.for("react.client.reference"),
     });
@@ -1114,7 +1116,7 @@ describe("buildPageElements", () => {
 
     await pageElement.props.searchParams;
 
-    expect(markDynamicUsageMock).not.toHaveBeenCalled();
+    expect(markDynamicUsageMock).toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
   });
 

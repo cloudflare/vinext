@@ -40,6 +40,7 @@ export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope 
   canonicalPathname: string;
   cleanPathname: string;
   forceDynamic?: boolean;
+  queryIndependentConfig?: boolean;
   interceptionContext: string | null;
   interceptionId: string | null;
   isRscRequest: boolean;
@@ -216,6 +217,8 @@ export function isAppWorkerResponseStageProps(
     typeof props.cleanPathname === "string" &&
     props.cleanPathname.startsWith("/") &&
     (props.forceDynamic === undefined || typeof props.forceDynamic === "boolean") &&
+    (props.queryIndependentConfig === undefined ||
+      typeof props.queryIndependentConfig === "boolean") &&
     (props.interceptionContext === null || typeof props.interceptionContext === "string") &&
     (props.interceptionId === null || typeof props.interceptionId === "string") &&
     typeof props.isRscRequest === "boolean" &&
@@ -272,6 +275,7 @@ function isResponseStageCacheability(value: unknown): value is VinextResponseSta
       cacheability.representation === "pages-data" ||
       cacheability.representation === "rsc-full" ||
       cacheability.representation === "rsc-loading-shell") &&
+    (cacheability.queryIndependent === undefined || cacheability.queryIndependent === true) &&
     typeof cacheability.resolvedRoutePathname === "string" &&
     cacheability.resolvedRoutePathname.startsWith("/")
   );

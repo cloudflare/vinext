@@ -270,6 +270,7 @@ export type AppRscHandlerRoute = {
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
   forceDynamic?: boolean;
+  queryIndependentConfig?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -524,6 +525,12 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   ) => AppRscRouteMatch<TRoute> | null;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
+  /** Build-bound proof for an exact prerendered App Page representation. */
+  queryIndependentAppPage?: (
+    routePattern: string,
+    routePathname: string,
+    representation: "html" | "rsc-full" | "rsc-loading-shell",
+  ) => boolean;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
   prefetchInlining?: PrefetchInliningConfig;
@@ -1164,6 +1171,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               cacheability: {
                 ...props.cacheability,
                 policyHeaders: responseStagePolicy,
+                ...(cache === "shared" &&
+                responseStagePolicy === null &&
+                props.kind === "app-page" &&
+                props.forceDynamic !== true &&
+                (props.queryIndependentConfig === true ||
+                  options.queryIndependentAppPage?.(
+                    props.routePattern,
+                    props.routePathname,
+                    !props.isRscRequest
+                      ? "html"
+                      : props.renderMode === "prefetch-loading-shell"
+                        ? "rsc-loading-shell"
+                        : "rsc-full",
+                  ))
+                  ? { queryIndependent: true }
+                  : {}),
               },
             },
             { cache },
@@ -2289,6 +2312,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         cleanPathname,
         draftModeCookie,
         forceDynamic: route.forceDynamic === true,
+        queryIndependentConfig: route.queryIndependentConfig === true,
         interceptionContext: interceptionContextHeader,
         interceptionId: interceptionIdHeader,
         isRscRequest,

@@ -378,6 +378,30 @@ export function cacheabilityManifestRouteState(
   return null;
 }
 
+/** Only an exact, completed static artifact certifies a query-independent Worker lookup.
+ * A route-wide static-candidate or unknown fallback may reflect one queryless
+ * probe and cannot authorize a pathname key for a different query.
+ */
+export function isQueryIndependentManifestArtifact(
+  route: CacheabilityManifestRoute,
+  routePathname: string,
+  representation: CacheabilityRepresentation,
+): boolean {
+  if (route.kind !== "app-page") return false;
+  const pathname = normalizeCacheabilityRoutePathname(routePathname);
+  if (
+    route.staticRepresentation === representation &&
+    !/(^|\/):/.test(route.pattern) &&
+    normalizeCacheabilityRoutePathname(route.pattern) === pathname
+  ) {
+    return true;
+  }
+  const paths = route.staticPaths?.[representation];
+  if (!paths) return false;
+  const token = route.pathPrefix ? pathname.slice(route.pathPrefix.length) : pathname;
+  return (!route.pathPrefix || pathname.startsWith(route.pathPrefix)) && paths.includes(token);
+}
+
 export function findCacheabilityManifestRoute(
   manifest: CacheabilityManifest,
   kind: CacheabilityRouteKind,

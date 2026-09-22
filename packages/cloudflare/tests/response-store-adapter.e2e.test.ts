@@ -152,7 +152,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
       const second = await isolated.dispatchFetch("https://app.test/force-dynamic");
       const secondBody = await second.text();
 
-      assert.equal(first.status, 200);
+      assert.equal(first.status, 200, firstBody.slice(0, 500));
       assert.equal(second.status, 200);
       assert.equal(first.headers.get("x-vinext-cache"), "BYPASS");
       assert.equal(second.headers.get("x-vinext-cache"), "BYPASS");
@@ -199,6 +199,27 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.equal(first.headers.get("x-vinext-cache"), "MISS");
       assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
       assert.equal(await hit.text(), firstBody);
+
+      const independent = await inline.dispatchFetch(
+        "https://app.test/query-on-demand/self-contained?q=first",
+      );
+      const independentBody = await independent.text();
+      const otherQuery = await inline.dispatchFetch(
+        "https://app.test/query-on-demand/self-contained?q=second",
+      );
+      assert.equal(independent.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(otherQuery.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await otherQuery.text(), independentBody);
+
+      const dependent = await inline.dispatchFetch("https://app.test/query-dependent?q=first");
+      const dependentBody = await dependent.text();
+      const otherDependent = await inline.dispatchFetch(
+        "https://app.test/query-dependent?q=second",
+      );
+      assert.notEqual(dependent.headers.get("x-vinext-cache"), "HIT");
+      assert.notEqual(otherDependent.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(htmlValue(dependentBody, "query-dependent-value"), "first");
+      assert.equal(htmlValue(await otherDependent.text(), "query-dependent-value"), "second");
 
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const stale = await fetch();
@@ -251,7 +272,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
   test("passes adapter sharding into the Response Store", async () => {
     await Promise.all(
       Array.from({ length: 16 }, async (_, index) => {
-        const response = await request(`/cached/local?shard=${index}`);
+        const response = await request(`/query-on-demand/shard-${index}`);
         assert.equal(response.status, 200);
         await response.arrayBuffer();
       }),
@@ -333,6 +354,128 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(await secondRsc.text(), firstBody);
   });
 
+  test("shares only completed query-independent App page artifacts across user queries", async () => {
+    // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    const first = await cacheStatus("/query-independent?q=first");
+    const second = await cacheStatus("/query-independent?q=second");
+    assert.equal(second.status, "HIT");
+    assert.equal(
+      htmlValue(first.body, "query-independent-id"),
+      htmlValue(second.body, "query-independent-id"),
+    );
+
+    const fromEmpty = await cacheStatus("/query-on-demand/a");
+    const fromQuery = await cacheStatus("/query-on-demand/a?q=second");
+    assert.equal(fromQuery.status, "HIT");
+    assert.equal(
+      htmlValue(fromEmpty.body, "query-on-demand-id"),
+      htmlValue(fromQuery.body, "query-on-demand-id"),
+    );
+    const otherPath = await cacheStatus("/query-on-demand/b?q=second");
+    assert.notEqual(
+      htmlValue(fromEmpty.body, "query-on-demand-id"),
+      htmlValue(otherPath.body, "query-on-demand-id"),
+    );
+
+    for (const pathname of [
+      "/query-dependent",
+      "/query-dependent?q=first",
+      "/query-dependent?q=second",
+    ]) {
+      const firstDynamic = await cacheStatus(pathname);
+      const secondDynamic = await cacheStatus(pathname);
+      assert.notEqual(firstDynamic.status, "HIT");
+      assert.notEqual(secondDynamic.status, "HIT");
+      assert.equal(
+        htmlValue(secondDynamic.body, "query-dependent-value"),
+        new URL(pathname, "https://app.test").searchParams.get("q") || "(empty)",
+      );
+      assert.notEqual(
+        htmlValue(firstDynamic.body, "query-dependent-id"),
+        htmlValue(secondDynamic.body, "query-dependent-id"),
+      );
+    }
+
+    const forced = await cacheStatus("/query-force-static?q=ignored");
+    assert.equal(htmlValue(forced.body, "query-force-static-value"), "(empty)");
+    assert.equal((await cacheStatus("/query-force-static?q=different")).status, "HIT");
+
+    const firstWithQuery = await cacheStatus("/query-independent?reverse=first");
+    const afterQuery = await cacheStatus("/query-independent");
+    assert.equal(firstWithQuery.status, "HIT");
+    assert.equal(afterQuery.status, "HIT");
+
+    const error = await cacheStatus("/query-error?q=ignored");
+    assert.equal((await cacheStatus("/query-error?q=another")).status, "HIT");
+    assert.equal(htmlValue(error.body, "query-error-id").length > 0, true);
+  });
+
+  test("keeps explicitly public query-dependent pages partitioned by the full query", async () => {
+    for (const [query, value] of [
+      ["?q=first", "first"],
+      ["?q=second", "second"],
+    ]) {
+      const first = await cacheStatus(`/query-public${query}`);
+      const second = await cacheStatus(`/query-public${query}`);
+      assert.equal(first.status, "MISS");
+      assert.equal(second.status, "HIT");
+      assert.equal(htmlValue(second.body, "query-public-value"), value);
+      assert.equal(
+        htmlValue(first.body, "query-public-id"),
+        htmlValue(second.body, "query-public-id"),
+      );
+    }
+  });
+
+  test("does not publish query-dependent metadata and does not alias rewritten paths", async () => {
+    for (const query of ["", "?q=first", "?q=second"]) {
+      const first = await cacheStatus(`/query-metadata${query}`);
+      const second = await cacheStatus(`/query-metadata${query}`);
+      assert.notEqual(first.status, "HIT");
+      assert.notEqual(second.status, "HIT");
+      assert.match(second.body, new RegExp(`Query metadata: ${query ? query.slice(3) : ""}`));
+    }
+    const source = await cacheStatus("/query-alias/rewrite?q=one");
+    const repeat = await cacheStatus("/query-alias/rewrite?q=two");
+    assert.equal(repeat.status, "HIT");
+    assert.equal(
+      htmlValue(source.body, "query-on-demand-id"),
+      htmlValue(repeat.body, "query-on-demand-id"),
+    );
+    const destination = await cacheStatus("/query-on-demand/rewrite?q=three");
+    assert.equal(destination.status, "MISS");
+  });
+
+  test("keeps HTML and RSC separate while sharing each query-independent representation", async () => {
+    const pathname = "/query-on-demand/representations";
+    const html = await cacheStatus(`${pathname}?q=html`);
+    assert.equal(html.status, "MISS");
+
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const firstRsc = await request(`${pathname}?q=first&_rsc=first`, { headers: rscHeaders });
+    const firstBody = await firstRsc.text();
+    assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
+    assert.match(firstRsc.headers.get("content-type") ?? "", /^text\/x-component/);
+
+    const secondRsc = await request(`${pathname}?q=second&_rsc=second`, {
+      headers: rscHeaders,
+    });
+    assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await secondRsc.text(), firstBody);
+    assert.equal(
+      decodeURIComponent(secondRsc.headers.get("x-vinext-rendered-path-and-search") ?? ""),
+      `${pathname}?q=second`,
+    );
+
+    const secondHtml = await cacheStatus(`${pathname}?q=other`);
+    assert.equal(secondHtml.status, "HIT");
+    assert.equal(
+      htmlValue(secondHtml.body, "query-on-demand-id"),
+      htmlValue(html.body, "query-on-demand-id"),
+    );
+  });
+
   test("seeds canonical RSC from one HTML warmup request", async () => {
     const pathname = "/cached/intro";
     const html = await request(pathname, {
@@ -358,7 +501,9 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(rsc.headers.get("content-type") ?? "", /^text\/x-component/);
     assert.ok((await rsc.arrayBuffer()).byteLength > 0);
 
-    const retryPath = `${pathname}?retry=1`;
+    // A different query on `pathname` now selects the same completed App page
+    // artifact. Use a distinct ISR pathname to exercise a genuinely cold fill.
+    const retryPath = "/cached/intro-retry";
     const storedHtml = await request(retryPath);
     assert.equal(storedHtml.headers.get("x-vinext-cache"), "MISS");
     await storedHtml.arrayBuffer();
@@ -369,7 +514,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(retriedWarmup.headers.get("x-vinext-cache"), "MISS");
     await retriedWarmup.arrayBuffer();
 
-    const repairedRsc = await request(`${retryPath}&_rsc`, {
+    const repairedRsc = await request(`${retryPath}?_rsc`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     assert.equal(repairedRsc.headers.get("x-vinext-cache"), "HIT");

@@ -81,6 +81,54 @@ describe("Cloudflare Response Store Worker", () => {
     }
   });
 
+  it("uses one pathname key for default App pages but keeps explicit public query variants", async () => {
+    const keys: string[] = [];
+    const store = {
+      fetch: vi.fn(async (request: Request) => {
+        keys.push(request.url);
+        return new Response("cached", { headers: { "Cache-Control": "public, max-age=60" } });
+      }),
+      getTagExpiration: vi.fn(async () => 0),
+      purge: vi.fn(),
+      put: vi.fn(),
+      refresh: vi.fn(),
+    };
+    const handler = createVinextResponseStoreHandler(store);
+    const context = { passThroughOnException: vi.fn(), waitUntil: vi.fn() };
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(
+        request,
+        {
+          kind: "app-page",
+          resolvedUrl: new URL(request.url).pathname + new URL(request.url).search,
+          cacheability: { policyHeaders: null },
+        },
+        { cache: "shared" },
+      ),
+    );
+
+    for (const url of ["https://example.com/page?q=first", "https://example.com/page?q=second"]) {
+      expect((await handler.fetch(new Request(url), {} as never, context)).status).toBe(200);
+    }
+    expect(keys[0]).toBe(keys[1]);
+
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(
+        request,
+        {
+          kind: "app-page",
+          resolvedUrl: new URL(request.url).pathname + new URL(request.url).search,
+          cacheability: { policyHeaders: [["Cache-Control", "public, s-maxage=30"]] },
+        },
+        { cache: "shared" },
+      ),
+    );
+    for (const url of ["https://example.com/page?q=first", "https://example.com/page?q=second"]) {
+      await handler.fetch(new Request(url), {} as never, context);
+    }
+    expect(keys[2]).not.toBe(keys[3]);
+  });
+
   it("sanitizes response-stage props once on cache hits", async () => {
     const toJSON = vi.fn(() => ({ kind: "app-page" }));
     stages.request.mockImplementation((request, _env, _context, dispatchResponseStage) =>

@@ -126,6 +126,10 @@ const appRequestStageDispatchPath = resolveEntryPath(
   "../server/app-request-stage-dispatch.js",
   import.meta.url,
 );
+const cacheabilityManifestPath = resolveEntryPath(
+  "../server/cacheability-manifest.js",
+  import.meta.url,
+);
 const appRouteModuleLoaderPath = resolveEntryPath(
   "../server/app-route-module-loader.js",
   import.meta.url,
@@ -239,8 +243,8 @@ type AppRouterConfig = {
 
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   const sourceCache = new Map<string, string | null>();
-  const forcesDynamic = (filePath: string | null | undefined): boolean => {
-    if (!filePath) return false;
+  const dynamicConfig = (filePath: string | null | undefined): string | null => {
+    if (!filePath) return null;
     let source = sourceCache.get(filePath);
     if (source === undefined) {
       try {
@@ -250,86 +254,99 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       }
       sourceCache.set(filePath, source);
     }
-    return source !== null && extractExportConstString(source, "dynamic") === "force-dynamic";
+    return source === null ? null : (extractExportConstString(source, "dynamic") ?? null);
   };
 
-  return routes.map((route) => ({
-    canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
-    forceDynamic: route.routePath
-      ? forcesDynamic(route.routePath)
-      : [
-          ...route.layouts,
-          route.pagePath,
-          ...route.parallelSlots.flatMap((slot) => [
-            slot.layoutPath,
-            ...(slot.configLayoutPaths ?? []),
-            slot.pagePath ?? slot.defaultPath,
-            ...slot.interceptingRoutes.flatMap((intercept) => [
+  return routes.map((route) => {
+    const configs = (
+      route.routePath
+        ? [route.routePath]
+        : [
+            ...route.layouts,
+            route.pagePath,
+            ...route.parallelSlots.flatMap((slot) => [
+              slot.layoutPath,
+              ...(slot.configLayoutPaths ?? []),
+              slot.pagePath ?? slot.defaultPath,
+              ...slot.interceptingRoutes.flatMap((intercept) => [
+                ...intercept.layoutPaths,
+                intercept.pagePath,
+              ]),
+            ]),
+            ...route.siblingIntercepts.flatMap((intercept) => [
               ...intercept.layoutPaths,
               intercept.pagePath,
             ]),
-          ]),
-          ...route.siblingIntercepts.flatMap((intercept) => [
-            ...intercept.layoutPaths,
-            intercept.pagePath,
-          ]),
-        ].some(forcesDynamic),
-    ids: route.ids ?? null,
-    pattern: route.pattern,
-    patternParts: route.patternParts,
-    isDynamic: route.isDynamic,
-    params: route.params,
-    rootParamNames: route.rootParamNames ?? [],
-    page: route.pagePath ? true : null,
-    routeHandler: route.routePath ? true : null,
-    routeSegments: route.routeSegments,
-    layouts: [],
-    layoutTreePositions: [],
-    slots: Object.fromEntries(
-      route.parallelSlots.map((slot) => [
-        slot.key,
-        {
-          id: slot.id ?? null,
-          name: slot.name,
-          intercepts: slot.interceptingRoutes.map((intercept) => ({
-            id: intercept.id ?? null,
-            targetPattern: intercept.targetPattern,
-            sourceMatchPattern: intercept.sourceMatchPattern,
-            sourcePageSegments: intercept.sourcePageSegments,
-            interceptLayouts: [],
-            interceptLayoutSegments: intercept.layoutSegments ?? [],
-            interceptBranchSegments: intercept.branchSegments ?? [],
-            interceptLoadings: [],
-            interceptLoadingTreePositions: intercept.loadingTreePositions ?? [],
-            interceptNotFoundBranchSegments:
-              intercept.notFoundBranchSegments ?? intercept.branchSegments ?? [],
-            page: null,
-            notFound: null,
-            notFoundTreePosition: intercept.notFoundTreePosition ?? null,
-            params: intercept.params,
-          })),
-        },
-      ]),
-    ),
-    siblingIntercepts: route.siblingIntercepts.map((intercept) => ({
-      id: intercept.id ?? null,
-      targetPattern: intercept.targetPattern,
-      sourceMatchPattern: intercept.sourceMatchPattern,
-      sourcePageSegments: intercept.sourcePageSegments,
-      slotId: intercept.slotId ?? null,
-      interceptLayouts: [],
-      interceptLayoutSegments: intercept.layoutSegments ?? [],
-      interceptBranchSegments: intercept.branchSegments ?? [],
-      interceptLoadings: [],
-      interceptLoadingTreePositions: intercept.loadingTreePositions ?? [],
-      interceptNotFoundBranchSegments:
-        intercept.notFoundBranchSegments ?? intercept.branchSegments ?? [],
-      page: null,
-      notFound: null,
-      notFoundTreePosition: intercept.notFoundTreePosition ?? null,
-      params: intercept.params,
-    })),
-  }));
+          ]
+    ).map(dynamicConfig);
+    return {
+      canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
+      forceDynamic: configs.includes("force-dynamic"),
+      // Only a literal static/error segment contract is a pre-render guarantee
+      // for paths that were not prerendered. An ordinary successful probe is not.
+      queryIndependentConfig:
+        !route.routePath &&
+        configs.some((config) => config === "force-static" || config === "error") &&
+        configs.every(
+          (config) => config === null || config === "force-static" || config === "error",
+        ),
+      ids: route.ids ?? null,
+      pattern: route.pattern,
+      patternParts: route.patternParts,
+      isDynamic: route.isDynamic,
+      params: route.params,
+      rootParamNames: route.rootParamNames ?? [],
+      page: route.pagePath ? true : null,
+      routeHandler: route.routePath ? true : null,
+      routeSegments: route.routeSegments,
+      layouts: [],
+      layoutTreePositions: [],
+      slots: Object.fromEntries(
+        route.parallelSlots.map((slot) => [
+          slot.key,
+          {
+            id: slot.id ?? null,
+            name: slot.name,
+            intercepts: slot.interceptingRoutes.map((intercept) => ({
+              id: intercept.id ?? null,
+              targetPattern: intercept.targetPattern,
+              sourceMatchPattern: intercept.sourceMatchPattern,
+              sourcePageSegments: intercept.sourcePageSegments,
+              interceptLayouts: [],
+              interceptLayoutSegments: intercept.layoutSegments ?? [],
+              interceptBranchSegments: intercept.branchSegments ?? [],
+              interceptLoadings: [],
+              interceptLoadingTreePositions: intercept.loadingTreePositions ?? [],
+              interceptNotFoundBranchSegments:
+                intercept.notFoundBranchSegments ?? intercept.branchSegments ?? [],
+              page: null,
+              notFound: null,
+              notFoundTreePosition: intercept.notFoundTreePosition ?? null,
+              params: intercept.params,
+            })),
+          },
+        ]),
+      ),
+      siblingIntercepts: route.siblingIntercepts.map((intercept) => ({
+        id: intercept.id ?? null,
+        targetPattern: intercept.targetPattern,
+        sourceMatchPattern: intercept.sourceMatchPattern,
+        sourcePageSegments: intercept.sourcePageSegments,
+        slotId: intercept.slotId ?? null,
+        interceptLayouts: [],
+        interceptLayoutSegments: intercept.layoutSegments ?? [],
+        interceptBranchSegments: intercept.branchSegments ?? [],
+        interceptLoadings: [],
+        interceptLoadingTreePositions: intercept.loadingTreePositions ?? [],
+        interceptNotFoundBranchSegments:
+          intercept.notFoundBranchSegments ?? intercept.branchSegments ?? [],
+        page: null,
+        notFound: null,
+        notFoundTreePosition: intercept.notFoundTreePosition ?? null,
+        params: intercept.params,
+      })),
+    };
+  });
 }
 
 /** Generate the module-free App request stage used by multi-stage Worker outputs. */
@@ -363,6 +380,8 @@ import ${JSON.stringify(serverGlobalsPath)};
 import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler";
 import { createAppRscRouteMatcher as __createAppRscRouteMatcher } from ${JSON.stringify(appRscRouteMatchingPath)};
 import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stringify(appRequestStageDispatchPath)};
+import __rawCacheabilityManifest from "virtual:vinext-cacheability-manifest";
+import { parseCacheabilityManifest as __parseCacheabilityManifest, findCacheabilityManifestRoute as __findCacheabilityManifestRoute, isQueryIndependentManifestArtifact as __isQueryIndependentManifestArtifact } from ${JSON.stringify(cacheabilityManifestPath)};
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 import { clearAppRequestStageContext as __clearRequestContext, setAppRequestStageNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestStageContextPath)};
 import { matchRoutePattern as __matchRoutePattern } from ${JSON.stringify(routePatternPath)};
@@ -428,6 +447,7 @@ export const __imageConfig = ${JSON.stringify({
 const __routes = ${JSON.stringify(requestRoutes)};
 const __routeMatcher = __createAppRscRouteMatcher(__routes);
 const __metadataRouteMatchers = ${JSON.stringify(metadataRouteMatchers)};
+const __cacheabilityManifest = __parseCacheabilityManifest(__rawCacheabilityManifest, process.env.__VINEXT_BUILD_ID);
 
 function matchRoute(pathname) { return __routeMatcher.matchRoute(pathname); }
 function matchRequestRoute(pathname) { return __routeMatcher.matchRequestRoute(pathname); }
@@ -479,6 +499,11 @@ const __requestHandler = createAppRscRequestHandler({
   isMetadataRoute: __isMetadataPath,
   isDev: process.env.NODE_ENV !== "production",
   hasInterceptionId,
+  queryIndependentAppPage(routePattern, routePathname, representation) {
+    if (!__cacheabilityManifest) return false;
+    const route = __findCacheabilityManifestRoute(__cacheabilityManifest, "app-page", routePattern);
+    return route !== null && __isQueryIndependentManifestArtifact(route, routePathname, representation);
+  },
   matchRoute,
   matchRequestRoute,
   matchInterceptRoute(pathname, sourcePathname, interceptionId) {

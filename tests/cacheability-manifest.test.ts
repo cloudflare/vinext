@@ -5,6 +5,7 @@ import {
   cacheabilityRequestIdentity,
   cacheabilityRoutePathname,
   findCacheabilityManifestRoute,
+  isQueryIndependentManifestArtifact,
   parseCacheabilityManifest,
   type CacheabilityManifestRoute,
 } from "../packages/vinext/src/server/cacheability-manifest.js";
@@ -17,6 +18,20 @@ const route: CacheabilityManifestRoute = {
 const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
 
 describe("cacheability manifest", () => {
+  it("certifies only the observed static representation and pathname, not a route-wide candidate", () => {
+    const candidate: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/posts/:slug",
+      state: "runtime-check",
+      allowUnknown: true,
+      unknownState: "static-candidate",
+      staticPaths: { html: ["/posts/one"] },
+    };
+    expect(isQueryIndependentManifestArtifact(candidate, "/posts/one", "html")).toBe(true);
+    expect(isQueryIndependentManifestArtifact(candidate, "/posts/two", "html")).toBe(false);
+    expect(isQueryIndependentManifestArtifact(candidate, "/posts/one", "rsc-full")).toBe(false);
+    expect(isQueryIndependentManifestArtifact(route, "/products/one", "html")).toBe(false);
+  });
   it("accepts only the expected build and route-pattern key", () => {
     const raw = JSON.stringify({ buildId: "build-a", routes: { [key]: route }, version: 1 });
     const manifest = parseCacheabilityManifest(raw, "build-a");
