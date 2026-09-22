@@ -499,4 +499,19 @@ describe("responseStoreAdapter builder", () => {
       "Workers Response Store shards must be an integer greater than 1",
     );
   });
+
+  it.each(["service-binding", "self-contained"] as const)(
+    "passes a metadata location hint into %s mode",
+    (mode) => {
+      const descriptor = responseStoreAdapter({ locationHint: "weur", mode });
+      expect(descriptor.cdn.options).toEqual({ locationHint: "weur" });
+      expect(descriptor.data.options).toEqual({ locationHint: "weur" });
+    },
+  );
+
+  it("rejects unsupported metadata location hints", () => {
+    expect(() => responseStoreAdapter({ locationHint: "moon" as never })).toThrow(
+      "Workers Response Store locationHint is not supported by Cloudflare",
+    );
+  });
 });

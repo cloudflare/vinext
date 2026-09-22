@@ -107,6 +107,18 @@ afterEach(async () => {
 });
 
 describe("Cloudflare Workers Response Store adapter", () => {
+  test("builds both deployment modes with their configured metadata location hints", async () => {
+    const serviceBinding = (await modules(appOutput, "index.js"))
+      .map(({ contents }) => contents)
+      .join("\n");
+    const selfContained = (await modules(selfContainedAppOutput, "index.js"))
+      .map(({ contents }) => contents)
+      .join("\n");
+
+    assert.match(serviceBinding, /options:\{locationHint:[`"']wnam[`"'],shards:4\}/);
+    assert.match(selfContained, /options:\{locationHint:[`"']weur[`"'],shards:4\}/);
+  });
+
   test("does not invoke Response Store for a force-dynamic route", async () => {
     let responseStoreRequests = 0;
     const isolated = new Miniflare({

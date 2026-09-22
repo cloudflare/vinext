@@ -131,16 +131,45 @@ export type WorkersResponseStoreEnv = {
 
 export type WorkersResponseStoreProps = {
   versionId?: string;
-  locationHint?: DurableObjectLocationHint;
+  locationHint?: ResponseStoreLocationHint;
   revalidator?: RevalidationService;
   shards?: number;
 };
+
+export type ResponseStoreLocationHint = DurableObjectLocationHint;
+
+const RESPONSE_STORE_LOCATION_HINTS = {
+  afr: true,
+  apac: true,
+  "apac-ne": true,
+  "apac-se": true,
+  eeur: true,
+  enam: true,
+  me: true,
+  oc: true,
+  sam: true,
+  weur: true,
+  wnam: true,
+} satisfies Record<ResponseStoreLocationHint, true>;
+
+export function validateResponseStoreLocationHint(
+  locationHint: unknown,
+): ResponseStoreLocationHint | undefined {
+  if (
+    locationHint !== undefined &&
+    !Object.hasOwn(RESPONSE_STORE_LOCATION_HINTS, locationHint as PropertyKey)
+  ) {
+    throw new TypeError("Workers Response Store locationHint is not supported by Cloudflare");
+  }
+  return locationHint as ResponseStoreLocationHint | undefined;
+}
 
 export type ResponseStoreServiceProps = Pick<WorkersResponseStoreProps, "locationHint">;
 
 export type ResponseStoreServiceInvocation = {
   versionId: string;
   revalidator: RevalidationService;
+  locationHint?: ResponseStoreLocationHint;
   shards?: number;
 };
 

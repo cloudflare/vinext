@@ -51,7 +51,7 @@
     "build": "vp pack",
     "prepack": "vp run build",
     "dev": "vp pack --watch",
-    "test": "vp run vinext#build && vp run @cloudflare/workers-response-store#build && vp run @vinext/cloudflare#build && VINEXT_RESPONSE_STORE_MODE=self-contained pnpm --filter response-store-demo run build && pnpm --filter response-store-demo run build && vitest run"
+    "test": "vp run vinext#build && vp run @cloudflare/workers-response-store#build && vp run @vinext/cloudflare#build && VINEXT_RESPONSE_STORE_MODE=self-contained VINEXT_RESPONSE_STORE_LOCATION_HINT=weur pnpm --filter response-store-demo run build && VINEXT_RESPONSE_STORE_LOCATION_HINT=wnam pnpm --filter response-store-demo run build && vitest run"
   },
   "dependencies": {
     "@cloudflare/workers-response-store": "workspace:*"

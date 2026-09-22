@@ -245,6 +245,19 @@ Each cache key and all its revisions, claims, and pending objects route to one d
 
 Changing the shard count selects a new metadata and R2 layout. Treat it as a cache-cold deployment change, not an in-place scaling control.
 
+### Metadata location
+
+Both deployment modes accept a Durable Object location hint:
+
+```ts
+const responseStore = createWorkersResponseStore<Env>({
+  locationHint: "weur",
+  regenerate,
+});
+```
+
+Use the same `locationHint` option with `createWorkersResponseStoreClient()` in service-binding mode. The hint is best-effort and only affects the first creation of each metadata Durable Object. Existing objects never move when this option changes, so roll out a changed hint as a cache-cold deployment and choose it alongside the R2 bucket's location.
+
 ## Storage and operational behavior
 
 ```text

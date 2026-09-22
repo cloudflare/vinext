@@ -100,6 +100,18 @@ vinext({ cache: responseStoreAdapter({ shards: 16 }) });
 Keys remain pinned to one shard while tag/path mutations fan out across every
 shard. Omit `shards` to retain the original single metadata Durable Object.
 
+To place newly created metadata Durable Objects near a stable traffic and R2
+region, pass a Cloudflare location hint:
+
+```ts
+vinext({ cache: responseStoreAdapter({ locationHint: "weur" }) });
+```
+
+The hint works in both deployment modes, is best-effort, and only affects each
+Durable Object's first creation. Changing it does not relocate existing
+objects; treat the change as a cache-cold deployment and align it with the R2
+bucket's location.
+
 To deploy storage and cache entrypoints with the application instead, select
 self-contained mode:
 

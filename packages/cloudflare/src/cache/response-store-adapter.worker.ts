@@ -1,5 +1,6 @@
 import type {
   RevalidationInput,
+  ResponseStoreLocationHint,
   WorkersResponseStore,
   WorkersResponseStoreClientEnv,
   WorkersResponseStoreEnv,
@@ -184,11 +185,18 @@ async function invokeResponseStage(
 export function createVinextResponseStoreOptions<Env extends VinextResponseStoreEnv>(
   configuration?: Record<string, unknown>,
 ): WorkersResponseStoreOptions<Env> {
+  const locationHint = configuration?.locationHint;
+  if (locationHint !== undefined && typeof locationHint !== "string") {
+    throw new TypeError("Workers Response Store locationHint must be a string");
+  }
   const shards = configuration?.shards;
   if (shards !== undefined && typeof shards !== "number") {
     throw new TypeError("Workers Response Store shards must be a number");
   }
   return {
+    ...(locationHint === undefined
+      ? {}
+      : { locationHint: locationHint as ResponseStoreLocationHint }),
     ...(shards === undefined ? {} : { shards }),
     async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
       if (input.id === ROUTE_REVALIDATOR_ID) {
