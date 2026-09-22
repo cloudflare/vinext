@@ -288,43 +288,62 @@ export default { plugins: [
     expect(lock.port).toBeGreaterThan(0);
   }, 30_000);
 
-  it("does not let a nested server reloading the same config claim the CLI lifecycle", async () => {
-    const root = createProject();
-    fs.writeFileSync(
-      path.join(root, "vite.config.ts"),
-      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+  it.each([
+    ["explicit", false],
+    ["implicit", false],
+    ["no-arg", false],
+    ["implicit", true],
+    ["no-arg", true],
+  ] as const)(
+    "does not let a nested server reloading the same config claim the CLI lifecycle (%s, unused=%s)",
+    async (configSelection, unusedReservation) => {
+      const root = createProject();
+      const nestedArgs =
+        configSelection === "explicit"
+          ? `{ root: ${JSON.stringify(root)}, configFile: "vite.config.ts", logLevel: "silent" }`
+          : configSelection === "implicit"
+            ? '{ logLevel: "silent" }'
+            : "";
+      fs.writeFileSync(
+        path.join(root, "vite.config.ts"),
+        `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 import { createServer } from "vite";
-const unused = vinext();
+${unusedReservation ? "const unused = vinext();" : ""}
 export default { plugins: [
-  { name: "nested-before-vinext", enforce: "pre", async config() {
+  { name: "nested-before-vinext", enforce: "pre", config: { order: "pre", async handler(config) {
     if (process.env.VINEXT_NESTED_CONFIG_TEST === "1") return;
+    if (config.__vinextDevCliLifecycle) throw new Error("Outer config claimed before the nested config hook");
     process.env.VINEXT_NESTED_CONFIG_TEST = "1";
     try {
-      const nested = await createServer({ root: ${JSON.stringify(root)}, configFile: "vite.config.ts", logLevel: "silent" });
+      const nested = await createServer(${nestedArgs});
       try {
+        if (!nested.config.configFile?.endsWith("vite.config.ts")) throw new Error("Nested server did not reload the config");
+        if (!nested.config.plugins.some((plugin) => plugin.name === "vinext:config")) throw new Error("Nested server did not load vinext");
         if (nested.config.server.port !== 5173) throw new Error("Nested server claimed the CLI lifecycle");
       } finally { await nested.close(); }
     } finally { delete process.env.VINEXT_NESTED_CONFIG_TEST; }
-  } },
+  } } },
   vinext(),
 ] };
 `,
-    );
-    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
-      cwd: root,
-      stdio: "pipe",
-    });
-    let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
-    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+      );
+      child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+        cwd: root,
+        stdio: "pipe",
+      });
+      let output = "";
+      child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+      child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
 
-    const lock = await waitFor(() => {
-      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
-    expect(lock.port).toBeGreaterThan(0);
-  }, 30_000);
+      const lock = await waitFor(() => {
+        if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+        const current = readLockfile(getLockfilePath(root));
+        return current && current.port > 0 ? current : undefined;
+      });
+      expect(lock.port).toBeGreaterThan(0);
+    },
+    30_000,
+  );
 
   it("keeps CLI ownership when a nested server reuses the same plugin array", async () => {
     const root = createProject();
