@@ -81,6 +81,35 @@ describe("thin vinext command proxies", () => {
     expect(result.stdout).toContain("--outDir");
   });
 
+  it("keeps the config preflight for negated boolean options", () => {
+    const root = createRoot();
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--no-watch"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("No Vite config was found for this project");
+  });
+
+  it("resolves project-local Vite when help precedes the root", () => {
+    const root = createRoot();
+    writeProject(path.join(root, "project"));
+    fs.unlinkSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "project/node_modules"),
+      "junction",
+    );
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--help", "project"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("Usage:");
+  });
+
   it("supports a positional project root", () => {
     const root = createRoot();
     writeProject(path.join(root, "project"));
