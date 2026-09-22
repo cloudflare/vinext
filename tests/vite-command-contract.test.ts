@@ -245,27 +245,39 @@ describe("configured vinext build contract", () => {
     expectConfiguredBuild(root);
   }, 120_000);
 
-  it("provides the same lifecycle with Vite options after a positional root", () => {
-    // Next.js preserves an explicit NODE_ENV while loading config, but still
-    // compiles production branches during build.
-    // Ported from Next.js: test/e2e/non-standard-node-env-warning/non-standard-node-env-warning.test.ts
-    // https://github.com/vercel/next.js/blob/canary/test/e2e/non-standard-node-env-warning/non-standard-node-env-warning.test.ts
-    const root = createHybridProject("vite.prod.ts");
-    write(root, "vite.config.ts", 'throw new Error("loaded the wrong Vite config");\n');
+  it.each([
+    ["default mode with NODE_ENV=test", [], "test", "test"],
+    ["test mode with NODE_ENV=test", ["--mode", "test"], "test", "test"],
+    ["default mode with NODE_ENV=development", [], "development", undefined],
+  ])(
+    "provides the same lifecycle for %s",
+    (_, modeArgs, nodeEnv, expectedConfigNodeEnv) => {
+      // Next.js preserves an explicit NODE_ENV while loading config, but still
+      // compiles production branches during build.
+      // Ported from Next.js: test/e2e/non-standard-node-env-warning/non-standard-node-env-warning.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/non-standard-node-env-warning/non-standard-node-env-warning.test.ts
+      const root = createHybridProject("vite.prod.ts");
+      write(root, "vite.config.ts", 'throw new Error("loaded the wrong Vite config");\n');
 
-    execFileSync(
-      process.execPath,
-      [VITE_CLI_PATH, "build", root, "--mode", "test", "--config", "vite.prod.ts"],
-      {
-        cwd: root,
-        env: { ...process.env, EXPECT_CONFIG_NODE_ENV: "test", NODE_ENV: "test" },
-        stdio: "pipe",
-        timeout: 120_000,
-      },
-    );
+      execFileSync(
+        process.execPath,
+        [VITE_CLI_PATH, "build", root, ...modeArgs, "--config", "vite.prod.ts"],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            ...(expectedConfigNodeEnv ? { EXPECT_CONFIG_NODE_ENV: expectedConfigNodeEnv } : {}),
+            NODE_ENV: nodeEnv,
+          },
+          stdio: "pipe",
+          timeout: 120_000,
+        },
+      );
 
-    expectConfiguredBuild(root);
-  }, 120_000);
+      expectConfiguredBuild(root);
+    },
+    120_000,
+  );
 
   it("builds only the known client and server environments for plain Pages projects", () => {
     const root = createPagesProject();
