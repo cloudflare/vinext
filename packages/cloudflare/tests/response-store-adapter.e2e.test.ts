@@ -221,6 +221,15 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.equal(htmlValue(dependentBody, "query-dependent-value"), "first");
       assert.equal(htmlValue(await otherDependent.text(), "query-dependent-value"), "second");
 
+      const clientEmpty = await inline.dispatchFetch("https://app.test/query-client-dependent");
+      const clientEmptyBody = await clientEmpty.text();
+      const clientQuery = await inline.dispatchFetch(
+        "https://app.test/query-client-dependent?q=second",
+      );
+      assert.notEqual(clientQuery.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(htmlValue(clientEmptyBody, "query-client-dependent-value"), "(empty)");
+      assert.equal(htmlValue(await clientQuery.text(), "query-client-dependent-value"), "second");
+
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const stale = await fetch();
       assert.equal(await stale.text(), firstBody);
