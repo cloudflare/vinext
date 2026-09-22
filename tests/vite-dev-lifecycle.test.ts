@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createServer, type ViteDevServer } from "vite";
@@ -131,6 +132,37 @@ describe("Vite dev lifecycle", () => {
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
+  it("does not leak the lock when a replacement post-configure callback fails", async () => {
+    const root = createProject();
+    useViteCliArgv();
+    let configureCount = 0;
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [
+        vinext(),
+        {
+          name: "fail-replacement-server-post-configure",
+          configureServer() {
+            const currentServer = ++configureCount;
+            return () => {
+              if (currentServer === 2) throw new Error("replacement post-configuration failed");
+            };
+          },
+        },
+      ],
+    });
+    await server.listen();
+
+    await server.restart();
+    expect(readLockfile(getLockfilePath(root))).toMatchObject({ pid: process.pid });
+
+    await server.close();
+    server = undefined;
+    expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+  });
+
   it("keeps middleware servers lock-free", async () => {
     const root = createProject();
     useViteCliArgv();
@@ -142,6 +174,41 @@ describe("Vite dev lifecycle", () => {
       server: { middlewareMode: true },
     });
 
+    expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+  });
+
+  it("keeps object-form middleware servers lock-free", async () => {
+    const root = createProject();
+    useViteCliArgv();
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext()],
+      server: { middlewareMode: { server: createHttpServer() } },
+    });
+
+    expect(server.config.server.port).toBe(5173);
+    expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+  });
+
+  it("keeps middleware servers configured by later plugins lock-free", async () => {
+    const root = createProject();
+    useViteCliArgv();
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [
+        vinext(),
+        {
+          name: "middleware-mode",
+          config: () => ({ server: { middlewareMode: true } }),
+        },
+      ],
+    });
+
+    expect(server.config.server.port).toBe(5173);
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
