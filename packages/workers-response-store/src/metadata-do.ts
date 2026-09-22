@@ -142,10 +142,10 @@ type EntryRow = Record<string, SqlStorageValue> & {
 
 type PurgeEntryRow = Pick<EntryRow, "key_hash" | "cache_key" | "latest_revision" | "object_key">;
 
-type RefreshCandidateRow = Pick<
-  EntryRow,
-  "key_hash" | "cache_key" | "latest_revision" | "revalidator_id"
-> & { active_revision: number };
+type RefreshCandidateRow = Pick<EntryRow, "key_hash" | "cache_key" | "latest_revision"> & {
+  active_revision: number;
+  has_revalidator: number;
+};
 
 const MAX_SQL_PARAMETERS = 100;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
@@ -496,7 +496,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         `SELECT ${
           projection === "purge"
             ? "key_hash, cache_key, latest_revision, object_key"
-            : "key_hash, cache_key, active_revision, latest_revision, revalidator_id"
+            : "key_hash, cache_key, active_revision, latest_revision, revalidator_id IS NOT NULL AS has_revalidator"
         } FROM entries ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}`,
         ...parameters,
       )
@@ -1095,7 +1095,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       cacheKey: row.cache_key,
       activeRevision: row.active_revision,
       latestRevision: row.latest_revision,
-      hasRevalidator: row.revalidator_id !== null,
+      hasRevalidator: row.has_revalidator === 1,
     }));
   }
 
