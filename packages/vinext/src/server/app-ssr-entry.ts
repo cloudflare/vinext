@@ -56,6 +56,8 @@ import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import { createClientReferencePreloader } from "./app-client-reference-preloader.js";
 import { RSC_FORM_STATE_GLOBAL } from "./app-browser-hydration.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
+import { isResponseAbortedError } from "./response-aborted.js";
+import { pumpThrough } from "./stream-pump.js";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
@@ -625,6 +627,13 @@ export async function handleSsr(
             }
             if (isAppRenderAbortError(error)) return undefined;
 
+            // Consumer cancellation tagged at the response boundary (client
+            // disconnect): not a real render failure, keep it out of the
+            // error meta stream.
+            if (isResponseAbortedError(error)) {
+              return undefined;
+            }
+
             errorMetaRenderer.capture(error);
 
             const instrumentationDigest = options?.onSsrError?.(error);
@@ -754,7 +763,8 @@ export async function handleSsr(
         }
 
         const finalStream = deferUntilStreamConsumed(
-          htmlStream.pipeThrough(
+          pumpThrough(
+            htmlStream,
             createTickBufferedTransform(
               rscEmbed,
               getInsertedHTML,
@@ -765,7 +775,10 @@ export async function handleSsr(
               options?.scriptNonce,
             ),
           ),
-          cleanup,
+          () => {
+            rscEmbed.abort?.();
+            cleanup();
+          },
         );
 
         return {

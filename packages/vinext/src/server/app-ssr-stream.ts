@@ -15,6 +15,12 @@ import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/navigation-runt
 type RscEmbedTransform = {
   flush(): string;
   finalize(): Promise<string>;
+  /**
+   * Stop reading the embed stream so pending finalize()/getRawBuffer()
+   * callers settle. Used when the response consumer goes away while the
+   * auxiliary Flight stream is still suspended; a no-op after natural end.
+   */
+  abort?(reason?: unknown): void;
   /** Resolves when all raw bytes from the embed stream have been read. */
   getRawBuffer(): Promise<ArrayBuffer>;
 };
@@ -164,6 +170,10 @@ export function createRscEmbedTransform(
   const pumpPromise = pumpReader();
 
   return {
+    abort(reason?: unknown): void {
+      void reader.cancel(reason).catch(() => {});
+    },
+
     flush(): string {
       if (pendingChunks.length === 0) return "";
 
@@ -668,14 +678,20 @@ export function createTickBufferedTransform(
       }
 
       const finalScripts = await rscEmbed.finalize();
-      if (finalScripts) {
-        controller.enqueue(encoder.encode(finalScripts));
-      }
+      try {
+        if (finalScripts) {
+          controller.enqueue(encoder.encode(finalScripts));
+        }
 
-      // Emit `</body></html>` last so the document always terminates with a
-      // well-formed close, after any trailing flight chunks / preinit scripts.
-      // Mirrors Next.js's `createMoveSuffixStream` behaviour (#1532).
-      controller.enqueue(encoder.encode(DOCUMENT_CLOSE_SUFFIX));
+        // Emit `</body></html>` last so the document always terminates with
+        // a well-formed close, after any trailing flight chunks / preinit
+        // scripts. Mirrors Next.js's `createMoveSuffixStream` behaviour
+        // (#1532).
+        controller.enqueue(encoder.encode(DOCUMENT_CLOSE_SUFFIX));
+      } catch {
+        // The readable side was cancelled while finalize() was pending
+        // (consumer went away mid-flush); nobody is reading anymore.
+      }
     },
   });
 }

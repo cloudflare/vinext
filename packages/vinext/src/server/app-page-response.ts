@@ -14,6 +14,7 @@ import {
   VINEXT_TIMING_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
+import { tagConsumerCancellation } from "./response-aborted.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
@@ -296,6 +297,7 @@ export function buildAppPageRscResponse(
   body: ReadableStream,
   options: BuildAppPageRscResponseOptions,
 ): Response {
+  body = tagConsumerCancellation(body);
   const headers = new Headers({
     "Content-Type": VINEXT_RSC_CONTENT_TYPE,
     Vary: VINEXT_RSC_VARY_HEADER,
@@ -345,6 +347,7 @@ export function buildAppPageHtmlResponse(
   body: ReadableStream,
   options: BuildAppPageHtmlResponseOptions,
 ): Response {
+  body = tagConsumerCancellation(body);
   const headers = new Headers({
     "Content-Type": "text/html; charset=utf-8",
     Vary: VINEXT_RSC_VARY_HEADER,
