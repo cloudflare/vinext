@@ -197,5 +197,3 @@ export type {
   WorkersResponseStoreEnv,
   WorkersResponseStore,
 } from "./binding";
-
-export { validateResponseStoreLocationHint };

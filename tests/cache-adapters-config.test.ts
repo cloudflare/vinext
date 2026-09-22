@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, expectTypeOf } from "vite-plus/test";
 import {
   findVinextCacheConfigInPlugins,
   generateCdnCacheAdapterModule,
@@ -38,7 +38,10 @@ import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js"
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
-import { responseStoreAdapter } from "../packages/cloudflare/src/cache/response-store-adapter.js";
+import {
+  responseStoreAdapter,
+  type ResponseStoreAdapterOptions,
+} from "../packages/cloudflare/src/cache/response-store-adapter.js";
 import createKvDataCacheAdapter, {
   KVCacheHandler,
 } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
@@ -506,6 +509,9 @@ describe("responseStoreAdapter builder", () => {
       const descriptor = responseStoreAdapter({ locationHint: "weur", mode });
       expect(descriptor.cdn.options).toEqual({ locationHint: "weur" });
       expect(descriptor.data.options).toEqual({ locationHint: "weur" });
+      expectTypeOf(descriptor.cdn.options?.locationHint).toEqualTypeOf<
+        ResponseStoreAdapterOptions["locationHint"]
+      >();
     },
   );
 

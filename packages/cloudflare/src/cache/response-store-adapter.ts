@@ -49,7 +49,7 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
   ) {
     throw new TypeError("Workers Response Store shards must be an integer greater than 1");
   }
-  const configuredOptions = {
+  const configuredOptions: Pick<ResponseStoreAdapterOptions, "locationHint" | "shards"> = {
     ...(locationHint === undefined ? {} : { locationHint }),
     ...(options.shards === undefined ? {} : { shards: options.shards }),
   };
