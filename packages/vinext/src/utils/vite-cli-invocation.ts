@@ -10,17 +10,6 @@ export type ViteCliInvocation = {
 
 let buildInvocationClaimed = false;
 
-function findVpCommand(args: string[]): string | undefined {
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "-C") {
-      i++;
-      continue;
-    }
-    if (!arg.startsWith("-")) return arg;
-  }
-}
-
 const REQUIRED_VALUE_OPTIONS = new Set([
   "--assetsDir",
   "--assetsInlineLimit",
@@ -106,6 +95,7 @@ function commandArguments(argv: string[]): { command: ViteCliCommand; args: stri
     if (arg === "dev" || arg === "serve") {
       return { command: "dev", args: args.slice(0, index).concat(args.slice(index + 1)) };
     }
+    if (arg === "preview" || arg === "optimize") return undefined;
     return isViteEntry ? { command: "dev", args } : undefined;
   }
   return isViteEntry ? { command: "dev", args } : undefined;
@@ -129,8 +119,7 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
       continue;
     }
     if (arg.startsWith("-")) continue;
-    root = arg;
-    break;
+    root ??= arg;
   }
   return {
     command: invocation.command,
@@ -144,20 +133,7 @@ export function isViteCliInvocation(
   command: ViteCliCommand,
   argv: string[] = process.argv,
 ): boolean {
-  const entry = toSlash(argv[1] ?? "");
-  const isViteEntry =
-    entry.endsWith("/vite/bin/vite.js") ||
-    entry.endsWith("/vite/node/cli.js") ||
-    entry.endsWith("/dist/vite/node/cli.js");
-  // ConfigEnv already identifies build, serve, and preview. Once provenance is
-  // known, parsing Vite's CLI arguments again only risks disagreeing with CAC.
-  if (isViteEntry) return true;
-
-  if (path.basename(entry) !== "vp") return false;
-  const args = argv.slice(2);
-  const vpCommand = findVpCommand(args);
-  if (vpCommand === "exec") return args[args.indexOf("exec") + 1] === "vite";
-  return command === "build" ? vpCommand === "build" : vpCommand === "dev" || vpCommand === "serve";
+  return commandArguments(argv)?.command === command;
 }
 
 /** Claim the single application lifecycle owned by a top-level Vite CLI build. */
