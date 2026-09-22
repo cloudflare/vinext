@@ -91,6 +91,30 @@ export default { plugins: [vinext()] };
     expect(lock.port).toBeGreaterThan(0);
   }, 30_000);
 
+  it("preserves an explicit NODE_ENV while evaluating Vite config", async () => {
+    const root = createProject();
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+if (process.env.NODE_ENV !== "staging") {
+  throw new Error("vite.config saw NODE_ENV=" + process.env.NODE_ENV);
+}
+export default { plugins: [vinext()] };
+`,
+    );
+    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      env: { ...process.env, NODE_ENV: "staging" },
+      stdio: "pipe",
+    });
+
+    const lock = await waitFor(() => {
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+  }, 30_000);
+
   it("reports duplicate dev servers through Vite's normal error path", async () => {
     const root = createProject();
     fs.writeFileSync(

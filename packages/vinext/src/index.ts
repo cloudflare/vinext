@@ -376,15 +376,17 @@ const viteCliBuildConfigNodeEnv =
     ? "test"
     : undefined;
 if (earlyViteCliInvocation) {
-  Reflect.set(
-    process.env,
-    "NODE_ENV",
-    earlyViteCliInvocation.command === "build"
-      ? (viteCliBuildConfigNodeEnv ?? "production")
-      : earlyViteCliInvocation.mode === "test"
-        ? "test"
-        : "development",
-  );
+  if (earlyViteCliInvocation.command === "build" || !process.env.NODE_ENV) {
+    Reflect.set(
+      process.env,
+      "NODE_ENV",
+      earlyViteCliInvocation.command === "build"
+        ? (viteCliBuildConfigNodeEnv ?? "production")
+        : earlyViteCliInvocation.mode === "test"
+          ? "test"
+          : "development",
+    );
+  }
   loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
 }
 
