@@ -32,6 +32,7 @@ describe("isViteCliInvocation", () => {
       "build",
       true,
     ],
+    [["node", "/project/node_modules/vite/bin/vite.js", "-dm", "staging", "build"], "build", true],
     [["node", "/project/node_modules/vite/bin/vite.js", "--", "build"], "dev", true],
     [["node", "/project/node_modules/.bin/vp", "build"], "build", true],
     [["node", "/project/node_modules/.bin/vp", "-C", "apps/web", "dev"], "dev", true],
@@ -65,6 +66,46 @@ describe("isViteCliInvocation", () => {
     ).toEqual({
       command: "build",
       mode: "staging",
+      root: expect.stringMatching(/\/app$/),
+    });
+  });
+
+  it("resolves modes from clustered short options", () => {
+    expect(
+      getViteCliInvocation([
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        "-dm",
+        "staging",
+        "build",
+        "app",
+      ]),
+    ).toEqual({
+      command: "build",
+      mode: "staging",
+      root: expect.stringMatching(/\/app$/),
+    });
+    expect(
+      getViteCliInvocation([
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        "build",
+        "app",
+        "-dm=staging",
+      ]),
+    ).toEqual({
+      command: "build",
+      mode: "staging",
+      root: expect.stringMatching(/\/app$/),
+    });
+  });
+
+  it("does not consume roots after boolean-final short option clusters", () => {
+    expect(
+      getViteCliInvocation(["node", "/project/node_modules/vite/bin/vite.js", "-dw", "app"]),
+    ).toEqual({
+      command: "dev",
+      mode: "development",
       root: expect.stringMatching(/\/app$/),
     });
   });
