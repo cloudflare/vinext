@@ -202,6 +202,31 @@ export default defineConfig({
   return root;
 }
 
+function createAppProject(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-app-contract-"));
+  temporaryProjects.push(root);
+  fs.symlinkSync(
+    path.resolve(import.meta.dirname, "../node_modules"),
+    path.join(root, "node_modules"),
+    "junction",
+  );
+  write(root, "package.json", '{"type":"module"}\n');
+  write(
+    root,
+    "vite.config.ts",
+    `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+export default { plugins: [vinext()] };
+`,
+  );
+  write(
+    root,
+    "app/layout.tsx",
+    "export default function Layout({ children }) { return <html><body>{children}</body></html>; }\n",
+  );
+  write(root, "app/page.tsx", "export default function Page() { return <p>app</p>; }\n");
+  return root;
+}
+
 afterEach(() => {
   for (const project of temporaryProjects.splice(0)) {
     fs.rmSync(project, { recursive: true, force: true });
@@ -264,6 +289,20 @@ describe("configured vinext build contract", () => {
     expect(output.indexOf("contract:user-build-app")).toBeLessThan(
       output.indexOf("Build complete."),
     );
+  }, 120_000);
+
+  it("detects the App Router from a positional project root", () => {
+    const root = createAppProject();
+
+    execFileSync(process.execPath, [VITE_CLI_PATH, "build", root], {
+      cwd: path.dirname(root),
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(fs.existsSync(path.join(root, "dist/server/index.js"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/ssr/index.js"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/client"))).toBe(true);
   }, 120_000);
 
   it.each<[string, string[], "test" | "development", "test" | undefined]>([
