@@ -2420,7 +2420,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
-        root = path.resolve(toSlash(config.root ?? process.cwd()));
+        root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
         const devCliLifecycleEnabled =
           env.command === "serve" &&
           env.isPreview !== true &&
