@@ -106,7 +106,7 @@ function optionHasInlineValue(arg: string): boolean {
   return arg.includes("=");
 }
 
-export function viteOptionConsumesNext(arg: string, next: string | undefined): boolean {
+function viteOptionConsumesNext(arg: string, next: string | undefined): boolean {
   if (optionHasInlineValue(arg)) return false;
   const option = valueOptionName(arg);
   if (REQUIRED_VALUE_OPTIONS.has(option)) return true;
