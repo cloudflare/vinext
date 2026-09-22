@@ -3,9 +3,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "preview": "vite build && wrangler dev --config deploy/wrangler.jsonc",
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp build && wrangler dev --config deploy/wrangler.jsonc",
     "verify": "node scripts/verify-output.mjs"
   },
   "dependencies": {

@@ -177,7 +177,7 @@ export default {
     "cloudflare",
   ],
   ignoreBinaries: [
-    // Project-local Vite CLI, invoked directly by first-party scripts and CI.
+    // Consumer-project bin invoked in CI.
     "vite",
     // system/user-project binaries invoked by runtime scripts
     "ps",

@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
+    "dev": "vp dev",
+    "build": "vp build",
     "deploy": "vinext-cloudflare deploy",
     "simulate-traffic": "node scripts/simulate-traffic.mjs"
   },
