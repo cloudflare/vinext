@@ -35,10 +35,16 @@ export function claimViteCliDevInvocation(
   root: string,
   isRestart = false,
   isReserved = false,
+  hasViteConfig = false,
 ): boolean {
   root = normalizeDevLifecycleRoot(root);
   if (!isViteCliInvocation("dev")) return false;
-  if (!isRestart && (!isReserved || devInvocationRoot !== undefined)) return false;
+  // A config may construct an unused vinext() before the installed instance.
+  // Let the installed instance claim the CLI when Vite loaded a config file;
+  // nested programmatic servers that disable config loading cannot steal it.
+  if (!isRestart && ((!isReserved && !hasViteConfig) || devInvocationRoot !== undefined)) {
+    return false;
+  }
   devInvocationRoot = root;
   return true;
 }

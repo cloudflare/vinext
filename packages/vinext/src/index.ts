@@ -2419,6 +2419,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             root,
             (config as InternalUserConfig)[VINEXT_DEV_RESTART_CONFIG] === true,
             reservedDevCliInvocation,
+            (config as InternalUserConfig & { configFile?: string | false }).configFile !== false,
           );
         buildLifecycleInvocation = (config as InternalUserConfig)[VINEXT_BUILD_LIFECYCLE_CONFIG];
         buildLifecycleEnabled =
