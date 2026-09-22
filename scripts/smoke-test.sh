@@ -83,7 +83,7 @@ for check in "${CHECKS[@]}"; do
   fi
 
   # Retry transient transport and server failures while deployments propagate.
-  status=$(curl "${CURL_ARGS[@]}" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null || true)
+  status=$(curl "${CURL_ARGS[@]}" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null) || status=000
   status=${status:-000}
   body=$(cat "$tmpfile" 2>/dev/null || echo "")
 
@@ -118,7 +118,7 @@ for check in "${CONTENT_CHECKS[@]}"; do
     url="https://${worker}.${DOMAIN}${path}"
   fi
 
-  status=$(curl "${CURL_ARGS[@]}" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null || true)
+  status=$(curl "${CURL_ARGS[@]}" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null) || status=000
   status=${status:-000}
   body=$(cat "$tmpfile" 2>/dev/null || echo "")
 
