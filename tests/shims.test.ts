@@ -17096,10 +17096,11 @@ describe("Pages Router concurrent navigation", () => {
   }
 
   it.each([
-    ["without authority fields", { pathname: "sibling" }],
-    ["with standalone auth", { pathname: "sibling", auth: "unused" }],
-    ["with standalone port", { pathname: "sibling", port: 3000 }],
-  ])("resolves a relative object as value against router.pathname %s", async (_case, as) => {
+    { as: { pathname: "sibling" }, expectedAs: "/fr/dir/sibling" },
+    { as: { pathname: "sibling//leaf" }, expectedAs: "/fr/dir/sibling/leaf" },
+    { as: { pathname: "sibling", auth: "unused" }, expectedAs: "/fr/dir/sibling" },
+    { as: { pathname: "sibling", port: 3000 }, expectedAs: "/fr/dir/sibling" },
+  ])("resolves object as $as against router.pathname", async (testCase) => {
     const previousWindow = (globalThis as any).window;
     const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
     process.env.__NEXT_ROUTER_BASEPATH = "/docs";
@@ -17120,12 +17121,14 @@ describe("Pages Router concurrent navigation", () => {
       vi.resetModules();
       const Router = (await import("../packages/vinext/src/shims/router.js")).default;
 
-      await expect(Router.push("/target", as, { locale: "fr", shallow: true })).resolves.toBe(true);
+      await expect(
+        Router.push("/target", testCase.as, { locale: "fr", shallow: true }),
+      ).resolves.toBe(true);
 
       expect(pushState).toHaveBeenCalledWith(
-        expect.objectContaining({ url: "/fr/target", as: "/fr/dir/sibling" }),
+        expect.objectContaining({ url: "/fr/target", as: testCase.expectedAs }),
         "",
-        "/docs/fr/dir/sibling",
+        `/docs${testCase.expectedAs}`,
       );
     } finally {
       if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;

@@ -98,6 +98,8 @@ import {
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { interpolateDynamicRouteHref } from "./internal/interpolate-as.js";
 import { formatUrlObject, formatUrlObjectWithValidation } from "./internal/format-url-object.js";
+import { normalizeRouterHref, resolvePagesRouterHref } from "./internal/normalize-router-href.js";
+import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-id.js";
 import type { RequestContext } from "../config/config-matchers.js";
@@ -517,38 +519,29 @@ function getPagesRouterRuntimeComponents(): PagesRouterRuntimeComponents {
   return components;
 }
 
-function resolveUrlObjectPath(formatted: string): string {
+function resolvePagesUrlPath(formatted: string): string {
   if (typeof window === "undefined") return formatted;
 
   const routePathname =
     window.__NEXT_DATA__?.page ?? stripBasePath(window.location.pathname, __basePath);
-  try {
-    if (isAbsoluteUrl(formatted)) {
-      const origin = getWindowOrigin();
-      if (!origin) return formatted;
-      const absolute = new URL(formatted, origin);
-      if (
-        absolute.origin !== origin ||
-        (__basePath !== "" && !hasBasePath(absolute.pathname, __basePath))
-      ) {
-        return formatted;
-      }
-    }
-    const base = new URL(routePathname, "http://vinext.local");
-    const resolved = new URL(formatted, base);
-    return resolved.origin === base.origin
-      ? resolved.href.slice(resolved.origin.length)
-      : resolved.href;
-  } catch {
-    return formatted;
-  }
+  const visibleAsPath =
+    stripBasePath(window.location.pathname, __basePath) + window.location.search;
+  return resolvePagesRouterHref(
+    formatted,
+    { pathname: routePathname, asPath: formatted.startsWith("#") ? visibleAsPath : routePathname },
+    __basePath,
+  );
+}
+
+function hasUrlObjectAuthority(url: UrlObject): boolean {
+  return Boolean(url.host || url.hostname || url.slashes);
 }
 
 function resolveUrl(url: string | UrlObject, resolveQueryFromRoute = false): string {
   if (typeof url === "string") return url;
   const formatted = formatUrlObject(url);
-  if (url.protocol || url.host || url.hostname || url.slashes || url.pathname) {
-    return resolveUrlObjectPath(formatted);
+  if (url.protocol || hasUrlObjectAuthority(url) || url.pathname) {
+    return resolvePagesUrlPath(formatted);
   }
   const visiblePathname =
     typeof window === "undefined" ? "/" : stripBasePath(window.location.pathname, __basePath);
@@ -569,7 +562,7 @@ function resolveUrl(url: string | UrlObject, resolveQueryFromRoute = false): str
         (formatted ? visiblePathname : (routePathname ?? visiblePathname)));
   const currentSearch =
     formatted.startsWith("#") && typeof window !== "undefined" ? window.location.search : "";
-  return resolveUrlObjectPath(base + currentSearch + formatted);
+  return resolvePagesUrlPath(base + currentSearch + formatted);
 }
 
 function toPreparedSameOriginPath(url: string): string | null {
@@ -586,7 +579,7 @@ function toPreparedSameOriginPath(url: string): string | null {
 
 /** Next.js only strips a same-origin URL when the origin is a literal prefix. */
 function credentialedSameOriginHref(url: Url | undefined): string | undefined {
-  if (!url || typeof url === "string") return undefined;
+  if (!url) return undefined;
   const href = resolveUrl(url);
   try {
     const parsed = new URL(href, window.location.href);
@@ -603,10 +596,6 @@ function hasUrlObjectQuery(url: UrlObject): boolean {
     : url.query !== null && typeof url.query === "object" && Object.keys(url.query).length > 0;
 }
 
-function validateUrlObject(url: Url | undefined): void {
-  if (url && typeof url !== "string") formatUrlObjectWithValidation(url);
-}
-
 function inheritsVisiblePath(url: UrlObject): boolean {
   return (
     !url.pathname &&
@@ -614,6 +603,27 @@ function inheritsVisiblePath(url: UrlObject): boolean {
       (typeof url.search === "string" && url.search.length > 0) ||
       (typeof url.hash === "string" && url.hash.length > 0))
   );
+}
+
+function prepareUrl(url: Url): Url {
+  const routePathname = getCurrentRoutePathnameForWarning();
+  if (typeof url === "string") {
+    const normalized = normalizeRouterHref(url, routePathname);
+    return normalized === url ? url : resolvePagesUrlPath(normalized);
+  }
+  const formatted = formatUrlObjectWithValidation(url);
+  const normalized = normalizeRouterHref(formatted, routePathname);
+  if (normalized === formatted) return url;
+
+  if (!hasUrlObjectAuthority(url) && (url.protocol || url.pathname)) {
+    return resolvePagesUrlPath(normalized);
+  }
+
+  // Keep pathless objects identifiable so resolveUrl can inherit the current
+  // visible pathname and query after normalizing a hash-only input.
+  if (!url.pathname && normalized.startsWith("#")) return { ...url, hash: normalized };
+
+  return normalized;
 }
 
 /** Derive the browser-visible navigation target before route identity is resolved. */
@@ -4267,13 +4277,13 @@ function navigatePagesRouter(
   mode: "push" | "replace",
 ): Promise<boolean> {
   if (typeof window === "undefined") throwNoRouterInstance();
-  // Keep validation synchronous so dangerous URLs thrown from React event
-  // handlers surface through React instead of becoming unobserved rejections.
-  validateUrlObject(url);
-  validateUrlObject(as);
-  assertSafeNavigationUrl(resolveUrl(url));
-  if (as) assertSafeNavigationUrl(resolveUrl(as));
-  return performNavigation(url, as, options, mode);
+  // Keep preparation and validation synchronous so URL warnings and unsafe-URL
+  // errors from React event handlers surface instead of becoming unobserved rejections.
+  const preparedUrl = prepareUrl(url);
+  const preparedAs = as ? prepareUrl(as) : undefined;
+  assertSafeNavigationUrl(resolveUrl(preparedUrl));
+  if (preparedAs) assertSafeNavigationUrl(resolveUrl(preparedAs));
+  return performNavigation(preparedUrl, preparedAs, options, mode);
 }
 
 const RouterMethods = {

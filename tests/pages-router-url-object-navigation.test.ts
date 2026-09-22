@@ -101,6 +101,43 @@ describe("Pages Router URL-object navigation", () => {
     },
   );
 
+  it.each(["href", "as"] as const)(
+    "retains a normalized credentialed object %s as an absolute history value",
+    async (value) => {
+      const previousWindow = (globalThis as any).window;
+      const { win, pushState } = createNavigationWindow({ pathname: "/start" });
+      (globalThis as any).window = win;
+      try {
+        vi.resetModules();
+        const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+        const object = {
+          protocol: "http:",
+          hostname: "localhost",
+          auth: "user:pass",
+          pathname: "/foo//bar",
+        };
+        const absolute = "http://user:pass@localhost/foo/bar";
+        await expect(
+          value === "href"
+            ? Router.push(object, undefined, { shallow: true })
+            : Router.push("/target", object, { shallow: true }),
+        ).resolves.toBe(true);
+
+        expect(pushState).toHaveBeenCalledWith(
+          expect.objectContaining(
+            value === "href" ? { url: absolute, as: absolute } : { url: "/target", as: absolute },
+          ),
+          "",
+          absolute,
+        );
+      } finally {
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        vi.resetModules();
+      }
+    },
+  );
+
   it("query-only UrlObjects preserve the current visible pathname", async () => {
     const previousWindow = (globalThis as any).window;
     const { win, pushState } = createNavigationWindow({
@@ -183,6 +220,31 @@ describe("Pages Router URL-object navigation", () => {
         "/posts/right",
       );
     } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  // Ported from Next.js: packages/next/src/client/resolve-href.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/resolve-href.ts
+  it("resolves dot segments after normalizing repeated separators in a string href", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, pushState } = createNavigationWindow({ pathname: "/start" });
+    (globalThis as any).window = win;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      await expect(Router.push("/foo//../bar", undefined, { shallow: true })).resolves.toBe(true);
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "/bar", as: "/bar" }),
+        "",
+        "/bar",
+      );
+      expect(error).toHaveBeenCalledOnce();
+    } finally {
+      error.mockRestore();
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;
       vi.resetModules();
@@ -368,6 +430,122 @@ describe("Pages Router URL-object navigation", () => {
     }
   });
 
+  it("normalizes string and object router hrefs before applying basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const pushState = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    (globalThis as any).window = {
+      location: {
+        pathname: "/docs/start",
+        search: "",
+        hash: "",
+        href: "http://localhost/docs/start",
+        origin: "http://localhost",
+      },
+      history: { state: null, pushState, replaceState() {} },
+      addEventListener() {},
+      dispatchEvent() {},
+      scrollTo() {},
+      __NEXT_DATA__: { page: "/posts/[id]" },
+    };
+
+    try {
+      vi.resetModules();
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+
+      await routerModule.default.push("//localhost/outside", undefined, { shallow: true });
+      await routerModule.default.push({ pathname: "//localhost/object" }, undefined, {
+        shallow: true,
+      });
+      await routerModule.default.push(
+        "/target",
+        { pathname: "//localhost/masked" },
+        {
+          shallow: true,
+        },
+      );
+      await routerModule.default.push({ pathname: "/literal//question?mark#hash" }, undefined, {
+        shallow: true,
+      });
+      await routerModule.default.push({ pathname: "https://example.com/foo//bar" }, undefined, {
+        shallow: true,
+      });
+      await routerModule.default.push({ pathname: "/hash", hash: "a//b" }, undefined, {
+        shallow: true,
+        scroll: false,
+      });
+      await routerModule.default.push({ hash: "a//b" }, undefined, {
+        shallow: true,
+        scroll: false,
+      });
+      await routerModule.default.push({ pathname: null, hash: "a//b" }, undefined, {
+        shallow: true,
+        scroll: false,
+      });
+
+      expect(pushState).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ url: "/localhost/outside", as: "/localhost/outside" }),
+        "",
+        "/docs/localhost/outside",
+      );
+      expect(pushState).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ url: "/localhost/object", as: "/localhost/object" }),
+        "",
+        "/docs/localhost/object",
+      );
+      expect(pushState).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({ url: "/target", as: "/localhost/masked" }),
+        "",
+        "/docs/localhost/masked",
+      );
+      expect(pushState).toHaveBeenNthCalledWith(
+        4,
+        expect.objectContaining({
+          url: "/literal/question%3Fmark%23hash",
+          as: "/literal/question%3Fmark%23hash",
+        }),
+        "",
+        "/docs/literal/question%3Fmark%23hash",
+      );
+      expect((globalThis as any).window.location.href).toBe("https://example.com/foo/bar");
+      expect(pushState).toHaveBeenNthCalledWith(
+        5,
+        expect.objectContaining({ url: "/hash#a/b", as: "/hash#a/b" }),
+        "",
+        "/docs/hash#a/b",
+      );
+      expect(pushState).toHaveBeenNthCalledWith(
+        6,
+        expect.objectContaining({ url: "/start#a/b", as: "/start#a/b" }),
+        "",
+        "/docs/start#a/b",
+      );
+      expect(pushState).toHaveBeenNthCalledWith(
+        7,
+        expect.objectContaining({ url: "/start#a/b", as: "/start#a/b" }),
+        "",
+        "/docs/start#a/b",
+      );
+      expect(consoleError).toHaveBeenCalledTimes(8);
+      expect(consoleError).toHaveBeenNthCalledWith(
+        1,
+        "Invalid href '//localhost/outside' passed to next/router in page: '/posts/[id]'. Repeated forward-slashes (//) or backslashes \\ are not valid in the href.",
+      );
+    } finally {
+      consoleError.mockRestore();
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
   it.each([
     [
       "href",
@@ -531,6 +709,8 @@ describe("Pages Router URL-object navigation", () => {
     [{ protocol: "http:", query: { x: "1" } }, "/dir/current?x=1"],
     [{ protocol: "http:", hash: "section" }, "/dir/current#section"],
     [{ protocol: "HTTP:", hostname: "localhost", pathname: "/target" }, "/dir/localhost/target"],
+    [{ protocol: "http:", hash: "a//b" }, "/dir/current#a/b"],
+    [{ protocol: "http:", hash: "a\\b" }, "/dir/current#a/b"],
   ])(
     "resolves same-scheme protocol objects relative to the router pathname",
     async (url, expected) => {
@@ -622,12 +802,21 @@ describe("Pages Router URL-object navigation", () => {
     },
   );
 
+  // Ported from Next.js: packages/next/src/client/resolve-href.ts (hash-only hrefs use router.asPath).
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/resolve-href.ts
   it.each([
-    ["/", "", "/#section"],
-    ["/posts", "?tab=1", "/posts?tab=1#section"],
+    ["/", "", "/", "#section", "/#section"],
+    ["/posts", "?tab=1", "/posts", "#section", "/posts?tab=1#section"],
+    [
+      "/rewrite-navigation/0",
+      "?tab=1",
+      "/rewrite-navigation/[id]/destination",
+      "#a//b",
+      "/rewrite-navigation/0?tab=1#a/b",
+    ],
   ])(
     "preserves the visible path and search in router.asPath after hash-only navigation from %s%s",
-    async (pathname, search, expectedAsPath) => {
+    async (pathname, search, page, href, expectedAsPath) => {
       const previousWindow = (globalThis as any).window;
       const win: any = {
         location: {
@@ -654,7 +843,7 @@ describe("Pages Router URL-object navigation", () => {
         scrollTo() {},
         scrollX: 0,
         scrollY: 0,
-        __NEXT_DATA__: { page: pathname, query: {}, isFallback: false },
+        __NEXT_DATA__: { page, query: {}, isFallback: false },
       };
       (globalThis as any).window = win;
       (globalThis as any).document = {
@@ -665,10 +854,16 @@ describe("Pages Router URL-object navigation", () => {
       try {
         vi.resetModules();
         const routerModule = await import("../packages/vinext/src/shims/router.js");
-        await routerModule.default.push("#section");
+        const routeStart = vi.fn();
+        const hashStart = vi.fn();
+        routerModule.default.events.on("routeChangeStart", routeStart);
+        routerModule.default.events.on("hashChangeStart", hashStart);
+        await routerModule.default.push(href);
 
         expect(win.history.state).toMatchObject({ url: expectedAsPath, as: expectedAsPath });
         expect(routerModule.default.asPath).toBe(expectedAsPath);
+        expect(routeStart).not.toHaveBeenCalled();
+        expect(hashStart).toHaveBeenCalledOnce();
       } finally {
         if (previousWindow === undefined) delete (globalThis as any).window;
         else (globalThis as any).window = previousWindow;

@@ -12,8 +12,8 @@
  * `installWindowNext()` side effect into every consumer of the Link shim
  * (including the App Router client bundle), clobbering `window.next.router`.
  *
- * On the client (or when no accessor is registered, e.g. App Router) we fall
- * back to `window.location.pathname`, then to `"/"`.
+ * On the client, Pages Router exposes the pattern through `__NEXT_DATA__.page`.
+ * App Router falls back to `window.location.pathname`, then to `"/"`.
  */
 
 const ROUTE_PATTERN_FOR_WARNING_ACCESSOR_KEY = Symbol.for(
@@ -46,5 +46,5 @@ export function getCurrentRoutePathnameForWarning(): string {
     }
     return "/";
   }
-  return window.location?.pathname ?? "/";
+  return window.__NEXT_DATA__?.page ?? window.location?.pathname ?? "/";
 }
