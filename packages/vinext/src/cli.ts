@@ -76,6 +76,7 @@ const VITE_BOOLEAN_OPTIONS = new Set([
   "--watch",
   "-w",
 ]);
+const VITE_OPTIONS_WITHOUT_VALUES = new Set(["--help", "-h", "--version", "-v"]);
 
 function findViteRoot(args: string[]): string | undefined | null {
   for (let index = 0; index < args.length; index++) {
@@ -83,11 +84,13 @@ function findViteRoot(args: string[]): string | undefined | null {
     if (arg === "--") break;
     const equalsIndex = arg.indexOf("=");
     const option = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
+    if (VITE_OPTIONS_WITHOUT_VALUES.has(option)) continue;
     if (VITE_OPTIONS_WITH_VALUES.has(option)) {
       if (equalsIndex === -1) index++;
       continue;
     }
-    if (VITE_BOOLEAN_OPTIONS.has(option)) {
+    const booleanOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
+    if (VITE_BOOLEAN_OPTIONS.has(booleanOption)) {
       if (equalsIndex === -1 && /^(?:true|false)$/.test(args[index + 1] ?? "")) index++;
       continue;
     }
