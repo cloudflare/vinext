@@ -49,6 +49,7 @@ function configPreflight(command: ViteCommand): string {
   let explicitConfigCount = 0;
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
+    if (arg === "--") break;
     if (arg.startsWith("--config=") || arg.startsWith("-c=")) {
       if (++explicitConfigCount > 1) return root;
       explicitConfig = arg.slice(arg.indexOf("=") + 1) || undefined;
