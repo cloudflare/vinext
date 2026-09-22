@@ -29,6 +29,7 @@ type ProjectViteApi = Pick<typeof import("vite"), "build" | "loadConfigFromFile"
 export type BuildLifecycleContext = {
   cacheConfig: VinextCacheConfig | null;
   createPagesOnlyPlugins: () => PluginOption[];
+  emptyOutDir?: boolean;
   hasAppDir: boolean;
   hasPagesDir: boolean;
   nextConfig: ResolvedNextConfig;
@@ -158,7 +159,7 @@ function prepareBuild(builder: ViteBuilder, context: BuildLifecycleContext): Bui
   cleanBuildOutput({
     root: context.root,
     outDir: path.resolve(context.root, "dist"),
-    emptyOutDir: builder.config.build.emptyOutDir ?? undefined,
+    emptyOutDir: context.emptyOutDir ?? builder.config.build.emptyOutDir ?? undefined,
   });
 
   if (!context.hasAppDir || !context.hasPagesDir) return {};

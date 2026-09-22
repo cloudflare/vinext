@@ -128,6 +128,37 @@ describe("configured vinext build contract", () => {
     expect(appOutput).not.toContain("__CONFIG_ONLY_MARKER__");
   }, 120_000);
 
+  it("keeps raw emptyOutDir false as the cleanup escape hatch", () => {
+    const root = createHybridProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace(
+          "export default defineConfig({",
+          `export default defineConfig({
+  build: { emptyOutDir: false },`,
+        )
+        .replace(
+          "plugins: [",
+          `plugins: [{
+    name: "override-empty-out-dir",
+    config() { return { build: { emptyOutDir: true } }; },
+  },`,
+        ),
+    );
+    write(root, "dist/keep.txt", "keep");
+
+    execFileSync(process.execPath, [CLI_PATH, "build"], {
+      cwd: root,
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
+  }, 120_000);
+
   it("keeps the vinext build report when Vite logging is silent", () => {
     const root = createHybridProject();
     const configPath = path.join(root, "vite.config.ts");
