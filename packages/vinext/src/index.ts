@@ -151,6 +151,7 @@ import {
   VINEXT_BUILD_LIFECYCLE_CONFIG,
   type BuildLifecycleInvocation,
 } from "./build/lifecycle.js";
+import { applyDevServerDefaults, configureDevServerLock } from "./cli-dev-config.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
@@ -1596,6 +1597,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasPlainPagesBuildEnvironments = false;
   let originalPlainPagesEnvironments: UserConfig["environments"] | undefined;
   let buildLifecycleInvocation: BuildLifecycleInvocation | undefined;
+  let devCliLifecycleEnabled = false;
   let reactUpgradeChecked = false;
   let pagesOptimizeEntries: string[] = [];
   const importMetaUrlCapability = createImportMetaUrlPlugin({
@@ -2391,6 +2393,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
+        devCliLifecycleEnabled =
+          env.command === "serve" &&
+          env.isPreview !== true &&
+          config.server?.middlewareMode !== true &&
+          isViteCliInvocation("dev");
+        if (devCliLifecycleEnabled) {
+          applyDevServerDefaults((config.server ??= {}), {});
+        }
         buildLifecycleInvocation = (config as InternalUserConfig)[VINEXT_BUILD_LIFECYCLE_CONFIG];
         buildLifecycleEnabled =
           env.command === "build" &&
@@ -5231,6 +5241,8 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
+        if (devCliLifecycleEnabled) configureDevServerLock(server);
+
         const devBuildId = nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
 
         server.middlewares.use((req, _res, next) => {
