@@ -89,13 +89,17 @@ function optionName(arg: string): string {
   return equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
 }
 
-function clusteredShortOption(arg: string): string | undefined {
+function clusteredShortOptions(arg: string): string[] | undefined {
   const name = optionName(arg);
   if (!name.startsWith("-") || name.startsWith("--") || name.length <= 2) return undefined;
   const options = name.slice(1);
   return Array.from(options).every((option) => SHORT_OPTIONS.has(option))
-    ? `-${options.at(-1)}`
+    ? Array.from(options, (option) => `-${option}`)
     : undefined;
+}
+
+function valueOptionName(arg: string): string {
+  return clusteredShortOptions(arg)?.at(-1) ?? optionName(arg);
 }
 
 function optionHasInlineValue(arg: string): boolean {
@@ -104,7 +108,7 @@ function optionHasInlineValue(arg: string): boolean {
 
 function optionConsumesNext(arg: string, next: string | undefined): boolean {
   if (optionHasInlineValue(arg)) return false;
-  const option = clusteredShortOption(arg) ?? optionName(arg);
+  const option = valueOptionName(arg);
   if (REQUIRED_VALUE_OPTIONS.has(option)) return true;
   if (OPTIONAL_VALUE_OPTIONS.has(option)) return next !== undefined && !next.startsWith("-");
   // CAC does not consume a separate value following --no-*.
@@ -112,7 +116,7 @@ function optionConsumesNext(arg: string, next: string | undefined): boolean {
 }
 
 function requiredOptionValueIsMissing(arg: string, next: string | undefined): boolean {
-  if (!REQUIRED_VALUE_OPTIONS.has(optionName(arg))) return false;
+  if (!REQUIRED_VALUE_OPTIONS.has(valueOptionName(arg))) return false;
   return optionHasInlineValue(arg)
     ? arg.slice(arg.indexOf("=") + 1) === ""
     : next === undefined || next.startsWith("-");
@@ -128,14 +132,20 @@ export function findViteRoot(
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--") break;
-    const option = optionName(arg);
-    if (VALUELESS_OPTIONS.has(option)) continue;
+    const clusteredOptions = clusteredShortOptions(arg);
+    const option = clusteredOptions?.at(-1) ?? optionName(arg);
+    if ((clusteredOptions ?? [option]).some((name) => VALUELESS_OPTIONS.has(name))) {
+      shouldPreflight = false;
+      continue;
+    }
     if (requiredOptionValueIsMissing(arg, args[index + 1])) {
       shouldPreflight = false;
       continue;
     }
-    const normalizedOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
-    if (COMMAND_ONLY_OPTIONS[otherCommand].has(normalizedOption)) {
+    const normalizedOptions = (clusteredOptions ?? [option]).map((name) =>
+      name.startsWith("--no-") ? `--${name.slice(5)}` : name,
+    );
+    if (normalizedOptions.some((name) => COMMAND_ONLY_OPTIONS[otherCommand].has(name))) {
       shouldPreflight = false;
     }
     if (optionConsumesNext(arg, args[index + 1])) {
@@ -145,6 +155,7 @@ export function findViteRoot(
     if (arg.startsWith("-")) {
       const booleanOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
       if (
+        !clusteredOptions &&
         !REQUIRED_VALUE_OPTIONS.has(option) &&
         !OPTIONAL_VALUE_OPTIONS.has(option) &&
         !BOOLEAN_OPTIONS.has(booleanOption)
@@ -204,7 +215,7 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
       root ??= invocation.args[index + 1];
       break;
     }
-    const option = clusteredShortOption(arg) ?? optionName(arg);
+    const option = valueOptionName(arg);
     if (option === "--config" || option === "-c") {
       const value = optionHasInlineValue(arg)
         ? arg.slice(arg.indexOf("=") + 1)
