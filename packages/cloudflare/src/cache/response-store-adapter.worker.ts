@@ -296,6 +296,7 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
       typeof page.resolvedUrl === "string" &&
       cacheability &&
       typeof cacheability === "object" &&
+      Reflect.get(cacheability, "queryIndependentCandidate") === true &&
       Reflect.get(cacheability, "policyHeaders") === null
     ) {
       const url = new URL(requestUrl);

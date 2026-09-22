@@ -18,6 +18,9 @@ export default {
     },
   ],
   async rewrites() {
-    return [{ source: "/query-alias/:slug", destination: "/query-on-demand/:slug" }];
+    return [
+      { source: "/query-alias/:slug", destination: "/query-on-demand/:slug" },
+      { source: "/query-alias-fixed/:slug", destination: "/query-on-demand/:slug?q=fixed" },
+    ];
   },
 } satisfies NextConfig;

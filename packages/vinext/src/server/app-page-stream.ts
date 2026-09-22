@@ -149,6 +149,8 @@ export type AppPageSsrHandler = {
       isStaticGeneration?: boolean;
       /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
       isForceStatic?: boolean;
+      queryFromBrowserForSharedHtml?: boolean;
+      onSsrSearchParamsAccess?: () => void;
       /** Dev-only: original server error to surface in the browser overlay. */
       initialDevServerError?: unknown;
       /** Report an SSR/Fizz render failure through instrumentation. */
@@ -203,6 +205,8 @@ type RenderAppPageHtmlStreamOptions = {
   isStaticGeneration?: boolean;
   /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
   isForceStatic?: boolean;
+  queryFromBrowserForSharedHtml?: boolean;
+  onSsrSearchParamsAccess?: () => void;
   /** Override the default shell-error recovery decision passed to handleSsr. */
   fallbackToErrorDocumentOnShellError?: boolean;
   /** Dev-only: original server error to surface in the browser overlay. */
@@ -293,6 +297,8 @@ export async function renderAppPageHtmlStream(
     waitForAllReady: options.waitForAllReady,
     isStaticGeneration: options.isStaticGeneration,
     isForceStatic: options.isForceStatic,
+    queryFromBrowserForSharedHtml: options.queryFromBrowserForSharedHtml,
+    onSsrSearchParamsAccess: options.onSsrSearchParamsAccess,
     initialDevServerError: options.initialDevServerError,
     onSsrError: options.onSsrError,
     mirrorNextFlight: options.mirrorNextFlight,

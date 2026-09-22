@@ -2245,6 +2245,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
       // into the static HTML while the browser fills in the real URL values.
       throw new NavigationBailoutToCSRError("useSearchParams()");
     }
+    ctx?.onServerSearchParamsAccess?.();
     markPprFallbackShellDynamicBoundary();
     // During SSR for "use client" components, the navigation context may not be set.
     // getServerSearchParamsSnapshot also covers the Pages Router compat shim.

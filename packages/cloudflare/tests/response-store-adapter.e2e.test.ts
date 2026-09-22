@@ -397,6 +397,12 @@ describe("Cloudflare Workers Response Store adapter", () => {
       htmlValue(fromEmpty.body, "query-on-demand-id"),
       htmlValue(fromQuery.body, "query-on-demand-id"),
     );
+    const firstQueryFill = await cacheStatus("/query-on-demand/query-first?q=first");
+    const secondQueryHit = await cacheStatus("/query-on-demand/query-first?q=second");
+    assert.equal(secondQueryHit.status, "HIT");
+    assert.equal(secondQueryHit.body, firstQueryFill.body);
+    assert.ok(!secondQueryHit.body.includes('"q","first"'));
+    assert.ok(secondQueryHit.body.includes("searchParamsFromBrowser:true"));
     const otherPath = await cacheStatus("/query-on-demand/b?q=second");
     assert.notEqual(
       htmlValue(fromEmpty.body, "query-on-demand-id"),
@@ -431,9 +437,48 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(htmlValue(clientWithQuery.body, "query-client-dependent-value"), "second");
     assert.notEqual((await cacheStatus("/query-client-dependent")).status, "HIT");
 
+    // A Server Page may forward an otherwise unread searchParams promise to a
+    // Client Component. React's serialization must count as dynamic usage.
+    const forwardedEmpty = await cacheStatus("/query-prop-to-client");
+    const forwardedQuery = await cacheStatus("/query-prop-to-client?q=second");
+    assert.notEqual(forwardedEmpty.status, "HIT");
+    assert.notEqual(forwardedQuery.status, "HIT");
+    assert.equal(htmlValue(forwardedEmpty.body, "query-prop-to-client-value"), "(empty)");
+    assert.equal(htmlValue(forwardedQuery.body, "query-prop-to-client-value"), "second");
+    assert.notEqual((await cacheStatus("/query-prop-to-client")).status, "HIT");
+
+    // The Server Page may be query-independent while a nested Client
+    // Component reads useSearchParams during SSR. That completed HTML cannot
+    // be admitted under the pathname key.
+    for (const pathname of [
+      "/query-ssr-client/nested",
+      "/query-ssr-client/nested?q=first",
+      "/query-ssr-client/nested?q=second",
+    ]) {
+      const firstNested = await cacheStatus(pathname);
+      const secondNested = await cacheStatus(pathname);
+      assert.notEqual(firstNested.status, "HIT");
+      assert.notEqual(secondNested.status, "HIT", pathname);
+      assert.equal(
+        htmlValue(secondNested.body, "query-ssr-client-value"),
+        new URL(pathname, "https://app.test").searchParams.get("q") || "(empty)",
+      );
+      assert.notEqual(
+        htmlValue(firstNested.body, "query-ssr-client-id"),
+        htmlValue(secondNested.body, "query-ssr-client-id"),
+      );
+    }
+
     const forced = await cacheStatus("/query-force-static?q=ignored");
     assert.equal(htmlValue(forced.body, "query-force-static-value"), "(empty)");
     assert.equal((await cacheStatus("/query-force-static?q=different")).status, "HIT");
+    const forceStaticFirst = await cacheStatus("/query-force-static/on-demand?q=first");
+    const forceStaticSecond = await cacheStatus("/query-force-static/on-demand?q=second");
+    assert.equal(forceStaticSecond.status, "HIT");
+    assert.equal(forceStaticSecond.body, forceStaticFirst.body);
+    assert.equal(htmlValue(forceStaticSecond.body, "query-force-static-value"), "(empty)");
+    assert.ok(!forceStaticSecond.body.includes('"q","first"'));
+    assert.ok(forceStaticSecond.body.includes("searchParamsFromBrowser:true"));
 
     const firstWithQuery = await cacheStatus("/query-independent?reverse=first");
     const afterQuery = await cacheStatus("/query-independent");
@@ -491,6 +536,17 @@ describe("Cloudflare Workers Response Store adapter", () => {
     );
     const destination = await cacheStatus("/query-on-demand/rewrite?q=three");
     assert.equal(destination.status, "MISS");
+
+    // A rewrite that changes the query has a server-owned bootstrap and is
+    // deliberately not eligible for pathname sharing.
+    const fixedFirst = await cacheStatus("/query-alias-fixed/rewrite?q=one");
+    const fixedSecond = await cacheStatus("/query-alias-fixed/rewrite?q=two");
+    assert.notEqual(fixedSecond.status, "HIT");
+    assert.notEqual(
+      htmlValue(fixedFirst.body, "query-on-demand-id"),
+      htmlValue(fixedSecond.body, "query-on-demand-id"),
+    );
+    assert.ok(!fixedFirst.body.includes("searchParamsFromBrowser:true"));
   });
 
   test("keeps HTML and RSC separate while sharing each query-independent representation", async () => {
@@ -622,6 +678,9 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const second = await request(key);
     assert.equal(second.headers.get("x-vinext-cache"), "HIT");
     assert.equal(await second.text(), body);
+    const otherQuery = await request(`/streaming-cache?key=${crypto.randomUUID()}`);
+    assert.equal(otherQuery.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await otherQuery.text(), body);
   });
 
   test("does not persist credentials or fragment a public entry by them", async () => {

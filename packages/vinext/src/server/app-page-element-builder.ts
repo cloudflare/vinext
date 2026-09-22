@@ -595,7 +595,12 @@ export async function buildPageElements<
       const invocationProps = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+              // React reads `.status` when a Server Page forwards the promise
+              // to a Client Component. That serialization is observable usage
+              // even if the Page itself never awaits searchParams.
+              observeReactPromiseStatus: true,
+            })
           : makeThenableParams(pageSearchParams);
       }
 

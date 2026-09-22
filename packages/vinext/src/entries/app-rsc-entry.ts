@@ -1320,6 +1320,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     interceptionPathname,
     isProgressiveActionRender,
     isRscRequest,
+    queryIndependentCandidate,
     middlewareContext,
     mountedSlotsHeader,
     params,
@@ -1433,6 +1434,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isProgressiveActionRender,
       isProduction: process.env.NODE_ENV === "production",
       isRscRequest,
+      queryIndependentCandidate,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
       isrHtmlKey(pathname) {

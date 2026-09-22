@@ -162,6 +162,7 @@ type RenderAppPageLifecycleOptionsBase = {
   probePageBeforeRender?: boolean;
   omitPendingDynamicCacheState?: boolean;
   isRscRequest: boolean;
+  queryIndependentCandidate?: boolean;
   traceOperation?: "prerender" | "render";
   onRenderComplete?: (completion: Promise<void>) => void;
   isrDebug?: AppPageDebugLogger;
@@ -723,8 +724,13 @@ async function renderAppPageLifecycleImpl(
   // cannot hide it from the other.
   let dynamicUsageObserved = false;
   let dynamicUsageFinalized = false;
+  // The SSR environment has a separate request state. Bridge its client-hook
+  // observation directly into this RSC render's final admission decision.
+  let ssrSearchParamsObserved = false;
   const consumeRenderDynamicUsage = (): boolean => {
-    if (!dynamicUsageObserved) dynamicUsageObserved = options.consumeDynamicUsage();
+    if (!dynamicUsageObserved) {
+      dynamicUsageObserved = ssrSearchParamsObserved || options.consumeDynamicUsage();
+    }
     return dynamicUsageObserved;
   };
   const finalizeRenderDynamicUsage = (): boolean => {
@@ -1199,6 +1205,15 @@ async function renderAppPageLifecycleImpl(
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
+        queryFromBrowserForSharedHtml: options.queryIndependentCandidate === true,
+        onSsrSearchParamsAccess:
+          options.queryIndependentCandidate === true
+            ? () => {
+                // SSR runs in a separate Vite environment. A Client Component
+                // reading the query there must veto the RSC render's shared put.
+                ssrSearchParamsObserved = true;
+              }
+            : undefined,
         onSsrError: createAppPageSsrErrorHandler(onSsrError, rscErrorTracker.isCapturedError),
       });
     },

@@ -351,6 +351,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   isProgressiveActionRender?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
+  queryIndependentCandidate?: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
   isrHtmlKey: (pathname: string) => string;
@@ -1206,6 +1207,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isSpeculativePrerender,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
+    queryIndependentCandidate: options.queryIndependentCandidate,
     traceOperation,
     isrDebug: options.isrDebug,
     isrHtmlKey: options.isrHtmlKey,

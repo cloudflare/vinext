@@ -332,6 +332,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   interceptionPathname: string;
   isProgressiveActionRender: boolean;
   isRscRequest: boolean;
+  queryIndependentCandidate?: boolean;
   middlewareContext: AppRscMiddlewareContext;
   mountedSlotsHeader: string | null;
   params: AppPageParams;
@@ -1165,6 +1166,21 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               );
             }
           }
+          const candidate =
+            cache === "shared" &&
+            responseStagePolicy === null &&
+            props.kind === "app-page" &&
+            props.forceDynamic !== true &&
+            props.mayBeClientPage !== true &&
+            (() => {
+              const original = new URL(stageRequest.url);
+              const resolved = new URL(props.resolvedUrl, original);
+              stripRscCacheBustingSearchParam(original);
+              stripRscCacheBustingSearchParam(resolved);
+              // A rewrite that changes the effective query needs its server
+              // bootstrap. It cannot share HTML with another browser query.
+              return original.search === resolved.search;
+            })();
           let response = await dispatchResponseStage(
             dispatchRequest,
             {
@@ -1172,11 +1188,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               cacheability: {
                 ...props.cacheability,
                 policyHeaders: responseStagePolicy,
-                ...(cache === "shared" &&
-                responseStagePolicy === null &&
-                props.kind === "app-page" &&
-                props.forceDynamic !== true &&
-                props.mayBeClientPage !== true &&
+                ...(candidate ? { queryIndependentCandidate: true } : {}),
+                ...(candidate &&
                 (props.queryIndependentConfig === true ||
                   options.queryIndependentAppPage?.(
                     props.routePattern,
@@ -2395,6 +2408,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
         isProgressiveActionRender,
         isRscRequest,
+        queryIndependentCandidate: false,
         middlewareContext,
         mountedSlotsHeader,
         params: renderParams,

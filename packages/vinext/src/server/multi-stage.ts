@@ -52,6 +52,8 @@ export type VinextResponseStageCacheability = {
   policyHeaders: Array<[string, string]> | null;
   /** Request-stage proof that an App Page representation ignores user query values. */
   queryIndependent?: true;
+  /** Eligible for completed-render query-independent admission (not a pre-lookup proof). */
+  queryIndependentCandidate?: true;
   /** Present only after the request stage authenticates an internal probe. */
   probeMode: VinextCacheabilityProbeMode | null;
   /** Resolved route pathname used for manifest authorization after outer rewrites. */

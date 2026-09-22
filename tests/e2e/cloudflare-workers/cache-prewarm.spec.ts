@@ -6,6 +6,7 @@ const backend = process.env.VINEXT_E2E_CACHE_BACKEND;
 
 test("deployment pre-warming and force-dynamic bypass work with the configured cache", async ({
   baseURL,
+  page,
   request,
 }) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
@@ -91,16 +92,91 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   const secondIndependentBody = await independentSecond.text();
   expect(independentSecond.ok()).toBe(true);
   expect(secondIndependentBody).toBe(firstIndependentBody);
+  expect(secondIndependentBody).not.toContain(`first-${suffix}`);
+  expect(secondIndependentBody).toContain("searchParamsFromBrowser:true");
   expect(
     independentSecond.headers()[backend === "workers-cache" ? "cf-cache-status" : "x-vinext-cache"],
   ).toBe("HIT");
+  await page.goto(`${baseURL}/query-independent?q=second-${suffix}`);
+  await expect(page.getByTestId("query-independent-client-value")).toHaveText(`second-${suffix}`);
 
-  for (const path of ["query-dependent", "query-client-dependent", "query-public"]) {
-    for (const value of [`first-${suffix}`, `second-${suffix}`]) {
-      const response = await request.get(`${baseURL}/${path}?q=${value}`);
-      expect(response.ok(), `${path}: ${JSON.stringify(response.headers())}`).toBe(true);
-      expect(await response.text()).toContain(`data-testid="${path}-value">${value}</output>`);
+  const cacheStatusHeader = backend === "workers-cache" ? "cf-cache-status" : "x-vinext-cache";
+  const forceStaticFirst = await request.get(
+    `${baseURL}/query-force-static/${suffix}?q=first-${suffix}`,
+  );
+  const forceStaticSecond = await request.get(
+    `${baseURL}/query-force-static/${suffix}?q=second-${suffix}`,
+  );
+  const forceStaticFirstBody = await forceStaticFirst.text();
+  const forceStaticSecondBody = await forceStaticSecond.text();
+  expect(forceStaticFirst.ok()).toBe(true);
+  expect(forceStaticSecond.ok()).toBe(true);
+  expect(forceStaticSecondBody).toBe(forceStaticFirstBody);
+  expect(forceStaticSecondBody).not.toContain(`first-${suffix}`);
+  expect(forceStaticSecondBody).toContain("searchParamsFromBrowser:true");
+  if (backend !== "kv") {
+    expect(forceStaticSecond.headers()[cacheStatusHeader]).toBe("HIT");
+  }
+  for (const path of ["query-dependent", "query-client-dependent", "query-prop-to-client"]) {
+    // The empty-query response is a particularly dangerous source of false
+    // static certification: its thenable carries no enumerable query keys.
+    for (const query of ["", `?q=first-${suffix}`, `?q=second-${suffix}`, ""]) {
+      const url = `${baseURL}/${path}${query}`;
+      const first = await request.get(url);
+      const second = await request.get(url);
+      expect(first.ok(), `${path}: ${JSON.stringify(first.headers())}`).toBe(true);
+      expect(second.ok(), `${path}: ${JSON.stringify(second.headers())}`).toBe(true);
+      const expected = new URL(url).searchParams.get("q") || "(empty)";
+      for (const response of [first, second]) {
+        expect(response.headers()["cache-control"]).toContain("no-store");
+        expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+        expect(await response.text()).toContain(`data-testid="${path}-value">${expected}</output>`);
+      }
     }
+  }
+
+  for (const query of ["", `?q=first-${suffix}`, `?q=second-${suffix}`]) {
+    const url = `${baseURL}/query-ssr-client/${suffix}${query}`;
+    for (const response of [await request.get(url), await request.get(url)]) {
+      expect(response.ok()).toBe(true);
+      expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+      expect(response.headers()["cache-control"]).toContain("no-store");
+      expect(await response.text()).toContain(
+        `data-testid="query-ssr-client-value">${new URL(url).searchParams.get("q") || "(empty)"}</output>`,
+      );
+    }
+  }
+
+  const rewriteWithQuery = await request.get(
+    `${baseURL}/query-alias-fixed/${suffix}?q=first-${suffix}`,
+  );
+  expect(rewriteWithQuery.ok()).toBe(true);
+  expect(await rewriteWithQuery.text()).not.toContain("searchParamsFromBrowser:true");
+
+  // Explicit public policy may cache a dynamic response, but only under its
+  // *full* query. The prewarm user-agent synchronously commits the Response
+  // Store entry so this assertion does not race background publication.
+  let previousPublicId: string | undefined;
+  for (const value of [`first-${suffix}`, `second-${suffix}`]) {
+    const url = `${baseURL}/query-public?q=${value}`;
+    const first = await request.get(url, {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    const firstBody = await first.text();
+    const second = await request.get(url);
+    const secondBody = await second.text();
+    expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+    expect(second.ok(), JSON.stringify(second.headers())).toBe(true);
+    expect(firstBody).toContain(`data-testid="query-public-value">${value}</output>`);
+    expect(secondBody).toContain(`data-testid="query-public-value">${value}</output>`);
+    const publicId = /data-testid="query-public-id"[^>]*>([^<]+)/.exec(firstBody)?.[1];
+    expect(publicId).toBeTruthy();
+    expect(publicId).not.toBe(previousPublicId);
+    if (backend !== "kv") {
+      expect(second.headers()[cacheStatusHeader]).toBe("HIT");
+      expect(secondBody).toBe(firstBody);
+    }
+    previousPublicId = publicId;
   }
 
   const dynamicUrl = `${baseURL}/force-dynamic?cache-e2e=${randomUUID()}`;
