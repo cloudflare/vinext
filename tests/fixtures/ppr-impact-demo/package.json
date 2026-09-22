@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "vp build",
     "start": "vinext start --port 4187",
     "wrangler": "wrangler dev --config dist/server/wrangler.json --port 4187"
   },

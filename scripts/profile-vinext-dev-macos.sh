@@ -9,7 +9,7 @@ export PATH="${HOME}/.cargo/bin:${HOME}/.local/bin:${HOME}/.vite-plus/bin:${PATH
 #   ./scripts/profile-vinext-dev-macos.sh
 #   ./scripts/profile-vinext-dev-macos.sh --route /dashboard
 #   ./scripts/profile-vinext-dev-macos.sh --raw-dev
-#   ./scripts/profile-vinext-dev-macos.sh --out-dir /tmp/vinext-profile -- vp exec vite dev --host 127.0.0.1
+#   ./scripts/profile-vinext-dev-macos.sh --out-dir /tmp/vinext-profile -- vp dev --host 127.0.0.1
 #
 # Environment:
 #   VINEXT_PROFILE_DURATION=60       Raw-dev/custom capture duration in seconds.
@@ -324,7 +324,7 @@ set_app_dev_command() {
     return
   fi
 
-  command_args=("vp" "exec" "vite" "dev" "${dev_args[@]}")
+  command_args=("vp" "dev" "${dev_args[@]}")
 }
 
 wait_for_profiled_route() {
@@ -876,18 +876,6 @@ EOF
       return 0
     fi
     echo "error: profiled command exited with status ${status}; profile is for the failed startup." >&2
-    if grep -q "Command .*vite.* not found in node_modules/.bin" "${command_log}"; then
-      cat >&2 <<'EOF'
-
-The default command is `vp exec vite dev`, but `vite` is missing from
-node_modules/.bin in the directory where you ran the script.
-
-Fix the local workspace bins, then rerun:
-  vp install
-
-Install the project's dependencies, then rerun the profile.
-EOF
-    fi
     return "${status}"
   fi
 }
