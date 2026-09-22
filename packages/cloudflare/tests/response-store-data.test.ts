@@ -47,6 +47,7 @@ class TestStore implements WorkersResponseStore {
   ): Promise<ResponseStoreMutationResult> {
     if (this.mutationError) throw this.mutationError;
     this.response = response.clone();
+    this.response.headers.set("X-Workers-Response-Store", "BLOB-FRESH");
     this.options = options;
     return this.putResult;
   }
@@ -278,8 +279,12 @@ test("lazily resolves soft-tag expiration once per request after a candidate hit
     await handler.set("key", null);
 
     await runWithRequestContext(createRequestContext(), async () => {
-      await expect(handler.get("key", { softTags: ["path", "layout"] })).resolves.not.toBeNull();
-      await expect(handler.get("key", { softTags: ["path", "layout"] })).resolves.not.toBeNull();
+      await expect(
+        Promise.all([
+          handler.get("key", { softTags: ["path", "layout"] }),
+          handler.get("key", { softTags: ["layout", "path"] }),
+        ]),
+      ).resolves.not.toContain(null);
     });
 
     expect(store.tagExpirationCalls).toHaveLength(1);
