@@ -188,4 +188,22 @@ describe("isViteCliInvocation", () => {
       process.argv = originalArgv;
     }
   });
+
+  it("matches each command's repeated config precedence", () => {
+    for (const [command, expected] of [
+      ["dev", "second.config.ts"],
+      ["build", "first.config.ts"],
+    ] as const) {
+      const invocation = getViteCliInvocation([
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        command,
+        "--config",
+        "first.config.ts",
+        "--config",
+        "second.config.ts",
+      ]);
+      expect(invocation?.configFile).toBe(path.resolve(expected));
+    }
+  });
 });

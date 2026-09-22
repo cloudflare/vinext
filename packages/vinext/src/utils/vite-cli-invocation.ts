@@ -135,7 +135,10 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
       const value = optionHasInlineValue(arg)
         ? arg.slice(arg.indexOf("=") + 1)
         : invocation.args[++index];
-      configFile ??= value;
+      // Vite dev keeps the last repeated --config, while Vite build keeps
+      // the first. Match the installed CLI when identifying its config.
+      if (invocation.command === "dev") configFile = value;
+      else configFile ??= value;
       continue;
     }
     if (option === "--mode" || option === "-m") {

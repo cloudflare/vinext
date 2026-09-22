@@ -138,6 +138,41 @@ export default { root: ${JSON.stringify(root)}, plugins: [vinext()] };
     expect(lock.port).toBeGreaterThan(0);
   }, 30_000);
 
+  it("claims the final repeated Vite dev config", async () => {
+    const root = createProject();
+    fs.writeFileSync(path.join(root, "first.config.ts"), 'throw new Error("wrong config");\n');
+    fs.writeFileSync(
+      path.join(root, "second.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+export default { plugins: [vinext()] };
+`,
+    );
+    child = spawn(
+      process.execPath,
+      [
+        VITE_CLI_PATH,
+        "dev",
+        "--config",
+        "first.config.ts",
+        "--config",
+        "second.config.ts",
+        "--port",
+        "0",
+      ],
+      { cwd: root, stdio: "pipe" },
+    );
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+
+    const lock = await waitFor(() => {
+      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+  }, 30_000);
+
   it("does not let a nested config-loading server claim an unused instance's reservation", async () => {
     const root = createProject();
     const nestedRoot = createProject();
@@ -289,6 +324,86 @@ export default { plugins: [
       return current && current.port > 0 ? current : undefined;
     });
     expect(lock.port).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("keeps CLI ownership when a nested server reuses the same plugin array", async () => {
+    const root = createProject();
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+import { createServer } from "vite";
+const shared = vinext();
+export default { plugins: [
+  { name: "nested-configure-server", enforce: "pre", async configureServer() {
+    if (process.env.VINEXT_NESTED_CONFIGURE_TEST === "1") return;
+    process.env.VINEXT_NESTED_CONFIGURE_TEST = "1";
+    try {
+      const nested = await createServer({ root: ${JSON.stringify(root)}, configFile: false, plugins: shared, logLevel: "silent", server: { middlewareMode: true } });
+      try {
+        if (nested.config.server.port === 3000) throw new Error("Nested server claimed CLI defaults");
+      } finally { await nested.close(); }
+    } finally { delete process.env.VINEXT_NESTED_CONFIGURE_TEST; }
+  } },
+  ...shared,
+] };
+`,
+    );
+    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      stdio: "pipe",
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+
+    const lock = await waitFor(() => {
+      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("retains the CLI claim until closeServer hooks finish", async () => {
+    const root = createProject();
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+import { createServer } from "vite";
+import fs from "node:fs";
+export default { plugins: [vinext(), {
+  name: "nested-on-close",
+  async closeServer() {
+    if (process.env.VINEXT_NESTED_CLOSE_TEST === "1") return;
+    process.env.VINEXT_NESTED_CLOSE_TEST = "1";
+    try {
+      const nested = await createServer({ logLevel: "silent" });
+      try {
+        if (nested.config.server.port === 3000) throw new Error("Close hook lost CLI ownership");
+      } finally { await nested.close(); }
+      fs.writeFileSync("close-hook-ok", "ok");
+    } finally { delete process.env.VINEXT_NESTED_CLOSE_TEST; }
+  },
+}] };
+`,
+    );
+    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      stdio: "pipe",
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+
+    await waitFor(() => {
+      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+      return readLockfile(getLockfilePath(root));
+    });
+    const exited = new Promise<void>((resolve) => child!.once("exit", () => resolve()));
+    child.kill("SIGTERM");
+    await exited;
+    expect(fs.readFileSync(path.join(root, "close-hook-ok"), "utf-8")).toBe("ok");
+    expect(output).not.toContain("Close hook lost CLI ownership");
   }, 30_000);
 
   it("loads dotenv before evaluating Vite config", async () => {

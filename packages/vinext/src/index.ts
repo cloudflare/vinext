@@ -156,6 +156,7 @@ import {
   reserveViteCliDevInvocation,
   applyDevServerDefaults,
   createDevServerLifecyclePlugin,
+  VINEXT_DEV_CLI_LIFECYCLE,
   VINEXT_DEV_RESTART_CONFIG,
 } from "./cli-dev-config.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
@@ -1528,6 +1529,7 @@ type InternalVinextOptions = VinextOptions & {
 
 type InternalUserConfig = UserConfig & {
   [VINEXT_BUILD_LIFECYCLE_CONFIG]?: BuildLifecycleInvocation;
+  [VINEXT_DEV_CLI_LIFECYCLE]?: true;
   [VINEXT_DEV_RESTART_CONFIG]?: true;
 };
 
@@ -1619,7 +1621,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasPlainPagesBuildEnvironments = false;
   let originalPlainPagesEnvironments: UserConfig["environments"] | undefined;
   let buildLifecycleInvocation: BuildLifecycleInvocation | undefined;
-  let devCliLifecycleEnabled = false;
   let reactUpgradeChecked = false;
   let pagesOptimizeEntries: string[] = [];
   const importMetaUrlCapability = createImportMetaUrlPlugin({
@@ -2383,7 +2384,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // `css-modules-data-urls` fixture. See plugins/css-data-url.ts.
     dataUrlCssPlugin(),
     createCssModuleImportCompatibilityPlugin(),
-    createDevServerLifecyclePlugin({}, () => devCliLifecycleEnabled),
+    createDevServerLifecyclePlugin(
+      {},
+      (config) => (config as InternalUserConfig)[VINEXT_DEV_CLI_LIFECYCLE] === true,
+    ),
     {
       name: "vinext:config",
       enforce: "pre",
@@ -2417,7 +2421,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
         root = path.resolve(toSlash(config.root ?? process.cwd()));
-        devCliLifecycleEnabled =
+        const devCliLifecycleEnabled =
           env.command === "serve" &&
           env.isPreview !== true &&
           claimViteCliDevInvocation(
@@ -3154,6 +3158,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
+          ...(devCliLifecycleEnabled ? { [VINEXT_DEV_CLI_LIFECYCLE]: true } : {}),
           // Cloudflare Pages builds need the shared builder configuration;
           // plain Pages builds add it after user config hooks determine whether
           // this is an application build or a single-environment target.
@@ -4053,13 +4058,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // plugin instance may otherwise take the outer CLI's reservation.
         if (
           isServeCommand &&
-          !devCliLifecycleEnabled &&
+          !(config as ResolvedConfig & { [VINEXT_DEV_CLI_LIFECYCLE]?: true })[
+            VINEXT_DEV_CLI_LIFECYCLE
+          ] &&
           config.configFile &&
           isViteCliConfigFile(config.configFile, config.inlineConfig)
         ) {
-          devCliLifecycleEnabled = claimViteCliDevInvocation(config.root, false, true);
-          if (devCliLifecycleEnabled && !config.server.middlewareMode) {
-            applyDevServerDefaults(config.server, {});
+          if (claimViteCliDevInvocation(config.root, false, true)) {
+            (config as ResolvedConfig & { [VINEXT_DEV_CLI_LIFECYCLE]?: true })[
+              VINEXT_DEV_CLI_LIFECYCLE
+            ] = true;
+            if (!config.server.middlewareMode) applyDevServerDefaults(config.server, {});
           }
         }
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {

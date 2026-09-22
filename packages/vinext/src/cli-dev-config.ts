@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { toSlash } from "pathslash";
-import type { Plugin, ServerOptions, ViteDevServer } from "vite";
+import type { Plugin, ResolvedConfig, ServerOptions, UserConfig, ViteDevServer } from "vite";
 import { formatAlreadyRunningError, tryAcquireLockfile } from "./server/dev-lockfile.js";
 import { isViteCliInvocation } from "./utils/vite-cli-invocation.js";
 
@@ -16,6 +16,7 @@ let devInvocationRoot: string | undefined;
 let devInvocationReserved = false;
 
 export const VINEXT_DEV_RESTART_CONFIG = "__vinextDevRestart";
+export const VINEXT_DEV_CLI_LIFECYCLE = "__vinextDevCliLifecycle";
 
 function normalizeDevLifecycleRoot(root: string): string {
   try {
@@ -57,7 +58,7 @@ export function applyDevServerDefaults(server: ServerOptions, options: DevServer
 
 export function createDevServerLifecyclePlugin(
   options: DevServerCliOptions,
-  isEnabled: () => boolean,
+  isEnabled: (config: UserConfig | ResolvedConfig) => boolean,
 ): Plugin {
   return {
     name: "vinext:dev-server-lifecycle",
@@ -67,7 +68,7 @@ export function createDevServerLifecyclePlugin(
     config: {
       order: "post",
       handler(config) {
-        if (!isEnabled() || config.server?.middlewareMode) return;
+        if (!isEnabled(config) || config.server?.middlewareMode) return;
         const server = (config.server ??= {});
         applyDevServerDefaults(server, options);
       },
@@ -75,7 +76,7 @@ export function createDevServerLifecyclePlugin(
     configureServer: {
       order: "post",
       handler(server) {
-        if (!isEnabled()) return;
+        if (!isEnabled(server.config)) return;
         if (!server.config.server.middlewareMode) {
           if (options.port !== undefined) server.config.server.port = options.port;
           if (options.hostname !== undefined) server.config.server.host = options.hostname;
@@ -219,5 +220,7 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
       });
     });
   });
-  server.httpServer?.on("close", releaseLifecycle);
+  // Vite runs closeServer hooks after closing HTTP. Keep CLI ownership until
+  // server.close() finishes those hooks, even if the lock is already released.
+  server.httpServer?.on("close", releaseLock);
 }
