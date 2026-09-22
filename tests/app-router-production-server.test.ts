@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
@@ -2312,9 +2313,9 @@ describe("App Router Production server (startProdServer)", () => {
     // resolves through vinext's production manifest below.
     expect(html).toContain('\\"getDate\\":\\"$h');
 
-    // The flight payload embeds each cached function prop as a server
-    // reference whose id is "<12-hex normalised key>#<hoisted export name>".
-    const refIds = [...new Set(html.match(/[0-9a-f]{12}#\$\$hoist_\d+_[A-Za-z0-9_$]+/g) ?? [])];
+    // Cache references keep plugin-rsc's module key while replacing the
+    // derivable export name with an independently keyed alias.
+    const refIds = [...new Set(html.match(/[0-9a-f]{12}#\$\$vinext_cache_[0-9a-f]{64}/g) ?? [])];
     expect(refIds.length).toBe(3);
     const [getDateRefId, getRandomRefId, getMessageRefId] = refIds;
 
@@ -2394,6 +2395,40 @@ describe("App Router Production server (startProdServer)", () => {
       messageRegExpFor(capturedScopeValue),
     )?.[0];
     expect(message2).toBe(capturedMessage.message);
+  });
+
+  // Next.js gives every server reference a build-secret-derived identity. A
+  // server-only cache helper must not become remotely callable from only its
+  // source path and export name.
+  // https://github.com/vercel/next.js/blob/canary/crates/next-custom-transforms/src/transforms/server_actions.rs
+  it("rejects an offline-derived reference for a hidden cache function", async () => {
+    const anonymous = await fetch(`${baseUrl}/use-cache-hidden-reference?record=victim`);
+    expect(anonymous.status).toBe(200);
+    expect(await anonymous.text()).toContain("FORBIDDEN");
+
+    const victim = await fetch(`${baseUrl}/use-cache-hidden-reference?record=victim`, {
+      headers: { Authorization: "Bearer fixture-victim-session" },
+    });
+    expect(victim.status).toBe(200);
+    expect(await victim.text()).toContain("VICTIM_PRIVATE_RECORD");
+
+    const predictableReferenceKey = createHash("sha256")
+      .update("app/use-cache-hidden-reference/records.ts")
+      .digest("hex")
+      .slice(0, 12);
+    const response = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "x-rsc-action": `${predictableReferenceKey}#readRecord`,
+      },
+      body: JSON.stringify(["victim"]),
+    });
+    const payload = await response.text();
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(payload).not.toContain("VICTIM_PRIVATE_RECORD");
   });
 
   it("middleware request header overrides still apply after middleware calls headers() first", async () => {

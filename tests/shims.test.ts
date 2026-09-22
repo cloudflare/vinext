@@ -6935,6 +6935,26 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it("scopes replayable cache entries by server-reference identity", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const firstBuild = registerCachedFunction(async () => "old", "test:same-id", "", {
+      encodeInvocationArgs: async () => "encrypted",
+      serverReferenceId: "module#first-alias",
+    });
+    const secondBuild = registerCachedFunction(async () => "new", "test:same-id", "", {
+      encodeInvocationArgs: async () => "encrypted",
+      serverReferenceId: "module#second-alias",
+    });
+
+    expect(await firstBuild()).toBe("old");
+    expect(await secondBuild()).toBe("new");
+  });
+
   it("scopes shared cache entries by deployment ID when available", async () => {
     // Ported from Next.js: test/production/app-dir/use-cache-cross-deployment/use-cache-cross-deployment.test.ts
     // https://github.com/vercel/next.js/blob/07f76411b07de9417d4a6b816f3137cafe1045fc/test/production/app-dir/use-cache-cross-deployment/use-cache-cross-deployment.test.ts

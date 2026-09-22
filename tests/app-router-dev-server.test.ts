@@ -2170,6 +2170,25 @@ describe("App Router integration", () => {
     expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
   });
 
+  it("rejects a hidden cache function's original dev export name", async () => {
+    const anonymous = await fetch(`${baseUrl}/use-cache-hidden-reference?record=victim`);
+    expect(anonymous.status).toBe(200);
+    expect(await anonymous.text()).toContain("FORBIDDEN");
+
+    const exploit = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "x-rsc-action": "/app/use-cache-hidden-reference/records.ts#readRecord",
+      },
+      body: JSON.stringify(["victim"]),
+    });
+
+    expect(exploit.status).toBe(404);
+    expect(exploit.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(await exploit.text()).not.toContain("VICTIM_PRIVATE_RECORD");
+  });
+
   it("returns action-not-found for an MPA form POST to a page with no decodable action", async () => {
     // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
     // ("should error when triggering an MPA action on an app with no server actions")

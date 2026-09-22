@@ -852,6 +852,47 @@ function isAppServerActionFunction(action: unknown): action is AppServerActionFu
   return typeof action === "function";
 }
 
+function normalizeDevServerReferenceId(id: string): string {
+  const exportSeparator = id.indexOf("#");
+  if (exportSeparator === -1) return id;
+  const moduleId = id.slice(0, exportSeparator);
+  // plugin-rsc's dev createServerManifest() appends this HMR-busting tag to
+  // serialized module ids. loadServerAction() removes it before importing, so
+  // compare the registered and requested identities on that same basis.
+  const cacheTag = moduleId.indexOf("$$cache=");
+  return (cacheTag === -1 ? moduleId : moduleId.slice(0, cacheTag)) + id.slice(exportSeparator);
+}
+
+function matchesRegisteredServerReference(
+  action: AppServerActionFunction,
+  actionId: string,
+): boolean {
+  const registeredId = Reflect.get(action, "$$id");
+  if (typeof registeredId !== "string") return false;
+
+  const normalizedRegisteredId = normalizeDevServerReferenceId(registeredId);
+  const normalizedActionId = normalizeDevServerReferenceId(actionId);
+  if (normalizedRegisteredId === normalizedActionId) return true;
+
+  // plugin-rsc hoists a function-level `"use server"` export under a generated
+  // reference name while preserving the source export as the module binding.
+  // A file-level `"use cache"` proxy therefore requests `#action`, but the
+  // loaded function is registered as `#$$hoist_<index>_action`. Keep the module
+  // identity and source export exact while accepting that compiler-owned name.
+  const registeredSeparator = normalizedRegisteredId.indexOf("#");
+  const actionSeparator = normalizedActionId.indexOf("#");
+  if (registeredSeparator === -1 || actionSeparator === -1) return false;
+  if (
+    normalizedRegisteredId.slice(0, registeredSeparator) !==
+    normalizedActionId.slice(0, actionSeparator)
+  ) {
+    return false;
+  }
+  const registeredExport = normalizedRegisteredId.slice(registeredSeparator + 1);
+  const requestedExport = normalizedActionId.slice(actionSeparator + 1);
+  return /^\$\$hoist_\d+_(.*)$/.exec(registeredExport)?.[1] === requestedExport;
+}
+
 function getServerActionFailureMessage(error: unknown): string {
   return error instanceof Error && error.message ? error.message : String(error);
 }
@@ -1222,6 +1263,13 @@ export async function handleProgressiveServerActionRequest(
       return null;
     }
 
+    if (directActionId && !matchesRegisteredServerReference(action, directActionId)) {
+      return createActionNotFoundResponse(directActionId, {
+        clearRequestContext: options.clearRequestContext,
+        getAndClearPendingCookies: options.getAndClearPendingCookies,
+      });
+    }
+
     const decodedActionId = Reflect.get(action, "$$id");
     if (
       typeof decodedActionId === "string" &&
@@ -1515,7 +1563,10 @@ export async function handleServerActionRscRequest<
         throw error;
       }
 
-      if (!isAppServerActionFunction(loadedAction)) {
+      if (
+        !isAppServerActionFunction(loadedAction) ||
+        !matchesRegisteredServerReference(loadedAction, options.actionId)
+      ) {
         return createActionNotFoundResponse(options.actionId, {
           clearRequestContext: options.clearRequestContext,
           getAndClearPendingCookies: options.getAndClearPendingCookies,
@@ -1558,7 +1609,10 @@ export async function handleServerActionRscRequest<
         throw error;
       }
 
-      if (!isAppServerActionFunction(loadedAction)) {
+      if (
+        !isAppServerActionFunction(loadedAction) ||
+        !matchesRegisteredServerReference(loadedAction, options.actionId)
+      ) {
         return createActionNotFoundResponse(options.actionId, {
           clearRequestContext: options.clearRequestContext,
           getAndClearPendingCookies: options.getAndClearPendingCookies,

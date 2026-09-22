@@ -1,7 +1,38 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
 test.describe('production "use cache" server function references', () => {
+  test("does not expose a server-only cache helper through its derived source identity", async ({
+    request,
+  }) => {
+    const anonymous = await request.get("/use-cache-hidden-reference?record=victim");
+    expect(anonymous.status()).toBe(200);
+    expect(await anonymous.text()).toContain("FORBIDDEN");
+
+    const victim = await request.get("/use-cache-hidden-reference?record=victim", {
+      headers: { Authorization: "Bearer fixture-victim-session" },
+    });
+    expect(victim.status()).toBe(200);
+    expect(await victim.text()).toContain("VICTIM_PRIVATE_RECORD");
+
+    const predictableReferenceKey = createHash("sha256")
+      .update("app/use-cache-hidden-reference/records.ts")
+      .digest("hex")
+      .slice(0, 12);
+    const exploit = await request.post("/use-cache-hidden-reference.rsc", {
+      data: JSON.stringify(["victim"]),
+      headers: {
+        "Content-Type": "text/plain",
+        "x-rsc-action": `${predictableReferenceKey}#readRecord`,
+      },
+    });
+
+    expect(exploit.status()).toBe(404);
+    expect(exploit.headers()["x-nextjs-action-not-found"]).toBe("1");
+    expect(await exploit.text()).not.toContain("VICTIM_PRIVATE_RECORD");
+  });
+
   test("separates arguments for file-level cached exports imported by a Client Component", async ({
     page,
   }) => {
