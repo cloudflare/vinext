@@ -10,6 +10,8 @@ export type ViteCliInvocation = {
 
 let buildInvocationClaimed = false;
 
+const SHORT_OPTIONS = new Set(["c", "d", "f", "h", "l", "m", "v", "w"]);
+
 const REQUIRED_VALUE_OPTIONS = new Set([
   "--assetsDir",
   "--assetsInlineLimit",
@@ -56,13 +58,22 @@ function optionName(arg: string): string {
   return equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
 }
 
+function clusteredShortOption(arg: string): string | undefined {
+  const name = optionName(arg);
+  if (!name.startsWith("-") || name.startsWith("--") || name.length <= 2) return undefined;
+  const options = name.slice(1);
+  return Array.from(options).every((option) => SHORT_OPTIONS.has(option))
+    ? `-${options.at(-1)}`
+    : undefined;
+}
+
 function optionHasInlineValue(arg: string): boolean {
   return arg.includes("=");
 }
 
 function optionConsumesNext(arg: string, next: string | undefined): boolean {
   if (optionHasInlineValue(arg)) return false;
-  const option = optionName(arg);
+  const option = clusteredShortOption(arg) ?? optionName(arg);
   if (REQUIRED_VALUE_OPTIONS.has(option)) return true;
   if (OPTIONAL_VALUE_OPTIONS.has(option)) return next !== undefined && !next.startsWith("-");
   const booleanOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
@@ -114,7 +125,7 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
       root ??= invocation.args[index + 1];
       break;
     }
-    const option = optionName(arg);
+    const option = clusteredShortOption(arg) ?? optionName(arg);
     if (option === "--mode" || option === "-m") {
       mode = optionHasInlineValue(arg) ? arg.slice(arg.indexOf("=") + 1) : invocation.args[++index];
       continue;
