@@ -1242,7 +1242,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const reserved = await Promise.allSettled(
       this.getMetadataShards().map(async (metadata) => ({
-        candidates: await metadata.reserveRefresh(options, this.objectKeyRoot(), Date.now()),
+        candidates: await metadata.findRefreshCandidates(options),
         metadata,
       })),
     );
@@ -1253,7 +1253,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       result.status === "fulfilled" ? [result.value] : [],
     );
     const candidates = groups.flatMap(({ candidates, metadata }) =>
-      candidates.map((candidate) => ({ ...candidate, metadata })),
+      candidates.map((entry) => ({ entry, metadata })),
     );
     if (candidates.length === 0) {
       if (failures.length) {
@@ -1265,20 +1265,26 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const settled = await settleWithConcurrency(
       candidates,
       REFRESH_CONCURRENCY,
-      async ({ entry, metadata, reservation }) => {
-        const result = await this.regenerateEntry(
-          metadata,
-          entry,
-          "manual",
-          reservation
-            ? {
-                cacheKey: entry.cacheKey,
-                fenceTags: entry.cacheTags,
-                keyHash: entry.keyHash,
-                ...reservation,
-              }
-            : undefined,
+      async ({ entry, metadata }) => {
+        if (!entry.revalidator) {
+          throw new Error("Cache entry has no configured revalidator");
+        }
+        const regeneration = await metadata.reserveRegeneration(
+          entry.keyHash,
+          entry.cacheKey,
+          this.objectKeyPrefix(entry.keyHash),
+          Date.now(),
+          entry.activeRevision,
+          entry.latestRevision,
         );
+        if (!regeneration?.reservation) return null;
+
+        const result = await this.regenerateEntry(metadata, regeneration.entry, "manual", {
+          cacheKey: regeneration.entry.cacheKey,
+          fenceTags: regeneration.entry.cacheTags,
+          keyHash: regeneration.entry.keyHash,
+          ...regeneration.reservation,
+        });
         return result.published ? result.entry : null;
       },
     );

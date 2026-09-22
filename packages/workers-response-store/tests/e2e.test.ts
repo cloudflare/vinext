@@ -853,7 +853,7 @@ test("refresh accepts more tag selectors than one SQLite parameter batch", async
   assert.equal(await (await read("/refresh-many-tags")).text(), "refreshed");
 });
 
-test("refresh reserves more than one SQLite batch in one metadata call", async () => {
+test("manual refresh handles more than one hundred candidates", async () => {
   await Promise.all(
     Array.from({ length: 101 }, (_, index) =>
       put(`/refresh-batch/${index}`, "seed", {
@@ -909,6 +909,107 @@ test("manual refresh bounds revalidator concurrency and completes every candidat
       index === candidateCount - 1 ? `seed-${index}` : `refreshed-${index}`,
     );
   }
+});
+
+test("manual refresh reserves candidates only as concurrency slots become available", async () => {
+  const candidateCount = 13;
+  await Promise.all(
+    Array.from({ length: candidateCount }, (_, index) =>
+      put(`/refresh-reservation-window/${index}`, `seed-${index}`, {
+        tags: ["refresh-reservation-window"],
+        revalidator: {
+          body: `refreshed-${index}`,
+          cacheControl: "public, max-age=60",
+          delayMs: 500,
+        },
+      }),
+    ),
+  );
+
+  const refreshing = refreshSelectors({ tags: ["refresh-reservation-window"] });
+  let activePaths: string[] = [];
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const response = await worker.fetch("https://user.test/admin/active-regenerations");
+    activePaths = (await response.json()) as string[];
+    if (activePaths.length === 6) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(activePaths.length, 6);
+
+  const activeObjectKeys = await Promise.all(
+    activePaths.map(async (path) => `${r2Root}/${await cacheKeyHash(path)}/2`),
+  );
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  await storage.exec(
+    `UPDATE pending_objects SET created_at = CASE
+      WHEN object_key IN (${activeObjectKeys.map(() => "?").join(", ")}) THEN ? ELSE 0 END`,
+    ...activeObjectKeys,
+    Date.now(),
+  );
+
+  const swept = await (await metadataStub()).sweepExpiredPendingObjects(1);
+  const result = await refreshing;
+  assert.equal(swept, 0);
+  assert.deepEqual(result.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+  assert.equal(
+    (await metadata()).filter((entry) => entry.activeRevision === 2).length,
+    candidateCount,
+  );
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("manual refresh does not regenerate a replacement outside its selected revision", async () => {
+  const paths = Array.from({ length: 7 }, (_, index) => `/refresh-replacement/${index}`);
+  await Promise.all(
+    paths.map((path, index) =>
+      put(path, `seed-${index}`, {
+        tags: ["refresh-replacement"],
+        revalidator: {
+          body: `refreshed-${index}`,
+          cacheControl: "public, max-age=60",
+          delayMs: 300,
+        },
+      }),
+    ),
+  );
+
+  const refreshing = refreshSelectors({ tags: ["refresh-replacement"] });
+  let activePaths: string[] = [];
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const response = await worker.fetch("https://user.test/admin/active-regenerations");
+    activePaths = (await response.json()) as string[];
+    if (activePaths.length === 6) break;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(activePaths.length, 6);
+
+  const queuedPath = paths.find((path) => !activePaths.includes(path));
+  assert.ok(queuedPath);
+  const replacement = put(queuedPath, "replacement", { bodyDelayMs: 600 });
+  let replacementReserved = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const queuedEntry = (await metadata()).find((entry) => entry.cacheKey === queuedPath);
+    if (queuedEntry?.latestRevision === 2) {
+      replacementReserved = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(replacementReserved, true);
+
+  const [refreshResult, replacementResult] = await Promise.all([refreshing, replacement]);
+  assert.deepEqual(refreshResult.json, {
+    backingStoreUpdated: false,
+    edgePurgeAccepted: false,
+  });
+  assert.deepEqual(replacementResult.json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  assert.equal(await (await read(queuedPath)).text(), "replacement");
+  assert.equal(await metadataRowCount("pending_objects"), 0);
 });
 
 test("refresh and purge select entries from their stored tags", async () => {

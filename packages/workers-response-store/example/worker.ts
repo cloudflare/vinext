@@ -25,6 +25,7 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 let regenerationCount = 0;
 let activeRegenerationCount = 0;
 let maxConcurrentRegenerations = 0;
+const activeRegenerationRequests = new Set<string>();
 const failedOnce = new Set<string>();
 
 function json(value: unknown, status = 200): Response {
@@ -136,6 +137,9 @@ const responseStoreOptions = {
     regenerationCount += 1;
     activeRegenerationCount += 1;
     maxConcurrentRegenerations = Math.max(maxConcurrentRegenerations, activeRegenerationCount);
+    const requestUrl = new URL(input.request.url);
+    const cacheKey = requestUrl.pathname + requestUrl.search;
+    activeRegenerationRequests.add(cacheKey);
 
     try {
       const options = (input.args[0] ?? {}) as FixtureRevalidatorOptions;
@@ -145,9 +149,6 @@ const responseStoreOptions = {
       if (options.fail) {
         throw new Error("Fixture regeneration failure");
       }
-
-      const requestUrl = new URL(input.request.url);
-      const cacheKey = requestUrl.pathname + requestUrl.search;
 
       if (options.failOnce && !failedOnce.has(cacheKey)) {
         failedOnce.add(cacheKey);
@@ -175,6 +176,7 @@ const responseStoreOptions = {
       return new Response(body, { headers });
     } finally {
       activeRegenerationCount -= 1;
+      activeRegenerationRequests.delete(cacheKey);
     }
   },
 } satisfies WorkersResponseStoreOptions<WorkersResponseStoreEnv>;
@@ -233,6 +235,10 @@ export default {
 
       if (request.method === "GET" && url.pathname === "/admin/stats") {
         return json({ activeRegenerationCount, maxConcurrentRegenerations, regenerationCount });
+      }
+
+      if (request.method === "GET" && url.pathname === "/admin/active-regenerations") {
+        return json([...activeRegenerationRequests]);
       }
 
       return new Response("Not found", { status: 404 });

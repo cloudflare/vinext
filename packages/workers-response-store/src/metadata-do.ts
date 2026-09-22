@@ -27,11 +27,6 @@ type WriteReservation = {
   revision: number;
 };
 
-type RefreshCandidate = {
-  entry: StoredEntry;
-  reservation?: Pick<WriteReservation, "objectKey" | "revision">;
-};
-
 type RegenerationReservation = {
   entry: StoredEntry;
   reservation?: WriteReservation;
@@ -74,6 +69,8 @@ export type CacheMetadataStub = DurableObjectStub & {
     cacheKey: string,
     objectKeyPrefix: string,
     createdAt: number,
+    expectedActiveRevision?: number,
+    expectedLatestRevision?: number,
   ): Promise<RegenerationReservation | null>;
   claimRevalidation(
     keyHash: string,
@@ -99,11 +96,7 @@ export type CacheMetadataStub = DurableObjectStub & {
   invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
   getTagExpiration(tags: string[]): Promise<number>;
-  reserveRefresh(
-    options: ResponseStoreRefreshOptions,
-    objectKeyRoot: string,
-    createdAt: number,
-  ): Promise<RefreshCandidate[]>;
+  findRefreshCandidates(options: ResponseStoreRefreshOptions): Promise<StoredEntry[]>;
   purgeMatching(
     options: ResponseStorePurgeOptions,
     invalidatedAt?: number,
@@ -832,6 +825,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     cacheKey: string,
     objectKeyPrefix: string,
     createdAt: number,
+    expectedActiveRevision?: number,
+    expectedLatestRevision?: number,
   ): Promise<RegenerationReservation | null> {
     const result = this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
@@ -843,6 +838,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         .toArray()[0];
       const entry = current ? storedEntryFromRow(current) : null;
       if (!entry) return null;
+      if (
+        (expectedActiveRevision !== undefined && entry.activeRevision !== expectedActiveRevision) ||
+        (expectedLatestRevision !== undefined && entry.latestRevision !== expectedLatestRevision)
+      ) {
+        return null;
+      }
       if (!entry.revalidator) return { entry };
 
       const revision = this.reserveRevision(keyHash, cacheKey, current);
@@ -1059,72 +1060,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return this.getTagInvalidationMaximum(tags, "invalidated_at");
   }
 
-  async reserveRefresh(
-    options: ResponseStoreRefreshOptions,
-    objectKeyRoot: string,
-    createdAt: number,
-  ): Promise<RefreshCandidate[]> {
-    const candidates = this.ctx.storage.transactionSync(() => {
-      const matches = this.findMatchingEntryRows(options);
-      const reservations = matches.flatMap((row) => {
-        const entry = storedEntryFromRow(row);
-        return entry?.revalidator
-          ? [
-              {
-                keyHash: row.key_hash,
-                objectKey: `${objectKeyRoot}/${row.key_hash}/${row.latest_revision + 1}`,
-                revision: row.latest_revision + 1,
-              },
-            ]
-          : [];
-      });
-
-      for (const batch of batches(reservations, MAX_SQL_PARAMETERS)) {
-        const keyHashes = batch.map(({ keyHash }) => keyHash);
-        this.ctx.storage.sql.exec(
-          `UPDATE entries SET latest_revision = latest_revision + 1
-          WHERE key_hash IN (${keyHashes.map(() => "?").join(", ")})`,
-          ...keyHashes,
-        );
-      }
-      for (const batch of batches(reservations, MAX_SQL_PARAMETERS / 2)) {
-        this.ctx.storage.sql.exec(
-          `INSERT OR REPLACE INTO pending_objects
-            (object_key, created_at, invalidation_sequence) VALUES ${batch
-              .map(
-                () =>
-                  "(?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
-              )
-              .join(", ")}`,
-          ...batch.flatMap(({ objectKey }) => [objectKey, createdAt]),
-        );
-      }
-
-      const byKey = new Map(reservations.map((reservation) => [reservation.keyHash, reservation]));
-      return matches.flatMap((row) => {
-        const entry = storedEntryFromRow(row);
-        if (!entry) return [];
-        const reservation = byKey.get(row.key_hash);
-        return [
-          {
-            entry,
-            ...(reservation
-              ? {
-                  reservation: {
-                    objectKey: reservation.objectKey,
-                    revision: reservation.revision,
-                  },
-                }
-              : {}),
-          },
-        ];
-      });
+  findRefreshCandidates(options: ResponseStoreRefreshOptions): StoredEntry[] {
+    return this.findMatchingEntryRows(options).flatMap((row) => {
+      const entry = storedEntryFromRow(row);
+      return entry ? [entry] : [];
     });
-
-    if (candidates.some(({ reservation }) => reservation)) {
-      await this.ensureCleanupAlarm(createdAt);
-    }
-    return candidates;
   }
 
   async purgeMatching(
