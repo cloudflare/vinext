@@ -41,7 +41,6 @@ export default defineConfig({
       },
     },
     vinext({
-      clientOutDir: "custom/client",
       rscOutDir: "custom/server",
       ssrOutDir: "custom/server/ssr",
     }),
