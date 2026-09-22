@@ -13,6 +13,7 @@ type ActiveDevServerLock = {
 
 const activeDevServerLocks = new Map<string, ActiveDevServerLock>();
 let devInvocationRoot: string | undefined;
+let devInvocationReserved = false;
 
 export const VINEXT_DEV_RESTART_CONFIG = "__vinextDevRestart";
 
@@ -24,14 +25,20 @@ function normalizeDevLifecycleRoot(root: string): string {
   }
 }
 
-export function claimViteCliDevInvocation(root: string, isRestart = false): boolean {
+export function reserveViteCliDevInvocation(): boolean {
+  if (!isViteCliInvocation("dev") || devInvocationReserved) return false;
+  devInvocationReserved = true;
+  return true;
+}
+
+export function claimViteCliDevInvocation(
+  root: string,
+  isRestart = false,
+  isReserved = false,
+): boolean {
   root = normalizeDevLifecycleRoot(root);
   if (!isViteCliInvocation("dev")) return false;
-  if (devInvocationRoot === undefined) {
-    devInvocationRoot = root;
-    return true;
-  }
-  if (!isRestart) return false;
+  if (!isRestart && (!isReserved || devInvocationRoot !== undefined)) return false;
   devInvocationRoot = root;
   return true;
 }
@@ -104,6 +111,7 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
     releaseLock();
     if (!activeDevServerLocks.get(root)?.restarting && devInvocationRoot === root) {
       devInvocationRoot = undefined;
+      devInvocationReserved = false;
     }
   };
   const closeServer = server.close.bind(server);
