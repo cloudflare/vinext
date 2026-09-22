@@ -59,8 +59,9 @@ export default defineConfig({
   write(
     root,
     "app/page.tsx",
-    `export default function Page() {
-  return <p>{process.env.NODE_ENV === "production" ? "vinext-production-marker" : "vinext-development-marker"}</p>;
+    `declare const __CONFIG_ONLY_MARKER__: string;
+export default function Page() {
+  return <p>{[__CONFIG_ONLY_MARKER__, process.env.NODE_ENV === "production" ? "vinext-production-marker" : "vinext-development-marker"].join(":")}</p>;
 }
 `,
   );
@@ -69,7 +70,7 @@ export default defineConfig({
     "pages/legacy.tsx",
     `declare const __CONFIG_ONLY_MARKER__: string;
 export default function LegacyPage() {
-  return <p>{__CONFIG_ONLY_MARKER__}</p>;
+  return <p>{[__CONFIG_ONLY_MARKER__, process.env.NODE_ENV === "production" ? "vinext-pages-production-marker" : "vinext-pages-development-marker"].join(":")}</p>;
 }
 `,
   );
@@ -90,6 +91,7 @@ describe("configured vinext build contract", () => {
       cwd: root,
       env: { ...process.env, NODE_ENV: "development" },
       stdio: "pipe",
+      timeout: 120_000,
     });
 
     expect(fs.existsSync(path.join(root, "custom/server/index.js"))).toBe(true);
@@ -98,13 +100,17 @@ describe("configured vinext build contract", () => {
 
     const pagesEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
     expect(pagesEntry).toContain("config-only-plugin-ran");
+    expect(pagesEntry).toContain("vinext-pages-production-marker");
+    expect(pagesEntry).not.toContain("vinext-pages-development-marker");
     expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
 
     const appOutput = fs
       .globSync("**/*.js", { cwd: path.join(root, "custom/server") })
       .map((file) => fs.readFileSync(path.join(root, "custom/server", file), "utf-8"))
       .join("\n");
+    expect(appOutput).toContain("config-only-plugin-ran");
     expect(appOutput).toContain("vinext-production-marker");
     expect(appOutput).not.toContain("vinext-development-marker");
+    expect(appOutput).not.toContain("__CONFIG_ONLY_MARKER__");
   }, 120_000);
 });
