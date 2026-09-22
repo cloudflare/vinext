@@ -23,6 +23,8 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 
 // Fixture-only state used by E2E assertions.
 let regenerationCount = 0;
+let activeRegenerationCount = 0;
+let maxConcurrentRegenerations = 0;
 const failedOnce = new Set<string>();
 
 function json(value: unknown, status = 200): Response {
@@ -132,41 +134,48 @@ const responseStoreOptions = {
     }
 
     regenerationCount += 1;
+    activeRegenerationCount += 1;
+    maxConcurrentRegenerations = Math.max(maxConcurrentRegenerations, activeRegenerationCount);
 
-    const options = (input.args[0] ?? {}) as FixtureRevalidatorOptions;
-    if (options.delayMs) {
-      await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+    try {
+      const options = (input.args[0] ?? {}) as FixtureRevalidatorOptions;
+      if (options.delayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+      }
+      if (options.fail) {
+        throw new Error("Fixture regeneration failure");
+      }
+
+      const requestUrl = new URL(input.request.url);
+      const cacheKey = requestUrl.pathname + requestUrl.search;
+
+      if (options.failOnce && !failedOnce.has(cacheKey)) {
+        failedOnce.add(cacheKey);
+        throw new Error("Fixture one-time regeneration failure");
+      }
+
+      const body =
+        options.body ??
+        `${options.bodyPrefix ?? "regenerated"}:${regenerationCount}:${crypto.randomUUID()}`;
+      const headers = new Headers({
+        "Cache-Control": options.cacheControl ?? DEFAULT_CACHE_CONTROL,
+        "Content-Type": "text/plain; charset=utf-8",
+        "X-Revalidation-Id": input.id,
+        "X-Revalidation-Reason": input.reason,
+        "X-Revalidation-Request": cacheKey,
+        "X-Revalidation-Observed-Visitor":
+          input.request.headers.get("X-Visitor-Secret") ?? "absent",
+        "X-Revalidation-Version": env.CF_VERSION_METADATA?.id ?? "missing",
+      });
+
+      if (options.cacheTags?.length) {
+        headers.set("Cache-Tag", options.cacheTags.join(","));
+      }
+
+      return new Response(body, { headers });
+    } finally {
+      activeRegenerationCount -= 1;
     }
-    if (options.fail) {
-      throw new Error("Fixture regeneration failure");
-    }
-
-    const requestUrl = new URL(input.request.url);
-    const cacheKey = requestUrl.pathname + requestUrl.search;
-
-    if (options.failOnce && !failedOnce.has(cacheKey)) {
-      failedOnce.add(cacheKey);
-      throw new Error("Fixture one-time regeneration failure");
-    }
-
-    const body =
-      options.body ??
-      `${options.bodyPrefix ?? "regenerated"}:${regenerationCount}:${crypto.randomUUID()}`;
-    const headers = new Headers({
-      "Cache-Control": options.cacheControl ?? DEFAULT_CACHE_CONTROL,
-      "Content-Type": "text/plain; charset=utf-8",
-      "X-Revalidation-Id": input.id,
-      "X-Revalidation-Reason": input.reason,
-      "X-Revalidation-Request": cacheKey,
-      "X-Revalidation-Observed-Visitor": input.request.headers.get("X-Visitor-Secret") ?? "absent",
-      "X-Revalidation-Version": env.CF_VERSION_METADATA?.id ?? "missing",
-    });
-
-    if (options.cacheTags?.length) {
-      headers.set("Cache-Tag", options.cacheTags.join(","));
-    }
-
-    return new Response(body, { headers });
   },
 } satisfies WorkersResponseStoreOptions<WorkersResponseStoreEnv>;
 
@@ -223,7 +232,7 @@ export default {
       }
 
       if (request.method === "GET" && url.pathname === "/admin/stats") {
-        return json({ regenerationCount });
+        return json({ activeRegenerationCount, maxConcurrentRegenerations, regenerationCount });
       }
 
       return new Response("Not found", { status: 404 });

@@ -219,6 +219,7 @@ const MISS_HEADERS = {
 const BACKGROUND_REVALIDATION_LEASE_MS = 30_000;
 const CACHE_PURGE_BATCH_SIZE = 100;
 const PURGE_TOMBSTONE_BATCH_SIZE = 400;
+const REFRESH_CONCURRENCY = 6;
 const ISOLATE_MISS_CACHE_CAPACITY = 1_024;
 const ISOLATE_MISS_CACHE_TTL_MS = 1_000;
 const MAX_R2_CAS_ATTEMPTS = 3;
@@ -245,6 +246,29 @@ function* batches<T>(values: readonly T[], size: number): Generator<T[], void> {
   for (let offset = 0; offset < values.length; offset += size) {
     yield values.slice(offset, offset + size);
   }
+}
+
+async function settleWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results = Array.from<PromiseSettledResult<R>>({ length: values.length });
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (nextIndex < values.length) {
+      const index = nextIndex++;
+      try {
+        results[index] = { status: "fulfilled", value: await operation(values[index]) };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, () => worker()));
+  return results;
 }
 
 function metadataInteger(value: string | undefined): number | undefined {
@@ -1238,8 +1262,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       return { backingStoreUpdated: false, edgePurgeAccepted: false };
     }
 
-    const settled = await Promise.allSettled(
-      candidates.map(async ({ entry, metadata, reservation }) => {
+    const settled = await settleWithConcurrency(
+      candidates,
+      REFRESH_CONCURRENCY,
+      async ({ entry, metadata, reservation }) => {
         const result = await this.regenerateEntry(
           metadata,
           entry,
@@ -1254,7 +1280,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             : undefined,
         );
         return result.published ? result.entry : null;
-      }),
+      },
     );
 
     const refreshed: StoredEntry[] = [];

@@ -872,6 +872,45 @@ test("refresh reserves more than one SQLite batch in one metadata call", async (
   assert.equal((await r2Objects()).objects.length, 101);
 });
 
+test("manual refresh bounds revalidator concurrency and completes every candidate", async () => {
+  const candidateCount = 13;
+  await Promise.all(
+    Array.from({ length: candidateCount }, (_, index) =>
+      put(`/refresh-concurrency/${index}`, `seed-${index}`, {
+        tags: ["refresh-concurrency"],
+        revalidator: {
+          body: `refreshed-${index}`,
+          cacheControl: "public, max-age=60",
+          delayMs: 50,
+          fail: index === candidateCount - 1,
+        },
+      }),
+    ),
+  );
+
+  const result = await refreshSelectors({ tags: ["refresh-concurrency"] });
+  assert.equal(result.response.status, 500);
+  assert.deepEqual(result.json, { error: "One or more cache entries failed to refresh" });
+
+  const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
+    activeRegenerationCount: number;
+    maxConcurrentRegenerations: number;
+    regenerationCount: number;
+  };
+  assert.deepEqual(stats, {
+    activeRegenerationCount: 0,
+    maxConcurrentRegenerations: 6,
+    regenerationCount: candidateCount,
+  });
+
+  for (let index = 0; index < candidateCount; index++) {
+    assert.equal(
+      await (await read(`/refresh-concurrency/${index}`)).text(),
+      index === candidateCount - 1 ? `seed-${index}` : `refreshed-${index}`,
+    );
+  }
+});
+
 test("refresh and purge select entries from their stored tags", async () => {
   await put("/tag-index", "seed", {
     tags: ["Original", "Shared"],
