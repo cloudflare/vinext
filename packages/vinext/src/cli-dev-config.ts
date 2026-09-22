@@ -49,7 +49,6 @@ export function createDevServerLifecyclePlugin(
   options: DevServerCliOptions,
   isEnabled: () => boolean,
 ): Plugin {
-  let appliedDefaultPort = false;
   return {
     name: "vinext:dev-server-lifecycle",
     // Both levels are required: `enforce` places this after the user's normal
@@ -60,7 +59,6 @@ export function createDevServerLifecyclePlugin(
       handler(config) {
         if (!isEnabled() || config.server?.middlewareMode) return;
         const server = (config.server ??= {});
-        appliedDefaultPort = options.port === undefined && server.port === undefined;
         applyDevServerDefaults(server, options);
       },
     },
@@ -68,11 +66,7 @@ export function createDevServerLifecyclePlugin(
       order: "post",
       handler(server) {
         if (!isEnabled()) return;
-        if (server.config.server.middlewareMode) {
-          if (appliedDefaultPort && server.config.server.port === 3000) {
-            server.config.server.port = 5173;
-          }
-        } else {
+        if (!server.config.server.middlewareMode) {
           if (options.port !== undefined) server.config.server.port = options.port;
           if (options.hostname !== undefined) server.config.server.host = options.hostname;
         }
