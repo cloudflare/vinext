@@ -377,9 +377,9 @@ if (earlyViteCliInvocation) {
     "NODE_ENV",
     earlyViteCliInvocation.command === "build"
       ? (viteCliBuildConfigNodeEnv ?? "production")
-        : earlyViteCliInvocation.mode === "test"
-          ? "test"
-          : "development",
+      : earlyViteCliInvocation.mode === "test"
+        ? "test"
+        : "development",
   );
   loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
 }
