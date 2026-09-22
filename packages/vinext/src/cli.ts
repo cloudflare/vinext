@@ -25,7 +25,7 @@ import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { parseArgs } from "./cli-args.js";
 import { generateRouteTypes } from "./typegen.js";
-import { findViteRoot } from "./utils/vite-cli-invocation.js";
+import { findViteRoot, valueOptionName } from "./utils/vite-cli-invocation.js";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"))
   .version as string;
@@ -50,16 +50,10 @@ function configPreflight(command: ViteCommand): string {
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
     if (arg === "--") break;
-    if (arg.startsWith("--config=") || arg.startsWith("-c=")) {
-      if (++explicitConfigCount > 1) return root;
-      explicitConfig = arg.slice(arg.indexOf("=") + 1) || undefined;
-      if (!explicitConfig) return root;
-    }
-    if (arg === "--config" || arg === "-c") {
-      if (++explicitConfigCount > 1) return root;
-      explicitConfig = rawArgs[index + 1];
-      if (!explicitConfig || explicitConfig.startsWith("-")) return root;
-    }
+    if (valueOptionName(arg) !== "--config" && valueOptionName(arg) !== "-c") continue;
+    if (++explicitConfigCount > 1) return root;
+    explicitConfig = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : rawArgs[++index];
+    if (!explicitConfig || explicitConfig.startsWith("-")) return root;
   }
 
   const configPath = explicitConfig ? path.resolve(cwd, explicitConfig) : findViteConfigPath(root);

@@ -106,6 +106,21 @@ describe("thin vinext command proxies", () => {
     },
   );
 
+  it("leaves inline-valued negations and extra positional roots to Vite", () => {
+    const root = createRoot();
+    for (const args of [["--no-minify=false"], ["first", "second"]]) {
+      const result = spawnSync(process.execPath, [CLI_PATH, "build", ...args], {
+        cwd: root,
+        encoding: "utf-8",
+      });
+      expect(result.status).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain(
+        args.length === 1 ? "Unknown option" : "Unused args: `second`",
+      );
+      expect(result.stderr).not.toContain("No Vite config was found");
+    }
+  });
+
   it.each([
     { args: ["--mode"] },
     { args: ["--mode="] },
@@ -294,6 +309,19 @@ describe("thin vinext command proxies", () => {
     },
     120_000,
   );
+
+  it("resolves a clustered short config option", () => {
+    const root = createRoot();
+    writeProject(root, "config/vite.custom.ts");
+    const result = spawnSync(
+      process.execPath,
+      [CLI_PATH, "build", "-dc", "config/vite.custom.ts", "--logLevel", "silent"],
+      { cwd: root, encoding: "utf-8" },
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
+  }, 120_000);
 
   it("leaves duplicate config precedence to Vite", () => {
     const root = createRoot();

@@ -58,6 +58,17 @@ describe("findViteRoot", () => {
       });
     },
   );
+
+  it("leaves valued negations and extra positional roots to Vite", () => {
+    expect(findViteRoot("build", ["--no-minify=false"])).toEqual({
+      root: undefined,
+      shouldPreflight: false,
+    });
+    expect(findViteRoot("build", ["first", "second"])).toEqual({
+      root: "first",
+      shouldPreflight: false,
+    });
+  });
 });
 
 describe("isViteCliInvocation", () => {
