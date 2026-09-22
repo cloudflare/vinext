@@ -35,6 +35,7 @@ describe("isViteCliInvocation", () => {
     [["node", "/project/node_modules/.bin/vp", "build"], "build", true],
     [["node", "/project/node_modules/.bin/vp", "-C", "apps/web", "dev"], "dev", true],
     [["node", "/project/node_modules/.bin/vp", "exec", "vite", "dev"], "dev", true],
+    [["node", "/project/node_modules/vite/bin/vite.js", "preview"], "dev", false],
     [["node", "/project/node_modules/.bin/vp", "preview"], "dev", false],
     [["node", "/project/node_modules/.bin/vp", "test"], "build", false],
     [["node", "/project/test.ts", "build"], "build", false],
@@ -65,5 +66,24 @@ describe("isViteCliInvocation", () => {
       mode: "staging",
       root: expect.stringMatching(/\/app$/),
     });
+  });
+
+  it.each(["build", "dev"] as const)("resolves %s mode after the project root", (command) => {
+    expect(
+      getViteCliInvocation([
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        command,
+        "app",
+        "--mode",
+        "staging",
+      ]),
+    ).toEqual({ command, mode: "staging", root: expect.stringMatching(/\/app$/) });
+  });
+
+  it("does not treat Vite preview as a dev invocation", () => {
+    expect(
+      getViteCliInvocation(["node", "/project/node_modules/vite/bin/vite.js", "preview"]),
+    ).toBeUndefined();
   });
 });

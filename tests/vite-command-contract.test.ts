@@ -165,7 +165,7 @@ export default defineConfig({
     {
       name: "record-builder-config",
       configResolved(config) {
-        fs.writeFileSync("builder.json", JSON.stringify(config.builder));
+        fs.writeFileSync(config.root + "/builder.json", JSON.stringify(config.builder));
       },
     },
   ],
@@ -233,13 +233,13 @@ describe("configured vinext build contract", () => {
     expectConfiguredBuild(root);
   }, 120_000);
 
-  it("provides the same lifecycle with an explicit config and leading Vite options", () => {
+  it("provides the same lifecycle with Vite options after a positional root", () => {
     const root = createHybridProject("vite.prod.ts");
     write(root, "vite.config.ts", 'throw new Error("loaded the wrong Vite config");\n');
 
     execFileSync(
       process.execPath,
-      [VITE_CLI_PATH, "--mode", "production", "--config", "vite.prod.ts", "build"],
+      [VITE_CLI_PATH, "build", root, "--mode", "production", "--config", "vite.prod.ts"],
       {
         cwd: root,
         env: { ...process.env, NODE_ENV: "development" },
