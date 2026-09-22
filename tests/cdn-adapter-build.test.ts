@@ -240,6 +240,10 @@ describe("Cloudflare CDN adapter build output", () => {
       const workerClosure = await readStaticClosure(serverDir, manifest, workerEntry!);
       expect(workerClosure).toContain("cloudflare-workers");
       expect(workerClosure).toContain("enterSpan");
+      const buildId = await fs.readFile(path.join(pagesRoot, "dist/server/BUILD_ID"), "utf8");
+      await expect(
+        fs.stat(path.join(pagesRoot, "dist/client/_next/static", buildId)),
+      ).resolves.toBeDefined();
       await expect(
         fs.readFile(path.join(pagesRoot, "dist/server/__vinext_pregenerated_concrete_paths.js")),
       ).rejects.toMatchObject({ code: "ENOENT" });

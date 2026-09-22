@@ -2395,8 +2395,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildLifecycleEnabled =
           env.command === "build" &&
           !internalOptions.__skipBuildLifecycle &&
-          (buildLifecycleInvocation !== undefined ||
-            claimViteCliBuildInvocation());
+          (buildLifecycleInvocation !== undefined || claimViteCliBuildInvocation());
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};
@@ -3121,6 +3120,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
+          // Cloudflare Pages builds need the shared builder configuration;
+          // plain Pages builds add it after user config hooks determine whether
+          // this is an application build or a single-environment target.
+          ...(!hasAppDir && hasCloudflarePlugin
+            ? { builder: { ...config.builder, sharedConfigBuild: true } }
+            : {}),
           build: {
             // Emit asset files (CSS, etc.) referenced by SSR JS chunks.
             //
