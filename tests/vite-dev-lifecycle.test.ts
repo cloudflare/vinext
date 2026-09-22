@@ -84,6 +84,38 @@ export default { plugins: [vinext()] };
     expect(lock.port).toBeGreaterThan(0);
   }, 30_000);
 
+  it("does not let a nested config-loading server claim an unused instance's reservation", async () => {
+    const root = createProject();
+    const nestedRoot = createProject();
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+import { createServer } from "vite";
+const unused = vinext();
+export default { plugins: [
+  { name: "nested-before-vinext", enforce: "pre", async config() {
+    const nested = await createServer({ root: ${JSON.stringify(nestedRoot)}, plugins: [vinext()], logLevel: "silent" });
+    try {
+      if (nested.config.server.port !== 5173) throw new Error("Nested server claimed the CLI lifecycle");
+    } finally { await nested.close(); }
+  } },
+  vinext(),
+] };
+`,
+    );
+    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      stdio: "pipe",
+    });
+
+    const lock = await waitFor(() => {
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+    expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
+  }, 30_000);
+
   it("loads dotenv before evaluating Vite config", async () => {
     const root = createProject();
     fs.writeFileSync(path.join(root, ".env.staging"), "FROM_DOTENV=config-time-dotenv\n");
