@@ -2125,9 +2125,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       !config.build?.watch &&
       !config.build?.ssr &&
       getBuildBundlerOptions(config.build)?.input === undefined,
-    onPrepare: (config) => {
-      // A later config hook can explicitly disable Vite's output cleanup.
-      if (config.build.emptyOutDir === false) buildEmptyOutDir = false;
+    onPrepare: () => {
       if (!hasAppDir || reactUpgradeChecked) return;
       reactUpgradeChecked = true;
       const reactUpgrade = getReactUpgradeDeps(root);
