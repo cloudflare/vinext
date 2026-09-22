@@ -334,6 +334,19 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).toContain("No Vite config was found");
   });
 
+  it("does not scan for config options after the option delimiter", () => {
+    const root = createRoot();
+    write(root, "ignored.ts", "export default {};\n");
+    const result = spawnSync(
+      process.execPath,
+      [CLI_PATH, "build", "--", "--config", "ignored.ts"],
+      { cwd: root, encoding: "utf-8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("No Vite config was found");
+  });
+
   it("serves configured projects and forwards termination to Vite", async () => {
     const root = createRoot();
     writeProject(root);
