@@ -237,6 +237,45 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(secondRoot))).toBe(false);
   });
 
+  it("keeps nested programmatic servers outside a CLI restart", async () => {
+    const root = createProject();
+    const nestedRoot = createProject();
+    useViteCliArgv();
+    let configCalls = 0;
+    let nested: ViteDevServer | undefined;
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [
+        vinext(),
+        {
+          name: "create-nested-server-on-restart",
+          async config() {
+            if (++configCalls !== 2) return;
+            nested = await createServer({
+              root: nestedRoot,
+              configFile: false,
+              logLevel: "silent",
+              plugins: [vinext()],
+            });
+          },
+        },
+      ],
+      server: { port: 0 },
+    });
+    await server.listen();
+
+    try {
+      await server.restart();
+
+      expect(nested?.config.server.port).toBe(5173);
+      expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
+    } finally {
+      await nested?.close();
+    }
+  });
+
   it("releases the lock after a replacement server fails to configure", async () => {
     const root = createProject();
     useViteCliArgv();

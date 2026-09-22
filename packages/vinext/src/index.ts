@@ -151,7 +151,11 @@ import {
   VINEXT_BUILD_LIFECYCLE_CONFIG,
   type BuildLifecycleInvocation,
 } from "./build/lifecycle.js";
-import { claimViteCliDevInvocation, createDevServerLifecyclePlugin } from "./cli-dev-config.js";
+import {
+  claimViteCliDevInvocation,
+  createDevServerLifecyclePlugin,
+  VINEXT_DEV_RESTART_CONFIG,
+} from "./cli-dev-config.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
@@ -1516,6 +1520,7 @@ type InternalVinextOptions = VinextOptions & {
 
 type InternalUserConfig = UserConfig & {
   [VINEXT_BUILD_LIFECYCLE_CONFIG]?: BuildLifecycleInvocation;
+  [VINEXT_DEV_RESTART_CONFIG]?: true;
 };
 
 type NitroSetupContext = {
@@ -2402,7 +2407,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         isServeCommand = env.command === "serve";
         root = toSlash(config.root ?? process.cwd());
         devCliLifecycleEnabled =
-          env.command === "serve" && env.isPreview !== true && claimViteCliDevInvocation(root);
+          env.command === "serve" &&
+          env.isPreview !== true &&
+          claimViteCliDevInvocation(
+            root,
+            (config as InternalUserConfig)[VINEXT_DEV_RESTART_CONFIG] === true,
+          );
         buildLifecycleInvocation = (config as InternalUserConfig)[VINEXT_BUILD_LIFECYCLE_CONFIG];
         buildLifecycleEnabled =
           env.command === "build" &&
