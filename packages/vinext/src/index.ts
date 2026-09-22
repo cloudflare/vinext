@@ -1522,6 +1522,7 @@ export type VinextOptions = {
 
 type InternalVinextOptions = VinextOptions & {
   __skipBuildLifecycle?: boolean;
+  __pagesClientAssetsModule?: string | null;
 };
 
 type NitroSetupContext = {
@@ -1631,7 +1632,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     !selectedMultiStageOutput && !hasAppDir && environmentName === "ssr"
       ? path.dirname(outputDir)
       : outputDir;
-  let pagesClientAssetsModule: string | null = null;
+  let pagesClientAssetsModule: string | null = internalOptions.__pagesClientAssetsModule ?? null;
   // Dev-only public route inventory. Vite's watcher keeps this synchronized,
   // so request handling can use O(1) membership checks without filesystem I/O.
   // Production builds leave it null and scan the configured public directory
@@ -2169,13 +2170,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     createContext: () => ({
       cacheConfig: options.cache ?? null,
       configNodeEnv: viteCliBuildConfigNodeEnv,
-      createPagesOnlyPlugins: () =>
+      createPagesOnlyPlugins: (pagesClientAssetsModule) =>
         vinext({
           ...options,
           disableAppRouter: true,
           precompress: false,
           prerender: undefined,
           __skipBuildLifecycle: true,
+          __pagesClientAssetsModule: pagesClientAssetsModule,
         } as InternalVinextOptions),
       emptyOutDir: buildEmptyOutDir,
       hasAppDir,

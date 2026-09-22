@@ -253,6 +253,12 @@ describe("configured vinext build contract", () => {
     );
 
     const pagesEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
+    const pagesClientAssets = fs.readFileSync(
+      path.join(root, "dist/vinext-client-assets.js"),
+      "utf-8",
+    );
+    expect(pagesClientAssets).toContain('"clientEntry"');
+    expect(pagesClientAssets).not.toBe("export default {};\n");
     expect(pagesEntry).toContain("top-level-alias-ran");
     expect(pagesEntry).toContain("config-only-plugin-ran");
     expect(pagesEntry).toContain("vinext-pages-production-marker");
@@ -287,7 +293,7 @@ describe("configured vinext build contract", () => {
   it("keeps hybrid config plugins, custom output roots, and production semantics", () => {
     const root = createHybridProject();
 
-    const output = execFileSync(process.execPath, [CLI_PATH, "build"], {
+    const output = execFileSync(process.execPath, [VITE_CLI_PATH, "build"], {
       cwd: root,
       env: { ...process.env, NODE_ENV: "development" },
       encoding: "utf-8",

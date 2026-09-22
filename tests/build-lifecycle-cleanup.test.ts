@@ -38,7 +38,7 @@ describe("Vite build lifecycle cleanup", () => {
     }
   });
 
-  it("releases a hybrid build session when an environment build fails", async () => {
+  it("does not leave process or builder state after another build hook fails", async () => {
     const previousSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
     delete process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
     const builder = {
@@ -48,9 +48,8 @@ describe("Vite build lifecycle cleanup", () => {
     } as unknown as ViteBuilder;
     // oxlint-disable-next-line typescript/unbound-method
     const originalBuild = builder.build;
-    const context = { hasAppDir: true, hasPagesDir: true } as BuildLifecycleContext;
     const plugins = createBuildLifecyclePlugins({
-      createContext: () => context,
+      createContext: () => ({ hasAppDir: true, hasPagesDir: true }) as BuildLifecycleContext,
       isEnabled: () => true,
       shouldPrepare: () => false,
       shouldBuildPlainPages: () => false,
@@ -59,20 +58,20 @@ describe("Vite build lifecycle cleanup", () => {
 
     try {
       await hook.handler(builder);
-      const failedSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
-      expect(failedSession).toMatch(/^[a-f0-9]{32}$/);
-      await expect(builder.build({} as Parameters<ViteBuilder["build"]>[0])).rejects.toThrow(
-        "RSC build failed",
+      // A later plugin can throw before vinext's finalizer. Nothing should need
+      // a cleanup hook in order to retry the same builder.
+      await expect(Promise.reject(new Error("later plugin failed"))).rejects.toThrow(
+        "later plugin failed",
       );
       expect(process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION).toBeUndefined();
       // oxlint-disable-next-line typescript/unbound-method
       expect(builder.build).toBe(originalBuild);
-
       await hook.handler(builder);
-      expect(process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION).not.toBe(failedSession);
       await expect(builder.build({} as Parameters<ViteBuilder["build"]>[0])).rejects.toThrow(
         "RSC build failed",
       );
+      // oxlint-disable-next-line typescript/unbound-method
+      expect(builder.build).toBe(originalBuild);
       expect(process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION).toBeUndefined();
     } finally {
       if (previousSession === undefined)
