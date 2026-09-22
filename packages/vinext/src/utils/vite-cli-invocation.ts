@@ -138,6 +138,9 @@ export function findViteRoot(
       shouldPreflight = false;
       continue;
     }
+    if (clusteredOptions?.slice(0, -1).some((name) => REQUIRED_VALUE_OPTIONS.has(name))) {
+      shouldPreflight = false;
+    }
     if (requiredOptionValueIsMissing(arg, args[index + 1])) {
       shouldPreflight = false;
       continue;

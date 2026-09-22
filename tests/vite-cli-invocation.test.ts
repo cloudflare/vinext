@@ -30,6 +30,13 @@ describe("findViteRoot", () => {
       shouldPreflight: false,
     });
   });
+
+  it("leaves required options before the end of a cluster to Vite", () => {
+    expect(findViteRoot("build", ["-ml", "silent"])).toEqual({
+      root: undefined,
+      shouldPreflight: false,
+    });
+  });
 });
 
 describe("isViteCliInvocation", () => {
