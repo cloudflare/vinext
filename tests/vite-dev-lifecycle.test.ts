@@ -80,6 +80,29 @@ describe("Vite dev lifecycle", () => {
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
+  it("keeps the lock across a Vite server restart", async () => {
+    const root = createProject();
+    useViteCliArgv();
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext()],
+    });
+    await server.listen();
+    const startedAt = readLockfile(getLockfilePath(root))?.startedAt;
+
+    await server.restart();
+
+    expect(readLockfile(getLockfilePath(root))).toMatchObject({
+      pid: process.pid,
+      startedAt,
+    });
+    await server.close();
+    server = undefined;
+    expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+  });
+
   it("keeps middleware servers lock-free", async () => {
     const root = createProject();
     useViteCliArgv();
