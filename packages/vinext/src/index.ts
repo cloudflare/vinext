@@ -5649,9 +5649,9 @@ export const loadServerActionClient = ${
               const environment = server.environments["rsc"];
               // External runtimes (such as Nitro) initialize in their own entry.
               if (!isRunnableDevEnvironment(environment)) return;
-              await runInstrumentation(environment.runner, instrumentationPath);
+              return runInstrumentation(environment.runner, instrumentationPath);
             } else {
-              await runInstrumentation(getPagesRunner(), instrumentationPath);
+              return runInstrumentation(getPagesRunner(), instrumentationPath);
             }
           })();
           // Vite's post-configure hook is synchronous. Attach a rejection
