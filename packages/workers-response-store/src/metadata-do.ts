@@ -8,6 +8,7 @@ import type {
   SerializableValue,
   StoredEntry,
 } from "./binding";
+import { mapSettledWithR2Concurrency } from "./r2-concurrency";
 
 type RevalidationClaim = {
   claimId: string;
@@ -393,6 +394,13 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (6)");
         }
       });
+      ctx.storage.sql.exec(`
+        CREATE INDEX IF NOT EXISTS pending_r2_tombstones_r2_pending
+          ON pending_r2_tombstones(key_hash) WHERE r2_complete = 0;
+        CREATE INDEX IF NOT EXISTS pending_r2_tombstones_edge_pending
+          ON pending_r2_tombstones(key_hash)
+          WHERE r2_complete = 1 AND edge_purge_complete = 0;
+      `);
     });
   }
 
@@ -1261,10 +1269,16 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     );
   }
 
-  private finishCompletedTombstones(): void {
-    this.ctx.storage.sql.exec(
-      "DELETE FROM pending_r2_tombstones WHERE r2_complete = 1 AND edge_purge_complete = 1",
-    );
+  private finishCompletedTombstones(entries: PurgedEntry[]): void {
+    for (const batch of batches(entries, MAX_SQL_PARAMETERS / 2)) {
+      this.ctx.storage.sql.exec(
+        `DELETE FROM pending_r2_tombstones
+        WHERE r2_complete = 1 AND edge_purge_complete = 1 AND (${batch
+          .map(() => "(key_hash = ? AND revision = ?)")
+          .join(" OR ")})`,
+        ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
+      );
+    }
   }
 
   async drainPendingTombstones(
@@ -1298,11 +1312,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       objectKey: row.object_key,
       revision: row.revision,
     }));
-    const settled = await Promise.allSettled(
-      pending.map(async (entry): Promise<PurgedEntry> => {
+    const settled = await mapSettledWithR2Concurrency(
+      pending,
+      async (entry): Promise<PurgedEntry> => {
         await this.writeR2Tombstone(entry);
         return entry;
-      }),
+      },
     );
     const purged = settled.flatMap((result) =>
       result.status === "fulfilled" ? [result.value] : [],
@@ -1316,7 +1331,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
         );
       }
-      this.finishCompletedTombstones();
+      this.finishCompletedTombstones(purged);
     });
     return {
       ...(rows.length ? { cursor: rows.at(-1)!.key_hash } : {}),
@@ -1357,19 +1372,16 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
         );
       }
-      this.finishCompletedTombstones();
+      this.finishCompletedTombstones(entries);
     });
   }
 
   markTombstonesEdgePurgedThrough(tombstoneSequence: number): void {
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.sql.exec(
-        `UPDATE pending_r2_tombstones SET edge_purge_complete = 1
-        WHERE r2_complete = 1 AND tombstone_sequence <= ?`,
-        tombstoneSequence,
-      );
-      this.finishCompletedTombstones();
-    });
+    this.ctx.storage.sql.exec(
+      `DELETE FROM pending_r2_tombstones
+      WHERE r2_complete = 1 AND edge_purge_complete = 0 AND tombstone_sequence <= ?`,
+      tombstoneSequence,
+    );
   }
 
   inspect(): StoredEntry[] {
