@@ -189,10 +189,7 @@ export function createRscEmbedTransform(
           // Flush only between React chunks so a single unusually large chunk
           // is never split at an unsafe UTF-16 boundary. Such a chunk is no
           // larger than the script vinext emitted before batching.
-          if (
-            textLength > 0 &&
-            textLength + chunk.length > RSC_EMBED_TEXT_BATCH_MAX_LENGTH
-          ) {
+          if (textLength > 0 && textLength + chunk.length > RSC_EMBED_TEXT_BATCH_MAX_LENGTH) {
             flushTextChunks();
           }
           textChunks.push(chunk);
