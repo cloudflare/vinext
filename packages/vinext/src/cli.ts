@@ -590,7 +590,8 @@ async function buildApp() {
       nextConfig: resolvedNextConfig,
       prerenderAll: parsed.prerenderAll,
       prerenderConfig: buildConfigMetadata.prerenderConfig,
-      prerenderConcurrency: parsed.prerenderConcurrency,
+      prerenderConcurrency:
+        parsed.prerenderConcurrency ?? buildConfigMetadata.prerenderConfig?.concurrency,
       prerenderSecret: process.env.__VINEXT_SHARED_PRERENDER_SECRET!,
       previewBuildCredentials: getPreviewBuildCredentials(),
       revalidateSecret: process.env.__VINEXT_SHARED_REVALIDATE_SECRET!,

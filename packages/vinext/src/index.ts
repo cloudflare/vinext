@@ -2326,6 +2326,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildLifecycleEnabled =
           env.command === "build" &&
           !internalOptions.__skipBuildLifecycle &&
+          !config.build?.watch &&
+          !config.build?.ssr &&
+          getBuildBundlerOptions(config.build)?.input === undefined &&
           isViteCliInvocation("build");
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
