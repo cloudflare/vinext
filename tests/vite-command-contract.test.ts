@@ -37,6 +37,7 @@ import { defineConfig } from "vite";
 import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 
 export default defineConfig({
+  build: { manifest: true },
   resolve: {
     alias: { "virtual:contract-value": path.join(import.meta.dirname, "contract-value.ts") },
   },
@@ -170,6 +171,11 @@ describe("configured vinext build contract", () => {
     expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-ran"), "utf-8")).toBe(
       "ssr",
     );
+    const serverManifest = JSON.parse(
+      fs.readFileSync(path.join(root, "custom/server/.vite/manifest.json"), "utf-8"),
+    ) as Record<string, { isEntry?: boolean }>;
+    expect(serverManifest["virtual:vinext-rsc-entry"]?.isEntry).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/.vite/manifest.json"))).toBe(false);
 
     const appOutput = fs
       .globSync("**/*.js", { cwd: path.join(root, "custom/server") })
