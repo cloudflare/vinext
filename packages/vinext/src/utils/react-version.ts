@@ -38,7 +38,9 @@ export function getReactUpgradeDeps(
     };
     for (const name of ["react", "react-dom"]) {
       const declared = pkg.dependencies?.[name] ?? pkg.devDependencies?.[name];
-      const version = /^[~^]?([0-9]+(?:\.[0-9]+){0,2})(?:\.[x*])?$/.exec(declared ?? "")?.[1];
+      const version = /^[~^]?([0-9]+(?:\.[0-9]+){0,2}(?:-[0-9A-Za-z.*-]+)?)(?:\.[x*])?$/.exec(
+        declared ?? "",
+      )?.[1];
       if (version && isVersionBelow(version, [19, 2, 6])) {
         return ["react@latest", "react-dom@latest"];
       }
@@ -58,7 +60,8 @@ function isVersionBelow(version: string, minimum: [number, number, number]): boo
   for (let index = 0; index < minimum.length; index++) {
     if ((current[index] ?? 0) !== minimum[index]) return (current[index] ?? 0) < minimum[index];
   }
-  return false;
+  // A prerelease of the floor is older than the stable security release.
+  return version.includes("-");
 }
 
 /** Walk up from a resolved module entry to find its package version. */
