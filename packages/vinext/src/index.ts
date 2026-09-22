@@ -362,8 +362,12 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 // previous CLI contract that project dotenv values are available while that
 // config is evaluated. The plugin hook loads again later for custom envDir.
 const earlyViteCliInvocation = getViteCliInvocation();
+const viteCliBuildConfigNodeEnv =
+  earlyViteCliInvocation?.command === "build" && process.env.NODE_ENV === "test"
+    ? "test"
+    : undefined;
 if (earlyViteCliInvocation?.command === "build") {
-  if (process.env.NODE_ENV !== "test") {
+  if (!viteCliBuildConfigNodeEnv) {
     Reflect.set(process.env, "NODE_ENV", "production");
   }
   loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
@@ -2136,6 +2140,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     shouldBuildPlainPages: () => !hasAppDir && !hasCloudflarePlugin && !hasNitroPlugin,
     createContext: () => ({
       cacheConfig: options.cache ?? null,
+      configNodeEnv: viteCliBuildConfigNodeEnv,
       createPagesOnlyPlugins: () =>
         vinext({
           ...options,
@@ -2394,7 +2399,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         const preserveTestNodeEnv =
           process.env.NODE_ENV === "test" &&
-          (mode === "test" || earlyViteCliInvocation?.command === "build");
+          (mode === "test" || viteCliBuildConfigNodeEnv === "test");
         if (!preserveTestNodeEnv && process.env.NODE_ENV !== resolvedNodeEnv) {
           // Next.js's vendored global declarations mark NODE_ENV readonly even
           // though Node permits updating process.env at runtime.
@@ -2498,6 +2503,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (sharedBuildId && sharedBuildId.length > 0) {
             nextConfig = { ...nextConfig, buildId: sharedBuildId };
           }
+        }
+        // Preserve an explicit test environment while Vite and Next config are
+        // evaluated, then keep the actual CLI build on production semantics.
+        if (env?.command === "build" && earlyViteCliInvocation?.command === "build") {
+          Reflect.set(process.env, "NODE_ENV", "production");
         }
         const configuredTsconfigPath = isRecord(nextConfig.typescript)
           ? typeof nextConfig.typescript.tsconfigPath === "string"
