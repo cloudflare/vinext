@@ -99,7 +99,6 @@ describe("Cloudflare CDN adapter build output", () => {
         cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
       ],
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: {
-        skipPrerender: true,
         onComplete(result: BuildLifecycleResult) {
           buildResult = result;
         },
