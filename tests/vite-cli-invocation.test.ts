@@ -68,8 +68,8 @@ describe("findViteRoot", () => {
     });
   });
 
-  it.each(["--no-minify", "--no-sourcemap", "--no-manifest"])(
-    "recognizes negated optional build option %s",
+  it.each(["--no-config", "--no-minify", "--no-sourcemap", "--no-manifest"])(
+    "recognizes negated build option %s",
     (option) => {
       expect(findViteRoot("build", [option])).toEqual({
         root: undefined,

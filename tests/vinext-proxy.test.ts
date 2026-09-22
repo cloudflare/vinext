@@ -123,7 +123,7 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).toContain("Could not resolve the project-local Vite CLI");
   });
 
-  it.each(["--no-watch", "--no-minify", "--no-sourcemap", "--no-manifest"])(
+  it.each(["--no-config", "--no-watch", "--no-minify", "--no-sourcemap", "--no-manifest"])(
     "keeps the config preflight for valid negated option %s",
     (option) => {
       const root = createRoot();
