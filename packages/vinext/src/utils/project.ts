@@ -257,31 +257,6 @@ export function findInNodeModules(start: string, subPath: string): string | null
   });
 }
 
-/**
- * Check whether a Wrangler executable shim exists in node_modules.
- */
-export function hasWranglerBin(
-  root: string,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  const candidates =
-    platform === "win32"
-      ? [
-          ".bin/wrangler.CMD",
-          ".bin/wrangler.cmd",
-          ".bin/wrangler.exe",
-          ".bin/wrangler.bunx",
-          ".bin/wrangler",
-          ".bin/cf.CMD",
-          ".bin/cf.cmd",
-          ".bin/cf.exe",
-          ".bin/cf.bunx",
-          ".bin/cf",
-        ]
-      : [".bin/wrangler", ".bin/cf"];
-
-  return candidates.some((candidate) => findInNodeModules(root, candidate) !== null);
-}
 // ─── Vite Config Detection ───────────────────────────────────────────────────
 
 /**
@@ -380,7 +355,7 @@ export function detectProject(root: string): ProjectInfo {
   // root rather than the app root.
   const hasCloudflarePlugin = findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
   const hasRscPlugin = findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
-  const hasWrangler = hasWranglerBin(root);
+  const hasWrangler = isPackageResolvable(root, "wrangler/package.json");
 
   const pkgPath = path.join(root, "package.json");
   let pkg: Record<string, unknown> | null = null;

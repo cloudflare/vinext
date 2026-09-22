@@ -26,7 +26,6 @@ import {
   detectPackageManagerName,
   detectProject,
   findInNodeModules,
-  hasWranglerBin,
   formatMissingCloudflarePluginError,
   getMissingDeps,
   hasWranglerConfig,
@@ -1099,16 +1098,18 @@ describe("detectProject", () => {
     expect(info.hasWranglerConfig).toBe(true);
   });
 
-  it.each([
-    ["linux", ".bin/wrangler"],
-    ["win32", ".bin/wrangler.CMD"],
-    ["win32", ".bin/wrangler.cmd"],
-    ["win32", ".bin/wrangler.exe"],
-    ["win32", ".bin/wrangler.bunx"],
-  ] as const)("detects Wrangler's %s shim", (platform, shim) => {
+  it("detects Wrangler independently of its executable shim", () => {
     mkdir(tmpDir, "app");
-    writeFile(tmpDir, `node_modules/${shim}`, "");
-    expect(hasWranglerBin(tmpDir, platform)).toBe(true);
+    writeWranglerPackageForTest(tmpDir);
+    expect(detectProject(tmpDir).hasWrangler).toBe(true);
+  });
+
+  it("does not mistake the separate cf package for Wrangler", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "node_modules/cf/package.json", JSON.stringify({ name: "cf" }));
+    writeFile(tmpDir, "node_modules/.bin/cf.exe", "");
+    writeFile(tmpDir, "node_modules/.bin/cf.bunx", "");
+    expect(detectProject(tmpDir).hasWrangler).toBe(false);
   });
 
   it("detects cloudflare.config.ts", () => {
