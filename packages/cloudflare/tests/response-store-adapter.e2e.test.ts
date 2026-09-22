@@ -463,6 +463,18 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const firstPage = await cacheStatus("/use-cache");
     const firstData = htmlValue(firstPage.body, "use-cache-value");
     const firstPageRenders = Number(htmlValue(firstPage.body, "use-cache-route-renders"));
+    const entries = (await metadataEntries()).flat() as Array<{
+      revalidator?: { args?: unknown[]; id?: unknown };
+    }>;
+    const cacheFunctionEntry = entries.find(
+      (entry) => entry.revalidator?.id === "vinext:cache-function",
+    );
+    assert.ok(cacheFunctionEntry);
+    const serializedInvocation = cacheFunctionEntry.revalidator?.args?.[1];
+    assert.ok(typeof serializedInvocation === "string");
+    const invocation = JSON.parse(serializedInvocation) as { referenceId?: unknown };
+    assert.ok(typeof invocation.referenceId === "string");
+    assert.match(invocation.referenceId, /^[0-9a-f]{12}#\$\$vinext_cache_[0-9a-f]{64}$/);
 
     await new Promise((resolve) => setTimeout(resolve, 1_100));
 

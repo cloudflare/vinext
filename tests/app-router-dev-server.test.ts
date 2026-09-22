@@ -2170,23 +2170,35 @@ describe("App Router integration", () => {
     expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
   });
 
-  it("rejects a hidden cache function's original dev export name", async () => {
+  it("rejects hidden cache functions' original dev export names", async () => {
     const anonymous = await fetch(`${baseUrl}/use-cache-hidden-reference?record=victim`);
     expect(anonymous.status).toBe(200);
     expect(await anonymous.text()).toContain("FORBIDDEN");
 
-    const exploit = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain",
-        "x-rsc-action": "/app/use-cache-hidden-reference/records.ts#readRecord",
-      },
-      body: JSON.stringify(["victim"]),
-    });
+    const defaultVictim = await fetch(
+      `${baseUrl}/use-cache-hidden-reference?record=victim&source=default`,
+      { headers: { Authorization: "Bearer fixture-victim-session" } },
+    );
+    expect(defaultVictim.status).toBe(200);
+    expect(await defaultVictim.text()).toContain("VICTIM_DEFAULT_PRIVATE_RECORD");
 
-    expect(exploit.status).toBe(404);
-    expect(exploit.headers.get("x-nextjs-action-not-found")).toBe("1");
-    expect(await exploit.text()).not.toContain("VICTIM_PRIVATE_RECORD");
+    for (const [exportName, secret] of [
+      ["readRecord", "VICTIM_PRIVATE_RECORD"],
+      ["default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
+    ] as const) {
+      const exploit = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "x-rsc-action": `/app/use-cache-hidden-reference/records.ts#${exportName}`,
+        },
+        body: JSON.stringify(["victim"]),
+      });
+
+      expect(exploit.status).toBe(404);
+      expect(exploit.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(await exploit.text()).not.toContain(secret);
+    }
   });
 
   it("returns action-not-found for an MPA form POST to a page with no decodable action", async () => {
