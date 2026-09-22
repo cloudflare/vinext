@@ -116,8 +116,17 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const finalScripts = await transform.finalize();
     expect(finalScripts).toContain('Symbol.for("vinext.navigationRuntime")');
     expect(finalScripts).toContain(".done=true");
-    expect(finalScripts).toContain('.rsc.push("chunk1")');
-    expect(finalScripts).toContain('.rsc.push("chunk2")');
+    expect(finalScripts).toContain('.rsc.push("chunk1chunk2")');
+  });
+
+  it("coalesces adjacent text chunks into one inline Flight script", async () => {
+    const transform = createRscEmbedTransform(createTextStream(Array(1_000).fill("chunk")));
+
+    const finalScripts = await transform.finalize();
+
+    expect(finalScripts.match(/\.rsc\.push\(/g)).toHaveLength(1);
+    expect(finalScripts.match(/<script/g)).toHaveLength(2);
+    expect(finalScripts).toContain(`.rsc.push("${"chunk".repeat(1_000)}")`);
   });
 
   it("optionally mirrors text chunks into the Next.js inline Flight transport", async () => {
@@ -132,10 +141,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
       '<script nonce="test-nonce">(self.__next_f=self.__next_f||[]).push([0])</script>',
     );
     expect(finalScripts).toContain(
-      '<script nonce="test-nonce">self.__next_f.push([1,"chunk1"])</script>',
-    );
-    expect(finalScripts).toContain(
-      '<script nonce="test-nonce">self.__next_f.push([1,"chunk2"])</script>',
+      '<script nonce="test-nonce">self.__next_f.push([1,"chunk1chunk2"])</script>',
     );
     expect(finalScripts).toContain(
       '<script nonce="test-nonce">self.addEventListener("DOMContentLoaded",()=>{if(self.__next_f?.push===Array.prototype.push)self.__next_f.length=0},{once:true})</script>',
@@ -321,6 +327,26 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const embeddedBytes = concatUint8Arrays(embeddedChunks);
 
     expect(embeddedBytes).toEqual(expectedBytes);
+  });
+
+  it("preserves binary boundaries while coalescing adjacent text chunks", async () => {
+    const transform = createRscEmbedTransform(
+      createByteStream([
+        new TextEncoder().encode("first"),
+        new Uint8Array([0xff]),
+        new TextEncoder().encode("second"),
+        new TextEncoder().encode("third"),
+      ]),
+    );
+
+    const finalScripts = await transform.finalize();
+    const firstIndex = finalScripts.indexOf('.rsc.push("first")');
+    const binaryIndex = finalScripts.indexOf('.rsc.push([3,"/w=="])');
+    const remainingTextIndex = finalScripts.indexOf('.rsc.push("secondthird")');
+
+    expect(firstIndex).toBeGreaterThanOrEqual(0);
+    expect(binaryIndex).toBeGreaterThan(firstIndex);
+    expect(remainingTextIndex).toBeGreaterThan(binaryIndex);
   });
 
   it("embeds non-UTF-8 RSC chunks as base64 binary chunks", async () => {

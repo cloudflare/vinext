@@ -134,6 +134,7 @@ export function createRscEmbedTransform(
   const rawChunks: Uint8Array[] = [];
   let reading = false;
   let mirroredNextFlightBootstrap = false;
+  const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
   async function pumpReader(): Promise<void> {
     if (reading) return;
@@ -144,9 +145,7 @@ export function createRscEmbedTransform(
         if (result.done) break;
         rawChunks.push(result.value);
         try {
-          const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-          const text = decoder.decode(result.value);
-          pendingChunks.push(text);
+          pendingChunks.push(textDecoder.decode(result.value));
         } catch {
           pendingChunks.push([RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(result.value)]);
         }
@@ -170,8 +169,29 @@ export function createRscEmbedTransform(
       const chunks = pendingChunks;
       pendingChunks = [];
 
-      let scripts = "";
+      // React commonly emits one small Flight row per byte chunk. Embedding
+      // each row in its own script makes large trees pay for thousands of
+      // script wrappers, JSON serializations, and browser script executions.
+      // Coalesce adjacent text here while preserving binary chunk boundaries.
+      const embeddedChunks: RscEmbeddedChunk[] = [];
+      let textChunks: string[] = [];
+      const flushTextChunks = (): void => {
+        if (textChunks.length === 0) return;
+        embeddedChunks.push(textChunks.join(""));
+        textChunks = [];
+      };
       for (const chunk of chunks) {
+        if (typeof chunk === "string") {
+          textChunks.push(chunk);
+        } else {
+          flushTextChunks();
+          embeddedChunks.push(chunk);
+        }
+      }
+      flushTextChunks();
+
+      let scripts = "";
+      for (const chunk of embeddedChunks) {
         scripts += createInlineScriptTag(
           createNavigationRuntimeRscChunkScript(chunk),
           options.scriptNonce,
