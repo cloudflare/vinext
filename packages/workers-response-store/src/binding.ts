@@ -99,6 +99,7 @@ type CacheKey = {
 
 type WriteReservation = CacheKey & {
   claimId?: string;
+  edgePurgeRequired: boolean;
   fenceTags: string[];
   objectKey: string;
   r2ObjectAbsent?: boolean;
@@ -1026,6 +1027,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         {
           cacheKey: claim.entry.cacheKey,
           claimId: claim.claimId,
+          edgePurgeRequired: true,
           fenceTags: claim.entry.cacheTags,
           keyHash: claim.entry.keyHash,
           objectKey: claim.objectKey,
@@ -1170,9 +1172,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           void response.body?.cancel().catch(() => {});
           return {
             backingStoreUpdated: true,
-            edgePurgeAccepted: options.purgeExisting
-              ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
-              : true,
+            edgePurgeAccepted:
+              options.purgeExisting && reservation.edgePurgeRequired
+                ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+                : true,
           };
         }
         if (pendingPuts.get(pendingPutKey) === pending) {
@@ -1200,9 +1203,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       }
       return {
         backingStoreUpdated: true,
-        edgePurgeAccepted: options.purgeExisting
-          ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
-          : true,
+        edgePurgeAccepted:
+          options.purgeExisting && reservation?.edgePurgeRequired
+            ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
+            : true,
       };
     } finally {
       if (options.coalesce && pendingPuts.get(pendingPutKey) === write) {
@@ -1247,6 +1251,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           reservation
             ? {
                 cacheKey: entry.cacheKey,
+                edgePurgeRequired: true,
                 fenceTags: entry.cacheTags,
                 keyHash: entry.keyHash,
                 ...reservation,

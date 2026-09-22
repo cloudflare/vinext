@@ -246,6 +246,28 @@ test("a put after a miss is visible to the next read", async () => {
   assert.equal(await stored.text(), "stored-after-miss");
 });
 
+test("purgeExisting skips first writes but still purges replacements and tombstones", async () => {
+  const first = await put("/conditional-edge-purge", "first", { purgeExisting: true });
+  assert.deepEqual(first.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+
+  const replacement = await put("/conditional-edge-purge", "replacement", {
+    purgeExisting: true,
+  });
+  assert.deepEqual(replacement.json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+
+  await purge({ pathPrefixes: ["/conditional-edge-purge"] });
+  const afterTombstone = await put("/conditional-edge-purge", "after-tombstone", {
+    purgeExisting: true,
+  });
+  assert.deepEqual(afterTombstone.json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+});
+
 test("put clears a miss cached while the write is in flight", async () => {
   const write = put("/miss-during-put", "stored-after-delayed-put", { bodyDelayMs: 200 });
   let pendingObjects = 0;
@@ -1095,10 +1117,17 @@ test("a newer put wins and the superseded candidate is cleaned up", async () => 
   assert.equal((await r2Objects()).objects.length, 1);
 });
 
-test("overlapping framework writes can be coalesced", async () => {
-  const first = put("/coalesced", "first", { bodyDelayMs: 300, coalesce: true });
+test("overlapping first writes can be coalesced without an edge purge", async () => {
+  const first = put("/coalesced", "first", {
+    bodyDelayMs: 300,
+    coalesce: true,
+    purgeExisting: true,
+  });
   await new Promise((resolve) => setTimeout(resolve, 50));
-  const second = await put("/coalesced", "second", { coalesce: true });
+  const second = await put("/coalesced", "second", {
+    coalesce: true,
+    purgeExisting: true,
+  });
   const firstResult = await first;
 
   assert.deepEqual(firstResult.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
@@ -1107,6 +1136,30 @@ test("overlapping framework writes can be coalesced", async () => {
   assert.equal((await metadata())[0].activeRevision, 1);
   assert.equal((await r2Objects()).objects.length, 1);
   assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("coalesced replacements still purge the existing edge response", async () => {
+  await put("/coalesced-replacement", "seed");
+  const first = put("/coalesced-replacement", "first", {
+    bodyDelayMs: 300,
+    coalesce: true,
+    purgeExisting: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const second = put("/coalesced-replacement", "second", {
+    coalesce: true,
+    purgeExisting: true,
+  });
+
+  assert.deepEqual((await first).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.deepEqual((await second).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.equal(await (await read("/coalesced-replacement")).text(), "first");
 });
 
 test("a coalesced tee body does not block on its unread sibling", async () => {
@@ -1136,7 +1189,7 @@ test("writes with different purge requirements are not coalesced", async () => {
   });
   assert.deepEqual(second.json, {
     backingStoreUpdated: true,
-    edgePurgeAccepted: false,
+    edgePurgeAccepted: true,
   });
   assert.equal(await (await read("/coalesced-purge")).text(), "second");
 });
@@ -1160,9 +1213,13 @@ test("a failed coalesced write preserves an overlapping successful write", async
     bodyDelayMs: 300,
     bodyFailure: true,
     coalesce: true,
+    purgeExisting: true,
   });
   await new Promise((resolve) => setTimeout(resolve, 50));
-  const fallback = put("/coalesced-fallback", "succeeds", { coalesce: true });
+  const fallback = put("/coalesced-fallback", "succeeds", {
+    coalesce: true,
+    purgeExisting: true,
+  });
 
   await assert.rejects(failing, /put fixture returned 500/);
   assert.deepEqual((await fallback).json, {

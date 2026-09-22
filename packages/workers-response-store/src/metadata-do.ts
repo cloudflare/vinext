@@ -22,6 +22,7 @@ type PublicationResult = {
 };
 
 type WriteReservation = {
+  edgePurgeRequired: boolean;
   objectKey: string;
   r2ObjectAbsent: boolean;
   revision: number;
@@ -759,7 +760,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         objectKey,
         createdAt,
       );
-      return { objectKey, r2ObjectAbsent: current === undefined, revision };
+      return {
+        edgePurgeRequired: current?.active_revision != null,
+        objectKey,
+        r2ObjectAbsent: current === undefined,
+        revision,
+      };
     });
     await this.ensureCleanupAlarm(createdAt);
     return reservation;
@@ -821,7 +827,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         createdAt,
         currentInvalidationSequence,
       );
-      return { objectKey, r2ObjectAbsent: false, revision };
+      return {
+        edgePurgeRequired: current?.active_revision != null,
+        objectKey,
+        r2ObjectAbsent: false,
+        revision,
+      };
     });
     if (reservation) await this.ensureCleanupAlarm(createdAt);
     return reservation;
@@ -856,7 +867,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       );
       return {
         entry,
-        reservation: { objectKey, r2ObjectAbsent: false, revision },
+        reservation: {
+          edgePurgeRequired: true,
+          objectKey,
+          r2ObjectAbsent: false,
+          revision,
+        },
       };
     });
     if (result?.reservation) await this.ensureCleanupAlarm(createdAt);
