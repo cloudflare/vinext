@@ -21,7 +21,10 @@ import type { ResolvedNextConfig } from "../config/next-config.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 import { cleanBuildOutput } from "./clean-output.js";
-import { clearPagesClientAssetsBuildMetadata } from "./pages-client-assets-module.js";
+import {
+  PAGES_CLIENT_ASSETS_MODULE,
+  clearPagesClientAssetsBuildMetadata,
+} from "./pages-client-assets-module.js";
 import { runWithPreviewBuildCredentials } from "./preview-credentials.js";
 
 type ProjectViteApi = Pick<
@@ -32,7 +35,7 @@ type ProjectViteApi = Pick<
 export type BuildLifecycleContext = {
   cacheConfig: VinextCacheConfig | null;
   configNodeEnv?: string;
-  createPagesOnlyPlugins: () => PluginOption[];
+  createPagesOnlyPlugins: (pagesClientAssetsModule: string | null) => PluginOption[];
   emptyOutDir?: boolean;
   hasAppDir: boolean;
   hasPagesDir: boolean;
@@ -157,6 +160,14 @@ async function buildHybridPagesBundle(
   const { build: _userSsrBuild, ...pagesEnvironment } = userSsrEnvironment ?? {};
   const mergedBuild = vite.mergeConfig(userConfig.build ?? {}, userSsrEnvironment?.build ?? {});
   const userOutput = mergedBuild.rolldownOptions?.output;
+  const appAssetsPath = path.resolve(
+    context.root,
+    builder.environments.rsc?.config.build.outDir ?? "dist/server",
+    PAGES_CLIENT_ASSETS_MODULE,
+  );
+  const pagesClientAssetsModule = fs.existsSync(appAssetsPath)
+    ? fs.readFileSync(appAssetsPath, "utf8")
+    : null;
   const pagesBuild = {
     ...mergedBuild,
     outDir: "dist/server",
@@ -177,7 +188,10 @@ async function buildHybridPagesBundle(
     root: context.root,
     mode: builder.config.mode,
     configFile: false,
-    plugins: [...(userConfig.plugins ?? []), ...context.createPagesOnlyPlugins()],
+    plugins: [
+      ...(userConfig.plugins ?? []),
+      ...context.createPagesOnlyPlugins(pagesClientAssetsModule),
+    ],
     builder: {
       ...userConfig.builder,
       buildApp: async (pagesBuilder) => {
@@ -356,7 +370,6 @@ export function createBuildLifecyclePlugins(options: {
   shouldPrepare: (config: UserConfig | ResolvedConfig) => boolean;
   shouldBuildPlainPages: () => boolean;
 }): Plugin[] {
-  const states = new WeakMap<ViteBuilder, BuildLifecycleState>();
   let outputPrepared = false;
   const finalizePlugin: Plugin = {
     name: "vinext:build-lifecycle-finalize",
@@ -375,14 +388,7 @@ export function createBuildLifecyclePlugins(options: {
     buildApp: {
       order: "post",
       async handler(builder) {
-        const state = states.get(builder);
-        if (!state) return;
-        states.delete(builder);
-        try {
-          await finalizeBuild(builder, options.createContext());
-        } finally {
-          disposeBuild(state);
-        }
+        if (options.isEnabled(builder)) await finalizeBuild(builder, options.createContext());
       },
     },
   };
@@ -406,36 +412,10 @@ export function createBuildLifecyclePlugins(options: {
       buildApp: {
         order: "pre",
         async handler(builder) {
-          if (!options.isEnabled(builder) || states.has(builder)) return;
-          const state = prepareBuild(options.createContext());
-          states.set(builder, state);
-          if (state.pagesClientAssetsBuildSession) {
-            // Keep the original method for exact restoration; call it with its builder below.
-            // oxlint-disable-next-line typescript/unbound-method
-            const originalBuild = builder.build;
-            builder.build = async (environment) => {
-              try {
-                return await originalBuild.call(builder, environment);
-              } catch (error) {
-                states.delete(builder);
-                disposeBuild(state);
-                throw error;
-              }
-            };
-            state.restoreBuild = () => {
-              builder.build = originalBuild;
-            };
-          }
-          try {
-            if (!options.shouldBuildPlainPages()) return;
-            for (const name of ["client", "ssr"]) {
-              const environment = builder.environments[name];
-              if (environment && !environment.isBuilt) await builder.build(environment);
-            }
-          } catch (error) {
-            disposeBuild(state);
-            states.delete(builder);
-            throw error;
+          if (!options.isEnabled(builder) || !options.shouldBuildPlainPages()) return;
+          for (const name of ["client", "ssr"]) {
+            const environment = builder.environments[name];
+            if (environment && !environment.isBuilt) await builder.build(environment);
           }
         },
       },
