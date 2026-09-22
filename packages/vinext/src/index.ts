@@ -2142,12 +2142,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       !builder.config.build.watch &&
       builder.config.build.write !== false &&
       !builder.config.build.ssr &&
+      !builder.config.build.lib &&
       getBuildBundlerOptions(builder.config.build)?.input === undefined,
     shouldPrepare: (config) =>
       buildLifecycleEnabled &&
       !config.build?.watch &&
       config.build?.write !== false &&
       !config.build?.ssr &&
+      !config.build?.lib &&
       getBuildBundlerOptions(config.build)?.input === undefined,
     onPrepare: () => {
       if (!hasAppDir || reactUpgradeChecked) return;
@@ -8094,6 +8096,7 @@ export const loadServerActionClient = ${
           !plainPagesBuildEnvironments ||
           config.build?.watch ||
           config.build?.ssr ||
+          config.build?.lib ||
           getBuildBundlerOptions(config.build)?.input !== undefined
         )
           return;
