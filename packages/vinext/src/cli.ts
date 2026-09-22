@@ -25,6 +25,7 @@ import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { parseArgs } from "./cli-args.js";
 import { generateRouteTypes } from "./typegen.js";
+import { findViteRoot } from "./utils/vite-cli-invocation.js";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"))
   .version as string;
@@ -37,67 +38,6 @@ const rawArgs = process.argv.slice(3);
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
 type ViteCommand = "dev" | "build";
-
-const VITE_OPTIONS_WITH_VALUES = new Set([
-  "--assetsDir",
-  "--assetsInlineLimit",
-  "--base",
-  "--config",
-  "--configLoader",
-  "--debug",
-  "--filter",
-  "--host",
-  "--logLevel",
-  "--manifest",
-  "--minify",
-  "--mode",
-  "--open",
-  "--outDir",
-  "--port",
-  "--profile",
-  "--sourcemap",
-  "--ssr",
-  "--ssrManifest",
-  "--target",
-  "-c",
-  "-d",
-  "-f",
-  "-l",
-  "-m",
-]);
-const VITE_BOOLEAN_OPTIONS = new Set([
-  "--app",
-  "--clearScreen",
-  "--cors",
-  "--emptyOutDir",
-  "--experimentalBundle",
-  "--force",
-  "--strictPort",
-  "--watch",
-  "-w",
-]);
-const VITE_OPTIONS_WITHOUT_VALUES = new Set(["--help", "-h", "--version", "-v"]);
-
-function findViteRoot(args: string[]): string | undefined | null {
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index];
-    if (arg === "--") break;
-    const equalsIndex = arg.indexOf("=");
-    const option = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
-    if (VITE_OPTIONS_WITHOUT_VALUES.has(option)) continue;
-    if (VITE_OPTIONS_WITH_VALUES.has(option)) {
-      if (equalsIndex === -1) index++;
-      continue;
-    }
-    const booleanOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
-    if (VITE_BOOLEAN_OPTIONS.has(booleanOption)) {
-      if (equalsIndex === -1 && /^(?:true|false)$/.test(args[index + 1] ?? "")) index++;
-      continue;
-    }
-    if (arg.startsWith("-")) return null;
-    return arg;
-  }
-}
 
 function configPreflight(command: ViteCommand): string {
   const cwd = process.cwd();
