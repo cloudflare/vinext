@@ -97,6 +97,22 @@ describe("thin vinext command proxies", () => {
     expect(fs.existsSync(path.join(root, "project/dist/server/entry.js"))).toBe(true);
   }, 120_000);
 
+  it("supports Vite options before a positional project root", () => {
+    const root = createRoot();
+    writeProject(path.join(root, "project"));
+    const result = spawnSync(
+      process.execPath,
+      [CLI_PATH, "build", "--mode", "production", "project", "--logLevel", "silent"],
+      {
+        cwd: root,
+        encoding: "utf-8",
+      },
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(fs.existsSync(path.join(root, "project/dist/server/entry.js"))).toBe(true);
+  }, 120_000);
+
   it("resolves explicit config paths from the invocation cwd", () => {
     const root = createRoot();
     writeProject(root, "config/vite.custom.ts");
