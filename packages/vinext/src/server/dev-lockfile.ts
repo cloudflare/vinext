@@ -276,7 +276,10 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
   const lockfile: DevLockfile = {
     path: lockfilePath,
     update(next: DevServerInfo): void {
+      if (released) return;
       try {
+        const current = readLockfile(lockfilePath);
+        if (!current || current.pid !== ownerPid) return;
         writeLockfile(lockfilePath, next);
       } catch {
         // Best-effort; not fatal.
