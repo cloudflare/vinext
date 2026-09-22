@@ -61,7 +61,7 @@ export default defineConfig({
     root,
     "app/page.tsx",
     `export default function Page() {
-  return <p>{process.env.NODE_ENV}</p>;
+  return <p>{process.env.NODE_ENV === "production" ? "vinext-production-marker" : "vinext-development-marker"}</p>;
 }
 `,
   );
@@ -101,7 +101,11 @@ describe("configured vinext build contract", () => {
     expect(pagesEntry).toContain("config-only-plugin-ran");
     expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
 
-    const appEntry = fs.readFileSync(path.join(root, "custom/server/index.js"), "utf-8");
-    expect(appEntry).toContain("production");
+    const appOutput = fs
+      .globSync("**/*.js", { cwd: path.join(root, "custom/server") })
+      .map((file) => fs.readFileSync(path.join(root, "custom/server", file), "utf-8"))
+      .join("\n");
+    expect(appOutput).toContain("vinext-production-marker");
+    expect(appOutput).not.toContain("vinext-development-marker");
   }, 120_000);
 });
