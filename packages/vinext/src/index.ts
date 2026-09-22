@@ -2398,8 +2398,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           resolvedNodeEnv = "development";
         }
         const preserveTestNodeEnv =
-          process.env.NODE_ENV === "test" &&
-          (mode === "test" || viteCliBuildConfigNodeEnv === "test");
+          process.env.NODE_ENV === "test" && viteCliBuildConfigNodeEnv === "test";
         if (!preserveTestNodeEnv && process.env.NODE_ENV !== resolvedNodeEnv) {
           // Next.js's vendored global declarations mark NODE_ENV readonly even
           // though Node permits updating process.env at runtime.
