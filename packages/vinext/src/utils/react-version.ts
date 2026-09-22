@@ -15,7 +15,7 @@ function getDependencyUpgradeDeps(
   for (const [dependency, recommendation] of Object.entries(recommendations)) {
     try {
       const version = findPackageVersion(req.resolve(dependency), dependency);
-      if (version && isVersionBelow(version, recommendation.minimumVersion)) {
+      if (version && needsStableUpgrade(version, recommendation.minimumVersion)) {
         return recommendation.upgrades;
       }
     } catch {
@@ -41,7 +41,7 @@ export function getReactUpgradeDeps(
       const version = /^[~^]?([0-9]+(?:\.[0-9]+){0,2}(?:-[0-9A-Za-z.*-]+)?)(?:\.[x*])?$/.exec(
         declared ?? "",
       )?.[1];
-      if (version && isVersionBelow(version, [19, 2, 6])) {
+      if (version && needsStableUpgrade(version, [19, 2, 6])) {
         return ["react@latest", "react-dom@latest"];
       }
     }
@@ -55,13 +55,15 @@ export function getReactUpgradeDeps(
   });
 }
 
-function isVersionBelow(version: string, minimum: [number, number, number]): boolean {
+function needsStableUpgrade(version: string, minimum: [number, number, number]): boolean {
+  // Stable RSDW cannot be paired with a React canary, even one whose numeric
+  // version is above the minimum stable version.
+  if (version.includes("-")) return true;
   const current = version.split(".").map((part) => parseInt(part, 10));
   for (let index = 0; index < minimum.length; index++) {
     if ((current[index] ?? 0) !== minimum[index]) return (current[index] ?? 0) < minimum[index];
   }
-  // A prerelease of the floor is older than the stable security release.
-  return version.includes("-");
+  return false;
 }
 
 /** Walk up from a resolved module entry to find its package version. */
