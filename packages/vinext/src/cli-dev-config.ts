@@ -121,13 +121,14 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
     const inlineConfig = server.config.inlineConfig as typeof server.config.inlineConfig & {
       [VINEXT_DEV_RESTART_CONFIG]?: true;
     };
-    const previousRestartMarker = inlineConfig[VINEXT_DEV_RESTART_CONFIG];
     inlineConfig[VINEXT_DEV_RESTART_CONFIG] = true;
     try {
       await restartServer(forceOptimize);
     } finally {
-      if (previousRestartMarker) inlineConfig[VINEXT_DEV_RESTART_CONFIG] = previousRestartMarker;
-      else delete inlineConfig[VINEXT_DEV_RESTART_CONFIG];
+      delete inlineConfig[VINEXT_DEV_RESTART_CONFIG];
+      // Forced restarts clone the inline config; concurrent calls can share the
+      // same restart. Neither config should retain this temporary provenance.
+      delete (server.config.inlineConfig as typeof inlineConfig)[VINEXT_DEV_RESTART_CONFIG];
       devInvocationRoot = normalizeDevLifecycleRoot(server.config.root);
       if (restartingLock) {
         restartingLock.restarting = false;
@@ -180,7 +181,8 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
     try {
       return await listenServer(port, isRestart);
     } catch (error) {
-      releaseLifecycle();
+      // The same Vite server can retry listen(); only close ends its CLI claim.
+      releaseLock();
       throw error;
     }
   };

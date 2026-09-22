@@ -181,6 +181,19 @@ export default { plugins: [vinext()] };
         await waitFor(() => readLockfile(getLockfilePath(root))?.port === actualPort || undefined),
       ).toBe(true);
 
+      const nested = await createServer({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [vinext()],
+      });
+      try {
+        expect(nested.config.server.port).toBe(5173);
+        expect(readLockfile(getLockfilePath(root))?.port).toBe(actualPort);
+      } finally {
+        await nested.close();
+      }
+
       await server.close();
       server = undefined;
       expect(fs.existsSync(getLockfilePath(root))).toBe(false);
@@ -242,6 +255,41 @@ export default { plugins: [vinext()] };
     server = undefined;
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
+
+  it.each(["forced", "concurrent"] as const)(
+    "does not carry CLI restart provenance into a reused config after a %s restart",
+    async (kind) => {
+      const root = createProject();
+      const nestedRoot = createProject();
+      useViteCliArgv();
+      server = await createServer({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [vinext()],
+        server: { port: 0 },
+      });
+      await server.listen();
+
+      if (kind === "forced") await server.restart(true);
+      else await Promise.all([server.restart(), server.restart()]);
+
+      const nested = await createServer({
+        ...server.config.inlineConfig,
+        root: nestedRoot,
+        server: {},
+      });
+      try {
+        expect(nested.config.server.port).toBe(5173);
+        expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
+      } finally {
+        await nested.close();
+      }
+      await server.close();
+      server = undefined;
+      expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+    },
+  );
 
   it("moves the lifecycle when a restart changes the configured root", async () => {
     const firstRoot = createProject();
