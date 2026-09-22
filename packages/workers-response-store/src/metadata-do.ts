@@ -395,6 +395,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         CREATE INDEX IF NOT EXISTS pending_r2_tombstones_edge_pending
           ON pending_r2_tombstones(key_hash)
           WHERE r2_complete = 1 AND edge_purge_complete = 0;
+        CREATE INDEX IF NOT EXISTS pending_r2_tombstones_r2_sequence
+          ON pending_r2_tombstones(tombstone_sequence, key_hash)
+          WHERE r2_complete = 0;
+        CREATE INDEX IF NOT EXISTS pending_r2_tombstones_edge_sequence
+          ON pending_r2_tombstones(tombstone_sequence, key_hash)
+          WHERE r2_complete = 1 AND edge_purge_complete = 0;
       `);
     });
   }

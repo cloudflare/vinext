@@ -1951,12 +1951,16 @@ test("the previous metadata schema is upgraded in place", async () => {
         `SELECT name FROM sqlite_schema
         WHERE type = 'index' AND name IN (
           'pending_r2_tombstones_r2_pending',
-          'pending_r2_tombstones_edge_pending'
+          'pending_r2_tombstones_edge_pending',
+          'pending_r2_tombstones_r2_sequence',
+          'pending_r2_tombstones_edge_sequence'
         ) ORDER BY name`,
       ),
       [
         { name: "pending_r2_tombstones_edge_pending" },
+        { name: "pending_r2_tombstones_edge_sequence" },
         { name: "pending_r2_tombstones_r2_pending" },
+        { name: "pending_r2_tombstones_r2_sequence" },
       ],
     );
   } finally {
@@ -2057,6 +2061,25 @@ test("tombstone cleanup uses persistent queue indexes and keyed completion", asy
     WHERE r2_complete = 1 AND edge_purge_complete = 1
       AND key_hash = 'tombstone-query-plan' AND revision = 1
   `);
+  const sequenceUnfinished = await storage.exec(`
+    EXPLAIN QUERY PLAN
+    SELECT key_hash, cache_key, object_key, revision, r2_complete, edge_purge_complete
+    FROM pending_r2_tombstones
+    WHERE r2_complete = 0 AND tombstone_sequence = 1
+    ORDER BY key_hash LIMIT 400
+  `);
+  const sequencePendingEdge = await storage.exec(`
+    EXPLAIN QUERY PLAN
+    SELECT key_hash, cache_key, object_key, revision, r2_complete, edge_purge_complete
+    FROM pending_r2_tombstones
+    WHERE r2_complete = 1 AND edge_purge_complete = 0 AND tombstone_sequence = 1
+    ORDER BY key_hash LIMIT 400
+  `);
+  const sequenceCompleted = await storage.exec(`
+    EXPLAIN QUERY PLAN
+    DELETE FROM pending_r2_tombstones
+    WHERE r2_complete = 1 AND edge_purge_complete = 0 AND tombstone_sequence <= 1
+  `);
   const unfinishedDetails = unfinished
     .map(({ detail }) => detail)
     .filter((detail): detail is string => typeof detail === "string");
@@ -2064,6 +2087,15 @@ test("tombstone cleanup uses persistent queue indexes and keyed completion", asy
     .map(({ detail }) => detail)
     .filter((detail): detail is string => typeof detail === "string");
   const completedDetails = completed
+    .map(({ detail }) => detail)
+    .filter((detail): detail is string => typeof detail === "string");
+  const sequenceUnfinishedDetails = sequenceUnfinished
+    .map(({ detail }) => detail)
+    .filter((detail): detail is string => typeof detail === "string");
+  const sequencePendingEdgeDetails = sequencePendingEdge
+    .map(({ detail }) => detail)
+    .filter((detail): detail is string => typeof detail === "string");
+  const sequenceCompletedDetails = sequenceCompleted
     .map(({ detail }) => detail)
     .filter((detail): detail is string => typeof detail === "string");
 
@@ -2080,6 +2112,24 @@ test("tombstone cleanup uses persistent queue indexes and keyed completion", asy
   assert.ok(
     completedDetails.some((detail) => detail.includes("PRIMARY KEY (key_hash=?)")),
     JSON.stringify(completed),
+  );
+  assert.ok(
+    sequenceUnfinishedDetails.some((detail) =>
+      detail.includes("INDEX pending_r2_tombstones_r2_sequence"),
+    ),
+    JSON.stringify(sequenceUnfinished),
+  );
+  assert.ok(
+    sequencePendingEdgeDetails.some((detail) =>
+      detail.includes("INDEX pending_r2_tombstones_edge_sequence"),
+    ),
+    JSON.stringify(sequencePendingEdge),
+  );
+  assert.ok(
+    sequenceCompletedDetails.some((detail) =>
+      detail.includes("INDEX pending_r2_tombstones_edge_sequence"),
+    ),
+    JSON.stringify(sequenceCompleted),
   );
 });
 
