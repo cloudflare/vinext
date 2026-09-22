@@ -253,7 +253,7 @@ jobs:
 
       - name: Build static export
         if: matrix.example.static_export == true
-        run: vp exec vinext build
+        run: vp exec vite build
         working-directory: ${{ matrix.example.working_directory }}
 
       - name: Verify static export artifact

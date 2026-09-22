@@ -354,7 +354,7 @@ jobs:
 
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cna-cloudflare
-        run: vp exec vinext build
+        run: vp exec vite build
 
       - name: Verify generated Cloudflare build output
         working-directory: ${{ runner.temp }}/cna-cloudflare
@@ -444,7 +444,7 @@ jobs:
 
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cva-cloudflare
-        run: vp exec vinext build
+        run: vp exec vite build
 
       - name: Verify generated Cloudflare build output
         working-directory: ${{ runner.temp }}/cva-cloudflare

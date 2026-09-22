@@ -2,8 +2,8 @@
   "name": "vinext-pages-router-complex",
   "private": true,
   "scripts": {
-    "dev": "vinext dev",
-    "build": "RELEASE_TAG=local vinext build",
+    "dev": "vite dev",
+    "build": "RELEASE_TAG=local vite build",
     "start": "vinext start",
     "preview": "vinext start",
     "dev:next": "next dev --webpack",

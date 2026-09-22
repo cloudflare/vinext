@@ -9,7 +9,7 @@
 # - Diagnostic output goes to stderr or files in the working directory
 #
 # This script injects vinext as a local file dependency into the test app,
-# builds with `vinext build`, starts with `vinext start`, and prints the URL.
+# builds with `vite build`, starts with `vinext start`, and prints the URL.
 set -euo pipefail
 
 # Accept ADAPTER_DIR (Next.js docs convention) or VINEXT_DIR
@@ -271,7 +271,7 @@ trap cleanup_on_error EXIT
 # Some Next.js tests check for .next/trace existence (telemetry trace file)
 # during the test harness's destroy() cleanup. vinext doesn't produce one, so
 # create an empty file to satisfy those checks. Do this BEFORE any step that
-# can fail (dep install, vinext init, vinext build) so the file exists even
+# can fail (dep install, vinext init, vite build) so the file exists even
 # on failure — otherwise the test harness logs ENOENT noise (303 lines per
 # deploy-suite run before this fix).
 mkdir -p ".next"
@@ -552,7 +552,7 @@ pkg.devDependencies.vinext = 'file:.vinext-local-package'
 
 // App Router fixtures need the same React trio that built vinext. Pinning the
 // throwaway manifest keeps nightly results tied to the frozen workspace install
-// and avoids a second compatibility install during `vinext build`.
+// and avoids a second compatibility install during `vite build`.
 function hasAppRouterDir(root) {
   return fs.existsSync(path.join(root, 'app')) || fs.existsSync(path.join(root, 'src', 'app'))
 }
@@ -732,6 +732,11 @@ if [ ! -x "${VINEXT_BIN}" ]; then
   echo "pnpm install failed: ${VINEXT_BIN} not found or not executable" >&2
   exit 1
 fi
+VITE_BIN="./node_modules/.bin/vite"
+if [ ! -x "${VITE_BIN}" ]; then
+  echo "pnpm install failed: ${VITE_BIN} not found or not executable" >&2
+  exit 1
+fi
 if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.setup ? 0 : 1)" >/dev/null 2>&1; then
   run_pnpm run setup >> "${BUILD_LOG}" 2>&1
 fi
@@ -745,9 +750,9 @@ fi
 # vinext loads CJS next.config.js in `"type": "module"` packages via a temp
 # .cjs sibling (see config/next-config.ts), so we don't rewrite the user's
 # config file here.
-"${VINEXT_BIN}" init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1
+"${VINEXT_BIN}" init --platform=node --skip-check --force --prerender >> "${BUILD_LOG}" 2>&1
 
-"${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
+"${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
 
 # Next.js emits large-page-data warnings during build. Specific deploy tests
 # (e.g. test/e2e/prerender) assert these strings appear in the build output,

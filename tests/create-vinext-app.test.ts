@@ -175,8 +175,8 @@ describe("createVinextApp", () => {
 
     const pkg = readPkg(appPath);
     expect(pkg.scripts).toEqual({
-      dev: "vinext dev",
-      build: "vinext build",
+      dev: "vite dev",
+      build: "vite build",
       start: "wrangler dev --config dist/server/wrangler.json",
       deploy: "vinext-cloudflare deploy --config dist/server/wrangler.json",
       "deploy:response-store": "wrangler deploy --config wrangler.response-store.jsonc",
@@ -361,8 +361,8 @@ describe("createVinextApp", () => {
     expect(pkg.devDependencies).not.toHaveProperty("@cloudflare/vite-plugin");
     expect(pkg.devDependencies).not.toHaveProperty("wrangler");
     expect(pkg.scripts).toEqual({
-      dev: "vinext dev",
-      build: "vinext build",
+      dev: "vite dev",
+      build: "vite build",
       start: "vinext start",
     });
   });

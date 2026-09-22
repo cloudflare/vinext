@@ -386,7 +386,7 @@ export type NextConfig = {
   cacheComponents?: boolean;
   /**
    * Enables source maps while generating static pages.
-   * Helps with errors during the prerender phase in `vinext build`.
+   * Helps with errors during the prerender phase in `vite build`.
    * Defaults to `true`. Set to `false` to disable.
    */
   enablePrerenderSourceMaps?: boolean;
@@ -1356,7 +1356,7 @@ function resolveDeploymentId(configDeploymentId: unknown): string | undefined {
  * across plugin instances); otherwise we mint a random UUID.
  *
  * NOTE: like `resolveBuildId`, this is non-deterministic in the no-deploymentId
- * case, so a single `vinext build` that instantiates the plugin more than once
+ * case, so a single `vite build` that instantiates the plugin more than once
  * (App Router `buildApp()` + the hybrid Pages Router `vite.build()`) must
  * resolve it once and share it — see `__VINEXT_SHARED_RSC_COMPATIBILITY_ID`.
  */

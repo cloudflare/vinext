@@ -4,7 +4,7 @@ import fs from "node:fs";
 /**
  * Production build E2E tests for Pages Router.
  *
- * These tests run against `vinext build` + `vinext start` output,
+ * These tests run against `vite build` + `vinext start` output,
  * NOT the dev server. The production server is started on port 4175
  * via the webServer config in playwright.config.ts.
  */

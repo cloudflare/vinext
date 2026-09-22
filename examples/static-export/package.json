@@ -3,9 +3,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
-    "preview": "vinext build && wrangler dev --config deploy/wrangler.jsonc",
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite build && wrangler dev --config deploy/wrangler.jsonc",
     "verify": "node scripts/verify-output.mjs"
   },
   "dependencies": {

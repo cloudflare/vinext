@@ -200,7 +200,7 @@ describe("App Router Production build", () => {
   }, 30000);
 
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
-    // The `vinext build` CLI resolves the build ID once and shares it via
+    // The `vite build` CLI resolves the build ID once and shares it via
     // __VINEXT_SHARED_BUILD_ID so that every plugin instance in a build (App
     // Router buildApp + the separate hybrid Pages Router vite.build) uses the
     // same ID. Without it, each instance mints its own random UUID and the
