@@ -98,7 +98,7 @@ function clusteredShortOptions(arg: string): string[] | undefined {
     : undefined;
 }
 
-function valueOptionName(arg: string): string {
+export function valueOptionName(arg: string): string {
   return clusteredShortOptions(arg)?.at(-1) ?? optionName(arg);
 }
 
@@ -167,17 +167,19 @@ export function findViteRoot(
     if (arg.startsWith("-")) {
       const normalizedOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
       if (
-        !clusteredOptions &&
-        !REQUIRED_VALUE_OPTIONS.has(option) &&
-        !OPTIONAL_VALUE_OPTIONS.has(normalizedOption) &&
-        !VALUELESS_OPTIONS.has(normalizedOption) &&
-        !BOOLEAN_OPTIONS.has(normalizedOption)
+        (option.startsWith("--no-") && optionHasInlineValue(arg)) ||
+        (!clusteredOptions &&
+          !REQUIRED_VALUE_OPTIONS.has(option) &&
+          !OPTIONAL_VALUE_OPTIONS.has(normalizedOption) &&
+          !VALUELESS_OPTIONS.has(normalizedOption) &&
+          !BOOLEAN_OPTIONS.has(normalizedOption))
       ) {
         shouldPreflight = false;
       }
       continue;
     }
-    root ??= arg;
+    if (root !== undefined) shouldPreflight = false;
+    else root = arg;
   }
   return { root, shouldPreflight };
 }
