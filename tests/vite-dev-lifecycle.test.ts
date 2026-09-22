@@ -102,9 +102,11 @@ if (process.env.NODE_ENV !== "staging") {
 export default { plugins: [vinext()] };
 `,
     );
+    const env = { ...process.env };
+    Reflect.set(env, "NODE_ENV", "staging");
     child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
       cwd: root,
-      env: { ...process.env, NODE_ENV: "staging" },
+      env,
       stdio: "pipe",
     });
 
