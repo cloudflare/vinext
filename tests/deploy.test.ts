@@ -26,6 +26,7 @@ import {
   detectPackageManagerName,
   detectProject,
   findInNodeModules,
+  hasWranglerBin,
   formatMissingCloudflarePluginError,
   getMissingDeps,
   hasWranglerConfig,
@@ -1096,6 +1097,18 @@ describe("detectProject", () => {
     writeFile(tmpDir, "wrangler.toml", "[vars]");
     const info = detectProject(tmpDir);
     expect(info.hasWranglerConfig).toBe(true);
+  });
+
+  it.each([
+    ["linux", ".bin/wrangler"],
+    ["win32", ".bin/wrangler.CMD"],
+    ["win32", ".bin/wrangler.cmd"],
+    ["win32", ".bin/wrangler.exe"],
+    ["win32", ".bin/wrangler.bunx"],
+  ] as const)("detects Wrangler's %s shim", (platform, shim) => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, `node_modules/${shim}`, "");
+    expect(hasWranglerBin(tmpDir, platform)).toBe(true);
   });
 
   it("detects cloudflare.config.ts", () => {
