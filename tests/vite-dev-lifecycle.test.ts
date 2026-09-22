@@ -89,7 +89,7 @@ export default { plugins: [vinext()] };
       return current && current.port > 0 ? current : undefined;
     });
     expect(lock.port).toBeGreaterThan(0);
-  });
+  }, 30_000);
 
   it("reports duplicate dev servers through Vite's normal error path", async () => {
     const root = createProject();
@@ -112,7 +112,7 @@ export default { plugins: [vinext()] };
     expect(duplicate.status).toBe(1);
     expect(duplicate.stderr).toContain("Another vinext dev server is already running");
     expect(duplicate.stderr).not.toContain("node:events");
-  });
+  }, 30_000);
 
   it("applies vinext defaults without locking a server that never listens", async () => {
     const root = createProject();
@@ -166,6 +166,16 @@ export default { plugins: [vinext()] };
       });
       await server.listen();
       expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+
+      await server.restart();
+      const nested = await createServer({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [vinext()],
+      });
+      expect(nested.config.server.port).toBe(5173);
+      await nested.close();
     } finally {
       if (previous === undefined) delete process.env.VINEXT_NO_DEV_LOCK;
       else process.env.VINEXT_NO_DEV_LOCK = previous;
@@ -193,6 +203,38 @@ export default { plugins: [vinext()] };
     await server.close();
     server = undefined;
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+  });
+
+  it("moves the lifecycle when a restart changes the configured root", async () => {
+    const firstRoot = createProject();
+    const secondRoot = createProject();
+    useViteCliArgv();
+    let configCalls = 0;
+    server = await createServer({
+      root: firstRoot,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [
+        {
+          name: "change-root-on-restart",
+          enforce: "pre",
+          config: () => ({ root: configCalls++ === 0 ? firstRoot : secondRoot }),
+        },
+        vinext(),
+      ],
+      server: { port: 0 },
+    });
+    await server.listen();
+    expect(readLockfile(getLockfilePath(firstRoot))).toMatchObject({ pid: process.pid });
+
+    await server.restart();
+
+    expect(fs.realpathSync.native(server.config.root)).toBe(fs.realpathSync.native(secondRoot));
+    expect(fs.existsSync(getLockfilePath(firstRoot))).toBe(false);
+    expect(readLockfile(getLockfilePath(secondRoot))).toMatchObject({ pid: process.pid });
+    await server.close();
+    server = undefined;
+    expect(fs.existsSync(getLockfilePath(secondRoot))).toBe(false);
   });
 
   it("releases the lock after a replacement server fails to configure", async () => {

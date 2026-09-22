@@ -13,6 +13,7 @@ type ActiveDevServerLock = {
 
 const activeDevServerLocks = new Map<string, ActiveDevServerLock>();
 let devInvocationRoot: string | undefined;
+let devInvocationRestarting = false;
 
 function normalizeDevLifecycleRoot(root: string): string {
   try {
@@ -29,7 +30,9 @@ export function claimViteCliDevInvocation(root: string): boolean {
     devInvocationRoot = root;
     return true;
   }
-  return devInvocationRoot === root && activeDevServerLocks.get(root)?.restarting === true;
+  if (!devInvocationRestarting) return false;
+  devInvocationRoot = root;
+  return true;
 }
 
 export type DevServerCliOptions = {
@@ -105,7 +108,11 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
   };
   const releaseLifecycle = () => {
     releaseLock();
-    if (!activeDevServerLocks.get(root)?.restarting && devInvocationRoot === root) {
+    if (
+      !devInvocationRestarting &&
+      !activeDevServerLocks.get(root)?.restarting &&
+      devInvocationRoot === root
+    ) {
       devInvocationRoot = undefined;
     }
   };
@@ -121,9 +128,12 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
   server.restart = async (forceOptimize?: boolean) => {
     const restartingLock = activeDevServerLocks.get(root);
     if (restartingLock) restartingLock.restarting = true;
+    devInvocationRestarting = true;
     try {
       await restartServer(forceOptimize);
     } finally {
+      devInvocationRestarting = false;
+      devInvocationRoot = normalizeDevLifecycleRoot(server.config.root);
       if (restartingLock) {
         restartingLock.restarting = false;
         if (restartingLock.servers === 0) {
