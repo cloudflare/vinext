@@ -1,4 +1,5 @@
 import path, { toSlash } from "pathslash";
+import type { InlineConfig } from "vite";
 import { findViteConfigPath } from "./project.js";
 
 type ViteCliCommand = "dev" | "build";
@@ -7,6 +8,7 @@ export type ViteCliInvocation = {
   command: ViteCliCommand;
   mode: string;
   root: string;
+  rootArg?: string;
   configFile?: string;
 };
 
@@ -151,14 +153,30 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
     command: invocation.command,
     mode: mode || (invocation.command === "build" ? "production" : "development"),
     root: path.resolve(toSlash(process.cwd()), root ?? "."),
+    ...(root ? { rootArg: root } : {}),
     ...(configFile ? { configFile: path.resolve(toSlash(process.cwd()), configFile) } : {}),
   };
 }
 
 /** Match the Vite config loaded by the outer CLI, not one loaded by a nested server. */
-export function isViteCliConfigFile(configFile: string): boolean {
+export function isViteCliConfigFile(
+  configFile: string,
+  inlineConfig?: Pick<InlineConfig, "root" | "configFile">,
+): boolean {
   const invocation = getViteCliInvocation();
   if (!invocation || !path.isAbsolute(configFile)) return false;
+  if (inlineConfig) {
+    if (inlineConfig.root !== invocation.rootArg) return false;
+    if (invocation.configFile) {
+      if (
+        typeof inlineConfig.configFile !== "string" ||
+        path.resolve(toSlash(process.cwd()), inlineConfig.configFile) !== invocation.configFile
+      )
+        return false;
+    } else if (inlineConfig.configFile !== undefined) {
+      return false;
+    }
+  }
   const expected = invocation.configFile ?? findViteConfigPath(invocation.root);
   return expected !== undefined && path.resolve(configFile) === expected;
 }

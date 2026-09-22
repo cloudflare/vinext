@@ -4055,7 +4055,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           isServeCommand &&
           !devCliLifecycleEnabled &&
           config.configFile &&
-          isViteCliConfigFile(config.configFile)
+          isViteCliConfigFile(config.configFile, config.inlineConfig)
         ) {
           devCliLifecycleEnabled = claimViteCliDevInvocation(config.root, false, true);
           if (devCliLifecycleEnabled && !config.server.middlewareMode) {
