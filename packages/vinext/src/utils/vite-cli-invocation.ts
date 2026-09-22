@@ -80,8 +80,8 @@ function optionConsumesNext(arg: string, next: string | undefined): boolean {
   const option = clusteredShortOption(arg) ?? optionName(arg);
   if (REQUIRED_VALUE_OPTIONS.has(option)) return true;
   if (OPTIONAL_VALUE_OPTIONS.has(option)) return next !== undefined && !next.startsWith("-");
-  const booleanOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
-  return BOOLEAN_OPTIONS.has(booleanOption) && /^(?:true|false)$/.test(next ?? "");
+  // CAC does not consume a separate value following --no-*.
+  return BOOLEAN_OPTIONS.has(option) && /^(?:true|false)$/.test(next ?? "");
 }
 
 function commandArguments(argv: string[]): { command: ViteCliCommand; args: string[] } | undefined {
