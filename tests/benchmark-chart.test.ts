@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { hasRollingMedian, rollingMedian } from "../apps/web/app/benchmarks/components/trend";
 
 describe("benchmark chart rolling median", () => {
