@@ -212,10 +212,7 @@ async function buildHybridPagesBundle(
   await pagesBuilder.buildApp();
 }
 
-export function prepareBuildOutput(
-  context: BuildLifecycleContext,
-  emptyOutDir = context.emptyOutDir,
-): void {
+function checkStandaloneBuildPrerequisite(context: BuildLifecycleContext): void {
   if (context.nextConfig.output === "standalone") {
     const vinextDistDir = path.join(resolveVinextPackageRoot(), "dist");
     if (!fs.existsSync(vinextDistDir)) {
@@ -224,6 +221,13 @@ export function prepareBuildOutput(
       );
     }
   }
+}
+
+export function prepareBuildOutput(
+  context: BuildLifecycleContext,
+  emptyOutDir = context.emptyOutDir,
+): void {
+  checkStandaloneBuildPrerequisite(context);
 
   cleanBuildOutput({
     root: context.root,
@@ -390,8 +394,11 @@ export function createBuildLifecyclePlugins(options: {
         order: "pre",
         handler(config) {
           if (outputPrepared || !options.shouldPrepare(config)) return;
+          const context = options.createContext();
+          // Fail before onPrepare can install or upgrade dependencies.
+          checkStandaloneBuildPrerequisite(context);
           options.onPrepare?.(config);
-          prepareBuildOutput(options.createContext());
+          prepareBuildOutput(context);
           outputPrepared = true;
         },
       },
