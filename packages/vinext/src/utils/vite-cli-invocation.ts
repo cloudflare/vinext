@@ -111,6 +111,7 @@ function optionConsumesNext(arg: string, next: string | undefined): boolean {
   const option = valueOptionName(arg);
   if (REQUIRED_VALUE_OPTIONS.has(option)) return true;
   if (OPTIONAL_VALUE_OPTIONS.has(option)) return next !== undefined && !next.startsWith("-");
+  if (VALUELESS_OPTIONS.has(option)) return /^(?:true|false)$/.test(next ?? "");
   // CAC does not consume a separate value following --no-*.
   return BOOLEAN_OPTIONS.has(option) && /^(?:true|false)$/.test(next ?? "");
 }
@@ -134,9 +135,17 @@ export function findViteRoot(
     if (arg === "--") break;
     const clusteredOptions = clusteredShortOptions(arg);
     const option = clusteredOptions?.at(-1) ?? optionName(arg);
-    if ((clusteredOptions ?? [option]).some((name) => VALUELESS_OPTIONS.has(name))) {
+    const earlierGlobalOption = clusteredOptions
+      ?.slice(0, -1)
+      .some((name) => VALUELESS_OPTIONS.has(name));
+    if (
+      earlierGlobalOption ||
+      (VALUELESS_OPTIONS.has(option) &&
+        (optionHasInlineValue(arg)
+          ? arg.slice(arg.indexOf("=") + 1) !== "false"
+          : args[index + 1] !== "false"))
+    ) {
       shouldPreflight = false;
-      continue;
     }
     if (clusteredOptions?.slice(0, -1).some((name) => REQUIRED_VALUE_OPTIONS.has(name))) {
       shouldPreflight = false;
@@ -161,6 +170,7 @@ export function findViteRoot(
         !clusteredOptions &&
         !REQUIRED_VALUE_OPTIONS.has(option) &&
         !OPTIONAL_VALUE_OPTIONS.has(option) &&
+        !VALUELESS_OPTIONS.has(option) &&
         !BOOLEAN_OPTIONS.has(booleanOption)
       ) {
         shouldPreflight = false;
