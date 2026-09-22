@@ -30,6 +30,7 @@ type ProjectViteApi = Pick<
 
 export type BuildLifecycleContext = {
   cacheConfig: VinextCacheConfig | null;
+  configNodeEnv?: string;
   createPagesOnlyPlugins: () => PluginOption[];
   emptyOutDir?: boolean;
   hasAppDir: boolean;
@@ -109,14 +110,15 @@ async function loadHybridUserConfig(
   root: string,
   mode: string,
   configFile: string | undefined,
+  configNodeEnv: string | undefined,
 ): Promise<UserConfig> {
   if (!configFile) return {};
   const vite = await loadProjectViteApi(root);
-  const loaded = await vite.loadConfigFromFile(
-    { command: "build", mode, isSsrBuild: true },
-    configFile,
-    root,
-  );
+  const load = () =>
+    vite.loadConfigFromFile({ command: "build", mode, isSsrBuild: true }, configFile, root);
+  const loaded = configNodeEnv
+    ? await withEnvironment({ NODE_ENV: configNodeEnv }, load)
+    : await load();
   if (!loaded) return {};
   const plugins = (loaded?.config.plugins as unknown[] | undefined)?.flat(Infinity) ?? [];
   return {
@@ -139,6 +141,7 @@ async function buildHybridPagesBundle(
     context.root,
     builder.config.mode,
     builder.config.configFile,
+    context.configNodeEnv,
   );
   if (builder.config.logLevel !== "silent") {
     console.log("  Building Pages Router server (hybrid)...");
@@ -162,7 +165,7 @@ async function buildHybridPagesBundle(
         : { ...userOutput, entryFileNames: "entry.js" },
     },
   };
-  const pagesBuilder = await vite.createBuilder({
+  const pagesConfig: Parameters<typeof vite.createBuilder>[0] = {
     ...userConfig,
     root: context.root,
     mode: builder.config.mode,
@@ -194,7 +197,11 @@ async function buildHybridPagesBundle(
     // Vite uses the top-level SSR entry while resolving config, before the
     // environment build runs. This preserves `apply(_, { isSsrBuild })`.
     build: pagesBuild,
-  });
+  };
+  const createPagesBuilder = () => vite.createBuilder(pagesConfig);
+  const pagesBuilder = context.configNodeEnv
+    ? await withEnvironment({ NODE_ENV: context.configNodeEnv }, createPagesBuilder)
+    : await createPagesBuilder();
   await pagesBuilder.buildApp();
 }
 

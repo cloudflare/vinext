@@ -69,6 +69,10 @@ export default defineConfig({
       configResolved(config) {
         fs.mkdirSync(path.join(config.root, "dist"), { recursive: true });
         fs.writeFileSync(path.join(config.root, "dist/config-resolved-plugin-ran"), "ok");
+        fs.writeFileSync(
+          path.join(config.root, "dist/config-resolved-node-env"),
+          process.env.NODE_ENV ?? "",
+        );
       },
     },
     {
@@ -200,6 +204,9 @@ describe("configured vinext build contract", () => {
     expect(fs.existsSync(path.join(root, "custom/server/ssr/index.js"))).toBe(true);
     expect(fs.existsSync(path.join(root, "dist/client"))).toBe(true);
     expect(fs.readFileSync(path.join(root, "dist/config-resolved-plugin-ran"), "utf-8")).toBe("ok");
+    expect(fs.readFileSync(path.join(root, "dist/config-resolved-node-env"), "utf-8")).toBe(
+      "production",
+    );
 
     const pagesEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
     expect(pagesEntry).toContain("top-level-alias-ran");
