@@ -102,9 +102,9 @@ jobs:
           # consumer experience instead of depending on monorepo-only aliasing.
           npm install --legacy-peer-deps "$VINEXT_PKG" "vite@$VITE_VERSION" "@vitejs/plugin-rsc@$RSC_VERSION"
 
-      - name: Build with vinext
+      - name: Build with Vite
         working-directory: target-repo
-        run: ./node_modules/.bin/vinext build
+        run: ./node_modules/.bin/vite build
 
       - name: Verify build output
         working-directory: target-repo

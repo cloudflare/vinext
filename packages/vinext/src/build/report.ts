@@ -1,5 +1,5 @@
 /**
- * Build report — prints a Next.js-style route table after `vinext build`.
+ * Build report — prints a Next.js-style route table after `vite build`.
  *
  * Classifies every discovered route as:
  *   ○  Static   — confirmed static: force-static or revalidate=Infinity

@@ -124,7 +124,7 @@ test_repo() {
   local port=$((3100 + RANDOM % 900))
 
   # Start dev server in background
-  PORT=$port npx vinext dev --port "$port" &
+  PORT=$port npx vite dev --port "$port" &
   local dev_pid=$!
   echo "$dev_pid" >> "$WORK_DIR/pids"
 

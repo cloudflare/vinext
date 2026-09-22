@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
+    "dev": "vite dev",
+    "build": "vite build",
     "start": "vinext start",
     "preview": "vinext start"
   },

@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 /**
  * Standalone output E2E tests.
  *
- * These tests run against `vinext build` output with `output: "standalone"`,
+ * These tests run against `vite build` output with `output: "standalone"`,
  * started via `node dist/standalone/server.js`. The production server runs
  * on port 4182 via the webServer config in playwright.config.ts.
  */
