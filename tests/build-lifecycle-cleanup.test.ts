@@ -38,9 +38,7 @@ describe("Vite build lifecycle cleanup", () => {
     }
   });
 
-  it("does not leave process or builder state after another build hook fails", async () => {
-    const previousSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
-    delete process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
+  it("does not patch the builder across failed build attempts", async () => {
     const builder = {
       build: async () => {
         throw new Error("RSC build failed");
@@ -56,27 +54,16 @@ describe("Vite build lifecycle cleanup", () => {
     });
     const hook = plugins[0]?.buildApp as { handler: (builder: ViteBuilder) => Promise<void> };
 
-    try {
-      await hook.handler(builder);
-      // A later plugin can throw before vinext's finalizer. Nothing should need
-      // a cleanup hook in order to retry the same builder.
-      await expect(Promise.reject(new Error("later plugin failed"))).rejects.toThrow(
-        "later plugin failed",
-      );
-      expect(process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION).toBeUndefined();
-      // oxlint-disable-next-line typescript/unbound-method
-      expect(builder.build).toBe(originalBuild);
-      await hook.handler(builder);
-      await expect(builder.build({} as Parameters<ViteBuilder["build"]>[0])).rejects.toThrow(
-        "RSC build failed",
-      );
-      // oxlint-disable-next-line typescript/unbound-method
-      expect(builder.build).toBe(originalBuild);
-      expect(process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION).toBeUndefined();
-    } finally {
-      if (previousSession === undefined)
-        delete process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
-      else process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = previousSession;
-    }
+    await hook.handler(builder);
+    // A later plugin can throw before vinext's finalizer. Retry must not
+    // depend on a cleanup hook that Vite would never call in that case.
+    await expect(builder.build({} as Parameters<ViteBuilder["build"]>[0])).rejects.toThrow(
+      "RSC build failed",
+    );
+    // oxlint-disable-next-line typescript/unbound-method
+    expect(builder.build).toBe(originalBuild);
+    await hook.handler(builder);
+    // oxlint-disable-next-line typescript/unbound-method
+    expect(builder.build).toBe(originalBuild);
   });
 });
