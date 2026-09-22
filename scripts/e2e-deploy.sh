@@ -732,11 +732,6 @@ if [ ! -x "${VINEXT_BIN}" ]; then
   echo "pnpm install failed: ${VINEXT_BIN} not found or not executable" >&2
   exit 1
 fi
-VITE_BIN="./node_modules/.bin/vite"
-if [ ! -x "${VITE_BIN}" ]; then
-  echo "pnpm install failed: ${VITE_BIN} not found or not executable" >&2
-  exit 1
-fi
 if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.setup ? 0 : 1)" >/dev/null 2>&1; then
   run_pnpm run setup >> "${BUILD_LOG}" 2>&1
 fi
@@ -750,9 +745,18 @@ fi
 # vinext loads CJS next.config.js in `"type": "module"` packages via a temp
 # .cjs sibling (see config/next-config.ts), so we don't rewrite the user's
 # config file here.
-"${VINEXT_BIN}" init --platform=node --skip-check --force --prerender >> "${BUILD_LOG}" 2>&1
-
-"${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
+if [ "${VINEXT_HARNESS_DIR}" != "${VINEXT_DIR}" ]; then
+  "${VINEXT_BIN}" init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1
+  "${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
+else
+  VITE_BIN="./node_modules/.bin/vite"
+  if [ ! -x "${VITE_BIN}" ]; then
+    echo "pnpm install failed: ${VITE_BIN} not found or not executable" >&2
+    exit 1
+  fi
+  "${VINEXT_BIN}" init --platform=node --skip-check --force --prerender >> "${BUILD_LOG}" 2>&1
+  "${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
+fi
 
 # Next.js emits large-page-data warnings during build. Specific deploy tests
 # (e.g. test/e2e/prerender) assert these strings appear in the build output,

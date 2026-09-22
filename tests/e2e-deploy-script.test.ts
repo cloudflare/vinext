@@ -244,9 +244,14 @@ describe("Next.js deploy harness", () => {
     }
   });
 
-  it("initializes fixtures for the Node deployment platform", () => {
+  it("uses the direct Vite lifecycle without breaking historical backfills", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
 
+    expect(script).toContain('if [ "${VINEXT_HARNESS_DIR}" != "${VINEXT_DIR}" ]; then');
+    expect(script).toContain(
+      '"${VINEXT_BIN}" init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1',
+    );
+    expect(script).toContain('"${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1');
     expect(script).toContain(
       '"${VINEXT_BIN}" init --platform=node --skip-check --force --prerender',
     );
