@@ -213,6 +213,46 @@ export default { plugins: [
     expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
   }, 30_000);
 
+  it("does not let an alternate config in the same root claim the CLI lifecycle", async () => {
+    const root = createProject();
+    fs.writeFileSync(
+      path.join(root, "alternate.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+export default { plugins: [vinext()] };
+`,
+    );
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+import { createServer } from "vite";
+const unused = vinext();
+export default { plugins: [
+  { name: "nested-before-vinext", enforce: "pre", async config() {
+    const nested = await createServer({ root: ${JSON.stringify(root)}, configFile: "alternate.config.ts", logLevel: "silent" });
+    try {
+      if (nested.config.server.port !== 5173) throw new Error("Alternate config claimed the CLI lifecycle");
+    } finally { await nested.close(); }
+  } },
+  vinext(),
+] };
+`,
+    );
+    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      stdio: "pipe",
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+
+    const lock = await waitFor(() => {
+      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+  }, 30_000);
+
   it("loads dotenv before evaluating Vite config", async () => {
     const root = createProject();
     fs.writeFileSync(path.join(root, ".env.staging"), "FROM_DOTENV=config-time-dotenv\n");
