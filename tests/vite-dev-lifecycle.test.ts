@@ -151,6 +151,27 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
+  it("honors the dev lock opt-out", async () => {
+    const root = createProject();
+    const previous = process.env.VINEXT_NO_DEV_LOCK;
+    process.env.VINEXT_NO_DEV_LOCK = "1";
+    useViteCliArgv();
+    try {
+      server = await createServer({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [vinext()],
+        server: { port: 0 },
+      });
+      await server.listen();
+      expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.VINEXT_NO_DEV_LOCK;
+      else process.env.VINEXT_NO_DEV_LOCK = previous;
+    }
+  });
+
   it("keeps the lock across a Vite server restart", async () => {
     const root = createProject();
     useViteCliArgv();
