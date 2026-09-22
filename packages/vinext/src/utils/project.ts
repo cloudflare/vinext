@@ -75,58 +75,6 @@ export function renameCJSConfigs(root: string): Array<[string, string]> {
   return renamed;
 }
 
-/**
- * Ensure the project is configured for ESM before Vite loads vite.config.ts.
- *
- * This mirrors what `vinext init` does, but is applied lazily at dev/build
- * time for projects that were set up before `vinext init` added the step.
- *
- * Side effects: may rename `.js` CJS config files to `.cjs` and add
- * `"type": "module"` to package.json.
- *
- * @returns Object describing what was changed, or null if nothing was done.
- */
-export function ensureViteConfigCompatibility(
-  root: string,
-): { renamed: Array<[string, string]>; addedTypeModule: boolean } | null {
-  // Only act when there is a vite.config — auto-config mode sets
-  // configFile: false and doesn't go through Vite's file-loading path.
-  if (!hasViteConfig(root)) return null;
-
-  const pkgPath = path.join(root, "package.json");
-  if (!fs.existsSync(pkgPath)) return null;
-
-  let pkg: Record<string, unknown>;
-  try {
-    pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-  } catch {
-    return null;
-  }
-
-  // Already correct — nothing to do.
-  if (pkg.type === "module") return null;
-
-  // Respect explicit "type" values (e.g. "commonjs") — the user chose this deliberately.
-  if (pkg.type !== undefined) return null;
-
-  // Rename any `.js` CJS config files first so they don't break after we
-  // add "type": "module".
-  const renamed = renameCJSConfigs(root);
-
-  // Write type:module directly using the already-parsed pkg object to avoid
-  // a redundant re-read inside ensureESModule.
-  let addedTypeModule = false;
-  try {
-    pkg.type = "module";
-    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
-    addedTypeModule = true;
-  } catch {
-    // If we can't write, Vite will fail with a clearer error downstream.
-  }
-
-  return { renamed, addedTypeModule };
-}
-
 // ─── Ancestor Directory Walking ──────────────────────────────────────────────
 
 /**
