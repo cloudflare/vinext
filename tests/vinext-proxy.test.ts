@@ -69,9 +69,9 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).toContain("Run `vinext init`");
   });
 
-  it("delegates help to Vite without requiring a config", () => {
+  it.each(["--help", "--help=true"])("delegates %s to Vite without requiring a config", (flag) => {
     const root = createRoot();
-    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--help"], {
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", flag], {
       cwd: root,
       encoding: "utf-8",
     });
@@ -79,6 +79,17 @@ describe("thin vinext command proxies", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("Usage:");
     expect(result.stdout).toContain("--outDir");
+  });
+
+  it("honors an explicit false help value", () => {
+    const root = createRoot();
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--help", "false"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("No Vite config was found for this project");
   });
 
   it("keeps the config preflight for negated boolean options", () => {
@@ -144,6 +155,25 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).not.toContain("Could not resolve the project-local Vite CLI");
   });
 
+  it("resolves child-local Vite after an unknown valued option", () => {
+    const root = createRoot();
+    writeProject(path.join(root, "project"));
+    fs.unlinkSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "project/node_modules"),
+      "junction",
+    );
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--bogus", "value", "project"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("Unknown option `--bogus`");
+    expect(result.stderr).not.toContain("Could not resolve the project-local Vite CLI");
+  });
+
   it("does not mask an invalid option after a configless project root", () => {
     const root = createRoot();
     write(path.join(root, "project"), "package.json", '{"type":"module"}\n');
@@ -177,7 +207,7 @@ describe("thin vinext command proxies", () => {
       encoding: "utf-8",
     });
 
-    expect(result.status, result.stderr).toBe(0);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("Usage:");
   });
 
@@ -261,6 +291,20 @@ describe("thin vinext command proxies", () => {
     },
     120_000,
   );
+
+  it("leaves duplicate config precedence to Vite", () => {
+    const root = createRoot();
+    writeProject(root);
+    const result = spawnSync(
+      process.execPath,
+      [CLI_PATH, "build", "--config", "missing.ts", "-c", "vite.config.ts"],
+      { cwd: root, encoding: "utf-8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("missing.ts");
+    expect(result.stderr).not.toContain("No Vite config was found");
+  });
 
   it("leaves unknown valued option handling to Vite", () => {
     const root = createRoot();

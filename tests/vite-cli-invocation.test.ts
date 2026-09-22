@@ -26,7 +26,7 @@ describe("findViteRoot", () => {
       shouldPreflight: true,
     });
     expect(findViteRoot("build", ["-hd", "project"])).toEqual({
-      root: "project",
+      root: undefined,
       shouldPreflight: false,
     });
   });
@@ -34,6 +34,17 @@ describe("findViteRoot", () => {
   it("leaves required options before the end of a cluster to Vite", () => {
     expect(findViteRoot("build", ["-ml", "silent"])).toEqual({
       root: undefined,
+      shouldPreflight: false,
+    });
+  });
+
+  it("honors explicit global boolean values", () => {
+    expect(findViteRoot("build", ["--help", "false", "project"])).toEqual({
+      root: "project",
+      shouldPreflight: true,
+    });
+    expect(findViteRoot("build", ["--help=true", "project"])).toEqual({
+      root: "project",
       shouldPreflight: false,
     });
   });

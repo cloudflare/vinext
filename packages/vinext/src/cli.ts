@@ -43,25 +43,21 @@ function configPreflight(command: ViteCommand): string {
   const cwd = process.cwd();
   const { root: positionalRoot, shouldPreflight } = findViteRoot(command, rawArgs);
   const root = positionalRoot ? path.resolve(cwd, positionalRoot) : cwd;
-  if (
-    !shouldPreflight ||
-    rawArgs.some((arg) => ["--help", "-h", "--version", "-v"].includes(arg))
-  ) {
-    return root;
-  }
+  if (!shouldPreflight) return root;
 
   let explicitConfig: string | undefined;
+  let explicitConfigCount = 0;
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
     if (arg.startsWith("--config=") || arg.startsWith("-c=")) {
+      if (++explicitConfigCount > 1) return root;
       explicitConfig = arg.slice(arg.indexOf("=") + 1) || undefined;
       if (!explicitConfig) return root;
-      break;
     }
     if (arg === "--config" || arg === "-c") {
+      if (++explicitConfigCount > 1) return root;
       explicitConfig = rawArgs[index + 1];
       if (!explicitConfig || explicitConfig.startsWith("-")) return root;
-      break;
     }
   }
 
@@ -74,28 +70,35 @@ function configPreflight(command: ViteCommand): string {
 }
 
 function resolveProjectViteCli(root: string): string {
-  const require = createRequire(path.join(root, "package.json"));
-  let packagePath: string;
-  try {
-    packagePath = require.resolve("vite/package.json");
-  } catch {
-    throw new Error(
-      "[vinext] Could not resolve the project-local Vite CLI. Run `vinext init` to install it.",
-    );
+  const cwd = process.cwd();
+  const candidates = new Set([
+    root,
+    cwd,
+    ...rawArgs.filter((arg) => !arg.startsWith("-")).map((arg) => path.resolve(cwd, arg)),
+  ]);
+  for (const candidate of candidates) {
+    const require = createRequire(path.join(candidate, "package.json"));
+    let packagePath: string;
+    try {
+      packagePath = require.resolve("vite/package.json");
+    } catch {
+      continue;
+    }
+
+    const packageRoot = path.dirname(packagePath);
+    const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf-8")) as {
+      bin?: string | Record<string, string>;
+    };
+    const bin = typeof packageJson.bin === "string" ? packageJson.bin : packageJson.bin?.vite;
+    const cliPath = bin
+      ? path.resolve(packageRoot, bin)
+      : path.join(path.dirname(require.resolve("vite")), "cli.js");
+    if (fs.existsSync(cliPath)) return cliPath;
   }
 
-  const packageRoot = path.dirname(packagePath);
-  const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf-8")) as {
-    bin?: string | Record<string, string>;
-  };
-  const bin = typeof packageJson.bin === "string" ? packageJson.bin : packageJson.bin?.vite;
-  const cliPath = bin
-    ? path.resolve(packageRoot, bin)
-    : path.join(path.dirname(require.resolve("vite")), "cli.js");
-  if (!fs.existsSync(cliPath)) {
-    throw new Error(`[vinext] Could not find the project-local Vite CLI at ${cliPath}.`);
-  }
-  return cliPath;
+  throw new Error(
+    "[vinext] Could not resolve the project-local Vite CLI. Run `vinext init` to install it.",
+  );
 }
 
 async function proxyVite(command: ViteCommand): Promise<void> {
