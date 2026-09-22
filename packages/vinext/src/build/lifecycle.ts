@@ -276,3 +276,54 @@ export async function runBuildLifecycle(
     disposeBuild(state);
   }
 }
+
+export function createBuildLifecyclePlugins(options: {
+  createContext: () => BuildLifecycleContext;
+  isEnabled: () => boolean;
+  shouldBuildPlainPages: () => boolean;
+}): Plugin[] {
+  const states = new WeakMap<ViteBuilder, BuildLifecycleState>();
+  return [
+    {
+      name: "vinext:build-lifecycle-prepare",
+      apply: "build",
+      buildApp: {
+        order: "pre",
+        async handler(builder) {
+          if (!options.isEnabled() || states.has(builder)) return;
+          const state = prepareBuild(builder, options.createContext());
+          states.set(builder, state);
+          try {
+            if (!options.shouldBuildPlainPages()) return;
+            for (const name of ["client", "ssr"]) {
+              const environment = builder.environments[name];
+              if (environment && !environment.isBuilt) await builder.build(environment);
+            }
+          } catch (error) {
+            disposeBuild(state);
+            states.delete(builder);
+            throw error;
+          }
+        },
+      },
+    },
+    {
+      name: "vinext:build-lifecycle-finalize",
+      apply: "build",
+      enforce: "post",
+      buildApp: {
+        order: "post",
+        async handler(builder) {
+          const state = states.get(builder);
+          if (!state) return;
+          states.delete(builder);
+          try {
+            await finalizeBuild(builder, options.createContext());
+          } finally {
+            disposeBuild(state);
+          }
+        },
+      },
+    },
+  ];
+}

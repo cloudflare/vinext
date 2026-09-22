@@ -146,6 +146,7 @@ import {
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { precompressAssets } from "./build/precompress.js";
+import { createBuildLifecyclePlugins } from "./build/lifecycle.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
@@ -310,6 +311,7 @@ import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { getPagesPreviewModeId } from "./server/pages-preview.js";
@@ -317,6 +319,8 @@ import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
 import { isServerEnvironment } from "./plugins/environment.js";
+import { isViteCliInvocation } from "./utils/vite-cli-invocation.js";
+import { getReactUpgradeDeps } from "./utils/react-version.js";
 import {
   isPathInside,
   isPathInsideOrEqual,
@@ -1479,6 +1483,10 @@ export type VinextOptions = {
   };
 };
 
+type InternalVinextOptions = VinextOptions & {
+  __skipBuildLifecycle?: boolean;
+};
+
 type NitroSetupContext = {
   options: {
     buildDir?: string;
@@ -1514,6 +1522,7 @@ function createServerEnvironmentFileNameResolver(
 }
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
+  const internalOptions = options as InternalVinextOptions;
   const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
     assertSupportedViteVersion();
   const prerenderConfig = normalizeVinextPrerenderConfig(options.prerender);
@@ -1558,6 +1567,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
+  let buildLifecycleEnabled = false;
+  let reactUpgradeChecked = false;
   let pagesOptimizeEntries: string[] = [];
   const importMetaUrlCapability = createImportMetaUrlPlugin({
     getRoot: () => root,
@@ -1590,6 +1601,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let draftModeSecret = getPagesPreviewModeId();
   const prerenderSecret =
     process.env.__VINEXT_SHARED_PRERENDER_SECRET ?? randomBytes(32).toString("hex");
+  let revalidateSecret = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
   let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
@@ -2084,7 +2096,41 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     };
   }
 
+  const buildLifecyclePlugins = createBuildLifecyclePlugins({
+    isEnabled: () => buildLifecycleEnabled,
+    shouldBuildPlainPages: () => !hasAppDir && !hasCloudflarePlugin && !hasNitroPlugin,
+    createContext: () => ({
+      cacheConfig: options.cache ?? null,
+      createPagesOnlyPlugins: () =>
+        vinext({
+          ...options,
+          disableAppRouter: true,
+          precompress: false,
+          prerender: undefined,
+          __skipBuildLifecycle: true,
+        } as InternalVinextOptions),
+      hasAppDir,
+      hasPagesDir,
+      nextConfig,
+      prerenderConfig,
+      prerenderConcurrency: prerenderConfig?.concurrency,
+      prerenderSecret,
+      previewBuildCredentials,
+      revalidateSecret: revalidateSecret!,
+      root,
+      routeRootConfig: {
+        appDir: options.appDir,
+        disableAppRouter: options.disableAppRouter,
+        rscOutDir: options.rscOutDir,
+        ssrOutDir: options.ssrOutDir,
+      },
+      rscBuildIdentity,
+      rscCompatibilityId,
+    }),
+  });
+
   const plugins: PluginOption[] = [
+    buildLifecyclePlugins[0],
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
@@ -2277,6 +2323,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
       async config(config, env) {
         isServeCommand = env.command === "serve";
+        buildLifecycleEnabled =
+          env.command === "build" &&
+          !internalOptions.__skipBuildLifecycle &&
+          isViteCliInvocation("build");
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};
@@ -2310,6 +2360,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         if (env?.command === "build") {
           previewBuildCredentials = getPreviewBuildCredentials() ?? createPreviewBuildCredentials();
+          if (buildLifecycleEnabled) {
+            revalidateSecret ??= randomBytes(32).toString("hex");
+          }
         }
         draftModeSecret = previewBuildCredentials?.id ?? getPagesPreviewModeId();
 
@@ -2343,6 +2396,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
+
+        if (buildLifecycleEnabled && hasAppDir && !reactUpgradeChecked) {
+          reactUpgradeChecked = true;
+          const reactUpgrade = getReactUpgradeDeps(root);
+          if (reactUpgrade.length > 0) {
+            const installCommand = detectPackageManager(root).replace(/ -D$/, "");
+            const [packageManager, ...packageManagerArgs] = installCommand.split(" ");
+            console.log("  Upgrading React for RSC compatibility...");
+            execFileSync(packageManager, [...packageManagerArgs, ...reactUpgrade], {
+              cwd: root,
+              stdio: "inherit",
+              shell: process.platform === "win32",
+            });
+          }
+        }
 
         // Route scans are cached at module scope so the generated entries and
         // request handlers can share them. A Vite restart can create a new
@@ -2396,14 +2464,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // is that the App Router runtime, the Pages Router runtime, the prerender
           // manifest, and dist/server/BUILD_ID could each get a different ID.
           //
-          // The CLI resolves the build ID exactly once via the same
-          // resolveBuildId() (so it already honors the user's generateBuildId,
-          // including the null→UUID fallback) and publishes that authoritative
-          // value via __VINEXT_SHARED_BUILD_ID. We always adopt it when set —
-          // there is no case where a per-instance re-resolution should win over
-          // the single shared value. The env var is only ever set by the build
-          // CLI, so resolveBuildId()'s standalone semantics (dev, tests) are
-          // unchanged.
+          // The top-level build lifecycle resolves the build ID exactly once via
+          // the same resolveBuildId() (including the null→UUID fallback) and
+          // publishes that authoritative value for nested plugin instances.
           const sharedBuildId = process.env.__VINEXT_SHARED_BUILD_ID;
           if (sharedBuildId && sharedBuildId.length > 0) {
             nextConfig = { ...nextConfig, buildId: sharedBuildId };
@@ -2438,10 +2501,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // RSC-compat ID coordination across plugin instances — same rationale as
         // the build ID above. createRscCompatibilityId() falls back to a random
         // UUID per instance when no deploymentId is pinned, so a hybrid app+pages
-        // build would otherwise bake two different compatibility tokens. The CLI
-        // resolves it once and publishes it via __VINEXT_SHARED_RSC_COMPATIBILITY_ID;
-        // we always adopt it when set (only the build CLI ever sets it, so dev and
-        // standalone resolution are unchanged).
+        // build would otherwise bake two different compatibility tokens. The
+        // top-level lifecycle publishes one value for every nested build.
         if (rscCompatibilityId === undefined) {
           const sharedRscCompatibilityId = process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
           rscCompatibilityId =
@@ -2998,6 +3059,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
+          // The Vite CLI uses its legacy single-environment path unless a
+          // builder config exists. Plain Pages projects define the exact
+          // client and SSR environments below, so opt into buildApp for them.
+          ...(shouldInjectPlainPagesEnvironments ? { builder: config.builder ?? {} } : {}),
           build: {
             // Emit asset files (CSS, etc.) referenced by SSR JS chunks.
             //
@@ -6884,16 +6949,12 @@ export const loadServerActionClient = ${
         // every server bundle, and therefore every Workers isolate, shares the
         // exact same value. This makes `res.revalidate()`'s cross-isolate
         // loopback authenticate correctly where a per-process random secret would
-        // mismatch. Generated once per build by the `vinext build` CLI (see
-        // __VINEXT_SHARED_REVALIDATE_SECRET) and read at runtime by
-        // `getRevalidateSecret()` in `server/isr-cache.ts`. The env var is only
-        // set during `vinext build`, so dev (and any non-CLI build) omits the
-        // define and the runtime falls back to a process-shared dev secret —
-        // correct since dev is single-process.
-        const sharedRevalidateSecret = process.env.__VINEXT_SHARED_REVALIDATE_SECRET;
-        if (sharedRevalidateSecret) {
+        // mismatch. Generated once by the top-level build lifecycle and read at
+        // runtime by `getRevalidateSecret()` in `server/isr-cache.ts`. Dev and
+        // programmatic builds use the process-shared runtime fallback.
+        if (revalidateSecret) {
           serverDefines["process.env.__VINEXT_REVALIDATE_SECRET"] =
-            JSON.stringify(sharedRevalidateSecret);
+            JSON.stringify(revalidateSecret);
         }
         if (previewBuildCredentials) {
           serverDefines["process.env.__VINEXT_PREVIEW_MODE_ID"] = JSON.stringify(
@@ -7898,6 +7959,7 @@ export const loadServerActionClient = ${
   } else if (manualUseCachePluginPromise) {
     plugins.push(manualUseCachePluginPromise);
   }
+  plugins.push(buildLifecyclePlugins[1]);
 
   return plugins;
 }

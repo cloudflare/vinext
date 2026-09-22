@@ -24,6 +24,19 @@ describe("vinext prerender config", () => {
     expect(normalizeVinextPrerenderConfig({ routes: "*" })).toEqual({ routes: "*" });
   });
 
+  it("accepts configured concurrency", () => {
+    expect(normalizeVinextPrerenderConfig({ routes: "*", concurrency: 4 })).toEqual({
+      routes: "*",
+      concurrency: 4,
+    });
+  });
+
+  it("rejects invalid concurrency", () => {
+    expect(() => normalizeVinextPrerenderConfig({ routes: "*", concurrency: 0 })).toThrow(
+      "must be a positive integer",
+    );
+  });
+
   it("treats undefined as disabled", () => {
     expect(normalizeVinextPrerenderConfig(undefined)).toBeNull();
   });
