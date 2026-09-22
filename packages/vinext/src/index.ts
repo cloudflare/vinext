@@ -376,7 +376,7 @@ const viteCliBuildConfigNodeEnv =
     ? "test"
     : undefined;
 if (earlyViteCliInvocation) {
-  if (earlyViteCliInvocation.command === "build" || !process.env.NODE_ENV) {
+  if (!process.env.NODE_ENV) {
     Reflect.set(
       process.env,
       "NODE_ENV",
