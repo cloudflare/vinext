@@ -64,7 +64,6 @@ const VITE_OPTIONS_WITH_VALUES = new Set([
   "-f",
   "-l",
   "-m",
-  "-p",
 ]);
 const VITE_BOOLEAN_OPTIONS = new Set([
   "--app",
@@ -78,52 +77,61 @@ const VITE_BOOLEAN_OPTIONS = new Set([
   "-w",
 ]);
 
-function findViteRoot(args: string[]): string | undefined {
+function findViteRoot(args: string[]): string | undefined | null {
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
-    if (VITE_OPTIONS_WITH_VALUES.has(arg)) {
-      index++;
+    if (arg === "--") break;
+    const equalsIndex = arg.indexOf("=");
+    const option = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
+    if (VITE_OPTIONS_WITH_VALUES.has(option)) {
+      if (equalsIndex === -1) index++;
       continue;
     }
-    if (VITE_BOOLEAN_OPTIONS.has(arg) && /^(?:true|false)$/.test(args[index + 1] ?? "")) {
-      index++;
+    if (VITE_BOOLEAN_OPTIONS.has(option)) {
+      if (equalsIndex === -1 && /^(?:true|false)$/.test(args[index + 1] ?? "")) index++;
       continue;
     }
-    if (!arg.startsWith("-")) return arg;
+    if (arg.startsWith("-")) return null;
+    return arg;
   }
 }
 
-function configPreflight(command: ViteCommand): void {
-  if (rawArgs.some((arg) => ["--help", "-h", "--version", "-v"].includes(arg))) return;
+function configPreflight(command: ViteCommand): string {
+  const cwd = process.cwd();
+  const positionalRoot = findViteRoot(rawArgs);
+  const root = positionalRoot ? path.resolve(cwd, positionalRoot) : cwd;
+  if (
+    positionalRoot === null ||
+    rawArgs.some((arg) => ["--help", "-h", "--version", "-v"].includes(arg))
+  ) {
+    return root;
+  }
 
   let explicitConfig: string | undefined;
   for (let index = 0; index < rawArgs.length; index += 1) {
     const arg = rawArgs[index];
     if (arg.startsWith("--config=")) {
       explicitConfig = arg.slice("--config=".length) || undefined;
-      if (!explicitConfig) return;
+      if (!explicitConfig) return root;
       break;
     }
     if (arg === "--config" || arg === "-c") {
       explicitConfig = rawArgs[index + 1];
-      if (!explicitConfig || explicitConfig.startsWith("-")) return;
+      if (!explicitConfig || explicitConfig.startsWith("-")) return root;
       break;
     }
   }
 
-  const cwd = process.cwd();
-  const positionalRoot = findViteRoot(rawArgs);
-  const root = positionalRoot ? path.resolve(cwd, positionalRoot) : cwd;
   const configPath = explicitConfig ? path.resolve(cwd, explicitConfig) : findViteConfigPath(root);
-  if (configPath && fs.existsSync(configPath)) return;
+  if (configPath && fs.existsSync(configPath)) return root;
 
   throw new Error(
     `[vinext] No Vite config was found for this project. Run \`vinext init\` to create one, then retry \`vinext ${command}\`.`,
   );
 }
 
-function resolveProjectViteCli(): string {
-  const require = createRequire(path.join(process.cwd(), "package.json"));
+function resolveProjectViteCli(root: string): string {
+  const require = createRequire(path.join(root, "package.json"));
   let packagePath: string;
   try {
     packagePath = require.resolve("vite/package.json");
@@ -148,8 +156,8 @@ function resolveProjectViteCli(): string {
 }
 
 async function proxyVite(command: ViteCommand): Promise<void> {
-  configPreflight(command);
-  const cliPath = resolveProjectViteCli();
+  const root = configPreflight(command);
+  const cliPath = resolveProjectViteCli(root);
   process.argv = [process.execPath, cliPath, command, ...rawArgs];
   await import(/* @vite-ignore */ pathToFileURL(cliPath).href);
 }
