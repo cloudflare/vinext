@@ -20,17 +20,29 @@ export function applyDevServerDefaults(server: ServerOptions, options: DevServer
   server.host = options.hostname ?? server.host ?? "localhost";
 }
 
-export function createDevServerConfigPlugin(options: DevServerCliOptions): Plugin {
+export function createDevServerLifecyclePlugin(
+  options: DevServerCliOptions,
+  isEnabled: () => boolean,
+): Plugin {
   return {
-    name: "vinext:dev-server-config",
+    name: "vinext:dev-server-lifecycle",
     // Both levels are required: `enforce` places this after the user's normal
     // plugins, while the hook `order` places it after their config handlers.
     enforce: "post",
     config: {
       order: "post",
       handler(config) {
+        if (!isEnabled() || config.server?.middlewareMode) return;
         const server = (config.server ??= {});
         applyDevServerDefaults(server, options);
+      },
+    },
+    configureServer: {
+      order: "post",
+      handler(server) {
+        return () => {
+          if (isEnabled()) configureDevServerLock(server);
+        };
       },
     },
   };
@@ -41,8 +53,8 @@ export function normalizeDevServerHostname(host: string | boolean | undefined): 
   return host === true ? "0.0.0.0" : "localhost";
 }
 
-export function configureDevServerLock(server: ViteDevServer): void {
-  if (server.config.server.middlewareMode === true || process.env.VINEXT_NO_DEV_LOCK === "1") {
+function configureDevServerLock(server: ViteDevServer): void {
+  if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1") {
     return;
   }
 

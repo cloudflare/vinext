@@ -151,7 +151,7 @@ import {
   VINEXT_BUILD_LIFECYCLE_CONFIG,
   type BuildLifecycleInvocation,
 } from "./build/lifecycle.js";
-import { applyDevServerDefaults, configureDevServerLock } from "./cli-dev-config.js";
+import { createDevServerLifecyclePlugin } from "./cli-dev-config.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
@@ -324,7 +324,11 @@ import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
 import { isServerEnvironment } from "./plugins/environment.js";
-import { claimViteCliBuildInvocation, getViteCliInvocation } from "./utils/vite-cli-invocation.js";
+import {
+  claimViteCliBuildInvocation,
+  getViteCliInvocation,
+  isViteCliInvocation,
+} from "./utils/vite-cli-invocation.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 import {
   isPathInside,
@@ -2361,6 +2365,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // `css-modules-data-urls` fixture. See plugins/css-data-url.ts.
     dataUrlCssPlugin(),
     createCssModuleImportCompatibilityPlugin(),
+    createDevServerLifecyclePlugin({}, () => devCliLifecycleEnabled),
     {
       name: "vinext:config",
       enforce: "pre",
@@ -2394,13 +2399,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
         devCliLifecycleEnabled =
-          env.command === "serve" &&
-          env.isPreview !== true &&
-          config.server?.middlewareMode !== true &&
-          isViteCliInvocation("dev");
-        if (devCliLifecycleEnabled) {
-          applyDevServerDefaults((config.server ??= {}), {});
-        }
+          env.command === "serve" && env.isPreview !== true && isViteCliInvocation("dev");
         buildLifecycleInvocation = (config as InternalUserConfig)[VINEXT_BUILD_LIFECYCLE_CONFIG];
         buildLifecycleEnabled =
           env.command === "build" &&
@@ -5684,8 +5683,6 @@ export const loadServerActionClient = ${
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
-          if (devCliLifecycleEnabled) configureDevServerLock(server);
-
           const viteFilesystemMiddlewares = server.middlewares.stack
             .filter(({ handle }) => {
               const name = typeof handle === "function" ? handle.name : "";
