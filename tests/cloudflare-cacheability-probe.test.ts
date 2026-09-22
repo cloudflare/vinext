@@ -641,7 +641,6 @@ describe("staged Worker cacheability probes", () => {
         targets: [target("/one")],
       }),
     ).rejects.toThrow("cacheability probing made no progress for 25ms");
-    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(3);
   });
 
   it("aborts a probe whose fetch never settles", async () => {

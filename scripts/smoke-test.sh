@@ -67,6 +67,7 @@ CONTENT_CHECKS=(
 
 tmpfile=$(mktemp)
 trap "rm -f '$tmpfile'" EXIT
+CURL_ARGS=(-s -L --max-time 10 --retry 2 --retry-delay 1 --retry-all-errors)
 
 passed=0
 failed=0
@@ -81,8 +82,9 @@ for check in "${CHECKS[@]}"; do
     url="https://${worker}.${DOMAIN}${path}"
   fi
 
-  # Fetch with a 10s timeout, follow redirects
-  status=$(curl -s -o "$tmpfile" -w "%{http_code}" -L --max-time 10 "$url" 2>/dev/null || echo "000")
+  # Retry transient transport and server failures while deployments propagate.
+  status=$(curl "${CURL_ARGS[@]}" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null || true)
+  status=${status:-000}
   body=$(cat "$tmpfile" 2>/dev/null || echo "")
 
   if [[ "$status" != "200" ]]; then
@@ -116,7 +118,8 @@ for check in "${CONTENT_CHECKS[@]}"; do
     url="https://${worker}.${DOMAIN}${path}"
   fi
 
-  status=$(curl -s -o "$tmpfile" -w "%{http_code}" -L --max-time 10 "$url" 2>/dev/null || echo "000")
+  status=$(curl "${CURL_ARGS[@]}" -o "$tmpfile" -w "%{http_code}" "$url" 2>/dev/null || true)
+  status=${status:-000}
   body=$(cat "$tmpfile" 2>/dev/null || echo "")
 
   if [[ "$status" != "200" ]]; then
