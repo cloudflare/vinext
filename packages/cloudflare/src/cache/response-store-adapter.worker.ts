@@ -52,6 +52,10 @@ type StoredInvocation = {
     url: string;
   };
 };
+type SerializedInvocation = {
+  replayable: boolean;
+  serialized: string;
+};
 
 export type VinextResponseStoreEnv = WorkersResponseStoreClientEnv | WorkersResponseStoreEnv;
 
@@ -110,15 +114,19 @@ function isReplayableInvocation(request: Request, props: unknown): boolean {
   );
 }
 
-function serializeInvocation(request: Request, props: unknown): string {
-  return JSON.stringify({
+function prepareInvocation(request: Request, props: unknown): StoredInvocation {
+  return {
     props: safeProps(props),
     request: {
       headers: replayHeaders(request),
       method: request.method,
       url: request.url,
     },
-  } satisfies StoredInvocation);
+  };
+}
+
+function serializeInvocation(request: Request, props: unknown): string {
+  return JSON.stringify(prepareInvocation(request, props));
 }
 
 function parseInvocation(value: unknown): StoredInvocation {
@@ -165,6 +173,7 @@ async function invokeResponseStage(
   ctx: WorkerExecutionContext,
   cache: VinextResponseStageDispatchOptions["cache"],
   capture?: ResponseStoreInvocationCapture,
+  invocation?: SerializedInvocation,
 ): Promise<Response> {
   const context = stageContext(ctx, env);
   const dispatchRequestStage: VinextRequestStageTransport = (request) =>
@@ -173,10 +182,13 @@ async function invokeResponseStage(
     VinextResponseStoreEnv,
     StageContext
   >();
-  const serialized = serializeInvocation(request, props);
+  const storedInvocation = invocation ?? {
+    replayable: isReplayableInvocation(request, props),
+    serialized: serializeInvocation(request, props),
+  };
   return runWithResponseStoreInvocation(
-    serialized,
-    isReplayableInvocation(request, props),
+    storedInvocation.serialized,
+    storedInvocation.replayable,
     () => handleResponseStage(request, env, context, props, dispatchRequestStage, { cache }),
     capture,
   );
@@ -264,19 +276,19 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
   };
 }
 
-async function cacheRequest(request: Request, props: unknown): Promise<Request> {
+async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
   // The stored loopback request includes transport headers that change on every
   // edge invocation; only stable response-stage selectors belong in the key.
   const identity = JSON.stringify([
-    request.method,
-    request.url,
-    safeProps(props),
-    replayHeaders(request),
+    invocation.request.method,
+    invocation.request.url,
+    invocation.props,
+    invocation.request.headers,
   ]);
   const digest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity)),
   );
-  const url = new URL(request.url);
+  const url = new URL(invocation.request.url);
   url.searchParams.set(
     RESPONSE_STORE_KEY_PARAM,
     `v1.${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`,
@@ -369,7 +381,6 @@ const handler = {
       props,
       options,
     ) => {
-      const invocation = serializeInvocation(stageRequest, props);
       if (
         options.cache === "bypass" ||
         (stageRequest.method !== "GET" && stageRequest.method !== "HEAD")
@@ -405,8 +416,10 @@ const handler = {
             ),
           }
         : undefined;
-      const rscKey = rscSeed ? await cacheRequest(rscSeed.request, rscSeed.props) : undefined;
-      const key = await cacheRequest(stageRequest, props);
+      const invocation = prepareInvocation(stageRequest, props);
+      const rscInvocation = rscSeed ? prepareInvocation(rscSeed.request, rscSeed.props) : undefined;
+      const rscKey = rscInvocation ? await cacheRequest(rscInvocation) : undefined;
+      const key = await cacheRequest(invocation);
       const stored = await responseStore.fetch(key);
       if (!isResponseStoreMiss(stored)) {
         if (!rscKey) return publicResponse(stored, "HIT", props);
@@ -424,7 +437,11 @@ const handler = {
         : isWarmup
           ? {}
           : { streamResponse: true };
-      const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "shared", capture);
+      const serializedInvocation = JSON.stringify(invocation);
+      const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "shared", capture, {
+        replayable: isReplayableInvocation(stageRequest, props),
+        serialized: serializedInvocation,
+      });
       if (capture.admittedResponse) {
         ctx.waitUntil(
           capture.admittedResponse
@@ -435,7 +452,7 @@ const handler = {
               }
               await responseStore.put(key, admitted, {
                 coalesce: true,
-                revalidator: { id: ROUTE_REVALIDATOR_ID, args: [invocation] },
+                revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
               });
             })
             .catch((error) => {
@@ -462,10 +479,10 @@ const handler = {
       const cacheResponse = new Response(cacheBody, rendered);
       await responseStore.put(key, cacheResponse, {
         coalesce: true,
-        revalidator: { id: ROUTE_REVALIDATOR_ID, args: [invocation] },
+        revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
       });
 
-      if (rscSeed && rscKey && capture?.rscData) {
+      if (rscSeed && rscInvocation && rscKey && capture?.rscData) {
         const rscData = await capture.rscData;
         const rscHeaders = new Headers(rendered.headers);
         rscHeaders.delete("Content-Length");
@@ -475,7 +492,7 @@ const handler = {
         rscHeaders.set("Vary", VINEXT_RSC_VARY_HEADER);
         applyRscCompatibilityIdHeader(rscHeaders);
         applyRscDeploymentIdHeader(rscHeaders);
-        const rscInvocation = serializeInvocation(rscSeed.request, rscSeed.props);
+        const serializedRscInvocation = JSON.stringify(rscInvocation);
         await responseStore.put(
           rscKey,
           new Response(rscData, {
@@ -484,7 +501,7 @@ const handler = {
           }),
           {
             coalesce: true,
-            revalidator: { id: ROUTE_REVALIDATOR_ID, args: [rscInvocation] },
+            revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedRscInvocation] },
           },
         );
       }

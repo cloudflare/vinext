@@ -2,15 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createVinextResponseStoreHandler } from "../packages/cloudflare/src/cache/response-store-adapter.worker.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
 
-const stages = vi.hoisted(() => ({ request: vi.fn() }));
+const stages = vi.hoisted(() => ({ request: vi.fn(), response: vi.fn() }));
 
 vi.mock("virtual:vinext-request-stage", () => ({
   handleRequestStage: stages.request,
 }));
 
+vi.mock("virtual:vinext-response-stage", () => ({
+  handleResponseStage: stages.response,
+}));
+
 describe("Cloudflare Response Store Worker", () => {
   beforeEach(() => {
     stages.request.mockReset();
+    stages.response.mockReset();
     stages.request.mockImplementation((request, _env, _context, dispatchResponseStage) =>
       dispatchResponseStage(request, { kind: "app-page" }, { cache: "shared" }),
     );
@@ -74,5 +79,78 @@ describe("Cloudflare Response Store Worker", () => {
       expect(htmlKey.headers.get(name.trim())).toBe("vinext-keyed");
       expect(rscKey.headers.get(name.trim())).toBe("vinext-keyed");
     }
+  });
+
+  it("sanitizes response-stage props once on cache hits", async () => {
+    const toJSON = vi.fn(() => ({ kind: "app-page" }));
+    stages.request.mockImplementation((request, _env, _context, dispatchResponseStage) =>
+      dispatchResponseStage(request, { toJSON }, { cache: "shared" }),
+    );
+    const store = {
+      fetch: vi.fn(
+        async () => new Response("cached", { headers: { "Cache-Control": "public, max-age=60" } }),
+      ),
+      getTagExpiration: vi.fn(async () => 0),
+      purge: vi.fn(),
+      put: vi.fn(),
+      refresh: vi.fn(),
+    };
+    const handler = createVinextResponseStoreHandler(store);
+
+    const response = await handler.fetch(new Request("https://example.com/hit"), {} as never, {
+      passThroughOnException: vi.fn(),
+      waitUntil: vi.fn(),
+    });
+
+    expect(await response.text()).toBe("cached");
+    expect(toJSON).toHaveBeenCalledOnce();
+    expect(stages.response).not.toHaveBeenCalled();
+  });
+
+  it("reuses prepared response-stage props on cache misses", async () => {
+    const toJSON = vi.fn(() => ({ kind: "app-page" }));
+    stages.request.mockImplementation((request, _env, _context, dispatchResponseStage) =>
+      dispatchResponseStage(request, { toJSON }, { cache: "shared" }),
+    );
+    stages.response.mockResolvedValue(
+      new Response("rendered", { headers: { "Cache-Control": "public, max-age=60" } }),
+    );
+    const mutationResult = { backingStoreUpdated: true, edgePurgeAccepted: true };
+    const put = vi.fn(
+      async (
+        _request: Request,
+        _response: Response,
+        _options?: { revalidator?: { id: string; args: unknown[] } },
+      ) => mutationResult,
+    );
+    const store = {
+      fetch: vi.fn(
+        async () =>
+          new Response(null, {
+            headers: { "X-Workers-Response-Store": "MISS" },
+            status: 404,
+          }),
+      ),
+      getTagExpiration: vi.fn(async () => 0),
+      purge: vi.fn(async () => mutationResult),
+      put,
+      refresh: vi.fn(async () => mutationResult),
+    };
+    const handler = createVinextResponseStoreHandler(store);
+
+    const response = await handler.fetch(new Request("https://example.com/miss"), {} as never, {
+      passThroughOnException: vi.fn(),
+      waitUntil: vi.fn(),
+    });
+
+    expect(await response.text()).toBe("rendered");
+    expect(toJSON).toHaveBeenCalledOnce();
+    expect(stages.response).toHaveBeenCalledOnce();
+    const options = put.mock.calls[0]?.[2];
+    expect(options?.revalidator?.args).toHaveLength(1);
+    expect(JSON.parse(String(options?.revalidator?.args[0]))).toEqual({
+      props: { kind: "app-page" },
+      request: { headers: [], method: "GET", url: "https://example.com/miss" },
+    });
   });
 });
