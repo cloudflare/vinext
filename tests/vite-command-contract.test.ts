@@ -485,4 +485,27 @@ describe("configured vinext build contract", () => {
         ),
     ).toBe(true);
   }, 120_000);
+
+  it("does not clean or finalize a non-emitting Vite build", () => {
+    const root = createPagesProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace("plugins: [", "build: { write: false }, plugins: ["),
+    );
+    write(root, "dist/keep.txt", "keep");
+
+    const output = execFileSync(process.execPath, [VITE_CLI_PATH, "build"], {
+      cwd: root,
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(output).not.toContain("Build complete.");
+    expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(false);
+  }, 120_000);
 });

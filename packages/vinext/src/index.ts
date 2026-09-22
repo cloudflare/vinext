@@ -2118,11 +2118,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     isEnabled: (builder) =>
       buildLifecycleEnabled &&
       !builder.config.build.watch &&
+      builder.config.build.write !== false &&
       !builder.config.build.ssr &&
       getBuildBundlerOptions(builder.config.build)?.input === undefined,
     shouldPrepare: (config) =>
       buildLifecycleEnabled &&
       !config.build?.watch &&
+      config.build?.write !== false &&
       !config.build?.ssr &&
       getBuildBundlerOptions(config.build)?.input === undefined,
     onPrepare: () => {
