@@ -81,7 +81,7 @@ describe("Cloudflare Response Store Worker", () => {
     }
   });
 
-  it("uses one pathname key for default App pages but keeps explicit public query variants", async () => {
+  it("shares proven App pages but preserves unproven and explicit-public query variants", async () => {
     const keys: string[] = [];
     const store = {
       fetch: vi.fn(async (request: Request) => {
@@ -101,7 +101,7 @@ describe("Cloudflare Response Store Worker", () => {
         {
           kind: "app-page",
           resolvedUrl: new URL(request.url).pathname + new URL(request.url).search,
-          cacheability: { policyHeaders: null },
+          cacheability: { policyHeaders: null, queryIndependentCandidate: true },
         },
         { cache: "shared" },
       ),
@@ -118,7 +118,7 @@ describe("Cloudflare Response Store Worker", () => {
         {
           kind: "app-page",
           resolvedUrl: new URL(request.url).pathname + new URL(request.url).search,
-          cacheability: { policyHeaders: [["Cache-Control", "public, s-maxage=30"]] },
+          cacheability: { policyHeaders: null },
         },
         { cache: "shared" },
       ),
@@ -127,6 +127,22 @@ describe("Cloudflare Response Store Worker", () => {
       await handler.fetch(new Request(url), {} as never, context);
     }
     expect(keys[2]).not.toBe(keys[3]);
+
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(
+        request,
+        {
+          kind: "app-page",
+          resolvedUrl: new URL(request.url).pathname + new URL(request.url).search,
+          cacheability: { policyHeaders: [["Cache-Control", "public, s-maxage=30"]] },
+        },
+        { cache: "shared" },
+      ),
+    );
+    for (const url of ["https://example.com/page?q=first", "https://example.com/page?q=second"]) {
+      await handler.fetch(new Request(url), {} as never, context);
+    }
+    expect(keys[4]).not.toBe(keys[5]);
   });
 
   it("sanitizes response-stage props once on cache hits", async () => {
