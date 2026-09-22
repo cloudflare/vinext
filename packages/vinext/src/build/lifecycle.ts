@@ -352,7 +352,7 @@ export async function runBuildLifecycle(
 export function createBuildLifecyclePlugins(options: {
   createContext: () => BuildLifecycleContext;
   isEnabled: (builder: ViteBuilder) => boolean;
-  onPrepare?: (config: ResolvedConfig) => void;
+  onPrepare?: () => void;
   shouldPrepare: (config: UserConfig | ResolvedConfig) => boolean;
   shouldBuildPlainPages: () => boolean;
 }): Plugin[] {
@@ -395,9 +395,10 @@ export function createBuildLifecyclePlugins(options: {
         handler(config) {
           if (outputPrepared || !options.shouldPrepare(config)) return;
           const context = options.createContext();
+          if (config.build.emptyOutDir === false) context.emptyOutDir = false;
           // Fail before onPrepare can install or upgrade dependencies.
           checkStandaloneBuildPrerequisite(context);
-          options.onPrepare?.(config);
+          options.onPrepare?.();
           prepareBuildOutput(context);
           outputPrepared = true;
         },
