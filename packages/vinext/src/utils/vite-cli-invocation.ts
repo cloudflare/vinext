@@ -2,39 +2,15 @@ import path, { toSlash } from "pathslash";
 
 type ViteCliCommand = "dev" | "build";
 
-const VITE_COMMANDS = new Set(["build", "dev", "optimize", "preview", "serve"]);
-const VITE_GLOBAL_OPTIONS_WITH_VALUES = new Set([
-  "--base",
-  "--config",
-  "--configLoader",
-  "--debug",
-  "--filter",
-  "--logLevel",
-  "--mode",
-  "--profile",
-  "-c",
-  "-d",
-  "-f",
-  "-l",
-  "-m",
-]);
-
-function findViteCommand(args: string[]): string | undefined {
+function findVpCommand(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (VITE_GLOBAL_OPTIONS_WITH_VALUES.has(arg)) {
+    if (arg === "-C") {
       i++;
       continue;
     }
-    if (!arg.startsWith("-")) return VITE_COMMANDS.has(arg) ? arg : undefined;
+    if (!arg.startsWith("-")) return arg;
   }
-}
-
-function matchesViteCommand(args: string[], command: ViteCliCommand, defaultDev: boolean): boolean {
-  const cliCommand = findViteCommand(args);
-  return command === "build"
-    ? cliCommand === "build"
-    : cliCommand === "dev" || cliCommand === "serve" || (defaultDev && cliCommand === undefined);
 }
 
 /** Distinguish real Vite/Vite+ CLI commands from programmatic API callers. */
@@ -47,11 +23,13 @@ export function isViteCliInvocation(
     entry.endsWith("/vite/bin/vite.js") ||
     entry.endsWith("/vite/node/cli.js") ||
     entry.endsWith("/dist/vite/node/cli.js");
-  if (isViteEntry) return matchesViteCommand(argv.slice(2), command, true);
+  // ConfigEnv already identifies build, serve, and preview. Once provenance is
+  // known, parsing Vite's CLI arguments again only risks disagreeing with CAC.
+  if (isViteEntry) return true;
 
   if (path.basename(entry) !== "vp") return false;
-  if (argv[2] === "exec" && argv[3] === "vite") {
-    return matchesViteCommand(argv.slice(4), command, true);
-  }
-  return matchesViteCommand(argv.slice(2), command, false);
+  const args = argv.slice(2);
+  const vpCommand = findVpCommand(args);
+  if (vpCommand === "exec") return args[args.indexOf("exec") + 1] === "vite";
+  return command === "build" ? vpCommand === "build" : vpCommand === "dev" || vpCommand === "serve";
 }

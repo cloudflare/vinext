@@ -19,7 +19,7 @@ function write(root: string, file: string, contents: string): void {
   fs.writeFileSync(destination, contents);
 }
 
-function createHybridProject(): string {
+function createHybridProject(configFile = "vite.config.ts"): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-command-contract-"));
   temporaryProjects.push(root);
   fs.symlinkSync(
@@ -30,13 +30,17 @@ function createHybridProject(): string {
   write(root, "package.json", '{"type":"module"}\n');
   write(
     root,
-    "vite.config.ts",
+    configFile,
     `import fs from "node:fs";
 import path from "node:path";
 import { defineConfig } from "vite";
 import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 
 export default defineConfig({
+  resolve: {
+    alias: { "virtual:contract-value": path.join(import.meta.dirname, "contract-value.ts") },
+  },
+  define: { __TOP_LEVEL_MARKER__: JSON.stringify("top-level-config-ran") },
   plugins: [
     {
       name: "contract:config-only",
@@ -49,6 +53,24 @@ export default defineConfig({
       configResolved(config) {
         fs.mkdirSync(path.join(config.root, "dist"), { recursive: true });
         fs.writeFileSync(path.join(config.root, "dist/config-resolved-plugin-ran"), "ok");
+      },
+    },
+    {
+      name: "contract:ssr-only",
+      apply(_config, env) {
+        return env.isSsrBuild;
+      },
+      transform(code, id) {
+        if (!id.endsWith("/pages/legacy.tsx")) return;
+        return code.replace("__SSR_ONLY_MARKER__", JSON.stringify("ssr-only-plugin-ran"));
+      },
+    },
+    {
+      name: "contract:ssr-environment",
+      configEnvironment(name) {
+        if (name === "ssr") {
+          return { define: { __SSR_ENV_MARKER__: JSON.stringify("ssr-environment-ran") } };
+        }
       },
     },
     {
@@ -68,6 +90,7 @@ export default defineConfig({
 });
 `,
   );
+  write(root, "contract-value.ts", 'export const aliasMarker = "top-level-alias-ran";\n');
   write(
     root,
     "app/layout.tsx",
@@ -88,9 +111,13 @@ export default function Page() {
   write(
     root,
     "pages/legacy.tsx",
-    `declare const __CONFIG_ONLY_MARKER__: string;
+    `import { aliasMarker } from "virtual:contract-value";
+declare const __CONFIG_ONLY_MARKER__: string;
+declare const __TOP_LEVEL_MARKER__: string;
+declare const __SSR_ONLY_MARKER__: string;
+declare const __SSR_ENV_MARKER__: string;
 export default function LegacyPage() {
-  return <p>{[__CONFIG_ONLY_MARKER__, process.env.NODE_ENV === "production" ? "vinext-pages-production-marker" : "vinext-pages-development-marker"].join(":")}</p>;
+  return <p>{[aliasMarker, __CONFIG_ONLY_MARKER__, __TOP_LEVEL_MARKER__, __SSR_ONLY_MARKER__, __SSR_ENV_MARKER__, process.env.NODE_ENV === "production" ? "vinext-pages-production-marker" : "vinext-pages-development-marker"].join(":")}</p>;
 }
 `,
   );
@@ -132,12 +159,16 @@ describe("configured vinext build contract", () => {
     expect(fs.readFileSync(path.join(root, "dist/config-resolved-plugin-ran"), "utf-8")).toBe("ok");
 
     const pagesEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
+    expect(pagesEntry).toContain("top-level-alias-ran");
     expect(pagesEntry).toContain("config-only-plugin-ran");
     expect(pagesEntry).toContain("vinext-pages-production-marker");
     expect(pagesEntry).not.toContain("vinext-pages-development-marker");
+    expect(pagesEntry).toContain("top-level-config-ran");
+    expect(pagesEntry).toContain("ssr-only-plugin-ran");
+    expect(pagesEntry).toContain("ssr-environment-ran");
     expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
     expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-ran"), "utf-8")).toBe(
-      "vinext_pages",
+      "ssr",
     );
 
     const appOutput = fs
@@ -163,15 +194,20 @@ describe("configured vinext build contract", () => {
     expectConfiguredBuild(root);
   }, 120_000);
 
-  it("provides the same lifecycle when global Vite options precede the build command", () => {
-    const root = createHybridProject();
+  it("provides the same lifecycle with an explicit config and leading Vite options", () => {
+    const root = createHybridProject("vite.prod.ts");
+    write(root, "vite.config.ts", 'throw new Error("loaded the wrong Vite config");\n');
 
-    execFileSync(process.execPath, [VITE_CLI_PATH, "--mode", "production", "build"], {
-      cwd: root,
-      env: { ...process.env, NODE_ENV: "development" },
-      stdio: "pipe",
-      timeout: 120_000,
-    });
+    execFileSync(
+      process.execPath,
+      [VITE_CLI_PATH, "--mode", "production", "--config", "vite.prod.ts", "build"],
+      {
+        cwd: root,
+        env: { ...process.env, NODE_ENV: "development" },
+        stdio: "pipe",
+        timeout: 120_000,
+      },
+    );
 
     expectConfiguredBuild(root);
   }, 120_000);
