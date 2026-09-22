@@ -302,6 +302,88 @@ test("does not resolve soft-tag expiration when the data entry misses", async ()
   expect(store.tagExpirationCalls).toHaveLength(0);
 });
 
+test("observes an eager soft-tag failure after finishing the response body", async () => {
+  let releaseBody!: () => void;
+  const bodyBlocked = new Promise<void>((resolve) => {
+    releaseBody = resolve;
+  });
+  let markBodyConsumed!: () => void;
+  const bodyConsumed = new Promise<void>((resolve) => {
+    markBodyConsumed = resolve;
+  });
+  let rejectExpiration!: (error: Error) => void;
+  const expirationBlocked = new Promise<number>((_resolve, reject) => {
+    rejectExpiration = reject;
+  });
+  const store = new TestStore();
+  store.response = new Response(
+    new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          await bodyBlocked;
+          controller.enqueue(
+            new TextEncoder().encode(JSON.stringify({ lastModified: 10_000, value: null })),
+          );
+          controller.close();
+          markBodyConsumed();
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Workers-Response-Store": "BLOB-STALE",
+      },
+    },
+  );
+  store.getTagExpiration = async (tags) => {
+    store.tagExpirationCalls.push(tags);
+    return expirationBlocked;
+  };
+
+  const result = new WorkersResponseStoreCacheHandler(store).get("key", {
+    softTags: ["path"],
+  });
+  let settled = false;
+  void result.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  const rejected = expect(result).rejects.toThrow("expiration unavailable");
+  await vi.waitFor(() => expect(store.tagExpirationCalls).toHaveLength(1));
+
+  rejectExpiration(new Error("expiration unavailable"));
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  releaseBody();
+  await bodyConsumed;
+  await rejected;
+  expect(settled).toBe(true);
+});
+
+test("does not speculate soft-tag expiration for invalid or non-ok responses", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+
+  store.response = new Response("invalid");
+  await expect(handler.get("invalid", { softTags: ["path"] })).resolves.toBeNull();
+
+  store.response = new Response("unavailable", {
+    status: 503,
+    headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
+  });
+  await expect(handler.get("unavailable", { softTags: ["path"] })).rejects.toThrow(
+    "Workers Response Store returned 503",
+  );
+
+  expect(store.tagExpirationCalls).toHaveLength(0);
+});
+
 test("rejects a candidate older than the latest soft-tag invalidation", async () => {
   vi.useFakeTimers();
   try {
