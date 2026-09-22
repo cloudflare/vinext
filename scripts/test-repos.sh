@@ -104,6 +104,12 @@ test_repo() {
   fi
   sed -i '' 's/^vinext_install=.*/vinext_install=pass/' "$result_file"
 
+  # Cloned Next.js repos need a Vite config before the direct Vite command.
+  if ! ./node_modules/.bin/vinext init --platform=node --skip-check; then
+    echo "FAILED: vinext init"
+    return 1
+  fi
+
   # Build
   echo ""
   echo "--- build ---"
