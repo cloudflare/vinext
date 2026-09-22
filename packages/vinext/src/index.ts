@@ -363,7 +363,7 @@ const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 // config is evaluated. The plugin hook loads again later for custom envDir.
 const earlyViteCliInvocation = getViteCliInvocation();
 if (earlyViteCliInvocation?.command === "build") {
-  if (!(earlyViteCliInvocation.mode === "test" && process.env.NODE_ENV === "test")) {
+  if (process.env.NODE_ENV !== "test") {
     Reflect.set(process.env, "NODE_ENV", "production");
   }
   loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
@@ -2382,8 +2382,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           loadDotenv({ root: envDir, mode });
         }
         // Build output always receives production defines. Preserve the
-        // explicit NODE_ENV=test and mode=test config-time behavior supported
-        // by the previous vinext CLI.
+        // explicit NODE_ENV=test config-time behavior supported by the previous
+        // vinext CLI, independently of Vite's mode.
         let resolvedNodeEnv: string;
         if (env?.command === "build" || env?.isPreview === true) {
           resolvedNodeEnv = "production";
@@ -2392,7 +2392,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         } else {
           resolvedNodeEnv = "development";
         }
-        const preserveTestNodeEnv = mode === "test" && process.env.NODE_ENV === "test";
+        const preserveTestNodeEnv =
+          process.env.NODE_ENV === "test" &&
+          (mode === "test" || earlyViteCliInvocation?.command === "build");
         if (!preserveTestNodeEnv && process.env.NODE_ENV !== resolvedNodeEnv) {
           // Next.js's vendored global declarations mark NODE_ENV readonly even
           // though Node permits updating process.env at runtime.
