@@ -153,4 +153,30 @@ describe("Cloudflare Response Store Worker", () => {
       request: { headers: [], method: "GET", url: "https://example.com/miss" },
     });
   });
+
+  it("serializes response-stage props once on bypasses", async () => {
+    const toJSON = vi.fn(() => ({ kind: "app-page" }));
+    stages.request.mockImplementation((request, _env, _context, dispatchResponseStage) =>
+      dispatchResponseStage(request, { toJSON }, { cache: "bypass" }),
+    );
+    stages.response.mockResolvedValue(new Response("rendered"));
+    const store = {
+      fetch: vi.fn(),
+      getTagExpiration: vi.fn(),
+      purge: vi.fn(),
+      put: vi.fn(),
+      refresh: vi.fn(),
+    };
+    const handler = createVinextResponseStoreHandler(store);
+
+    const response = await handler.fetch(new Request("https://example.com/bypass"), {} as never, {
+      passThroughOnException: vi.fn(),
+      waitUntil: vi.fn(),
+    });
+
+    expect(await response.text()).toBe("rendered");
+    expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
+    expect(toJSON).toHaveBeenCalledOnce();
+    expect(store.fetch).not.toHaveBeenCalled();
+  });
 });
