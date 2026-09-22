@@ -371,21 +371,30 @@ test("observes an eager soft-tag failure after finishing the response body", asy
   expect(settled).toBe(true);
 });
 
-test("purges a corrupt blob before observing a synchronous soft-tag failure", async () => {
+test("retries a suppressed soft-tag failure after purging a corrupt blob", async () => {
   const store = new TestStore();
   const purge = vi.spyOn(store, "purge");
   store.response = new Response("invalid", {
     headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
   });
+  let expirationCalls = 0;
   store.getTagExpiration = (tags) => {
     store.tagExpirationCalls.push(tags);
-    throw new Error("expiration unavailable");
+    if (expirationCalls++ === 0) throw new Error("expiration unavailable");
+    return Promise.resolve(0);
   };
 
-  await expect(
-    new WorkersResponseStoreCacheHandler(store).get("key", { softTags: ["path"] }),
-  ).resolves.toBeNull();
-  expect(store.tagExpirationCalls).toHaveLength(1);
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  await runWithRequestContext(createRequestContext(), async () => {
+    await expect(handler.get("corrupt", { softTags: ["path"] })).resolves.toBeNull();
+
+    store.response = new Response(JSON.stringify({ lastModified: 10_000, value: null }), {
+      headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
+    });
+    await expect(handler.get("valid", { softTags: ["path"] })).resolves.not.toBeNull();
+  });
+
+  expect(store.tagExpirationCalls).toHaveLength(2);
   expect(purge).toHaveBeenCalledOnce();
 });
 

@@ -332,6 +332,9 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       if (!expiration) {
         expiration = Promise.resolve().then(() => this.store.getTagExpiration(softTags));
         expirations.set(key, expiration);
+        void expiration.catch(() => {
+          if (expirations.get(key) === expiration) expirations.delete(key);
+        });
       }
       return expiration;
     };
