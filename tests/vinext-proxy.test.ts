@@ -92,6 +92,37 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).toContain("No Vite config was found for this project");
   });
 
+  it.each(["--version", "-v"])("requires config for build %s", (flag) => {
+    const root = createRoot();
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", flag], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("No Vite config was found for this project");
+  });
+
+  it("does not resolve Vite from the value of a known option", () => {
+    const root = createRoot();
+    write(root, "vite.config.ts", "export default {};\n");
+    fs.unlinkSync(path.join(root, "node_modules"));
+    const other = path.join(root, "other");
+    fs.mkdirSync(other);
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(other, "node_modules"),
+      "junction",
+    );
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--outDir", "other"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Could not resolve the project-local Vite CLI");
+  });
+
   it.each(["--no-watch", "--no-minify", "--no-sourcemap", "--no-manifest"])(
     "keeps the config preflight for valid negated option %s",
     (option) => {

@@ -106,7 +106,7 @@ function optionHasInlineValue(arg: string): boolean {
   return arg.includes("=");
 }
 
-function optionConsumesNext(arg: string, next: string | undefined): boolean {
+export function viteOptionConsumesNext(arg: string, next: string | undefined): boolean {
   if (optionHasInlineValue(arg)) return false;
   const option = valueOptionName(arg);
   if (REQUIRED_VALUE_OPTIONS.has(option)) return true;
@@ -137,10 +137,10 @@ export function findViteRoot(
     const option = clusteredOptions?.at(-1) ?? optionName(arg);
     const earlierGlobalOption = clusteredOptions
       ?.slice(0, -1)
-      .some((name) => VALUELESS_OPTIONS.has(name));
+      .some((name) => name === "--help" || name === "-h");
     if (
       earlierGlobalOption ||
-      (VALUELESS_OPTIONS.has(option) &&
+      ((option === "--help" || option === "-h") &&
         (optionHasInlineValue(arg)
           ? arg.slice(arg.indexOf("=") + 1) !== "false"
           : args[index + 1] !== "false"))
@@ -160,7 +160,7 @@ export function findViteRoot(
     if (normalizedOptions.some((name) => COMMAND_ONLY_OPTIONS[otherCommand].has(name))) {
       shouldPreflight = false;
     }
-    if (optionConsumesNext(arg, args[index + 1])) {
+    if (viteOptionConsumesNext(arg, args[index + 1])) {
       index++;
       continue;
     }
@@ -200,7 +200,7 @@ function commandArguments(argv: string[]): { command: ViteCliCommand; args: stri
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--") break;
-    if (optionConsumesNext(arg, args[index + 1])) {
+    if (viteOptionConsumesNext(arg, args[index + 1])) {
       index++;
       continue;
     }
@@ -226,10 +226,7 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
   let configFile: string | undefined;
   for (let index = 0; index < invocation.args.length; index += 1) {
     const arg = invocation.args[index];
-    if (arg === "--") {
-      root ??= invocation.args[index + 1];
-      break;
-    }
+    if (arg === "--") break;
     const option = valueOptionName(arg);
     if (option === "--config" || option === "-c") {
       const value = optionHasInlineValue(arg)
@@ -245,7 +242,7 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
       mode = optionHasInlineValue(arg) ? arg.slice(arg.indexOf("=") + 1) : invocation.args[++index];
       continue;
     }
-    if (optionConsumesNext(arg, invocation.args[index + 1])) {
+    if (viteOptionConsumesNext(arg, invocation.args[index + 1])) {
       index++;
       continue;
     }

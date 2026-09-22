@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vite-plus/test";
 import path from "node:path";
+import { toSlash } from "pathslash";
+import { describe, expect, it } from "vite-plus/test";
 import {
   claimViteCliBuildInvocation,
   findViteRoot,
@@ -28,6 +29,17 @@ describe("findViteRoot", () => {
     expect(findViteRoot("build", ["-hd", "project"])).toEqual({
       root: undefined,
       shouldPreflight: false,
+    });
+  });
+
+  it("keeps the config preflight for version flags on explicit commands", () => {
+    expect(findViteRoot("build", ["--version"])).toEqual({
+      root: undefined,
+      shouldPreflight: true,
+    });
+    expect(findViteRoot("dev", ["-v"])).toEqual({
+      root: undefined,
+      shouldPreflight: true,
     });
   });
 
@@ -212,15 +224,14 @@ describe("isViteCliInvocation", () => {
     ).toBeUndefined();
   });
 
-  it("keeps arguments after the option delimiter on the default dev command", () => {
+  it("does not use post-delimiter arguments as the default dev root", () => {
     const argv = ["node", "/project/node_modules/vite/bin/vite.js", "--", "build"];
 
     expect(isViteCliInvocation("build", argv)).toBe(false);
     expect(getViteCliInvocation(argv)).toEqual({
       command: "dev",
       mode: "development",
-      root: expect.stringMatching(/\/build$/),
-      rootArg: "build",
+      root: toSlash(process.cwd()),
     });
   });
 
@@ -238,8 +249,7 @@ describe("isViteCliInvocation", () => {
     ).toEqual({
       command: "dev",
       mode: "staging",
-      root: expect.stringMatching(/\/--mode$/),
-      rootArg: "--mode",
+      root: toSlash(process.cwd()),
     });
   });
 
