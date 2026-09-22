@@ -1150,6 +1150,33 @@ test("purge supports tags, path prefixes, and purgeEverything", async () => {
   assert.equal((await r2Objects()).objects.length, 3);
 });
 
+test("path-prefix selection uses the cache-key index", async () => {
+  await put("/indexed-prefix/a", "a");
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const plan = await storage.exec(`
+    EXPLAIN QUERY PLAN
+    SELECT entries.key_hash FROM entries
+    WHERE entries.key_hash IN (
+      SELECT path_entry.key_hash FROM json_each('["/indexed-prefix"]') AS path_prefix
+      JOIN entries AS path_entry
+        ON path_entry.cache_key >= path_prefix.value
+        AND path_entry.cache_key < path_prefix.value || char(127)
+    )
+  `);
+  const details = plan.map(({ detail }) => detail).filter((detail) => typeof detail === "string");
+
+  assert.ok(
+    details.some((detail) => detail.includes("INDEX entries_cache_key")),
+    JSON.stringify(plan),
+  );
+  assert.ok(
+    details.every((detail) => !detail.includes("SCAN path_entry")),
+    JSON.stringify(plan),
+  );
+});
+
 test("a failed R2 purge remains queued and retryable after SQLite is tombstoned", async () => {
   await put("/retry-purge", "still-readable-until-r2-is-tombstoned", {
     tags: ["retry-purge"],

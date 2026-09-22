@@ -462,9 +462,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         parameters.push(JSON.stringify(tags));
       }
       if (options.pathPrefixes?.length) {
-        selectors.push(`EXISTS (
-          SELECT 1 FROM json_each(?) AS path_prefix
-          WHERE instr(entries.cache_key, path_prefix.value) = 1
+        selectors.push(`entries.key_hash IN (
+          SELECT path_entry.key_hash FROM json_each(?) AS path_prefix
+          JOIN entries AS path_entry
+            ON path_entry.cache_key >= path_prefix.value
+            AND path_entry.cache_key < path_prefix.value || char(127)
         )`);
         parameters.push(JSON.stringify(options.pathPrefixes));
       }
