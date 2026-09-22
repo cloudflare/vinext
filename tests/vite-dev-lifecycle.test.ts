@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -65,7 +65,7 @@ afterEach(async () => {
 describe("Vite dev lifecycle", () => {
   it("loads dotenv before evaluating Vite config", async () => {
     const root = createProject();
-    fs.writeFileSync(path.join(root, ".env"), "FROM_DOTENV=config-time-dotenv\n");
+    fs.writeFileSync(path.join(root, ".env.staging"), "FROM_DOTENV=config-time-dotenv\n");
     fs.writeFileSync(
       path.join(root, "vite.config.ts"),
       `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
@@ -75,13 +75,43 @@ if (process.env.FROM_DOTENV !== "config-time-dotenv") {
 export default { plugins: [vinext()] };
 `,
     );
+    child = spawn(
+      process.execPath,
+      [VITE_CLI_PATH, "dev", root, "--mode", "staging", "--port", "0"],
+      {
+        cwd: root,
+        stdio: "pipe",
+      },
+    );
+
+    const lock = await waitFor(() => {
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+  });
+
+  it("reports duplicate dev servers through Vite's normal error path", async () => {
+    const root = createProject();
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};\nexport default { plugins: [vinext()] };\n`,
+    );
     child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
       cwd: root,
       stdio: "pipe",
     });
+    await waitFor(() => readLockfile(getLockfilePath(root)));
 
-    const lock = await waitFor(() => readLockfile(getLockfilePath(root)));
-    expect(lock.port).toBeGreaterThan(0);
+    const duplicate = spawnSync(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+
+    expect(duplicate.status).toBe(1);
+    expect(duplicate.stderr).toContain("Another vinext dev server is already running");
+    expect(duplicate.stderr).not.toContain("node:events");
   });
 
   it("applies vinext defaults without locking a server that never listens", async () => {
