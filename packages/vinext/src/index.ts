@@ -153,6 +153,7 @@ import {
 } from "./build/lifecycle.js";
 import {
   claimViteCliDevInvocation,
+  reserveViteCliDevInvocation,
   createDevServerLifecyclePlugin,
   VINEXT_DEV_RESTART_CONFIG,
 } from "./cli-dev-config.js";
@@ -1563,6 +1564,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const internalOptions = options as InternalVinextOptions;
   const { supportsNativeTypeofWindowFolding: useNativeTypeofWindowFolding } =
     assertSupportedViteVersion();
+  // Reserve CLI ownership while evaluating the outer config, before an earlier
+  // plugin's config hook can create a nested programmatic Vite server.
+  const reservedDevCliInvocation = reserveViteCliDevInvocation();
   const prerenderConfig = normalizeVinextPrerenderConfig(options.prerender);
   const cacheAdapterBuildOutputs = [options.cache?.data?.output, options.cache?.cdn?.output].filter(
     (output) => output !== undefined,
@@ -2414,6 +2418,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           claimViteCliDevInvocation(
             root,
             (config as InternalUserConfig)[VINEXT_DEV_RESTART_CONFIG] === true,
+            reservedDevCliInvocation,
           );
         buildLifecycleInvocation = (config as InternalUserConfig)[VINEXT_BUILD_LIFECYCLE_CONFIG];
         buildLifecycleEnabled =

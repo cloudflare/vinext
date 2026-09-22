@@ -547,4 +547,41 @@ export default { plugins: [vinext()] };
     server = undefined;
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
+
+  it("keeps nested servers created by earlier config hooks outside the CLI lifecycle", async () => {
+    const root = createProject();
+    useViteCliArgv();
+    let nested: ViteDevServer | undefined;
+    try {
+      server = await createServer({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [
+          {
+            name: "create-nested-before-vinext-config",
+            enforce: "pre",
+            config: {
+              order: "pre",
+              async handler() {
+                nested = await createServer({
+                  root,
+                  configFile: false,
+                  logLevel: "silent",
+                  plugins: [vinext()],
+                });
+              },
+            },
+          },
+          vinext(),
+        ],
+      });
+      expect(nested?.config.server.port).toBe(5173);
+      expect(server.config.server.port).toBe(3000);
+      await server.listen(0);
+      expect(readLockfile(getLockfilePath(root))).toBeTruthy();
+    } finally {
+      await nested?.close();
+    }
+  });
 });
