@@ -2134,7 +2134,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         (!builder.config.build.watch &&
           !builder.config.build.ssr &&
           getBuildBundlerOptions(builder.config.build)?.input === undefined)),
-    onComplete: (result) => buildLifecycleInvocation?.onComplete?.(result),
+    onComplete: () => buildLifecycleInvocation?.onComplete?.(),
     shouldDeferPostBuild: () => buildLifecycleInvocation !== undefined,
     shouldPrepare: (config) =>
       buildLifecycleEnabled &&

@@ -5,10 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import {
-  VINEXT_BUILD_LIFECYCLE_CONFIG,
-  type BuildLifecycleResult,
-} from "../packages/vinext/src/build/lifecycle.js";
+import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
 
 const CLI_PATH = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
 const VP_PATH = path.resolve(import.meta.dirname, "../node_modules/.bin/vp");
@@ -593,19 +590,19 @@ describe("configured vinext build contract", () => {
           'nextConfig: { output: "standalone", generateBuildId',
         ),
     );
-    let result: BuildLifecycleResult | undefined;
+    let completed = false;
     const builder = await createBuilder({
       root,
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: {
-        onComplete(value: BuildLifecycleResult) {
-          result = value;
+        onComplete() {
+          completed = true;
         },
       },
     } as Parameters<typeof createBuilder>[0]);
 
     await builder.buildApp();
 
-    expect(result).toEqual({ prerendered: false, standalone: false });
+    expect(completed).toBe(true);
     expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
     expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes/index.html"))).toBe(false);
     expect(fs.existsSync(path.join(root, "dist/standalone"))).toBe(false);
