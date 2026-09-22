@@ -284,6 +284,8 @@ describe("optimizeDeps.exclude for vinext", () => {
       const result = await (mainPlugin as any).config(mockConfig, {
         command: "build",
       });
+      const pagesPlugin = plugins.find((p: any) => p.name === "vinext:plain-pages-build-config");
+      const pagesConfig = (pagesPlugin as any).config.handler(result);
 
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
@@ -291,7 +293,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
       expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
-      expect(result.environments.ssr.resolve.external).toContain("typescript");
+      expect(pagesConfig.environments.ssr.resolve.external).toContain("typescript");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"true"');
       expect(
         aliasEntriesToRecord(result.resolve.alias)["vinext/server/pages-client-assets"],
@@ -925,7 +927,7 @@ describe("process.env.NODE_ENV define", () => {
     );
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
-    return { mainPlugin: mainPlugin as any, tmpDir, fsp };
+    return { mainPlugin: mainPlugin as any, plugins, tmpDir, fsp };
   }
 
   it("is injected as production for build", async () => {
@@ -1006,7 +1008,7 @@ describe("process.env.NODE_ENV define", () => {
   }, 15000);
 
   it("respects user-defined process.env.NODE_ENV in config.define", async () => {
-    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    const { mainPlugin, plugins, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = {
         root: tmpDir,
@@ -1024,8 +1026,10 @@ describe("process.env.NODE_ENV define", () => {
       expect(
         result.optimizeDeps?.rolldownOptions?.transform?.define?.["process.env.NODE_ENV"],
       ).toBe(JSON.stringify("staging"));
+      const pagesPlugin = plugins.find((p: any) => p.name === "vinext:plain-pages-build-config");
+      const pagesConfig = (pagesPlugin as any).config.handler(result);
       expect(
-        result.environments?.ssr?.optimizeDeps?.rolldownOptions?.transform?.define?.[
+        pagesConfig.environments?.ssr?.optimizeDeps?.rolldownOptions?.transform?.define?.[
           "process.env.NODE_ENV"
         ],
       ).toBe(JSON.stringify("staging"));
