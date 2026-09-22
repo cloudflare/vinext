@@ -998,6 +998,44 @@ test("autonomous cleanup retains edge work when cache purge is unavailable", asy
   await stub.markTombstonesEdgePurged(await stub.listPendingEdgePurges(1));
 });
 
+test("purge retains edge work when cache purge is unavailable", async () => {
+  await put("/unavailable-tag-purge", "old", { tags: ["unavailable"] });
+  await put("/unavailable-global-purge", "old");
+
+  assert.deepEqual((await purge({ tags: ["unavailable"] })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+
+  assert.deepEqual((await purge({ purgeEverything: true })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 2);
+
+  const stub = await metadataStub();
+  await stub.markTombstonesEdgePurged(await stub.listPendingEdgePurges(2));
+});
+
+test("a broad purge only acknowledges tombstones in its snapshot", async () => {
+  await put("/broad-purge-snapshot", "old", { tags: ["snapshot"] });
+  await put("/broad-purge-later", "old", { tags: ["later"] });
+  const stub = await metadataStub();
+
+  const snapshot = await stub.purgeMatching({ tags: ["snapshot"] });
+  await stub.drainPendingTombstones(400);
+  await stub.purgeMatching({ tags: ["later"] });
+  await stub.drainPendingTombstones(400);
+
+  await stub.markTombstonesEdgePurgedThrough(snapshot.tombstoneSequence);
+  assert.deepEqual(
+    (await stub.listPendingEdgePurges(400)).map(({ cacheKey }: { cacheKey: string }) => cacheKey),
+    ["/broad-purge-later"],
+  );
+  await stub.markTombstonesEdgePurged(await stub.listPendingEdgePurges(400));
+});
+
 test("a failed R2 publication can be fenced with a newer tombstone", async () => {
   await put("/failed-publication", "possibly-committed");
   await put("/unrelated-pending-tombstone", "unrelated", { tags: ["unrelated"] });
@@ -1408,10 +1446,21 @@ test("the previous metadata schema is upgraded in place", async () => {
                   ) WITHOUT ROWID;
                   CREATE TABLE metadata_schema_migrations (version INTEGER PRIMARY KEY);
                   INSERT INTO metadata_schema_migrations (version) VALUES (1);
+                  CREATE TABLE metadata_state (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    tag_invalidation_sequence INTEGER NOT NULL
+                  );
+                  INSERT INTO metadata_state (singleton, tag_invalidation_sequence) VALUES (1, 0);
                   CREATE TABLE pending_objects (
                     object_key TEXT PRIMARY KEY,
                     created_at INTEGER NOT NULL
                   );
+                  CREATE TABLE pending_r2_tombstones (
+                    key_hash TEXT PRIMARY KEY,
+                    cache_key TEXT NOT NULL,
+                    object_key TEXT NOT NULL,
+                    revision INTEGER NOT NULL
+                  ) WITHOUT ROWID;
                 \`));
               }
               seed() {
@@ -1473,7 +1522,8 @@ test("the previous metadata schema is upgraded in place", async () => {
       "runtime-cache/poc-v2/migrated-write",
       Date.now(),
     );
-    await stub.purgeMatching({ tags: ["new-tag"] });
+    const purge = await stub.purgeMatching({ tags: ["new-tag"] });
+    await stub.markTombstonesEdgePurgedThrough(purge.tombstoneSequence);
 
     assert.ok(reservation.objectKey);
     assert.equal(await stub.getTagExpiration(["old-tag"]), 123);

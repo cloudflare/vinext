@@ -70,6 +70,7 @@ type AppMetadataWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   mountedSlotsHeader: string | null;
   renderMode: AppRscRenderMode;
   resolvedUrl: string;
+  routePathname: string;
 };
 
 type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
@@ -196,6 +197,8 @@ export function isAppWorkerResponseStageProps(
       (special.mountedSlotsHeader === null || typeof special.mountedSlotsHeader === "string") &&
       typeof special.resolvedUrl === "string" &&
       special.resolvedUrl.startsWith("/") &&
+      (props.kind !== "app-metadata" ||
+        (typeof props.routePathname === "string" && props.routePathname.startsWith("/"))) &&
       (special.renderMode === "navigation" ||
         special.renderMode === "prefetch-empty" ||
         special.renderMode === "prefetch-dynamic-shell" ||

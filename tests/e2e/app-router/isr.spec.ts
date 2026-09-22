@@ -303,6 +303,62 @@ test.describe("App Router ISR", () => {
     const plain = await waitForCacheHit(request, plainPath);
     expect(await plain.text()).toBe(`CACHE_IDENTITY_API_ROUTE:${plainPath}`);
   });
+
+  test("dynamic metadata images honor dynamicParams=false", async ({ request }) => {
+    const publicImage = await request.get(
+      `${baseUrl()}/metadata-static-params/public-post/opengraph-image`,
+    );
+    expect(publicImage.status()).toBe(200);
+    expect(await publicImage.text()).toBe("PUBLIC");
+
+    const encodedPublicImage = await request.get(
+      `${baseUrl()}/metadata-static-params/public%20post/opengraph-image`,
+    );
+    expect(encodedPublicImage.status()).toBe(200);
+    expect(await encodedPublicImage.text()).toBe("PUBLIC ENCODED");
+
+    const doubleEncodedImage = await request.get(
+      `${baseUrl()}/metadata-static-params/public%2520post/opengraph-image`,
+    );
+    expect(doubleEncodedImage.status()).toBe(200);
+    expect(await doubleEncodedImage.text()).toBe("PUBLIC ESCAPED");
+
+    const escapedSlashImage = await request.get(
+      `${baseUrl()}/metadata-static-params/public%252Fpost/opengraph-image`,
+    );
+    expect(escapedSlashImage.status()).toBe(200);
+    expect(await escapedSlashImage.text()).toBe("PUBLIC ESCAPED SLASH");
+
+    const unlistedEncodingImage = await request.get(
+      `${baseUrl()}/metadata-static-params/public%252520post/opengraph-image`,
+    );
+    expect(unlistedEncodingImage.status()).toBe(404);
+
+    const incompleteParamsImage = await request.get(
+      `${baseUrl()}/metadata-static-params-multi/private/public/opengraph-image`,
+    );
+    expect(incompleteParamsImage.status()).toBe(404);
+
+    const emptyOptionalImage = await request.get(
+      `${baseUrl()}/metadata-static-params-optional/opengraph-image`,
+    );
+    expect(emptyOptionalImage.status()).toBe(200);
+    expect(await emptyOptionalImage.text()).toBe("EMPTY OPTIONAL");
+
+    const omittedOptionalImage = await request.get(
+      `${baseUrl()}/metadata-static-params-optional-missing/opengraph-image`,
+    );
+    expect(omittedOptionalImage.status()).toBe(404);
+
+    const privatePage = await request.get(`${baseUrl()}/metadata-static-params/unlisted-draft`);
+    expect(privatePage.status()).toBe(404);
+
+    const privateImage = await request.get(
+      `${baseUrl()}/metadata-static-params/unlisted-draft/opengraph-image`,
+    );
+    expect(privateImage.status()).toBe(404);
+    expect(await privateImage.text()).not.toContain("UNLISTED_METADATA");
+  });
 });
 
 /**

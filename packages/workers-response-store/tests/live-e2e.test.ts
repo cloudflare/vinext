@@ -5,6 +5,7 @@ import { test } from "vitest";
 const base =
   process.env.LIVE_CACHE_BASE ?? "https://vinext-programmatic-cache-poc-user.vinext.workers.dev";
 const PURGE_OBSERVATION_POLICY = "public, max-age=2";
+const EDGE_PURGE_ACCEPTED = process.env.LIVE_RESPONSE_STORE_EDGE_PURGE_MODE !== "disabled";
 
 type PutOptions = {
   cacheControl?: string;
@@ -102,7 +103,10 @@ test("live put updates R2 before purging an existing edge response", async () =>
   assert.equal(await (await read(`/${id}`)).text(), "old-body");
 
   const mutation = await put(`/${id}`, "new-body", { purgeExisting: true });
-  assert.deepEqual(mutation, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.deepEqual(mutation, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: EDGE_PURGE_ACCEPTED,
+  });
   const refill = await eventually(async () => {
     const response = await read(`/${id}`);
     const body = await response.text();
@@ -129,7 +133,7 @@ test("live manual refresh calls the named user entrypoint and exposes only the c
   }
   assert.deepEqual(await refreshResponse.json(), {
     backingStoreUpdated: true,
-    edgePurgeAccepted: true,
+    edgePurgeAccepted: EDGE_PURGE_ACCEPTED,
   });
   const response = await eventually(async () => {
     const candidate = await read(`/${id}`);
@@ -170,7 +174,7 @@ test("live refresh selects and regenerates entries by tag and path prefix", asyn
   }
   assert.deepEqual(await tagRefresh.json(), {
     backingStoreUpdated: true,
-    edgePurgeAccepted: true,
+    edgePurgeAccepted: EDGE_PURGE_ACCEPTED,
   });
   await eventually(async () => {
     const response = await read(`/${id}/tagged`);
@@ -186,7 +190,7 @@ test("live refresh selects and regenerates entries by tag and path prefix", asyn
   }
   assert.deepEqual(await prefixRefresh.json(), {
     backingStoreUpdated: true,
-    edgePurgeAccepted: true,
+    edgePurgeAccepted: EDGE_PURGE_ACCEPTED,
   });
   await eventually(async () => {
     const response = await read(`/${id}/prefix/a`);
@@ -213,9 +217,8 @@ test("live hard expiry never serves the expired R2 body", async () => {
 test("live purge applies tag, path-prefix, and purge-everything selectors", async () => {
   const id = key("purge");
   const tag = `tag-${id}`;
-  // Purge acceptance and propagation are separate. Keep these edge entries
-  // short-lived so the test can always observe the durable tombstone even if
-  // global purge propagation is delayed during repeated canary runs.
+  // Keep tag/path-purged entries short-lived so the test can observe their
+  // durable tombstones when edge purges are disabled or propagation is delayed.
   await put(`/${id}/tagged`, "tagged", {
     tags: [tag],
     cacheControl: PURGE_OBSERVATION_POLICY,
@@ -225,6 +228,7 @@ test("live purge applies tag, path-prefix, and purge-everything selectors", asyn
     cacheControl: PURGE_OBSERVATION_POLICY,
   });
   await put(`/${id}/keep`, "keep", { cacheControl: "public, max-age=120" });
+  await put(`/${id}/uncached`, "uncached", { cacheControl: "public, max-age=120" });
   await Promise.all([
     read(`/${id}/tagged`).then((response) => response.arrayBuffer()),
     read(`/${id}/prefix/a`).then((response) => response.arrayBuffer()),
@@ -233,7 +237,7 @@ test("live purge applies tag, path-prefix, and purge-everything selectors", asyn
 
   assert.deepEqual(await purge({ tags: [tag] }), {
     backingStoreUpdated: true,
-    edgePurgeAccepted: true,
+    edgePurgeAccepted: EDGE_PURGE_ACCEPTED,
   });
   await eventually(async () => {
     const response = await read(`/${id}/tagged`);
@@ -253,8 +257,9 @@ test("live purge applies tag, path-prefix, and purge-everything selectors", asyn
 
   assert.deepEqual(await purge({ purgeEverything: true }), {
     backingStoreUpdated: true,
-    edgePurgeAccepted: true,
+    edgePurgeAccepted: EDGE_PURGE_ACCEPTED,
   });
+  assert.equal((await read(`/${id}/uncached`)).status, 404);
 });
 
 test("live loopback failure preserves the last usable R2 and edge response", async () => {

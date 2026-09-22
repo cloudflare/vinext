@@ -1836,7 +1836,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   }
   ${
     (metadataRoutes?.length ?? 0) > 0
-      ? `async handleMetadataRouteRequest(cleanPathname) {
+      ? `async handleMetadataRouteRequest(cleanPathname, routePathname) {
     const { handleMetadataRouteRequest: __handleMetadataRouteRequest } =
       await __loadMetadataRouteResponse();
     return __handleMetadataRouteRequest({
@@ -1846,6 +1846,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isrRouteKey: __isrRouteKey,
       isrSet: __isrSet,
       makeThenableParams,
+      routePathname,
       scheduleBackgroundRegeneration: __triggerBackgroundRegeneration,
     });
   },`

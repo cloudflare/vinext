@@ -50,7 +50,9 @@ export type ValidateAppPageDynamicParamsOptions = {
     | readonly (GenerateStaticParams | GenerateStaticParamsSource | null | undefined)[]
     | null;
   isDynamicRoute: boolean;
+  optionalCatchAllParamNames?: readonly string[];
   params: AppPageParams;
+  requiredParamNames?: readonly string[];
 };
 
 type ResolveAppPageGenerateStaticParamsSourcesOptions = {
@@ -390,21 +392,35 @@ function areStaticParamsAllowed(
   params: AppPageParams,
   staticParams: readonly Record<string, unknown>[],
   allowMissingValues = false,
+  paramKeys: readonly string[] = Object.keys(params),
+  optionalCatchAllParamNames: readonly string[] = [],
 ): boolean {
-  const paramKeys = Object.keys(params);
   // Next.js compares the concrete request pathname against generated encoded
   // pathnames exactly. This generated-path gate is case-sensitive even though
   // custom redirect, rewrite, and header sources are case-insensitive by default.
   const stringParamMatches = (value: string, staticValue: string): boolean =>
     value === encodeURIComponent(staticValue);
 
-  return staticParams.some((staticParamSet) =>
-    paramKeys.every((key) => {
+  return staticParams.some((staticParamSet) => {
+    if (!staticParamSet || typeof staticParamSet !== "object" || Array.isArray(staticParamSet)) {
+      return false;
+    }
+    return paramKeys.every((key) => {
       const value = params[key];
       const staticValue = staticParamSet[key];
 
       if (!Object.hasOwn(staticParamSet, key)) {
         return allowMissingValues;
+      }
+
+      if (value === undefined) {
+        return (
+          optionalCatchAllParamNames.includes(key) &&
+          (staticValue === undefined ||
+            staticValue === null ||
+            staticValue === false ||
+            (Array.isArray(staticValue) && staticValue.length === 0))
+        );
       }
 
       if (Array.isArray(value)) {
@@ -428,8 +444,8 @@ function areStaticParamsAllowed(
       }
 
       return JSON.stringify(value) === JSON.stringify(staticValue);
-    }),
-  );
+    });
+  });
 }
 
 function remapStaticParamsToRouteParams(
@@ -599,10 +615,22 @@ export async function validateAppPageDynamicParams(
     );
     if (result.validated) {
       validatedIndependentResults = true;
-      if (!areStaticParamsAllowed(options.params, result.staticParams, true)) {
+      if (
+        !areStaticParamsAllowed(
+          options.params,
+          result.staticParams,
+          options.requiredParamNames === undefined,
+          options.requiredParamNames,
+          options.optionalCatchAllParamNames,
+        )
+      ) {
         return notFoundResponse();
       }
     }
+  }
+
+  if (options.requiredParamNames && !validatedIndependentResults) {
+    return notFoundResponse();
   }
 
   if (chainedStaticParams && !validatedIndependentResults) {

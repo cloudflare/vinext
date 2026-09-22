@@ -26,7 +26,7 @@
  */
 import React from "react";
 import { getPagesClientAssets } from "vinext/server/pages-client-assets";
-import { useScriptNonce } from "./script-nonce-context.js";
+import { useInitialStylesheetHrefs, useScriptNonce } from "./script-nonce-context.js";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 
 function dynamicPreloadHref(file: string): string {
@@ -68,6 +68,7 @@ function resolveDynamicPreloadFiles(moduleIds: readonly string[] | undefined): s
 
 export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
   const nonce = useScriptNonce();
+  const initialStylesheetHrefs = useInitialStylesheetHrefs();
   // Defensive guard matching Next.js's <PreloadChunks> `typeof window` check:
   // this component only does work during SSR. The runtime global is server-only
   // today (so on the client the map is absent/undefined and we already return
@@ -84,6 +85,7 @@ export function DynamicPreloadChunks(props: { moduleIds?: readonly string[] }) {
     const assetHref = dynamicPreloadHref(file);
     if (assetHref.endsWith(".css")) {
       const href = appendAssetDeploymentIdQuery(assetHref);
+      if (initialStylesheetHrefs?.has(href)) continue;
       preloadLinks.push(
         React.createElement("link", {
           key: href,

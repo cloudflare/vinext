@@ -126,6 +126,7 @@ export type WorkersResponseStoreEnv = {
   CACHE_BODIES: R2Bucket;
   CACHE_METADATA: DurableObjectNamespace<undefined>;
   CF_VERSION_METADATA?: WorkerVersionMetadata;
+  WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE?: "disabled";
 };
 
 export type WorkersResponseStoreProps = {
@@ -451,6 +452,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   private async purgeEdgeCache(options: CachePurgeOptions): Promise<boolean> {
+    if (this.env.WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE === "disabled") {
+      return false;
+    }
     if (!this.ctx.cache) {
       console.error(
         JSON.stringify({
@@ -497,16 +501,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry));
   }
 
-  private async purgePendingEdgeEntries(
-    metadata: CacheMetadataStub,
-    purgeByTag: boolean,
-  ): Promise<boolean> {
-    let accepted = true;
+  private async purgePendingEdgeEntries(metadata: CacheMetadataStub): Promise<boolean> {
     for (;;) {
       const entries = await metadata.listPendingEdgePurges(PURGE_TOMBSTONE_BATCH_SIZE);
-      if (!entries.length) return accepted;
-      if (purgeByTag && !(await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
-        accepted = false;
+      if (!entries.length) return true;
+      if (!(await this.purgeEdgeCacheByTags(entries.map(purgeTagForEntry)))) {
+        return false;
       }
       await metadata.markTombstonesEdgePurged(entries);
     }
@@ -1319,11 +1319,15 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     if (options.purgeEverything && failures.length === 0) {
       try {
         edgePurgeAccepted = await this.purgeEdgeCache({ purgeEverything: true });
-        const acknowledged = await Promise.allSettled(
-          reservations.map(({ metadata }) => this.purgePendingEdgeEntries(metadata, true)),
-        );
-        for (const result of acknowledged) {
-          if (result.status === "rejected") failures.push(result.reason);
+        if (edgePurgeAccepted) {
+          const acknowledged = await Promise.allSettled(
+            reservations.map(({ metadata, reservation }) =>
+              metadata.markTombstonesEdgePurgedThrough(reservation.tombstoneSequence),
+            ),
+          );
+          for (const result of acknowledged) {
+            if (result.status === "rejected") failures.push(result.reason);
+          }
         }
       } catch (error) {
         edgePurgeAccepted = false;
@@ -1332,7 +1336,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     } else {
       if (options.purgeEverything) edgePurgeAccepted = false;
       const acknowledged = await Promise.allSettled(
-        reservations.map(({ metadata }) => this.purgePendingEdgeEntries(metadata, true)),
+        reservations.map(({ metadata }) => this.purgePendingEdgeEntries(metadata)),
       );
       for (const result of acknowledged) {
         if (result.status === "rejected") {

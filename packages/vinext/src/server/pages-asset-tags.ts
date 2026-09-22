@@ -52,6 +52,40 @@ export function getManifestFilesForModule(
   return null;
 }
 
+function collectGraphOrderedCss(
+  graph: NonNullable<ReturnType<typeof getPagesClientAssets>["cssGraph"]>,
+  moduleIds: (string | null | undefined)[],
+): string[] {
+  const ordered: string[] = [];
+  const emitted = new Set<string>();
+  const visited = new Set<string>();
+
+  function findKey(moduleId: string | null | undefined): string | undefined {
+    if (!moduleId) return undefined;
+    if (graph[moduleId]) return moduleId;
+    for (const key in graph) {
+      if (moduleId === key || moduleId.endsWith("/" + key)) return key;
+    }
+    return undefined;
+  }
+
+  function visit(key: string | undefined): void {
+    if (!key || visited.has(key)) return;
+    visited.add(key);
+    const chunk = graph[key];
+    if (!chunk) return;
+    for (const importedKey of chunk.imports ?? []) visit(importedKey);
+    for (const file of chunk.css ?? []) {
+      if (emitted.has(file)) continue;
+      emitted.add(file);
+      ordered.push(file);
+    }
+  }
+
+  for (const moduleId of moduleIds) visit(findKey(moduleId));
+  return ordered;
+}
+
 /**
  * Find the first `.js` file in the manifest for `moduleId` and return the URL it
  * is actually SERVED from. Used to resolve the client-navigation / hydration URL
@@ -110,6 +144,7 @@ type CollectAssetTagsOptions = {
   assetPrefix?: string;
   deploymentId?: string;
   crossOrigin?: string;
+  initialStylesheetHrefs?: Set<string>;
 };
 
 /**
@@ -191,6 +226,17 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
     );
   }
 
+  if (runtimeAssets.cssGraph) {
+    for (let file of collectGraphOrderedCss(runtimeAssets.cssGraph, options.moduleIds)) {
+      if (file.charAt(0) === "/") file = file.slice(1);
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const stylesheetHref = href(file);
+      options.initialStylesheetHrefs?.add(stylesheetHref);
+      tags.push('<link rel="stylesheet"' + nonceAttr + ' href="' + stylesheetHref + '" />');
+    }
+  }
+
   if (m) {
     const allFiles: string[] = [];
     const moduleIds = options.moduleIds;
@@ -245,7 +291,9 @@ export function collectAssetTags(options: CollectAssetTagsOptions): string {
       if (seen.has(tf)) continue;
       seen.add(tf);
       if (tf.endsWith(".css")) {
-        tags.push('<link rel="stylesheet"' + nonceAttr + ' href="' + href(tf) + '" />');
+        const stylesheetHref = href(tf);
+        options.initialStylesheetHrefs?.add(stylesheetHref);
+        tags.push('<link rel="stylesheet"' + nonceAttr + ' href="' + stylesheetHref + '" />');
       } else if (tf.endsWith(".js")) {
         // Skip lazy chunks — they are behind dynamic import() boundaries
         // (React.lazy, next/dynamic) and should only be fetched on demand.

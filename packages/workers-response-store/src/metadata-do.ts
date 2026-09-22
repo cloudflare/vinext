@@ -40,6 +40,7 @@ type RegenerationReservation = {
 type PurgeReservation = {
   backingStoreUpdated: boolean;
   pendingTombstones: number;
+  tombstoneSequence: number;
 };
 
 type TombstoneDrainResult = {
@@ -115,6 +116,7 @@ export type CacheMetadataStub = DurableObjectStub & {
   retryPendingTombstones(): Promise<boolean>;
   listPendingEdgePurges(limit: number): Promise<PurgedEntry[]>;
   markTombstonesEdgePurged(entries: PurgedEntry[]): Promise<void>;
+  markTombstonesEdgePurgedThrough(tombstoneSequence: number): Promise<void>;
   inspect(): Promise<StoredEntry[]>;
 };
 
@@ -266,7 +268,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
         CREATE TABLE IF NOT EXISTS metadata_state (
           singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-          tag_invalidation_sequence INTEGER NOT NULL
+          tag_invalidation_sequence INTEGER NOT NULL,
+          tombstone_sequence INTEGER NOT NULL DEFAULT 0
         );
         INSERT OR IGNORE INTO metadata_state (singleton, tag_invalidation_sequence) VALUES (1, 0);
         CREATE TABLE IF NOT EXISTS key_invalidations (
@@ -286,7 +289,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           object_key TEXT NOT NULL,
           revision INTEGER NOT NULL,
           r2_complete INTEGER NOT NULL DEFAULT 0,
-          edge_purge_complete INTEGER NOT NULL DEFAULT 0
+          edge_purge_complete INTEGER NOT NULL DEFAULT 0,
+          tombstone_sequence INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID;
       `);
 
@@ -294,18 +298,18 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const migrations = new Set(
           ctx.storage.sql
             .exec<{ version: number }>(
-              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4)",
+              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5)",
             )
             .toArray()
             .map(({ version }) => version),
         );
-        if (migrations.size === 3) return;
+        if (migrations.size === 4) return;
 
         const schemas = ctx.storage.sql
           .exec<{ name: string; sql: string }>(
             `SELECT name, sql FROM sqlite_schema
             WHERE type = 'table'
-              AND name IN ('tag_invalidations', 'pending_objects', 'pending_r2_tombstones')`,
+              AND name IN ('tag_invalidations', 'metadata_state', 'pending_objects', 'pending_r2_tombstones')`,
           )
           .toArray();
         if (
@@ -355,6 +359,21 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           }
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (4)");
         }
+        if (!migrations.has(5)) {
+          const metadataState = schemas.find(({ name }) => name === "metadata_state")?.sql;
+          const tombstones = schemas.find(({ name }) => name === "pending_r2_tombstones")?.sql;
+          if (!metadataState?.includes("tombstone_sequence")) {
+            ctx.storage.sql.exec(
+              "ALTER TABLE metadata_state ADD COLUMN tombstone_sequence INTEGER NOT NULL DEFAULT 0",
+            );
+          }
+          if (!tombstones?.includes("tombstone_sequence")) {
+            ctx.storage.sql.exec(
+              "ALTER TABLE pending_r2_tombstones ADD COLUMN tombstone_sequence INTEGER NOT NULL DEFAULT 0",
+            );
+          }
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (5)");
+        }
       });
     });
   }
@@ -379,6 +398,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         error: error instanceof Error ? error.message : String(error),
       }),
     );
+  }
+
+  private tombstoneSequence(increment = false): number {
+    const statement = increment
+      ? `UPDATE metadata_state SET tombstone_sequence = tombstone_sequence + 1
+        WHERE singleton = 1 RETURNING tombstone_sequence`
+      : "SELECT tombstone_sequence FROM metadata_state WHERE singleton = 1";
+    return this.ctx.storage.sql.exec<{ tombstone_sequence: number }>(statement).one()
+      .tombstone_sequence;
   }
 
   private getR2TombstoneEdgePurger(): R2TombstoneEdgePurger {
@@ -908,13 +936,16 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       }
 
       const tombstoneRevision = current.latest_revision + 1;
+      const tombstoneSequence = this.tombstoneSequence(true);
       this.ctx.storage.sql.exec(
         `INSERT OR REPLACE INTO pending_r2_tombstones
-          (key_hash, cache_key, object_key, revision) VALUES (?, ?, ?, ?)`,
+          (key_hash, cache_key, object_key, revision, tombstone_sequence)
+          VALUES (?, ?, ?, ?, ?)`,
         keyHash,
         current.cache_key,
         current.object_key,
         tombstoneRevision,
+        tombstoneSequence,
       );
       this.ctx.storage.sql.exec(
         `UPDATE entries SET
@@ -1046,6 +1077,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   ): Promise<PurgeReservation> {
     const reservation = this.ctx.storage.transactionSync(() => {
       const matches = this.findMatchingEntryRows(options, true);
+      const tombstoneSequence = this.tombstoneSequence(
+        matches.some((row) => row.object_key !== null),
+      );
 
       const tags = normalizeTags(options.tags ?? []);
       this.ctx.storage.sql.exec(
@@ -1086,17 +1120,18 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
       for (const batch of batches(matches, MAX_SQL_PARAMETERS - 1)) {
         const active = batch.filter((row) => row.object_key !== null);
-        for (const entryBatch of batches(active, MAX_SQL_PARAMETERS / 4)) {
+        for (const entryBatch of batches(active, MAX_SQL_PARAMETERS / 5)) {
           this.ctx.storage.sql.exec(
             `INSERT OR REPLACE INTO pending_r2_tombstones
-              (key_hash, cache_key, object_key, revision) VALUES ${entryBatch
-                .map(() => "(?, ?, ?, ?)")
+              (key_hash, cache_key, object_key, revision, tombstone_sequence) VALUES ${entryBatch
+                .map(() => "(?, ?, ?, ?, ?)")
                 .join(", ")}`,
             ...entryBatch.flatMap((row) => [
               row.key_hash,
               row.cache_key,
               row.object_key!,
               row.latest_revision + 1,
+              tombstoneSequence,
             ]),
           );
         }
@@ -1127,7 +1162,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const pendingTombstones = this.ctx.storage.sql
         .exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending_r2_tombstones")
         .one().count;
-      return { backingStoreUpdated: matches.length > 0 || tags.length > 0, pendingTombstones };
+      return {
+        backingStoreUpdated: matches.length > 0 || tags.length > 0,
+        pendingTombstones,
+        tombstoneSequence,
+      };
     });
     if (reservation.pendingTombstones > 0) {
       await this.scheduleCleanupAlarm(Date.now() + ORPHAN_CLEANUP_RETRY_MS).catch((error) =>
@@ -1258,6 +1297,17 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
         );
       }
+      this.finishCompletedTombstones();
+    });
+  }
+
+  markTombstonesEdgePurgedThrough(tombstoneSequence: number): void {
+    this.ctx.storage.transactionSync(() => {
+      this.ctx.storage.sql.exec(
+        `UPDATE pending_r2_tombstones SET edge_purge_complete = 1
+        WHERE r2_complete = 1 AND tombstone_sequence <= ?`,
+        tombstoneSequence,
+      );
       this.finishCompletedTombstones();
     });
   }

@@ -182,11 +182,12 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     handleMetadataRouteRequest:
       overrides.handleMetadataRouteRequest ??
       (overrides.metadataRoutes
-        ? (cleanPathname) =>
+        ? (cleanPathname, routePathname) =>
             handleMetadataRouteRequest({
               metadataRoutes: overrides.metadataRoutes!,
               cleanPathname,
               makeThenableParams,
+              routePathname,
             })
         : undefined),
     handleServerActionRequest:
@@ -2138,12 +2139,41 @@ describe("createAppRscHandler", () => {
       kind: "app-metadata",
       canonicalPathname: "/robots-alias",
       cleanPathname: "/robots.txt",
+      routePathname: "/robots.txt",
     });
-    expect(metadataHandler).toHaveBeenCalledOnce();
+    expect(metadataHandler).toHaveBeenCalledWith("/robots.txt", "/robots.txt");
     expect(requestLocalMetadataHandler).not.toHaveBeenCalled();
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/plain");
     expect(await response.text()).toContain("Disallow: /private");
+  });
+
+  it("preserves encoded metadata route identity in the response stage", async () => {
+    const metadataHandler = vi.fn(async () => new Response("metadata"));
+    const responseHandler = createHandler({ handleMetadataRouteRequest: metadataHandler });
+    const requestHandler = createHandler({ isMetadataRoute: () => true });
+    const dispatchResponseStage = vi.fn(
+      (stageRequest: Request, props: AppWorkerResponseStageProps) =>
+        responseHandler.handleResponseStage(stageRequest, null, props),
+    );
+
+    const response = await requestHandler(
+      new Request("https://example.test/docs/posts/public%2520post/opengraph-image"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      kind: "app-metadata",
+      cleanPathname: "/posts/public%20post/opengraph-image",
+      routePathname: "/posts/public%2520post/opengraph-image",
+    });
+    expect(metadataHandler).toHaveBeenCalledWith(
+      "/posts/public%20post/opengraph-image",
+      "/posts/public%2520post/opengraph-image",
+    );
+    expect(response.status).toBe(200);
   });
 
   it("continues to an App page when staged metadata overclassification has no match", async () => {

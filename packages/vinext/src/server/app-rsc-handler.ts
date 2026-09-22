@@ -498,7 +498,10 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   handleProgressiveActionRequest?: (
     options: HandleProgressiveActionRequestOptions<TRoute>,
   ) => Promise<Response | ProgressiveActionFormStateResult | null>;
-  handleMetadataRouteRequest?: (cleanPathname: string) => Promise<Response | null>;
+  handleMetadataRouteRequest?: (
+    cleanPathname: string,
+    routePathname: string,
+  ) => Promise<Response | null>;
   isMetadataRoutePath?: (cleanPathname: string) => boolean | Promise<boolean>;
   getPrerenderMetadataRoutePaths?: () => Promise<unknown>;
   createPprFallbackShells?: (
@@ -1214,6 +1217,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     ) {
       return null;
     }
+    const metadataRoutePathname = cleanPathnameIsRequestPathname
+      ? requestCleanPathname
+      : cleanPathname;
     const metadataResponseStage = transportedResponseStage ?? options.renderResponseStageLocally;
     if (metadataResponseStage) {
       const response = await metadataResponseStage(responseStageRequest(), {
@@ -1230,6 +1236,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         requestOrigin: url.origin,
         renderMode,
         resolvedUrl,
+        routePathname: metadataRoutePathname,
         scriptNonce: scriptNonce ?? null,
       });
       if (response.headers.get(APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER) === "1") {
@@ -1238,7 +1245,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }
       return response;
     }
-    return options.handleMetadataRouteRequest?.(cleanPathname) ?? null;
+    return options.handleMetadataRouteRequest?.(cleanPathname, metadataRoutePathname) ?? null;
   };
   const applyConfigHeadersToResponseStage = async (
     response: Response,
