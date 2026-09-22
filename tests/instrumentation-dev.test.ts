@@ -77,11 +77,13 @@ export function GET() {
     if (options.hybrid) {
       await write(
         "pages/api/probe.js",
-        `import { state } from "../../state.js";
+        `import { isInitialized } from "../../service.js";
+import { state } from "../../state.js";
+const initializedAtImport = isInitialized();
 const registeredAtImport = state.events.includes("register:end");
 state.events.push("pages:import");
 export default function handler(_request, response) {
-  response.json({ ...state, registeredAtImport });
+  response.json({ ...state, initializedAtImport, initialized: isInitialized(), registeredAtImport });
 }
 `,
       );
@@ -129,6 +131,11 @@ export default function Page() { return <main>{String(isInitialized())}</main>; 
         const pagesResponse = await fetch(`${baseUrl}/api/probe`);
         expect(pagesResponse.status).toBe(200);
         await expect(pagesResponse.json()).resolves.toEqual({
+          // Like Next.js, instrumentation runs in a separate server-layer
+          // module graph. Process-global effects cross into Pages; local
+          // module state does not.
+          initialized: false,
+          initializedAtImport: false,
           registrations: 1,
           registeredAtImport: true,
           events: ["register:start", "register:end", "pages:import"],
