@@ -32,6 +32,7 @@ function targetEnvironment() {
     ...environment,
     NEXT_TELEMETRY_DISABLED: "1",
     NO_COLOR: "1",
+    VINEXT_NO_DEV_LOCK: "1",
   };
 }
 
