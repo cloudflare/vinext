@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import path from "pathslash";
-import type { Logger, Plugin, PluginOption, ViteBuilder } from "vite";
+import type { Logger, Plugin, PluginOption, UserConfig, ViteBuilder } from "vite";
 import {
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
@@ -18,7 +18,6 @@ import {
   type VinextRouteRootConfig,
 } from "../config/prerender.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
-import { hasViteConfig } from "../utils/project.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 import { cleanBuildOutput } from "./clean-output.js";
 import { clearPagesClientAssetsBuildMetadata } from "./pages-client-assets-module.js";
@@ -43,6 +42,7 @@ export type BuildLifecycleContext = {
   routeRootConfig: VinextRouteRootConfig | null;
   rscBuildIdentity?: string;
   rscCompatibilityId?: string;
+  skipHybridPagesBundle?: boolean;
   skipPrerender?: boolean;
 };
 
@@ -102,21 +102,29 @@ function isInternalBuildPlugin(plugin: Plugin): boolean {
   );
 }
 
-async function loadHybridUserPlugins(root: string, mode: string): Promise<Plugin[]> {
-  if (!hasViteConfig(root)) return [];
+async function loadHybridUserConfig(
+  root: string,
+  mode: string,
+  configFile: string | undefined,
+): Promise<UserConfig> {
+  if (!configFile) return {};
   const vite = await loadProjectViteApi(root);
   const loaded = await vite.loadConfigFromFile(
     { command: "build", mode, isSsrBuild: true },
-    undefined,
+    configFile,
     root,
   );
+  if (!loaded) return {};
   const plugins = (loaded?.config.plugins as unknown[] | undefined)?.flat(Infinity) ?? [];
-  return plugins.filter(
-    (plugin): plugin is Plugin =>
-      Boolean(plugin) &&
-      typeof (plugin as Plugin).name === "string" &&
-      !isInternalBuildPlugin(plugin as Plugin),
-  );
+  return {
+    ...loaded.config,
+    plugins: plugins.filter(
+      (plugin): plugin is Plugin =>
+        Boolean(plugin) &&
+        typeof (plugin as Plugin).name === "string" &&
+        !isInternalBuildPlugin(plugin as Plugin),
+    ),
+  };
 }
 
 async function buildHybridPagesBundle(
@@ -124,41 +132,58 @@ async function buildHybridPagesBundle(
   context: BuildLifecycleContext,
 ): Promise<void> {
   const vite = await loadProjectViteApi(context.root);
-  const userPlugins = await loadHybridUserPlugins(context.root, builder.config.mode);
+  const userConfig = await loadHybridUserConfig(
+    context.root,
+    builder.config.mode,
+    builder.config.configFile,
+  );
   if (builder.config.logLevel !== "silent") {
     console.log("  Building Pages Router server (hybrid)...");
   }
-  const environmentName = "vinext_pages";
+  const pagesBuild = {
+    ...userConfig.build,
+    outDir: "dist/server",
+    emptyOutDir: false,
+    ssr: "virtual:vinext-server-entry",
+    rolldownOptions: {
+      ...userConfig.build?.rolldownOptions,
+      output: { entryFileNames: "entry.js" },
+    },
+  };
+  const userSsrEnvironment = userConfig.environments?.ssr;
   const pagesBuilder = await vite.createBuilder({
+    ...userConfig,
     root: context.root,
     mode: builder.config.mode,
     configFile: false,
-    plugins: [...userPlugins, ...context.createPagesOnlyPlugins()],
+    plugins: [...(userConfig.plugins ?? []), ...context.createPagesOnlyPlugins()],
     builder: {
+      ...userConfig.builder,
       buildApp: async (pagesBuilder) => {
-        await pagesBuilder.build(pagesBuilder.environments[environmentName]);
+        await pagesBuilder.build(pagesBuilder.environments.ssr);
       },
     },
     environments: {
-      [environmentName]: {
+      ssr: {
+        ...userSsrEnvironment,
         consumer: "server",
-        build: {
-          outDir: "dist/server",
-          emptyOutDir: false,
-          ssr: "virtual:vinext-server-entry",
-          rolldownOptions: { output: { entryFileNames: "entry.js" } },
-        },
+        build: { ...userSsrEnvironment?.build, ...pagesBuild },
       },
     },
     resolve: {
-      dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
+      ...userConfig.resolve,
+      dedupe: [
+        ...(userConfig.resolve?.dedupe ?? []),
+        "react",
+        "react-dom",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+      ],
     },
     customLogger: builder.config.logger as Logger,
-    build: {
-      // Keep vinext's Pages-only config from injecting its default client and
-      // SSR environments; this auxiliary build owns one named environment.
-      rolldownOptions: { input: "virtual:vinext-server-entry" },
-    },
+    // Vite uses the top-level SSR entry while resolving config, before the
+    // environment build runs. This preserves `apply(_, { isSsrBuild })`.
+    build: pagesBuild,
   });
   await pagesBuilder.buildApp();
 }
@@ -194,7 +219,7 @@ async function finalizeBuild(
   builder: ViteBuilder,
   context: BuildLifecycleContext,
 ): Promise<BuildLifecycleResult> {
-  if (context.hasAppDir && context.hasPagesDir) {
+  if (context.hasAppDir && context.hasPagesDir && !context.skipHybridPagesBundle) {
     await withEnvironment(
       {
         __VINEXT_SHARED_BUILD_ID: context.nextConfig.buildId,

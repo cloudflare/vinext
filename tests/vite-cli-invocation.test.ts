@@ -12,14 +12,27 @@ describe("isViteCliInvocation", () => {
       true,
     ],
     [
-      ["node", "/project/node_modules/vite/bin/vite.js", "--mode", "production", "build"],
+      ["node", "/project/node_modules/vite/bin/vite.js", "--host", "127.0.0.1", "build"],
       "build",
       true,
     ],
-    [["node", "/project/node_modules/vite/bin/vite.js", "--mode", "build", "dev"], "build", false],
+    [
+      [
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        "--profile",
+        "--mode",
+        "production",
+        "build",
+      ],
+      "build",
+      true,
+    ],
     [["node", "/project/node_modules/.bin/vp", "build"], "build", true],
+    [["node", "/project/node_modules/.bin/vp", "-C", "apps/web", "dev"], "dev", true],
     [["node", "/project/node_modules/.bin/vp", "exec", "vite", "dev"], "dev", true],
     [["node", "/project/node_modules/.bin/vp", "preview"], "dev", false],
+    [["node", "/project/node_modules/.bin/vp", "test"], "build", false],
     [["node", "/project/test.ts", "build"], "build", false],
   ] as const)("classifies %j for %s", (argv, command, expected) => {
     expect(isViteCliInvocation(command, [...argv])).toBe(expected);

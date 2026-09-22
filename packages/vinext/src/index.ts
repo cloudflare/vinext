@@ -2148,6 +2148,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
       rscBuildIdentity,
       rscCompatibilityId,
+      skipHybridPagesBundle: hasCloudflarePlugin,
     }),
   });
 
