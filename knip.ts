@@ -177,8 +177,9 @@ export default {
     "cloudflare",
   ],
   ignoreBinaries: [
-    // Consumer-project bin invoked in CI.
+    // Consumer-project bins invoked in CI after installing into a cloned repo.
     "vite",
+    "vinext",
     // system/user-project binaries invoked by runtime scripts
     "ps",
     "taskkill",
