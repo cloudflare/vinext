@@ -114,9 +114,10 @@ export type CacheMetadataStub = DurableObjectStub & {
     limit: number,
     keyHash?: string,
     afterKeyHash?: string,
+    tombstoneSequence?: number,
   ): Promise<TombstoneDrainResult>;
   retryPendingTombstones(): Promise<boolean>;
-  listPendingEdgePurges(limit: number): Promise<PurgedEntry[]>;
+  listPendingEdgePurges(limit: number, tombstoneSequence?: number): Promise<PurgedEntry[]>;
   markTombstonesEdgePurged(entries: PurgedEntry[]): Promise<void>;
   markTombstonesEdgePurgedThrough(tombstoneSequence: number): Promise<void>;
   inspect(): Promise<StoredEntry[]>;
@@ -1233,12 +1234,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         );
       }
 
-      const pendingTombstones = this.ctx.storage.sql
-        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending_r2_tombstones")
-        .one().count;
       return {
         backingStoreUpdated: matches.length > 0 || tags.length > 0,
-        pendingTombstones,
+        pendingTombstones: matches.filter((row) => row.object_key !== null).length,
         tombstoneSequence,
       };
     });
@@ -1291,6 +1289,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     limit: number,
     keyHash?: string,
     afterKeyHash?: string,
+    tombstoneSequence?: number,
   ): Promise<TombstoneDrainResult> {
     const filters = ["r2_complete = 0"];
     const parameters: (number | string)[] = [];
@@ -1301,6 +1300,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     if (afterKeyHash !== undefined) {
       filters.push("key_hash > ?");
       parameters.push(afterKeyHash);
+    }
+    if (tombstoneSequence !== undefined) {
+      filters.push("tombstone_sequence = ?");
+      parameters.push(tombstoneSequence);
     }
     parameters.push(limit);
     const rows = this.ctx.storage.sql
@@ -1351,12 +1354,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     };
   }
 
-  listPendingEdgePurges(limit: number): PurgedEntry[] {
+  listPendingEdgePurges(limit: number, tombstoneSequence?: number): PurgedEntry[] {
+    const sequenceFilter = tombstoneSequence === undefined ? "" : " AND tombstone_sequence = ?";
     return this.ctx.storage.sql
       .exec<PendingTombstoneRow>(
         `SELECT key_hash, cache_key, object_key, revision, r2_complete, edge_purge_complete
         FROM pending_r2_tombstones
-        WHERE r2_complete = 1 AND edge_purge_complete = 0 ORDER BY key_hash LIMIT ?`,
+        WHERE r2_complete = 1 AND edge_purge_complete = 0${sequenceFilter}
+        ORDER BY key_hash LIMIT ?`,
+        ...(tombstoneSequence === undefined ? [] : [tombstoneSequence]),
         limit,
       )
       .toArray()

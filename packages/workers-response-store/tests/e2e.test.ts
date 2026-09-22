@@ -1021,7 +1021,7 @@ test("a failed R2 purge remains queued and retryable after SQLite is tombstoned"
   assert.equal(await (await read("/retry-purge")).text(), "still-readable-until-r2-is-tombstoned");
 
   const retry = await stub.purgeMatching({ tags: ["retry-purge"] });
-  assert.equal(retry.pendingTombstones, 1);
+  assert.equal(retry.pendingTombstones, 0);
   assert.deepEqual(await stub.listPendingEdgePurges(400), []);
   const drained = await stub.drainPendingTombstones(400);
   assert.deepEqual(drained.failures, []);
@@ -1103,6 +1103,109 @@ test("stale edge completion cannot remove a replacement tombstone", async () => 
   assert.ok(replacement.purged[0].revision > first.purged[0].revision);
   await stub.markTombstonesEdgePurged(replacement.purged);
   assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+});
+
+test("purge only drains R2 and edge work from its snapshot", async () => {
+  const stub = await metadataStub();
+  await stub.inspect();
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  await storage.exec(`
+    WITH RECURSIVE numbers(value) AS (
+      VALUES(0)
+      UNION ALL
+      SELECT value + 1 FROM numbers WHERE value < 400
+    )
+    INSERT INTO pending_r2_tombstones
+      (key_hash, cache_key, object_key, revision, r2_complete, tombstone_sequence)
+    SELECT
+      printf('historical-r2-%03d', value),
+      printf('/historical-r2/%d', value),
+      printf('historical-r2-object-%d', value),
+      1,
+      0,
+      1
+    FROM numbers
+  `);
+  await storage.exec(`
+    WITH RECURSIVE numbers(value) AS (
+      VALUES(0)
+      UNION ALL
+      SELECT value + 1 FROM numbers WHERE value < 400
+    )
+    INSERT INTO pending_r2_tombstones
+      (key_hash, cache_key, object_key, revision, r2_complete, tombstone_sequence)
+    SELECT
+      printf('historical-edge-%03d', value),
+      printf('/historical-edge/%d', value),
+      printf('historical-edge-object-%d', value),
+      1,
+      1,
+      2
+    FROM numbers
+  `);
+  await storage.exec("UPDATE metadata_state SET tombstone_sequence = 2 WHERE singleton = 1");
+
+  await put("/current-purge", "current", { tags: ["current-purge"] });
+  assert.deepEqual((await purge({ tags: ["current-purge"] })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+
+  assert.deepEqual(
+    await storage.exec(
+      `SELECT r2_complete, edge_purge_complete, tombstone_sequence
+      FROM pending_r2_tombstones WHERE cache_key = '/current-purge'`,
+    ),
+    [{ edge_purge_complete: 0, r2_complete: 1, tombstone_sequence: 3 }],
+  );
+  assert.deepEqual(
+    await storage.exec(
+      `SELECT COUNT(*) AS count FROM pending_r2_tombstones
+      WHERE tombstone_sequence = 1 AND r2_complete = 0`,
+    ),
+    [{ count: 401 }],
+  );
+  assert.deepEqual(
+    (await stub.listPendingEdgePurges(400, 3)).map(
+      ({ cacheKey }: { cacheKey: string }) => cacheKey,
+    ),
+    ["/current-purge"],
+  );
+  assert.equal((await stub.listPendingEdgePurges(400, 2)).length, 400);
+});
+
+test("snapshot draining preserves tombstones created by a concurrent later purge", async () => {
+  await put("/snapshot-current", "current", { tags: ["snapshot-current"] });
+  await put("/snapshot-later", "later", { tags: ["snapshot-later"] });
+  const stub = await metadataStub();
+
+  const current = await stub.purgeMatching({ tags: ["snapshot-current"] });
+  const later = await stub.purgeMatching({ tags: ["snapshot-later"] });
+  const drained = await stub.drainPendingTombstones(
+    400,
+    undefined,
+    undefined,
+    current.tombstoneSequence,
+  );
+
+  assert.deepEqual(
+    drained.pending.map(({ cacheKey }: { cacheKey: string }) => cacheKey),
+    ["/snapshot-current"],
+  );
+  assert.deepEqual(
+    (await stub.listPendingEdgePurges(400, current.tombstoneSequence)).map(
+      ({ cacheKey }: { cacheKey: string }) => cacheKey,
+    ),
+    ["/snapshot-current"],
+  );
+  assert.equal(
+    (await stub.drainPendingTombstones(400, undefined, undefined, later.tombstoneSequence))
+      .pending[0].cacheKey,
+    "/snapshot-later",
+  );
+  await stub.markTombstonesEdgePurged(await stub.listPendingEdgePurges(400));
 });
 
 test("a failed R2 publication can be fenced with a newer tombstone", async () => {
