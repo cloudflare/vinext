@@ -123,7 +123,7 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).toContain("Could not resolve the project-local Vite CLI");
   });
 
-  it.each(["--no-config", "--no-watch", "--no-minify", "--no-sourcemap", "--no-manifest"])(
+  it.each(["--no-watch", "--no-minify", "--no-sourcemap", "--no-manifest", "--no-base"])(
     "keeps the config preflight for valid negated option %s",
     (option) => {
       const root = createRoot();
@@ -157,6 +157,10 @@ describe("thin vinext command proxies", () => {
     { args: ["--mode="] },
     { args: ["--mode", "--debug"] },
     { args: ["-ml", "silent"] },
+    { args: ["--no-config"] },
+    { args: ["--no-mode"] },
+    { args: ["--no-target"] },
+    { args: ["--no-configLoader"] },
   ])("lets Vite reject missing option values ($args)", ({ args }) => {
     const root = createRoot();
     const result = spawnSync(process.execPath, [CLI_PATH, "build", ...args], {
