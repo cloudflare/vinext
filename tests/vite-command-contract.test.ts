@@ -29,7 +29,9 @@ function createHybridProject(): string {
   write(
     root,
     "vite.config.ts",
-    `import { defineConfig } from "vite";
+    `import fs from "node:fs";
+import path from "node:path";
+import { defineConfig } from "vite";
 import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 
 export default defineConfig({
@@ -38,6 +40,15 @@ export default defineConfig({
       name: "contract:config-only",
       config() {
         return { define: { __CONFIG_ONLY_MARKER__: JSON.stringify("config-only-plugin-ran") } };
+      },
+    },
+    {
+      name: "contract:output-only",
+      writeBundle() {
+        const outDir = this.environment.config.build.outDir;
+        if (outDir.endsWith("dist/server")) {
+          fs.writeFileSync(path.join(outDir, "output-only-plugin-ran"), "ok");
+        }
       },
     },
     vinext({
@@ -103,6 +114,9 @@ describe("configured vinext build contract", () => {
     expect(pagesEntry).toContain("vinext-pages-production-marker");
     expect(pagesEntry).not.toContain("vinext-pages-development-marker");
     expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
+    expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-ran"), "utf-8")).toBe(
+      "ok",
+    );
 
     const appOutput = fs
       .globSync("**/*.js", { cwd: path.join(root, "custom/server") })
