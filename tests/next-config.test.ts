@@ -1665,7 +1665,9 @@ module.exports = function withManifest(config = {}) {
 
     expect(config.aliases["wrapped/config"]).toBe(canonical(tmpDir, "turbopack/request.ts"));
     expect(consoleWarn).toHaveBeenCalledWith(
-      '[vinext] next.config option "webpack" is not yet supported and will be ignored',
+      '[vinext] next.config option "webpack" is not yet supported and will be ignored. ' +
+        "Vite resolves .ts/.tsx natively, so common tweaks like resolve.extensionAlias are unnecessary; " +
+        "custom loaders or rules must move to vite.config.ts.",
     );
   });
 

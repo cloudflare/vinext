@@ -2978,6 +2978,79 @@ describe("detectProject — new detection features", () => {
     expect(info.hasCodeHike).toBe(false);
   });
 
+  it.each(["^4.2.0", "=4.2.0", "4.0.0-beta.1", "workspace:^4.2.0", "npm:tailwindcss@^4.2.0"])(
+    "detects Tailwind v4 from the simple declared version %s",
+    (version) => {
+      mkdir(tmpDir, "app");
+      writeFile(
+        tmpDir,
+        "package.json",
+        JSON.stringify({ devDependencies: { tailwindcss: version } }),
+      );
+      expect(detectProject(tmpDir).hasTailwindV4).toBe(true);
+    },
+  );
+
+  it.each([
+    [">=4.0.0-0 <4.0.0", "4.0.0-beta.1"],
+    [">=4 <6", "4.2.0"],
+    ["workspace:*", "4.2.0"],
+    ["github:tailwindlabs/tailwindcss", "4.2.0"],
+    ["latest", "4.2.0"],
+  ])("uses installed Tailwind for %s resolved to %s", (specifier, version) => {
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ devDependencies: { tailwindcss: specifier } }),
+    );
+    writeFile(tmpDir, "node_modules/tailwindcss/package.json", JSON.stringify({ version }));
+    expect(detectProject(tmpDir).hasTailwindV4).toBe(true);
+  });
+
+  it.each([
+    ["^3.4.0", "3.4.17"],
+    ["^4.2.0", "3.4.17"],
+    [">=4 <6", "5.0.0-beta.1"],
+    ["workspace:*", "3.4.17"],
+    ["github:tailwindlabs/tailwindcss", "5.0.0"],
+  ])("rejects non-v4 installed Tailwind for %s resolved to %s", (specifier, version) => {
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ devDependencies: { tailwindcss: specifier } }),
+    );
+    writeFile(tmpDir, "node_modules/tailwindcss/package.json", JSON.stringify({ version }));
+    expect(detectProject(tmpDir).hasTailwindV4).toBe(false);
+  });
+
+  it.each(["^3.4.0", ">=4 <6", "workspace:*", "github:tailwindlabs/tailwindcss", "latest"])(
+    "does not guess Tailwind v4 from unresolved specifier %s",
+    (version) => {
+      mkdir(tmpDir, "app");
+      writeFile(
+        tmpDir,
+        "package.json",
+        JSON.stringify({ devDependencies: { tailwindcss: version } }),
+      );
+      expect(detectProject(tmpDir).hasTailwindV4).toBe(false);
+    },
+  );
+
+  it.each(["@tailwindcss/postcss", "@tailwindcss/vite"])(
+    "detects Tailwind v4 from the %s package",
+    (packageName) => {
+      mkdir(tmpDir, "app");
+      writeFile(
+        tmpDir,
+        "package.json",
+        JSON.stringify({ devDependencies: { [packageName]: "latest", tailwindcss: "latest" } }),
+      );
+      expect(detectProject(tmpDir).hasTailwindV4).toBe(true);
+    },
+  );
+
   it("detects native modules to stub", () => {
     mkdir(tmpDir, "app");
     writeFile(
@@ -3136,6 +3209,34 @@ describe("getMissingDeps — MDX", () => {
 
     const missing = getMissingDeps(info, () => true);
     expect(missing).not.toContainEqual(expect.objectContaining({ name: "@mdx-js/rollup" }));
+  });
+});
+
+describe("getMissingDeps — Tailwind v4", () => {
+  it("reports @tailwindcss/vite when Tailwind v4 is detected but the plugin is missing", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+    info.hasTailwindV4 = true;
+
+    const missing = getMissingDeps(info, (_root, pkg) => pkg !== "@tailwindcss/vite");
+
+    expect(missing).toContainEqual(expect.objectContaining({ name: "@tailwindcss/vite" }));
+  });
+
+  it("does not report @tailwindcss/vite when it is resolvable", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+    info.hasTailwindV4 = true;
+
+    const missing = getMissingDeps(info, () => true);
+
+    expect(missing).not.toContainEqual(expect.objectContaining({ name: "@tailwindcss/vite" }));
   });
 });
 
