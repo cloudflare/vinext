@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { toSlash } from "pathslash";
 import type { Plugin, ServerOptions, ViteDevServer } from "vite";
 import { formatAlreadyRunningError, tryAcquireLockfile } from "./server/dev-lockfile.js";
-import { isViteCliInvocation } from "./utils/vite-cli-invocation.js";
+import { getViteCliInvocation, isViteCliInvocation } from "./utils/vite-cli-invocation.js";
 
 type ActiveDevServerLock = {
   lockfile: Extract<ReturnType<typeof tryAcquireLockfile>, { ok: true }>["lockfile"];
@@ -40,9 +40,11 @@ export function claimViteCliDevInvocation(
   root = normalizeDevLifecycleRoot(root);
   if (!isViteCliInvocation("dev")) return false;
   // A config may construct an unused vinext() before the installed instance.
-  // Let the installed instance claim the CLI when Vite loaded a config file;
-  // nested programmatic servers that disable config loading cannot steal it.
-  if (!isRestart && ((!isReserved && !hasViteConfig) || devInvocationRoot !== undefined)) {
+  // Only the invocation's project may recover its claim; a nested server may
+  // also load a Vite config, but it must not take ownership of the CLI server.
+  const cliRoot = getViteCliInvocation()?.root;
+  const canRecoverClaim = hasViteConfig && cliRoot && normalizeDevLifecycleRoot(cliRoot) === root;
+  if (!isRestart && ((!isReserved && !canRecoverClaim) || devInvocationRoot !== undefined)) {
     return false;
   }
   devInvocationRoot = root;
