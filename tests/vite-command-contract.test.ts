@@ -36,6 +36,10 @@ import path from "node:path";
 import { defineConfig } from "vite";
 import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 
+if (process.env.FROM_DOTENV !== "config-time-dotenv") {
+  throw new Error("dotenv unavailable in Vite config: " + process.env.FROM_DOTENV);
+}
+
 export default defineConfig({
   build: { manifest: true, target: "es2020" },
   environments: {
@@ -105,6 +109,7 @@ export default defineConfig({
 });
 `,
   );
+  write(root, ".env", "FROM_DOTENV=config-time-dotenv\n");
   write(root, "contract-value.ts", 'export const aliasMarker = "top-level-alias-ran";\n');
   write(
     root,
@@ -151,9 +156,20 @@ function createPagesProject(): string {
   write(
     root,
     "vite.config.ts",
-    `import { defineConfig } from "vite";
+    `import fs from "node:fs";
+import { defineConfig } from "vite";
 import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
-export default defineConfig({ plugins: [vinext({ prerender: true })] });
+export default defineConfig({
+  plugins: [
+    vinext({ nextConfig: { generateBuildId: async () => null }, prerender: true }),
+    {
+      name: "record-builder-config",
+      configResolved(config) {
+        fs.writeFileSync("builder.json", JSON.stringify(config.builder));
+      },
+    },
+  ],
+});
 `,
   );
   write(root, "pages/index.tsx", "export default function Page() { return <p>pages</p>; }\n");
@@ -243,6 +259,15 @@ describe("configured vinext build contract", () => {
     expect(fs.existsSync(path.join(root, "dist/client/.vite/manifest.json"))).toBe(true);
     expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
     expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes/index.html"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(root, "builder.json"), "utf-8"))).toMatchObject({
+      sharedConfigBuild: true,
+    });
+    const buildId = fs.readFileSync(path.join(root, "dist/server/BUILD_ID"), "utf-8");
+    expect(buildId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(fs.existsSync(path.join(root, "dist/client/_next/static", buildId))).toBe(true);
+    const serverEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
+    expect(serverEntry).toContain(buildId);
+    expect(serverEntry).not.toContain("process.env.__VINEXT_REVALIDATE_SECRET");
   }, 120_000);
 
   it("keeps raw emptyOutDir false as the cleanup escape hatch", () => {
@@ -307,10 +332,14 @@ describe("configured vinext build contract", () => {
         "plugins: [",
         `plugins: [{
     name: "late-targeted-build",
-    config() { return { build: { rolldownOptions: { input: "entry.ts" } } }; },
+    config: {
+      order: "post",
+      handler() { return { build: { rolldownOptions: { input: "entry.ts" } } }; },
+    },
   },`,
       ),
     );
+    write(root, "dist/keep.txt", "keep");
 
     const output = execFileSync(VP_PATH, ["build"], {
       cwd: root,
@@ -320,5 +349,6 @@ describe("configured vinext build contract", () => {
 
     expect(output).not.toContain("Build complete.");
     expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes"))).toBe(false);
+    expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
   }, 120_000);
 });
