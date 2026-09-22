@@ -116,6 +116,19 @@ describe("isViteCliInvocation", () => {
     });
   });
 
+  it("keeps the next positional argument after a negated option", () => {
+    expect(
+      getViteCliInvocation([
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        "build",
+        "--no-watch",
+        "false",
+        "project",
+      ]),
+    ).toMatchObject({ command: "build", root: path.resolve("false"), rootArg: "false" });
+  });
+
   it.each(["build", "dev"] as const)("resolves %s mode after the project root", (command) => {
     expect(
       getViteCliInvocation([
