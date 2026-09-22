@@ -152,6 +152,19 @@ describe("thin vinext command proxies", () => {
     }
   });
 
+  it("leaves positional arguments after a negated boolean to Vite", () => {
+    const root = createRoot();
+    const result = spawnSync(
+      process.execPath,
+      [CLI_PATH, "build", "--no-watch", "false", "project"],
+      { cwd: root, encoding: "utf-8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("Unused args: `project`");
+    expect(result.stderr).not.toContain("No Vite config was found");
+  });
+
   it.each([
     { args: ["--mode"] },
     { args: ["--mode="] },
