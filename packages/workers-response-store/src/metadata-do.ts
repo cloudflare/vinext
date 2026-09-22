@@ -646,8 +646,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     }
     return (
       this.ctx.storage.sql
-        .exec<{ count: number }>("SELECT COUNT(*) AS count FROM pending_r2_tombstones")
-        .one().count > 0
+        .exec<{ pending: number }>("SELECT EXISTS(SELECT 1 FROM pending_r2_tombstones) AS pending")
+        .one().pending === 1
     );
   }
 

@@ -1063,6 +1063,26 @@ test("a broad purge only acknowledges tombstones in its snapshot", async () => {
   await stub.markTombstonesEdgePurged(await stub.listPendingEdgePurges(400));
 });
 
+test("stale edge completion cannot remove a replacement tombstone", async () => {
+  await put("/stale-edge-completion", "first", { tags: ["stale-edge-completion"] });
+  const stub = await metadataStub();
+
+  await stub.purgeMatching({ tags: ["stale-edge-completion"] });
+  const first = await stub.drainPendingTombstones(1);
+  assert.equal(first.purged.length, 1);
+
+  await put("/stale-edge-completion", "second", { tags: ["stale-edge-completion"] });
+  await stub.purgeMatching({ tags: ["stale-edge-completion"] });
+  await stub.markTombstonesEdgePurged(first.purged);
+
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+  const replacement = await stub.drainPendingTombstones(1);
+  assert.equal(replacement.purged.length, 1);
+  assert.ok(replacement.purged[0].revision > first.purged[0].revision);
+  await stub.markTombstonesEdgePurged(replacement.purged);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+});
+
 test("a failed R2 publication can be fenced with a newer tombstone", async () => {
   await put("/failed-publication", "possibly-committed", { tags: ["failed-publication"] });
   await put("/unrelated-pending-tombstone", "unrelated", { tags: ["unrelated"] });
@@ -1603,6 +1623,19 @@ test("the previous metadata schema is upgraded in place", async () => {
     assert.deepEqual(
       await storage.exec("SELECT invalidation_sequence, publishable FROM pending_objects"),
       [],
+    );
+    assert.deepEqual(
+      await storage.exec(
+        `SELECT name FROM sqlite_schema
+        WHERE type = 'index' AND name IN (
+          'pending_r2_tombstones_r2_pending',
+          'pending_r2_tombstones_edge_pending'
+        ) ORDER BY name`,
+      ),
+      [
+        { name: "pending_r2_tombstones_edge_pending" },
+        { name: "pending_r2_tombstones_r2_pending" },
+      ],
     );
   } finally {
     await legacy?.dispose();
