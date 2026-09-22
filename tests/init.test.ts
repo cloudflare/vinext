@@ -380,12 +380,25 @@ describe("addScripts", () => {
       },
     });
 
-    expect(addScripts(tmpDir, 3001)).toEqual(["dev:vinext", "build:vinext"]);
+    expect(addScripts(tmpDir, undefined)).toEqual(["dev:vinext", "build:vinext"]);
     expect((readPkg(tmpDir) as { scripts: Record<string, string> }).scripts).toMatchObject({
       "dev:vinext": "vite dev --port 4000",
       "build:vinext": "vite build",
       "start:vinext": "custom-start",
     });
+  });
+
+  it("uses an explicit init port when migrating a generated dev script", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: { scripts: { "dev:vinext": "vinext dev --port 4000" } },
+    });
+
+    await runInit(tmpDir, { port: 5000 });
+
+    expect((readPkg(tmpDir) as { scripts: Record<string, string> }).scripts["dev:vinext"]).toBe(
+      "vite dev --port 5000",
+    );
   });
 
   it("creates scripts object if missing", () => {

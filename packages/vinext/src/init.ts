@@ -159,7 +159,7 @@ export default defineConfig({
  */
 export function addScripts(
   root: string,
-  port: number | false,
+  port?: number | false,
   platform: InitPlatform = "node",
   options: {
     deployResponseStore?: boolean;
@@ -202,11 +202,13 @@ export function addScripts(
     const devScriptName = options.scriptNames === "standard" ? "dev" : "dev:vinext";
     const legacyDevScript = pkg.scripts[devScriptName];
     const devCommand =
-      typeof legacyDevScript === "string" && /^vinext dev(?: --port \d+)?$/.test(legacyDevScript)
+      port === undefined &&
+      typeof legacyDevScript === "string" &&
+      /^vinext dev(?: --port \d+)?$/.test(legacyDevScript)
         ? legacyDevScript.replace(/^vinext /, "vite ")
         : port === false
           ? "vite dev"
-          : `vite dev --port ${port}`;
+          : `vite dev --port ${port ?? 3001}`;
     addScript("dev", devCommand, ["vinext dev", /^vinext dev --port \d+$/]);
     addScript("build", "vite build", ["vinext build"]);
     addScript(
@@ -497,7 +499,6 @@ function setupNodePlatform(context: PlatformSetupContext): PlatformSetupResult {
 
 export async function init(options: InitOptions): Promise<InitResult> {
   const root = path.resolve(options.root);
-  const port = options.port ?? 3001;
   if (!options.platform) {
     throw new Error("A deployment platform must be selected before running vinext init.");
   }
@@ -608,7 +609,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 3: Add scripts ────────────────────────────────────────────────
 
-  const addedScripts = addScripts(root, port, platform, {
+  const addedScripts = addScripts(root, options.port, platform, {
     deployResponseStore:
       options.cloudflare?.cdnCache === "response-store" &&
       (options.cloudflare.responseStoreMode ?? "service-binding") === "service-binding",

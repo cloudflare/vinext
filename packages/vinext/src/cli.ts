@@ -236,14 +236,13 @@ async function initCommand() {
   console.log(`\n  vinext init\n`);
 
   // Parse init-specific flags
-  const port = parsed.port ?? 3001;
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
   const initOptions = await resolveInitOptions(rawArgs);
 
   await runInit({
     root: process.cwd(),
-    port,
+    port: parsed.port,
     skipCheck,
     force,
     ...initOptions,
