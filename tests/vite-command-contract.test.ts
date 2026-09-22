@@ -2,11 +2,12 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 const CLI_PATH = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
 const VP_PATH = path.resolve(import.meta.dirname, "../node_modules/.bin/vp");
+const VITE_CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.resolve("vite"))), "cli.js");
 const VINEXT_ENTRY_URL = pathToFileURL(
   path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
 ).href;
@@ -162,10 +163,10 @@ describe("configured vinext build contract", () => {
     expectConfiguredBuild(root);
   }, 120_000);
 
-  it("provides the same configured lifecycle through the Vite CLI", () => {
+  it("provides the same lifecycle when global Vite options precede the build command", () => {
     const root = createHybridProject();
 
-    execFileSync(VP_PATH, ["build"], {
+    execFileSync(process.execPath, [VITE_CLI_PATH, "--mode", "production", "build"], {
       cwd: root,
       env: { ...process.env, NODE_ENV: "development" },
       stdio: "pipe",
@@ -236,5 +237,29 @@ describe("configured vinext build contract", () => {
     });
 
     expect(output).toContain("Build complete.");
+  }, 120_000);
+
+  it("leaves explicitly targeted Vite builds outside the application lifecycle", () => {
+    const root = createPagesProject();
+    write(root, "entry.ts", 'export const marker = "targeted-build";\n');
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace(
+          "export default defineConfig({ plugins:",
+          'export default defineConfig({ build: { rolldownOptions: { input: "entry.ts" } }, plugins:',
+        ),
+    );
+
+    const output = execFileSync(VP_PATH, ["build"], {
+      cwd: root,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+
+    expect(output).not.toContain("Build complete.");
+    expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes"))).toBe(false);
   }, 120_000);
 });

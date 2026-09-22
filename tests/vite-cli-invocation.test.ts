@@ -4,12 +4,19 @@ import { isViteCliInvocation } from "../packages/vinext/src/utils/vite-cli-invoc
 describe("isViteCliInvocation", () => {
   it.each([
     [["node", "/project/node_modules/vite/bin/vite.js", "build"], "build", true],
+    [["node", "/project/node_modules/vite/bin/vite.js", "./app"], "dev", true],
     [["node", "/project/node_modules/vite/node/cli.js", "dev"], "dev", true],
     [
       ["node", "/project/node_modules/vite-plus-core/dist/vite/node/cli.js", "build"],
       "build",
       true,
     ],
+    [
+      ["node", "/project/node_modules/vite/bin/vite.js", "--mode", "production", "build"],
+      "build",
+      true,
+    ],
+    [["node", "/project/node_modules/vite/bin/vite.js", "--mode", "build", "dev"], "build", false],
     [["node", "/project/node_modules/.bin/vp", "build"], "build", true],
     [["node", "/project/node_modules/.bin/vp", "exec", "vite", "dev"], "dev", true],
     [["node", "/project/node_modules/.bin/vp", "preview"], "dev", false],
