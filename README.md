@@ -132,6 +132,8 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 `vinext dev` and `vinext build` remain as thin aliases for the project-local Vite commands.
 They require a Vite config; if one is missing, run `vinext init`. Vite owns their options,
 output, and exit behavior.
+For an older configured project without `"type": "module"`, run `vinext init` once to
+migrate its package and CommonJS config files. The aliases no longer edit them at startup.
 
 The old vinext-only build flags are configured on the plugin instead:
 
