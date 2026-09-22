@@ -92,6 +92,21 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).toContain("No Vite config was found for this project");
   });
 
+  it.each([{ args: ["--mode"] }, { args: ["--mode="] }, { args: ["--mode", "--debug"] }])(
+    "lets Vite reject missing option values ($args)",
+    ({ args }) => {
+      const root = createRoot();
+      const result = spawnSync(process.execPath, [CLI_PATH, "build", ...args], {
+        cwd: root,
+        encoding: "utf-8",
+      });
+
+      expect(result.status).toBe(1);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("value is missing");
+      expect(result.stderr).not.toContain("No Vite config was found");
+    },
+  );
+
   it.each([
     ["build", ["--host", "127.0.0.1"], "host"],
     ["dev", ["--outDir", "dist"], "outDir"],
