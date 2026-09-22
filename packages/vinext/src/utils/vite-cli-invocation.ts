@@ -111,15 +111,22 @@ function optionConsumesNext(arg: string, next: string | undefined): boolean {
   return BOOLEAN_OPTIONS.has(option) && /^(?:true|false)$/.test(next ?? "");
 }
 
-export function findViteRoot(command: ViteCliCommand, args: string[]): string | undefined | null {
+export function findViteRoot(
+  command: ViteCliCommand,
+  args: string[],
+): { root?: string; shouldPreflight: boolean } {
+  let root: string | undefined;
+  let shouldPreflight = true;
+  const otherCommand = command === "dev" ? "build" : "dev";
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--") break;
     const option = optionName(arg);
     if (VALUELESS_OPTIONS.has(option)) continue;
-    const otherCommand = command === "dev" ? "build" : "dev";
     const normalizedOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
-    if (COMMAND_ONLY_OPTIONS[otherCommand].has(normalizedOption)) return null;
+    if (COMMAND_ONLY_OPTIONS[otherCommand].has(normalizedOption)) {
+      shouldPreflight = false;
+    }
     if (optionConsumesNext(arg, args[index + 1])) {
       index++;
       continue;
@@ -131,12 +138,13 @@ export function findViteRoot(command: ViteCliCommand, args: string[]): string | 
         !OPTIONAL_VALUE_OPTIONS.has(option) &&
         !BOOLEAN_OPTIONS.has(booleanOption)
       ) {
-        return null;
+        shouldPreflight = false;
       }
       continue;
     }
-    return arg;
+    root ??= arg;
   }
+  return { root, shouldPreflight };
 }
 
 function commandArguments(argv: string[]): { command: ViteCliCommand; args: string[] } | undefined {

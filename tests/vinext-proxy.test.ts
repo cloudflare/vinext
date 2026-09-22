@@ -107,6 +107,45 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).not.toContain("No Vite config was found");
   });
 
+  it("resolves child-local Vite when an invalid option precedes the project root", () => {
+    const root = createRoot();
+    writeProject(path.join(root, "project"));
+    fs.unlinkSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "project/node_modules"),
+      "junction",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [CLI_PATH, "build", "--host", "127.0.0.1", "project"],
+      { cwd: root, encoding: "utf-8" },
+    );
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("Unknown option `--host`");
+    expect(result.stderr).not.toContain("Could not resolve the project-local Vite CLI");
+  });
+
+  it("does not mask an invalid option after a configless project root", () => {
+    const root = createRoot();
+    write(path.join(root, "project"), "package.json", '{"type":"module"}\n');
+    fs.unlinkSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "project/node_modules"),
+      "junction",
+    );
+    const result = spawnSync(process.execPath, [CLI_PATH, "dev", "project", "--outDir", "dist"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("Unknown option `--outDir`");
+    expect(result.stderr).not.toContain("No Vite config was found");
+  });
+
   it("resolves project-local Vite when help precedes the root", () => {
     const root = createRoot();
     writeProject(path.join(root, "project"));
