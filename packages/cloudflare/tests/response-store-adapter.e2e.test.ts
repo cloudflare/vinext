@@ -230,6 +230,22 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.equal(htmlValue(clientEmptyBody, "query-client-dependent-value"), "(empty)");
       assert.equal(htmlValue(await clientQuery.text(), "query-client-dependent-value"), "second");
 
+      const publicWarmup = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-warmup",
+        { headers: { "user-agent": "vinext-cloudflare-cdn-warm" } },
+      );
+      const publicWarmupBody = await publicWarmup.text();
+      assert.equal(publicWarmup.status, 200, publicWarmupBody.slice(0, 500));
+      assert.equal(publicWarmup.headers.get("x-vinext-cache"), "MISS");
+      const publicHit = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-warmup",
+      );
+      assert.equal(publicHit.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(
+        htmlValue(await publicHit.text(), "query-public-id"),
+        htmlValue(publicWarmupBody, "query-public-id"),
+      );
+
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const stale = await fetch();
       assert.equal(await stale.text(), firstBody);
@@ -431,6 +447,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
 
   test("keeps explicitly public query-dependent pages partitioned by the full query", async () => {
     for (const [query, value] of [
+      ["", "(empty)"],
       ["?q=first", "first"],
       ["?q=second", "second"],
     ]) {
@@ -444,6 +461,17 @@ describe("Cloudflare Workers Response Store adapter", () => {
         htmlValue(second.body, "query-public-id"),
       );
     }
+
+    const warmed = await request("/query-public?q=prewarmed", {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    const warmedBody = await warmed.text();
+    assert.equal(warmed.status, 200, warmedBody.slice(0, 500));
+    assert.equal(warmed.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(htmlValue(warmedBody, "query-public-value"), "prewarmed");
+    const hit = await cacheStatus("/query-public?q=prewarmed");
+    assert.equal(hit.status, "HIT");
+    assert.equal(htmlValue(hit.body, "query-public-id"), htmlValue(warmedBody, "query-public-id"));
   });
 
   test("does not publish query-dependent metadata and does not alias rewritten paths", async () => {

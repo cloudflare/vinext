@@ -420,11 +420,17 @@ const handler = {
       }
 
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
+      const cacheability =
+        props !== null && typeof props === "object" ? Reflect.get(props, "cacheability") : null;
       const canSeedRsc =
         isWarmup &&
         props !== null &&
         typeof props === "object" &&
         Reflect.get(props, "kind") === "app-page" &&
+        Reflect.get(props, "forceDynamic") !== true &&
+        cacheability !== null &&
+        typeof cacheability === "object" &&
+        Reflect.get(cacheability, "policyHeaders") === null &&
         Reflect.get(props, "isRscRequest") === false &&
         Reflect.get(props, "matchKind") === "request" &&
         Reflect.get(props, "interceptionContext") === null &&
