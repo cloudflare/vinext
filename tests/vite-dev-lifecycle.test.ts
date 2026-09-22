@@ -63,6 +63,27 @@ afterEach(async () => {
 });
 
 describe("Vite dev lifecycle", () => {
+  it("claims the configured plugin when an unused instance was constructed first", async () => {
+    const root = createProject();
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+const unused = vinext();
+export default { plugins: [vinext()] };
+`,
+    );
+    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      stdio: "pipe",
+    });
+
+    const lock = await waitFor(() => {
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+  }, 30_000);
+
   it("loads dotenv before evaluating Vite config", async () => {
     const root = createProject();
     fs.writeFileSync(path.join(root, ".env.staging"), "FROM_DOTENV=config-time-dotenv\n");
