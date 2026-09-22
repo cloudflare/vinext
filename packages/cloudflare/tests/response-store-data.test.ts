@@ -366,6 +366,24 @@ test("observes an eager soft-tag failure after finishing the response body", asy
   expect(settled).toBe(true);
 });
 
+test("purges a corrupt blob before observing a synchronous soft-tag failure", async () => {
+  const store = new TestStore();
+  const purge = vi.spyOn(store, "purge");
+  store.response = new Response("invalid", {
+    headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
+  });
+  store.getTagExpiration = (tags) => {
+    store.tagExpirationCalls.push(tags);
+    throw new Error("expiration unavailable");
+  };
+
+  await expect(
+    new WorkersResponseStoreCacheHandler(store).get("key", { softTags: ["path"] }),
+  ).resolves.toBeNull();
+  expect(store.tagExpirationCalls).toHaveLength(1);
+  expect(purge).toHaveBeenCalledOnce();
+});
+
 test("does not speculate soft-tag expiration for invalid or non-ok responses", async () => {
   const store = new TestStore();
   const handler = new WorkersResponseStoreCacheHandler(store);
