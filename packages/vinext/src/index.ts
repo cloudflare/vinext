@@ -5269,8 +5269,6 @@ export const loadServerActionClient = ${
       },
 
       configureServer(server: ViteDevServer) {
-        if (devCliLifecycleEnabled) configureDevServerLock(server);
-
         const devBuildId = nextConfig?.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development";
 
         server.middlewares.use((req, _res, next) => {
@@ -5780,6 +5778,8 @@ export const loadServerActionClient = ${
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
+          if (devCliLifecycleEnabled) configureDevServerLock(server);
+
           const viteFilesystemMiddlewares = server.middlewares.stack
             .filter(({ handle }) => {
               const name = typeof handle === "function" ? handle.name : "";

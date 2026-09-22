@@ -103,6 +103,34 @@ describe("Vite dev lifecycle", () => {
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
+  it("releases the lock after a replacement server fails to configure", async () => {
+    const root = createProject();
+    useViteCliArgv();
+    let configureCount = 0;
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [
+        vinext(),
+        {
+          name: "fail-replacement-server",
+          configureServer() {
+            if (++configureCount === 2) throw new Error("replacement configuration failed");
+          },
+        },
+      ],
+    });
+    await server.listen();
+
+    await server.restart();
+    expect(readLockfile(getLockfilePath(root))).toMatchObject({ pid: process.pid });
+
+    await server.close();
+    server = undefined;
+    expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+  });
+
   it("keeps middleware servers lock-free", async () => {
     const root = createProject();
     useViteCliArgv();
