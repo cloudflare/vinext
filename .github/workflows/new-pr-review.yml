@@ -1,0 +1,46 @@
+name: PR Review
+
+on:
+  pull_request:
+    types: [opened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Skip bot PRs. Fork PRs are allowed — ask-bonk handles fork detection and
+    # posts an explanatory comment when OIDC is unavailable.
+    if: github.event.pull_request.user.login != 'dependabot[bot]' && github.event.pull_request.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      # Check out the BASE branch, not the PR merge ref. The agent reads the
+      # PR diff via `gh pr diff`. Checking out base ensures the agent definition,
+      # config files, and AGENTS.md come from the trusted base branch — not
+      # attacker-controlled PR content.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 30
+
+      - name: Run review
+        uses: ask-bonk/ask-bonk/github@main
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+        with:
+          model: "cloudflare-ai-gateway/moonshotai/kimi-k2-0711"
+          permissions: any
+          token_permissions: READ_ONLY
+          agent: auto-reviewer
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} on cloudflare/vinext.
