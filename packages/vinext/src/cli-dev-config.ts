@@ -91,15 +91,14 @@ export function normalizeDevServerHostname(host: string | boolean | undefined): 
 function configureDevServerLifecycle(server: ViteDevServer): void {
   const root = normalizeDevLifecycleRoot(server.config.root);
   let activeLock: ActiveDevServerLock | undefined;
-  let released = false;
   const releaseLock = () => {
-    if (released) return;
-    released = true;
     if (!activeLock) return;
-    activeLock.servers--;
-    if (activeLock.servers > 0 || activeLock.restarting) return;
-    activeLock.lockfile.release();
-    if (activeDevServerLocks.get(root) === activeLock) activeDevServerLocks.delete(root);
+    const lock = activeLock;
+    activeLock = undefined;
+    lock.servers--;
+    if (lock.servers > 0 || lock.restarting) return;
+    lock.lockfile.release();
+    if (activeDevServerLocks.get(root) === lock) activeDevServerLocks.delete(root);
   };
   const releaseLifecycle = () => {
     releaseLock();
@@ -149,8 +148,10 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
     const configuredPort = port ?? server.config.server.port ?? 3000;
     const hostname = normalizeDevServerHostname(server.config.server.host);
     const displayHostname = hostname === "0.0.0.0" ? "localhost" : hostname;
-    activeLock = activeDevServerLocks.get(root);
-    if (!activeLock?.restarting) {
+    const restartingLock = activeDevServerLocks.get(root);
+    if (restartingLock?.restarting) {
+      activeLock = restartingLock;
+    } else {
       const startedAt = Date.now();
       const acquired = tryAcquireLockfile({
         root,
@@ -183,14 +184,14 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
       throw error;
     }
   };
-  server.httpServer?.once("listening", () => {
+  server.httpServer?.on("listening", () => {
     if (!activeLock) return;
     const port = server.config.server.port ?? 3000;
     const hostname = normalizeDevServerHostname(server.config.server.host);
     const displayHostname = hostname === "0.0.0.0" ? "localhost" : hostname;
     const lock = activeLock;
     setImmediate(() => {
-      if (released) return;
+      if (activeLock !== lock) return;
       const address = server.httpServer?.address();
       const actualPort = typeof address === "object" && address ? address.port : port;
       const appUrl =
@@ -206,5 +207,5 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
       });
     });
   });
-  server.httpServer?.once("close", releaseLifecycle);
+  server.httpServer?.on("close", releaseLifecycle);
 }
