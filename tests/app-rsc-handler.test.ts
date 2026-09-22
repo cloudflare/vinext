@@ -6373,6 +6373,18 @@ describe("createAppRscHandler", () => {
       destination: "2",
       original: "1",
     });
+    expect(pageOptions!.queryIndependentCandidate).toBe(false);
+  });
+
+  it("uses the query-safe bootstrap for direct pathname-shared App ISR", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({ configHeaders: [], dispatchMatchedPage });
+
+    await handler(new Request("https://example.test/docs/about?q=first"), null);
+
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ queryIndependentCandidate: true }),
+    );
   });
 
   it("runs beforeFiles rewrites before route matching", async () => {

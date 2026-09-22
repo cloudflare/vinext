@@ -233,6 +233,14 @@ function rewriteCachePathname(sourcePathname: string, resolvedPathname: string):
   return `${sourcePathname}?__vinext_rewrite=${encodeURIComponent(resolvedPathname)}`;
 }
 
+function hasSameUserQuery(originalUrl: string, resolvedUrl: string): boolean {
+  const original = new URL(originalUrl);
+  const resolved = new URL(resolvedUrl, original);
+  stripRscCacheBustingSearchParam(original);
+  stripRscCacheBustingSearchParam(resolved);
+  return original.search === resolved.search;
+}
+
 function requestOptsOutOfWorkerResponseStage(
   request: Request,
   options: Pick<CreateAppRscHandlerOptions<AppRscHandlerRoute>, "draftModeSecret">,
@@ -1172,15 +1180,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             props.kind === "app-page" &&
             props.forceDynamic !== true &&
             props.mayBeClientPage !== true &&
-            (() => {
-              const original = new URL(stageRequest.url);
-              const resolved = new URL(props.resolvedUrl, original);
-              stripRscCacheBustingSearchParam(original);
-              stripRscCacheBustingSearchParam(resolved);
-              // A rewrite that changes the effective query needs its server
-              // bootstrap. It cannot share HTML with another browser query.
-              return original.search === resolved.search;
-            })();
+            // A query-changing rewrite needs its server-owned bootstrap.
+            hasSameUserQuery(stageRequest.url, props.resolvedUrl);
           let response = await dispatchResponseStage(
             dispatchRequest,
             {
@@ -2408,7 +2409,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
         isProgressiveActionRender,
         isRscRequest,
-        queryIndependentCandidate: false,
+        // Direct ISR also shares completed pathname artifacts. The HTML
+        // bootstrap must not retain the first requester's query on a hit.
+        queryIndependentCandidate:
+          request.method === "GET" &&
+          !route.forceDynamic &&
+          !route.mayBeClientPage &&
+          !isProgressiveActionRender &&
+          hasSameUserQuery(url.toString(), resolvedUrl),
         middlewareContext,
         mountedSlotsHeader,
         params: renderParams,
