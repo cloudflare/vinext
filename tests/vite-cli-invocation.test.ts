@@ -69,6 +69,7 @@ describe("isViteCliInvocation", () => {
       command: "build",
       mode: "staging",
       root: expect.stringMatching(/\/app$/),
+      rootArg: "app",
     });
   });
 
@@ -86,6 +87,7 @@ describe("isViteCliInvocation", () => {
       command: "build",
       mode: "staging",
       root: expect.stringMatching(/\/app$/),
+      rootArg: "app",
     });
     expect(
       getViteCliInvocation([
@@ -99,6 +101,7 @@ describe("isViteCliInvocation", () => {
       command: "build",
       mode: "staging",
       root: expect.stringMatching(/\/app$/),
+      rootArg: "app",
     });
   });
 
@@ -109,6 +112,7 @@ describe("isViteCliInvocation", () => {
       command: "dev",
       mode: "development",
       root: expect.stringMatching(/\/app$/),
+      rootArg: "app",
     });
   });
 
@@ -122,7 +126,7 @@ describe("isViteCliInvocation", () => {
         "--mode",
         "staging",
       ]),
-    ).toEqual({ command, mode: "staging", root: expect.stringMatching(/\/app$/) });
+    ).toEqual({ command, mode: "staging", root: expect.stringMatching(/\/app$/), rootArg: "app" });
   });
 
   it("does not treat Vite preview as a dev invocation", () => {
@@ -139,6 +143,7 @@ describe("isViteCliInvocation", () => {
       command: "dev",
       mode: "development",
       root: expect.stringMatching(/\/build$/),
+      rootArg: "build",
     });
   });
 
@@ -157,6 +162,7 @@ describe("isViteCliInvocation", () => {
       command: "dev",
       mode: "staging",
       root: expect.stringMatching(/\/--mode$/),
+      rootArg: "--mode",
     });
   });
 
@@ -167,6 +173,13 @@ describe("isViteCliInvocation", () => {
       expect(isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"))).toBe(true);
       expect(isViteCliConfigFile(path.join(process.cwd(), "nested/vite.config.ts"))).toBe(false);
       expect(isViteCliConfigFile(path.join(process.cwd(), "alternate.config.ts"))).toBe(false);
+      expect(
+        isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"), {
+          root: process.cwd(),
+          configFile: "vite.config.ts",
+        }),
+      ).toBe(false);
+      expect(isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"), {})).toBe(true);
 
       process.argv.push("--config", "config/vite.config.ts");
       expect(isViteCliConfigFile(path.join(process.cwd(), "config/vite.config.ts"))).toBe(true);
