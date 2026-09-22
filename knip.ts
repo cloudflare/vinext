@@ -180,6 +180,8 @@ export default {
   ignoreBinaries: [
     // workspace's own bin, invoked in CI
     "vinext",
+    // Project-local Vite CLI, invoked directly by first-party scripts and CI.
+    "vite",
     // system/user-project binaries invoked by runtime scripts
     "ps",
     "taskkill",
