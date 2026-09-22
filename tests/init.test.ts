@@ -1563,6 +1563,29 @@ describe("init — dependency installation", () => {
     });
   });
 
+  it("updates old React pins even when RSC is already declared in no-install mode", async () => {
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: {
+        dependencies: {
+          react: "19.2.3",
+          "react-dom": "19.2.3",
+          "react-server-dom-webpack": "latest",
+          next: "^15.0.0",
+        },
+      },
+    });
+
+    const { execCalls } = await runInit(tmpDir, { install: false });
+    const pkg = readPkg(tmpDir) as { dependencies: Record<string, string> };
+    expect(execCalls).toEqual([]);
+    expect(pkg.dependencies).toMatchObject({
+      react: "latest",
+      "react-dom": "latest",
+      "react-server-dom-webpack": "latest",
+    });
+  });
+
   it("updates old React dependency entries without installing when install is disabled", async () => {
     setupProject(tmpDir, { router: "app" });
     setupFakeReact(tmpDir, "19.2.3");

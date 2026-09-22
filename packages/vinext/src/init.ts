@@ -654,7 +654,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   // to match exactly (e.g. rsdw@19.2.6 needs react@^19.2.6). If the installed
   // React is too old (common with create-next-app), upgrade it first as a
   // regular dependency to avoid ERESOLVE peer-dep conflicts.
-  if (isApp && missingDependencies.includes("react-server-dom-webpack")) {
+  if (isApp && (!shouldInstall || missingDependencies.includes("react-server-dom-webpack"))) {
     const reactUpgrade = getReactUpgradeDeps(root, { fromManifest: !shouldInstall });
     if (reactUpgrade.length > 0) {
       console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading dependencies:"))}`);

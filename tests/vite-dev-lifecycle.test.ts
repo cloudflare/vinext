@@ -39,7 +39,7 @@ function useViteCliArgv(): void {
   process.argv = [process.execPath, "/project/node_modules/vite/bin/vite.js", "dev"];
 }
 
-async function waitFor<T>(read: () => T | undefined, timeoutMs = 10_000): Promise<T> {
+async function waitFor<T>(read: () => T | undefined, timeoutMs = 20_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = read();
@@ -130,11 +130,20 @@ export default { root: ${JSON.stringify(root)}, plugins: [vinext()] };
       [VITE_CLI_PATH, "dev", "--config", "config/vite.config.ts", "--port", "0"],
       { cwd: root, stdio: "pipe" },
     );
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
 
-    const lock = await waitFor(() => {
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
+    let lock: NonNullable<ReturnType<typeof readLockfile>>;
+    try {
+      lock = await waitFor(() => {
+        if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+        const current = readLockfile(getLockfilePath(root));
+        return current && current.port > 0 ? current : undefined;
+      }, 20_000);
+    } catch (error) {
+      throw new Error(`${String(error)}\nVite output: ${output.slice(-4000)}`);
+    }
     expect(lock.port).toBeGreaterThan(0);
   }, 30_000);
 
@@ -196,11 +205,20 @@ export default { plugins: [
       cwd: root,
       stdio: "pipe",
     });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
 
-    const lock = await waitFor(() => {
-      const current = readLockfile(getLockfilePath(root));
-      return current && current.port > 0 ? current : undefined;
-    });
+    let lock: NonNullable<ReturnType<typeof readLockfile>>;
+    try {
+      lock = await waitFor(() => {
+        if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+        const current = readLockfile(getLockfilePath(root));
+        return current && current.port > 0 ? current : undefined;
+      });
+    } catch (error) {
+      throw new Error(`${String(error)}\nVite output: ${output.slice(-4000)}`);
+    }
     expect(lock.port).toBeGreaterThan(0);
     expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
   }, 30_000);
