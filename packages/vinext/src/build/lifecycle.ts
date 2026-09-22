@@ -144,6 +144,9 @@ async function buildHybridPagesBundle(
     ...userConfig.build,
     outDir: "dist/server",
     emptyOutDir: false,
+    // The primary App build owns the shared server manifest. Emitting another
+    // one here would replace its RSC entries with the auxiliary Pages graph.
+    manifest: false,
     ssr: "virtual:vinext-server-entry",
     rolldownOptions: {
       ...userConfig.build?.rolldownOptions,
