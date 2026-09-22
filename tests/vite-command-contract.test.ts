@@ -245,7 +245,7 @@ describe("configured vinext build contract", () => {
     expectConfiguredBuild(root);
   }, 120_000);
 
-  it.each([
+  it.each<[string, string[], "test" | "development", "test" | undefined]>([
     ["default mode with NODE_ENV=test", [], "test", "test"],
     ["test mode with NODE_ENV=test", ["--mode", "test"], "test", "test"],
     ["default mode with NODE_ENV=development", [], "development", undefined],
