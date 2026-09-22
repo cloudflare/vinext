@@ -157,7 +157,8 @@ export function validateResponseStoreLocationHint(
 ): ResponseStoreLocationHint | undefined {
   if (
     locationHint !== undefined &&
-    !Object.hasOwn(RESPONSE_STORE_LOCATION_HINTS, locationHint as PropertyKey)
+    (typeof locationHint !== "string" ||
+      !Object.hasOwn(RESPONSE_STORE_LOCATION_HINTS, locationHint))
   ) {
     throw new TypeError("Workers Response Store locationHint is not supported by Cloudflare");
   }

@@ -36,7 +36,11 @@ export type ResponseStoreAdapterOptions = {
  */
 export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) {
   const locationHint = options.locationHint;
-  if (locationHint !== undefined && !Object.hasOwn(RESPONSE_STORE_LOCATION_HINTS, locationHint)) {
+  if (
+    locationHint !== undefined &&
+    (typeof locationHint !== "string" ||
+      !Object.hasOwn(RESPONSE_STORE_LOCATION_HINTS, locationHint))
+  ) {
     throw new TypeError("Workers Response Store locationHint is not supported by Cloudflare");
   }
   const mode = options.mode ?? "service-binding";

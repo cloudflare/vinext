@@ -519,5 +519,8 @@ describe("responseStoreAdapter builder", () => {
     expect(() => responseStoreAdapter({ locationHint: "moon" as never })).toThrow(
       "Workers Response Store locationHint is not supported by Cloudflare",
     );
+    expect(() => responseStoreAdapter({ locationHint: ["weur"] as never })).toThrow(
+      "Workers Response Store locationHint is not supported by Cloudflare",
+    );
   });
 });
