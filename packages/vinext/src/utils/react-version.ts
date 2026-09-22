@@ -38,7 +38,7 @@ export function getReactUpgradeDeps(
     };
     for (const name of ["react", "react-dom"]) {
       const declared = pkg.dependencies?.[name] ?? pkg.devDependencies?.[name];
-      const version = /^[~^]?([0-9]+\.[0-9]+\.[0-9]+)/.exec(declared ?? "")?.[1];
+      const version = /^[~^]?([0-9]+(?:\.[0-9]+){0,2})(?:\.[x*])?$/.exec(declared ?? "")?.[1];
       if (version && isVersionBelow(version, [19, 2, 6])) {
         return ["react@latest", "react-dom@latest"];
       }
