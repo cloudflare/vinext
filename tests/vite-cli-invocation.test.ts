@@ -68,12 +68,22 @@ describe("findViteRoot", () => {
     });
   });
 
-  it.each(["--no-config", "--no-minify", "--no-sourcemap", "--no-manifest"])(
+  it.each(["--no-minify", "--no-sourcemap", "--no-manifest", "--no-base"])(
     "recognizes negated build option %s",
     (option) => {
       expect(findViteRoot("build", [option])).toEqual({
         root: undefined,
         shouldPreflight: true,
+      });
+    },
+  );
+
+  it.each(["--no-config", "--no-mode", "--no-target", "--no-configLoader"])(
+    "defers malformed required-option negation %s to Vite",
+    (option) => {
+      expect(findViteRoot("build", [option])).toEqual({
+        root: undefined,
+        shouldPreflight: false,
       });
     },
   );

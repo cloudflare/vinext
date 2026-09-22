@@ -19,7 +19,6 @@ const SHORT_OPTIONS = new Set(["c", "d", "f", "h", "l", "m", "v", "w"]);
 const REQUIRED_VALUE_OPTIONS = new Set([
   "--assetsDir",
   "--assetsInlineLimit",
-  "--base",
   "--config",
   "--configLoader",
   "--filter",
@@ -34,6 +33,7 @@ const REQUIRED_VALUE_OPTIONS = new Set([
   "-m",
 ]);
 const OPTIONAL_VALUE_OPTIONS = new Set([
+  "--base",
   "--debug",
   "--host",
   "--manifest",
@@ -158,6 +158,9 @@ export function findViteRoot(
     const normalizedOptions = (clusteredOptions ?? [option]).map((name) =>
       name.startsWith("--no-") ? `--${name.slice(5)}` : name,
     );
+    if (option.startsWith("--no-") && REQUIRED_VALUE_OPTIONS.has(normalizedOptions[0])) {
+      shouldPreflight = false;
+    }
     if (normalizedOptions.some((name) => COMMAND_ONLY_OPTIONS[otherCommand].has(name))) {
       shouldPreflight = false;
     }
