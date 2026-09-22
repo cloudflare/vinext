@@ -667,6 +667,10 @@ One caveat: modules whose JSX is lowered earlier in the pipeline are not memoize
 
 vinext automatically loads dotenv files for `dev`, `build`, `start`, and `deploy`.
 
+Vite evaluates static config imports before plugin hooks. Import `vinext` before any config helper
+that reads dotenv-backed `process.env` values, or load those values explicitly with Vite's
+[`loadEnv`](https://vite.dev/config/#using-environment-variables-in-config).
+
 Load order matches Next.js (highest priority first):
 
 1. Existing `process.env` values (shell/CI)
