@@ -38,6 +38,61 @@ const rawArgs = process.argv.slice(3);
 
 type ViteCommand = "dev" | "build";
 
+const VITE_OPTIONS_WITH_VALUES = new Set([
+  "--assetsDir",
+  "--assetsInlineLimit",
+  "--base",
+  "--config",
+  "--configLoader",
+  "--debug",
+  "--filter",
+  "--host",
+  "--logLevel",
+  "--manifest",
+  "--minify",
+  "--mode",
+  "--open",
+  "--outDir",
+  "--port",
+  "--profile",
+  "--sourcemap",
+  "--ssr",
+  "--ssrManifest",
+  "--target",
+  "-c",
+  "-d",
+  "-f",
+  "-l",
+  "-m",
+  "-p",
+]);
+const VITE_BOOLEAN_OPTIONS = new Set([
+  "--app",
+  "--clearScreen",
+  "--cors",
+  "--emptyOutDir",
+  "--experimentalBundle",
+  "--force",
+  "--strictPort",
+  "--watch",
+  "-w",
+]);
+
+function findViteRoot(args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (VITE_OPTIONS_WITH_VALUES.has(arg)) {
+      index++;
+      continue;
+    }
+    if (VITE_BOOLEAN_OPTIONS.has(arg) && /^(?:true|false)$/.test(args[index + 1] ?? "")) {
+      index++;
+      continue;
+    }
+    if (!arg.startsWith("-")) return arg;
+  }
+}
+
 function configPreflight(command: ViteCommand): void {
   if (rawArgs.some((arg) => ["--help", "-h", "--version", "-v"].includes(arg))) return;
 
@@ -57,7 +112,7 @@ function configPreflight(command: ViteCommand): void {
   }
 
   const cwd = process.cwd();
-  const positionalRoot = rawArgs[0] && !rawArgs[0].startsWith("-") ? rawArgs[0] : undefined;
+  const positionalRoot = findViteRoot(rawArgs);
   const root = positionalRoot ? path.resolve(cwd, positionalRoot) : cwd;
   const configPath = explicitConfig ? path.resolve(cwd, explicitConfig) : findViteConfigPath(root);
   if (configPath && fs.existsSync(configPath)) return;
