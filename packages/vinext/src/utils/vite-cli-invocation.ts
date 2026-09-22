@@ -111,6 +111,13 @@ function optionConsumesNext(arg: string, next: string | undefined): boolean {
   return BOOLEAN_OPTIONS.has(option) && /^(?:true|false)$/.test(next ?? "");
 }
 
+function requiredOptionValueIsMissing(arg: string, next: string | undefined): boolean {
+  if (!REQUIRED_VALUE_OPTIONS.has(optionName(arg))) return false;
+  return optionHasInlineValue(arg)
+    ? arg.slice(arg.indexOf("=") + 1) === ""
+    : next === undefined || next.startsWith("-");
+}
+
 export function findViteRoot(
   command: ViteCliCommand,
   args: string[],
@@ -123,6 +130,10 @@ export function findViteRoot(
     if (arg === "--") break;
     const option = optionName(arg);
     if (VALUELESS_OPTIONS.has(option)) continue;
+    if (requiredOptionValueIsMissing(arg, args[index + 1])) {
+      shouldPreflight = false;
+      continue;
+    }
     const normalizedOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
     if (COMMAND_ONLY_OPTIONS[otherCommand].has(normalizedOption)) {
       shouldPreflight = false;

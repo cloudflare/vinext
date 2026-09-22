@@ -2,10 +2,24 @@ import { describe, expect, it } from "vite-plus/test";
 import path from "node:path";
 import {
   claimViteCliBuildInvocation,
+  findViteRoot,
   getViteCliInvocation,
   isViteCliConfigFile,
   isViteCliInvocation,
 } from "../packages/vinext/src/utils/vite-cli-invocation.js";
+
+describe("findViteRoot", () => {
+  it.each([
+    { args: ["--mode"] },
+    { args: ["--mode="] },
+    { args: ["--mode", "--config", "vite.config.ts"] },
+  ])("leaves malformed required options to Vite ($args)", ({ args }) => {
+    expect(findViteRoot("build", args)).toEqual({
+      root: undefined,
+      shouldPreflight: false,
+    });
+  });
+});
 
 describe("isViteCliInvocation", () => {
   it.each([
