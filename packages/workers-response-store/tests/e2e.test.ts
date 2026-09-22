@@ -998,6 +998,26 @@ test("autonomous cleanup retains edge work when cache purge is unavailable", asy
   await stub.markTombstonesEdgePurged(await stub.listPendingEdgePurges(1));
 });
 
+test("purge retains edge work when cache purge is unavailable", async () => {
+  await put("/unavailable-tag-purge", "old", { tags: ["unavailable"] });
+  await put("/unavailable-global-purge", "old");
+
+  assert.deepEqual((await purge({ tags: ["unavailable"] })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 1);
+
+  assert.deepEqual((await purge({ purgeEverything: true })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 2);
+
+  const stub = await metadataStub();
+  await stub.markTombstonesEdgePurged(await stub.listPendingEdgePurges(2));
+});
+
 test("a broad purge only acknowledges tombstones in its snapshot", async () => {
   await put("/broad-purge-snapshot", "old", { tags: ["snapshot"] });
   await put("/broad-purge-later", "old", { tags: ["later"] });

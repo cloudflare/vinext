@@ -75,14 +75,15 @@ jobs:
           SERVICE_NAME: ${{ steps.names.outputs.service_name }}
           INLINE_NAME: ${{ steps.names.outputs.inline_name }}
         run: |
-          node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config example/service-binding/wrangler.cache.jsonc --name "$SERVICE_NAME"
+          node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config example/service-binding/wrangler.cache.jsonc --name "$SERVICE_NAME" --var WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE:disabled
           node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config .wrangler-e2e.user.jsonc
-          node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.jsonc --name "$INLINE_NAME"
+          node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.jsonc --name "$INLINE_NAME" --var WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE:disabled
 
       - name: Run live Response Store E2E
         working-directory: packages/workers-response-store
         env:
           LIVE_CACHE_BASE: https://${{ steps.names.outputs.inline_name }}.vinext.workers.dev
+          LIVE_RESPONSE_STORE_EDGE_PURGE_MODE: disabled
           LIVE_RESPONSE_STORE_SERVICE_BASE: https://${{ steps.names.outputs.client_name }}.vinext.workers.dev
         run: |
           for url in "$LIVE_CACHE_BASE" "$LIVE_RESPONSE_STORE_SERVICE_BASE"; do
