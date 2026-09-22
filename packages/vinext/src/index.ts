@@ -1610,6 +1610,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let isServeCommand = false;
   let buildEmptyOutDir: boolean | undefined;
   let buildLifecycleEnabled = false;
+  let plainPagesBuildEnvironments: UserConfig["environments"] | undefined;
   let reactUpgradeChecked = false;
   let pagesOptimizeEntries: string[] = [];
   const importMetaUrlCapability = createImportMetaUrlPlugin({
@@ -2146,7 +2147,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       !config.build?.watch &&
       !config.build?.ssr &&
       getBuildBundlerOptions(config.build)?.input === undefined,
-    onPrepare: () => {
+    onPrepare: (config) => {
+      // A later config hook can explicitly disable Vite's output cleanup.
+      if (config.build.emptyOutDir === false) buildEmptyOutDir = false;
       if (!hasAppDir || reactUpgradeChecked) return;
       reactUpgradeChecked = true;
       const reactUpgrade = getReactUpgradeDeps(root);
@@ -2387,6 +2390,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       >),
 
       async config(config, env) {
+        plainPagesBuildEnvironments = undefined;
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
@@ -3118,12 +3122,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
-          // The Vite CLI uses its legacy single-environment path unless a
-          // builder config exists. Plain Pages projects define the exact
-          // client and SSR environments below, so opt into buildApp for them.
-          ...(shouldInjectPlainPagesEnvironments
-            ? { builder: { ...config.builder, sharedConfigBuild: true } }
-            : {}),
           build: {
             // Emit asset files (CSS, etc.) referenced by SSR JS chunks.
             //
@@ -3864,7 +3862,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // calls that specify their own input (tests, hybrid build step)
           // still work via the single-build path — injecting environments
           // alongside an explicit build input conflicts with the caller's intent.
-          viteConfig.environments = {
+          plainPagesBuildEnvironments = {
             client: {
               consumer: "client",
               optimizeDeps: {
@@ -8081,6 +8079,27 @@ export const loadServerActionClient = ${
   } else if (manualUseCachePluginPromise) {
     plugins.push(manualUseCachePluginPromise);
   }
+  plugins.push({
+    name: "vinext:plain-pages-build-config",
+    apply: "build",
+    enforce: "post",
+    config: {
+      order: "post",
+      handler(config) {
+        if (
+          !plainPagesBuildEnvironments ||
+          config.build?.watch ||
+          config.build?.ssr ||
+          getBuildBundlerOptions(config.build)?.input !== undefined
+        )
+          return;
+        return {
+          builder: { ...config.builder, sharedConfigBuild: true },
+          environments: plainPagesBuildEnvironments,
+        };
+      },
+    },
+  });
   plugins.push(buildLifecyclePlugins[1]);
 
   return plugins;

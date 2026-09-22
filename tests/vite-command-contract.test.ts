@@ -85,6 +85,14 @@ export default defineConfig({
         return code.replace("__SSR_ONLY_MARKER__", JSON.stringify("ssr-only-plugin-ran"));
       },
     },
+    Promise.resolve([[{
+      name: "contract:async-nested",
+      transform(code, id) {
+        if (id.endsWith("/pages/legacy.tsx")) {
+          return code.replace("__ASYNC_PLUGIN_MARKER__", JSON.stringify("async-plugin-ran"));
+        }
+      },
+    }]]),
     {
       name: "contract:ssr-environment",
       configEnvironment(name) {
@@ -162,8 +170,9 @@ declare const __CONFIG_ONLY_MARKER__: string;
 declare const __TOP_LEVEL_MARKER__: string;
 declare const __SSR_ONLY_MARKER__: string;
 declare const __SSR_ENV_MARKER__: string;
+declare const __ASYNC_PLUGIN_MARKER__: string;
 export default function LegacyPage() {
-  return <p>{[aliasMarker, __CONFIG_ONLY_MARKER__, __TOP_LEVEL_MARKER__, __SSR_ONLY_MARKER__, __SSR_ENV_MARKER__, process.env.NODE_ENV === "production" ? "vinext-pages-production-marker" : "vinext-pages-development-marker"].join(":")}</p>;
+  return <p>{[aliasMarker, __CONFIG_ONLY_MARKER__, __TOP_LEVEL_MARKER__, __SSR_ONLY_MARKER__, __SSR_ENV_MARKER__, __ASYNC_PLUGIN_MARKER__, process.env.NODE_ENV === "production" ? "vinext-pages-production-marker" : "vinext-pages-development-marker"].join(":")}</p>;
 }
 `,
   );
@@ -191,7 +200,7 @@ export default defineConfig({
     {
       name: "record-builder-config",
       configResolved(config) {
-        fs.writeFileSync(config.root + "/builder.json", JSON.stringify(config.builder));
+        fs.writeFileSync(config.root + "/builder.json", JSON.stringify(config.builder ?? null));
       },
     },
   ],
@@ -251,6 +260,7 @@ describe("configured vinext build contract", () => {
     expect(pagesEntry).toContain("top-level-config-ran");
     expect(pagesEntry).toContain("ssr-only-plugin-ran");
     expect(pagesEntry).toContain("ssr-environment-ran");
+    expect(pagesEntry).toContain("async-plugin-ran");
     expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
     expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-ran"), "utf-8")).toBe(
       "ssr:es2022",
@@ -388,6 +398,33 @@ describe("configured vinext build contract", () => {
     expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
   }, 120_000);
 
+  it("honors emptyOutDir false returned by a later config hook", () => {
+    const root = createHybridProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs.readFileSync(configPath, "utf-8").replace(
+        "plugins: [",
+        `plugins: [{
+    name: "disable-output-cleanup",
+    config: {
+      order: "post",
+      handler() { return { build: { emptyOutDir: false } }; },
+    },
+  },`,
+      ),
+    );
+    write(root, "dist/keep.txt", "keep");
+
+    execFileSync(process.execPath, [VITE_CLI_PATH, "build"], {
+      cwd: root,
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
+  }, 120_000);
+
   it("keeps the vinext build report when Vite logging is silent", () => {
     const root = createHybridProject();
     const configPath = path.join(root, "vite.config.ts");
@@ -412,7 +449,7 @@ describe("configured vinext build contract", () => {
 
   it("leaves explicitly targeted Vite builds outside the application lifecycle", () => {
     const root = createPagesProject();
-    write(root, "entry.ts", 'export const marker = "targeted-build";\n');
+    write(root, "entry.ts", 'console.log("targeted-build");\n');
     const configPath = path.join(root, "vite.config.ts");
     fs.writeFileSync(
       configPath,
@@ -437,6 +474,15 @@ describe("configured vinext build contract", () => {
 
     expect(output).not.toContain("Build complete.");
     expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes"))).toBe(false);
-    expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
+    expect(fs.existsSync(path.join(root, "dist/keep.txt"))).toBe(false);
+    expect(
+      fs
+        .readdirSync(path.join(root, "dist/_next/static/chunks"))
+        .some((file) =>
+          fs
+            .readFileSync(path.join(root, "dist/_next/static/chunks", file), "utf-8")
+            .includes("targeted-build"),
+        ),
+    ).toBe(true);
   }, 120_000);
 });

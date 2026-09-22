@@ -18,6 +18,7 @@ import {
   type VinextRouteRootConfig,
 } from "../config/prerender.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
+import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 import { cleanBuildOutput } from "./clean-output.js";
 import { clearPagesClientAssetsBuildMetadata } from "./pages-client-assets-module.js";
@@ -101,6 +102,7 @@ function isInternalBuildPlugin(plugin: Plugin): boolean {
   return (
     plugin.name.startsWith("vinext:") ||
     plugin.name.startsWith("vite:react") ||
+    plugin.name === "rsc" ||
     plugin.name.startsWith("rsc:") ||
     plugin.name === "vite-rsc-load-module-dev-proxy" ||
     plugin.name.startsWith("vite-plugin-cloudflare")
@@ -121,7 +123,7 @@ async function loadHybridUserConfig(
     ? await withEnvironment({ NODE_ENV: configNodeEnv }, load)
     : await load();
   if (!loaded) return {};
-  const plugins = (loaded?.config.plugins as unknown[] | undefined)?.flat(Infinity) ?? [];
+  const plugins = await flattenPluginOptions(loaded.config.plugins);
   return {
     ...loaded.config,
     plugins: plugins
@@ -346,7 +348,7 @@ export async function runBuildLifecycle(
 export function createBuildLifecyclePlugins(options: {
   createContext: () => BuildLifecycleContext;
   isEnabled: (builder: ViteBuilder) => boolean;
-  onPrepare?: () => void;
+  onPrepare?: (config: ResolvedConfig) => void;
   shouldPrepare: (config: UserConfig | ResolvedConfig) => boolean;
   shouldBuildPlainPages: () => boolean;
 }): Plugin[] {
@@ -388,7 +390,7 @@ export function createBuildLifecyclePlugins(options: {
         order: "pre",
         handler(config) {
           if (outputPrepared || !options.shouldPrepare(config)) return;
-          options.onPrepare?.();
+          options.onPrepare?.(config);
           prepareBuildOutput(options.createContext());
           outputPrepared = true;
         },
