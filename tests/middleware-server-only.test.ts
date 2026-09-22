@@ -60,6 +60,26 @@ async function buildFixture(): Promise<{ tmpDir: string }> {
     path.join(tmpDir, "app", "page.tsx"),
     `export default function Home() { return <div>home</div>; }\n`,
   );
+  // Instrumentation is also imported by the hybrid app's Pages SSR entry.
+  // Ported from Next.js: test/e2e/instrumentation-hook/general/instrumentation.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/instrumentation-hook/general/instrumentation.js
+  await writeFile(
+    path.join(tmpDir, "instrumentation.ts"),
+    `import "server-only";
+export async function register() {
+  const { initialize } = await import("./lib/server-init");
+  initialize();
+}
+`,
+  );
+  await writeFile(
+    path.join(tmpDir, "lib", "server-init.ts"),
+    `import "server-only";
+export function initialize() {
+  console.log("vinext-instrumentation-server-only-initialized");
+}
+`,
+  );
   // Pages Router companion route — its mere presence flips
   // \`hasPagesDir\` and triggers the SSR-entry → server-entry re-export.
   await writeFile(
@@ -316,6 +336,14 @@ describe("middleware can import server-only", () => {
     }
     return seen;
   }
+
+  it("preserves the instrumentation initialization in the server bundle", async () => {
+    const files = await collectServerJsFiles();
+    const sources = await Promise.all(files.map((file) => fsp.readFile(file, "utf8")));
+    expect(
+      sources.some((source) => source.includes("vinext-instrumentation-server-only-initialized")),
+    ).toBe(true);
+  });
 
   it("emits server bundles without an invalid-server-only stub", async () => {
     // The validate-imports plugin replaces an invalid bare `server-only`

@@ -2210,8 +2210,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // been compiled: `vite:react-compiler` infers the source language from the
     // file extension and cannot parse JSX inside a `.js` file.
     reactCompilerPluginPromise,
-    // Allow `import 'server-only'` from middleware (and any module reachable
-    // from it) in non-RSC environments. Registered before `vinext:config` so
+    // Allow `import 'server-only'` from server entries (and their dependencies)
+    // in non-RSC environments. Registered before `vinext:config` so
     // its `enforce: "pre"` resolveId runs ahead of @vitejs/plugin-rsc's
     // `rsc:validate-imports` (which rejects bare `server-only` outside RSC).
     // See packages/vinext/src/plugins/middleware-server-only.ts for the
@@ -2222,7 +2222,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         middlewarePath ? (tryRealpathSync(middlewarePath) ?? middlewarePath) : null,
       isNeutralServerModule: (id) => {
         const canonicalId = canonicalizePageTransformPath(id);
-        return isWithinPagesDirectory(canonicalId) && isApiPage(canonicalId);
+        return (
+          (instrumentationPath !== null &&
+            canonicalId === canonicalizePageTransformPath(instrumentationPath)) ||
+          (isWithinPagesDirectory(canonicalId) && isApiPage(canonicalId))
+        );
       },
       serverOnlyShimPath: resolveShimModulePath(shimsDir, "server-only"),
     }),

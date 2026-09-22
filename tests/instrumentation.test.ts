@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import * as Sentry from "@sentry/nextjs";
 import { createServer, parseAst } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
+import { createDirectRunner } from "../packages/vinext/src/server/dev-module-runner.js";
 import {
   findInstrumentationClientFile,
   findInstrumentationFile,
@@ -141,6 +142,65 @@ async function withInjectClientServer(
 // The runInstrumentation/reportRequestError describe blocks re-import via
 // vi.resetModules() to get fresh module-level state (_onRequestError).
 // findInstrumentationFile is a pure function — no reset needed.
+
+describe("instrumentation server-only imports", () => {
+  // Ported from Next.js: test/e2e/instrumentation-hook/general/instrumentation.js
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/instrumentation-hook/general/instrumentation.js
+  it.each([
+    { directory: "", direct: true, symlink: false },
+    { directory: "", direct: false, symlink: false },
+    { directory: "src", direct: false, symlink: false },
+    { directory: "src", direct: false, symlink: true },
+  ])("allows SSR startup imports: %j", async ({ directory, direct, symlink }) => {
+    const tmpDir = setupInjectProject({ instrumentationClientInject: [] });
+    const sourceDir = path.join(tmpDir, directory);
+    fs.mkdirSync(sourceDir, { recursive: true });
+    const instrumentationPath = path.join(sourceDir, "instrumentation.ts");
+    const implementationPath = symlink ? path.join(sourceDir, "startup.ts") : instrumentationPath;
+    fs.writeFileSync(
+      implementationPath,
+      `${direct ? 'import "server-only";' : ""}
+export async function register() {
+  const { initialized } = await import("./server-init");
+  return initialized;
+}
+`,
+    );
+    if (symlink) fs.symlinkSync(implementationPath, instrumentationPath);
+    fs.writeFileSync(
+      path.join(sourceDir, "server-init.ts"),
+      'import "server-only"; export const initialized = "server initialized";',
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "client-component.tsx"),
+      '"use client"; import "server-only"; export default function Client() { return null; }',
+    );
+
+    const server = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { middlewareMode: true, watch: null },
+      logLevel: "silent",
+    });
+    const runner = createDirectRunner(server.environments.ssr);
+    try {
+      const instrumentation = await runner.import<{ register: () => Promise<string> }>(
+        instrumentationPath,
+      );
+      await expect(instrumentation.register()).resolves.toBe("server initialized");
+      // Allowing server instrumentation must not disable SSR validation for
+      // actual Client Components.
+      await expect(runner.import(path.join(tmpDir, "client-component.tsx"))).rejects.toThrow(
+        /'server-only' cannot be imported in client build \('ssr' environment\)/,
+      );
+    } finally {
+      await runner.close();
+      await server.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("findInstrumentationFile", () => {
   let tmpDir: string;

@@ -25,7 +25,7 @@ import { stripViteModuleQuery } from "../utils/path.js";
  *
  *   1. Seed a `tainted` set with the middleware entry path (and its
  *      canonical realpath), and recognize other neutral server entry modules
- *      such as Pages API routes through `isNeutralServerModule`.
+ *      such as instrumentation and Pages API routes through `isNeutralServerModule`.
  *   2. For every resolveId call from a tainted importer, resolve the import
  *      via `this.resolve(..., { skipSelf: true })` and add the resolved id
  *      to the tainted set. This propagates the taint along the import graph
@@ -36,7 +36,7 @@ import { stripViteModuleQuery } from "../utils/path.js";
  *      matches the bare `^server-only$` specifier) never fires for that
  *      import.
  *
- * The taint set is scoped to the middleware chain only — `server-only`
+ * The taint set is scoped to these server entry chains — `server-only`
  * imports from anywhere else (including client component code traversing
  * through the SSR environment for `react-dom/server.edge` rendering) still
  * hit the rsc:validate-imports rejection, preserving the original safety
