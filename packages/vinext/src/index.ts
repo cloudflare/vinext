@@ -151,7 +151,7 @@ import {
   VINEXT_BUILD_LIFECYCLE_CONFIG,
   type BuildLifecycleInvocation,
 } from "./build/lifecycle.js";
-import { createDevServerLifecyclePlugin } from "./cli-dev-config.js";
+import { claimViteCliDevInvocation, createDevServerLifecyclePlugin } from "./cli-dev-config.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
@@ -324,11 +324,7 @@ import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
 import { isServerEnvironment } from "./plugins/environment.js";
-import {
-  claimViteCliBuildInvocation,
-  getViteCliInvocation,
-  isViteCliInvocation,
-} from "./utils/vite-cli-invocation.js";
+import { claimViteCliBuildInvocation, getViteCliInvocation } from "./utils/vite-cli-invocation.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 import {
   isPathInside,
@@ -375,10 +371,16 @@ const viteCliBuildConfigNodeEnv =
   earlyViteCliInvocation?.command === "build" && process.env.NODE_ENV === "test"
     ? "test"
     : undefined;
-if (earlyViteCliInvocation?.command === "build") {
-  if (!viteCliBuildConfigNodeEnv) {
-    Reflect.set(process.env, "NODE_ENV", "production");
-  }
+if (earlyViteCliInvocation) {
+  Reflect.set(
+    process.env,
+    "NODE_ENV",
+    earlyViteCliInvocation.command === "build"
+      ? (viteCliBuildConfigNodeEnv ?? "production")
+        : earlyViteCliInvocation.mode === "test"
+          ? "test"
+          : "development",
+  );
   loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
 }
 
@@ -2398,14 +2400,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
+        root = toSlash(config.root ?? process.cwd());
         devCliLifecycleEnabled =
-          env.command === "serve" && env.isPreview !== true && isViteCliInvocation("dev");
+          env.command === "serve" && env.isPreview !== true && claimViteCliDevInvocation(root);
         buildLifecycleInvocation = (config as InternalUserConfig)[VINEXT_BUILD_LIFECYCLE_CONFIG];
         buildLifecycleEnabled =
           env.command === "build" &&
           !internalOptions.__skipBuildLifecycle &&
           (buildLifecycleInvocation !== undefined || claimViteCliBuildInvocation());
-        root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};
         let sassTsconfigPathAliases: SassTsconfigPathAlias[] = [];

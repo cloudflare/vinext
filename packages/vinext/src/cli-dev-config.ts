@@ -1,5 +1,8 @@
+import fs from "node:fs";
+import { toSlash } from "pathslash";
 import type { Plugin, ServerOptions, ViteDevServer } from "vite";
 import { formatAlreadyRunningError, tryAcquireLockfile } from "./server/dev-lockfile.js";
+import { isViteCliInvocation } from "./utils/vite-cli-invocation.js";
 
 type ActiveDevServerLock = {
   lockfile: Extract<ReturnType<typeof tryAcquireLockfile>, { ok: true }>["lockfile"];
@@ -9,6 +12,25 @@ type ActiveDevServerLock = {
 };
 
 const activeDevServerLocks = new Map<string, ActiveDevServerLock>();
+let devInvocationRoot: string | undefined;
+
+function normalizeDevLifecycleRoot(root: string): string {
+  try {
+    return toSlash(fs.realpathSync.native(root));
+  } catch {
+    return root;
+  }
+}
+
+export function claimViteCliDevInvocation(root: string): boolean {
+  root = normalizeDevLifecycleRoot(root);
+  if (!isViteCliInvocation("dev")) return false;
+  if (devInvocationRoot === undefined) {
+    devInvocationRoot = root;
+    return true;
+  }
+  return devInvocationRoot === root && activeDevServerLocks.get(root)?.restarting === true;
+}
 
 export type DevServerCliOptions = {
   port?: number;
@@ -24,6 +46,7 @@ export function createDevServerLifecyclePlugin(
   options: DevServerCliOptions,
   isEnabled: () => boolean,
 ): Plugin {
+  let appliedDefaultPort = false;
   return {
     name: "vinext:dev-server-lifecycle",
     // Both levels are required: `enforce` places this after the user's normal
@@ -34,15 +57,23 @@ export function createDevServerLifecyclePlugin(
       handler(config) {
         if (!isEnabled() || config.server?.middlewareMode) return;
         const server = (config.server ??= {});
+        appliedDefaultPort = options.port === undefined && server.port === undefined;
         applyDevServerDefaults(server, options);
       },
     },
     configureServer: {
       order: "post",
       handler(server) {
-        return () => {
-          if (isEnabled()) configureDevServerLock(server);
-        };
+        if (!isEnabled()) return;
+        if (server.config.server.middlewareMode) {
+          if (appliedDefaultPort && server.config.server.port === 3000) {
+            server.config.server.port = 5173;
+          }
+        } else {
+          if (options.port !== undefined) server.config.server.port = options.port;
+          if (options.hostname !== undefined) server.config.server.host = options.hostname;
+        }
+        configureDevServerLifecycle(server);
       },
     },
   };
@@ -59,70 +90,84 @@ export function normalizeDevServerHostname(host: string | boolean | undefined): 
   return host === true ? "0.0.0.0" : "localhost";
 }
 
-function configureDevServerLock(server: ViteDevServer): void {
-  if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1") {
-    return;
-  }
-
-  const root = server.config.root;
-  const port = server.config.server.port ?? 3000;
-  const hostname = normalizeDevServerHostname(server.config.server.host);
-  const displayHostname = hostname === "0.0.0.0" ? "localhost" : hostname;
-  let activeLock = activeDevServerLocks.get(root);
-  if (!activeLock?.restarting) {
-    const startedAt = Date.now();
-    const acquired = tryAcquireLockfile({
-      root,
-      info: {
-        pid: process.pid,
-        port,
-        hostname,
-        appUrl: `http://${displayHostname}:${port}`,
-        startedAt,
-        cwd: root,
-      },
-    });
-    if (!acquired.ok) {
-      throw new Error(
-        formatAlreadyRunningError({
-          existing: acquired.existing,
-          cwd: root,
-          lockfilePath: acquired.lockfilePath,
-        }),
-      );
-    }
-    activeLock = { lockfile: acquired.lockfile, restarting: false, servers: 0, startedAt };
-    activeDevServerLocks.set(root, activeLock);
-  }
-
-  activeLock.servers++;
+function configureDevServerLifecycle(server: ViteDevServer): void {
+  const root = normalizeDevLifecycleRoot(server.config.root);
+  let activeLock: ActiveDevServerLock | undefined;
   let released = false;
   const releaseLock = () => {
     if (released) return;
     released = true;
+    if (!activeLock) return;
     activeLock.servers--;
-    if (activeLock.servers > 0) return;
+    if (activeLock.servers > 0 || activeLock.restarting) return;
     activeLock.lockfile.release();
     if (activeDevServerLocks.get(root) === activeLock) activeDevServerLocks.delete(root);
+  };
+  const releaseLifecycle = () => {
+    releaseLock();
+    if (!activeDevServerLocks.get(root)?.restarting && devInvocationRoot === root) {
+      devInvocationRoot = undefined;
+    }
   };
   const closeServer = server.close.bind(server);
   server.close = async () => {
     try {
       await closeServer();
     } finally {
-      releaseLock();
+      releaseLifecycle();
     }
   };
   const restartServer = server.restart.bind(server);
   server.restart = async (forceOptimize?: boolean) => {
-    activeLock.restarting = true;
+    const restartingLock = activeDevServerLocks.get(root);
+    if (restartingLock) restartingLock.restarting = true;
     try {
       await restartServer(forceOptimize);
     } finally {
-      activeLock.restarting = false;
+      if (restartingLock) {
+        restartingLock.restarting = false;
+        if (restartingLock.servers === 0) {
+          restartingLock.lockfile.release();
+          if (activeDevServerLocks.get(root) === restartingLock) {
+            activeDevServerLocks.delete(root);
+          }
+        }
+      }
     }
   };
   server.httpServer?.once("listening", () => {
+    if (server.config.server.middlewareMode || process.env.VINEXT_NO_DEV_LOCK === "1") return;
+    const port = server.config.server.port ?? 3000;
+    const hostname = normalizeDevServerHostname(server.config.server.host);
+    const displayHostname = hostname === "0.0.0.0" ? "localhost" : hostname;
+    activeLock = activeDevServerLocks.get(root);
+    if (!activeLock?.restarting) {
+      const startedAt = Date.now();
+      const acquired = tryAcquireLockfile({
+        root,
+        info: {
+          pid: process.pid,
+          port,
+          hostname,
+          appUrl: `http://${displayHostname}:${port}`,
+          startedAt,
+          cwd: root,
+        },
+      });
+      if (!acquired.ok) {
+        throw new Error(
+          formatAlreadyRunningError({
+            existing: acquired.existing,
+            cwd: root,
+            lockfilePath: acquired.lockfilePath,
+          }),
+        );
+      }
+      activeLock = { lockfile: acquired.lockfile, restarting: false, servers: 0, startedAt };
+      activeDevServerLocks.set(root, activeLock);
+    }
+    activeLock.servers++;
+    const lock = activeLock;
     setImmediate(() => {
       if (released) return;
       const address = server.httpServer?.address();
@@ -130,15 +175,15 @@ function configureDevServerLock(server: ViteDevServer): void {
       const appUrl =
         server.resolvedUrls?.local[0]?.replace(/\/$/, "") ??
         `http://${displayHostname}:${actualPort}`;
-      activeLock.lockfile.update({
+      lock.lockfile.update({
         pid: process.pid,
         port: actualPort,
         hostname,
         appUrl,
-        startedAt: activeLock.startedAt,
+        startedAt: lock.startedAt,
         cwd: root,
       });
     });
   });
-  server.httpServer?.once("close", releaseLock);
+  server.httpServer?.once("close", releaseLifecycle);
 }
