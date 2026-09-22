@@ -202,7 +202,7 @@ export default defineConfig({
   return root;
 }
 
-function createAppProject(): string {
+function createAppProject(appDir?: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-vite-app-contract-"));
   temporaryProjects.push(root);
   fs.symlinkSync(
@@ -215,7 +215,7 @@ function createAppProject(): string {
     root,
     "vite.config.ts",
     `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
-export default { plugins: [vinext()] };
+export default { plugins: [vinext(${appDir === undefined ? "" : JSON.stringify({ appDir })})] };
 `,
   );
   write(
@@ -292,7 +292,7 @@ describe("configured vinext build contract", () => {
   }, 120_000);
 
   it("detects the App Router from a positional project root", () => {
-    const root = createAppProject();
+    const root = createAppProject(".");
 
     execFileSync(process.execPath, [VITE_CLI_PATH, "build", root], {
       cwd: path.dirname(root),
