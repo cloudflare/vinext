@@ -655,7 +655,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   // React is too old (common with create-next-app), upgrade it first as a
   // regular dependency to avoid ERESOLVE peer-dep conflicts.
   if (isApp && missingDependencies.includes("react-server-dom-webpack")) {
-    const reactUpgrade = getReactUpgradeDeps(root);
+    const reactUpgrade = getReactUpgradeDeps(root, { fromManifest: !shouldInstall });
     if (reactUpgrade.length > 0) {
       console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading dependencies:"))}`);
       console.log(
