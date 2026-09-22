@@ -146,7 +146,11 @@ import {
 } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { precompressAssets } from "./build/precompress.js";
-import { createBuildLifecyclePlugins } from "./build/lifecycle.js";
+import {
+  createBuildLifecyclePlugins,
+  VINEXT_BUILD_LIFECYCLE_CONFIG,
+  type BuildLifecycleInvocation,
+} from "./build/lifecycle.js";
 import { ensureAssetsIgnore } from "./build/assets-ignore.js";
 import { emitNextClientRuntimeManifests } from "./build/next-client-runtime-manifests.js";
 import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build/inline-css.js";
@@ -1503,6 +1507,10 @@ type InternalVinextOptions = VinextOptions & {
   __pagesClientAssetsModule?: string | null;
 };
 
+type InternalUserConfig = UserConfig & {
+  [VINEXT_BUILD_LIFECYCLE_CONFIG]?: BuildLifecycleInvocation;
+};
+
 type NitroSetupContext = {
   options: {
     buildDir?: string;
@@ -1587,6 +1595,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let buildLifecycleEnabled = false;
   let hasPlainPagesBuildEnvironments = false;
   let originalPlainPagesEnvironments: UserConfig["environments"] | undefined;
+  let buildLifecycleInvocation: BuildLifecycleInvocation | undefined;
   let reactUpgradeChecked = false;
   let pagesOptimizeEntries: string[] = [];
   const importMetaUrlCapability = createImportMetaUrlPlugin({
@@ -2119,18 +2128,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const buildLifecyclePlugins = createBuildLifecyclePlugins({
     isEnabled: (builder) =>
       buildLifecycleEnabled &&
-      !builder.config.build.watch &&
       builder.config.build.write !== false &&
-      !builder.config.build.ssr &&
       !builder.config.build.lib &&
-      getBuildBundlerOptions(builder.config.build)?.input === undefined,
+      (buildLifecycleInvocation !== undefined ||
+        (!builder.config.build.watch &&
+          !builder.config.build.ssr &&
+          getBuildBundlerOptions(builder.config.build)?.input === undefined)),
+    onComplete: (result) => buildLifecycleInvocation?.onComplete?.(result),
     shouldPrepare: (config) =>
       buildLifecycleEnabled &&
-      !config.build?.watch &&
       config.build?.write !== false &&
-      !config.build?.ssr &&
       !config.build?.lib &&
-      getBuildBundlerOptions(config.build)?.input === undefined,
+      (buildLifecycleInvocation !== undefined ||
+        (!config.build?.watch &&
+          !config.build?.ssr &&
+          getBuildBundlerOptions(config.build)?.input === undefined)),
     onPrepare: () => {
       if (!hasAppDir || reactUpgradeChecked) return;
       reactUpgradeChecked = true;
@@ -2177,6 +2189,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       rscBuildIdentity,
       rscCompatibilityId,
       skipHybridPagesBundle: hasCloudflarePlugin,
+      skipPrerender: buildLifecycleInvocation?.skipPrerender,
     }),
   });
 
@@ -2378,10 +2391,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
+        buildLifecycleInvocation = (config as InternalUserConfig)[VINEXT_BUILD_LIFECYCLE_CONFIG];
         buildLifecycleEnabled =
           env.command === "build" &&
           !internalOptions.__skipBuildLifecycle &&
-          claimViteCliBuildInvocation();
+          (buildLifecycleInvocation !== undefined ||
+            claimViteCliBuildInvocation());
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};

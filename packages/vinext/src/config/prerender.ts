@@ -153,7 +153,7 @@ export function resolveVinextPrerenderDecision(options: {
   if (options.prerenderAllFlag) return { routes: "*", reason: "flag" };
   if (options.nextOutput === "export") return { routes: "*", reason: "next-export" };
   if (options.vinextPrerenderConfig?.routes === "*") {
-    return { routes: "*", reason: "vinext-config" };
+    return { ...options.vinextPrerenderConfig, reason: "vinext-config" };
   }
   return null;
 }

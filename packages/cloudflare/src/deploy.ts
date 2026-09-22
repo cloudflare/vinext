@@ -22,6 +22,11 @@ import {
   discoverPrerenderPathManifest,
   emitPrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
+import {
+  VINEXT_BUILD_LIFECYCLE_CONFIG,
+  type BuildLifecycleInvocation,
+  type BuildLifecycleResult,
+} from "vinext/internal/build/lifecycle";
 import { runPrerender } from "vinext/internal/build/run-prerender";
 import { loadDotenv } from "vinext/internal/config/dotenv";
 import {
@@ -527,7 +532,7 @@ async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteCon
   };
 }
 
-async function runBuild(info: ProjectInfo, env: string | undefined): Promise<void> {
+async function runBuild(info: ProjectInfo, env: string | undefined): Promise<BuildLifecycleResult> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
   const { createBuilder } = await loadProjectViteApi(info.root);
@@ -540,10 +545,24 @@ async function runBuild(info: ProjectInfo, env: string | undefined): Promise<voi
   // .wrangler/deploy/config.json. A plain build() call bypasses cloudflare()'s
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
+  let result: BuildLifecycleResult | undefined;
   await withCloudflareEnv(env, async () => {
-    const builder = await createBuilder({ root: info.root });
+    const invocation: BuildLifecycleInvocation = {
+      // Deploy decides whether to prerender locally only after TPR and staged
+      // warmup selection, so the build lifecycle must defer that phase.
+      skipPrerender: true,
+      onComplete(value) {
+        result = value;
+      },
+    };
+    const builder = await createBuilder({
+      root: info.root,
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: invocation,
+    } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
   });
+  if (!result) throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
+  return result;
 }
 
 async function populateKVCacheFromPrerenderedArtifacts(
@@ -2070,8 +2089,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
   );
   const shouldEmitPrerenderPathManifest = !options.skipBuild && prerenderDecision;
   // Step 5: Build
+  let buildResult: BuildLifecycleResult | undefined;
   if (!options.skipBuild) {
-    await runBuild(info, buildEnv);
+    buildResult = await runBuild(info, buildEnv);
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
@@ -2164,8 +2184,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // Triggered only by --prerender-all, vinext({ prerender: true }), or
   // output: 'export'. CDN warmup performs path discovery above, but relies on
   // the deployed Worker to render and classify each response.
-  let ranPrerender = false;
-  if (shouldPrerenderLocally) {
+  let ranPrerender = buildResult?.prerendered ?? false;
+  if (shouldPrerenderLocally && !ranPrerender) {
     console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
@@ -2173,7 +2193,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     }
     await runPrerender({
       root: info.root,
-      concurrency: options.prerenderConcurrency,
+      concurrency: options.prerenderConcurrency ?? viteConfigMetadata.prerenderConfig?.concurrency,
       nextConfig,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });

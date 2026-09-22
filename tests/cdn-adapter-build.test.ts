@@ -6,6 +6,10 @@ import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
+import {
+  VINEXT_BUILD_LIFECYCLE_CONFIG,
+  type BuildLifecycleResult,
+} from "../packages/vinext/src/build/lifecycle.js";
 import vinext from "../packages/vinext/src/index.js";
 
 const CLOUDFLARE_NODE_MODULES = path.resolve(
@@ -47,6 +51,7 @@ async function readStaticClosure(
 
 describe("Cloudflare CDN adapter build output", () => {
   let root: string;
+  let buildResult: BuildLifecycleResult | undefined;
 
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-cdn-adapter-build-"));
@@ -93,12 +98,22 @@ describe("Cloudflare CDN adapter build output", () => {
         vinext({ appDir: root, cache: { cdn: cdnAdapter() } }),
         cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
       ],
-    });
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {
+        skipPrerender: true,
+        onComplete(result: BuildLifecycleResult) {
+          buildResult = result;
+        },
+      },
+    } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
   }, 120_000);
 
   afterAll(async () => {
     await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("reports lifecycle completion without prerendering before deploy policy is known", () => {
+    expect(buildResult).toEqual({ prerendered: false, standalone: false });
   });
 
   it("makes the emitted Wrangler config directly deployable without changing source config", async () => {

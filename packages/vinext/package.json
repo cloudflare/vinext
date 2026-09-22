@@ -138,6 +138,10 @@
       "types": "./dist/build/prerender-paths.d.ts",
       "import": "./dist/build/prerender-paths.js"
     },
+    "./internal/build/lifecycle": {
+      "types": "./dist/build/lifecycle.d.ts",
+      "import": "./dist/build/lifecycle.js"
+    },
     "./internal/cache-adapters": {
       "types": "./dist/cache/cache-adapters-virtual.d.ts",
       "import": "./dist/cache/cache-adapters-virtual.js"
