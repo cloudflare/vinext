@@ -343,13 +343,13 @@ export default { plugins: [vinext()] };
           enforce: "post",
           config: {
             order: "post",
-            handler: () => ({ server: { middlewareMode: true } }),
+            handler: () => ({ server: { middlewareMode: true, port: 3000 } }),
           },
         },
       ],
     });
 
-    expect(server.config.server.port).toBe(5173);
+    expect(server.config.server.port).toBe(3000);
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
