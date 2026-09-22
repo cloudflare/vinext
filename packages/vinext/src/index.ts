@@ -1798,7 +1798,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Check eagerly at call time using the same heuristic as config().
   // Must mirror the full detection logic: check {base}/app then {base}/src/app.
   const autoRsc = options.rsc !== false;
-  const earlyBaseDir = options.appDir ?? process.cwd();
+  const earlyBaseDir = options.appDir ?? earlyViteCliInvocation?.root ?? process.cwd();
   const earlyAppDirExists =
     !options.disableAppRouter &&
     (fs.existsSync(path.join(earlyBaseDir, "app")) ||
