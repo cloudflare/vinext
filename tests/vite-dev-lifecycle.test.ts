@@ -151,6 +151,44 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
+  it("updates and releases the lock when a failed listen is retried", async () => {
+    const root = createProject();
+    useViteCliArgv();
+    const occupied = createHttpServer();
+    const occupiedPort = await new Promise<number>((resolve) => {
+      occupied.listen(0, "localhost", () => {
+        const address = occupied.address();
+        if (!address || typeof address === "string") throw new Error("Expected a TCP port");
+        resolve(address.port);
+      });
+    });
+    try {
+      server = await createServer({
+        root,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [vinext()],
+        server: { port: occupiedPort, strictPort: true },
+      });
+      await expect(server.listen()).rejects.toThrow(`Port ${occupiedPort} is already in use`);
+      expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+
+      await server.listen(0);
+      const address = server.httpServer?.address();
+      if (!address || typeof address === "string") throw new Error("Expected a TCP port");
+      const actualPort = address.port;
+      expect(
+        await waitFor(() => readLockfile(getLockfilePath(root))?.port === actualPort || undefined),
+      ).toBe(true);
+
+      await server.close();
+      server = undefined;
+      expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => occupied.close(() => resolve()));
+    }
+  });
+
   it("honors the dev lock opt-out", async () => {
     const root = createProject();
     const previous = process.env.VINEXT_NO_DEV_LOCK;
