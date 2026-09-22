@@ -292,6 +292,7 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
     if (
       page.kind === "app-page" &&
       page.forceDynamic !== true &&
+      page.mayBeClientPage !== true &&
       typeof page.resolvedUrl === "string" &&
       cacheability &&
       typeof cacheability === "object" &&

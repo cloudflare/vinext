@@ -1162,6 +1162,8 @@ describe("App Router entry templates", () => {
     const dynamicPage = path.join(tmpDir, "dynamic-page.tsx");
     const dynamicLayout = path.join(tmpDir, "dynamic-layout.tsx");
     const dynamicHandler = path.join(tmpDir, "dynamic-route.ts");
+    const clientPage = path.join(tmpDir, "client-page.tsx");
+    const reexportedPage = path.join(tmpDir, "reexported-page.tsx");
     fs.writeFileSync(staticPage, "export default function Page() { return null; }");
     fs.writeFileSync(
       dynamicPage,
@@ -1175,10 +1177,14 @@ describe("App Router entry templates", () => {
       dynamicHandler,
       'export const dynamic = "force-dynamic"; export function GET() { return new Response(); }',
     );
+    fs.writeFileSync(clientPage, '"use client"; export default function Page() { return null; }');
+    fs.writeFileSync(reexportedPage, 'export { default } from "./client-page";');
 
     try {
       const code = generateAppRequestRscEntry(tmpDir, [
         { ...minimalAppRoutes[0], pattern: "/static", pagePath: staticPage, layouts: [] },
+        { ...minimalAppRoutes[0], pattern: "/client", pagePath: clientPage, layouts: [] },
+        { ...minimalAppRoutes[0], pattern: "/reexport", pagePath: reexportedPage, layouts: [] },
         { ...minimalAppRoutes[0], pattern: "/page", pagePath: dynamicPage, layouts: [] },
         {
           ...minimalAppRoutes[0],
@@ -1246,15 +1252,26 @@ describe("App Router entry templates", () => {
       expect(serializedRoutes).toBeDefined();
       const routes = JSON.parse(serializedRoutes!) as Array<{
         forceDynamic: boolean;
+        mayBeClientPage: boolean;
         pattern: string;
       }>;
+
+      expect(
+        Object.fromEntries(routes.map((route) => [route.pattern, route.mayBeClientPage])),
+      ).toMatchObject({
+        "/client": true,
+        "/reexport": true,
+        "/static": false,
+      });
 
       expect(
         Object.fromEntries(routes.map((route) => [route.pattern, route.forceDynamic])),
       ).toEqual({
         "/api": true,
+        "/client": false,
         "/layout": true,
         "/page": true,
+        "/reexport": false,
         "/sibling-intercept": true,
         "/slot-intercept": true,
         "/static": false,

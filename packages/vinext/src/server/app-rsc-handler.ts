@@ -270,6 +270,7 @@ export type AppRscHandlerRoute = {
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
   forceDynamic?: boolean;
+  mayBeClientPage?: boolean;
   queryIndependentConfig?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
@@ -1175,6 +1176,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                 responseStagePolicy === null &&
                 props.kind === "app-page" &&
                 props.forceDynamic !== true &&
+                props.mayBeClientPage !== true &&
                 (props.queryIndependentConfig === true ||
                   options.queryIndependentAppPage?.(
                     props.routePattern,
@@ -2362,6 +2364,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         cleanPathname,
         draftModeCookie,
         forceDynamic: route.forceDynamic === true,
+        mayBeClientPage: route.mayBeClientPage === true,
         interceptionContext: isRscRequest ? interceptionContextHeader : null,
         interceptionId: interceptionIdHeader,
         isRscRequest,

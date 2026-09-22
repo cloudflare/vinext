@@ -555,6 +555,9 @@ export async function buildPageElements<
   void streamingMetadataOutlet?.catch(() => null);
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
+  // React serializes Client Page props before the component can read them.
+  // Serialization of an empty thenable is not evidence that the page used it.
+  const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
   const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
   const hasPageLoadingBoundary =
     resolveAppPageLoadingModuleAtOrAbove(route, pageTreePosition) !== null ||
@@ -580,7 +583,9 @@ export async function buildPageElements<
       const invocationProps = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
+              markDynamic: hasRequestSearchParams,
+            })
           : makeThenableParams(pageSearchParams);
       }
       return createElement(PageComponent, invocationProps);

@@ -40,6 +40,7 @@ export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope 
   canonicalPathname: string;
   cleanPathname: string;
   forceDynamic?: boolean;
+  mayBeClientPage?: boolean;
   queryIndependentConfig?: boolean;
   interceptionContext: string | null;
   interceptionId: string | null;
@@ -217,6 +218,7 @@ export function isAppWorkerResponseStageProps(
     typeof props.cleanPathname === "string" &&
     props.cleanPathname.startsWith("/") &&
     (props.forceDynamic === undefined || typeof props.forceDynamic === "boolean") &&
+    (props.mayBeClientPage === undefined || typeof props.mayBeClientPage === "boolean") &&
     (props.queryIndependentConfig === undefined ||
       typeof props.queryIndependentConfig === "boolean") &&
     (props.interceptionContext === null || typeof props.interceptionContext === "string") &&

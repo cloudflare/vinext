@@ -397,6 +397,15 @@ describe("Cloudflare Workers Response Store adapter", () => {
       );
     }
 
+    // A Client Page's empty-query prop is serialized before its component can
+    // read it. A cached empty-query response must never answer a later query.
+    const clientEmpty = await cacheStatus("/query-client-dependent");
+    const clientWithQuery = await cacheStatus("/query-client-dependent?q=second");
+    assert.notEqual(clientWithQuery.status, "HIT");
+    assert.equal(htmlValue(clientEmpty.body, "query-client-dependent-value"), "(empty)");
+    assert.equal(htmlValue(clientWithQuery.body, "query-client-dependent-value"), "second");
+    assert.notEqual((await cacheStatus("/query-client-dependent")).status, "HIT");
+
     const forced = await cacheStatus("/query-force-static?q=ignored");
     assert.equal(htmlValue(forced.body, "query-force-static-value"), "(empty)");
     assert.equal((await cacheStatus("/query-force-static?q=different")).status, "HIT");

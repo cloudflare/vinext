@@ -9,6 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { parseSync } from "vite";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import { toSlash } from "pathslash";
@@ -243,18 +244,49 @@ type AppRouterConfig = {
 
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   const sourceCache = new Map<string, string | null>();
+  const readSource = (filePath: string): string | null => {
+    if (!sourceCache.has(filePath)) {
+      try {
+        sourceCache.set(filePath, fs.readFileSync(filePath, "utf8"));
+      } catch {
+        sourceCache.set(filePath, null);
+      }
+    }
+    return sourceCache.get(filePath) ?? null;
+  };
   const dynamicConfig = (filePath: string | null | undefined): string | null => {
     if (!filePath) return null;
-    let source = sourceCache.get(filePath);
-    if (source === undefined) {
-      try {
-        source = fs.readFileSync(filePath, "utf8");
-      } catch {
-        source = null;
-      }
-      sourceCache.set(filePath, source);
-    }
+    const source = readSource(filePath);
     return source === null ? null : (extractExportConstString(source, "dynamic") ?? null);
+  };
+
+  // A Client Page's searchParams promise is serialized by React before the
+  // component runs. An empty-query render cannot prove that the client won't
+  // read the promise later. Only a directly declared Server Page is eligible
+  // for cross-query reuse; re-exports and unparseable modules fail closed.
+  const mayBeClientPage = (filePath: string | null | undefined): boolean => {
+    if (!filePath) return false;
+    const source = readSource(filePath);
+    if (source === null || source.includes('"use client"') || source.includes("'use client'")) {
+      return true;
+    }
+    try {
+      const result = parseSync(filePath, source, {
+        astType: "ts",
+        lang: "tsx",
+        sourceType: "module",
+      });
+      return (
+        result.errors.some((error) => error.severity === "Error") ||
+        !result.program.body.some(
+          (node) =>
+            node.type === "ExportDefaultDeclaration" &&
+            node.declaration.type === "FunctionDeclaration",
+        )
+      );
+    } catch {
+      return true;
+    }
   };
 
   return routes.map((route) => {
@@ -282,6 +314,17 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     return {
       canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
       forceDynamic: configs.includes("force-dynamic"),
+      mayBeClientPage:
+        !route.routePath &&
+        [
+          route.pagePath,
+          ...route.parallelSlots.flatMap((slot) => [
+            slot.pagePath,
+            slot.defaultPath,
+            ...slot.interceptingRoutes.map((intercept) => intercept.pagePath),
+          ]),
+          ...route.siblingIntercepts.map((intercept) => intercept.pagePath),
+        ].some(mayBeClientPage),
       // Only a literal static/error segment contract is a pre-render guarantee
       // for paths that were not prerendered. An ordinary successful probe is not.
       queryIndependentConfig:
