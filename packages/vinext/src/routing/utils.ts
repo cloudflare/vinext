@@ -19,11 +19,22 @@
  *     penalties (1000+) are not swamped, preserving their relative ordering.
  *     E.g. /:locale/blog/:path+ (with infix "blog") correctly beats /:locale/:path+
  *     even when both share the same "locale-test" static prefix.
- *   - Note: dynamic routes CAN score negative (e.g. /a/:b/c/:d = -346), but
- *     this is harmless because the trie matcher (route-trie.ts) checks static
- *     children before dynamic children at each node, so purely-static routes
- *     still win at request time regardless of sort-order score.
+ *   - Infix-static and static-prefix bonuses can drive a dynamic route's raw
+ *     score below zero (e.g. /:id/b = -400). The trie matcher (route-trie.ts)
+ *     is unaffected (it checks static children before dynamic ones per node),
+ *     but linear-scan consumers of this order — e.g.
+ *     findRouteManifestRouteByMatchedUrl in navigation-planner.ts — return the
+ *     first matching route, so a negative-scoring dynamic route would shadow a
+ *     purely-static one (#1964). To prevent that, every dynamic route is lifted
+ *     by a uniform offset (DYNAMIC_PRECEDENCE_OFFSET) so the whole dynamic band
+ *     sits strictly above static routes (score 0), while the offset preserves
+ *     the exact relative ordering among dynamic routes.
  */
+// Uniform offset applied to every dynamic route's precedence. Large enough to
+// clear any infix-driven negative for realistic route depths, so static routes
+// (score 0) always sort before dynamic ones in linear-scan matchers.
+const DYNAMIC_PRECEDENCE_OFFSET = 1_000_000;
+
 function routePrecedence(pattern: string): number {
   const parts = pattern.split("/").filter(Boolean);
   let score = 0;
@@ -56,16 +67,22 @@ function routePrecedence(pattern: string): number {
 
   // Apply a small reduction per static-prefix segment for routes that also
   // contain dynamic segments. This ensures /_sites/:subdomain sorts above
-  // /:subdomain, and /_sites/:slug* sorts above /:slug*, while keeping the
-  // final score positive (so purely-static routes at score=0 always win).
+  // /:subdomain, and /_sites/:slug* sorts above /:slug*.
   //
   // 50 is deliberately smaller than the dynamic-segment penalty (100) so
   // one static prefix segment is enough to beat one bare dynamic segment,
   // and smaller than the infix-static bonus (500) so that infix ordering is
   // not disturbed between two routes that share the same prefix.
   const isDynamic = parts.some((p) => p.startsWith(":") || p.endsWith("+") || p.endsWith("*"));
-  if (isDynamic && staticPrefixCount > 0) {
-    score -= staticPrefixCount * 50;
+  if (isDynamic) {
+    if (staticPrefixCount > 0) {
+      score -= staticPrefixCount * 50;
+    }
+    // Lift the whole dynamic band above purely-static routes (score 0). The
+    // offset is uniform, so relative ordering among dynamic routes (including
+    // negative infix-static scores) is preserved exactly while no dynamic route
+    // can ever sort before a static one in a linear scan (#1964).
+    score += DYNAMIC_PRECEDENCE_OFFSET;
   }
 
   return score;
