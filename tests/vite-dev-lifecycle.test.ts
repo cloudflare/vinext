@@ -644,6 +644,30 @@ export default { plugins: [vinext()] };
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
 
+  it("reclaims the CLI lifecycle when vinext is removed and restored on config reload", async () => {
+    const root = createProject();
+    useViteCliArgv();
+    server = await createServer({
+      root,
+      configFile: false,
+      logLevel: "silent",
+      plugins: [vinext()],
+      server: { port: 0 },
+    });
+    await server.listen();
+    const lockfilePath = getLockfilePath(root);
+    const lock = readLockfile(lockfilePath);
+    expect(lock).toMatchObject({ pid: process.pid });
+
+    server.config.inlineConfig.plugins = [];
+    await server.restart();
+    expect(fs.existsSync(lockfilePath)).toBe(false);
+
+    server.config.inlineConfig.plugins = [vinext()];
+    await server.restart();
+    expect(readLockfile(lockfilePath)).toMatchObject({ pid: process.pid });
+  });
+
   it.each(["forced", "concurrent"] as const)(
     "does not carry CLI restart provenance into a reused config after a %s restart",
     async (kind) => {

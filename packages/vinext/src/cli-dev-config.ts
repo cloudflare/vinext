@@ -140,7 +140,16 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
       // Forced restarts clone the inline config; concurrent calls can share the
       // same restart. Neither config should retain this temporary provenance.
       delete (server.config.inlineConfig as typeof inlineConfig)[VINEXT_DEV_RESTART_CONFIG];
-      devInvocationRoot = normalizeDevLifecycleRoot(server.config.root);
+      if (
+        (server.config as ResolvedConfig & { [VINEXT_DEV_CLI_LIFECYCLE]?: true })[
+          VINEXT_DEV_CLI_LIFECYCLE
+        ]
+      ) {
+        devInvocationRoot = normalizeDevLifecycleRoot(server.config.root);
+      } else {
+        devInvocationRoot = undefined;
+        devInvocationReserved = false;
+      }
       if (restartingLock) {
         restartingLock.restarting = false;
         if (restartingLock.servers === 0) {
