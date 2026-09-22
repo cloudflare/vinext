@@ -165,13 +165,13 @@ export function findViteRoot(
       continue;
     }
     if (arg.startsWith("-")) {
-      const booleanOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
+      const normalizedOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
       if (
         !clusteredOptions &&
         !REQUIRED_VALUE_OPTIONS.has(option) &&
-        !OPTIONAL_VALUE_OPTIONS.has(option) &&
-        !VALUELESS_OPTIONS.has(option) &&
-        !BOOLEAN_OPTIONS.has(booleanOption)
+        !OPTIONAL_VALUE_OPTIONS.has(normalizedOption) &&
+        !VALUELESS_OPTIONS.has(normalizedOption) &&
+        !BOOLEAN_OPTIONS.has(normalizedOption)
       ) {
         shouldPreflight = false;
       }

@@ -92,16 +92,19 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).toContain("No Vite config was found for this project");
   });
 
-  it("keeps the config preflight for negated boolean options", () => {
-    const root = createRoot();
-    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--no-watch"], {
-      cwd: root,
-      encoding: "utf-8",
-    });
+  it.each(["--no-watch", "--no-minify", "--no-sourcemap", "--no-manifest"])(
+    "keeps the config preflight for valid negated option %s",
+    (option) => {
+      const root = createRoot();
+      const result = spawnSync(process.execPath, [CLI_PATH, "build", option], {
+        cwd: root,
+        encoding: "utf-8",
+      });
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("No Vite config was found for this project");
-  });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("No Vite config was found for this project");
+    },
+  );
 
   it.each([
     { args: ["--mode"] },
