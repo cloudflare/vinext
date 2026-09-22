@@ -145,7 +145,7 @@ async function buildHybridPagesBundle(
   });
 }
 
-export function prepareBuild(
+function prepareBuild(
   builder: ViteBuilder,
   context: BuildLifecycleContext,
 ): BuildLifecycleState {
@@ -170,7 +170,7 @@ export function prepareBuild(
   return { pagesClientAssetsBuildSession };
 }
 
-export async function finalizeBuild(
+async function finalizeBuild(
   builder: ViteBuilder,
   context: BuildLifecycleContext,
 ): Promise<BuildLifecycleResult> {
@@ -254,7 +254,7 @@ export async function finalizeBuild(
   return { prerendered: Boolean(prerenderDecision), standalone: false };
 }
 
-export function disposeBuild(state: BuildLifecycleState): void {
+function disposeBuild(state: BuildLifecycleState): void {
   const session = state.pagesClientAssetsBuildSession;
   if (!session) return;
   clearPagesClientAssetsBuildMetadata(session);
