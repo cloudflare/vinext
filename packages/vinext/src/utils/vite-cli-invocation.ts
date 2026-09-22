@@ -170,7 +170,7 @@ export function findViteRoot(
       if (
         (option.startsWith("--no-") && optionHasInlineValue(arg)) ||
         (!clusteredOptions &&
-          !REQUIRED_VALUE_OPTIONS.has(option) &&
+          !REQUIRED_VALUE_OPTIONS.has(normalizedOption) &&
           !OPTIONAL_VALUE_OPTIONS.has(normalizedOption) &&
           !VALUELESS_OPTIONS.has(normalizedOption) &&
           !BOOLEAN_OPTIONS.has(normalizedOption))
