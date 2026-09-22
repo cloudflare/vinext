@@ -84,6 +84,12 @@ describe("thin vinext command proxies", () => {
   it("supports a positional project root", () => {
     const root = createRoot();
     writeProject(path.join(root, "project"));
+    fs.unlinkSync(path.join(root, "node_modules"));
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "project/node_modules"),
+      "junction",
+    );
     const result = spawnSync(
       process.execPath,
       [CLI_PATH, "build", "project", "--logLevel", "silent"],
@@ -126,16 +132,29 @@ describe("thin vinext command proxies", () => {
     expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
   }, 120_000);
 
-  it("leaves invalid option handling to Vite", () => {
+  it("leaves unknown valued option handling to Vite", () => {
     const root = createRoot();
     writeProject(root);
-    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--not-a-vite-option"], {
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--hostname", "127.0.0.1"], {
       cwd: root,
       encoding: "utf-8",
     });
 
     expect(result.status).toBe(1);
     expect(`${result.stdout}\n${result.stderr}`).toContain("Unknown option");
+    expect(result.stderr).not.toContain("No Vite config was found");
+  });
+
+  it("does not treat arguments after the option delimiter as a project root", () => {
+    const root = createRoot();
+    writeProject(path.join(root, "project"));
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--", "project"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("No Vite config was found");
   });
 
   it("serves configured projects and forwards termination to Vite", async () => {
