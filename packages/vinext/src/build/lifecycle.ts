@@ -145,10 +145,7 @@ async function buildHybridPagesBundle(
   });
 }
 
-function prepareBuild(
-  builder: ViteBuilder,
-  context: BuildLifecycleContext,
-): BuildLifecycleState {
+function prepareBuild(builder: ViteBuilder, context: BuildLifecycleContext): BuildLifecycleState {
   if (context.nextConfig.output === "standalone") {
     const vinextDistDir = path.join(resolveVinextPackageRoot(), "dist");
     if (!fs.existsSync(vinextDistDir)) {
