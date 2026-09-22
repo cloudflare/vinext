@@ -57,6 +57,7 @@ export type BuildLifecycleResult = {
 
 type BuildLifecycleState = {
   pagesClientAssetsBuildSession?: string;
+  restoreBuild?: () => void;
 };
 
 async function loadProjectViteApi(root: string): Promise<ProjectViteApi> {
@@ -319,6 +320,8 @@ async function finalizeBuild(
 }
 
 function disposeBuild(state: BuildLifecycleState): void {
+  state.restoreBuild?.();
+  state.restoreBuild = undefined;
   const session = state.pagesClientAssetsBuildSession;
   if (!session) return;
   clearPagesClientAssetsBuildMetadata(session);
@@ -396,6 +399,23 @@ export function createBuildLifecyclePlugins(options: {
           if (!options.isEnabled(builder) || states.has(builder)) return;
           const state = prepareBuild(options.createContext());
           states.set(builder, state);
+          if (state.pagesClientAssetsBuildSession) {
+            // Keep the original method for exact restoration; call it with its builder below.
+            // oxlint-disable-next-line typescript/unbound-method
+            const originalBuild = builder.build;
+            builder.build = async (environment) => {
+              try {
+                return await originalBuild.call(builder, environment);
+              } catch (error) {
+                states.delete(builder);
+                disposeBuild(state);
+                throw error;
+              }
+            };
+            state.restoreBuild = () => {
+              builder.build = originalBuild;
+            };
+          }
           try {
             if (!options.shouldBuildPlainPages()) return;
             for (const name of ["client", "ssr"]) {
