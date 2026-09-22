@@ -508,4 +508,38 @@ describe("configured vinext build contract", () => {
     expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
     expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(false);
   }, 120_000);
+
+  it("leaves Vite library builds outside the application lifecycle", () => {
+    const root = createPagesProject();
+    write(root, "entry.ts", 'export const greeting = "library-build";\n');
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace(
+          "plugins: [",
+          'build: { lib: { entry: "entry.ts", formats: ["es"], fileName: "library" } }, plugins: [',
+        ),
+    );
+
+    const output = execFileSync(process.execPath, [VITE_CLI_PATH, "build"], {
+      cwd: root,
+      encoding: "utf-8",
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(output).not.toContain("Build complete.");
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(false);
+    expect(
+      fs
+        .readdirSync(path.join(root, "dist/_next/static/chunks"))
+        .some((file) =>
+          fs
+            .readFileSync(path.join(root, "dist/_next/static/chunks", file), "utf-8")
+            .includes("library-build"),
+        ),
+    ).toBe(true);
+  }, 120_000);
 });
