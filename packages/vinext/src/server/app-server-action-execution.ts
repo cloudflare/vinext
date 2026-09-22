@@ -863,6 +863,15 @@ function normalizeDevServerReferenceId(id: string): string {
   return (cacheTag === -1 ? moduleId : moduleId.slice(0, cacheTag)) + id.slice(exportSeparator);
 }
 
+function requiresRegisteredServerReferenceMatch(actionId: string): boolean {
+  const exportSeparator = actionId.indexOf("#");
+  if (exportSeparator === -1) return true;
+  // Production requests are authorized by the generated action-owner manifest
+  // before execution. Dev has no manifest, so its path-based references need
+  // the runtime registration check to prevent arbitrary named-export loading.
+  return !/^[0-9a-f]{12}$/.test(actionId.slice(0, exportSeparator));
+}
+
 function matchesRegisteredServerReference(
   action: AppServerActionFunction,
   actionId: string,
@@ -1263,7 +1272,11 @@ export async function handleProgressiveServerActionRequest(
       return null;
     }
 
-    if (directActionId && !matchesRegisteredServerReference(action, directActionId)) {
+    if (
+      directActionId &&
+      requiresRegisteredServerReferenceMatch(directActionId) &&
+      !matchesRegisteredServerReference(action, directActionId)
+    ) {
       return createActionNotFoundResponse(directActionId, {
         clearRequestContext: options.clearRequestContext,
         getAndClearPendingCookies: options.getAndClearPendingCookies,
@@ -1565,7 +1578,8 @@ export async function handleServerActionRscRequest<
 
       if (
         !isAppServerActionFunction(loadedAction) ||
-        !matchesRegisteredServerReference(loadedAction, options.actionId)
+        (requiresRegisteredServerReferenceMatch(options.actionId) &&
+          !matchesRegisteredServerReference(loadedAction, options.actionId))
       ) {
         return createActionNotFoundResponse(options.actionId, {
           clearRequestContext: options.clearRequestContext,
@@ -1611,7 +1625,8 @@ export async function handleServerActionRscRequest<
 
       if (
         !isAppServerActionFunction(loadedAction) ||
-        !matchesRegisteredServerReference(loadedAction, options.actionId)
+        (requiresRegisteredServerReferenceMatch(options.actionId) &&
+          !matchesRegisteredServerReference(loadedAction, options.actionId))
       ) {
         return createActionNotFoundResponse(options.actionId, {
           clearRequestContext: options.clearRequestContext,
