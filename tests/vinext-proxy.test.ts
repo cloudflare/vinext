@@ -148,6 +148,32 @@ describe("thin vinext command proxies", () => {
     expect(fs.existsSync(path.join(root, "project/dist/server/entry.js"))).toBe(true);
   }, 120_000);
 
+  it.each(["--profile", "--debug"])(
+    "does not consume another option as the value of optional flag %s",
+    (optionalFlag) => {
+      const root = createRoot();
+      writeProject(path.join(root, "project"));
+      const result = spawnSync(
+        process.execPath,
+        [
+          CLI_PATH,
+          "build",
+          optionalFlag,
+          "--mode",
+          "production",
+          "project",
+          "--logLevel",
+          "silent",
+        ],
+        { cwd: root, encoding: "utf-8" },
+      );
+
+      expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      expect(fs.existsSync(path.join(root, "project/dist/server/entry.js"))).toBe(true);
+    },
+    120_000,
+  );
+
   it.each(["--config=config/vite.custom.ts", "-c=config/vite.custom.ts"])(
     "resolves explicit config paths from the invocation cwd (%s)",
     (configArg) => {

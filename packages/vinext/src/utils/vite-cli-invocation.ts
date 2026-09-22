@@ -56,6 +56,7 @@ const BOOLEAN_OPTIONS = new Set([
   "--watch",
   "-w",
 ]);
+const VALUELESS_OPTIONS = new Set(["--help", "-h", "--version", "-v"]);
 
 function optionName(arg: string): string {
   const equalsIndex = arg.indexOf("=");
@@ -82,6 +83,31 @@ function optionConsumesNext(arg: string, next: string | undefined): boolean {
   if (OPTIONAL_VALUE_OPTIONS.has(option)) return next !== undefined && !next.startsWith("-");
   // CAC does not consume a separate value following --no-*.
   return BOOLEAN_OPTIONS.has(option) && /^(?:true|false)$/.test(next ?? "");
+}
+
+export function findViteRoot(args: string[]): string | undefined | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--") break;
+    const option = optionName(arg);
+    if (VALUELESS_OPTIONS.has(option)) continue;
+    if (optionConsumesNext(arg, args[index + 1])) {
+      index++;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      const booleanOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
+      if (
+        !REQUIRED_VALUE_OPTIONS.has(option) &&
+        !OPTIONAL_VALUE_OPTIONS.has(option) &&
+        !BOOLEAN_OPTIONS.has(booleanOption)
+      ) {
+        return null;
+      }
+      continue;
+    }
+    return arg;
+  }
 }
 
 function commandArguments(argv: string[]): { command: ViteCliCommand; args: string[] } | undefined {
