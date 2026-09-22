@@ -210,6 +210,10 @@ describe("isViteCliInvocation", () => {
   });
 
   it("keeps the next positional argument after a negated option", () => {
+    expect(findViteRoot("build", ["--no-watch", "false", "project"])).toEqual({
+      root: "false",
+      shouldPreflight: false,
+    });
     expect(
       getViteCliInvocation([
         "node",
