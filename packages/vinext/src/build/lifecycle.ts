@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import path from "pathslash";
-import type { Logger, Plugin, PluginOption, UserConfig, ViteBuilder } from "vite";
+import type { Logger, Plugin, PluginOption, ResolvedConfig, UserConfig, ViteBuilder } from "vite";
 import {
   hasBuildIdentityResponseHeader,
   hasUncachedRequestRouting,
@@ -332,7 +332,8 @@ export async function runBuildLifecycle(
 export function createBuildLifecyclePlugins(options: {
   createContext: () => BuildLifecycleContext;
   isEnabled: (builder: ViteBuilder) => boolean;
-  shouldPrepare: (config: UserConfig) => boolean;
+  onPrepare?: () => void;
+  shouldPrepare: (config: UserConfig | ResolvedConfig) => boolean;
   shouldBuildPlainPages: () => boolean;
 }): Plugin[] {
   const states = new WeakMap<ViteBuilder, BuildLifecycleState>();
@@ -341,10 +342,11 @@ export function createBuildLifecyclePlugins(options: {
     {
       name: "vinext:build-lifecycle-prepare",
       apply: "build",
-      config: {
-        order: "post",
+      configResolved: {
+        order: "pre",
         handler(config) {
           if (outputPrepared || !options.shouldPrepare(config)) return;
+          options.onPrepare?.();
           prepareBuildOutput(options.createContext());
           outputPrepared = true;
         },

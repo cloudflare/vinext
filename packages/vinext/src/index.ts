@@ -319,7 +319,7 @@ import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
 import { isServerEnvironment } from "./plugins/environment.js";
-import { claimViteCliBuildInvocation } from "./utils/vite-cli-invocation.js";
+import { claimViteCliBuildInvocation, getViteCliInvocation } from "./utils/vite-cli-invocation.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 import {
   isPathInside,
@@ -357,6 +357,15 @@ const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
   /Failed to resolve dependency: .*use-sync-external-store\/with-selector.*present in .* 'optimizeDeps\.include'/;
 const VINEXT_FILTERED_OPTIMIZE_DEPS_WARN = Symbol.for("vinext.filteredOptimizeDepsWarn");
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+
+// Static imports run before the body of vite.config.*, which preserves the
+// previous CLI contract that project dotenv values are available while that
+// config is evaluated. The plugin hook loads again later for custom envDir.
+const earlyViteCliInvocation = getViteCliInvocation();
+if (earlyViteCliInvocation?.command === "build") {
+  Reflect.set(process.env, "NODE_ENV", "production");
+  loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
+}
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -2108,6 +2117,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       !config.build?.watch &&
       !config.build?.ssr &&
       getBuildBundlerOptions(config.build)?.input === undefined,
+    onPrepare: () => {
+      if (!hasAppDir || reactUpgradeChecked) return;
+      reactUpgradeChecked = true;
+      const reactUpgrade = getReactUpgradeDeps(root);
+      if (reactUpgrade.length === 0) return;
+      const installCommand = detectPackageManager(root).replace(/ -D$/, "");
+      const [packageManager, ...packageManagerArgs] = installCommand.split(" ");
+      console.log("  Upgrading React for RSC compatibility...");
+      execFileSync(packageManager, [...packageManagerArgs, ...reactUpgrade], {
+        cwd: root,
+        stdio: "inherit",
+        shell: process.platform === "win32",
+      });
+    },
     shouldBuildPlainPages: () => !hasAppDir && !hasCloudflarePlugin && !hasNitroPlugin,
     createContext: () => ({
       cacheConfig: options.cache ?? null,
@@ -2410,21 +2433,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
-
-        if (buildLifecycleEnabled && hasAppDir && !reactUpgradeChecked) {
-          reactUpgradeChecked = true;
-          const reactUpgrade = getReactUpgradeDeps(root);
-          if (reactUpgrade.length > 0) {
-            const installCommand = detectPackageManager(root).replace(/ -D$/, "");
-            const [packageManager, ...packageManagerArgs] = installCommand.split(" ");
-            console.log("  Upgrading React for RSC compatibility...");
-            execFileSync(packageManager, [...packageManagerArgs, ...reactUpgrade], {
-              cwd: root,
-              stdio: "inherit",
-              shell: process.platform === "win32",
-            });
-          }
-        }
 
         // Route scans are cached at module scope so the generated entries and
         // request handlers can share them. A Vite restart can create a new
@@ -3076,7 +3084,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // The Vite CLI uses its legacy single-environment path unless a
           // builder config exists. Plain Pages projects define the exact
           // client and SSR environments below, so opt into buildApp for them.
-          ...(shouldInjectPlainPagesEnvironments ? { builder: config.builder ?? {} } : {}),
+          ...(shouldInjectPlainPagesEnvironments
+            ? { builder: { ...config.builder, sharedConfigBuild: true } }
+            : {}),
           build: {
             // Emit asset files (CSS, etc.) referenced by SSR JS chunks.
             //
@@ -7323,7 +7333,7 @@ export const loadServerActionClient = ${
           sequential: true,
           order: "post" as const,
           handler() {
-            if (buildIdWritten) return;
+            if (buildIdWritten || !isServerEnvironment(this.environment)) return;
             buildIdWritten = true;
             const outDir = path.join(root, "dist", "server");
             fs.mkdirSync(outDir, { recursive: true });

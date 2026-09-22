@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   claimViteCliBuildInvocation,
+  getViteCliInvocation,
   isViteCliInvocation,
 } from "../packages/vinext/src/utils/vite-cli-invocation.js";
 
@@ -46,5 +47,23 @@ describe("isViteCliInvocation", () => {
 
     expect(claimViteCliBuildInvocation(argv)).toBe(true);
     expect(claimViteCliBuildInvocation(argv)).toBe(false);
+  });
+
+  it("resolves build roots and modes without consuming optional flags", () => {
+    expect(
+      getViteCliInvocation([
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        "--profile",
+        "--mode",
+        "staging",
+        "build",
+        "app",
+      ]),
+    ).toEqual({
+      command: "build",
+      mode: "staging",
+      root: expect.stringMatching(/\/app$/),
+    });
   });
 });
