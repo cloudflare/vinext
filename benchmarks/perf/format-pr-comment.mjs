@@ -13,26 +13,28 @@ if (results.run.kind !== "pull_request") {
   process.exit(0);
 }
 
-const response = JSON.parse(await readFile(responsePath, "utf8"));
-const uploadedComparison = response.comparison;
-if (!uploadedComparison)
-  throw new Error("Performance upload response did not include a comparison");
-
 const resultBenchmarks = Array.isArray(results.benchmarks) ? results.benchmarks : [];
 const resultsByBenchmark = new Map(
   resultBenchmarks.map((benchmark) => [benchmark.benchmarkId, benchmark]),
 );
+const response = await readUploadResponse(responsePath);
+const uploadedComparison = response.comparison;
+if (!uploadedComparison && resultBenchmarks.length === 0) {
+  await writeFile(outputPath, "");
+  process.exit(0);
+}
 const hasPairedBaseline = resultBenchmarks.some((benchmark) => benchmark.baselineSamples);
+const comparisonSource = uploadedComparison ?? localComparison(resultBenchmarks);
 const comparison = {
-  ...uploadedComparison,
+  ...comparisonSource,
   baseline: hasPairedBaseline
     ? {
         sha: results.run.baseSha,
-        shortSha: results.run.baseSha.slice(0, 7),
-        measuredAt: results.run.measuredAt,
+        shortSha: shortSha(results.run.baseSha),
+        measuredAt: comparisonSource.baseline?.measuredAt ?? null,
       }
-    : uploadedComparison.baseline,
-  measurements: uploadedComparison.measurements.map((measurement) => {
+    : comparisonSource.baseline,
+  measurements: comparisonSource.measurements.map((measurement) => {
     const benchmark = resultsByBenchmark.get(measurement.benchmarkId);
     return benchmark?.baselineSamples
       ? {
@@ -62,6 +64,51 @@ function formatValue(value, unit) {
     return `${(value / (1024 * 1024)).toFixed(2)} MB`;
   }
   return `${Number(value.toFixed(2))} ${unit}`;
+}
+
+function shortSha(sha) {
+  return typeof sha === "string" && sha.length > 0 ? sha.slice(0, 7) : "unknown";
+}
+
+async function readUploadResponse(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    // The skipped-upload fields are diagnostic metadata; comment formatting is
+    // gated by the presence of a dashboard comparison.
+    if (error?.code === "ENOENT") return { uploaded: false, reason: "missing_response" };
+    throw error;
+  }
+}
+
+function localComparison(benchmarks) {
+  const hasLocalBaseline =
+    results.run.baseSha && benchmarks.some((benchmark) => benchmark.baselineSamples);
+
+  return {
+    uploaded: false,
+    head: {
+      sha: results.run.commitSha,
+      shortSha: shortSha(results.run.commitSha),
+      measuredAt: results.run.measuredAt,
+    },
+    baseline: hasLocalBaseline
+      ? {
+          sha: results.run.baseSha,
+          shortSha: shortSha(results.run.baseSha),
+          measuredAt: null,
+        }
+      : null,
+    measurements: benchmarks.map((benchmark) => ({
+      benchmarkId: benchmark.benchmarkId,
+      label: benchmark.label,
+      implementationLabel: benchmark.implementationLabel,
+      unit: benchmark.unit,
+      lowerIsBetter: benchmark.lowerIsBetter,
+      baseline: benchmark.baselineSamples,
+      current: benchmark.samples,
+    })),
+  };
 }
 
 function measurementChange(measurement) {
@@ -115,7 +162,9 @@ const hasCurrentOnlyMeasurement = comparison.measurements.some(
   (measurement) =>
     !measurement.baseline && !resultsByBenchmark.get(measurement.benchmarkId)?.baselineSamples,
 );
-const dashboardUrl = `https://vinext.dev/benchmarks/pull/${results.run.pullRequest}`;
+const dashboardUrl = uploadedComparison
+  ? `https://vinext.dev/benchmarks/pull/${results.run.pullRequest}`
+  : null;
 const rows = measurements.map((measurement) =>
   [
     escapeCell(measurement.label),
@@ -140,7 +189,7 @@ const body = [
             : `Compared \`${comparison.head.shortSha}\` against base \`${comparison.baseline.shortSha}\`. Paired benchmarks use alternating same-runner rounds; unpaired benchmarks have no baseline.${skippedNextjs ? " Next.js was unchanged and skipped." : ""}`
         : `Compared \`${comparison.head.shortSha}\` against base \`${comparison.baseline.shortSha}\` using alternating same-runner rounds.${skippedNextjs ? " Next.js was unchanged and skipped." : ""}`
       : `Compared \`${comparison.head.shortSha}\` against base \`${comparison.baseline.shortSha}\`.`
-    : `Measured \`${comparison.head.shortSha}\`. No benchmark run is available for base \`${results.run.baseSha.slice(0, 7)}\`.`,
+    : `Measured \`${comparison.head.shortSha}\`. No benchmark run is available for base \`${shortSha(results.run.baseSha)}\`.`,
   "",
   comparison.baseline
     ? `**${improvements} improved · ${regressions} regressed · ${neutral} within ±1.5%**`
@@ -150,7 +199,9 @@ const body = [
   "|---|---|---:|---:|---:|",
   ...rows.map((row) => `| ${row} |`),
   "",
-  `[View detailed results and traces](${dashboardUrl})`,
+  dashboardUrl
+    ? `[View detailed results and traces](${dashboardUrl})`
+    : "Dashboard upload was unavailable for this run.",
   "",
   `<sub>🟢 improvement · 🔴 regression · ⚫ change below 1.5%${
     hasPairedBaseline
