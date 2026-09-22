@@ -37,7 +37,8 @@ import { defineConfig } from "vite";
 import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 
 export default defineConfig({
-  build: { manifest: true },
+  build: { manifest: true, target: "es2020" },
+  environments: { ssr: { build: { target: "es2022" } } },
   resolve: {
     alias: { "virtual:contract-value": path.join(import.meta.dirname, "contract-value.ts") },
   },
@@ -79,7 +80,10 @@ export default defineConfig({
       writeBundle() {
         const outDir = this.environment.config.build.outDir;
         if (outDir.endsWith("dist/server")) {
-          fs.writeFileSync(path.join(outDir, "output-only-plugin-ran"), this.environment.name);
+          fs.writeFileSync(
+            path.join(outDir, "output-only-plugin-ran"),
+            this.environment.name + ":" + this.environment.config.build.target,
+          );
         }
       },
     },
@@ -169,7 +173,7 @@ describe("configured vinext build contract", () => {
     expect(pagesEntry).toContain("ssr-environment-ran");
     expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
     expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-ran"), "utf-8")).toBe(
-      "ssr",
+      "ssr:es2022",
     );
     const serverManifest = JSON.parse(
       fs.readFileSync(path.join(root, "custom/server/.vite/manifest.json"), "utf-8"),
@@ -236,9 +240,8 @@ describe("configured vinext build contract", () => {
       fs
         .readFileSync(configPath, "utf-8")
         .replace(
-          "export default defineConfig({",
-          `export default defineConfig({
-  build: { emptyOutDir: false },`,
+          'build: { manifest: true, target: "es2020" },',
+          'build: { emptyOutDir: false, manifest: true, target: "es2020" },',
         )
         .replace(
           "plugins: [",
@@ -287,12 +290,13 @@ describe("configured vinext build contract", () => {
     const configPath = path.join(root, "vite.config.ts");
     fs.writeFileSync(
       configPath,
-      fs
-        .readFileSync(configPath, "utf-8")
-        .replace(
-          "export default defineConfig({ plugins:",
-          'export default defineConfig({ build: { rolldownOptions: { input: "entry.ts" } }, plugins:',
-        ),
+      fs.readFileSync(configPath, "utf-8").replace(
+        "plugins: [",
+        `plugins: [{
+    name: "late-targeted-build",
+    config() { return { build: { rolldownOptions: { input: "entry.ts" } } }; },
+  },`,
+      ),
     );
 
     const output = execFileSync(VP_PATH, ["build"], {
