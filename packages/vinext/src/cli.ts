@@ -586,6 +586,7 @@ async function buildApp() {
     await runBuildLifecycle(builder, {
       cacheConfig: buildConfigMetadata.cacheConfig,
       createPagesOnlyPlugins: () => vinext({ disableAppRouter: true }),
+      emptyOutDir: buildConfigMetadata.emptyOutDir,
       hasAppDir: isApp,
       hasPagesDir: hasPagesDir(),
       nextConfig: resolvedNextConfig,
