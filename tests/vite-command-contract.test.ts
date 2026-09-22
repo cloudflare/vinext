@@ -39,6 +39,9 @@ import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 if (process.env.FROM_DOTENV !== "config-time-dotenv") {
   throw new Error("dotenv unavailable in Vite config: " + process.env.FROM_DOTENV);
 }
+if (process.env.EXPECT_CONFIG_NODE_ENV && process.env.NODE_ENV !== process.env.EXPECT_CONFIG_NODE_ENV) {
+  throw new Error("vite.config saw NODE_ENV=" + process.env.NODE_ENV);
+}
 
 export default defineConfig({
   build: { manifest: true, target: "es2020" },
@@ -107,6 +110,15 @@ export default defineConfig({
     }),
   ],
 });
+`,
+  );
+  write(
+    root,
+    "next.config.mjs",
+    `if (process.env.EXPECT_CONFIG_NODE_ENV && process.env.NODE_ENV !== process.env.EXPECT_CONFIG_NODE_ENV) {
+  throw new Error("next.config saw NODE_ENV=" + process.env.NODE_ENV);
+}
+export default {};
 `,
   );
   write(root, ".env", "FROM_DOTENV=config-time-dotenv\n");
@@ -234,15 +246,19 @@ describe("configured vinext build contract", () => {
   }, 120_000);
 
   it("provides the same lifecycle with Vite options after a positional root", () => {
+    // Next.js preserves an explicit NODE_ENV while loading config, but still
+    // compiles production branches during build.
+    // Ported from Next.js: test/e2e/non-standard-node-env-warning/non-standard-node-env-warning.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/non-standard-node-env-warning/non-standard-node-env-warning.test.ts
     const root = createHybridProject("vite.prod.ts");
     write(root, "vite.config.ts", 'throw new Error("loaded the wrong Vite config");\n');
 
     execFileSync(
       process.execPath,
-      [VITE_CLI_PATH, "build", root, "--mode", "production", "--config", "vite.prod.ts"],
+      [VITE_CLI_PATH, "build", root, "--mode", "test", "--config", "vite.prod.ts"],
       {
         cwd: root,
-        env: { ...process.env, NODE_ENV: "development" },
+        env: { ...process.env, EXPECT_CONFIG_NODE_ENV: "test", NODE_ENV: "test" },
         stdio: "pipe",
         timeout: 120_000,
       },
