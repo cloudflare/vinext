@@ -112,6 +112,16 @@ export default defineConfig({
       rscOutDir: "custom/server",
       ssrOutDir: "custom/server/ssr",
     }),
+    {
+      name: "contract:post-build-app",
+      enforce: "post",
+      buildApp: {
+        order: "post",
+        handler() {
+          console.log("contract:user-build-app");
+        },
+      },
+    },
   ],
 });
 `,
@@ -242,14 +252,18 @@ describe("configured vinext build contract", () => {
   it("keeps hybrid config plugins, custom output roots, and production semantics", () => {
     const root = createHybridProject();
 
-    execFileSync(process.execPath, [CLI_PATH, "build"], {
+    const output = execFileSync(process.execPath, [CLI_PATH, "build"], {
       cwd: root,
       env: { ...process.env, NODE_ENV: "development" },
-      stdio: "pipe",
+      encoding: "utf-8",
       timeout: 120_000,
     });
 
     expectConfiguredBuild(root);
+    expect(output.match(/contract:user-build-app/g)).toHaveLength(1);
+    expect(output.indexOf("contract:user-build-app")).toBeLessThan(
+      output.indexOf("Build complete."),
+    );
   }, 120_000);
 
   it.each<[string, string[], "test" | "development", "test" | undefined]>([
