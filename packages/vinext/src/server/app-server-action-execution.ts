@@ -899,7 +899,10 @@ function matchesRegisteredServerReference(
   }
   const registeredExport = normalizedRegisteredId.slice(registeredSeparator + 1);
   const requestedExport = normalizedActionId.slice(actionSeparator + 1);
-  return /^\$\$hoist_\d+_(.*)$/.exec(registeredExport)?.[1] === requestedExport;
+  const hoistedExport = /^\$\$hoist_\d+_(.*)$/.exec(registeredExport)?.[1];
+  return requestedExport === "default"
+    ? hoistedExport !== undefined
+    : hoistedExport === requestedExport;
 }
 
 function getServerActionFailureMessage(error: unknown): string {

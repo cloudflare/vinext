@@ -2805,6 +2805,25 @@ describe("app server action execution helpers", () => {
     expect(action).toHaveBeenCalledTimes(1);
   });
 
+  it("accepts a hoisted registration for a default-exported action", async () => {
+    const action = vi.fn(() => "saved");
+    Object.defineProperty(action, "$$id", {
+      value: "/app/actions.ts#$$hoist_0_save",
+    });
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "/app/actions.ts#default",
+        loadServerAction() {
+          return Promise.resolve(action);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a source export whose registered server-reference id is different", async () => {
     const hidden = vi.fn(() => "private");
     Object.defineProperty(hidden, "$$id", {

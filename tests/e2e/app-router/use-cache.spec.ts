@@ -199,6 +199,17 @@ test.describe('"use cache" direct client imports', () => {
       );
     }).toPass({ timeout: 15_000 });
   });
+
+  test("default-exported server actions remain callable from cached modules", async ({ page }) => {
+    await page.goto(`${BASE}/use-cache-client-import`);
+    await expect(async () => {
+      await page.locator("#call-client-imported-default").click();
+      await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
+        "client-default:direct",
+        { timeout: 2000 },
+      );
+    }).toPass({ timeout: 15_000 });
+  });
 });
 
 test.describe('"use cache" transform coverage', () => {
