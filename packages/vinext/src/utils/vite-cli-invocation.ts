@@ -6,6 +6,7 @@ export type ViteCliInvocation = {
   command: ViteCliCommand;
   mode: string;
   root: string;
+  configFile?: string;
 };
 
 let buildInvocationClaimed = false;
@@ -119,6 +120,7 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
   if (!invocation) return undefined;
   let mode: string | undefined;
   let root: string | undefined;
+  let configFile: string | undefined;
   for (let index = 0; index < invocation.args.length; index += 1) {
     const arg = invocation.args[index];
     if (arg === "--") {
@@ -126,6 +128,13 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
       break;
     }
     const option = clusteredShortOption(arg) ?? optionName(arg);
+    if (option === "--config" || option === "-c") {
+      const value = optionHasInlineValue(arg)
+        ? arg.slice(arg.indexOf("=") + 1)
+        : invocation.args[++index];
+      configFile ??= value;
+      continue;
+    }
     if (option === "--mode" || option === "-m") {
       mode = optionHasInlineValue(arg) ? arg.slice(arg.indexOf("=") + 1) : invocation.args[++index];
       continue;
@@ -141,7 +150,18 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
     command: invocation.command,
     mode: mode || (invocation.command === "build" ? "production" : "development"),
     root: path.resolve(toSlash(process.cwd()), root ?? "."),
+    ...(configFile ? { configFile: path.resolve(toSlash(process.cwd()), configFile) } : {}),
   };
+}
+
+/** Match the Vite config loaded by the outer CLI, not one loaded by a nested server. */
+export function isViteCliConfigFile(configFile: string): boolean {
+  const invocation = getViteCliInvocation();
+  if (!invocation || !path.isAbsolute(configFile)) return false;
+  const expected = invocation.configFile;
+  return expected
+    ? path.resolve(configFile) === expected
+    : path.dirname(path.resolve(configFile)) === invocation.root;
 }
 
 /** Distinguish real Vite/Vite+ CLI commands from programmatic API callers. */

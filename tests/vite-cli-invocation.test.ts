@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
+import path from "node:path";
 import {
   claimViteCliBuildInvocation,
   getViteCliInvocation,
+  isViteCliConfigFile,
   isViteCliInvocation,
 } from "../packages/vinext/src/utils/vite-cli-invocation.js";
 
@@ -156,5 +158,20 @@ describe("isViteCliInvocation", () => {
       mode: "staging",
       root: expect.stringMatching(/\/--mode$/),
     });
+  });
+
+  it("identifies the CLI config rather than a nested server's config", () => {
+    const originalArgv = process.argv;
+    try {
+      process.argv = ["node", "/project/node_modules/vite/bin/vite.js", "dev"];
+      expect(isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"))).toBe(true);
+      expect(isViteCliConfigFile(path.join(process.cwd(), "nested/vite.config.ts"))).toBe(false);
+
+      process.argv.push("--config", "config/vite.config.ts");
+      expect(isViteCliConfigFile(path.join(process.cwd(), "config/vite.config.ts"))).toBe(true);
+      expect(isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"))).toBe(false);
+    } finally {
+      process.argv = originalArgv;
+    }
   });
 });

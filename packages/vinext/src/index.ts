@@ -154,6 +154,7 @@ import {
 import {
   claimViteCliDevInvocation,
   reserveViteCliDevInvocation,
+  applyDevServerDefaults,
   createDevServerLifecyclePlugin,
   VINEXT_DEV_RESTART_CONFIG,
 } from "./cli-dev-config.js";
@@ -329,7 +330,11 @@ import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
 import { isServerEnvironment } from "./plugins/environment.js";
-import { claimViteCliBuildInvocation, getViteCliInvocation } from "./utils/vite-cli-invocation.js";
+import {
+  claimViteCliBuildInvocation,
+  getViteCliInvocation,
+  isViteCliConfigFile,
+} from "./utils/vite-cli-invocation.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 import {
   isPathInside,
@@ -2411,15 +2416,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
-        root = toSlash(config.root ?? process.cwd());
+        root = path.resolve(toSlash(config.root ?? process.cwd()));
         devCliLifecycleEnabled =
           env.command === "serve" &&
           env.isPreview !== true &&
           claimViteCliDevInvocation(
             root,
             (config as InternalUserConfig)[VINEXT_DEV_RESTART_CONFIG] === true,
-            reservedDevCliInvocation,
-            (config as InternalUserConfig & { configFile?: string | false }).configFile !== false,
+            reservedDevCliInvocation &&
+              (config as InternalUserConfig & { configFile?: string | false }).configFile === false,
           );
         buildLifecycleInvocation = (config as InternalUserConfig)[VINEXT_BUILD_LIFECYCLE_CONFIG];
         buildLifecycleEnabled =
@@ -4043,6 +4048,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       async configResolved(config) {
+        // Config-loaded plugins claim only after Vite identifies the loaded
+        // file. An unused vinext() or a nested server with its own bundled
+        // plugin instance may otherwise take the outer CLI's reservation.
+        if (
+          isServeCommand &&
+          !devCliLifecycleEnabled &&
+          config.configFile &&
+          isViteCliConfigFile(config.configFile)
+        ) {
+          devCliLifecycleEnabled = claimViteCliDevInvocation(config.root, false, true);
+          if (devCliLifecycleEnabled && !config.server.middlewareMode) {
+            applyDevServerDefaults(config.server, {});
+          }
+        }
         if (isServeCommand && hasCloudflarePlugin && hasPagesDir && !hasAppDir) {
           suppressOptionalOptimizeDepsWarnings(config.logger);
         }

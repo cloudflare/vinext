@@ -76,6 +76,60 @@ export default { plugins: [vinext()] };
       cwd: root,
       stdio: "pipe",
     });
+    const lock = await waitFor(() => {
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("claims the configured child root when an unused instance was constructed first", async () => {
+    const root = createProject();
+    const appRoot = path.join(root, "app");
+    fs.mkdirSync(path.join(appRoot, "pages"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appRoot, "pages/index.tsx"),
+      "export default function Page() { return <main>child root</main>; }\n",
+    );
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+const unused = vinext();
+export default { root: "app", plugins: [vinext()] };
+`,
+    );
+    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      stdio: "pipe",
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+
+    const lock = await waitFor(() => {
+      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
+      const current = readLockfile(getLockfilePath(appRoot));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+    expect(fs.existsSync(getLockfilePath(root))).toBe(false);
+  }, 30_000);
+
+  it("claims an explicitly selected Vite config outside the project root", async () => {
+    const root = createProject();
+    fs.mkdirSync(path.join(root, "config"));
+    fs.writeFileSync(
+      path.join(root, "config/vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+const unused = vinext();
+export default { root: ${JSON.stringify(root)}, plugins: [vinext()] };
+`,
+    );
+    child = spawn(
+      process.execPath,
+      [VITE_CLI_PATH, "dev", "--config", "config/vite.config.ts", "--port", "0"],
+      { cwd: root, stdio: "pipe" },
+    );
 
     const lock = await waitFor(() => {
       const current = readLockfile(getLockfilePath(root));
@@ -109,6 +163,49 @@ export default { plugins: [
     });
 
     const lock = await waitFor(() => {
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    expect(lock.port).toBeGreaterThan(0);
+    expect(fs.existsSync(getLockfilePath(nestedRoot))).toBe(false);
+  }, 30_000);
+
+  it("does not let a nested child config claim the CLI lifecycle", async () => {
+    const root = createProject();
+    const nestedRoot = path.join(root, "nested");
+    fs.mkdirSync(path.join(nestedRoot, "pages"), { recursive: true });
+    fs.writeFileSync(
+      path.join(nestedRoot, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+export default { plugins: [vinext()] };
+`,
+    );
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+import { createServer } from "vite";
+const unused = vinext();
+export default { plugins: [
+  { name: "nested-before-vinext", enforce: "pre", async config() {
+    const nested = await createServer({ root: ${JSON.stringify(nestedRoot)}, logLevel: "silent" });
+    try {
+      if (nested.config.server.port !== 5173) throw new Error("Nested server claimed the CLI lifecycle");
+    } finally { await nested.close(); }
+  } },
+  vinext(),
+] };
+`,
+    );
+    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      stdio: "pipe",
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+
+    const lock = await waitFor(() => {
+      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
       const current = readLockfile(getLockfilePath(root));
       return current && current.port > 0 ? current : undefined;
     });
