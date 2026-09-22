@@ -43,7 +43,7 @@ export type DevServerInfo = {
   cwd: string;
 };
 
-export type DevLockfile = {
+type DevLockfile = {
   /** Update the lock file contents (e.g. once the port is known after listen). */
   update(info: DevServerInfo): void;
   /** Release the lock — deletes the file. Safe to call multiple times. */
