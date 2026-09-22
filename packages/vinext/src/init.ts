@@ -199,10 +199,15 @@ export function addScripts(
       added.push(scriptName);
     };
 
-    addScript("dev", port === false ? "vite dev" : `vite dev --port ${port}`, [
-      "vinext dev",
-      /^vinext dev --port \d+$/,
-    ]);
+    const devScriptName = options.scriptNames === "standard" ? "dev" : "dev:vinext";
+    const legacyDevScript = pkg.scripts[devScriptName];
+    const devCommand =
+      typeof legacyDevScript === "string" && /^vinext dev(?: --port \d+)?$/.test(legacyDevScript)
+        ? legacyDevScript.replace(/^vinext /, "vite ")
+        : port === false
+          ? "vite dev"
+          : `vite dev --port ${port}`;
+    addScript("dev", devCommand, ["vinext dev", /^vinext dev --port \d+$/]);
     addScript("build", "vite build", ["vinext build"]);
     addScript(
       "start",

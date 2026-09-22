@@ -373,14 +373,14 @@ describe("addScripts", () => {
       router: "app",
       extraPkg: {
         scripts: {
-          "dev:vinext": "vinext dev --port 3001",
+          "dev:vinext": "vinext dev --port 4000",
           "build:vinext": "vinext build",
           "start:vinext": "custom-start",
         },
       },
     });
 
-    expect(addScripts(tmpDir, 4000)).toEqual(["dev:vinext", "build:vinext"]);
+    expect(addScripts(tmpDir, 3001)).toEqual(["dev:vinext", "build:vinext"]);
     expect((readPkg(tmpDir) as { scripts: Record<string, string> }).scripts).toMatchObject({
       "dev:vinext": "vite dev --port 4000",
       "build:vinext": "vite build",
