@@ -374,6 +374,33 @@ describe("configured vinext build contract", () => {
     expect(serverEntry).not.toContain("process.env.__VINEXT_REVALIDATE_SECRET");
   }, 120_000);
 
+  it("lets following config hooks customize the plain Pages SSR environment", () => {
+    const root = createPagesProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs.readFileSync(configPath, "utf-8").replace(
+        'name: "record-builder-config",',
+        `name: "record-builder-config",
+      config(config) {
+        if (!config.environments?.ssr) throw new Error("missing SSR environment in config hook");
+        return { environments: { ssr: { define: { __FOLLOWING_PLUGIN__: JSON.stringify("visible") } } } };
+      },`,
+      ),
+    );
+    write(
+      root,
+      "pages/index.tsx",
+      "declare const __FOLLOWING_PLUGIN__: string; export default function Page() { return <p>{__FOLLOWING_PLUGIN__}</p>; }\n",
+    );
+
+    execFileSync(VP_PATH, ["build"], { cwd: root, stdio: "pipe", timeout: 120_000 });
+
+    expect(
+      fs.readFileSync(path.join(root, "dist/server/prerendered-routes/index.html"), "utf-8"),
+    ).toContain("visible");
+  }, 120_000);
+
   it("keeps raw emptyOutDir false as the cleanup escape hatch", () => {
     const root = createHybridProject();
     const configPath = path.join(root, "vite.config.ts");

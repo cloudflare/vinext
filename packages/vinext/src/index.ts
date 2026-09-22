@@ -1585,7 +1585,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let isServeCommand = false;
   let buildEmptyOutDir: boolean | undefined;
   let buildLifecycleEnabled = false;
-  let plainPagesBuildEnvironments: UserConfig["environments"] | undefined;
+  let hasPlainPagesBuildEnvironments = false;
+  let originalPlainPagesEnvironments: UserConfig["environments"] | undefined;
   let reactUpgradeChecked = false;
   let pagesOptimizeEntries: string[] = [];
   const importMetaUrlCapability = createImportMetaUrlPlugin({
@@ -2372,7 +2373,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       >),
 
       async config(config, env) {
-        plainPagesBuildEnvironments = undefined;
+        hasPlainPagesBuildEnvironments = false;
+        originalPlainPagesEnvironments = undefined;
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
@@ -3051,7 +3053,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // client-only `assetsInlineLimit` default; otherwise we apply it at the
         // top level (single-build client output) so RSC/SSR stay untouched.
         const shouldInjectPlainPagesEnvironments =
-          !hasAppDir && !hasCloudflarePlugin && !isSSR && !hasBuildInput;
+          !hasAppDir && !hasCloudflarePlugin && !isSSR && !hasBuildInput && !config.build?.lib;
         const hasClientBuildEnvironment =
           hasAppDir || hasCloudflarePlugin || hasNitroPlugin || shouldInjectPlainPagesEnvironments;
         const clientAssetsDir = resolveAssetsDir(nextConfig.assetPrefix ?? "");
@@ -3903,10 +3905,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
             },
           };
-          // Dev needs the SSR environment during server startup. Only build
-          // defers injection until later config hooks have settled the target.
-          if (env.command === "serve") viteConfig.environments = plainPagesEnvironments;
-          else plainPagesBuildEnvironments = plainPagesEnvironments;
+          // Expose these environments to following config hooks, including
+          // plugins that customize the SSR environment for plain Pages builds.
+          originalPlainPagesEnvironments = config.environments;
+          viteConfig.environments = plainPagesEnvironments;
+          hasPlainPagesBuildEnvironments = env.command === "build";
         }
 
         if (pagesOptimizeEntries.length > 0 && !hasCloudflarePlugin) {
@@ -8011,17 +8014,26 @@ export const loadServerActionClient = ${
     config: {
       order: "post",
       handler(config) {
+        if (!hasPlainPagesBuildEnvironments) return;
         if (
-          !plainPagesBuildEnvironments ||
           config.build?.watch ||
           config.build?.ssr ||
           config.build?.lib ||
           getBuildBundlerOptions(config.build)?.input !== undefined
-        )
+        ) {
+          // A later config hook selected a single-build target. Remove only
+          // the environments vinext supplied, leaving user environments alone.
+          for (const name of ["client", "ssr"] as const) {
+            if (originalPlainPagesEnvironments?.[name]) {
+              config.environments![name] = originalPlainPagesEnvironments[name];
+            } else {
+              delete config.environments?.[name];
+            }
+          }
           return;
+        }
         return {
           builder: { ...config.builder, sharedConfigBuild: true },
-          environments: plainPagesBuildEnvironments,
         };
       },
     },
