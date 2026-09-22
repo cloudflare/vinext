@@ -24,7 +24,7 @@ import { cleanBuildOutput } from "./clean-output.js";
 import { clearPagesClientAssetsBuildMetadata } from "./pages-client-assets-module.js";
 import { runWithPreviewBuildCredentials } from "./preview-credentials.js";
 
-type ProjectViteApi = Pick<typeof import("vite"), "build" | "loadConfigFromFile">;
+type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
 
 export type BuildLifecycleContext = {
   cacheConfig: VinextCacheConfig | null;
@@ -128,22 +128,39 @@ async function buildHybridPagesBundle(
   if (builder.config.logLevel !== "silent") {
     console.log("  Building Pages Router server (hybrid)...");
   }
-  await vite.build({
+  const environmentName = "vinext_pages";
+  const pagesBuilder = await vite.createBuilder({
     root: context.root,
     mode: builder.config.mode,
     configFile: false,
     plugins: [...userPlugins, ...context.createPagesOnlyPlugins()],
+    builder: {
+      buildApp: async (pagesBuilder) => {
+        await pagesBuilder.build(pagesBuilder.environments[environmentName]);
+      },
+    },
+    environments: {
+      [environmentName]: {
+        consumer: "server",
+        build: {
+          outDir: "dist/server",
+          emptyOutDir: false,
+          ssr: "virtual:vinext-server-entry",
+          rolldownOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      },
+    },
     resolve: {
       dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
     },
     customLogger: builder.config.logger as Logger,
     build: {
-      outDir: "dist/server",
-      emptyOutDir: false,
-      ssr: "virtual:vinext-server-entry",
-      rolldownOptions: { output: { entryFileNames: "entry.js" } },
+      // Keep vinext's Pages-only config from injecting its default client and
+      // SSR environments; this auxiliary build owns one named environment.
+      rolldownOptions: { input: "virtual:vinext-server-entry" },
     },
   });
+  await pagesBuilder.buildApp();
 }
 
 export function prepareBuildOutput(
