@@ -59,11 +59,13 @@ import { isUnknownRecord } from "../utils/record.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import {
+  isAbsoluteUrl,
   isAbsoluteOrProtocolRelativeUrl,
   isHashOnlyBrowserUrlChange,
   normalizePathTrailingSlash,
   toBrowserNavigationHref,
   toSameOriginAppPath,
+  toSameOriginPath,
   getWindowOrigin,
   withBasePath,
 } from "./url-utils.js";
@@ -77,12 +79,10 @@ import {
 } from "../utils/domain-locale.js";
 import {
   addQueryParam,
-  appendSearchParamsToUrl,
   mergeRewriteQuery,
   mergeRouteParamsIntoQuery,
   parseQueryString,
   type UrlQuery,
-  urlQueryToSearchParams,
 } from "../utils/query.js";
 import {
   fillRoutePatternSegments,
@@ -97,6 +97,7 @@ import {
 } from "./pages-router-runtime.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { interpolateDynamicRouteHref } from "./internal/interpolate-as.js";
+import { formatUrlObject, formatUrlObjectWithValidation } from "./internal/format-url-object.js";
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-id.js";
 import type { RequestContext } from "../config/config-matchers.js";
@@ -344,6 +345,9 @@ type BeforePopStateCallback = (state: {
   options: TransitionOptions;
 }) => boolean;
 
+type UrlObject = NodeUrlObject;
+type Url = string | UrlObject;
+
 export type NextRouter = {
   /** Current pathname */
   pathname: string;
@@ -373,9 +377,9 @@ export type NextRouter = {
   isFallback: boolean;
 
   /** Navigate to a new URL */
-  push(url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean>;
+  push(url: Url, as?: Url, options?: TransitionOptions): Promise<boolean>;
   /** Replace current URL */
-  replace(url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean>;
+  replace(url: Url, as?: Url, options?: TransitionOptions): Promise<boolean>;
   /** Go back */
   back(): void;
   /** Go forward */
@@ -389,8 +393,6 @@ export type NextRouter = {
   /** Listen for route changes */
   events: RouterEvents;
 };
-
-type UrlObject = NodeUrlObject;
 
 type TransitionOptions = {
   _h?: 1;
@@ -515,46 +517,106 @@ function getPagesRouterRuntimeComponents(): PagesRouterRuntimeComponents {
   return components;
 }
 
-function resolveUrl(url: string | UrlObject): string {
-  if (typeof url === "string") return url;
-  const query = url.query && typeof url.query === "object" ? (url.query as UrlQuery) : undefined;
-  const hasQuery = query !== undefined && Object.keys(query).length > 0;
-  const hasSearch = typeof url.search === "string" && url.search.length > 0;
-  const hasHash = typeof url.hash === "string" && url.hash.length > 0;
-  const inheritsVisiblePath = url.pathname === undefined && (hasQuery || hasSearch || hasHash);
-  let result =
-    url.pathname ??
-    (typeof window !== "undefined"
-      ? inheritsVisiblePath
-        ? stripBasePath(window.location.pathname, __basePath)
-        : (window.__NEXT_DATA__?.page ?? stripBasePath(window.location.pathname, __basePath))
-      : "/");
-  if (hasSearch) {
-    const search = url.search!.startsWith("?") ? url.search! : `?${url.search}`;
-    const hashIndex = search.indexOf("#");
-    result +=
-      hashIndex === -1 ? search : `${search.slice(0, hashIndex)}%23${search.slice(hashIndex + 1)}`;
-  } else if (hasQuery) {
-    const params = urlQueryToSearchParams(query!);
-    result = appendSearchParamsToUrl(result, params);
-  } else if (hasHash && typeof window !== "undefined") {
-    result += window.location.search;
+function resolveUrlObjectPath(formatted: string): string {
+  if (typeof window === "undefined") return formatted;
+
+  const routePathname =
+    window.__NEXT_DATA__?.page ?? stripBasePath(window.location.pathname, __basePath);
+  try {
+    if (isAbsoluteUrl(formatted)) {
+      const origin = getWindowOrigin();
+      if (!origin) return formatted;
+      const absolute = new URL(formatted, origin);
+      if (
+        absolute.origin !== origin ||
+        (__basePath !== "" && !hasBasePath(absolute.pathname, __basePath))
+      ) {
+        return formatted;
+      }
+    }
+    const base = new URL(routePathname, "http://vinext.local");
+    const resolved = new URL(formatted, base);
+    return resolved.origin === base.origin
+      ? resolved.href.slice(resolved.origin.length)
+      : resolved.href;
+  } catch {
+    return formatted;
   }
-  if (hasHash) {
-    result += url.hash!.startsWith("#") ? url.hash : `#${url.hash}`;
-  }
-  return result;
 }
 
-/**
- * When `as` is provided, use it as the navigation target. This is a
- * simplification: Next.js keeps `url` and `as` as separate values (url for
- * data fetching, as for the browser URL). We collapse them because vinext's
- * navigateClient() fetches HTML from the target URL, so `as` must be a
- * server-resolvable path. Purely decorative `as` values are not supported.
- * Pages error routes are handled as a narrow exception below because Next.js
- * treats their href as the component route while preserving `as` in history.
- */
+function resolveUrl(url: string | UrlObject, resolveQueryFromRoute = false): string {
+  if (typeof url === "string") return url;
+  const formatted = formatUrlObject(url);
+  if (url.protocol || url.host || url.hostname || url.slashes || url.pathname) {
+    return resolveUrlObjectPath(formatted);
+  }
+  const visiblePathname =
+    typeof window === "undefined" ? "/" : stripBasePath(window.location.pathname, __basePath);
+  const routePathname = typeof window === "undefined" ? undefined : window.__NEXT_DATA__?.page;
+  const matchingDynamicRoute =
+    resolveQueryFromRoute &&
+    formatted.startsWith("?") &&
+    routePathname &&
+    extractRouteParamNames(routePathname).length > 0 &&
+    extractRouteParamsFromPath(routePathname, removeNavigationLocalePrefix(visiblePathname)) !==
+      null
+      ? routePathname
+      : undefined;
+  const base =
+    typeof window === "undefined"
+      ? "/"
+      : (matchingDynamicRoute ??
+        (formatted ? visiblePathname : (routePathname ?? visiblePathname)));
+  const currentSearch =
+    formatted.startsWith("#") && typeof window !== "undefined" ? window.location.search : "";
+  return resolveUrlObjectPath(base + currentSearch + formatted);
+}
+
+function toPreparedSameOriginPath(url: string): string | null {
+  const appPath = toSameOriginAppPath(url, __basePath);
+  if (appPath !== null) return appPath;
+  if (!isAbsoluteUrl(url)) return null;
+  const localPath = toSameOriginPath(url);
+  if (localPath === null) return null;
+  // Next.js leaves credentialed URLs outside basePath absolute in prepareUrlAs,
+  // then hard-navigates them. Its literal origin prefix cannot strip credentials.
+  const parsed = new URL(url);
+  return parsed.username || parsed.password ? null : localPath;
+}
+
+/** Next.js only strips a same-origin URL when the origin is a literal prefix. */
+function credentialedSameOriginHref(url: Url | undefined): string | undefined {
+  if (!url || typeof url === "string") return undefined;
+  const href = resolveUrl(url);
+  try {
+    const parsed = new URL(href, window.location.href);
+    if (!parsed.username && !parsed.password) return undefined;
+  } catch {
+    return undefined;
+  }
+  return toSameOriginPath(href) !== null ? href : undefined;
+}
+
+function hasUrlObjectQuery(url: UrlObject): boolean {
+  return typeof url.query === "string"
+    ? url.query.length > 0
+    : url.query !== null && typeof url.query === "object" && Object.keys(url.query).length > 0;
+}
+
+function validateUrlObject(url: Url | undefined): void {
+  if (url && typeof url !== "string") formatUrlObjectWithValidation(url);
+}
+
+function inheritsVisiblePath(url: UrlObject): boolean {
+  return (
+    !url.pathname &&
+    (hasUrlObjectQuery(url) ||
+      (typeof url.search === "string" && url.search.length > 0) ||
+      (typeof url.hash === "string" && url.hash.length > 0))
+  );
+}
+
+/** Derive the browser-visible navigation target before route identity is resolved. */
 function resolveNavigationTarget(
   url: string | UrlObject,
   as: string | undefined,
@@ -738,10 +800,12 @@ export function applyNavigationLocale(
   replaceExistingLocale = false,
 ): string {
   if (!locale || typeof window === "undefined") return url;
-  // Absolute and protocol-relative URLs must not be prefixed — locale
-  // only applies to local paths.
+  // Next.js strips the current origin before locale handling. Keep truly
+  // external URLs untouched, but treat same-origin absolute URLs as app paths.
   if (isAbsoluteOrProtocolRelativeUrl(url)) {
-    return url;
+    const localPath = window.location ? toSameOriginAppPath(url, __basePath) : null;
+    if (localPath == null) return url;
+    url = localPath;
   }
   if (!replaceExistingLocale && getLocalePathPrefix(url, window.__VINEXT_LOCALES__)) {
     return url;
@@ -3141,17 +3205,16 @@ function throwNoRouterInstance(): never {
 /**
  * Shared client-side navigation flow used by both `useRouter()` and the
  * `Router` singleton. The only differences between push/replace are the
- * history method (`pushState` vs `replaceState`), the external-URL fallback
- * (`assign` vs `replace`), and the fact that push saves scroll position for
- * back/forward restoration while replace does not.
+ * history method (`pushState` vs `replaceState`) and the fact that push saves
+ * scroll position for back/forward restoration while replace does not.
  *
  * `onStateUpdate` lets the hook trigger a `setState` re-render at the same
  * point that hashChangeComplete/routeChangeComplete fires; the singleton
  * passes no callback.
  */
 async function performNavigation(
-  url: string | UrlObject,
-  as: string | undefined,
+  url: Url,
+  as: Url | undefined,
   options: TransitionOptions | undefined,
   mode: "push" | "replace",
   onStateUpdate?: () => void,
@@ -3172,6 +3235,20 @@ async function performNavigation(
     throwNoRouterInstance();
   }
 
+  const replaceInheritedLocale =
+    options?.locale !== undefined &&
+    (!as
+      ? typeof url !== "string" && inheritsVisiblePath(url)
+      : typeof as !== "string" && inheritsVisiblePath(as));
+
+  const credentialedHistoryHref = credentialedSameOriginHref(url);
+  const credentialedHistoryAs = credentialedSameOriginHref(as);
+  const credentialedDisplayHref =
+    credentialedHistoryAs ?? (!as ? credentialedHistoryHref : undefined);
+
+  // Next.js treats a falsy `as` as omitted in prepareUrlAs().
+  as = as ? resolveUrl(as, true) : undefined;
+
   // Defence-in-depth dangerous-scheme guard. The synchronous guard inside
   // `Router.push` / `Router.replace` (see RouterMethods below) is the primary
   // line of defence and is what surfaces the matching console.error to React's
@@ -3181,19 +3258,11 @@ async function performNavigation(
   // packages/next/src/shared/lib/router/router.ts:1025-1033,1057-1065.
   assertSafeNavigationUrl(resolveUrl(url));
   if (as !== undefined) {
-    assertSafeNavigationUrl(String(as));
+    assertSafeNavigationUrl(as);
   }
 
   const isHydrationQueryUpdate = options?._h === 1;
   const navigationLocale = resolveTransitionLocale(options?.locale);
-  const replaceInheritedLocale =
-    as === undefined &&
-    options?.locale !== undefined &&
-    typeof url !== "string" &&
-    url.pathname === undefined &&
-    ((url.query !== null && typeof url.query === "object" && Object.keys(url.query).length > 0) ||
-      (typeof url.search === "string" && url.search.length > 0) ||
-      (typeof url.hash === "string" && url.hash.length > 0));
   let resolved = isHydrationQueryUpdate
     ? normalizeHydrationNavigationUrl(as ?? resolveUrl(url))
     : resolveNavigationTarget(url, as, navigationLocale, replaceInheritedLocale);
@@ -3211,29 +3280,39 @@ async function performNavigation(
     as === undefined &&
     ((typeof url === "string" && options?._vinextInterpolateDynamicRoute === true) ||
       (typeof url !== "string" &&
-        url.pathname === undefined &&
-        ((url.query !== null &&
-          typeof url.query === "object" &&
-          Object.keys(url.query).length > 0) ||
-          (typeof url.search === "string" && url.search.length > 0))));
+        !url.pathname &&
+        (hasUrlObjectQuery(url) || (typeof url.search === "string" && url.search.length > 0))));
   if (inheritsCurrentPath) {
     resolved = interpolateCurrentDynamicRoute(resolved);
     resolvedRoute = interpolateCurrentDynamicRoute(resolvedRoute);
   }
 
-  // External URLs — delegate to browser (unless same-origin)
-  if (isExternalUrl(resolved)) {
-    const localPath = toSameOriginAppPath(resolved, __basePath);
+  // Next.js validates the route href before the display `as` URL. An external
+  // href must therefore hard-navigate even when a local mask was supplied.
+  if (isExternalUrl(resolvedRoute)) {
+    const localPath = toPreparedSameOriginPath(resolvedRoute);
     if (localPath == null) {
-      if (mode === "push") window.location.assign(resolved);
-      else window.location.replace(resolved);
-      return true;
+      window.location.href = resolvedRoute;
+      return false;
+    }
+    resolvedRoute = localPath;
+  }
+
+  // External display URLs delegate to the browser unless they point back to
+  // this app's base path.
+  if (isExternalUrl(resolved)) {
+    const localPath = toPreparedSameOriginPath(resolved);
+    if (localPath == null) {
+      if (process.env.NODE_ENV !== "production") {
+        throw new Error(
+          `Invalid href: "${toBrowserNavigationHref(resolvedRoute, window.location.href, __basePath)}" and as: "${resolved}", received relative href and external as` +
+            "\nSee more info: https://nextjs.org/docs/messages/invalid-relative-url-external-as",
+        );
+      }
+      window.location.href = resolved;
+      return false;
     }
     resolved = localPath;
-  }
-  if (isExternalUrl(resolvedRoute)) {
-    const localPath = toSameOriginAppPath(resolvedRoute, __basePath);
-    if (localPath != null) resolvedRoute = localPath;
   }
 
   resolved = normalizePathTrailingSlash(resolved, __trailingSlash);
@@ -3258,7 +3337,7 @@ async function performNavigation(
     const projection = interpolateDynamicRouteHref(
       resolvedRoute,
       resolved,
-      typeof url === "string" || !url.query || typeof url.query === "string"
+      typeof url === "string" || url.search || !url.query || typeof url.query === "string"
         ? undefined
         : (url.query as UrlQuery),
     );
@@ -3298,7 +3377,7 @@ async function performNavigation(
               );
             })
         : [];
-      const hasExplicitHrefPathname = typeof url === "string" || url.pathname !== undefined;
+      const hasExplicitHrefPathname = typeof url === "string" || !inheritsCurrentPath;
       const isMiddlewareMatch =
         options?.shallow !== true &&
         getPagesMiddlewareDataHref(resolved, __basePath, { locale: navigationLocale }) !== null;
@@ -3378,6 +3457,59 @@ async function performNavigation(
   if (redirectBrowserHref !== undefined) {
     navigateOptions.redirectBrowserHref = redirectBrowserHref;
   }
+  const isHashOnlyNavigation = options?._h !== 1 && isHashOnlyChange(full);
+
+  // History state metadata — surfaces the active locale to popstate and the
+  // Safari-replay filter. `as` is the canonical app-relative path (no
+  // basePath) used by the popstate handler and exposed to beforePopState.
+  // Hash-only strings are expanded against the current visible path just as
+  // Next.js resolveHref() expands them before changeState().
+  //
+  // The push→replace comparison below remains hashless via `stripHash(full)`.
+  // `url` is the route-pattern path the popstate handler uses to load the
+  // correct page module when `as` differs.
+  // Mirrors Next.js Router.changeState(): navState = { url, as, ... } where
+  // url and as are kept distinct.
+  const navStateOptions: { locale?: string; shallow: boolean } = { shallow };
+  if (navigationLocale !== undefined) navStateOptions.locale = navigationLocale;
+  const currentAppUrl =
+    stripBasePath(window.location.pathname, __basePath) + window.location.search;
+  const navState = {
+    url:
+      credentialedHistoryHref ??
+      (interpolatedRoute.startsWith("#") ? currentAppUrl + interpolatedRoute : interpolatedRoute),
+    as: credentialedDisplayHref ?? (resolved.startsWith("#") ? currentAppUrl + resolved : resolved),
+    options: navStateOptions,
+  };
+
+  if (options?._h !== 1) cancelActiveNavigationEvent({ shallow });
+
+  // Hash-only change — no page fetch needed. Next.js bases this solely on the
+  // prepared display `as`, even when the stored route href differs.
+  if (isHashOnlyNavigation) {
+    // Snapshot the outgoing entry's scroll before updateHistory mints a new
+    // key, so a later back-popstate restores the position the user had
+    // reached here rather than {x: 0, y: 0}. Upstream snapshots inside
+    // Router.push() itself — before change()'s onlyAHashChange short-circuit
+    // — so hash-only pushes still write `__next_scroll_<key>` for the
+    // departed entry.
+    // Mirrors Next.js: packages/next/src/shared/lib/router/router.ts:1034-1046.
+    if (mode === "push") saveScrollPosition();
+    const eventUrl = resolveHashUrl(browserEventUrl);
+    routerEvents.emit("hashChangeStart", eventUrl, { shallow });
+    updateHistory(
+      mode,
+      resolved.startsWith("#")
+        ? resolved
+        : (redirectBrowserHref ?? credentialedDisplayHref ?? full),
+      navState,
+    );
+    if (doScroll) scrollToHashTarget(extractHash(resolved));
+    onStateUpdate?.();
+    routerEvents.emit("hashChangeComplete", eventUrl, { shallow });
+    dispatchNavigateEvent();
+    return true;
+  }
 
   // Next.js push→replace coercion (narrowed): when the display URL (asPath)
   // doesn't change AND the route URL DOES change AND the locale doesn't
@@ -3403,54 +3535,6 @@ async function performNavigation(
     navigationLocale === currentLocale
   ) {
     mode = "replace";
-  }
-
-  // History state metadata — surfaces the active locale to popstate and the
-  // Safari-replay filter. `as` is the canonical app-relative path (no
-  // basePath, no hash) used by the popstate handler's comparison against
-  // `lastPathnameAndSearch`; this is separate from the push→replace coercion
-  // above, which compares `stripHash(full)`. `url` is the route-pattern path the
-  // popstate handler uses to load the correct page module when `as` differs.
-  // Mirrors Next.js Router.changeState(): navState = { url, as, ... } where
-  // url and as are kept distinct.
-  const navStateOptions: { locale?: string; shallow: boolean } = { shallow };
-  if (navigationLocale !== undefined) navStateOptions.locale = navigationLocale;
-  const resolvedNoHash = stripHash(resolved);
-  const resolvedRouteNoHash = stripHash(interpolatedRoute);
-  const navState = {
-    url: resolvedRouteNoHash,
-    as: resolvedNoHash,
-    options: navStateOptions,
-  };
-
-  if (options?._h !== 1) cancelActiveNavigationEvent({ shallow });
-
-  // Hash-only change — no page fetch needed.
-  // Guard: when the route URL differs from the display URL (i.e. href and as
-  // disagree), the underlying page module changes even if the address bar
-  // didn't — so the hash-only shortcut MUST NOT skip the fetch. Mirrors
-  // Next.js where `onlyAHashChange` runs only after the route is unchanged.
-  if (options?._h !== 1 && interpolatedRoute === resolved && isHashOnlyChange(full)) {
-    // Snapshot the outgoing entry's scroll before updateHistory mints a new
-    // key, so a later back-popstate restores the position the user had
-    // reached here rather than {x: 0, y: 0}. Upstream snapshots inside
-    // Router.push() itself — before change()'s onlyAHashChange short-circuit
-    // — so hash-only pushes still write `__next_scroll_<key>` for the
-    // departed entry.
-    // Mirrors Next.js: packages/next/src/shared/lib/router/router.ts:1034-1046.
-    if (mode === "push") saveScrollPosition();
-    const eventUrl = resolveHashUrl(browserEventUrl);
-    routerEvents.emit("hashChangeStart", eventUrl, { shallow });
-    updateHistory(
-      mode,
-      resolved.startsWith("#") ? resolved : (redirectBrowserHref ?? full),
-      navState,
-    );
-    if (doScroll) scrollToHashTarget(extractHash(resolved));
-    onStateUpdate?.();
-    routerEvents.emit("hashChangeComplete", eventUrl, { shallow });
-    dispatchNavigateEvent();
-    return true;
   }
 
   // If this destination was detected as an App Router route during prefetch,
@@ -3515,7 +3599,7 @@ async function performNavigation(
     if (beforeHistoryChangeEmitted) return;
     beforeHistoryChangeEmitted = true;
     routerEvents.emit("beforeHistoryChange", browserEventUrl, { shallow });
-    updateHistory(mode, redirectBrowserHref ?? full, navState);
+    updateHistory(mode, redirectBrowserHref ?? credentialedDisplayHref ?? full, navState);
   };
   if (!shallow) {
     // A query-only navigation through a beforeFiles rewrite can reuse the
@@ -3970,7 +4054,7 @@ function handlePagesRouterPopState(e: PopStateEvent): void {
         isNextRouterState(state) &&
         typeof state.url === "string" &&
         typeof state.as === "string" &&
-        state.url !== state.as
+        stripHash(state.url) !== stripHash(state.as)
       ) {
         return normalizePathTrailingSlash(withBasePath(state.url, __basePath), __trailingSlash);
       }
@@ -4176,6 +4260,22 @@ export function withRouter<P extends WithRouterProps, C extends BaseContext = Ne
  */
 const _components = getPagesRouterComponentsMap();
 
+function navigatePagesRouter(
+  url: Url,
+  as: Url | undefined,
+  options: TransitionOptions | undefined,
+  mode: "push" | "replace",
+): Promise<boolean> {
+  if (typeof window === "undefined") throwNoRouterInstance();
+  // Keep validation synchronous so dangerous URLs thrown from React event
+  // handlers surface through React instead of becoming unobserved rejections.
+  validateUrlObject(url);
+  validateUrlObject(as);
+  assertSafeNavigationUrl(resolveUrl(url));
+  if (as) assertSafeNavigationUrl(resolveUrl(as));
+  return performNavigation(url, as, options, mode);
+}
+
 const RouterMethods = {
   router: null,
   readyCallbacks: [] as Array<() => unknown>,
@@ -4185,32 +4285,10 @@ const RouterMethods = {
   /** See `_components` comment above for the dual role this map plays. */
   components: _components,
   sdc: getPagesStaticDataCache(),
-  push: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
-    if (typeof window === "undefined") throwNoRouterInstance();
-    // Synchronously guard dangerous URI schemes (javascript:, data:, vbscript:)
-    // before the async performNavigation kicks off. Mirrors Next.js's
-    // Pages Router `push` at packages/next/src/shared/lib/router/router.ts:1025-1033,
-    // where the check runs synchronously inside push() so the throw bubbles up
-    // through React's event-handler error reporter (surfacing console.error).
-    // Without this synchronous hoist, the throw inside `performNavigation`
-    // (an async function) becomes a rejected Promise that React does not
-    // observe from an event handler that does not await it (e.g.
-    // `<button onClick={() => router.push(...)}>`).
-    assertSafeNavigationUrl(resolveUrl(url));
-    if (as !== undefined) {
-      assertSafeNavigationUrl(String(as));
-    }
-    return performNavigation(url, as, options, "push");
-  },
-  replace: (url: string | UrlObject, as?: string, options?: TransitionOptions) => {
-    if (typeof window === "undefined") throwNoRouterInstance();
-    // See `push` above for the rationale on the synchronous guard.
-    assertSafeNavigationUrl(resolveUrl(url));
-    if (as !== undefined) {
-      assertSafeNavigationUrl(String(as));
-    }
-    return performNavigation(url, as, options, "replace");
-  },
+  push: (url: Url, as?: Url, options?: TransitionOptions) =>
+    navigatePagesRouter(url, as, options, "push"),
+  replace: (url: Url, as?: Url, options?: TransitionOptions) =>
+    navigatePagesRouter(url, as, options, "replace"),
   back: () => {
     if (typeof window === "undefined") throwNoRouterInstance();
     window.history.back();
@@ -4488,10 +4566,10 @@ export class Router {
     return singletonRouter.sdc;
   }
 
-  push(url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean> {
+  push(url: Url, as?: Url, options?: TransitionOptions): Promise<boolean> {
     return singletonRouter.push(url, as, options);
   }
-  replace(url: string | UrlObject, as?: string, options?: TransitionOptions): Promise<boolean> {
+  replace(url: Url, as?: Url, options?: TransitionOptions): Promise<boolean> {
     return singletonRouter.replace(url, as, options);
   }
   reload(): void {
