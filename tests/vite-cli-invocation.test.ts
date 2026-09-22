@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
-import { isViteCliInvocation } from "../packages/vinext/src/utils/vite-cli-invocation.js";
+import {
+  claimViteCliBuildInvocation,
+  isViteCliInvocation,
+} from "../packages/vinext/src/utils/vite-cli-invocation.js";
 
 describe("isViteCliInvocation", () => {
   it.each([
@@ -36,5 +39,12 @@ describe("isViteCliInvocation", () => {
     [["node", "/project/test.ts", "build"], "build", false],
   ] as const)("classifies %j for %s", (argv, command, expected) => {
     expect(isViteCliInvocation(command, [...argv])).toBe(expected);
+  });
+
+  it("lets only the top-level Vite build claim the application lifecycle", () => {
+    const argv = ["node", "/project/node_modules/vite/bin/vite.js", "build"];
+
+    expect(claimViteCliBuildInvocation(argv)).toBe(true);
+    expect(claimViteCliBuildInvocation(argv)).toBe(false);
   });
 });

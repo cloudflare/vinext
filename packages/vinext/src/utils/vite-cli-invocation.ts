@@ -2,6 +2,8 @@ import path, { toSlash } from "pathslash";
 
 type ViteCliCommand = "dev" | "build";
 
+let buildInvocationClaimed = false;
+
 function findVpCommand(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -32,4 +34,11 @@ export function isViteCliInvocation(
   const vpCommand = findVpCommand(args);
   if (vpCommand === "exec") return args[args.indexOf("exec") + 1] === "vite";
   return command === "build" ? vpCommand === "build" : vpCommand === "dev" || vpCommand === "serve";
+}
+
+/** Claim the single application lifecycle owned by a top-level Vite CLI build. */
+export function claimViteCliBuildInvocation(argv: string[] = process.argv): boolean {
+  if (buildInvocationClaimed || !isViteCliInvocation("build", argv)) return false;
+  buildInvocationClaimed = true;
+  return true;
 }

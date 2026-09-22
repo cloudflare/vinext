@@ -38,7 +38,14 @@ import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 
 export default defineConfig({
   build: { manifest: true, target: "es2020" },
-  environments: { ssr: { build: { target: "es2022" } } },
+  environments: {
+    ssr: {
+      build: {
+        target: "es2022",
+        rolldownOptions: { output: [{ chunkFileNames: "chunks/[name].js" }] },
+      },
+    },
+  },
   resolve: {
     alias: { "virtual:contract-value": path.join(import.meta.dirname, "contract-value.ts") },
   },
@@ -80,10 +87,13 @@ export default defineConfig({
       writeBundle() {
         const outDir = this.environment.config.build.outDir;
         if (outDir.endsWith("dist/server")) {
+          const countPath = path.join(outDir, "output-only-plugin-count");
+          const count = fs.existsSync(countPath) ? Number(fs.readFileSync(countPath, "utf-8")) : 0;
           fs.writeFileSync(
             path.join(outDir, "output-only-plugin-ran"),
             this.environment.name + ":" + this.environment.config.build.target,
           );
+          fs.writeFileSync(countPath, String(count + 1));
         }
       },
     },
@@ -174,6 +184,9 @@ describe("configured vinext build contract", () => {
     expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
     expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-ran"), "utf-8")).toBe(
       "ssr:es2022",
+    );
+    expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-count"), "utf-8")).toBe(
+      "1",
     );
     const serverManifest = JSON.parse(
       fs.readFileSync(path.join(root, "custom/server/.vite/manifest.json"), "utf-8"),

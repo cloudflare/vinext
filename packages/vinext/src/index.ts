@@ -319,7 +319,7 @@ import commonjs from "vite-plugin-commonjs";
 import { createIgnoreDynamicRequestsPlugin } from "./plugins/ignore-dynamic-requests.js";
 import { createTransformCache } from "./plugins/transform-cache.js";
 import { isServerEnvironment } from "./plugins/environment.js";
-import { isViteCliInvocation } from "./utils/vite-cli-invocation.js";
+import { claimViteCliBuildInvocation } from "./utils/vite-cli-invocation.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 import {
   isPathInside,
@@ -2103,6 +2103,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       !builder.config.build.watch &&
       !builder.config.build.ssr &&
       getBuildBundlerOptions(builder.config.build)?.input === undefined,
+    shouldPrepare: (config) =>
+      buildLifecycleEnabled &&
+      !config.build?.watch &&
+      !config.build?.ssr &&
+      getBuildBundlerOptions(config.build)?.input === undefined,
     shouldBuildPlainPages: () => !hasAppDir && !hasCloudflarePlugin && !hasNitroPlugin,
     createContext: () => ({
       cacheConfig: options.cache ?? null,
@@ -2335,10 +2340,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildLifecycleEnabled =
           env.command === "build" &&
           !internalOptions.__skipBuildLifecycle &&
-          !config.build?.watch &&
-          !config.build?.ssr &&
-          getBuildBundlerOptions(config.build)?.input === undefined &&
-          isViteCliInvocation("build");
+          claimViteCliBuildInvocation();
         root = toSlash(config.root ?? process.cwd());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};

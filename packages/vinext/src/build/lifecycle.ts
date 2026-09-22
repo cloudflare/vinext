@@ -144,6 +144,7 @@ async function buildHybridPagesBundle(
     console.log("  Building Pages Router server (hybrid)...");
   }
   const userSsrEnvironment = userConfig.environments?.ssr;
+  const { build: _userSsrBuild, ...pagesEnvironment } = userSsrEnvironment ?? {};
   const mergedBuild = vite.mergeConfig(userConfig.build ?? {}, userSsrEnvironment?.build ?? {});
   const userOutput = mergedBuild.rolldownOptions?.output;
   const pagesBuild = {
@@ -175,9 +176,8 @@ async function buildHybridPagesBundle(
     },
     environments: {
       ssr: {
-        ...userSsrEnvironment,
+        ...pagesEnvironment,
         consumer: "server",
-        build: pagesBuild,
       },
     },
     resolve: {
@@ -332,18 +332,28 @@ export async function runBuildLifecycle(
 export function createBuildLifecyclePlugins(options: {
   createContext: () => BuildLifecycleContext;
   isEnabled: (builder: ViteBuilder) => boolean;
+  shouldPrepare: (config: UserConfig) => boolean;
   shouldBuildPlainPages: () => boolean;
 }): Plugin[] {
   const states = new WeakMap<ViteBuilder, BuildLifecycleState>();
+  let outputPrepared = false;
   return [
     {
       name: "vinext:build-lifecycle-prepare",
       apply: "build",
+      config: {
+        order: "post",
+        handler(config) {
+          if (outputPrepared || !options.shouldPrepare(config)) return;
+          prepareBuildOutput(options.createContext());
+          outputPrepared = true;
+        },
+      },
       buildApp: {
         order: "pre",
         async handler(builder) {
           if (!options.isEnabled(builder) || states.has(builder)) return;
-          const state = prepareBuild(builder, options.createContext());
+          const state = prepareBuild(options.createContext());
           states.set(builder, state);
           try {
             if (!options.shouldBuildPlainPages()) return;
