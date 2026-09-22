@@ -129,6 +129,7 @@ export function findViteRoot(
 ): { root?: string; shouldPreflight: boolean } {
   let root: string | undefined;
   let shouldPreflight = true;
+  let ambiguousRoot = false;
   const otherCommand = command === "dev" ? "build" : "dev";
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -175,13 +176,14 @@ export function findViteRoot(
           !BOOLEAN_OPTIONS.has(normalizedOption))
       ) {
         shouldPreflight = false;
+        if (root === undefined) ambiguousRoot = true;
       }
       continue;
     }
     if (root !== undefined) shouldPreflight = false;
     else root = arg;
   }
-  return { root, shouldPreflight };
+  return { root: ambiguousRoot ? undefined : root, shouldPreflight };
 }
 
 function commandArguments(argv: string[]): { command: ViteCliCommand; args: string[] } | undefined {

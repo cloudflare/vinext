@@ -204,23 +204,25 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).not.toContain("Could not resolve the project-local Vite CLI");
   });
 
-  it("resolves child-local Vite after an unknown valued option", () => {
+  it("does not execute either child-local Vite when an unknown option makes the root ambiguous", () => {
     const root = createRoot();
     writeProject(path.join(root, "project"));
+    writeProject(path.join(root, "value"));
     fs.unlinkSync(path.join(root, "node_modules"));
-    fs.symlinkSync(
-      path.resolve(import.meta.dirname, "../node_modules"),
-      path.join(root, "project/node_modules"),
-      "junction",
-    );
+    for (const directory of ["project", "value"]) {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(root, directory, "node_modules"),
+        "junction",
+      );
+    }
     const result = spawnSync(process.execPath, [CLI_PATH, "build", "--bogus", "value", "project"], {
       cwd: root,
       encoding: "utf-8",
     });
 
     expect(result.status).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain("Unknown option `--bogus`");
-    expect(result.stderr).not.toContain("Could not resolve the project-local Vite CLI");
+    expect(result.stderr).toContain("Could not resolve the project-local Vite CLI");
   });
 
   it("does not mask an invalid option after a configless project root", () => {

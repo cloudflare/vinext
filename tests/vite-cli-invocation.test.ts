@@ -10,6 +10,13 @@ import {
 } from "../packages/vinext/src/utils/vite-cli-invocation.js";
 
 describe("findViteRoot", () => {
+  it("does not guess a project root after an unknown valued option", () => {
+    expect(findViteRoot("build", ["--bogus", "other", "project"])).toEqual({
+      root: undefined,
+      shouldPreflight: false,
+    });
+  });
+
   it.each([
     { args: ["--mode"] },
     { args: ["--mode="] },
