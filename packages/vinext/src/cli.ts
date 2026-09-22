@@ -25,11 +25,7 @@ import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { parseArgs } from "./cli-args.js";
 import { generateRouteTypes } from "./typegen.js";
-import {
-  findViteRoot,
-  valueOptionName,
-  viteOptionConsumesNext,
-} from "./utils/vite-cli-invocation.js";
+import { findViteRoot, valueOptionName } from "./utils/vite-cli-invocation.js";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"))
   .version as string;
@@ -71,15 +67,6 @@ function configPreflight(command: ViteCommand): string {
 function resolveProjectViteCli(root: string): string {
   const cwd = process.cwd();
   const candidates = new Set([root, cwd]);
-  for (let index = 0; index < rawArgs.length; index += 1) {
-    const arg = rawArgs[index];
-    if (arg === "--") break;
-    if (arg.startsWith("-")) {
-      if (viteOptionConsumesNext(arg, rawArgs[index + 1])) index++;
-      continue;
-    }
-    candidates.add(path.resolve(cwd, arg));
-  }
   for (const candidate of candidates) {
     const require = createRequire(path.join(candidate, "package.json"));
     let packagePath: string;
