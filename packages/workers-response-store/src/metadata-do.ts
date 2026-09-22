@@ -99,7 +99,11 @@ export type CacheMetadataStub = DurableObjectStub & {
   invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
   getTagExpiration(tags: string[]): Promise<number>;
-  findRefreshCandidates(options: ResponseStoreRefreshOptions): Promise<RefreshCandidate[]>;
+  findRefreshCandidates(options: ResponseStoreRefreshOptions): Promise<StoredEntry[]>;
+  findRefreshCandidates(
+    options: ResponseStoreRefreshOptions,
+    projection: "reservation",
+  ): Promise<RefreshCandidate[]>;
   purgeMatching(
     options: ResponseStorePurgeOptions,
     invalidatedAt?: number,
@@ -447,6 +451,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return factory({ props: {} });
   }
 
+  private findMatchingEntryRows(options: ResponseStorePurgeOptions): EntryRow[];
   private findMatchingEntryRows(
     options: ResponseStorePurgeOptions,
     projection: "purge",
@@ -457,8 +462,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   ): RefreshCandidateRow[];
   private findMatchingEntryRows(
     options: ResponseStorePurgeOptions,
-    projection: "purge" | "refresh",
-  ): PurgeEntryRow[] | RefreshCandidateRow[] {
+    projection: "entry" | "purge" | "refresh" = "entry",
+  ): EntryRow[] | PurgeEntryRow[] | RefreshCandidateRow[] {
     const selectors: string[] = [];
     const parameters: string[] = [];
     if (!options.purgeEverything) {
@@ -481,8 +486,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     if (!options.purgeEverything && !selectors.length) return [];
 
     const conditions: string[] = [];
-    if (projection === "refresh") {
+    if (projection !== "purge") {
       conditions.push("tombstoned = 0 AND active_revision IS NOT NULL");
+    }
+    if (projection === "refresh") {
       conditions.push(
         "object_key IS NOT NULL AND response_headers IS NOT NULL AND fresh_until IS NOT NULL AND swr_until IS NOT NULL",
       );
@@ -496,7 +503,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         `SELECT ${
           projection === "purge"
             ? "key_hash, cache_key, latest_revision, object_key"
-            : "key_hash, cache_key, active_revision, latest_revision, revalidator_id IS NOT NULL AS has_revalidator"
+            : projection === "refresh"
+              ? "key_hash, cache_key, active_revision, latest_revision, revalidator_id IS NOT NULL AS has_revalidator"
+              : "*"
         } FROM entries ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}`,
         ...parameters,
       )
@@ -1089,7 +1098,18 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return this.getTagInvalidationMaximum(tags, "invalidated_at");
   }
 
-  findRefreshCandidates(options: ResponseStoreRefreshOptions): RefreshCandidate[] {
+  findRefreshCandidates(options: ResponseStoreRefreshOptions): StoredEntry[];
+  findRefreshCandidates(
+    options: ResponseStoreRefreshOptions,
+    projection: "reservation",
+  ): RefreshCandidate[];
+  findRefreshCandidates(
+    options: ResponseStoreRefreshOptions,
+    projection?: "reservation",
+  ): StoredEntry[] | RefreshCandidate[] {
+    if (projection === undefined) {
+      return storedEntriesFromRows(this.findMatchingEntryRows(options));
+    }
     return this.findMatchingEntryRows(options, "refresh").map((row) => ({
       keyHash: row.key_hash,
       cacheKey: row.cache_key,

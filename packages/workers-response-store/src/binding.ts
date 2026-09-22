@@ -84,9 +84,11 @@ export type StoredEntry = EntryMetadata & {
 export type RefreshCandidate = Pick<
   StoredEntry,
   "keyHash" | "cacheKey" | "activeRevision" | "latestRevision"
-> & {
-  hasRevalidator: boolean;
-};
+> &
+  (
+    | { hasRevalidator: boolean; revalidator?: never }
+    | { hasRevalidator?: never; revalidator: RevalidatorDescriptor | null }
+  );
 
 export type PurgedEntry = {
   keyHash: string;
@@ -1291,7 +1293,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const reserved = await Promise.allSettled(
       this.getMetadataShards().map(async (metadata) => ({
-        candidates: await metadata.findRefreshCandidates(options),
+        candidates: await metadata.findRefreshCandidates(options, "reservation"),
         metadata,
       })),
     );
@@ -1315,7 +1317,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       candidates,
       REFRESH_CONCURRENCY,
       async ({ entry, metadata }) => {
-        if (!entry.hasRevalidator) {
+        const hasRevalidator =
+          "hasRevalidator" in entry ? entry.hasRevalidator : entry.revalidator !== null;
+        if (!hasRevalidator) {
           throw new Error("Cache entry has no configured revalidator");
         }
         const regeneration = await metadata.reserveRegeneration(

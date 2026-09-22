@@ -858,7 +858,9 @@ test("refresh candidate selection returns only reservation fields", async () => 
     revalidator: { body: "refreshed", cacheControl: "public, max-age=60" },
   });
 
-  assert.deepEqual(await (await metadataStub()).findRefreshCandidates({ pathPrefixes: [path] }), [
+  const metadata = await metadataStub();
+  const options = { pathPrefixes: [path] };
+  assert.deepEqual(await metadata.findRefreshCandidates(options, "reservation"), [
     {
       keyHash: await cacheKeyHash(path),
       cacheKey: path,
@@ -867,6 +869,10 @@ test("refresh candidate selection returns only reservation fields", async () => 
       hasRevalidator: true,
     },
   ]);
+  assert.deepEqual((await metadata.findRefreshCandidates(options))[0]?.revalidator, {
+    id: "fixture-render",
+    args: [{ body: "refreshed", cacheControl: "public, max-age=60" }],
+  });
 });
 
 test("refresh selects entries by tag and path prefix", async () => {
