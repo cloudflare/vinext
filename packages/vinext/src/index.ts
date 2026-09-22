@@ -3860,7 +3860,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // calls that specify their own input (tests, hybrid build step)
           // still work via the single-build path — injecting environments
           // alongside an explicit build input conflicts with the caller's intent.
-          plainPagesBuildEnvironments = {
+          const plainPagesEnvironments: UserConfig["environments"] = {
             client: {
               consumer: "client",
               optimizeDeps: {
@@ -3921,6 +3921,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
             },
           };
+          // Dev needs the SSR environment during server startup. Only build
+          // defers injection until later config hooks have settled the target.
+          if (env.command === "serve") viteConfig.environments = plainPagesEnvironments;
+          else plainPagesBuildEnvironments = plainPagesEnvironments;
         }
 
         if (pagesOptimizeEntries.length > 0 && !hasCloudflarePlugin) {
