@@ -81,6 +81,13 @@ export type StoredEntry = EntryMetadata & {
   latestRevision: number;
 };
 
+export type RefreshCandidate = Pick<
+  StoredEntry,
+  "keyHash" | "cacheKey" | "activeRevision" | "latestRevision"
+> & {
+  hasRevalidator: boolean;
+};
+
 export type PurgedEntry = {
   keyHash: string;
   cacheKey: string;
@@ -1308,7 +1315,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       candidates,
       REFRESH_CONCURRENCY,
       async ({ entry, metadata }) => {
-        if (!entry.revalidator) {
+        if (!entry.hasRevalidator) {
           throw new Error("Cache entry has no configured revalidator");
         }
         const regeneration = await metadata.reserveRegeneration(
