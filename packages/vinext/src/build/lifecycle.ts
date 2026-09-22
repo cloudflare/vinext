@@ -146,7 +146,10 @@ async function buildHybridPagesBundle(
   });
 }
 
-function prepareBuild(builder: ViteBuilder, context: BuildLifecycleContext): BuildLifecycleState {
+export function prepareBuildOutput(
+  context: BuildLifecycleContext,
+  emptyOutDir = context.emptyOutDir,
+): void {
   if (context.nextConfig.output === "standalone") {
     const vinextDistDir = path.join(resolveVinextPackageRoot(), "dist");
     if (!fs.existsSync(vinextDistDir)) {
@@ -159,9 +162,11 @@ function prepareBuild(builder: ViteBuilder, context: BuildLifecycleContext): Bui
   cleanBuildOutput({
     root: context.root,
     outDir: path.resolve(context.root, "dist"),
-    emptyOutDir: context.emptyOutDir ?? builder.config.build.emptyOutDir ?? undefined,
+    emptyOutDir,
   });
+}
 
+function prepareBuild(context: BuildLifecycleContext): BuildLifecycleState {
   if (!context.hasAppDir || !context.hasPagesDir) return {};
   const pagesClientAssetsBuildSession = randomBytes(16).toString("hex");
   process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = pagesClientAssetsBuildSession;
@@ -263,7 +268,7 @@ export async function runBuildLifecycle(
   builder: ViteBuilder,
   context: BuildLifecycleContext,
 ): Promise<BuildLifecycleResult> {
-  const state = prepareBuild(builder, context);
+  const state = prepareBuild(context);
   try {
     await builder.buildApp();
     return await finalizeBuild(builder, context);

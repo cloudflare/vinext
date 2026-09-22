@@ -43,7 +43,7 @@ import {
   getPreviewBuildCredentials,
   runWithPreviewBuildCredentials,
 } from "./build/preview-credentials.js";
-import { runBuildLifecycle } from "./build/lifecycle.js";
+import { prepareBuildOutput, runBuildLifecycle } from "./build/lifecycle.js";
 import { parseArgs } from "./cli-args.js";
 import {
   type DevLockfile,
@@ -581,9 +581,7 @@ async function buildApp() {
   // in its config() hook for each case, so cloudflare() and the plain Node SSR
   // build both work correctly.
   await runWithPreviewBuildCredentials(async () => {
-    const config = buildViteConfig({}, logger, buildMode);
-    const builder = await vite.createBuilder(config);
-    await runBuildLifecycle(builder, {
+    const lifecycleContext = {
       cacheConfig: buildConfigMetadata.cacheConfig,
       createPagesOnlyPlugins: () => vinext({ disableAppRouter: true }),
       emptyOutDir: buildConfigMetadata.emptyOutDir,
@@ -600,7 +598,11 @@ async function buildApp() {
       routeRootConfig: buildConfigMetadata.routeRootConfig,
       rscBuildIdentity: process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY,
       rscCompatibilityId: process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID,
-    });
+    };
+    prepareBuildOutput(lifecycleContext);
+    const config = buildViteConfig({}, logger, buildMode);
+    const builder = await vite.createBuilder(config);
+    await runBuildLifecycle(builder, lifecycleContext);
   });
   process.exit(0);
 }

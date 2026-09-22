@@ -43,6 +43,13 @@ export default defineConfig({
       },
     },
     {
+      name: "contract:config-resolved-output",
+      configResolved(config) {
+        fs.mkdirSync(path.join(config.root, "dist"), { recursive: true });
+        fs.writeFileSync(path.join(config.root, "dist/config-resolved-plugin-ran"), "ok");
+      },
+    },
+    {
       name: "contract:output-only",
       writeBundle() {
         const outDir = this.environment.config.build.outDir;
@@ -108,6 +115,7 @@ describe("configured vinext build contract", () => {
     expect(fs.existsSync(path.join(root, "custom/server/index.js"))).toBe(true);
     expect(fs.existsSync(path.join(root, "custom/server/ssr/index.js"))).toBe(true);
     expect(fs.existsSync(path.join(root, "dist/client"))).toBe(true);
+    expect(fs.readFileSync(path.join(root, "dist/config-resolved-plugin-ran"), "utf-8")).toBe("ok");
 
     const pagesEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
     expect(pagesEntry).toContain("config-only-plugin-ran");
