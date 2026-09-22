@@ -447,7 +447,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return factory({ props: {} });
   }
 
-  private findMatchingEntryRows(options: ResponseStorePurgeOptions): EntryRow[];
   private findMatchingEntryRows(
     options: ResponseStorePurgeOptions,
     projection: "purge",
@@ -458,8 +457,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   ): RefreshCandidateRow[];
   private findMatchingEntryRows(
     options: ResponseStorePurgeOptions,
-    projection: "entry" | "purge" | "refresh" = "entry",
-  ): EntryRow[] | PurgeEntryRow[] | RefreshCandidateRow[] {
+    projection: "purge" | "refresh",
+  ): PurgeEntryRow[] | RefreshCandidateRow[] {
     const selectors: string[] = [];
     const parameters: string[] = [];
     if (!options.purgeEverything) {
@@ -482,10 +481,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     if (!options.purgeEverything && !selectors.length) return [];
 
     const conditions: string[] = [];
-    if (projection !== "purge") {
-      conditions.push("tombstoned = 0 AND active_revision IS NOT NULL");
-    }
     if (projection === "refresh") {
+      conditions.push("tombstoned = 0 AND active_revision IS NOT NULL");
       conditions.push(
         "object_key IS NOT NULL AND response_headers IS NOT NULL AND fresh_until IS NOT NULL AND swr_until IS NOT NULL",
       );
@@ -499,9 +496,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         `SELECT ${
           projection === "purge"
             ? "key_hash, cache_key, latest_revision, object_key"
-            : projection === "refresh"
-              ? "key_hash, cache_key, active_revision, latest_revision, revalidator_id"
-              : "*"
+            : "key_hash, cache_key, active_revision, latest_revision, revalidator_id"
         } FROM entries ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}`,
         ...parameters,
       )
