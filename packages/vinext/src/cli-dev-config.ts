@@ -13,7 +13,8 @@ type ActiveDevServerLock = {
 
 const activeDevServerLocks = new Map<string, ActiveDevServerLock>();
 let devInvocationRoot: string | undefined;
-let devInvocationRestarting = false;
+
+export const VINEXT_DEV_RESTART_CONFIG = "__vinextDevRestart";
 
 function normalizeDevLifecycleRoot(root: string): string {
   try {
@@ -23,14 +24,14 @@ function normalizeDevLifecycleRoot(root: string): string {
   }
 }
 
-export function claimViteCliDevInvocation(root: string): boolean {
+export function claimViteCliDevInvocation(root: string, isRestart = false): boolean {
   root = normalizeDevLifecycleRoot(root);
   if (!isViteCliInvocation("dev")) return false;
   if (devInvocationRoot === undefined) {
     devInvocationRoot = root;
     return true;
   }
-  if (!devInvocationRestarting) return false;
+  if (!isRestart) return false;
   devInvocationRoot = root;
   return true;
 }
@@ -102,11 +103,7 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
   };
   const releaseLifecycle = () => {
     releaseLock();
-    if (
-      !devInvocationRestarting &&
-      !activeDevServerLocks.get(root)?.restarting &&
-      devInvocationRoot === root
-    ) {
+    if (!activeDevServerLocks.get(root)?.restarting && devInvocationRoot === root) {
       devInvocationRoot = undefined;
     }
   };
@@ -122,11 +119,16 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
   server.restart = async (forceOptimize?: boolean) => {
     const restartingLock = activeDevServerLocks.get(root);
     if (restartingLock) restartingLock.restarting = true;
-    devInvocationRestarting = true;
+    const inlineConfig = server.config.inlineConfig as typeof server.config.inlineConfig & {
+      [VINEXT_DEV_RESTART_CONFIG]?: true;
+    };
+    const previousRestartMarker = inlineConfig[VINEXT_DEV_RESTART_CONFIG];
+    inlineConfig[VINEXT_DEV_RESTART_CONFIG] = true;
     try {
       await restartServer(forceOptimize);
     } finally {
-      devInvocationRestarting = false;
+      if (previousRestartMarker) inlineConfig[VINEXT_DEV_RESTART_CONFIG] = previousRestartMarker;
+      else delete inlineConfig[VINEXT_DEV_RESTART_CONFIG];
       devInvocationRoot = normalizeDevLifecycleRoot(server.config.root);
       if (restartingLock) {
         restartingLock.restarting = false;
