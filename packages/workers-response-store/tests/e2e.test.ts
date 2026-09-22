@@ -1117,6 +1117,28 @@ test("a newer put wins and the superseded candidate is cleaned up", async () => 
   assert.equal((await r2Objects()).objects.length, 1);
 });
 
+test("an overlapping first-write reservation still purges when it replaces a publication", async () => {
+  const first = put("/overlapping-first-write", "first", {
+    bodyDelayMs: 150,
+    purgeExisting: true,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const replacement = put("/overlapping-first-write", "replacement", {
+    bodyDelayMs: 300,
+    purgeExisting: true,
+  });
+
+  assert.deepEqual((await first).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  assert.deepEqual((await replacement).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
+  assert.equal(await (await read("/overlapping-first-write")).text(), "replacement");
+});
+
 test("overlapping first writes can be coalesced without an edge purge", async () => {
   const first = put("/coalesced", "first", {
     bodyDelayMs: 300,

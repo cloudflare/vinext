@@ -99,7 +99,6 @@ type CacheKey = {
 
 type WriteReservation = CacheKey & {
   claimId?: string;
-  edgePurgeRequired: boolean;
   fenceTags: string[];
   objectKey: string;
   r2ObjectAbsent?: boolean;
@@ -107,12 +106,14 @@ type WriteReservation = CacheKey & {
 };
 
 type StoreResult = {
+  edgePurgeRequired: boolean;
   published: boolean;
   entry: StoredEntry | null;
   response?: Response;
 };
 
 type PublicationResult = {
+  edgePurgeRequired: boolean;
   entry: StoredEntry | null;
   published: boolean;
 };
@@ -878,6 +879,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     if (!publication.published) {
       return {
+        edgePurgeRequired: false,
         published: false,
         entry: this.readableEntry(publication.entry),
       };
@@ -934,6 +936,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const entry = this.readableEntry(publication.entry);
     return {
+      edgePurgeRequired: publication.edgePurgeRequired,
       published: true,
       entry,
       ...(stored && entry
@@ -1027,7 +1030,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         {
           cacheKey: claim.entry.cacheKey,
           claimId: claim.claimId,
-          edgePurgeRequired: true,
           fenceTags: claim.entry.cacheTags,
           keyHash: claim.entry.keyHash,
           objectKey: claim.objectKey,
@@ -1173,7 +1175,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           return {
             backingStoreUpdated: true,
             edgePurgeAccepted:
-              options.purgeExisting && reservation.edgePurgeRequired
+              options.purgeExisting && result.edgePurgeRequired
                 ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
                 : true,
           };
@@ -1204,7 +1206,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       return {
         backingStoreUpdated: true,
         edgePurgeAccepted:
-          options.purgeExisting && reservation?.edgePurgeRequired
+          options.purgeExisting && result.edgePurgeRequired
             ? await this.purgeEdgeCacheByTags([purgeTagForEntry(result.entry)])
             : true,
       };
@@ -1251,7 +1253,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           reservation
             ? {
                 cacheKey: entry.cacheKey,
-                edgePurgeRequired: true,
                 fenceTags: entry.cacheTags,
                 keyHash: entry.keyHash,
                 ...reservation,
