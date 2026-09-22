@@ -55,7 +55,7 @@ export default defineConfig({
       writeBundle() {
         const outDir = this.environment.config.build.outDir;
         if (outDir.endsWith("dist/server")) {
-          fs.writeFileSync(path.join(outDir, "output-only-plugin-ran"), "ok");
+          fs.writeFileSync(path.join(outDir, "output-only-plugin-ran"), this.environment.name);
         }
       },
     },
@@ -136,7 +136,7 @@ describe("configured vinext build contract", () => {
     expect(pagesEntry).not.toContain("vinext-pages-development-marker");
     expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
     expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-ran"), "utf-8")).toBe(
-      "ok",
+      "vinext_pages",
     );
 
     const appOutput = fs
