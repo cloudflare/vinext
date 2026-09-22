@@ -249,8 +249,6 @@ import {
 import {
   PAGES_CLIENT_ASSETS_MODULE,
   buildPagesClientAssetsModule,
-  setPagesClientAssetsBuildMetadata,
-  takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
 import { readPrerenderSecret, readServerRuntimeOutputDirs } from "./build/server-manifest.js";
@@ -7779,19 +7777,9 @@ export const loadServerActionClient = ${
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
               crossOrigin: nextConfig.crossOrigin ?? "",
             });
-            const buildSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
-            if (hasAppDir && hasPagesDir && buildSession) {
-              setPagesClientAssetsBuildMetadata(buildSession, pagesClientAssetsModule);
-            }
           }
 
-          if (pagesClientAssetsModule === null) {
-            if (pagesClientAssetsOutputDirs.size === 0) return;
-            const buildSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
-            if (buildSession) {
-              pagesClientAssetsModule = takePagesClientAssetsBuildMetadata(buildSession);
-            }
-          }
+          if (pagesClientAssetsModule === null && pagesClientAssetsOutputDirs.size === 0) return;
           if (pagesClientAssetsModule === null) {
             const emptyModule = buildPagesClientAssetsModule({});
             for (const outputDir of pagesClientAssetsOutputDirs) {
