@@ -1083,7 +1083,7 @@ describe("buildPageElements", () => {
     await expect(renderElementEntry(result, "slot:modal:/")).resolves.toContain("memo slot");
   });
 
-  it("marks a client page dynamic when it consumes searchParams with an empty query", async () => {
+  it("does not infer Client Page dynamic use from serializing an empty searchParams promise", async () => {
     // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
     const ClientPage = Object.assign(() => null, {
@@ -1114,9 +1114,11 @@ describe("buildPageElements", () => {
       throw new Error("Expected client page element");
     }
 
+    // React serializes this prop before the Client Page runs. Serialization
+    // must not classify a Client Page that never reads the prop as dynamic.
     await pageElement.props.searchParams;
 
-    expect(markDynamicUsageMock).toHaveBeenCalled();
+    expect(markDynamicUsageMock).not.toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
   });
 
