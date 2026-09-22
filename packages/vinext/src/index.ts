@@ -1593,6 +1593,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
+  let buildEmptyOutDir: boolean | undefined;
   let buildLifecycleEnabled = false;
   let reactUpgradeChecked = false;
   let pagesOptimizeEntries: string[] = [];
@@ -2119,7 +2120,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   }
 
   const buildLifecyclePlugins = createBuildLifecyclePlugins({
-    isEnabled: () => buildLifecycleEnabled,
+    isEnabled: (builder) =>
+      buildLifecycleEnabled &&
+      !builder.config.build.watch &&
+      !builder.config.build.ssr &&
+      getBuildBundlerOptions(builder.config.build)?.input === undefined,
     shouldBuildPlainPages: () => !hasAppDir && !hasCloudflarePlugin && !hasNitroPlugin,
     createContext: () => ({
       cacheConfig: options.cache ?? null,
@@ -2131,6 +2136,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           prerender: undefined,
           __skipBuildLifecycle: true,
         } as InternalVinextOptions),
+      emptyOutDir: buildEmptyOutDir,
       hasAppDir,
       hasPagesDir,
       nextConfig,
@@ -2345,6 +2351,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       >),
 
       async config(config, env) {
+        buildEmptyOutDir =
+          typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
         buildLifecycleEnabled =
           env.command === "build" &&

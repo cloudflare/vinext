@@ -23,7 +23,10 @@ import { cleanBuildOutput } from "./clean-output.js";
 import { clearPagesClientAssetsBuildMetadata } from "./pages-client-assets-module.js";
 import { runWithPreviewBuildCredentials } from "./preview-credentials.js";
 
-type ProjectViteApi = Pick<typeof import("vite"), "createBuilder" | "loadConfigFromFile">;
+type ProjectViteApi = Pick<
+  typeof import("vite"),
+  "createBuilder" | "loadConfigFromFile" | "mergeConfig"
+>;
 
 export type BuildLifecycleContext = {
   cacheConfig: VinextCacheConfig | null;
@@ -140,8 +143,11 @@ async function buildHybridPagesBundle(
   if (builder.config.logLevel !== "silent") {
     console.log("  Building Pages Router server (hybrid)...");
   }
+  const userSsrEnvironment = userConfig.environments?.ssr;
+  const mergedBuild = vite.mergeConfig(userConfig.build ?? {}, userSsrEnvironment?.build ?? {});
+  const userOutput = mergedBuild.rolldownOptions?.output;
   const pagesBuild = {
-    ...userConfig.build,
+    ...mergedBuild,
     outDir: "dist/server",
     emptyOutDir: false,
     // The primary App build owns the shared server manifest. Emitting another
@@ -149,11 +155,12 @@ async function buildHybridPagesBundle(
     manifest: false,
     ssr: "virtual:vinext-server-entry",
     rolldownOptions: {
-      ...userConfig.build?.rolldownOptions,
-      output: { entryFileNames: "entry.js" },
+      ...mergedBuild.rolldownOptions,
+      output: Array.isArray(userOutput)
+        ? userOutput.map((output) => ({ ...output, entryFileNames: "entry.js" }))
+        : { ...userOutput, entryFileNames: "entry.js" },
     },
   };
-  const userSsrEnvironment = userConfig.environments?.ssr;
   const pagesBuilder = await vite.createBuilder({
     ...userConfig,
     root: context.root,
@@ -170,7 +177,7 @@ async function buildHybridPagesBundle(
       ssr: {
         ...userSsrEnvironment,
         consumer: "server",
-        build: { ...userSsrEnvironment?.build, ...pagesBuild },
+        build: pagesBuild,
       },
     },
     resolve: {
@@ -324,7 +331,7 @@ export async function runBuildLifecycle(
 
 export function createBuildLifecyclePlugins(options: {
   createContext: () => BuildLifecycleContext;
-  isEnabled: () => boolean;
+  isEnabled: (builder: ViteBuilder) => boolean;
   shouldBuildPlainPages: () => boolean;
 }): Plugin[] {
   const states = new WeakMap<ViteBuilder, BuildLifecycleState>();
@@ -335,7 +342,7 @@ export function createBuildLifecyclePlugins(options: {
       buildApp: {
         order: "pre",
         async handler(builder) {
-          if (!options.isEnabled() || states.has(builder)) return;
+          if (!options.isEnabled(builder) || states.has(builder)) return;
           const state = prepareBuild(builder, options.createContext());
           states.set(builder, state);
           try {
