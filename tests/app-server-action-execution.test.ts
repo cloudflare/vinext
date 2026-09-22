@@ -2843,10 +2843,29 @@ describe("app server action execution helpers", () => {
     expect(action).toHaveBeenCalledTimes(1);
   });
 
+  it("does not mistake a cache-like user export alias for an opaque cache reference", async () => {
+    const action = vi.fn(() => "saved");
+    Object.defineProperty(action, "$$id", {
+      value: "/app/actions.ts#$$vinext_cache_custom",
+    });
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "/app/actions.ts#save",
+        loadServerAction() {
+          return Promise.resolve(action);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a source export whose registered server-reference id is different", async () => {
     const hidden = vi.fn(() => "private");
     Object.defineProperty(hidden, "$$id", {
-      value: "/app/records.ts#$$vinext_cache_opaque",
+      value: `/app/records.ts#$$vinext_cache_${"a".repeat(64)}`,
     });
 
     const response = await handleServerActionRscRequest(

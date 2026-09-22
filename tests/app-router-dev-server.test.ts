@@ -2171,18 +2171,22 @@ describe("App Router integration", () => {
   });
 
   it("invokes every export alias for the same server action", async () => {
-    for (const exportName of ["firstAliasedAction", "secondAliasedAction"]) {
+    for (const exportName of [
+      "firstAliasedAction",
+      "secondAliasedAction",
+      "$$vinext_cache_custom",
+    ]) {
       const res = await fetch(`${baseUrl}/actions.rsc`, {
         method: "POST",
         headers: {
           "Content-Type": "text/plain",
           "x-rsc-action": `/app/actions/actions.ts#${exportName}`,
         },
-        body: JSON.stringify([exportName]),
+        body: JSON.stringify(["proof"]),
       });
 
       expect(res.status).toBe(200);
-      expect(await res.text()).toContain(`aliased:${exportName}`);
+      expect(await res.text()).toContain("aliased:proof");
     }
   });
 

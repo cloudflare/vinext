@@ -18,7 +18,11 @@ async function aliasedAction(value: string): Promise<string> {
   return `aliased:${value}`;
 }
 
-export { aliasedAction as firstAliasedAction, aliasedAction as secondAliasedAction };
+export {
+  aliasedAction as firstAliasedAction,
+  aliasedAction as secondAliasedAction,
+  aliasedAction as $$vinext_cache_custom,
+};
 
 export async function addMessage(formData: FormData): Promise<string> {
   const message = formData.get("message") as string;

@@ -900,7 +900,7 @@ function matchesRegisteredServerReference(
     return false;
   }
   const registeredExport = normalizedRegisteredId.slice(registeredSeparator + 1);
-  return !registeredExport.startsWith("$$vinext_cache_");
+  return !/^\$\$vinext_cache_[0-9a-f]{64}$/.test(registeredExport);
 }
 
 function getServerActionFailureMessage(error: unknown): string {
