@@ -318,9 +318,10 @@ set_app_dev_command() {
   local cwd="$1"
   shift
   local dev_args=("$@")
+  local vite_cli="${cwd}/node_modules/vite/bin/vite.js"
 
-  if [[ -x "${cwd}/node_modules/.bin/vite" ]]; then
-    command_args=("${cwd}/node_modules/.bin/vite" "dev" "${dev_args[@]}")
+  if [[ -f "${vite_cli}" ]]; then
+    command_args=("node" "${vite_cli}" "dev" "${dev_args[@]}")
     return
   fi
 
