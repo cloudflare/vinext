@@ -127,4 +127,26 @@ describe("configured vinext build contract", () => {
     expect(appOutput).not.toContain("vinext-development-marker");
     expect(appOutput).not.toContain("__CONFIG_ONLY_MARKER__");
   }, 120_000);
+
+  it("keeps the vinext build report when Vite logging is silent", () => {
+    const root = createHybridProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace(
+          "export default defineConfig({",
+          'export default defineConfig({ logLevel: "silent",',
+        ),
+    );
+
+    const output = execFileSync(process.execPath, [CLI_PATH, "build"], {
+      cwd: root,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+
+    expect(output).toContain("Build complete.");
+  }, 120_000);
 });

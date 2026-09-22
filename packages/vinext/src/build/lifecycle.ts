@@ -239,15 +239,13 @@ async function finalizeBuild(
     });
   }
 
-  if (builder.config.logLevel !== "silent") {
-    const { printBuildReport } = await import("./report.js");
-    await printBuildReport({
-      root: context.root,
-      pageExtensions: context.nextConfig.pageExtensions,
-      prerenderResult: prerenderResult ?? undefined,
-    });
-    console.log("\n  Build complete.\n");
-  }
+  const { printBuildReport } = await import("./report.js");
+  await printBuildReport({
+    root: context.root,
+    pageExtensions: context.nextConfig.pageExtensions,
+    prerenderResult: prerenderResult ?? undefined,
+  });
+  console.log("\n  Build complete.\n");
   return { prerendered: Boolean(prerenderDecision), standalone: false };
 }
 
