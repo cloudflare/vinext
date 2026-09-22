@@ -24,7 +24,10 @@ import {
   generatePagesResponseEntry as _generatePagesResponseEntry,
   generateServerEntry as _generateServerEntry,
 } from "./entries/pages-server-entry.js";
-import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
+import {
+  compileClientMiddlewareMatchers,
+  generateClientEntry as _generateClientEntry,
+} from "./entries/pages-client-entry.js";
 import {
   appRouteGraph,
   appRouter,
@@ -5141,10 +5144,31 @@ export const loadServerActionClient = ${
         // — a new reference only when the route set changes (invalidateRouteCache
         // -> re-scan). Keying on `routes` rebuilds exactly then and reuses the
         // handler otherwise, instead of re-running it for every request.
+        // Middleware and page export-kind edits explicitly clear the cache
+        // below because their client manifests are derived from source files.
         let cachedSSRHandler: {
           routes: Awaited<ReturnType<typeof pagesRouter>>;
           handler: ReturnType<typeof createSSRHandler>;
         } | null = null;
+        const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
+        function classifyDevPageFile(filePath: string): "static" | "server" | "none" {
+          const cached = devPageRouteDataKinds.get(filePath);
+          if (cached) return cached;
+
+          let dataKind: "static" | "server" | "none" = "none";
+          try {
+            const source = fs.readFileSync(filePath, "utf8");
+            dataKind = hasExportedName(source, "getStaticProps")
+              ? "static"
+              : hasExportedName(source, "getServerSideProps")
+                ? "server"
+                : "none";
+          } catch {
+            // Dev can race with an editor deleting/renaming a page file.
+          }
+          devPageRouteDataKinds.set(filePath, dataKind);
+          return dataKind;
+        }
         function getPagesRunner() {
           if (!pagesRunner) {
             const env =
@@ -5207,6 +5231,20 @@ export const loadServerActionClient = ${
             if (mod) env.moduleGraph.invalidateModule(mod);
           }
           pagesRunner?.clearCache();
+        }
+
+        function invalidatePagesHydrationProxies() {
+          // Vite caches transformed inline HTML modules by their proxy ID.
+          // A newly rendered page can replace the proxy's source without
+          // invalidating that transformed module, leaving the old route data
+          // manifest in browsers even after a full reload.
+          const graph = server.environments.client?.moduleGraph;
+          if (!graph) return;
+          for (const mod of graph.idToModuleMap.values()) {
+            if (mod.id?.includes("?html-proxy&index=")) {
+              graph.invalidateModule(mod);
+            }
+          }
         }
 
         function invalidateAppRoutingModules() {
@@ -5374,7 +5412,16 @@ export const loadServerActionClient = ${
           if (hasCloudflarePlugin && hasPagesDir && !hasAppDir) invalidatePagesServerEntry();
         };
 
+        function invalidatePagesMiddlewareMatcher(filePath: string) {
+          if (!hasPagesDir || !middlewarePath || toSlash(filePath) !== middlewarePath) return;
+          // The handler snapshots this matcher in each __NEXT_DATA__ response.
+          // Editors may save via unlink/add instead of a change event.
+          cachedSSRHandler = null;
+          server.ws.send({ type: "full-reload" });
+        }
+
         server.watcher.on("add", (filePath: string) => {
+          invalidatePagesMiddlewareMatcher(filePath);
           updatePublicFileRoute(filePath, true);
           let routeChanged = false;
           const pagesAppChanged = isPagesAppFile(filePath);
@@ -5391,6 +5438,7 @@ export const loadServerActionClient = ${
             toSlash(filePath).startsWith(pagesDir) &&
             pageExtensions.test(filePath)
           ) {
+            devPageRouteDataKinds.delete(toSlash(filePath));
             invalidateRouteCache(pagesDir);
             routeChanged = true;
           }
@@ -5401,12 +5449,30 @@ export const loadServerActionClient = ${
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
+            if (hasPagesDir) invalidatePagesHydrationProxies();
             if (!hasAppDir) server.ws.send({ type: "full-reload" });
             invalidateHybridClientEntries();
             revalidateHybridRoutes();
           }
         });
         server.watcher.on("change", (filePath: string) => {
+          invalidatePagesMiddlewareMatcher(filePath);
+          if (
+            hasPagesDir &&
+            toSlash(filePath).startsWith(pagesDir) &&
+            pageExtensions.test(filePath)
+          ) {
+            // The handler snapshots each page's data-loading exports for the
+            // client hydration manifest, which can change without a new route.
+            const pageFile = toSlash(filePath);
+            const previousKind = devPageRouteDataKinds.get(pageFile);
+            devPageRouteDataKinds.delete(pageFile);
+            if (previousKind !== undefined && previousKind !== classifyDevPageFile(pageFile)) {
+              cachedSSRHandler = null;
+              invalidatePagesHydrationProxies();
+              server.ws.send({ type: "full-reload" });
+            }
+          }
           const pagesAppChanged = isPagesAppFile(filePath);
           const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(filePath);
           if (
@@ -5417,6 +5483,7 @@ export const loadServerActionClient = ${
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
+          invalidatePagesMiddlewareMatcher(filePath);
           updatePublicFileRoute(filePath, false);
           let routeChanged = false;
           const pagesAppChanged = isPagesAppFile(filePath);
@@ -5433,6 +5500,7 @@ export const loadServerActionClient = ${
             toSlash(filePath).startsWith(pagesDir) &&
             pageExtensions.test(filePath)
           ) {
+            devPageRouteDataKinds.delete(toSlash(filePath));
             invalidateRouteCache(pagesDir);
             routeChanged = true;
           }
@@ -5443,6 +5511,7 @@ export const loadServerActionClient = ${
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
+            if (hasPagesDir) invalidatePagesHydrationProxies();
             if (!hasAppDir) server.ws.send({ type: "full-reload" });
             invalidateHybridClientEntries();
             revalidateHybridRoutes();
@@ -6207,27 +6276,9 @@ export const loadServerActionClient = ${
                   hasAppDir && appDir
                     ? appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
                     : Promise.resolve([]));
-              const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
               const classifyDevPageRoute = (
                 route: (typeof devPageRoutes)[number],
-              ): "static" | "server" | "none" => {
-                const cached = devPageRouteDataKinds.get(route.filePath);
-                if (cached) return cached;
-
-                let dataKind: "static" | "server" | "none" = "none";
-                try {
-                  const source = fs.readFileSync(route.filePath, "utf8");
-                  dataKind = hasExportedName(source, "getStaticProps")
-                    ? "static"
-                    : hasExportedName(source, "getServerSideProps")
-                      ? "server"
-                      : "none";
-                } catch {
-                  // Dev can race with an editor deleting/renaming a page file.
-                }
-                devPageRouteDataKinds.set(route.filePath, dataKind);
-                return dataKind;
-              };
+              ): "static" | "server" | "none" => classifyDevPageFile(route.filePath);
 
               const pipelineDeps: PagesPipelineDeps = {
                 basePath: bp,
@@ -6523,6 +6574,12 @@ export const loadServerActionClient = ${
                       nextConfig?.expireTime,
                       nextConfig?.crossOrigin,
                       devBuildId,
+                      middlewarePath
+                        ? compileClientMiddlewareMatchers(
+                            extractMiddlewareMatcherConfig(middlewarePath),
+                          )
+                        : undefined,
+                      classifyDevPageRoute,
                     ),
                   };
                 }

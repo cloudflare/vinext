@@ -1993,6 +1993,216 @@ export default class CustomDocument extends Document {
     expect(html).toMatch(/html-proxy.*\.js/);
   });
 
+  it("refreshes the dev hydration matcher after middleware config changes", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-matcher-edit-"));
+    const middlewareFile = path.join(tmpRoot, "middleware.ts");
+    const previousSource = (matcher: string) => `import { NextResponse } from "next/server";
+export function middleware() { return NextResponse.next(); }
+export const config = { matcher: "${matcher}" };
+`;
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpRoot, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(tmpRoot, "pages"));
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Home() { return <p>home</p>; }\n",
+      );
+      await fsp.writeFile(middlewareFile, previousSource("/a"));
+      const { server: devServer, baseUrl } = await startFixtureServer(tmpRoot);
+      const wsSend = vi.spyOn(devServer.ws, "send");
+      try {
+        const readMatcher = async () => {
+          const html = await fetch(baseUrl).then((response) => response.text());
+          const nextData = html.match(
+            /<script id="__NEXT_DATA__" type="application\/json"[^>]*>([\s\S]*?)<\/script>/,
+          )?.[1];
+          expect(nextData).toBeDefined();
+          return JSON.parse(nextData!).__vinext.clientMiddlewareMatcher;
+        };
+        expect(await readMatcher()).toEqual(
+          expect.arrayContaining([expect.objectContaining({ source: "/a" })]),
+        );
+        await fsp.writeFile(middlewareFile, previousSource("/b"));
+        devServer.watcher.emit("change", middlewareFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        expect(await readMatcher()).toEqual(
+          expect.arrayContaining([expect.objectContaining({ source: "/b" })]),
+        );
+        // Atomic editor saves replace the file via unlink/add instead of change.
+        wsSend.mockClear();
+        await fsp.rm(middlewareFile);
+        devServer.watcher.emit("unlink", middlewareFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        wsSend.mockClear();
+        await fsp.writeFile(middlewareFile, previousSource("/c"));
+        devServer.watcher.emit("add", middlewareFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        expect(await readMatcher()).toEqual(
+          expect.arrayContaining([expect.objectContaining({ source: "/c" })]),
+        );
+      } finally {
+        wsSend.mockRestore();
+        await devServer.close();
+      }
+    } finally {
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes dev page data classifications after edits and replacements", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-data-hmr-"));
+    const pageFile = path.join(tmpRoot, "pages", "index.tsx");
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpRoot, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.dirname(pageFile));
+      await fsp.writeFile(
+        pageFile,
+        "export const getServerSideProps = () => ({ props: {} });\nexport default function Home() { return <p>home</p>; }\n",
+      );
+      const { server: devServer, baseUrl } = await startFixtureServer(tmpRoot);
+      const wsSend = vi.spyOn(devServer.ws, "send");
+      const invalidateClientModule = vi.spyOn(
+        devServer.environments.client.moduleGraph,
+        "invalidateModule",
+      );
+      try {
+        const readDataPatterns = async () => {
+          const html = await fetch(baseUrl).then((response) => response.text());
+          const nextData = JSON.parse(
+            html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? "{}",
+          );
+          const proxyPath = html.match(
+            /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
+          )?.[1];
+          expect(proxyPath).toBeDefined();
+          const script = await fetch(new URL(proxyPath!, baseUrl)).then((response) =>
+            response.text(),
+          );
+          return {
+            gsp: nextData.gsp === true,
+            gssp: nextData.gssp === true,
+            ssg: script.match(/window\.__VINEXT_PAGES_SSG_PATTERNS__ = (\[[^;]*\]);/)?.[1],
+            ssp: script.match(/window\.__VINEXT_PAGES_SSP_PATTERNS__ = (\[[^;]*\]);/)?.[1],
+          };
+        };
+        expect(await readDataPatterns()).toEqual({
+          gsp: false,
+          gssp: true,
+          ssg: "[]",
+          ssp: '["/"]',
+        });
+
+        await fsp.writeFile(pageFile, "export default function Home() { return <p>home</p>; }\n");
+        devServer.watcher.emit("change", pageFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        expect(
+          invalidateClientModule.mock.calls.some(([module]) =>
+            module.id?.includes("?html-proxy&index="),
+          ),
+        ).toBe(true);
+        await vi.waitFor(
+          async () => {
+            expect(await readDataPatterns()).toEqual({
+              gsp: false,
+              gssp: false,
+              ssg: "[]",
+              ssp: "[]",
+            });
+          },
+          { timeout: 5000 },
+        );
+
+        await fsp.writeFile(
+          pageFile,
+          "export const getStaticProps = () => ({ props: {} });\nexport default function Home() { return <p>home</p>; }\n",
+        );
+        devServer.watcher.emit("change", pageFile);
+        expect(wsSend).toHaveBeenCalledWith({ type: "full-reload" });
+        await vi.waitFor(
+          async () => {
+            expect(await readDataPatterns()).toEqual({
+              gsp: true,
+              gssp: false,
+              ssg: '["/"]',
+              ssp: "[]",
+            });
+          },
+          { timeout: 5000 },
+        );
+
+        await fsp.rm(pageFile);
+        devServer.watcher.emit("unlink", pageFile);
+        await fsp.writeFile(pageFile, "export default function Home() { return <p>new</p>; }\n");
+        devServer.watcher.emit("add", pageFile);
+        await vi.waitFor(
+          async () => {
+            expect(await readDataPatterns()).toEqual({
+              gsp: false,
+              gssp: false,
+              ssg: "[]",
+              ssp: "[]",
+            });
+          },
+          { timeout: 5000 },
+        );
+      } finally {
+        invalidateClientModule.mockRestore();
+        wsSend.mockRestore();
+        await devServer.close();
+      }
+    } finally {
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not link other pages into the initial hydration HMR proxy", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-hmr-deps-"));
+    try {
+      await fsp.symlink(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpRoot, "node_modules"),
+        "junction",
+      );
+      await fsp.mkdir(path.join(tmpRoot, "pages"));
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Home() { return <p>home</p>; }\n",
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "neighbor.tsx"),
+        "export default function Neighbor() { return <p>neighbor</p>; }\n",
+      );
+      const { server: devServer, baseUrl } = await startFixtureServer(tmpRoot);
+      try {
+        const html = await fetch(baseUrl).then((response) => response.text());
+        const proxyPath = html.match(
+          /<script type="module" src="([^"]*html-proxy[^"]*)"><\/script>/,
+        )?.[1];
+        expect(proxyPath).toBeDefined();
+        await fetch(new URL(proxyPath!, baseUrl));
+        const proxyModule = [
+          ...devServer.environments.client.moduleGraph.idToModuleMap.values(),
+        ].find((module) => module.id?.includes("?html-proxy&index="));
+        expect(proxyModule).toBeDefined();
+        expect([...proxyModule!.importedModules].map((module) => module.url)).not.toContain(
+          "/pages/neighbor.tsx",
+        );
+      } finally {
+        await devServer.close();
+      }
+    } finally {
+      await fsp.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   // --- Catch-all Routes ---
 
   it("renders catch-all routes with multiple segments", async () => {
@@ -2201,6 +2411,17 @@ export default class CustomDocument extends Document {
     );
     expect(nextDataMatch).toBeTruthy();
     expect(JSON.parse(nextDataMatch![1]!)).not.toHaveProperty("notFoundSrcPage");
+  });
+
+  it("marks middleware-backed error documents for initial history state", async () => {
+    const res = await fetch(`${baseUrl}/missing-middleware-error`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    const nextData = JSON.parse(
+      html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1] ?? "{}",
+    );
+    expect(nextData.__vinext.hasMiddleware).toBe(true);
+    expect(nextData.__vinext.clientMiddlewareMatcher).toBeDefined();
   });
 
   it("renders an empty optional catch-all path from getStaticPaths in dev", async () => {
@@ -4087,6 +4308,10 @@ describe("Virtual server entry generation", () => {
   it("dev Pages custom error HTML includes _app and error page stylesheet links", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-error-"));
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "_error.tsx"),
+      "export default function ErrorPage() { return <p>Custom error</p>; }\n",
+    );
     const testServer = await createServer({
       root: tmpDir,
       configFile: false,
@@ -4104,6 +4329,13 @@ describe("Virtual server entry generation", () => {
       const html = await res.text();
       expect(res.status).toBe(404);
       expect(html).toContain("Global CSS Error Test");
+      const scriptPath = html.match(/<script type="module" src="([^"]+html-proxy[^"]+)"/)?.[1];
+      expect(scriptPath).toBeTruthy();
+      const hydrationScript = await (
+        await fetch(`http://localhost:${addr.port}${scriptPath}`)
+      ).text();
+      expect(hydrationScript).toContain('"/_error": () => loadDevPage(');
+      expect(hydrationScript).toContain("_error.tsx");
       const stylesheetHrefs = getStylesheetHrefs(html);
       for (const href of fixture.errorDevStylesheetHrefs) {
         expect(stylesheetHrefs).toContain(href);

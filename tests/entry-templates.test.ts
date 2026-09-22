@@ -2308,9 +2308,17 @@ describe("Pages Router entry template", () => {
         { middlewareMatcher: ["/ssr", { source: "/api/:path*" }] },
       );
 
-      expect(code).toContain(
-        'window.__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr",{"source":"/api/:path*"}]',
-      );
+      const prefix = "window.__VINEXT_MIDDLEWARE_MATCHER__ = ";
+      const assignment = code.split("\n").find((line) => line.startsWith(prefix));
+      expect(assignment).toBeDefined();
+      expect(JSON.parse(assignment!.slice(prefix.length, -1))).toEqual([
+        expect.objectContaining({ source: "/ssr", regexp: expect.any(String), flags: "i" }),
+        expect.objectContaining({
+          source: "/api/:path*",
+          regexp: expect.any(String),
+          flags: "i",
+        }),
+      ]);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

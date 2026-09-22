@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { compileClientMiddlewareMatchers } from "../packages/vinext/src/entries/pages-client-entry.js";
 import ReactDOMServer from "react-dom/server";
 import type { ElementType, ReactNode } from "react";
 import {
@@ -3437,9 +3438,9 @@ describe("Link prefetch scheduling", () => {
     const actualLoader = vi.fn(async () => ({ default: null }));
     const result = await renderIsolatedLink({
       appNavigation: false,
-      href: "/actual",
+      href: "/actual?source=1",
       nodeEnv: "production",
-      props: { as: "/masked" },
+      props: { as: "/masked?visible=1" },
       windowOverrides: {
         __NEXT_DATA__: {
           buildId: "build-id",
@@ -3448,7 +3449,7 @@ describe("Link prefetch scheduling", () => {
             pageModuleUrl: "/_next/static/chunks/pages/current.js",
           },
         },
-        __VINEXT_MIDDLEWARE_MATCHER__: ["/masked"],
+        __VINEXT_MIDDLEWARE_MATCHER__: compileClientMiddlewareMatchers(["/masked"]),
         __VINEXT_PAGE_LOADERS__: {
           "/actual": actualLoader,
         },
@@ -3472,7 +3473,7 @@ describe("Link prefetch scheduling", () => {
       expect(actualLoader).toHaveBeenCalled();
       expect(result.fetch).toHaveBeenCalledTimes(2);
       for (const call of result.fetch.mock.calls) {
-        expect(call[0]).toBe("/_next/data/build-id/masked.json");
+        expect(call[0]).toBe("/_next/data/build-id/masked.json?source=1");
         expect(call[1]?.headers).toMatchObject({
           Accept: "application/json",
           purpose: "prefetch",
@@ -3559,7 +3560,7 @@ describe("Link prefetch scheduling", () => {
             pageModuleUrl: "/_next/static/chunks/pages/current.js",
           },
         },
-        __VINEXT_MIDDLEWARE_MATCHER__: ["/:path*"],
+        __VINEXT_MIDDLEWARE_MATCHER__: compileClientMiddlewareMatchers(["/:path*"]),
         __VINEXT_PAGE_LOADERS__: {
           "/dynamic-no-cache/[id]": dynamicLoader,
         },
@@ -3614,7 +3615,7 @@ describe("Link prefetch scheduling", () => {
             pageModuleUrl: "/_next/static/chunks/pages/current.js",
           },
         },
-        __VINEXT_MIDDLEWARE_MATCHER__: ["/masked"],
+        __VINEXT_MIDDLEWARE_MATCHER__: compileClientMiddlewareMatchers(["/masked"]),
         __VINEXT_PAGE_LOADERS__: {
           "/actual": actualLoader,
         },

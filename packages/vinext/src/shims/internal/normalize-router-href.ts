@@ -47,7 +47,10 @@ export function resolvePagesRouterHref(
   }
 
   try {
-    const base = new URL(normalized.startsWith("#") ? router.asPath : router.pathname, "http://n");
+    const base = new URL(
+      normalized.startsWith("#") || normalized.startsWith("?") ? router.asPath : router.pathname,
+      "http://n",
+    );
     const resolved = new URL(normalized, base);
     return resolved.origin === base.origin
       ? resolved.href.slice(resolved.origin.length)

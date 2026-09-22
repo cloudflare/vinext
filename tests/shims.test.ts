@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { PAGES_FIXTURE_DIR, aliasEntriesToRecord } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { extractVinextNextDataJson } from "../packages/vinext/src/client/vinext-next-data.js";
+import { compileClientMiddlewareMatchers } from "../packages/vinext/src/entries/pages-client-entry.js";
 import { toClientRewrites } from "../packages/vinext/src/client/client-rewrites.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
 import vinext from "../packages/vinext/src/index.js";
@@ -17014,6 +17015,230 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("stamps initial dynamic route identity separately from the visible URL", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, replaceState } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/posts/1",
+      search: "?view=full",
+      href: "http://localhost/posts/1?view=full",
+    });
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/posts/[id]",
+      query: { id: "1" },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      expect(replaceState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: "/posts/[id]?view=full&id=1",
+          as: "/posts/1?view=full",
+          __N: true,
+        }),
+        "",
+      );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it("waits for serialized page data and middleware matchers before stamping initial history", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, replaceState } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/posts/1",
+      href: "http://localhost/posts/1",
+      origin: "http://localhost",
+    });
+    const nextData = {
+      ...win.__NEXT_DATA__,
+      page: "/posts/[id]",
+      query: { id: "1" },
+      buildId: "test-build",
+      __vinext: { hasMiddleware: true },
+    };
+    delete (win as any).__NEXT_DATA__;
+    (globalThis as any).window = win;
+    try {
+      vi.resetModules();
+      const router = await import("../packages/vinext/src/shims/router.js");
+      expect(replaceState).not.toHaveBeenCalled();
+      (win as any).__NEXT_DATA__ = nextData;
+      router._initializePagesRouterReadyFromNextData(nextData);
+      expect(replaceState).not.toHaveBeenCalled();
+      (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/posts/:id"]);
+      const { getPagesMiddlewareDataHref } =
+        await import("../packages/vinext/src/shims/internal/pages-data-target.js");
+      expect(getPagesMiddlewareDataHref("/posts/1", "")).not.toBeNull();
+      router._initializePagesRouterReadyFromNextData(nextData);
+      expect(replaceState).toHaveBeenCalledTimes(1);
+      expect(replaceState).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "/posts/1", as: "/posts/1", __N: true }),
+        "",
+      );
+      expect(win.addEventListener).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it("stamps initial history when the generated entry publishes a match-all middleware value", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, replaceState } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/posts/1",
+      href: "http://localhost/posts/1",
+      origin: "http://localhost",
+    });
+    const nextData = {
+      ...win.__NEXT_DATA__,
+      page: "/posts/[id]",
+      query: { id: "1" },
+      buildId: "test-build",
+      __vinext: { hasMiddleware: true },
+    };
+    delete (win as any).__NEXT_DATA__;
+    delete (win as any).__VINEXT_MIDDLEWARE_MATCHER__;
+    (globalThis as any).window = win;
+    try {
+      vi.resetModules();
+      const router = await import("../packages/vinext/src/shims/router.js");
+      (win as any).__NEXT_DATA__ = nextData;
+      router._initializePagesRouterReadyFromNextData(nextData);
+      expect(replaceState).not.toHaveBeenCalled();
+
+      (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = undefined;
+      router._initializePagesRouterReadyFromNextData(nextData);
+      expect(replaceState).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "/posts/1", as: "/posts/1", __N: true }),
+        "",
+      );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it.each([
+    { trailingSlash: false, browserPath: "/docs", expected: "/docs" },
+    { trailingSlash: true, browserPath: "/docs/", expected: "/docs/" },
+  ])(
+    "normalizes basePath root history when trailingSlash is $trailingSlash",
+    async ({ trailingSlash, browserPath, expected }) => {
+      const previousWindow = (globalThis as any).window;
+      const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+      const previousTrailingSlash = process.env.__VINEXT_TRAILING_SLASH;
+      process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+      process.env.__VINEXT_TRAILING_SLASH = String(trailingSlash);
+      const { win, replaceState } = createNavWindow();
+      Object.assign(win.location, {
+        pathname: browserPath,
+        href: `http://localhost${browserPath}`,
+      });
+      (globalThis as any).window = win;
+
+      try {
+        vi.resetModules();
+        await import("../packages/vinext/src/shims/router.js");
+
+        expect(replaceState).toHaveBeenCalledWith(
+          expect.objectContaining({ url: expected, as: expected, __N: true }),
+          "",
+        );
+      } finally {
+        if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+        else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+        if (previousTrailingSlash === undefined) delete process.env.__VINEXT_TRAILING_SLASH;
+        else process.env.__VINEXT_TRAILING_SLASH = previousTrailingSlash;
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        vi.resetModules();
+      }
+    },
+  );
+
+  it.each([
+    {
+      label: "keeps visible identity for a matching complex middleware path",
+      matcher: { source: "/posts/(.*)", regexp: "^/posts/(.*)$", flags: "i" },
+      expectedUrl: "/posts/1",
+    },
+    {
+      label: "keeps dynamic route identity for a non-matching complex middleware path",
+      matcher: { source: "/admin/(.*)", regexp: "^/admin/(.*)$", flags: "i" },
+      expectedUrl: "/posts/[id]?id=1",
+    },
+    {
+      label: "keeps visible identity when the path matches but a has condition does not",
+      matcher: {
+        source: "/posts/:id",
+        regexp: "^/posts/[^/]+$",
+        has: [{ type: "header", key: "x-allow", value: "yes" }],
+      },
+      expectedUrl: "/posts/1",
+    },
+    {
+      label: "keeps visible identity when the path matches but a missing condition does not",
+      matcher: {
+        source: "/posts/:id",
+        regexp: "^/posts/[^/]+$",
+        missing: [{ type: "cookie", key: "session" }],
+      },
+      expectedUrl: "/posts/1",
+    },
+  ])("$label", async ({ matcher, expectedUrl }) => {
+    // Ported from Next.js's path-only matchesMiddleware() and initial history
+    // stamp; `has`/`missing` conditions are intentionally server-only.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+    const previousWindow = (globalThis as any).window;
+    const { win, replaceState } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/posts/1",
+      href: "http://localhost/posts/1",
+      origin: "http://localhost",
+    });
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/posts/[id]",
+      query: { id: "1" },
+    };
+    (win.__NEXT_DATA__ as any).buildId = "test-build";
+    (win.__NEXT_DATA__ as any).__vinext = {
+      ...win.__NEXT_DATA__.__vinext,
+      hasMiddleware: true,
+    };
+    Object.assign(win, { __VINEXT_MIDDLEWARE_MATCHER__: [matcher] });
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      await import("../packages/vinext/src/shims/router.js");
+
+      expect(replaceState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: expectedUrl,
+          as: "/posts/1",
+          __N: true,
+        }),
+        "",
+      );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   /**
    * Helper: create a mock window suitable for non-shallow Router.push().
    * Returns an object with the window mock plus helpers for controlling
@@ -17126,7 +17351,7 @@ describe("Pages Router concurrent navigation", () => {
       ).resolves.toBe(true);
 
       expect(pushState).toHaveBeenCalledWith(
-        expect.objectContaining({ url: "/fr/target", as: testCase.expectedAs }),
+        expect.objectContaining({ url: "/docs/target", as: `/docs${testCase.expectedAs}` }),
         "",
         `/docs${testCase.expectedAs}`,
       );
@@ -17383,12 +17608,95 @@ describe("Pages Router concurrent navigation", () => {
 
       await Router.push({ query: { id: "1" } }, undefined, { shallow: true, locale: "fr" });
 
-      expect(win.location.href).toBe("http://example.fr/app/rewrite-navigation-same/0?id=1");
+      expect(win.location.href).toBe("http://example.fr/app/rewrite-navigation-same/1");
       expect(win.history.pushState).not.toHaveBeenCalled();
     } finally {
       vi.resetModules();
       if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
       else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it.each([
+    { label: "object", href: { pathname: "/posts/[id]", query: { id: "2" } } },
+    { label: "string", href: "/posts/[id]?id=2" },
+  ])("interpolates $label dynamic hrefs before domain-locale routing", async ({ href }) => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const { win } = createNavWindow();
+    process.env.__NEXT_ROUTER_BASEPATH = "/app";
+    Object.assign(win.location, {
+      pathname: "/app/",
+      href: "https://example.com/app/",
+      hostname: "example.com",
+      origin: "https://example.com",
+    });
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "en",
+      __VINEXT_LOCALES__: ["en", "fr"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: {
+        ...win.__NEXT_DATA__,
+        domainLocales: [
+          { domain: "example.com", defaultLocale: "en" },
+          { domain: "example.fr", defaultLocale: "fr", http: true },
+        ],
+      },
+    });
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(Router.push(href, undefined, { locale: "fr" })).resolves.toBe(false);
+
+      expect(win.location.href).toBe("http://example.fr/app/posts/2");
+      expect(win.history.pushState).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it.each([
+    { href: "?id=2", as: "/pretty", expectedUrl: "/posts/[id]?id=2" },
+    { href: "?tab=x", as: "/posts/2", expectedUrl: "/posts/[id]?tab=x" },
+  ])("keeps dynamic route identity when $href has explicit as $as", async (testCase) => {
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/posts/1",
+      href: "http://localhost/posts/1",
+    });
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/posts/[id]",
+      query: { id: "1" },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(Router.push(testCase.href, testCase.as, { shallow: true })).resolves.toBe(true);
+
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: testCase.expectedUrl,
+          as: testCase.as,
+        }),
+        "",
+        testCase.as,
+      );
+    } finally {
+      vi.resetModules();
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;
     }
@@ -17537,6 +17845,66 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it.each([
+    {
+      name: "an empty optional catch-all",
+      page: "/docs/[[...slug]]",
+      pathname: "/docs",
+      query: { tab: "api" },
+      expectedUrl: "/docs/[[...slug]]?tab=api",
+      expectedAs: "/docs?tab=api",
+      locale: undefined,
+    },
+    {
+      name: "a locale-prefixed dynamic route",
+      page: "/posts/[id]",
+      pathname: "/fr/posts/1",
+      query: { id: "2" },
+      expectedUrl: "/posts/[id]?id=2",
+      expectedAs: "/fr/posts/2",
+      locale: "fr",
+    },
+  ])("stores Next-compatible history for $name", async (testCase) => {
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: testCase.pathname,
+      href: `http://localhost${testCase.pathname}`,
+    });
+    Object.assign(win, {
+      __NEXT_DATA__: { ...win.__NEXT_DATA__, page: testCase.page },
+      __VINEXT_LOCALE__: testCase.locale,
+      __VINEXT_LOCALES__: testCase.locale ? ["en", "fr"] : undefined,
+      __VINEXT_DEFAULT_LOCALE__: testCase.locale ? "en" : undefined,
+    });
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(
+        Router.push({ query: testCase.query }, undefined, { shallow: true }),
+      ).resolves.toBe(true);
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          url: testCase.expectedUrl,
+          as: testCase.expectedAs,
+          options: {
+            shallow: true,
+            ...(testCase.locale ? { locale: testCase.locale } : {}),
+          },
+        }),
+        "",
+        testCase.expectedAs,
+      );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   it("interpolates required catch-all params during same-segment navigation", async () => {
     const previousWindow = (globalThis as any).window;
     const { win } = createNavWindow();
@@ -17644,14 +18012,23 @@ describe("Pages Router concurrent navigation", () => {
   async function expectPagesRouterPushTrailingSlashNormalization({
     target,
     expectedBrowserUrl,
+    dynamicRoute,
+    expectedStateUrl,
   }: {
-    target: string;
+    target: string | { query: Record<string, string> };
     expectedBrowserUrl: string;
+    dynamicRoute?: { page: string; pathname: string };
+    expectedStateUrl?: string;
   }): Promise<void> {
     const previousWindow = (globalThis as any).window;
     const previousTrailingSlash = process.env.__VINEXT_TRAILING_SLASH;
     const originalFetch = globalThis.fetch;
     const { win } = createNavWindow();
+    if (dynamicRoute) {
+      win.location.pathname = dynamicRoute.pathname;
+      win.location.href = `http://localhost${dynamicRoute.pathname}`;
+      win.__NEXT_DATA__.page = dynamicRoute.page;
+    }
     (globalThis as any).window = win;
     process.env.__VINEXT_TRAILING_SLASH = "true";
     vi.resetModules();
@@ -17670,7 +18047,10 @@ describe("Pages Router concurrent navigation", () => {
       // History state now follows Next.js shape ({ url, as, options, __N, key });
       // assert via partial match so test stays focused on URL normalization.
       expect(win.history.pushState).toHaveBeenCalledWith(
-        expect.objectContaining({ __N: true }),
+        expect.objectContaining({
+          __N: true,
+          ...(expectedStateUrl ? { url: expectedStateUrl } : {}),
+        }),
         "",
         expectedBrowserUrl,
       );
@@ -17701,6 +18081,15 @@ describe("Pages Router concurrent navigation", () => {
     await expectPagesRouterPushTrailingSlashNormalization({
       target: "/about/?hello=world",
       expectedBrowserUrl: "/about/?hello=world",
+    });
+  });
+
+  it("normalizes query-only dynamic route history when trailingSlash is true", async () => {
+    await expectPagesRouterPushTrailingSlashNormalization({
+      target: { query: { id: "2" } },
+      dynamicRoute: { page: "/posts/[id]", pathname: "/posts/1" },
+      expectedBrowserUrl: "/posts/2/",
+      expectedStateUrl: "/posts/[id]/?id=2",
     });
   });
 
@@ -17925,8 +18314,8 @@ describe("Pages Router concurrent navigation", () => {
       expect(fetch).toHaveBeenCalledWith("/docs/fr/something-else", expect.any(Object));
       expect(win.history.pushState).toHaveBeenCalledWith(
         expect.objectContaining({
-          url: "/fr/something-else",
-          as: "/fr/hello",
+          url: "/docs/something-else",
+          as: "/docs/fr/hello",
           options: expect.objectContaining({ locale: "fr" }),
         }),
         "",
@@ -19344,6 +19733,73 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("keeps basePath in history state exposed to beforePopState", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    const listeners = new Map<string, (event: any) => void>();
+    const dynamicLoader = vi.fn(async () => ({ default: () => null }));
+    const { win } = createNavWindow();
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    Object.assign(win.location, {
+      pathname: "/docs/start",
+      href: "http://localhost/docs/start",
+    });
+    Object.assign(win.__NEXT_DATA__, { page: "/start", buildId: "test-build" });
+    Object.assign(win, {
+      __VINEXT_PAGE_LOADERS__: { "/posts/[id]": dynamicLoader },
+      __VINEXT_PAGE_PATTERNS__: ["/posts/[id]"],
+      __VINEXT_PAGES_SSP_PATTERNS__: ["/posts/[id]"],
+    });
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    (globalThis as any).window = win;
+    const fetch = vi.fn(
+      async (_url: RequestInfo | URL) =>
+        new Response(JSON.stringify({ pageProps: {} }), {
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+
+      await Router.push("/posts/[id]?id=1", "/posts/1", { shallow: true });
+      expect(win.history.state).toMatchObject({
+        url: "/docs/posts/[id]?id=1",
+        as: "/docs/posts/1",
+      });
+
+      const beforePopState = vi.fn(() => true);
+      Router.beforePopState(beforePopState);
+      listeners.get("popstate")?.({ state: win.history.state });
+
+      expect(beforePopState).toHaveBeenCalledWith({
+        url: "/docs/posts/[id]?id=1",
+        as: "/docs/posts/1",
+        options: { shallow: true },
+      });
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+      expect(fetch).toHaveBeenCalledWith("/docs/posts/1?id=1", expect.any(Object));
+      expect(fetch.mock.calls.map(([url]) => getFetchHref(url))).not.toEqual(
+        expect.arrayContaining([expect.stringContaining("/docs/docs/")]),
+      );
+    } finally {
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("beforePopState receives the stored href and as values for masked history entries", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -19764,7 +20220,11 @@ describe("Pages Router concurrent navigation", () => {
       );
       expect(pushState).toHaveBeenCalledTimes(1);
       expect(pushState).toHaveBeenCalledWith(
-        expect.objectContaining({ url: "/new-home", as: "/new-home", __N: true }),
+        expect.objectContaining({
+          url: "/new-home",
+          as: "/new-home",
+          __N: true,
+        }),
         "",
         "/new-home",
       );
@@ -20477,13 +20937,17 @@ describe("Pages Router concurrent navigation", () => {
       );
       expect(fetch).not.toHaveBeenCalledWith("/docs/docs/new-home", expect.any(Object));
       expect(pushState).toHaveBeenCalledWith(
-        expect.objectContaining({ url: "/new-home", as: "/new-home", __N: true }),
+        expect.objectContaining({
+          url: "/docs/new-home",
+          as: "/docs/new-home",
+          __N: true,
+        }),
         "",
         "/docs/new-home",
       );
       expect(win.history.state).toMatchObject({
-        url: "/new-home",
-        as: "/new-home",
+        url: "/docs/new-home",
+        as: "/docs/new-home",
         __N: true,
       });
       expect(win.location.href).toBe("http://localhost/docs/new-home");
@@ -20546,13 +21010,17 @@ describe("Pages Router concurrent navigation", () => {
       expect(fetch).not.toHaveBeenCalledWith("/docs/docs/new-home", expect.any(Object));
       expect(pushState).toHaveBeenCalledTimes(1);
       expect(pushState).toHaveBeenCalledWith(
-        expect.objectContaining({ url: "/new-home", as: "/new-home", __N: true }),
+        expect.objectContaining({
+          url: "/docs/new-home",
+          as: "/docs/new-home",
+          __N: true,
+        }),
         "",
         "/docs/new-home",
       );
       expect(win.history.state).toMatchObject({
-        url: "/new-home",
-        as: "/new-home",
+        url: "/docs/new-home",
+        as: "/docs/new-home",
         __N: true,
       });
       expect(win.location.href).toBe("http://localhost/docs/new-home");
@@ -21613,12 +22081,16 @@ describe("Pages Router _next/data client navigation", () => {
 
   // Local mirror of buildNavHtml — the HTML-fallback assertion needs a
   // minimal HTML response that the navigateClientHtml path can parse.
-  function buildNavHtmlLocal(page: string, pageModuleUrl: string): string {
+  function buildNavHtmlLocal(
+    page: string,
+    pageModuleUrl: string,
+    buildId: string | null = null,
+  ): string {
     const nextData = {
       props: { pageProps: {} },
       page,
       query: {},
-      buildId: null,
+      buildId,
       isFallback: false,
       __vinext: { pageModuleUrl },
     };
@@ -21756,7 +22228,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: [routePattern],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
     (globalThis as any).window = win;
     globalThis.fetch = vi.fn(
       async () =>
@@ -21892,7 +22364,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: [],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: () => ({ rel: "", as: "", href: "" }),
@@ -21943,7 +22415,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: ["/ssr"],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/ssr"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: () => ({ rel: "", as: "", href: "" }),
@@ -22017,7 +22489,7 @@ describe("Pages Router _next/data client navigation", () => {
     (win as any).__VINEXT_LOCALE__ = "en";
     (win as any).__VINEXT_LOCALES__ = ["ja", "en", "fr", "es"];
     (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: () => ({ rel: "", as: "", href: "" }),
@@ -22078,7 +22550,7 @@ describe("Pages Router _next/data client navigation", () => {
     (win as any).__VINEXT_LOCALE__ = "ja";
     (win as any).__VINEXT_LOCALES__ = ["ja", "en", "fr", "es"];
     (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
     (globalThis as any).window = win;
 
     try {
@@ -22112,7 +22584,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: ["/about"],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
     (globalThis as any).window = win;
     globalThis.fetch = vi.fn(() => fetchResponse) as typeof fetch;
 
@@ -22157,7 +22629,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: ["/ssr"],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/ssr"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: () => ({ rel: "", as: "", href: "" }),
@@ -22225,7 +22697,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: ["/ssr"],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/ssr"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: () => ({ rel: "", as: "", href: "" }),
@@ -22276,7 +22748,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: ["/ssr"],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/ssr"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: () => ({ rel: "", as: "", href: "" }),
@@ -22331,7 +22803,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: ["/actual"],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/masked"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/masked"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: () => ({ rel: "", as: "", href: "" }),
@@ -22344,13 +22816,13 @@ describe("Pages Router _next/data client navigation", () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
       async (url) => {
         const href = getDataFetchHref(url);
-        if (href === `/_next/data/${buildId}/masked.json`) {
+        if (href === `/_next/data/${buildId}/masked.json?source=1`) {
           return new Response(JSON.stringify({ pageProps: { from: "masked-probe" } }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
           });
         }
-        if (href === `/_next/data/${buildId}/actual.json`) {
+        if (href === `/_next/data/${buildId}/actual.json?source=1`) {
           return new Response(JSON.stringify({ pageProps: { from: "route-data" } }), {
             status: 200,
             headers: { "Content-Type": "application/json" },
@@ -22367,13 +22839,13 @@ describe("Pages Router _next/data client navigation", () => {
         await import("../packages/vinext/src/shims/internal/pages-data-fetch-dedup.js");
       const Router = routerModule.default;
 
-      const result = await Router.push("/actual", "/masked");
+      const result = await Router.push("/actual?source=1", "/masked?visible=1");
 
       expect(result).toBe(true);
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(fetchMock.mock.calls.map(([url]) => getDataFetchHref(url))).toEqual([
-        `/_next/data/${buildId}/masked.json`,
-        `/_next/data/${buildId}/actual.json`,
+        `/_next/data/${buildId}/masked.json?source=1`,
+        `/_next/data/${buildId}/actual.json?source=1`,
       ]);
       expect(win.__NEXT_DATA__.page).toBe("/actual");
       expect(win.__NEXT_DATA__.props.pageProps).toEqual({ from: "route-data" });
@@ -22506,6 +22978,604 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it.each([
+    {
+      label: "object push",
+      method: "push" as const,
+      target: { query: { id: "2" } },
+      historyMethod: "pushState" as const,
+      trailingSlash: false,
+    },
+    {
+      label: "string push",
+      method: "push" as const,
+      target: "?id=2",
+      historyMethod: "pushState" as const,
+      trailingSlash: false,
+    },
+    {
+      label: "string replace",
+      method: "replace" as const,
+      target: "?id=2",
+      historyMethod: "replaceState" as const,
+      trailingSlash: false,
+    },
+    {
+      label: "explicit object push",
+      method: "push" as const,
+      target: { pathname: "/posts/[id]", query: { id: "2" } },
+      historyMethod: "pushState" as const,
+      trailingSlash: false,
+    },
+    {
+      label: "explicit string push",
+      method: "push" as const,
+      target: "/posts/[id]?id=2",
+      historyMethod: "pushState" as const,
+      trailingSlash: false,
+    },
+    {
+      label: "explicit trailing-slash string push",
+      method: "push" as const,
+      target: "/posts/[id]/?id=2",
+      historyMethod: "pushState" as const,
+      trailingSlash: true,
+    },
+    {
+      label: "same-origin absolute string push",
+      method: "push" as const,
+      target: "http://localhost/posts/[id]?id=2",
+      historyMethod: "pushState" as const,
+      trailingSlash: false,
+    },
+    {
+      label: "same-origin absolute string push under basePath",
+      method: "push" as const,
+      target: "http://localhost/app/fr/posts/[id]?id=2",
+      historyMethod: "pushState" as const,
+      trailingSlash: false,
+      basePath: "/app",
+      pathname: "/app/fr/posts/1",
+      expectedFetch: "/app/_next/data/test-build/fr/posts/2.json?id=2",
+      expectedBrowserUrl: "/app/fr/posts/2",
+    },
+  ])(
+    // Next.js 16.2.7 likewise fetches the concrete data URL while loading
+    // the dynamic component by its stored route identity.
+    "$label keeps dynamic identity when a static path collides",
+    async ({
+      method,
+      target,
+      historyMethod,
+      trailingSlash,
+      basePath,
+      pathname,
+      expectedFetch,
+      expectedBrowserUrl,
+    }) => {
+      const previousWindow = (globalThis as any).window;
+      const originalFetch = globalThis.fetch;
+      const previousTrailingSlash = process.env.__VINEXT_TRAILING_SLASH;
+      const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+      process.env.__VINEXT_TRAILING_SLASH = String(trailingSlash);
+      if (basePath) process.env.__NEXT_ROUTER_BASEPATH = basePath;
+      const dynamicLoader = vi.fn(async () => makePageModule("dynamic"));
+      const staticLoader = vi.fn(async () => makePageModule("static"));
+      const { win } = createDataNavWindow({
+        page: "/posts/[id]",
+        pathname: pathname ?? "/fr/posts/1",
+        locale: "fr",
+        loaders: {
+          "/posts/[id]": dynamicLoader,
+          "/posts/2": staticLoader,
+        },
+        ssgPatterns: [],
+        sspPatterns: ["/posts/[id]"],
+      });
+      Object.assign(win, {
+        __VINEXT_LOCALES__: ["en", "fr"],
+        __VINEXT_DEFAULT_LOCALE__: "en",
+      });
+      (globalThis as any).window = win;
+      const fetch = vi.fn(async () => new Response(JSON.stringify({ pageProps: {} })));
+      globalThis.fetch = fetch;
+
+      try {
+        vi.resetModules();
+        const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+        await expect(Router[method](target)).resolves.toBe(true);
+
+        expect(fetch).toHaveBeenCalledWith(
+          expectedFetch ?? "/_next/data/test-build/fr/posts/2.json?id=2",
+          expect.any(Object),
+        );
+        expect(dynamicLoader).toHaveBeenCalledOnce();
+        expect(staticLoader).not.toHaveBeenCalled();
+        const slash = trailingSlash ? "/" : "";
+        expect(win.history[historyMethod]).toHaveBeenCalledWith(
+          expect.objectContaining({
+            url: `${basePath ?? ""}/posts/[id]${slash}?id=2`,
+            as: `${basePath ?? ""}/fr/posts/2${slash}`,
+          }),
+          "",
+          expectedBrowserUrl ?? `/fr/posts/2${slash}`,
+        );
+      } finally {
+        if (previousTrailingSlash === undefined) delete process.env.__VINEXT_TRAILING_SLASH;
+        else process.env.__VINEXT_TRAILING_SLASH = previousTrailingSlash;
+        if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+        else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+        vi.resetModules();
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        globalThis.fetch = originalFetch;
+      }
+    },
+  );
+
+  it("does not interpolate dynamic-looking cross-origin hrefs", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const { win } = createDataNavWindow();
+    (globalThis as any).window = win;
+    const fetch = vi.fn();
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const target = "https://example.com/posts/[id]?id=2&ref=x";
+
+      await expect(Router.push(target)).resolves.toBe(false);
+
+      expect(win.location.href).toBe(target);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("resolves a middleware rewrite independently from query-only source identity", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const sourceLoader = vi.fn(async () => makePageModule("source"));
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      page: "/source/[id]",
+      pathname: "/source/1",
+      loaders: {
+        "/source/[id]": sourceLoader,
+        "/destination": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: ["/source/[id]"],
+    });
+    (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
+    (globalThis as any).window = win;
+    const fetch = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ pageProps: { rewritten: true } }), {
+          headers: {
+            "content-type": "application/json",
+            "x-nextjs-rewrite": "/destination",
+          },
+        }),
+    );
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(Router.push("?id=2")).resolves.toBe(true);
+
+      expect(fetch).toHaveBeenCalledWith(
+        "/_next/data/test-build/source/2.json?id=2",
+        expect.any(Object),
+      );
+      expect(sourceLoader).not.toHaveBeenCalled();
+      expect(destinationLoader).toHaveBeenCalledOnce();
+      expect(win.__NEXT_DATA__.page).toBe("/destination");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.each([
+    {
+      label: "an implicit as",
+      page: "/source/[id]",
+      pathname: "/source/1",
+      href: "?id=2",
+      as: undefined,
+      expectedFetch: "/_next/data/test-build/source/2.json?id=2",
+      expectedQuery: { id: "2" },
+    },
+    {
+      label: "an explicit equivalent as",
+      page: "/source/[id]",
+      pathname: "/source/1",
+      href: "/source/[id]?id=2",
+      as: "/source/2",
+      expectedFetch: "/_next/data/test-build/source/2.json?id=2",
+      expectedQuery: { id: "2" },
+    },
+    {
+      label: "a static as with a different query",
+      page: "/page",
+      pathname: "/page",
+      href: "/page?href=1",
+      as: "/page?visible=1",
+      expectedFetch: "/_next/data/test-build/page.json?href=1",
+      expectedQuery: { href: "1" },
+    },
+    {
+      label: "a dynamic as with a different query",
+      page: "/posts/[id]",
+      pathname: "/posts/1",
+      href: "/posts/[id]?id=1&href=1",
+      as: "/posts/1?visible=1",
+      expectedFetch: "/_next/data/test-build/posts/1.json?id=1&href=1",
+      expectedQuery: { id: "1", href: "1" },
+    },
+  ])(
+    "reuses one middleware data request for $label",
+    async ({ page, pathname, href, as, expectedFetch, expectedQuery }) => {
+      const previousWindow = (globalThis as any).window;
+      const originalFetch = globalThis.fetch;
+      const sourceLoader = vi.fn(async () => makePageModule("source"));
+      const { win } = createDataNavWindow({
+        page,
+        pathname,
+        loaders: { [page]: sourceLoader },
+        ssgPatterns: [],
+        sspPatterns: [page],
+      });
+      (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+      (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
+      (globalThis as any).window = win;
+      const fetch = vi.fn(
+        async () => new Response(JSON.stringify({ pageProps: { middlewareQuery: "2" } })),
+      );
+      globalThis.fetch = fetch;
+
+      try {
+        vi.resetModules();
+        const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+        await expect(Router.push(href, as)).resolves.toBe(true);
+
+        expect(fetch).toHaveBeenCalledOnce();
+        expect(fetch).toHaveBeenCalledWith(expectedFetch, expect.any(Object));
+        expect(sourceLoader).toHaveBeenCalledOnce();
+        expect(win.__NEXT_DATA__).toMatchObject({
+          page,
+          query: expectedQuery,
+          props: { pageProps: { middlewareQuery: "2" } },
+        });
+      } finally {
+        vi.resetModules();
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        globalThis.fetch = originalFetch;
+      }
+    },
+  );
+
+  const queryOnlyNavigationCases = [
+    {
+      label: "preserves a localized rewritten path",
+      pathname: "/fr/pretty",
+      target: "?x=1",
+      options: { shallow: true },
+      expectedAs: "/fr/pretty?x=1",
+      expectedState: { as: "/fr/pretty?x=1" },
+    },
+    {
+      label: "applies an explicit locale to a dynamic route",
+      pathname: "/fr/posts/1",
+      target: "?id=2",
+      options: { shallow: true, locale: "nl" },
+      expectedAs: "/nl/posts/2",
+      expectedState: {
+        url: "/posts/[id]?id=2",
+        as: "/nl/posts/2",
+        options: expect.objectContaining({ locale: "nl" }),
+      },
+    },
+  ] as const;
+
+  it.each(
+    queryOnlyNavigationCases.flatMap((testCase) =>
+      (["push", "replace"] as const).map((method) => ({ ...testCase, method })),
+    ),
+  )(
+    "direct query-only $method $label",
+    async ({ method, pathname, target, options, expectedAs, expectedState }) => {
+      const previousWindow = (globalThis as any).window;
+      const originalFetch = globalThis.fetch;
+      const { win } = createDataNavWindow({
+        page: "/posts/[id]",
+        pathname,
+        locale: "fr",
+        loaders: { "/posts/[id]": vi.fn(async () => makePageModule("dynamic")) },
+        ssgPatterns: [],
+        sspPatterns: ["/posts/[id]"],
+      });
+      Object.assign(win, {
+        __VINEXT_LOCALES__: ["en", "fr", "nl"],
+        __VINEXT_DEFAULT_LOCALE__: "en",
+      });
+      (globalThis as any).window = win;
+      globalThis.fetch = vi.fn(async () => {
+        throw new Error("shallow query-only navigation must not fetch");
+      });
+
+      try {
+        vi.resetModules();
+        const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+        const historyMethod = method === "push" ? "pushState" : "replaceState";
+        win.history[historyMethod].mockClear();
+
+        await expect(Router[method](target, undefined, options)).resolves.toBe(true);
+
+        expect(win.history[historyMethod]).toHaveBeenCalledWith(
+          expect.objectContaining(expectedState),
+          "",
+          expectedAs,
+        );
+      } finally {
+        vi.resetModules();
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        globalThis.fetch = originalFetch;
+      }
+    },
+  );
+
+  // Next.js preserves the full initial query in the dynamic route's history URL.
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
+  it("preserves initial dynamic GSSP search params when navigating away and back", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const originalCustomEvent = globalThis.CustomEvent;
+    const dynamicPage = "/posts/[id]";
+    const initialPath = "/posts/1?view=full&tag=first&tag=second&id=spoof";
+    const dynamicLoader = vi.fn(async () => makePageModule("post"));
+    const { win } = createDataNavWindow({
+      page: dynamicPage,
+      pathname: "/posts/1",
+      loaders: {
+        [dynamicPage]: dynamicLoader,
+        "/about": vi.fn(async () => makePageModule("about")),
+      },
+      sspPatterns: [dynamicPage],
+      ssgPatterns: [],
+    });
+    Object.assign(win.location, {
+      search: "?view=full&tag=first&tag=second&id=spoof",
+      href: `http://localhost${initialPath}`,
+    });
+    win.__NEXT_DATA__.query = { id: "1" };
+    const listeners = new Map<string, (event: any) => void>();
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    (globalThis as any).window = win;
+    (globalThis as any).CustomEvent = class CustomEventMock {
+      constructor(public type: string) {}
+    } as any;
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ pageProps: {} })));
+    globalThis.fetch = fetch;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+      const initialState = win.history.state;
+      expect(initialState).toMatchObject({
+        url: "/posts/[id]?view=full&tag=first&tag=second&id=1",
+        as: initialPath,
+        __N: true,
+      });
+
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+      await Router.push("/about");
+      Object.assign(win.location, {
+        pathname: "/posts/1",
+        search: "?view=full&tag=first&tag=second&id=spoof",
+        href: `http://localhost${initialPath}`,
+      });
+      (win.history as { state: unknown }).state = initialState;
+      const completed = new Promise<void>((resolve) => {
+        Router.events.on("routeChangeComplete", () => resolve());
+      });
+      listeners.get("popstate")!({ state: initialState });
+      await completed;
+
+      expect(fetch).toHaveBeenCalledWith(
+        "/_next/data/test-build/posts/1.json?view=full&tag=first&tag=second&id=1",
+        expect.any(Object),
+      );
+      expect(dynamicLoader).toHaveBeenCalledOnce();
+      expect(win.__NEXT_DATA__.query).toEqual({
+        view: "full",
+        tag: ["first", "second"],
+        id: "1",
+      });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      (globalThis as any).CustomEvent = originalCustomEvent;
+    }
+  });
+
+  it.each([
+    {
+      label: "query parameters",
+      url: "/posts/[id]?id=2",
+      expectedFetch: "/_next/data/test-build/fr/posts/2.json?id=2",
+    },
+    {
+      label: "query parameters through middleware",
+      url: "/posts/[id]?id=2",
+      expectedFetch: "/_next/data/test-build/fr/posts/2.json?id=2",
+      middleware: true,
+    },
+    {
+      label: "an explicitly masked middleware route",
+      url: "/posts/[id]?id=2",
+      as: "/fr/pretty?preview=1",
+      pathname: "/fr/pretty",
+      search: "?preview=1",
+      expectedMiddlewareFetch: "/_next/data/test-build/fr/pretty.json?id=2",
+      expectedFetch: "/_next/data/test-build/fr/posts/2.json?id=2",
+      middleware: true,
+    },
+    {
+      label: "the stored as path",
+      url: "/posts/[id]",
+      expectedFetch: "/_next/data/test-build/fr/posts/2.json",
+    },
+    {
+      label: "a static pathname-equivalent as with a different query",
+      page: "/page",
+      url: "/page?href=1",
+      as: "/page?visible=1",
+      pathname: "/page",
+      search: "?visible=1",
+      expectedFetch: "/_next/data/test-build/fr/page.json?href=1",
+      expectedQuery: { href: "1" },
+      middleware: true,
+    },
+    {
+      label: "a dynamic pathname-equivalent as with a different query",
+      url: "/posts/[id]?id=2&href=1",
+      as: "/fr/posts/2?visible=1",
+      pathname: "/fr/posts/2",
+      search: "?visible=1",
+      expectedFetch: "/_next/data/test-build/fr/posts/2.json?id=2&href=1",
+      expectedQuery: { id: "2", href: "1" },
+      middleware: true,
+    },
+    {
+      label: "a same-origin absolute route identity",
+      url: "http://localhost/posts/[id]",
+      expectedFetch: "/_next/data/test-build/fr/posts/2.json",
+    },
+    {
+      label: "a trailing-slash route identity",
+      url: "/posts/[id]/?id=2",
+      expectedFetch: "/_next/data/test-build/fr/posts/2.json?id=2",
+    },
+  ])(
+    "popstate resolves route data from $label",
+    async ({
+      page = "/posts/[id]",
+      url,
+      as,
+      pathname,
+      search,
+      expectedFetch,
+      expectedMiddlewareFetch,
+      expectedQuery = { id: "2" },
+      middleware,
+    }) => {
+      const previousWindow = (globalThis as any).window;
+      const originalFetch = globalThis.fetch;
+      const originalCustomEvent = globalThis.CustomEvent;
+      const routeLoader = vi.fn(async () => makePageModule("route"));
+      const staticLoader = vi.fn(async () => makePageModule("static"));
+      const { win } = createDataNavWindow({
+        page,
+        pathname: "/fr/posts/1",
+        locale: "fr",
+        loaders: {
+          [page]: routeLoader,
+          "/posts/2": staticLoader,
+        },
+        ssgPatterns: [],
+        sspPatterns: [page],
+      });
+      Object.assign(win, {
+        __VINEXT_LOCALES__: ["en", "fr"],
+        __VINEXT_DEFAULT_LOCALE__: "en",
+      });
+      if (middleware) {
+        (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
+        (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
+      }
+      const listeners = new Map<string, (event: any) => void>();
+      win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+        listeners.set(type, handler);
+      });
+      (globalThis as any).window = win;
+      (globalThis as any).CustomEvent = class CustomEventMock {
+        constructor(public type: string) {}
+      } as any;
+      const fetch = vi.fn(async () => new Response(JSON.stringify({ pageProps: {} })));
+      globalThis.fetch = fetch;
+
+      try {
+        vi.resetModules();
+        const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+        const completed = new Promise<void>((resolve) => {
+          Router.events.on("routeChangeComplete", () => resolve());
+        });
+        const { installPagesRouterRuntime } =
+          await import("../packages/vinext/src/shims/pages-router-runtime.js");
+        installPagesRouterRuntime();
+
+        const state = {
+          url,
+          as: as ?? "/fr/posts/2",
+          options: { locale: "fr", shallow: false },
+          __N: true,
+          key: "post-2",
+        };
+        Object.assign(win.location, {
+          pathname: pathname ?? "/fr/posts/2",
+          search: search ?? "",
+          href: `http://localhost${pathname ?? "/fr/posts/2"}${search ?? ""}`,
+        });
+        (win.history as { state: unknown }).state = state;
+        listeners.get("popstate")!({ state });
+        await completed;
+
+        expect(fetch).toHaveBeenCalledWith(expectedFetch, expect.any(Object));
+        if (expectedMiddlewareFetch) {
+          expect(fetch).toHaveBeenNthCalledWith(1, expectedMiddlewareFetch, expect.any(Object));
+          expect(fetch).toHaveBeenNthCalledWith(2, expectedFetch, expect.any(Object));
+        } else if (middleware) {
+          expect(fetch).toHaveBeenCalledOnce();
+        }
+        expect(routeLoader).toHaveBeenCalledOnce();
+        expect(staticLoader).not.toHaveBeenCalled();
+        expect(win.__NEXT_DATA__).toMatchObject({
+          page,
+          query: expectedQuery,
+        });
+      } finally {
+        vi.resetModules();
+        if (previousWindow === undefined) delete (globalThis as any).window;
+        else (globalThis as any).window = previousWindow;
+        globalThis.fetch = originalFetch;
+        (globalThis as any).CustomEvent = originalCustomEvent;
+      }
+    },
+  );
+
   // Mirrors Next.js popstate calling change("replaceState", ...) and threading
   // that method through recursive internal redirects.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
@@ -22591,8 +23661,8 @@ describe("Pages Router _next/data client navigation", () => {
       expect(replaceState).toHaveBeenCalledTimes(1);
       expect(replaceState).toHaveBeenCalledWith(
         expect.objectContaining({
-          url: "/destination",
-          as: "/destination",
+          url: "/docs/destination",
+          as: "/docs/destination",
           __N: true,
         }),
         "",
@@ -22856,6 +23926,48 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("uses the rewrite destination instead of a retained dynamic route hint", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const sourceLoader = vi.fn(async () => makePageModule("source"));
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win, pushState } = createDataNavWindow({
+      page: "/posts/[id]",
+      pathname: "/posts/1",
+      loaders: { "/posts/[id]": sourceLoader, "/landing/[id]": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    win.__NEXT_DATA__.query = { id: "1" };
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/posts/:id", destination: "/landing/:id" }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const result = await Router.push({ query: { id: "1", tab: "2" } });
+      expect(sourceLoader).not.toHaveBeenCalled();
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(result).toBe(true);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ as: "/posts/1?tab=2" }),
+        "",
+        "/posts/1?tab=2",
+      );
+      expect(win.__NEXT_DATA__.page).toBe("/landing/[id]");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it.each([
     [
       "an HttpOnly cookie",
@@ -23040,7 +24152,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: [],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/ssr"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/ssr"]);
     (globalThis as any).window = win;
     vi.resetModules();
 
@@ -23074,7 +24186,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: [],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/about"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/about"]);
     (globalThis as any).window = win;
     vi.resetModules();
 
@@ -23100,7 +24212,7 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
-  it("matches middleware probes for path parameters, locale=false entries, and regex fallbacks", async () => {
+  it("matches middleware probes for path parameters, locale=false entries, and compiled regexes", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
 
@@ -23112,16 +24224,18 @@ describe("Pages Router _next/data client navigation", () => {
         "/": vi.fn(async () => makePageModule("home")),
         "/api/[...path]": loaderApiPath,
         "/localized": loaderLocalized,
-        "/regex": loaderRegex,
+        "/regex/[...path]": loaderRegex,
       },
       ssgPatterns: [],
       sspPatterns: [],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
     (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = [
-      "/api/:path*",
-      { source: "/en/localized", locale: false },
-      "/regex/(.*)",
+      ...compileClientMiddlewareMatchers([
+        "/api/:path*",
+        { source: "/en/localized", locale: false },
+      ])!,
+      { source: "/regex/(.*)", regexp: "^/regex/(.*)$", flags: "i" },
     ];
     (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
     (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
@@ -23139,12 +24253,12 @@ describe("Pages Router _next/data client navigation", () => {
 
       await Router.push("/api/hello/world");
       await Router.push("/en/localized");
-      await Router.push("/regex");
+      await Router.push("/regex/value");
 
       expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
         `/_next/data/${buildId}/en/api/hello/world.json`,
         `/_next/data/${buildId}/en/localized.json`,
-        `/_next/data/${buildId}/en/regex.json`,
+        `/_next/data/${buildId}/en/regex/value.json`,
       ]);
       expect(loaderApiPath).toHaveBeenCalledTimes(1);
       expect(loaderLocalized).toHaveBeenCalledTimes(1);
@@ -23495,6 +24609,204 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("fetches a concrete dynamic HTML route on popstate without a page loader", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createDataNavWindow({ page: "/posts/[id]", pathname: "/posts/1" });
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    (globalThis as any).window = win;
+    const fixturePath = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    const pageModuleUrl = isWindows ? `/@fs/${toSlash(fixturePath)}` : fixturePath;
+    const fetch = vi.fn(
+      async () =>
+        new Response(buildNavHtmlLocal("/posts/[id]", pageModuleUrl, "test-build"), {
+          headers: { "Content-Type": "text/html" },
+        }),
+    );
+    globalThis.fetch = fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+      const completed = new Promise<void>((resolve) => {
+        Router.events.on("routeChangeComplete", () => resolve());
+      });
+      const state = {
+        url: "/posts/[id]?id=2",
+        as: "/posts/2",
+        options: { shallow: false },
+        __N: true,
+        key: "post-2",
+      };
+      Object.assign(win.location, { pathname: "/posts/2", href: "http://localhost/posts/2" });
+      (win.history as { state: unknown }).state = state;
+      listeners.get("popstate")?.({ state });
+      await completed;
+      expect(fetch).toHaveBeenCalledWith("/posts/2?id=2", expect.any(Object));
+      expect(win.__NEXT_DATA__.page).toBe("/posts/[id]");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("hard-navigates when stale dynamic history resolves to a different HTML page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const listeners = new Map<string, (event: any) => void>();
+    const { win } = createDataNavWindow({ page: "/posts/[id]", pathname: "/posts/1" });
+    win.addEventListener = vi.fn((type: string, handler: (event: any) => void) => {
+      listeners.set(type, handler);
+    });
+    (globalThis as any).window = win;
+    const fetch = vi.fn(
+      async () =>
+        new Response(buildNavHtmlLocal("/posts/static", "/@fs/pages/static.js", "test-build"), {
+          headers: { "Content-Type": "text/html" },
+        }),
+    );
+    globalThis.fetch = fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+      const failed = new Promise<void>((resolve) =>
+        Router.events.on("routeChangeError", () => resolve()),
+      );
+      const state = {
+        url: "/posts/[id]?id=static",
+        as: "/concealed",
+        options: { shallow: false },
+        __N: true,
+        key: "stale-post",
+      };
+      Object.assign(win.location, { pathname: "/concealed", href: "http://localhost/concealed" });
+      (win.history as { state: unknown }).state = state;
+      listeners.get("popstate")?.({ state });
+      await failed;
+      expect(fetch).toHaveBeenCalledWith("/posts/static?id=static", expect.any(Object));
+      expect(win.location.href).toBe("/concealed");
+      expect(win.__NEXT_DATA__.page).toBe("/posts/[id]");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("retains dynamic identity after an HTML fallback before a static collision", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const fixturePath = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    const pageModuleUrl = isWindows ? `/@fs/${toSlash(fixturePath)}` : fixturePath;
+    const { win } = createDataNavWindow({
+      page: "/_error",
+      pathname: "/missing",
+      loaders: { "/_error": vi.fn(async () => makePageModule("error")) },
+      sspPatterns: ["/posts/[id]"],
+    });
+    win.__VINEXT_PAGE_PATTERNS__ = ["/posts/3", "/_error"];
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+      if (getDataFetchHref(url).startsWith("/_next/data/")) {
+        return new Response(JSON.stringify({ pageProps: {} }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(buildNavHtmlLocal("/posts/[id]", pageModuleUrl, "test-build"), {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      });
+    });
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      await expect(Router.push("/posts/2")).resolves.toBe(true);
+
+      expect(fetchMock).toHaveBeenNthCalledWith(1, "/posts/2", expect.any(Object));
+      expect(win.__VINEXT_PAGE_LOADERS__?.["/posts/[id]"]).toBeTypeOf("function");
+      expect(win.__VINEXT_PAGE_PATTERNS__).toContain("/posts/[id]");
+
+      await expect(Router.push("?id=3")).resolves.toBe(true);
+
+      expect(fetchMock).toHaveBeenNthCalledWith(
+        2,
+        "/_next/data/test-build/posts/3.json?id=3",
+        expect.any(Object),
+      );
+      expect(win.__NEXT_DATA__.page).toBe("/posts/[id]");
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("keeps HTML-fallback route patterns sorted by specificity", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const fixturePath = path.resolve(import.meta.dirname, "fixtures/client-navigation-page.tsx");
+    const pageModuleUrl = isWindows ? `/@fs/${toSlash(fixturePath)}` : fixturePath;
+    const { win } = createDataNavWindow({
+      page: "/_error",
+      pathname: "/missing",
+      loaders: { "/_error": vi.fn(async () => makePageModule("error")) },
+      sspPatterns: ["/[...slug]", "/posts/[id]"],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async (url: RequestInfo | URL) => {
+      const href = getDataFetchHref(url);
+      if (href.startsWith("/_next/data/")) {
+        return new Response(JSON.stringify({ pageProps: {} }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const page = href.includes("/posts/") ? "/posts/[id]" : "/[...slug]";
+      return new Response(buildNavHtmlLocal(page, pageModuleUrl, "test-build"), {
+        headers: { "Content-Type": "text/html" },
+      });
+    });
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      await expect(Router.push("/anything")).resolves.toBe(true);
+      await expect(Router.push({ pathname: "/posts/[id]", query: { id: "2" } })).resolves.toBe(
+        true,
+      );
+
+      expect(win.__VINEXT_PAGE_PATTERNS__).toEqual(["/_error", "/posts/[id]", "/[...slug]"]);
+
+      await expect(Router.push("/posts/3")).resolves.toBe(true);
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        "/_next/data/test-build/posts/3.json",
+        expect.any(Object),
+      );
+      expect(win.__NEXT_DATA__.page).toBe("/posts/[id]");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("extracts dynamic route params from the URL and stores them on __NEXT_DATA__.query", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
@@ -23695,7 +25007,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: ["/actual"],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/masked"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/masked"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: vi.fn(() => ({ rel: "", as: "", href: "" })),
@@ -23710,10 +25022,10 @@ describe("Pages Router _next/data client navigation", () => {
     try {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
-      await Router.prefetch("/actual", "/masked");
+      await Router.prefetch("/actual?source=1", "/masked?visible=1");
 
       await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-      expect(fetchMock).toHaveBeenCalledWith(`/_next/data/${buildId}/masked.json`, {
+      expect(fetchMock).toHaveBeenCalledWith(`/_next/data/${buildId}/masked.json?source=1`, {
         headers: {
           Accept: "application/json",
           purpose: "prefetch",
@@ -23746,7 +25058,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: ["/dynamic-no-cache/[id]"],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: vi.fn(() => ({ rel: "", as: "", href: "" })),
@@ -23800,7 +25112,7 @@ describe("Pages Router _next/data client navigation", () => {
       sspPatterns: [],
     });
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/masked"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/masked"]);
     (globalThis as any).window = win;
     (globalThis as any).document = {
       createElement: vi.fn(() => ({ rel: "", as: "", href: "" })),
@@ -24045,7 +25357,7 @@ describe("Pages Router _next/data client navigation", () => {
     (win.__NEXT_DATA__ as any).defaultLocale = "en";
     (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
     (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
-    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = ["/:path*"];
+    (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = compileClientMiddlewareMatchers(["/:path*"]);
     (globalThis as any).window = win;
     vi.resetModules();
 

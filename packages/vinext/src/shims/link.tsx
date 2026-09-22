@@ -685,7 +685,8 @@ function prefetchUrl(
           const middlewareDataHref =
             fullRouteHref === fullHref
               ? dataTarget.middlewareDataHref
-              : (getPagesMiddlewareDataHref(fullHref, __basePath, { locale }) ?? undefined);
+              : (getPagesMiddlewareDataHref(fullHref, __basePath, { locale }, fullRouteHref) ??
+                undefined);
           prefetchPagesData({ ...dataTarget, middlewareDataHref });
         } else {
           // The target is not a Pages Router route — mark it on the Pages

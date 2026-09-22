@@ -14,6 +14,7 @@ describe("Pages Router URL-object navigation", () => {
   }) {
     const pushState = vi.fn();
     const replaceState = vi.fn();
+    const listeners = new Map<string, (event: any) => void>();
     const win: any = {
       location: {
         pathname,
@@ -24,14 +25,16 @@ describe("Pages Router URL-object navigation", () => {
         hostname: "localhost",
       },
       history: { state: null, pushState, replaceState },
-      addEventListener() {},
+      addEventListener(type: string, listener: (event: any) => void) {
+        listeners.set(type, listener);
+      },
       dispatchEvent() {},
       scrollTo() {},
     };
     if (page !== undefined) {
       win.__NEXT_DATA__ = { page, query, isFallback: false };
     }
-    return { win, pushState, replaceState };
+    return { win, pushState, replaceState, listeners };
   }
 
   // Next.js prepareUrlAs strips an absolute origin only when it literally
@@ -70,6 +73,120 @@ describe("Pages Router URL-object navigation", () => {
       }
     },
   );
+
+  // Ported from Next.js: packages/next/src/shared/lib/router/router.ts (prepareUrlAs/changeState)
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+  it.each([
+    ["relative href", "route", undefined, "/docs/dir/route", "/docs/dir/route"],
+    ["relative mask", "/route", "mask", "/docs/route", "/docs/dir/mask"],
+  ])("stores prepared history values for a %s", async (_name, href, as, url, display) => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    const { win, pushState, listeners } = createNavigationWindow({ pathname: "/docs/dir/current" });
+    (globalThis as any).window = win;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const { installPagesRouterRuntime } =
+        await import("../packages/vinext/src/shims/pages-router-runtime.js");
+      installPagesRouterRuntime();
+      await expect(Router.push(href, as, { shallow: true })).resolves.toBe(true);
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ url, as: display }),
+        "",
+        display,
+      );
+      const beforePopState = vi.fn(() => false);
+      Router.beforePopState(beforePopState);
+      listeners.get("popstate")?.({ state: pushState.mock.calls[0]?.[0] });
+      expect(beforePopState).toHaveBeenCalledWith({
+        url,
+        as: display,
+        options: { shallow: true },
+      });
+    } finally {
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("stores an unlocalized route URL and localized display URL under basePath", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    const { win, pushState } = createNavigationWindow({ pathname: "/docs/fr/start" });
+    win.__VINEXT_LOCALE__ = "fr";
+    win.__VINEXT_LOCALES__ = ["en", "fr"];
+    win.__VINEXT_DEFAULT_LOCALE__ = "en";
+    (globalThis as any).window = win;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      await expect(Router.push("/target", undefined, { shallow: true })).resolves.toBe(true);
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "/docs/target", as: "/docs/fr/target" }),
+        "",
+        "/docs/fr/target",
+      );
+    } finally {
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("stores the visible rewritten route for a query-only string", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, pushState } = createNavigationWindow({ pathname: "/pretty", page: "/target" });
+    (globalThis as any).window = win;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      await expect(Router.push("?tab=2", undefined, { shallow: true })).resolves.toBe(true);
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "/pretty?tab=2", as: "/pretty?tab=2" }),
+        "",
+        "/pretty?tab=2",
+      );
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  // Ported from Next.js: packages/next/src/client/resolve-href.ts (relative dynamic href).
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/resolve-href.ts
+  it("stores an absolute route identity for a relative dynamic href", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win, pushState } = createNavigationWindow({
+      pathname: "/guide/current",
+      page: "/guide/[slug]",
+    });
+    (globalThis as any).window = win;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      await expect(Router.push("posts/[id]?id=2", undefined, { shallow: true })).resolves.toBe(
+        true,
+      );
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "/guide/posts/[id]?id=2", as: "/guide/posts/2" }),
+        "",
+        "/guide/posts/2",
+      );
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
 
   it.each([{ hostname: "localhost", auth: "user:pass" }, { host: "user:pass@localhost" }])(
     "retains credentials in an explicit same-origin object as history entry (%o)",
@@ -137,6 +254,35 @@ describe("Pages Router URL-object navigation", () => {
       }
     },
   );
+  it("keeps an absolute dynamic href outside basePath unprefixed in history", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/docs";
+    const { win, pushState } = createNavigationWindow({ pathname: "/docs/start" });
+    (globalThis as any).window = win;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      await expect(
+        Router.push(
+          { protocol: "http:", hostname: "localhost", pathname: "/posts/[id]", query: { id: "1" } },
+          "/posts/1",
+          { shallow: true },
+        ),
+      ).resolves.toBe(true);
+      expect(pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ url: "/posts/[id]?id=1", as: "/docs/posts/1" }),
+        "",
+        "/docs/posts/1",
+      );
+    } finally {
+      if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
+      else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
 
   it("query-only UrlObjects preserve the current visible pathname", async () => {
     const previousWindow = (globalThis as any).window;
@@ -215,7 +361,7 @@ describe("Pages Router URL-object navigation", () => {
         ),
       ).resolves.toBe(true);
       expect(pushState).toHaveBeenCalledWith(
-        expect.objectContaining({ as: "/posts/right" }),
+        expect.objectContaining({ url: "/posts/[id]?id=right", as: "/posts/right" }),
         "",
         "/posts/right",
       );
@@ -487,27 +633,33 @@ describe("Pages Router URL-object navigation", () => {
 
       expect(pushState).toHaveBeenNthCalledWith(
         1,
-        expect.objectContaining({ url: "/localhost/outside", as: "/localhost/outside" }),
+        expect.objectContaining({
+          url: "/docs/localhost/outside",
+          as: "/docs/localhost/outside",
+        }),
         "",
         "/docs/localhost/outside",
       );
       expect(pushState).toHaveBeenNthCalledWith(
         2,
-        expect.objectContaining({ url: "/localhost/object", as: "/localhost/object" }),
+        expect.objectContaining({
+          url: "/docs/localhost/object",
+          as: "/docs/localhost/object",
+        }),
         "",
         "/docs/localhost/object",
       );
       expect(pushState).toHaveBeenNthCalledWith(
         3,
-        expect.objectContaining({ url: "/target", as: "/localhost/masked" }),
+        expect.objectContaining({ url: "/docs/target", as: "/docs/localhost/masked" }),
         "",
         "/docs/localhost/masked",
       );
       expect(pushState).toHaveBeenNthCalledWith(
         4,
         expect.objectContaining({
-          url: "/literal/question%3Fmark%23hash",
-          as: "/literal/question%3Fmark%23hash",
+          url: "/docs/literal/question%3Fmark%23hash",
+          as: "/docs/literal/question%3Fmark%23hash",
         }),
         "",
         "/docs/literal/question%3Fmark%23hash",
@@ -515,19 +667,19 @@ describe("Pages Router URL-object navigation", () => {
       expect((globalThis as any).window.location.href).toBe("https://example.com/foo/bar");
       expect(pushState).toHaveBeenNthCalledWith(
         5,
-        expect.objectContaining({ url: "/hash#a/b", as: "/hash#a/b" }),
+        expect.objectContaining({ url: "/docs/hash#a/b", as: "/docs/hash#a/b" }),
         "",
         "/docs/hash#a/b",
       );
       expect(pushState).toHaveBeenNthCalledWith(
         6,
-        expect.objectContaining({ url: "/start#a/b", as: "/start#a/b" }),
+        expect.objectContaining({ url: "/docs/start#a/b", as: "/docs/start#a/b" }),
         "",
         "/docs/start#a/b",
       );
       expect(pushState).toHaveBeenNthCalledWith(
         7,
-        expect.objectContaining({ url: "/start#a/b", as: "/start#a/b" }),
+        expect.objectContaining({ url: "/docs/start#a/b", as: "/docs/start#a/b" }),
         "",
         "/docs/start#a/b",
       );
@@ -552,15 +704,31 @@ describe("Pages Router URL-object navigation", () => {
       { protocol: "http:", hostname: "localhost", pathname: "/outside" },
       "/mask",
       "/outside",
+      "/docs/mask",
+      "/docs/mask",
+    ],
+    [
+      "href with dot segments",
+      { protocol: "http:", hostname: "localhost", pathname: "/outside/../target" },
       "/mask",
+      "/outside/../target",
+      "/docs/mask",
+      "/docs/mask",
+    ],
+    [
+      "href with normalized separators",
+      { protocol: "http:", hostname: "localhost", pathname: "/outside//../target" },
+      "/mask",
+      "/outside/../target",
+      "/docs/mask",
       "/docs/mask",
     ],
     [
       "as",
       "/target",
       { protocol: "http:", hostname: "localhost", pathname: "/outside" },
-      "/target",
-      "/outside",
+      "/docs/target",
+      "/docs/outside",
       "/docs/outside",
     ],
   ])(
@@ -569,12 +737,17 @@ describe("Pages Router URL-object navigation", () => {
       const previousWindow = (globalThis as any).window;
       const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
       process.env.__NEXT_ROUTER_BASEPATH = "/docs";
-      const { win, pushState } = createNavigationWindow({ pathname: "/docs/start" });
+      const { win, pushState, listeners } = createNavigationWindow({
+        pathname: "/docs/start",
+      });
       (globalThis as any).window = win;
 
       try {
         vi.resetModules();
         const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+        const { installPagesRouterRuntime } =
+          await import("../packages/vinext/src/shims/pages-router-runtime.js");
+        installPagesRouterRuntime();
 
         await expect(Router.push(url, as, { shallow: true })).resolves.toBe(true);
         expect(pushState).toHaveBeenCalledWith(
@@ -582,6 +755,15 @@ describe("Pages Router URL-object navigation", () => {
           "",
           browserUrl,
         );
+
+        const beforePopState = vi.fn(() => false);
+        Router.beforePopState(beforePopState);
+        listeners.get("popstate")?.({ state: pushState.mock.calls[0]?.[0] });
+        expect(beforePopState).toHaveBeenCalledWith({
+          url: stateUrl,
+          as: stateAs,
+          options: { shallow: true },
+        });
       } finally {
         if (previousBasePath === undefined) delete process.env.__NEXT_ROUTER_BASEPATH;
         else process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
@@ -873,21 +1055,32 @@ describe("Pages Router URL-object navigation", () => {
     },
   );
 
+  // Ported from Next.js: test/e2e/i18n-support-same-page-hash-change/
+  // i18n-support-same-page-hash-change.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/i18n-support-same-page-hash-change/i18n-support-same-page-hash-change.test.ts
   it.each([
     [
       "query-only href",
       { query: { id: "1" } },
       undefined,
       "nl",
-      "/nl/rewrite-navigation/0?id=1",
       "/docs/nl/rewrite-navigation/0?id=1",
+      "/docs/nl/rewrite-navigation/0?id=1",
+    ],
+    [
+      "hash-only href",
+      { hash: "section" },
+      undefined,
+      "nl",
+      "/docs/nl/rewrite-navigation/0#section",
+      "/docs/nl/rewrite-navigation/0#section",
     ],
     [
       "explicit query-only as",
       "/target",
       { query: { tab: "1" } },
       "en",
-      "/rewrite-navigation/0?tab=1",
+      "/docs/rewrite-navigation/0?tab=1",
       "/docs/rewrite-navigation/0?tab=1",
     ],
     [
@@ -895,7 +1088,7 @@ describe("Pages Router URL-object navigation", () => {
       "/target",
       { hash: "section" },
       "en",
-      "/rewrite-navigation/0#section",
+      "/docs/rewrite-navigation/0#section",
       "/docs/rewrite-navigation/0#section",
     ],
     [
@@ -903,7 +1096,7 @@ describe("Pages Router URL-object navigation", () => {
       { query: { tab: "1" } },
       "",
       "en",
-      "/rewrite-navigation/0?tab=1",
+      "/docs/rewrite-navigation/0?tab=1",
       "/docs/rewrite-navigation/0?tab=1",
     ],
   ])("replaces the current locale for a %s", async (_case, url, as, locale, stateAs, browserAs) => {
@@ -985,7 +1178,7 @@ describe("Pages Router URL-object navigation", () => {
       });
 
       expect(replaceState).toHaveBeenCalledWith(
-        expect.objectContaining({ as: "/rewrite-navigation/0?id=2" }),
+        expect.objectContaining({ as: "/docs/rewrite-navigation/0?id=2" }),
         "",
         "/docs/rewrite-navigation/0?id=2",
       );
