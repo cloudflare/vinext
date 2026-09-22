@@ -48,6 +48,16 @@ describe("findViteRoot", () => {
       shouldPreflight: false,
     });
   });
+
+  it.each(["--no-minify", "--no-sourcemap", "--no-manifest"])(
+    "recognizes negated optional build option %s",
+    (option) => {
+      expect(findViteRoot("build", [option])).toEqual({
+        root: undefined,
+        shouldPreflight: true,
+      });
+    },
+  );
 });
 
 describe("isViteCliInvocation", () => {
