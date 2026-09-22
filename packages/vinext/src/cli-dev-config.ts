@@ -48,6 +48,12 @@ export function createDevServerLifecyclePlugin(
   };
 }
 
+// Kept while the legacy CLI still imports this helper. The thin-proxy layer
+// removes both together.
+export function createDevServerConfigPlugin(options: DevServerCliOptions): Plugin {
+  return createDevServerLifecyclePlugin(options, () => true);
+}
+
 export function normalizeDevServerHostname(host: string | boolean | undefined): string {
   if (typeof host === "string") return host;
   return host === true ? "0.0.0.0" : "localhost";
