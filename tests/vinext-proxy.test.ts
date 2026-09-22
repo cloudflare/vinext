@@ -1,0 +1,153 @@
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, it } from "vite-plus/test";
+import { getLockfilePath, readLockfile } from "../packages/vinext/src/server/dev-lockfile.js";
+
+const CLI_PATH = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
+const VINEXT_ENTRY_URL = pathToFileURL(
+  path.resolve(import.meta.dirname, "../packages/vinext/dist/index.js"),
+).href;
+const roots: string[] = [];
+let child: ChildProcess | undefined;
+
+function createRoot(prefix = "vinext-proxy-"): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  roots.push(root);
+  fs.symlinkSync(
+    path.resolve(import.meta.dirname, "../node_modules"),
+    path.join(root, "node_modules"),
+    "junction",
+  );
+  return root;
+}
+
+function write(root: string, file: string, contents: string): void {
+  const destination = path.join(root, file);
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.writeFileSync(destination, contents);
+}
+
+function writeProject(root: string, configPath = "vite.config.ts"): void {
+  write(root, "package.json", '{"type":"module"}\n');
+  write(root, "pages/index.tsx", "export default function Page() { return <main>proxy</main>; }\n");
+  write(
+    root,
+    configPath,
+    `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};\nexport default { plugins: [vinext()] };\n`,
+  );
+}
+
+async function waitFor<T>(read: () => T | undefined, timeoutMs = 10_000): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = read();
+    if (value !== undefined) return value;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for vinext proxy state");
+}
+
+afterEach(async () => {
+  if (child?.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+  child = undefined;
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe("thin vinext command proxies", () => {
+  it("fails configless commands with an actionable init error", () => {
+    const root = createRoot();
+    const result = spawnSync(process.execPath, [CLI_PATH, "build"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("No Vite config was found for this project");
+    expect(result.stderr).toContain("Run `vinext init`");
+  });
+
+  it("delegates help to Vite without requiring a config", () => {
+    const root = createRoot();
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--help"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Usage:");
+    expect(result.stdout).toContain("--outDir");
+  });
+
+  it("supports a positional project root", () => {
+    const root = createRoot();
+    writeProject(path.join(root, "project"));
+    const result = spawnSync(
+      process.execPath,
+      [CLI_PATH, "build", "project", "--logLevel", "silent"],
+      {
+        cwd: root,
+        encoding: "utf-8",
+      },
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(fs.existsSync(path.join(root, "project/dist/server/entry.js"))).toBe(true);
+  }, 120_000);
+
+  it("resolves explicit config paths from the invocation cwd", () => {
+    const root = createRoot();
+    writeProject(root, "config/vite.custom.ts");
+    const result = spawnSync(
+      process.execPath,
+      [CLI_PATH, "build", "--config=config/vite.custom.ts", "--logLevel", "silent"],
+      { cwd: root, encoding: "utf-8" },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
+  }, 120_000);
+
+  it("leaves invalid option handling to Vite", () => {
+    const root = createRoot();
+    writeProject(root);
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--not-a-vite-option"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(`${result.stdout}\n${result.stderr}`).toContain("Unknown option");
+  });
+
+  it("serves configured projects and forwards termination to Vite", async () => {
+    const root = createRoot();
+    writeProject(root);
+    child = spawn(process.execPath, [CLI_PATH, "dev", "--port", "0", "--clearScreen", "false"], {
+      cwd: root,
+      stdio: "pipe",
+    });
+
+    const info = await waitFor(() => {
+      const current = readLockfile(getLockfilePath(root));
+      return current && current.port > 0 ? current : undefined;
+    });
+    const response = await fetch(info.appUrl);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("proxy");
+
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+      (resolve) => {
+        child!.once("exit", (code, signal) => resolve({ code, signal }));
+      },
+    );
+    child.kill("SIGTERM");
+    const result = await exited;
+    child = undefined;
+
+    expect(result.signal === "SIGTERM" || result.code === 0 || result.code === 143).toBe(true);
+    await waitFor(() => (fs.existsSync(getLockfilePath(root)) ? undefined : true));
+  }, 60_000);
+});
