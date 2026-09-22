@@ -123,12 +123,16 @@ async function loadHybridUserConfig(
   const plugins = (loaded?.config.plugins as unknown[] | undefined)?.flat(Infinity) ?? [];
   return {
     ...loaded.config,
-    plugins: plugins.filter(
-      (plugin): plugin is Plugin =>
-        Boolean(plugin) &&
-        typeof (plugin as Plugin).name === "string" &&
-        !isInternalBuildPlugin(plugin as Plugin),
-    ),
+    plugins: plugins
+      .filter(
+        (plugin): plugin is Plugin =>
+          Boolean(plugin) &&
+          typeof (plugin as Plugin).name === "string" &&
+          !isInternalBuildPlugin(plugin as Plugin),
+      )
+      // The auxiliary Pages build reuses transform/config hooks, but the
+      // top-level builder remains the sole owner of application orchestration.
+      .map((plugin) => ({ ...plugin, buildApp: undefined })),
   };
 }
 
@@ -345,6 +349,34 @@ export function createBuildLifecyclePlugins(options: {
 }): Plugin[] {
   const states = new WeakMap<ViteBuilder, BuildLifecycleState>();
   let outputPrepared = false;
+  const finalizePlugin: Plugin = {
+    name: "vinext:build-lifecycle-finalize",
+    apply: "build",
+    enforce: "post",
+    configResolved: {
+      order: "post",
+      handler(config) {
+        const plugins = config.plugins as Plugin[];
+        const index = plugins.indexOf(finalizePlugin);
+        if (index !== -1 && index !== plugins.length - 1) {
+          plugins.push(...plugins.splice(index, 1));
+        }
+      },
+    },
+    buildApp: {
+      order: "post",
+      async handler(builder) {
+        const state = states.get(builder);
+        if (!state) return;
+        states.delete(builder);
+        try {
+          await finalizeBuild(builder, options.createContext());
+        } finally {
+          disposeBuild(state);
+        }
+      },
+    },
+  };
   return [
     {
       name: "vinext:build-lifecycle-prepare",
@@ -378,23 +410,6 @@ export function createBuildLifecyclePlugins(options: {
         },
       },
     },
-    {
-      name: "vinext:build-lifecycle-finalize",
-      apply: "build",
-      enforce: "post",
-      buildApp: {
-        order: "post",
-        async handler(builder) {
-          const state = states.get(builder);
-          if (!state) return;
-          states.delete(builder);
-          try {
-            await finalizeBuild(builder, options.createContext());
-          } finally {
-            disposeBuild(state);
-          }
-        },
-      },
-    },
+    finalizePlugin,
   ];
 }
