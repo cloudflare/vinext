@@ -12,7 +12,13 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { createIdResolver, createLogger, parseAst, transformWithOxc } from "vite";
+import {
+  createIdResolver,
+  createLogger,
+  isRunnableDevEnvironment,
+  parseAst,
+  transformWithOxc,
+} from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -5632,31 +5638,22 @@ export const loadServerActionClient = ${
             return false;
           };
 
-          // Run instrumentation.ts register() if present (once at server startup).
-          // Must be inside the returned function so that all environments are
-          // fully registered before getPagesRunner() inspects them.
-          //
-          // App Router: register() is baked into the generated RSC entry as a
-          // top-level await, so it runs inside the Worker process (or RSC Vite
-          // environment) — the same process as request handling. Calling
-          // runInstrumentation() here too would run it a second time in the host
-          // process, which is wrong when @cloudflare/vite-plugin is present.
-          //
-          // Pages Router prod: register() is baked into generateServerEntry() as
-          // a top-level await, so it runs inside the Worker bundle — the same
-          // process as request handling. configureServer() is never called during
-          // a prod build, so there is no double-invocation risk there either.
-          //
-          // We pass getPagesRunner() (createDirectRunner) rather than server so
-          // that this is safe when @cloudflare/vite-plugin is present. That
-          // plugin replaces the SSR environment's hot channel, causing
-          // server.ssrLoadModule() to crash with outsideEmitter. The runner
-          // calls environment.fetchModule() directly and never touches the hot
-          // channel, making it safe with all Vite plugin combinations.
-          const pagesInstrumentationReady =
-            instrumentationPath && (!hasAppDir || !hasCloudflarePlugin)
-              ? runInstrumentation(getPagesRunner(), instrumentationPath)
-              : Promise.resolve();
+          // Environments are ready in this post-configure hook. Initialize before
+          // the first Pages request starts tracing, including in hybrid apps.
+          // App instrumentation must share the request handler's RSC runner for
+          // react-server conditions and module state. Workers initialize in their
+          // own runtime through the generated RSC entry instead of the Node host.
+          const pagesInstrumentationReady = (async () => {
+            if (!instrumentationPath || (hasAppDir && hasCloudflarePlugin)) return;
+            if (hasAppDir) {
+              const environment = server.environments["rsc"];
+              // External runtimes (such as Nitro) initialize in their own entry.
+              if (!isRunnableDevEnvironment(environment)) return;
+              await runInstrumentation(environment.runner, instrumentationPath);
+            } else {
+              await runInstrumentation(getPagesRunner(), instrumentationPath);
+            }
+          })();
           // Vite's post-configure hook is synchronous. Attach a rejection
           // handler immediately, then let every Pages request await the original
           // promise so startup failures are propagated instead of serving
