@@ -80,6 +80,29 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
     slug: "intro",
   });
 
+  // The demo is deployed with each cache adapter. A statically observed App
+  // page reuses its artifact across user queries; query-dependent output must
+  // retain the query that produced it.
+  const suffix = randomUUID();
+  const independentFirst = await request.get(`${baseURL}/query-independent?q=first-${suffix}`);
+  const firstIndependentBody = await independentFirst.text();
+  expect(independentFirst.ok()).toBe(true);
+  const independentSecond = await request.get(`${baseURL}/query-independent?q=second-${suffix}`);
+  const secondIndependentBody = await independentSecond.text();
+  expect(independentSecond.ok()).toBe(true);
+  expect(secondIndependentBody).toBe(firstIndependentBody);
+  expect(
+    independentSecond.headers()[backend === "workers-cache" ? "cf-cache-status" : "x-vinext-cache"],
+  ).toBe("HIT");
+
+  for (const path of ["query-dependent", "query-client-dependent", "query-public"]) {
+    for (const value of [`first-${suffix}`, `second-${suffix}`]) {
+      const response = await request.get(`${baseURL}/${path}?q=${value}`);
+      expect(response.ok(), `${path}: ${JSON.stringify(response.headers())}`).toBe(true);
+      expect(await response.text()).toContain(`data-testid="${path}-value">${value}</output>`);
+    }
+  }
+
   const dynamicUrl = `${baseURL}/force-dynamic?cache-e2e=${randomUUID()}`;
   const firstDynamic = await request.get(dynamicUrl);
   const secondDynamic = await request.get(dynamicUrl);
