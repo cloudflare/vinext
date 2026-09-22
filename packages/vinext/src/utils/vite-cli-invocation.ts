@@ -1,4 +1,5 @@
 import path, { toSlash } from "pathslash";
+import { findViteConfigPath } from "./project.js";
 
 type ViteCliCommand = "dev" | "build";
 
@@ -158,10 +159,8 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
 export function isViteCliConfigFile(configFile: string): boolean {
   const invocation = getViteCliInvocation();
   if (!invocation || !path.isAbsolute(configFile)) return false;
-  const expected = invocation.configFile;
-  return expected
-    ? path.resolve(configFile) === expected
-    : path.dirname(path.resolve(configFile)) === invocation.root;
+  const expected = invocation.configFile ?? findViteConfigPath(invocation.root);
+  return expected !== undefined && path.resolve(configFile) === expected;
 }
 
 /** Distinguish real Vite/Vite+ CLI commands from programmatic API callers. */

@@ -166,6 +166,7 @@ describe("isViteCliInvocation", () => {
       process.argv = ["node", "/project/node_modules/vite/bin/vite.js", "dev"];
       expect(isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"))).toBe(true);
       expect(isViteCliConfigFile(path.join(process.cwd(), "nested/vite.config.ts"))).toBe(false);
+      expect(isViteCliConfigFile(path.join(process.cwd(), "alternate.config.ts"))).toBe(false);
 
       process.argv.push("--config", "config/vite.config.ts");
       expect(isViteCliConfigFile(path.join(process.cwd(), "config/vite.config.ts"))).toBe(true);
