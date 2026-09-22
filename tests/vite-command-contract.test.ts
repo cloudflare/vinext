@@ -357,6 +357,29 @@ describe("configured vinext build contract", () => {
     120_000,
   );
 
+  it("preserves an explicit NODE_ENV during initial Vite build config evaluation", () => {
+    const root = createPagesProject();
+    write(
+      root,
+      "vite.config.ts",
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+if (process.env.NODE_ENV !== "development") {
+  throw new Error("vite.config saw NODE_ENV=" + process.env.NODE_ENV);
+}
+export default { plugins: [vinext()] };
+`,
+    );
+
+    execFileSync(process.execPath, [VITE_CLI_PATH, "build", root], {
+      cwd: root,
+      env: { ...process.env, NODE_ENV: "development" },
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
+  }, 120_000);
+
   it("builds only the known client and server environments for plain Pages projects", () => {
     const root = createPagesProject();
 
