@@ -349,19 +349,6 @@ function disposeBuild(state: BuildLifecycleState): void {
   }
 }
 
-export async function runBuildLifecycle(
-  builder: ViteBuilder,
-  context: BuildLifecycleContext,
-): Promise<void> {
-  const state = prepareBuild(context);
-  try {
-    await builder.buildApp();
-    await finalizeBuild(builder, context);
-  } finally {
-    disposeBuild(state);
-  }
-}
-
 export function createBuildLifecyclePlugins(options: {
   createContext: () => BuildLifecycleContext;
   isEnabled: (builder: ViteBuilder) => boolean;
