@@ -142,6 +142,10 @@
       "types": "./dist/build/lifecycle.d.ts",
       "import": "./dist/build/lifecycle.js"
     },
+    "./internal/build/report": {
+      "types": "./dist/build/report.d.ts",
+      "import": "./dist/build/report.js"
+    },
     "./internal/cache-adapters": {
       "types": "./dist/cache/cache-adapters-virtual.d.ts",
       "import": "./dist/cache/cache-adapters-virtual.js"

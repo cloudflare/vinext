@@ -28,6 +28,7 @@ import {
   type BuildLifecycleResult,
 } from "vinext/internal/build/lifecycle";
 import { runPrerender } from "vinext/internal/build/run-prerender";
+import { printBuildReport } from "vinext/internal/build/report";
 import { loadDotenv } from "vinext/internal/config/dotenv";
 import {
   findVinextNextConfigInPlugins,
@@ -565,9 +566,8 @@ async function runBuild(
   let result: BuildLifecycleResult | undefined;
   await withCloudflareEnv(env, async () => {
     const invocation: BuildLifecycleInvocation = {
-      // Deploy decides whether to prerender locally only after TPR and staged
-      // warmup selection, so the build lifecycle must defer that phase.
-      skipPrerender: true,
+      // Deploy decides platform-specific finalization only after TPR and staged
+      // warmup selection.
       onComplete(value) {
         result = value;
       },
@@ -2425,19 +2425,29 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // output: 'export'. CDN warmup performs path discovery above, but relies on
   // the deployed Worker to render and classify each response.
   let ranPrerender = buildResult?.prerendered ?? false;
+  let prerenderResult: Awaited<ReturnType<typeof runPrerender>> | undefined = undefined;
   if (shouldPrerenderLocally && !ranPrerender) {
     console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
     }
-    await runPrerender({
+    prerenderResult = await runPrerender({
       root: info.root,
       concurrency: options.prerenderConcurrency ?? viteConfigMetadata.prerenderConfig?.concurrency,
       nextConfig,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
     ranPrerender = true;
+  }
+
+  if (!options.skipBuild) {
+    await printBuildReport({
+      root: info.root,
+      pageExtensions: nextConfig.pageExtensions,
+      prerenderResult: prerenderResult ?? undefined,
+    });
+    console.log("\n  Build complete.\n");
   }
 
   if (ranPrerender) {

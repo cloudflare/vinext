@@ -2157,6 +2157,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           !builder.config.build.ssr &&
           getBuildBundlerOptions(builder.config.build)?.input === undefined)),
     onComplete: (result) => buildLifecycleInvocation?.onComplete?.(result),
+    shouldDeferPostBuild: () => buildLifecycleInvocation !== undefined,
     shouldPrepare: (config) =>
       buildLifecycleEnabled &&
       config.build?.write !== false &&
@@ -2211,7 +2212,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       rscBuildIdentity,
       rscCompatibilityId,
       skipHybridPagesBundle: hasCloudflarePlugin,
-      skipPrerender: buildLifecycleInvocation?.skipPrerender,
     }),
   });
 

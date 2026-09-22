@@ -583,11 +583,20 @@ describe("configured vinext build contract", () => {
 
   it("lets Cloudflare-style programmatic builds opt in without running prerender early", async () => {
     const root = createPagesProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf8")
+        .replace(
+          "nextConfig: { generateBuildId",
+          'nextConfig: { output: "standalone", generateBuildId',
+        ),
+    );
     let result: BuildLifecycleResult | undefined;
     const builder = await createBuilder({
       root,
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: {
-        skipPrerender: true,
         onComplete(value: BuildLifecycleResult) {
           result = value;
         },
@@ -599,5 +608,6 @@ describe("configured vinext build contract", () => {
     expect(result).toEqual({ prerendered: false, standalone: false });
     expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
     expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes/index.html"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "dist/standalone"))).toBe(false);
   }, 120_000);
 });
