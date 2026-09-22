@@ -32,6 +32,7 @@ describe("isViteCliInvocation", () => {
       "build",
       true,
     ],
+    [["node", "/project/node_modules/vite/bin/vite.js", "--", "build"], "dev", true],
     [["node", "/project/node_modules/.bin/vp", "build"], "build", true],
     [["node", "/project/node_modules/.bin/vp", "-C", "apps/web", "dev"], "dev", true],
     [["node", "/project/node_modules/.bin/vp", "exec", "vite", "dev"], "dev", true],
@@ -85,5 +86,34 @@ describe("isViteCliInvocation", () => {
     expect(
       getViteCliInvocation(["node", "/project/node_modules/vite/bin/vite.js", "preview"]),
     ).toBeUndefined();
+  });
+
+  it("keeps arguments after the option delimiter on the default dev command", () => {
+    const argv = ["node", "/project/node_modules/vite/bin/vite.js", "--", "build"];
+
+    expect(isViteCliInvocation("build", argv)).toBe(false);
+    expect(getViteCliInvocation(argv)).toEqual({
+      command: "dev",
+      mode: "development",
+      root: expect.stringMatching(/\/build$/),
+    });
+  });
+
+  it("does not parse option-looking positional arguments after the delimiter", () => {
+    expect(
+      getViteCliInvocation([
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        "--mode",
+        "staging",
+        "--",
+        "--mode",
+        "test",
+      ]),
+    ).toEqual({
+      command: "dev",
+      mode: "staging",
+      root: expect.stringMatching(/\/--mode$/),
+    });
   });
 });

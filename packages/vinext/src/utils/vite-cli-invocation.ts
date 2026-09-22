@@ -84,6 +84,7 @@ function commandArguments(argv: string[]): { command: ViteCliCommand; args: stri
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--") break;
     if (optionConsumesNext(arg, args[index + 1])) {
       index++;
       continue;
@@ -109,6 +110,10 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
   let root: string | undefined;
   for (let index = 0; index < invocation.args.length; index += 1) {
     const arg = invocation.args[index];
+    if (arg === "--") {
+      root ??= invocation.args[index + 1];
+      break;
+    }
     const option = optionName(arg);
     if (option === "--mode" || option === "-m") {
       mode = optionHasInlineValue(arg) ? arg.slice(arg.indexOf("=") + 1) : invocation.args[++index];
