@@ -398,6 +398,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
   ): Promise<void> {
     let revalidate = readCacheControlField(context, "revalidate");
     if (value && "revalidate" in value) revalidate = value.revalidate;
+    if (revalidate === Infinity) revalidate = false;
     if (revalidate === 0) return;
 
     const rawExpire = readCacheControlField(context, "expire");

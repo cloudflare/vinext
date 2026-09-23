@@ -167,6 +167,53 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
     ).toBe(`/query-force-static/${suffix}?q=second-${suffix}`);
   }
 
+  // An on-demand page may prove query independence only after rendering, so
+  // Response Store can share its RSC entry while Workers Cache remains conservative.
+  // See Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  const ordinaryPath = `/query-on-demand/${suffix}-rsc`;
+  const ordinaryRscFirst = await request.get(
+    `${baseURL}${ordinaryPath}?q=first-${suffix}&_rsc=first-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const ordinaryRscBody = await ordinaryRscFirst.text();
+  expect(ordinaryRscFirst.ok(), JSON.stringify(ordinaryRscFirst.headers())).toBe(true);
+  expect(ordinaryRscFirst.headers()["content-type"]).toContain("text/x-component");
+  expect(ordinaryRscBody).toContain(`${suffix}-rsc`);
+  if (backend === "response-store") {
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(
+            `${baseURL}${ordinaryPath}?q=first-${suffix}&_rsc=first-${suffix}`,
+            { headers: rscHeaders },
+          );
+          const status = response.headers()[cacheStatusHeader];
+          await response.dispose();
+          return status;
+        },
+        { message: "Response Store did not publish the on-demand RSC page", timeout: 30_000 },
+      )
+      .toBe("HIT");
+  }
+  const ordinaryRscSecond = await request.get(
+    `${baseURL}${ordinaryPath}?q=second-${suffix}&_rsc=second-${suffix}`,
+    { headers: rscHeaders },
+  );
+  expect(ordinaryRscSecond.ok(), JSON.stringify(ordinaryRscSecond.headers())).toBe(true);
+  expect(ordinaryRscSecond.headers()["content-type"]).toContain("text/x-component");
+  const ordinaryRscSecondBody = await ordinaryRscSecond.text();
+  expect(ordinaryRscSecondBody).toContain(`${suffix}-rsc`);
+  if (backend === "response-store") {
+    expect(ordinaryRscSecond.headers()[cacheStatusHeader]).toBe("HIT");
+    expect(ordinaryRscSecondBody).toBe(ordinaryRscBody);
+  }
+  if (backend !== "kv") {
+    expect(
+      decodeURIComponent(ordinaryRscSecond.headers()["x-vinext-rendered-path-and-search"] ?? ""),
+    ).toBe(`${ordinaryPath}?q=second-${suffix}`);
+  }
+
   // A force-static Route Handler strips the query and reuses its pathname artifact.
   // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts
@@ -210,6 +257,19 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
         expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
         expect(await response.text()).toContain(`data-testid="${path}-value">${expected}</output>`);
       }
+    }
+  }
+
+  // Metadata reading searchParams makes even the empty-query response dynamic.
+  for (const query of ["", `?q=first-${suffix}`, `?q=second-${suffix}`, ""]) {
+    const url = `${baseURL}/query-metadata${query}`;
+    for (const response of [await request.get(url), await request.get(url)]) {
+      expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+      expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+      expect(response.headers()["cache-control"]).toContain("no-store");
+      expect(await response.text()).toContain(
+        `<title>Query metadata: ${new URL(url).searchParams.get("q") ?? ""}</title>`,
+      );
     }
   }
 
