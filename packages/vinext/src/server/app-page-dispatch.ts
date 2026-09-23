@@ -862,6 +862,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               {
                 observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                queryFromNavigationForClientPage:
+                  options.queryIndependentCandidate === true &&
+                  !options.isRscRequest &&
+                  revalidationDynamicConfig !== "force-static",
                 // Cache regeneration produces a complete static artifact, so metadata
                 // must be resolved into <head> before the artifact is stored.
                 serveStreamingMetadata: false,

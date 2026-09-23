@@ -145,9 +145,7 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   expect(clientRscFirst.ok(), JSON.stringify(clientRscFirst.headers())).toBe(true);
   expect(clientRscSecond.ok(), JSON.stringify(clientRscSecond.headers())).toBe(true);
   expect(clientRscSecond.headers()["content-type"]).toContain("text/x-component");
-  if (clientRscSecond.headers()[cacheStatusHeader] === "HIT") {
-    expect(clientRscSecondBody).not.toContain(`rsc-first-${suffix}`);
-  }
+  expect(clientRscSecondBody).not.toContain(`rsc-first-${suffix}`);
   expect(clientRscFirstBody).not.toContain(`rsc-second-${suffix}`);
 
   await page.goto(`${baseURL}${clientPath}?q=second-${suffix}`);
@@ -546,6 +544,85 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
     }
     previousPublicId = cachedPublicId;
   }
+
+  const publicRscHeaders = { accept: "text/x-component", RSC: "1" };
+  let previousPublicRscValue: string | undefined;
+  for (const value of [`rsc-first-${suffix}`, `rsc-second-${suffix}`]) {
+    const url = `${baseURL}/query-public?q=${value}&_rsc=public-${suffix}`;
+    const first = await request.get(url, {
+      headers: { ...publicRscHeaders, "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    const firstBody = await first.text();
+    expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+    expect(first.headers()["content-type"]).toContain("text/x-component");
+    expect(firstBody).toContain(value);
+    if (previousPublicRscValue) expect(firstBody).not.toContain(previousPublicRscValue);
+    if (backend !== "kv") {
+      await expect
+        .poll(
+          async () => {
+            const response = await request.get(url, { headers: publicRscHeaders });
+            const body = await response.text();
+            expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+            expect(response.headers()["content-type"]).toContain("text/x-component");
+            if (response.headers()[cacheStatusHeader] === "HIT") {
+              expect(body).toContain(value);
+              if (previousPublicRscValue) expect(body).not.toContain(previousPublicRscValue);
+            }
+            await response.dispose();
+            return response.headers()[cacheStatusHeader];
+          },
+          { message: `${backend} did not publish the query-specific public RSC`, timeout: 10_000 },
+        )
+        .toBe("HIT");
+    }
+    previousPublicRscValue = value;
+  }
+
+  const staleClientPath = `${baseURL}/query-stale-client`;
+  const seededClient = await request.get(`${staleClientPath}?q=seed-${suffix}`);
+  const seededClientBody = await seededClient.text();
+  expect(seededClient.ok(), JSON.stringify(seededClient.headers())).toBe(true);
+  const seededClientId = /data-testid="query-stale-client-id"[^>]*>([^<]+)/.exec(
+    seededClientBody,
+  )?.[1];
+  expect(seededClientId).toBeTruthy();
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const regenerationQuery = `regenerating-${suffix}`;
+  const staleClient = await request.get(`${staleClientPath}?q=${regenerationQuery}`);
+  expect(staleClient.ok(), JSON.stringify(staleClient.headers())).toBe(true);
+  await staleClient.dispose();
+  let regeneratedClientBody = "";
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`${staleClientPath}?q=${regenerationQuery}`);
+        const body = await response.text();
+        expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+        await response.dispose();
+        const id = /data-testid="query-stale-client-id"[^>]*>([^<]+)/.exec(body)?.[1];
+        if (id && id !== seededClientId) regeneratedClientBody = body;
+        return id && id !== seededClientId ? "regenerated" : "pending";
+      },
+      { message: `${backend} did not regenerate the stale Client Page`, timeout: 30_000 },
+    )
+    .toBe("regenerated");
+  expect(regeneratedClientBody).toContain("searchParamsFromBrowser:true");
+  expect(regeneratedClientBody).not.toContain(regenerationQuery);
+  const currentClientQuery = `current-${suffix}`;
+  await page.goto(`${staleClientPath}?q=${currentClientQuery}`);
+  await expect
+    .poll(
+      async () => {
+        await page.getByRole("button", { name: "Read searchParams" }).click();
+        return page.getByTestId("query-stale-client-value").textContent();
+      },
+      {
+        message: "regenerated Client Page did not hydrate with the current query",
+        timeout: 20_000,
+      },
+    )
+    .toBe(currentClientQuery);
 
   const dynamicUrl = `${baseURL}/force-dynamic?cache-e2e=${randomUUID()}`;
   const firstDynamic = await request.get(dynamicUrl);

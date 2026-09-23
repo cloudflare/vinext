@@ -348,6 +348,37 @@ describe("Cloudflare Workers Response Store adapter", () => {
         htmlValue(await publicHit.text(), "query-public-id"),
         htmlValue(publicWarmupBody, "query-public-id"),
       );
+      const publicOtherQuery = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-other",
+      );
+      const publicOtherBody = await publicOtherQuery.text();
+      assert.equal(publicOtherQuery.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(htmlValue(publicOtherBody, "query-public-value"), "self-contained-other");
+      assert.notEqual(
+        htmlValue(publicOtherBody, "query-public-id"),
+        htmlValue(publicWarmupBody, "query-public-id"),
+      );
+
+      const publicRscHeaders = { Accept: "text/x-component", RSC: "1" };
+      const firstPublicRsc = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-rsc-first&_rsc=public",
+        { headers: publicRscHeaders },
+      );
+      const firstPublicRscBody = await firstPublicRsc.text();
+      const repeatedPublicRsc = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-rsc-first&_rsc=public",
+        { headers: publicRscHeaders },
+      );
+      assert.equal(repeatedPublicRsc.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await repeatedPublicRsc.text(), firstPublicRscBody);
+      const otherPublicRsc = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-rsc-second&_rsc=public",
+        { headers: publicRscHeaders },
+      );
+      const otherPublicRscBody = await otherPublicRsc.text();
+      assert.equal(otherPublicRsc.headers.get("x-vinext-cache"), "MISS");
+      assert.ok(otherPublicRscBody.includes("self-contained-rsc-second"));
+      assert.ok(!otherPublicRscBody.includes("self-contained-rsc-first"));
 
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const stale = await fetch();
@@ -679,10 +710,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.ok(!secondRscBody.includes('E{"digest"'), "second RSC payload contains a render error");
     assert.notEqual(secondRsc.headers.get("x-vinext-cache"), "HIT");
     assert.match(secondRsc.headers.get("content-type") ?? "", /^text\/x-component/);
-    // A shared RSC HIT is valid only if the payload does not carry the first request's query.
-    if (secondRsc.headers.get("x-vinext-cache") === "HIT") {
-      assert.ok(!secondRscBody.includes("rsc-first"), secondRscBody.slice(0, 600));
-    }
+    assert.ok(!secondRscBody.includes("rsc-first"), secondRscBody.slice(0, 600));
     assert.ok(!firstRscBody.includes("rsc-second"));
     assert.equal(
       decodeURIComponent(secondRsc.headers.get("x-vinext-rendered-path-and-search") ?? ""),
@@ -801,6 +829,46 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const hit = await cacheStatus("/query-public?q=prewarmed");
     assert.equal(hit.status, "HIT");
     assert.equal(htmlValue(hit.body, "query-public-id"), htmlValue(warmedBody, "query-public-id"));
+
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    for (const value of ["first-rsc", "second-rsc"]) {
+      const pathname = `/query-public?q=${value}&_rsc=public`;
+      const firstRsc = await request(pathname, { headers: rscHeaders });
+      const firstRscBody = await firstRsc.text();
+      const repeatedRsc = await request(pathname, { headers: rscHeaders });
+      assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(repeatedRsc.headers.get("x-vinext-cache"), "HIT");
+      assert.match(repeatedRsc.headers.get("content-type") ?? "", /^text\/x-component/);
+      assert.ok(firstRscBody.includes(value), firstRscBody.slice(0, 600));
+      assert.equal(await repeatedRsc.text(), firstRscBody);
+      if (value === "second-rsc") {
+        assert.ok(!firstRscBody.includes("first-rsc"), firstRscBody.slice(0, 600));
+      }
+    }
+  });
+
+  test("regenerates a shared Client Page without storing the stale request's query", async () => {
+    const pathname = "/query-stale-client";
+    const first = await cacheStatus(`${pathname}?q=first-stale-client`);
+    const firstId = htmlValue(first.body, "query-stale-client-id");
+    assert.ok(first.body.includes("searchParamsFromBrowser:true"));
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await cacheStatus(`${pathname}?q=regenerating-stale-client`);
+    assert.equal(htmlValue(stale.body, "query-stale-client-id"), firstId);
+
+    let fresh = await cacheStatus(`${pathname}?q=after-stale-client`);
+    for (
+      let attempt = 0;
+      attempt < 40 && htmlValue(fresh.body, "query-stale-client-id") === firstId;
+      attempt++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      fresh = await cacheStatus(`${pathname}?q=after-stale-client`);
+    }
+    assert.notEqual(htmlValue(fresh.body, "query-stale-client-id"), firstId);
+    assert.ok(fresh.body.includes("searchParamsFromBrowser:true"));
+    assert.ok(!fresh.body.includes("regenerating-stale-client"));
   });
 
   test("does not publish query-dependent metadata and does not alias rewritten paths", async () => {

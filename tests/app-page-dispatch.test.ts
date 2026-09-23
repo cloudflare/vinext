@@ -301,6 +301,7 @@ type CreateDispatchOptionsOverrides = {
   isProgressiveActionRender?: DispatchOptions["isProgressiveActionRender"];
   isProduction?: boolean;
   isRscRequest?: boolean;
+  queryIndependentCandidate?: DispatchOptions["queryIndependentCandidate"];
   isrRscKey?: DispatchOptions["isrRscKey"];
   isrGet?: DispatchOptions["isrGet"];
   isrSet?: DispatchOptions["isrSet"];
@@ -386,6 +387,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     isProgressiveActionRender: overrides.isProgressiveActionRender,
     isProduction: overrides.isProduction ?? false,
     isRscRequest: overrides.isRscRequest ?? false,
+    queryIndependentCandidate: overrides.queryIndependentCandidate,
     isrGet,
     isrHtmlKey(pathname: string) {
       return `html:${pathname}`;
@@ -3022,6 +3024,56 @@ describe("app page dispatch", () => {
     expect(writtenKeys).toEqual(
       expect.arrayContaining(["html:/photos/123", "rsc:/photos/123:none:none"]),
     );
+  });
+
+  it("keeps regenerated Client Page HTML independent of the triggering query", async () => {
+    let scheduledRender: unknown = null;
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "query-neutral Client Page"),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      isProduction: true,
+      isrGet: async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "<html>stale</html>",
+            undefined,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("query-neutral Flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>regenerated</html>"]);
+        },
+      }),
+      queryIndependentCandidate: true,
+      revalidateSeconds: 1,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+      searchParams: new URLSearchParams("q=triggering-query"),
+    });
+
+    const response = await dispatchAppPage(options);
+    await expect(response.text()).resolves.toBe("<html>stale</html>");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") throw new Error("expected stale regeneration");
+    await scheduledRender();
+
+    expect(buildPageElement).toHaveBeenCalledOnce();
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+      queryFromNavigationForClientPage: true,
+    });
+    expect(buildPageElement.mock.calls[0]?.[3].toString()).toBe("");
   });
 
   it.each(["page", "metadata"] as const)(
