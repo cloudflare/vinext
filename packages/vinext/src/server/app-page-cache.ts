@@ -465,6 +465,22 @@ export async function readAppPageCacheResponse(
       // reuse it instead of recomputing the hash.
       options.scheduleBackgroundRegeneration(isrKey, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
+        if (
+          (revalidatedPage.htmlRenderObservation &&
+            !hasCompleteNegativeRequestApiProof(revalidatedPage.htmlRenderObservation, [
+              "searchParams",
+            ])) ||
+          (revalidatedPage.rscRenderObservation &&
+            !hasCompleteNegativeRequestApiProof(revalidatedPage.rscRenderObservation, [
+              "searchParams",
+            ]))
+        ) {
+          // A static artifact cannot be replaced by query-dependent output
+          // under its pathname key, even when the triggering URL is queryless.
+          throw new Error(
+            `Page changed from static to dynamic at runtime ${options.cleanPathname}, reason: searchParams`,
+          );
+        }
         const cacheControl = resolveRegeneratedAppPageCacheControl({
           expireSeconds: options.expireSeconds,
           renderCacheControl: revalidatedPage.cacheControl,
