@@ -591,6 +591,10 @@ export async function buildPageElements<
           : makeThenableParams(pageSearchParams);
         return createElement(PageComponent, invocationProps);
       }
+      // A parallel slot can supply its own searchParams prop. The Client Page
+      // wrapper supplies the current query when it executes; serializing the
+      // slot's original promise would leak it into a shared HTML Flight payload.
+      delete invocationProps.searchParams;
       return createElement(ClientPageRoot, {
         Component: PageComponent,
         props: invocationProps,

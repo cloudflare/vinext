@@ -159,6 +159,57 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   await page.getByRole("link", { name: "Open query-dependent Client Page" }).click();
   await expect(page.getByTestId("query-client-dependent-value")).toHaveText("from-navigation");
 
+  // A parallel-slot Client Page receives searchParams through the slot wiring.
+  // Even when it never reads the prop during render, the unused query must not
+  // survive in the pathname-shared HTML's inlined Flight payload.
+  const parallelPath = `/query-parallel-client/${suffix}`;
+  const parallelFirstQuery = `first-${suffix}`;
+  const parallelSecondQuery = `second-${suffix}`;
+  const parallelFirstUrl = `${baseURL}${parallelPath}?q=${parallelFirstQuery}`;
+  const parallelSecondUrl = `${baseURL}${parallelPath}?q=${parallelSecondQuery}`;
+  const parallelFirst = await request.get(parallelFirstUrl);
+  const parallelFirstBody = await parallelFirst.text();
+  expect(parallelFirst.ok(), JSON.stringify(parallelFirst.headers())).toBe(true);
+  expect(parallelFirstBody).toContain("No searchParams used during render");
+  expect(parallelFirstBody).not.toContain(parallelFirstQuery);
+  const parallelSecond = await request.get(parallelSecondUrl);
+  const parallelSecondBody = await parallelSecond.text();
+  expect(parallelSecond.ok(), JSON.stringify(parallelSecond.headers())).toBe(true);
+  expect(parallelSecondBody).not.toContain(parallelFirstQuery);
+  expect(parallelSecondBody).not.toContain(parallelSecondQuery);
+  if (backend === "response-store") {
+    await expect
+      .poll(
+        async () => {
+          const first = await request.get(parallelFirstUrl);
+          const second = await request.get(parallelSecondUrl);
+          try {
+            const statuses = `${first.headers()[cacheStatusHeader]}/${second.headers()[cacheStatusHeader]}`;
+            if (statuses !== "HIT/HIT") return statuses;
+            const firstBody = await first.text();
+            const secondBody = await second.text();
+            expect(firstBody).not.toContain(parallelFirstQuery);
+            expect(secondBody).not.toContain(parallelSecondQuery);
+            return firstBody === secondBody ? "HIT/HIT/same" : "HIT/HIT/different";
+          } finally {
+            await first.dispose();
+            await second.dispose();
+          }
+        },
+        { message: "Response Store did not share the parallel-slot HTML", timeout: 30_000 },
+      )
+      .toBe("HIT/HIT/same");
+  } else if (backend === "workers-cache") {
+    // An on-demand route has no pre-lookup static certificate for Workers Cache.
+    expect(parallelSecond.headers()[cacheStatusHeader]).not.toBe("HIT");
+  }
+  await page.goto(parallelSecondUrl);
+  await expect(page.getByTestId("query-parallel-client-late-value")).toHaveText("(unread)");
+  await page.getByRole("button", { name: "Read searchParams" }).click();
+  await expect(page.getByTestId("query-parallel-client-late-value")).toHaveText(
+    parallelSecondQuery,
+  );
+
   let forceStaticFirstBody = "";
   await expect
     .poll(

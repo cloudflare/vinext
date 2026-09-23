@@ -162,6 +162,8 @@ type RenderAppPageLifecycleOptionsBase = {
   probePageBeforeRender?: boolean;
   omitPendingDynamicCacheState?: boolean;
   isRscRequest: boolean;
+  /** The direct Client Page Flight contains this request's query prop. */
+  skipSharedRscCache?: boolean;
   queryIndependentCandidate?: boolean;
   traceOperation?: "prerender" | "render";
   onRenderComplete?: (completion: Promise<void>) => void;
@@ -1053,7 +1055,9 @@ async function renderAppPageLifecycleImpl(
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
-        options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
+        options.isProduction && shouldCaptureRscForCacheMetadata && !options.skipSharedRscCache
+          ? capturedRscDataRef.value
+          : null,
       bypassInterceptionContextCache: options.bypassInterceptionContextCache,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,

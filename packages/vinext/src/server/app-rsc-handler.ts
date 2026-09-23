@@ -1175,15 +1175,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             }
           }
           const candidate =
-            cache === "shared" &&
+            // An authenticated cacheability probe bypasses writes, but must
+            // render with the same query observer as the eventual shared
+            // response. Otherwise an empty-query Client Page can be falsely
+            // certified and fail static-to-dynamic on the live request.
+            (cache === "shared" || responseStageProbeMode === "probe") &&
             responseStagePolicy === null &&
             (props.kind === "app-page" || props.kind === "app-route-handler") &&
             props.forceDynamic !== true &&
             (props.kind === "app-route-handler"
               ? props.queryIndependentConfig === true
-              : !props.isRscRequest ||
-                props.mayBeClientPage !== true ||
-                props.queryIndependentConfig === true) &&
+              : !props.isRscRequest || props.mayBeClientPage !== true) &&
             // A query-changing rewrite needs its server-owned bootstrap.
             hasSameUserQuery(stageRequest.url, props.resolvedUrl);
           let response = await dispatchResponseStage(
@@ -2420,7 +2422,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         queryIndependentCandidate:
           request.method === "GET" &&
           !route.forceDynamic &&
-          (!isRscRequest || !route.mayBeClientPage || route.queryIndependentConfig === true) &&
+          (!isRscRequest || !route.mayBeClientPage) &&
           !isProgressiveActionRender &&
           hasSameUserQuery(url.toString(), resolvedUrl),
         middlewareContext,

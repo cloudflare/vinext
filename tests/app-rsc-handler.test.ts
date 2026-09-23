@@ -115,6 +115,7 @@ type TestRoute = {
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
   forceDynamic?: boolean;
+  mayBeClientPage?: boolean;
   queryIndependentConfig?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
@@ -646,6 +647,32 @@ describe("createAppRscHandler", () => {
     });
   });
 
+  it("keeps possible Client Page RSC query variants separate even under a static contract", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+      async () => new Response("page"),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => ({
+        params: {},
+        route: createPageRoute({ mayBeClientPage: true, queryIndependentConfig: true }),
+      }),
+    });
+    const headers = createRscRequestHeaders();
+    const rscUrl = await createRscRequestUrl("/docs/about?q=first", headers);
+
+    await handler(
+      new Request(`https://example.test${rscUrl}`, { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [, props] = dispatchResponseStage.mock.calls[0]!;
+    expect(props.cacheability).not.toMatchObject({ queryIndependentCandidate: true });
+    expect(props.cacheability).not.toMatchObject({ queryIndependent: true });
+  });
+
   it.each(["no-cache", "no-store", "max-age=0, no-cache"])(
     "keeps production App responses shareable with request Cache-Control %s",
     async (cacheControl) => {
@@ -903,7 +930,10 @@ describe("createAppRscHandler", () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
       Promise.resolve(new Response("probe")),
     );
-    const handler = createHandler({ configHeaders: [] });
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => ({ params: {}, route: createPageRoute({ mayBeClientPage: true }) }),
+    });
 
     await handler(
       new Request("https://example.test/docs/about"),
@@ -916,6 +946,7 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability).toMatchObject({
       policyHeaders: null,
       probeMode: "probe",
+      queryIndependentCandidate: true,
       resolvedRoutePathname: "/about",
     });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });

@@ -125,6 +125,69 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(selfContained, /options:\{locationHint:[`"']weur[`"'],shards:4\}/);
   });
 
+  test("shares query-independent HTML and RSC in the self-contained deployment", async () => {
+    const isolated = new Miniflare({
+      unsafeEphemeralDurableObjects: true,
+      workers: [
+        {
+          bindings: {
+            CF_VERSION_METADATA: {
+              id: crypto.randomUUID(),
+              tag: "test",
+              timestamp: new Date().toISOString(),
+            },
+          },
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          durableObjects: {
+            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+          },
+          modules: await modules(selfContainedAppOutput, "index.js"),
+          name: "app",
+          r2Buckets: { CACHE_BODIES: crypto.randomUUID() },
+          serviceBindings: {
+            ASSETS: async () => new Response(null, { status: 404 }),
+          },
+        },
+      ],
+    } satisfies MiniflareOptions);
+
+    try {
+      const fetch = (pathname: string, headers?: Record<string, string>) =>
+        isolated.dispatchFetch(`https://app.test${pathname}`, { headers });
+      const firstHtml = await fetch("/query-on-demand/self-contained-html?q=first");
+      const firstHtmlBody = await firstHtml.text();
+      const secondHtml = await fetch("/query-on-demand/self-contained-html?q=second");
+      assert.equal(firstHtml.status, 200);
+      assert.equal(firstHtml.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(secondHtml.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await secondHtml.text(), firstHtmlBody);
+      assert.ok(!firstHtmlBody.includes('"q","first"'));
+      assert.ok(firstHtmlBody.includes("searchParamsFromBrowser:true"));
+
+      const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+      const firstRsc = await fetch(
+        "/query-on-demand/self-contained-rsc?q=first&_rsc=first",
+        rscHeaders,
+      );
+      const firstRscBody = await firstRsc.text();
+      const secondRsc = await fetch(
+        "/query-on-demand/self-contained-rsc?q=second&_rsc=second",
+        rscHeaders,
+      );
+      assert.equal(firstRsc.status, 200);
+      assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await secondRsc.text(), firstRscBody);
+      assert.equal(
+        decodeURIComponent(secondRsc.headers.get("x-vinext-rendered-path-and-search") ?? ""),
+        "/query-on-demand/self-contained-rsc?q=second",
+      );
+    } finally {
+      await isolated.dispose();
+    }
+  });
+
   test("does not invoke Response Store for a force-dynamic route", async () => {
     let responseStoreRequests = 0;
     const isolated = new Miniflare({
@@ -595,6 +658,44 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
     assert.equal(empty.status, "HIT");
     assert.equal(empty.body, first.body);
+  });
+
+  test("keeps dynamic-error Client Page RSC payloads partitioned by query", async () => {
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const pathname = "/query-error-client/identity";
+    const firstUrl = `${pathname}?q=first-client-query&_rsc=identity`;
+    const secondUrl = `${pathname}?q=second-client-query&_rsc=identity`;
+    const first = await request(firstUrl, { headers: rscHeaders });
+    const firstBody = await first.text();
+    const repeat = await request(firstUrl, { headers: rscHeaders });
+    const repeatBody = await repeat.text();
+    const second = await request(secondUrl, { headers: rscHeaders });
+    const secondBody = await second.text();
+
+    assert.equal(first.status, 200, firstBody.slice(0, 500));
+    assert.equal(repeat.status, 200, repeatBody.slice(0, 500));
+    assert.equal(second.status, 200, secondBody.slice(0, 500));
+    assert.match(first.headers.get("content-type") ?? "", /^text\/x-component/);
+    assert.equal(repeat.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(repeatBody, firstBody);
+    assert.notEqual(second.headers.get("x-vinext-cache"), "HIT");
+    assert.ok(firstBody.includes("first-client-query"), firstBody.slice(0, 600));
+    assert.ok(secondBody.includes("second-client-query"), secondBody.slice(0, 600));
+    assert.ok(!secondBody.includes("first-client-query"), secondBody.slice(0, 600));
+  });
+
+  test("does not serialize a parallel Client Page's unused query into shared HTML", async () => {
+    const pathname = "/query-parallel-client/slot";
+    const first = await cacheStatus(`${pathname}?q=parallel-first`);
+    assert.ok(!first.body.includes("parallel-first"));
+    let second = await cacheStatus(`${pathname}?q=parallel-second`);
+    for (let attempt = 0; attempt < 40 && second.status !== "HIT"; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      second = await cacheStatus(`${pathname}?q=parallel-second`);
+    }
+    assert.equal(second.status, "HIT");
+    assert.equal(second.body, first.body);
+    assert.ok(!second.body.includes("parallel-second"));
   });
 
   test("keeps explicitly public query-dependent pages partitioned by the full query", async () => {

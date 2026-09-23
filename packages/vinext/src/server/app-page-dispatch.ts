@@ -206,6 +206,7 @@ export type AppPageDispatchRoute = {
   forbiddenTreePosition?: number | null;
   forbiddens?: readonly (AppPageModule | null | undefined)[];
   isDynamic: boolean;
+  mayBeClientPage?: boolean;
   layouts: readonly AppPageModule[];
   layoutTreePositions?: readonly number[];
   loading?: AppPageModule | null;
@@ -691,6 +692,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
   const hasRequestSearchParams =
     !shouldUseEmptySearchParams && hasSearchParams(options.searchParams);
+  // A Client Page's direct Flight payload serializes its query prop without
+  // observing an access. Never read or write that variant under the inner
+  // pathname-only ISR key; the outer adapters can retain full-query identity.
+  const queryBearingClientRsc =
+    options.isRscRequest && route.mayBeClientPage === true && hasRequestSearchParams;
   const pageSearchParams = shouldUseEmptySearchParams
     ? new URLSearchParams()
     : options.searchParams;
@@ -748,6 +754,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (
     !isRouteCacheabilityProbe() &&
     options.bypassInterceptionContextCache !== true &&
+    !queryBearingClientRsc &&
     shouldReadAppPageCache({
       isDraftMode,
       isForceDynamic,
@@ -1210,6 +1217,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isSpeculativePrerender,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
+    skipSharedRscCache: queryBearingClientRsc,
     queryIndependentCandidate: options.queryIndependentCandidate,
     traceOperation,
     isrDebug: options.isrDebug,
