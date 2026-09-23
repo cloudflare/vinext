@@ -115,6 +115,7 @@ type TestRoute = {
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
   forceDynamic?: boolean;
+  queryIndependentConfig?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -616,6 +617,33 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("x-test-header")).toBe("applied");
     expect(response.headers.get("x-response-stage")).toBe("yes");
     expect(await response.text()).toBe("response-stage");
+  });
+
+  it("passes force-static query independence through the matched App page stage", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("page")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => ({
+        params: {},
+        route: createPageRoute({ queryIndependentConfig: true }),
+      }),
+    });
+
+    await handler(
+      new Request("https://example.test/docs/about?q=first"),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [, props] = dispatchResponseStage.mock.calls[0]!;
+    expect(props).toMatchObject({
+      kind: "app-page",
+      queryIndependentConfig: true,
+      cacheability: { queryIndependent: true },
+    });
   });
 
   it.each(["no-cache", "no-store", "max-age=0, no-cache"])(

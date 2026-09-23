@@ -290,6 +290,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   };
 
   return routes.map((route) => {
+    const ownConfigs = [...route.layouts, route.pagePath].map(dynamicConfig);
     const configs = (
       route.routePath
         ? [route.routePath]
@@ -329,7 +330,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       // for paths that were not prerendered. An ordinary successful probe is not.
       queryIndependentConfig:
         !route.routePath &&
-        configs.some((config) => config === "force-static" || config === "error") &&
+        ownConfigs.some((config) => config === "force-static" || config === "error") &&
         configs.every(
           (config) => config === null || config === "force-static" || config === "error",
         ),

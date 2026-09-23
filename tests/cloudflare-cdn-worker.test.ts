@@ -174,7 +174,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
   it("uses a certified App Page pathname key while restoring the current query on a streaming miss", async () => {
     const requests: Request[] = [];
-    const seen: Array<{ url: string; resolvedUrl: unknown }> = [];
+    const seen: Array<{ url: string; resolvedUrl: unknown; queryTransport: string | null }> = [];
     const cache = new Map<string, Response>();
     stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
       dispatch(
@@ -188,7 +188,11 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       ),
     );
     stages.response.mockImplementation((request, _env, _ctx, props) => {
-      seen.push({ url: request.url, resolvedUrl: props.resolvedUrl });
+      seen.push({
+        url: request.url,
+        resolvedUrl: props.resolvedUrl,
+        queryTransport: request.headers.get("x-vinext-internal-render-query"),
+      });
       return new Response("query-independent", {
         headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=60" },
       });
@@ -211,7 +215,11 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(await hit.text()).toBe("query-independent");
     expect(requests[0]!.url).toBe(requests[1]!.url);
     expect(seen).toEqual([
-      { url: "https://example.com/page?q=first", resolvedUrl: "/page?q=first" },
+      {
+        url: "https://example.com/page?q=first",
+        resolvedUrl: "/page?q=first",
+        queryTransport: null,
+      },
     ]);
 
     const untrusted = await worker.fetch(

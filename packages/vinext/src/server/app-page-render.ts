@@ -1208,7 +1208,7 @@ async function renderAppPageLifecycleImpl(
         queryFromBrowserForSharedHtml:
           options.queryIndependentCandidate === true && !options.isForceStatic,
         onSsrSearchParamsAccess:
-          options.queryIndependentCandidate === true
+          options.queryIndependentCandidate === true && !options.isForceStatic
             ? () => {
                 // SSR runs in a separate Vite environment. A Client Component
                 // reading the query there must veto the RSC render's shared put.

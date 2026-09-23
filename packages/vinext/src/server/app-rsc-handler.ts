@@ -2379,6 +2379,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         draftModeCookie,
         forceDynamic: route.forceDynamic === true,
         mayBeClientPage: route.mayBeClientPage === true,
+        queryIndependentConfig: route.queryIndependentConfig === true,
         interceptionContext: isRscRequest ? interceptionContextHeader : null,
         interceptionId: interceptionIdHeader,
         isRscRequest,

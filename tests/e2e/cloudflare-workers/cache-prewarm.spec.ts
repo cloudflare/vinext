@@ -101,22 +101,72 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   await expect(page.getByTestId("query-independent-client-value")).toHaveText(`second-${suffix}`);
 
   const cacheStatusHeader = backend === "workers-cache" ? "cf-cache-status" : "x-vinext-cache";
-  const forceStaticFirst = await request.get(
-    `${baseURL}/query-force-static/${suffix}?q=first-${suffix}`,
-  );
+  let forceStaticFirstBody = "";
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(
+          `${baseURL}/query-force-static/${suffix}?q=first-${suffix}`,
+        );
+        const status = response.status();
+        const cacheStatus = response.headers()[cacheStatusHeader];
+        const body = await response.text();
+        await response.dispose();
+        if (status < 200 || status >= 300) return `HTTP ${status}`;
+        if (cacheStatus === "HIT") forceStaticFirstBody = body;
+        return cacheStatus;
+      },
+      { message: `${backend} did not publish the force-static response`, timeout: 30_000 },
+    )
+    .toBe("HIT");
   const forceStaticSecond = await request.get(
     `${baseURL}/query-force-static/${suffix}?q=second-${suffix}`,
   );
-  const forceStaticFirstBody = await forceStaticFirst.text();
   const forceStaticSecondBody = await forceStaticSecond.text();
-  expect(forceStaticFirst.ok()).toBe(true);
   expect(forceStaticSecond.ok()).toBe(true);
   expect(forceStaticSecondBody).toBe(forceStaticFirstBody);
   expect(forceStaticSecondBody).not.toContain(`first-${suffix}`);
   expect(forceStaticSecondBody).not.toContain("searchParamsFromBrowser:true");
+  expect(forceStaticSecondBody).toContain(
+    'data-testid="query-force-static-client-value">(empty)</output>',
+  );
+  await page.goto(`${baseURL}/query-force-static/${suffix}?q=second-${suffix}`);
+  await expect(page.getByTestId("query-force-static-client-value")).toHaveText("(empty)");
+  expect(forceStaticSecond.headers()[cacheStatusHeader]).toBe("HIT");
+
+  // The ordinary static route above has an HTML-only manifest certificate.
+  // An explicit force-static route certifies both HTML and RSC on-demand.
+  const rscHeaders = { accept: "text/x-component", RSC: "1" };
+  let forceStaticRscBody = "";
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(
+          `${baseURL}/query-force-static/${suffix}?q=first-${suffix}&_rsc=first-${suffix}`,
+          { headers: rscHeaders },
+        );
+        const cacheStatus = response.headers()[cacheStatusHeader];
+        if (cacheStatus === "HIT") forceStaticRscBody = await response.text();
+        await response.dispose();
+        return cacheStatus;
+      },
+      { message: `${backend} did not publish the force-static RSC response`, timeout: 30_000 },
+    )
+    .toBe("HIT");
+  const forceStaticSecondRsc = await request.get(
+    `${baseURL}/query-force-static/${suffix}?q=second-${suffix}&_rsc=second-${suffix}`,
+    { headers: rscHeaders },
+  );
+  expect(forceStaticSecondRsc.ok()).toBe(true);
+  expect(forceStaticSecondRsc.headers()["content-type"]).toContain("text/x-component");
+  expect(await forceStaticSecondRsc.text()).toBe(forceStaticRscBody);
+  expect(forceStaticSecondRsc.headers()[cacheStatusHeader]).toBe("HIT");
   if (backend !== "kv") {
-    expect(forceStaticSecond.headers()[cacheStatusHeader]).toBe("HIT");
+    expect(
+      decodeURIComponent(forceStaticSecondRsc.headers()["x-vinext-rendered-path-and-search"] ?? ""),
+    ).toBe(`/query-force-static/${suffix}?q=second-${suffix}`);
   }
+
   for (const path of ["query-dependent", "query-client-dependent", "query-prop-to-client"]) {
     // The empty-query response is a particularly dangerous source of false
     // static certification: its thenable carries no enumerable query keys.
@@ -152,6 +202,13 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   );
   expect(rewriteWithQuery.ok()).toBe(true);
   expect(await rewriteWithQuery.text()).not.toContain("searchParamsFromBrowser:true");
+  const rewriteWithOtherQuery = await request.get(
+    `${baseURL}/query-alias-fixed/${suffix}?q=second-${suffix}`,
+  );
+  expect(rewriteWithOtherQuery.ok()).toBe(true);
+  if (backend !== "kv") {
+    expect(rewriteWithOtherQuery.headers()[cacheStatusHeader]).not.toBe("HIT");
+  }
 
   // Explicit public policy may cache a dynamic response, but only under its
   // *full* query. The prewarm user-agent synchronously commits the Response

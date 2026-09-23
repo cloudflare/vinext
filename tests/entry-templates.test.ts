@@ -1162,6 +1162,7 @@ describe("App Router entry templates", () => {
     const dynamicPage = path.join(tmpDir, "dynamic-page.tsx");
     const dynamicLayout = path.join(tmpDir, "dynamic-layout.tsx");
     const dynamicHandler = path.join(tmpDir, "dynamic-route.ts");
+    const forceStaticPage = path.join(tmpDir, "force-static-page.tsx");
     const clientPage = path.join(tmpDir, "client-page.tsx");
     const reexportedPage = path.join(tmpDir, "reexported-page.tsx");
     fs.writeFileSync(staticPage, "export default function Page() { return null; }");
@@ -1177,12 +1178,22 @@ describe("App Router entry templates", () => {
       dynamicHandler,
       'export const dynamic = "force-dynamic"; export function GET() { return new Response(); }',
     );
+    fs.writeFileSync(
+      forceStaticPage,
+      'export const dynamic = "force-static"; export default function Page() { return null; }',
+    );
     fs.writeFileSync(clientPage, '"use client"; export default function Page() { return null; }');
     fs.writeFileSync(reexportedPage, 'export { default } from "./client-page";');
 
     try {
       const code = generateAppRequestRscEntry(tmpDir, [
         { ...minimalAppRoutes[0], pattern: "/static", pagePath: staticPage, layouts: [] },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/force-static",
+          pagePath: forceStaticPage,
+          layouts: [],
+        },
         { ...minimalAppRoutes[0], pattern: "/client", pagePath: clientPage, layouts: [] },
         { ...minimalAppRoutes[0], pattern: "/reexport", pagePath: reexportedPage, layouts: [] },
         { ...minimalAppRoutes[0], pattern: "/page", pagePath: dynamicPage, layouts: [] },
@@ -1242,6 +1253,22 @@ describe("App Router entry templates", () => {
         },
         {
           ...minimalAppRoutes[0],
+          pattern: "/sibling-force-static",
+          pagePath: staticPage,
+          layouts: [],
+          siblingIntercepts: [
+            {
+              convention: ".",
+              targetPattern: "/sibling-force-static/photo",
+              sourceMatchPattern: "/sibling-force-static",
+              pagePath: forceStaticPage,
+              layoutPaths: [],
+              params: [],
+            },
+          ],
+        },
+        {
+          ...minimalAppRoutes[0],
           pattern: "/api",
           pagePath: null,
           routePath: dynamicHandler,
@@ -1253,6 +1280,7 @@ describe("App Router entry templates", () => {
       const routes = JSON.parse(serializedRoutes!) as Array<{
         forceDynamic: boolean;
         mayBeClientPage: boolean;
+        queryIndependentConfig: boolean;
         pattern: string;
       }>;
 
@@ -1269,12 +1297,20 @@ describe("App Router entry templates", () => {
       ).toEqual({
         "/api": true,
         "/client": false,
+        "/force-static": false,
         "/layout": true,
         "/page": true,
         "/reexport": false,
+        "/sibling-force-static": false,
         "/sibling-intercept": true,
         "/slot-intercept": true,
         "/static": false,
+      });
+      expect(
+        Object.fromEntries(routes.map((route) => [route.pattern, route.queryIndependentConfig])),
+      ).toMatchObject({
+        "/force-static": true,
+        "/sibling-force-static": false,
       });
     } finally {
       fs.rmSync(tmpDir, { force: true, recursive: true });
