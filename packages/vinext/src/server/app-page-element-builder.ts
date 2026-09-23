@@ -594,7 +594,9 @@ export async function buildPageElements<
       return createElement(ClientPageRoot, {
         Component: PageComponent,
         props: invocationProps,
-        serverProvidedSearchParams: queryFromNavigationForClientPage ? null : pageSearchParams,
+        serverProvidedSearchParams: queryFromNavigationForClientPage
+          ? null
+          : { ...pageSearchParams },
       });
     }
 

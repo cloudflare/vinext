@@ -1119,6 +1119,9 @@ describe("buildPageElements", () => {
     // The actual Page's promise is constructed only inside the client boundary.
     // Neither constructing nor serializing that boundary observes the query.
     expect(pageElement.props.serverProvidedSearchParams).toEqual({});
+    expect(Object.getPrototypeOf(pageElement.props.serverProvidedSearchParams)).toBe(
+      Object.prototype,
+    );
 
     expect(markDynamicUsageMock).not.toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalledWith("searchParams");

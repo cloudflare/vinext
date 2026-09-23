@@ -555,6 +555,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const secondRscBody = await secondRsc.text();
     assert.equal(firstRsc.status, 200);
     assert.equal(secondRsc.status, 200);
+    assert.ok(!firstRscBody.includes('E{"digest"'), "first RSC payload contains a render error");
+    assert.ok(!secondRscBody.includes('E{"digest"'), "second RSC payload contains a render error");
     assert.notEqual(secondRsc.headers.get("x-vinext-cache"), "HIT");
     assert.match(secondRsc.headers.get("content-type") ?? "", /^text\/x-component/);
     // A shared RSC HIT is valid only if the payload does not carry the first request's query.
