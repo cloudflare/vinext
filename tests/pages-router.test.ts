@@ -15,7 +15,12 @@ import {
   PHASE_DEVELOPMENT_SERVER,
   PHASE_PRODUCTION_BUILD,
 } from "../packages/vinext/src/shims/constants.js";
-import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
+import {
+  PAGES_FIXTURE_DIR,
+  buildPagesFixture,
+  createIsolatedFixture,
+  startFixtureServer,
+} from "./helpers.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
 
@@ -163,6 +168,78 @@ function getStylesheetHrefs(html: string): string[] {
     .filter((tag) => getHtmlAttr(tag, "rel") === "stylesheet")
     .map((tag) => getHtmlAttr(tag, "href"))
     .filter((href): href is string => href !== null);
+}
+
+function getStyledJsxStyles(html: string): Map<string, string> {
+  return new Map(
+    Array.from(
+      html.matchAll(/<style id="(__jsx-[^"]+)"[^>]*>([\s\S]*?)<\/style>/g),
+      (match) => [match[1], match[2]] as const,
+    ),
+  );
+}
+
+/** `<style id="__jsx-…">` contents rendered into the document head, keyed by id. */
+function getHeadStyledJsxStyles(html: string): Map<string, string> {
+  return getStyledJsxStyles(html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "");
+}
+
+/**
+ * `<style id="__jsx-…">` contents collected from the shell render: emitted
+ * between `<body>` and the React root (see server/pages-styled-jsx.ts).
+ */
+function getShellStyledJsxStyles(html: string): Map<string, string> {
+  const body = html.slice(html.search(/<body[\s>]/i));
+  return getStyledJsxStyles(body.slice(0, body.indexOf('<div id="__next">')));
+}
+
+// Ported from Next.js: test/e2e/streaming-ssr/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
+function expectStyledJsxStreamingSsr(html: string): void {
+  expect(html).toMatch(/color:(?:blue|#00f)/);
+  // The rule must be server-rendered (not only injected by the client) and
+  // scoped to the class the server rendered onto the element.
+  const tag = html.match(/<p\b[^>]*\bid="styled-jsx-streaming"[^>]*>/)?.[0] ?? "";
+  const className = getHtmlAttr(tag, "class");
+  expect(className).toMatch(/^jsx-[\w-]+$/);
+  expect(getShellStyledJsxStyles(html).get(`__${className}`)).toBe(`p.${className}{color:blue}`);
+  expect(html.match(/color:blue/g)).toHaveLength(1);
+}
+
+function expectLateStyledJsxSsr(html: string): void {
+  // The shell's rule is emitted before the React root like any other page.
+  expect([...getShellStyledJsxStyles(html).values()]).toEqual([
+    expect.stringMatching(/^main\.jsx-[\w-]+\{padding:1px\}$/),
+  ]);
+  // Rules registered by the Suspense content that streamed in after the head
+  // was built (including a `styled-jsx/css` module) follow the React root:
+  // they start right where `<div id="__next">` closes, before __NEXT_DATA__.
+  const lateContent = html.indexOf('id="styled-jsx-late"');
+  const nextData = html.indexOf('id="__NEXT_DATA__"');
+  expect(lateContent).toBeGreaterThan(-1);
+  expect(nextData).toBeGreaterThan(lateContent);
+  const rootClose = html.lastIndexOf("</div>", nextData);
+  const lateStyles = html.slice(rootClose + "</div>".length, nextData);
+  expect(lateStyles.startsWith('<style id="__jsx-')).toBe(true);
+  expect(lateStyles).toMatch(/<style id="__jsx-[\w-]+">p\.jsx-[\w-]+\{color:purple\}<\/style>/);
+  expect(lateStyles).toMatch(
+    /<style id="__jsx-[\w-]+">\.late-accent\.jsx-[\w-]+\{background:yellow\}<\/style>/,
+  );
+  expect(html.match(/padding:1px/g)).toHaveLength(1);
+}
+
+// Ported from Next.js: test/e2e/styled-jsx-dynamic/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/styled-jsx-dynamic/index.test.ts
+function expectDynamicStyledJsxSsr(html: string): void {
+  // Interpolated styles get numeric runtime class names from styled-jsx's
+  // computeId, and every rule (including the one derived from
+  // getServerSideProps) must already be in the SSR document.
+  expect(html.match(/\bjsx-\d+\b/g)?.length ?? 0).toBeGreaterThan(0);
+  const css = [...getShellStyledJsxStyles(html).values()].join("\n");
+  expect(css).toMatch(/div\.jsx-\d+\{color:green\}/);
+  expect(css).toMatch(/p\.jsx-\d+\{color:blue\}/);
+  expect(css).toMatch(/header\.jsx-\d+\{background-color:navy;/);
+  expect(css).toMatch(/footer\.jsx-\d+\{color:purple;/);
 }
 
 function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixture {
@@ -8124,6 +8201,18 @@ export default function StaticGspPage() {
 `,
     );
     await fsp.writeFile(
+      path.join(fixtureRoot, "pages", "styled-jsx.jsx"),
+      `export default function StyledJsxPage() {
+  return (
+    <div>
+      <style jsx>{\`p { color: hotpink; }\`}</style>
+      <p id="styled-jsx-content">STYLED</p>
+    </div>
+  );
+}
+`,
+    );
+    await fsp.writeFile(
       path.join(fixtureRoot, "pages", "_error.tsx"),
       `import { renderCounts } from "../render-counts";
 function ErrorPage({ message }: { message: string }) {
@@ -8278,6 +8367,25 @@ export default class CustomDocument extends Document {
       }
     }
   });
+
+  // Next.js returns (and flushes) the styled-jsx registry from
+  // ctx.defaultGetInitialProps(), so `Document.getInitialProps(ctx)` callers
+  // keep those rules in `styles`: packages/next/src/server/render.tsx.
+  it.each(["dev", "prod"] as const)(
+    "returns styled-jsx styles from Document.getInitialProps in %s",
+    async (mode) => {
+      const url = mode === "dev" ? devUrl : prodUrl;
+      const response = await fetch(`${url}/styled-jsx`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toMatch(/<p id="styled-jsx-content" class="jsx-[\w-]+">STYLED<\/p>/);
+      expect([...getHeadStyledJsxStyles(html).values()]).toEqual([
+        expect.stringMatching(/^p\.jsx-[\w-]+\{color:hotpink\}$/),
+      ]);
+      expect(html.match(/color:hotpink/g)).toHaveLength(1);
+      expectFragmentsInOrder(html, ['name="document-child"', '<style id="__jsx-'], mode);
+    },
+  );
 
   it("places client trace metadata after custom Document children in dev and prod", async () => {
     // Next.js renders trace metadata after custom Document children and generated
@@ -8507,6 +8615,83 @@ export default class CustomDocument extends Document {
       expectErrorDocument(html, "style serialization failed", "throwStyles");
     },
   );
+});
+
+// Uses its own fixture: bundling styled-jsx (CommonJS that requires React at
+// runtime) into pages-basic would break the tests that load that fixture's
+// server bundle from a temp directory without node_modules.
+describe("Pages Router styled-jsx SSR", () => {
+  const styledJsxFixtureDir = path.resolve(import.meta.dirname, "fixtures/pages-styled-jsx");
+  let fixtureRoot: string;
+  let devServer: ViteDevServer;
+  let devUrl: string;
+  let prodServer: import("node:http").Server;
+  let prodUrl: string;
+  const modes = ["dev", "prod"] as const;
+  const urlFor = (mode: (typeof modes)[number]) => (mode === "dev" ? devUrl : prodUrl);
+
+  beforeAll(async () => {
+    fixtureRoot = await createIsolatedFixture(styledJsxFixtureDir, "vinext-pages-styled-jsx-");
+    const dev = await startFixtureServer(fixtureRoot);
+    devServer = dev.server;
+    devUrl = dev.baseUrl;
+
+    const outDir = path.join(fixtureRoot, "dist");
+    await buildPagesFixtureToOutDir(fixtureRoot, outDir);
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    prodServer = unwrapStartedProdServer(
+      await startProdServer({ port: 0, host: "127.0.0.1", outDir }),
+    );
+    const address = prodServer.address() as { port: number };
+    prodUrl = `http://127.0.0.1:${address.port}`;
+  }, 120000);
+
+  afterAll(async () => {
+    await devServer?.close();
+    if (prodServer) await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+    if (fixtureRoot) fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  });
+
+  // Ported from Next.js: test/e2e/streaming-ssr/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/streaming-ssr/index.test.ts
+  it.each(modes)("should render styled-jsx styles in streaming (%s)", async (mode) => {
+    const res = await fetch(`${urlFor(mode)}/`);
+    expect(res.status).toBe(200);
+    expectStyledJsxStreamingSsr(await res.text());
+  });
+
+  // Ported from Next.js: test/e2e/styled-jsx-dynamic/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/styled-jsx-dynamic/index.test.ts
+  it.each(modes)("should contain dynamic styled-jsx styles during SSR (%s)", async (mode) => {
+    const res = await fetch(`${urlFor(mode)}/dynamic/`);
+    expect(res.status).toBe(200);
+    expectDynamicStyledJsxSsr(await res.text());
+  });
+
+  it.each(modes)(
+    "renders styled-jsx styles registered by late Suspense content (%s)",
+    async (mode) => {
+      const res = await fetch(`${urlFor(mode)}/late/`);
+      expect(res.status).toBe(200);
+      expectLateStyledJsxSsr(await res.text());
+    },
+  );
+
+  // Ported from Next.js: test/e2e/app-dir/scss/with-styled-jsx/with-styled-jsx.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/scss/with-styled-jsx/with-styled-jsx.test.ts
+  it.each(modes)("orders styled-jsx rules after global stylesheets (%s)", async (mode) => {
+    const res = await fetch(`${urlFor(mode)}/css-order/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const headEnd = html.indexOf("</head>");
+    expect(getStylesheetHrefs(html.slice(0, headEnd)).length).toBeGreaterThan(0);
+    expect([...getShellStyledJsxStyles(html).values()]).toEqual([".my-text{color:green}"]);
+    // Outside <head>, the rule also stays after stylesheet links the client
+    // appends to <head> later (Vite's CSS preloading), so green keeps winning.
+    const ruleIndex = html.indexOf(".my-text{color:green}");
+    expect(ruleIndex).toBeGreaterThan(headEnd);
+    expect(ruleIndex).toBeLessThan(html.indexOf('<div id="__next">'));
+  });
 });
 
 describe("Production Pages Router SSR streaming", () => {

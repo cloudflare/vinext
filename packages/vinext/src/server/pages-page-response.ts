@@ -2,6 +2,7 @@ import React, { type ComponentType, type ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import { createPagesStyledJsxCollector } from "vinext/shims/styled-jsx-registry";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   applyCdnResponseHeaders,
@@ -24,6 +25,11 @@ import {
   type RenderPageEnhancers,
   runDocumentRenderPage,
 } from "./pages-document-initial-props.js";
+import {
+  appendLateStyledJsxStyles,
+  insertStyledJsxBeforePagesRoot,
+  renderStyledJsxStylesHTML,
+} from "./pages-styled-jsx.js";
 import { fnv1a52 } from "../utils/hash.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
@@ -393,10 +399,20 @@ async function buildPagesShellHtml(
   );
 }
 
+/**
+ * The document suffix, or a callback resolving it once the body stream has
+ * been fully read (so it can carry output the body render produced late).
+ */
+type PagesShellSuffix = string | (() => Promise<string>);
+
+function resolvePagesShellSuffix(shellSuffix: PagesShellSuffix): string | Promise<string> {
+  return typeof shellSuffix === "string" ? shellSuffix : shellSuffix();
+}
+
 async function buildPagesCompositeStream(
   bodyStream: ReadableStream<Uint8Array>,
   shellPrefix: string,
-  shellSuffix: string,
+  shellSuffix: PagesShellSuffix,
 ): Promise<ReadableStream<Uint8Array>> {
   const encoder = new TextEncoder();
 
@@ -415,7 +431,7 @@ async function buildPagesCompositeStream(
       } finally {
         reader.releaseLock();
       }
-      controller.enqueue(encoder.encode(shellSuffix));
+      controller.enqueue(encoder.encode(await resolvePagesShellSuffix(shellSuffix)));
       controller.close();
     },
   });
@@ -450,17 +466,18 @@ async function writePagesIsrCache(options: {
   revalidateSeconds: number | false;
   routePattern: string;
   shellPrefix: string;
-  shellSuffix: string;
+  shellSuffix: PagesShellSuffix;
   status: number;
   stream: ReadableStream<Uint8Array>;
   setCache: RenderPagesPageResponseOptions["isrSet"];
 }): Promise<void> {
   const bodyHtml = await readStreamAsText(options.stream);
+  const shellSuffix = await resolvePagesShellSuffix(options.shellSuffix);
   await options.setCache(
     options.cacheKey,
     {
       kind: "PAGES",
-      html: options.shellPrefix + bodyHtml + options.shellSuffix,
+      html: options.shellPrefix + bodyHtml + shellSuffix,
       pageData: options.pageData,
       headers: undefined,
       status: options.status,
@@ -540,6 +557,14 @@ export async function renderPagesPageResponse(
     vinext: options.vinext,
   });
   const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
+  // Render collected `styles` fragments with the plain stream renderer rather
+  // than the full `<Document>` shell renderer — the styles tree is a
+  // standalone fragment, so it doesn't need the heavier document pipeline.
+  const renderStylesToString = async (element: React.ReactElement) =>
+    readStreamAsText(await options.renderToReadableStream(element));
+  // Next.js wraps every Pages render in styled-jsx's StyleRegistry. `null`
+  // unless the app loaded a module compiled by the styled-jsx plugin.
+  const styledJsx = createPagesStyledJsxCollector();
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
   // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. for
@@ -556,13 +581,10 @@ export async function renderPagesPageResponse(
       DocumentComponent: options.DocumentComponent,
       enhancePageElement: options.enhancePageElement,
       renderToReadableStream: options.renderToReadableStream,
-      // Render the collected `styles` fragment with the plain stream renderer
-      // rather than the full `<Document>` shell renderer — the styles tree is a
-      // standalone fragment, so it doesn't need the heavier document pipeline.
-      renderStylesToString: async (element) =>
-        readStreamAsText(await options.renderToReadableStream(element)),
+      renderStylesToString,
       scriptNonce: options.scriptNonce,
       initialStylesheetHrefs: options.initialStylesheetHrefs,
+      styledJsx,
       context: {
         err: options.err,
         req: options.documentReqRes?.req,
@@ -587,8 +609,13 @@ export async function renderPagesPageResponse(
     } else {
       // Start the body render before collecting its head state, then let the
       // tracing adapter keep the span alive without delaying the response.
+      const pageTree = React.createElement(
+        React.Fragment,
+        null,
+        options.createPageElement(renderProps),
+      );
       const pageElement = withScriptNonce(
-        React.createElement(React.Fragment, null, options.createPageElement(renderProps)),
+        styledJsx ? styledJsx.wrap(pageTree) : pageTree,
         options.scriptNonce,
         options.initialStylesheetHrefs,
       );
@@ -629,6 +656,14 @@ export async function renderPagesPageResponse(
     if (tailHeadHTML) tailHeadHTML += "\n  ";
     tailHeadHTML += documentRenderPage.stylesHTML;
   }
+  // Without a `getInitialProps` override Next.js passes the registry's styles
+  // straight to `_document` as `styles`. Collected once the shell is ready,
+  // alongside the `next/head` tags above; see `pages-styled-jsx.ts` for why
+  // they are emitted right before the React root.
+  const styledJsxHTML =
+    documentRenderPage.status === "skipped"
+      ? await renderStyledJsxStylesHTML(styledJsx, options.scriptNonce, renderStylesToString)
+      : "";
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     disableOptimizedLoading: options.disableOptimizedLoading,
@@ -646,8 +681,27 @@ export async function renderPagesPageResponse(
   options.clearSsrContext();
 
   const markerIndex = shellHtml.indexOf(bodyMarker);
-  const shellPrefix = shellHtml.slice(0, markerIndex);
-  const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
+  const shellPrefix = insertStyledJsxBeforePagesRoot(
+    shellHtml.slice(0, markerIndex),
+    styledJsxHTML,
+  );
+  const documentSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
+  let lateStyledJsxSuffix: Promise<string> | undefined;
+  // A streamed body can register styled-jsx rules after the shell rendered
+  // (Suspense content). Resolve the suffix once the body has been read — by
+  // whichever of the response and the ISR cache write finishes first — so
+  // both carry the same late rules. The renderPage path rendered the whole
+  // body up front, so it has none.
+  const shellSuffix: PagesShellSuffix =
+    styledJsx && documentRenderPage.status === "skipped"
+      ? () =>
+          (lateStyledJsxSuffix ??= appendLateStyledJsxStyles(
+            documentSuffix,
+            styledJsx,
+            options.scriptNonce,
+            renderStylesToString,
+          ))
+      : documentSuffix;
   const responseHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   const finalStatus = applyGsspHeaders(
     responseHeaders,
