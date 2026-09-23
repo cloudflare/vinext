@@ -1,5 +1,24 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.9
+
+### Features
+
+- **Response Store:** read response metadata from R2 (#3339)
+- **Tracing:** add Next.js-compatible OpenTelemetry instrumentation with Sentry and Cloudflare Workers tracing support (#3261)
+- **Cloudflare:** allow version uploads without promotion (#3337)
+- **Response Store:** support for sharded durable objects (#3301)
+
+### Bug Fixes
+
+- **Cache:** bypass shared lookup for force-dynamic routes (#3346)
+- **Cloudflare:** prewarm KV through deployed Workers (#3324)
+- **Response Store:** stabilize cached variant selection (#3308)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.8
 
 ### Features

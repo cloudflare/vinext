@@ -555,17 +555,17 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
       matches.push(match[1]);
     }
 
-    // Should have 3 RSC chunks in order
-    expect(matches.length).toBe(3);
+    // Adjacent text chunks share one script without changing Flight row order.
+    expect(matches).toHaveLength(1);
 
-    // Chunks are now text strings, so just parse the JSON strings directly
-    const chunk0 = JSON.parse(matches[0]);
-    const chunk1 = JSON.parse(matches[1]);
-    const chunk2 = JSON.parse(matches[2]);
+    const chunk = JSON.parse(matches[0]);
+    const layoutIndex = chunk.indexOf('0:D{"name":"layout"}');
+    const pageIndex = chunk.indexOf('1:D{"name":"page"}');
+    const elementIndex = chunk.indexOf('2:["$","div"');
 
-    expect(chunk0).toContain('0:D{"name":"layout"}');
-    expect(chunk1).toContain('1:D{"name":"page"}');
-    expect(chunk2).toContain('2:["$","div"');
+    expect(layoutIndex).toBeGreaterThanOrEqual(0);
+    expect(pageIndex).toBeGreaterThan(layoutIndex);
+    expect(elementIndex).toBeGreaterThan(pageIndex);
   });
 
   it("handles large number of interleaved flush cycles correctly", async () => {

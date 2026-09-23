@@ -266,6 +266,22 @@ describe("matchRemotePattern glob edge cases", () => {
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/is-private-ip.test.ts
 
 describe("isPrivateIp", () => {
+  it("classifies non-canonical IPv4 literals and hostnames correctly", () => {
+    // Hostnames short-circuit before ipaddr.js parsing; these guard the
+    // character-class fast path against skipping a real IPv4 literal form.
+    expect(isPrivateIp("0x7f.1")).toBe(true);
+    expect(isPrivateIp("0x7f000001")).toBe(true);
+    expect(isPrivateIp("2130706433")).toBe(true);
+    expect(isPrivateIp("017700000001")).toBe(true);
+    expect(isPrivateIp("[::ffff:127.0.0.1]")).toBe(true);
+    expect(isPrivateIp("8.8.8.8")).toBe(false);
+    expect(isPrivateIp("[::ffff:8.8.8.8]")).toBe(false);
+    expect(isPrivateIp("raw.githubusercontent.com")).toBe(false);
+    expect(isPrivateIp("localhost")).toBe(false);
+    expect(isPrivateIp("cafe.be")).toBe(false);
+    expect(isPrivateIp("")).toBe(false);
+  });
+
   it("returns true for private IPv4 addresses", () => {
     expect(isPrivateIp("127.0.0.0")).toBe(true);
     expect(isPrivateIp("127.0.0.1")).toBe(true);

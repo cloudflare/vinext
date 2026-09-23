@@ -190,7 +190,9 @@ function resolveBuildOutputArtifact(root: string): GeneratedWorkerArtifact {
     ? fs
         .readdirSync(outputDirectory, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
-        .map((entry) => path.join(outputDirectory, entry.name, "workers", "default", "config.json"))
+        .map((entry) =>
+          path.join(outputDirectory, entry.name, "workers", "default", "worker.config.json"),
+        )
         .filter((candidate) => fs.existsSync(candidate) && fs.lstatSync(candidate).isFile())
     : [];
   if (configPaths.length !== 1) {

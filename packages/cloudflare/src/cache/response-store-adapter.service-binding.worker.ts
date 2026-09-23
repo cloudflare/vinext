@@ -1,9 +1,12 @@
+import "vinext/internal/server/cloudflare-workers-tracing";
 import {
   createWorkersResponseStoreClient,
   type ResponseStoreClientEntrypoint,
   type ResponseStoreRevalidatorEntrypoint,
   type WorkersResponseStoreClientEnv,
 } from "@cloudflare/workers-response-store";
+// @ts-expect-error -- virtual module resolved by vinext at build time
+import { configuredCdnCacheAdapterOptions } from "virtual:vinext-cdn-cache-adapter";
 
 import {
   createVinextResponseStoreHandler,
@@ -11,7 +14,7 @@ import {
 } from "./response-store-adapter.worker.js";
 
 const responseStore = createWorkersResponseStoreClient<WorkersResponseStoreClientEnv>(
-  createVinextResponseStoreOptions(),
+  createVinextResponseStoreOptions(configuredCdnCacheAdapterOptions),
 );
 
 export const ResponseStoreClient: ResponseStoreClientEntrypoint =

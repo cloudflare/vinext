@@ -22,7 +22,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createBuilder } from "vite";
+import { createBuilder, createServer, type AliasOptions } from "vite";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { startFixtureServer, fetchHtml } from "./helpers.js";
@@ -283,4 +283,123 @@ export default function HomePage() {
 
     expect(fs.existsSync(path.join(appRoot, "dist", "server", "index.js"))).toBe(true);
   }, 120_000);
+});
+
+// Regression: https://github.com/langgenius/dify/pull/42654
+// Explicit bundler aliases must work in CSS even when tsconfig maps the same name.
+// Next.js CSS uses the bundler resolver:
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/css-loader/src/index.ts
+describe("explicit aliases overriding tsconfig paths", () => {
+  function fixture(kind: "object" | "regexp" | "custom" | "next"): {
+    root: string;
+    alias?: AliasOptions;
+  } {
+    const root = fs.realpathSync(makeTmpDir("vinext-explicit-css-alias-"));
+    linkRepoNodeModules(root);
+    writeFixtureFile(root, "package.json", JSON.stringify({ type: "module" }));
+    writeFixtureFile(
+      root,
+      "tsconfig.json",
+      JSON.stringify({
+        compilerOptions: { paths: { "~@/*": ["./*"] } },
+      }),
+    );
+    writeFixtureFile(
+      root,
+      "app/layout.tsx",
+      `import "../style.css";
+export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
+    writeFixtureFile(
+      root,
+      "app/page.tsx",
+      `export default function Page() { return <div className="icon">alias</div>; }`,
+    );
+    writeFixtureFile(root, "style.css", `.icon { background-image: url("~@/icon.svg"); }`);
+    writeFixtureFile(
+      root,
+      "icon.svg",
+      `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M0 0h16v16H0z"/></svg>`,
+    );
+    if (kind === "next") {
+      writeFixtureFile(
+        root,
+        "next.config.mjs",
+        `export default { turbopack: { resolveAlias: { "~@": "./" } } };`,
+      );
+      return { root };
+    }
+    return {
+      root,
+      alias:
+        kind === "object"
+          ? { "~@": root }
+          : kind === "custom"
+            ? [
+                {
+                  find: "~@",
+                  replacement: "/missing",
+                  customResolver: () => ({ id: path.join(root, "icon.svg") }),
+                },
+              ]
+            : [{ find: /^~@(?=\/)/, replacement: root }],
+    };
+  }
+
+  it.each(["object", "regexp", "custom", "next"] as const)(
+    "dev: preserves an explicit %s alias across server restarts",
+    async (kind) => {
+      const { root, alias } = fixture(kind);
+      const server = await createServer({
+        root,
+        configFile: false,
+        plugins: [vinext({ appDir: root })],
+        resolve: { alias },
+        logLevel: "silent",
+        server: { middlewareMode: true },
+      });
+      try {
+        const result = await server.transformRequest("/style.css");
+        expect(result?.code).not.toContain("~@/");
+        expect(result?.code).toContain("icon.svg");
+        await server.restart();
+        const restarted = await server.transformRequest("/style.css");
+        expect(restarted?.code).not.toContain("~@/");
+        expect(restarted?.code).toContain("icon.svg");
+      } finally {
+        await server.close();
+      }
+    },
+    60_000,
+  );
+
+  it.each(["object", "regexp", "custom", "next"] as const)(
+    "build: emits CSS assets with an explicit %s alias",
+    async (kind) => {
+      const { root, alias } = fixture(kind);
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        plugins: [vinext({ appDir: root })],
+        resolve: { alias },
+        logLevel: "silent",
+        build: { assetsInlineLimit: 0 },
+      });
+      await builder.buildApp();
+      const clientDir = path.join(root, "dist/client");
+      const files = fs.readdirSync(clientDir, { recursive: true }).map(String);
+      const css = files
+        .filter((file) => file.endsWith(".css"))
+        .map((file) => fs.readFileSync(path.join(clientDir, file), "utf8"))
+        .join("\n");
+      expect(css).toContain("background-image:");
+      expect(css).not.toContain("~@/");
+      const urls = [...css.matchAll(/url\(["']?([^)"']+)["']?\)/g)].map((match) => match[1]);
+      expect(urls.length).toBeGreaterThan(0);
+      for (const url of urls) {
+        expect(fs.existsSync(path.join(clientDir, url.replace(/^\//, "")))).toBe(true);
+      }
+    },
+    120_000,
+  );
 });

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
@@ -824,6 +825,7 @@ describe("App Router Production server (startProdServer)", () => {
       // The PR deliberately drops `as="style"` — `as` is only valid on
       // rel="preload" per the HTML spec, not on rel="stylesheet".
       expect(tag).not.toContain('as="style"');
+      expect(tag).toMatch(/\bcrossorigin(?:="")?/i);
     }
   });
 
@@ -965,6 +967,7 @@ describe("App Router Production server (startProdServer)", () => {
       expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
       for (const tag of dynamicScriptPreloads) {
         expect(tag).toMatch(/\bhref="\/cdn\/_next\/static\/chunks\/[^"]+\.js"/);
+        expect(tag).toMatch(/\bcrossorigin/i);
       }
     } finally {
       assetPrefixServer?.close();
@@ -980,104 +983,160 @@ describe("App Router Production server (startProdServer)", () => {
     }
   }, 60000);
 
-  it("preloads rendered next/dynamic chunks with absolute assetPrefix and the CSP nonce", async () => {
-    const tmpDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "vinext-app-dynamic-absolute-asset-prefix-"),
-    );
-    const fixtureRoot = path.join(tmpDir, "fixture");
-    const prefixedOutDir = path.join(fixtureRoot, "dist");
-    let assetPrefixServer: import("node:http").Server | undefined;
-    const previousPagesClientAssets = getPagesClientAssets();
-    const prodGlobalKeys = [
-      "__vite_rsc_client_require__",
-      "__vite_rsc_require__",
-      "__vite_rsc_server_require__",
-      "__webpack_chunk_load__",
-      "__webpack_require__",
-    ];
-    const previousGlobals = new Map(
-      prodGlobalKeys.map((key) => [
-        key,
-        {
-          exists: Reflect.has(globalThis, key),
-          value: Reflect.get(globalThis, key),
-        },
-      ]),
-    );
-
-    try {
-      fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
-      fs.rmSync(prefixedOutDir, { recursive: true, force: true });
-      const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
-      if (!fs.existsSync(fixtureNodeModules)) {
-        fs.symlinkSync(
-          path.resolve(__dirname, "..", "node_modules"),
-          fixtureNodeModules,
-          "junction",
-        );
-      }
-
-      const nextConfigPath = path.join(fixtureRoot, "next.config.ts");
-      const nextConfig = fs.readFileSync(nextConfigPath, "utf-8");
-      fs.writeFileSync(
-        nextConfigPath,
-        nextConfig.replace(
-          "const nextConfig: NextConfig = {",
-          'const nextConfig: NextConfig = {\n  assetPrefix: "https://cdn.example.com",',
-        ),
+  it.each([
+    { label: "anonymous fallback", configuredCrossOrigin: undefined, expectedCrossOrigin: "" },
+    {
+      label: "configured credentials",
+      configuredCrossOrigin: "use-credentials",
+      expectedCrossOrigin: "use-credentials",
+    },
+  ])(
+    "applies $label to vinext-managed App Router assets with absolute assetPrefix",
+    async ({ configuredCrossOrigin, expectedCrossOrigin }) => {
+      // Ported from Next.js: test/e2e/app-dir/app-config-crossorigin/index.test.ts
+      // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-config-crossorigin/index.test.ts
+      const tmpDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "vinext-app-dynamic-absolute-asset-prefix-"),
+      );
+      const fixtureRoot = path.join(tmpDir, "fixture");
+      const prefixedOutDir = path.join(fixtureRoot, "dist");
+      let assetPrefixServer: import("node:http").Server | undefined;
+      const previousPagesClientAssets = getPagesClientAssets();
+      const prodGlobalKeys = [
+        "__vite_rsc_client_require__",
+        "__vite_rsc_require__",
+        "__vite_rsc_server_require__",
+        "__webpack_chunk_load__",
+        "__webpack_require__",
+      ];
+      const previousGlobals = new Map(
+        prodGlobalKeys.map((key) => [
+          key,
+          {
+            exists: Reflect.has(globalThis, key),
+            value: Reflect.get(globalThis, key),
+          },
+        ]),
       );
 
-      const builder = await createBuilder({
-        root: fixtureRoot,
-        configFile: false,
-        plugins: [vinext({ appDir: fixtureRoot })],
-        logLevel: "silent",
-      });
-      await builder.buildApp();
-
-      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      ({ server: assetPrefixServer } = await startProdServer({
-        port: 0,
-        outDir: prefixedOutDir,
-        noCompression: true,
-      }));
-      const addr = assetPrefixServer.address();
-      const port = typeof addr === "object" && addr ? addr.port : 0;
-      const tmpBaseUrl = `http://localhost:${port}`;
-
-      const res = await fetch(`${tmpBaseUrl}/nextjs-compat/dynamic?csp-nonce=1`);
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-security-policy")).toBe(
-        "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
-      );
-
-      const html = await res.text();
-      const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
-        (tag) =>
-          /\bfetchpriority="low"/i.test(tag) &&
-          tag.includes('nonce="vinext-test-nonce"') &&
-          tag.includes("https://cdn.example.com/_next/static/chunks/"),
-      );
-
-      expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
-      for (const tag of dynamicScriptPreloads) {
-        expect(tag).toMatch(
-          /\bhref="https:\/\/cdn\.example\.com\/_next\/static\/chunks\/[^"]+\.js"/,
-        );
-      }
-    } finally {
-      assetPrefixServer?.close();
-      setPagesClientAssets(previousPagesClientAssets);
-      for (const [key, previous] of previousGlobals) {
-        if (previous.exists) {
-          Reflect.set(globalThis, key, previous.value);
-        } else {
-          Reflect.deleteProperty(globalThis, key);
+      try {
+        fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
+        fs.rmSync(prefixedOutDir, { recursive: true, force: true });
+        const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
+        if (!fs.existsSync(fixtureNodeModules)) {
+          fs.symlinkSync(
+            path.resolve(__dirname, "..", "node_modules"),
+            fixtureNodeModules,
+            "junction",
+          );
         }
+
+        const nextConfigPath = path.join(fixtureRoot, "next.config.ts");
+        const nextConfig = fs.readFileSync(nextConfigPath, "utf-8");
+        fs.writeFileSync(
+          nextConfigPath,
+          nextConfig.replace(
+            "const nextConfig: NextConfig = {",
+            'const nextConfig: NextConfig = {\n  assetPrefix: "https://cdn.example.com",' +
+              (configuredCrossOrigin ? `\n  crossOrigin: "${configuredCrossOrigin}",` : ""),
+          ),
+        );
+
+        const builder = await createBuilder({
+          root: fixtureRoot,
+          configFile: false,
+          plugins: [vinext({ appDir: fixtureRoot })],
+          logLevel: "silent",
+        });
+        await builder.buildApp();
+
+        const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+        ({ server: assetPrefixServer } = await startProdServer({
+          port: 0,
+          outDir: prefixedOutDir,
+          noCompression: true,
+        }));
+        const addr = assetPrefixServer.address();
+        const port = typeof addr === "object" && addr ? addr.port : 0;
+        const tmpBaseUrl = `http://localhost:${port}`;
+
+        const res = await fetch(`${tmpBaseUrl}/nextjs-compat/dynamic?csp-nonce=1`);
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-security-policy")).toBe(
+          "script-src 'nonce-vinext-test-nonce' 'strict-dynamic';",
+        );
+
+        const html = await res.text();
+        const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+          (tag) =>
+            /\bfetchpriority="low"/i.test(tag) &&
+            tag.includes('nonce="vinext-test-nonce"') &&
+            tag.includes("https://cdn.example.com/_next/static/chunks/"),
+        );
+
+        expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+        for (const tag of dynamicScriptPreloads) {
+          expect(tag).toMatch(
+            /\bhref="https:\/\/cdn\.example\.com\/_next\/static\/chunks\/[^"]+\.js"/,
+          );
+          expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
+        }
+
+        // @vitejs/plugin-rsc owns additional client-reference hints. This parity port covers
+        // the bootstrap and next/dynamic assets emitted by vinext in this PR.
+        const cdnAssetScripts = (html.match(/<script\b[^>]*>/g) ?? []).filter((tag) =>
+          tag.includes('src="https://cdn.example.com/_next/static/'),
+        );
+        expect(cdnAssetScripts.length).toBeGreaterThan(0);
+        for (const tag of cdnAssetScripts) {
+          expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
+        }
+
+        const bootstrapSrc = /\bsrc="([^"]+)"/.exec(cdnAssetScripts[0])?.[1];
+        expect(bootstrapSrc).toBeTruthy();
+        const bootstrapPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
+          (tag) =>
+            /\brel="modulepreload"/i.test(tag) && tag.includes('href="' + bootstrapSrc + '"'),
+        );
+        expect(bootstrapPreloads.length).toBeGreaterThan(0);
+        for (const tag of bootstrapPreloads) {
+          expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
+        }
+
+        const cssRes = await fetch(
+          `${tmpBaseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`,
+        );
+        expect(cssRes.status).toBe(200);
+        const cssHtml = await cssRes.text();
+        expect(cssHtml).toContain("rsc-imports-client-widget");
+        const dynamicStylesheets = (cssHtml.match(/<link\b[^>]*>/g) ?? []).filter(
+          (tag) =>
+            /\brel="stylesheet"/i.test(tag) &&
+            /\bdata-precedence="dynamic"/i.test(tag) &&
+            tag.includes("https://cdn.example.com/_next/static/"),
+        );
+
+        expect(dynamicStylesheets.length).toBeGreaterThan(0);
+        for (const tag of dynamicStylesheets) {
+          expect(tag).toContain('nonce="vinext-test-nonce"');
+          expect(tag).not.toContain('as="style"');
+          expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
+        }
+      } finally {
+        assetPrefixServer?.close();
+        setPagesClientAssets(previousPagesClientAssets);
+        for (const [key, previous] of previousGlobals) {
+          if (previous.exists) {
+            Reflect.set(globalThis, key, previous.value);
+          } else {
+            Reflect.deleteProperty(globalThis, key);
+          }
+        }
+        fs.rmSync(tmpDir, { recursive: true, force: true });
       }
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  }, 60000);
+    },
+    60000,
+  );
 
   it("does not collapse encoded slashes onto nested routes in production", async () => {
     const encodedRes = await fetch(`${baseUrl}/headers%2Foverride-from-middleware`);
@@ -2254,9 +2313,9 @@ describe("App Router Production server (startProdServer)", () => {
     // resolves through vinext's production manifest below.
     expect(html).toContain('\\"getDate\\":\\"$h');
 
-    // The flight payload embeds each cached function prop as a server
-    // reference whose id is "<12-hex normalised key>#<hoisted export name>".
-    const refIds = [...new Set(html.match(/[0-9a-f]{12}#\$\$hoist_\d+_[A-Za-z0-9_$]+/g) ?? [])];
+    // Cache references keep plugin-rsc's module key while replacing the
+    // derivable export name with an independently keyed alias.
+    const refIds = [...new Set(html.match(/[0-9a-f]{12}#\$\$vinext_cache_[0-9a-f]{64}/g) ?? [])];
     expect(refIds.length).toBe(3);
     const [getDateRefId, getRandomRefId, getMessageRefId] = refIds;
 
@@ -2267,9 +2326,7 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).not.toContain(capturedScopeValue);
     const encryptedBoundArgs = [
       ...new Set(
-        [...html.matchAll(/rsc\.push\("[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/g)].map(
-          (match) => match[1],
-        ),
+        [...html.matchAll(/[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/g)].map((match) => match[1]),
       ),
     ];
     expect(encryptedBoundArgs).toHaveLength(2);
@@ -2336,6 +2393,40 @@ describe("App Router Production server (startProdServer)", () => {
       messageRegExpFor(capturedScopeValue),
     )?.[0];
     expect(message2).toBe(capturedMessage.message);
+  });
+
+  // Next.js gives every server reference a build-secret-derived identity. A
+  // server-only cache helper must not become remotely callable from only its
+  // source path and export name.
+  // https://github.com/vercel/next.js/blob/canary/crates/next-custom-transforms/src/transforms/server_actions.rs
+  it("rejects an offline-derived reference for a hidden cache function", async () => {
+    const anonymous = await fetch(`${baseUrl}/use-cache-hidden-reference?record=victim`);
+    expect(anonymous.status).toBe(200);
+    expect(await anonymous.text()).toContain("FORBIDDEN");
+
+    const victim = await fetch(`${baseUrl}/use-cache-hidden-reference?record=victim`, {
+      headers: { Authorization: "Bearer fixture-victim-session" },
+    });
+    expect(victim.status).toBe(200);
+    expect(await victim.text()).toContain("VICTIM_PRIVATE_RECORD");
+
+    const predictableReferenceKey = createHash("sha256")
+      .update("app/use-cache-hidden-reference/records.ts")
+      .digest("hex")
+      .slice(0, 12);
+    const response = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "x-rsc-action": `${predictableReferenceKey}#readRecord`,
+      },
+      body: JSON.stringify(["victim"]),
+    });
+    const payload = await response.text();
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(payload).not.toContain("VICTIM_PRIVATE_RECORD");
   });
 
   it("middleware request header overrides still apply after middleware calls headers() first", async () => {

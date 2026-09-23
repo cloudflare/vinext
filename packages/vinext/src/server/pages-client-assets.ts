@@ -1,9 +1,14 @@
+export type AssetCrossOrigin = "" | "anonymous" | "use-credentials";
+
 export type PagesClientAssets = {
   clientEntry?: string;
   appBootstrapPreinitModules?: string[];
   ssrManifest?: Record<string, string[]>;
+  cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
+  /** next.config crossOrigin, defaulting to anonymous for Vite's CORS-fetched assets. */
+  crossOrigin?: AssetCrossOrigin;
 };
 
 let pagesClientAssets: PagesClientAssets = {};

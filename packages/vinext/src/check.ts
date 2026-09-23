@@ -8,6 +8,7 @@
 import { detectPackageManager, findDir } from "./utils/project.js";
 import { parseAst, type ESTree } from "vite";
 import fs from "node:fs";
+import ignore, { type Ignore } from "ignore";
 import path from "pathslash";
 
 // ── Support status definitions ─────────────────────────────────────────────
@@ -353,28 +354,69 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
 
 // ── Scanning functions ─────────────────────────────────────────────────────
 
+const IGNORED_DIRECTORIES = new Set(["node_modules", ".next", "dist", ".git"]);
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs"];
+
+type GitignoreRule = { dir: string; matcher: Ignore };
+
+function readGitignoreRule(dir: string): GitignoreRule | undefined {
+  const gitignore = path.join(dir, ".gitignore");
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(gitignore);
+  } catch {
+    return;
+  }
+  if (!stat.isFile()) return;
+  return {
+    dir,
+    matcher: ignore({ ignorecase: false }).add(fs.readFileSync(gitignore, "utf-8")),
+  };
+}
+
+function ancestorGitignoreRules(root: string, dir: string): GitignoreRule[] {
+  const rules: GitignoreRule[] = [];
+  let current = root;
+  for (const segment of path.relative(root, dir).split("/")) {
+    const rule = readGitignoreRule(current);
+    if (rule) rules.push(rule);
+    current = path.join(current, segment);
+    if (isGitignored(current, true, rules)) break;
+  }
+  return rules;
+}
+
+function isGitignored(fullPath: string, isDirectory: boolean, rules: GitignoreRule[]): boolean {
+  let ignored = false;
+  for (const rule of rules) {
+    const relative = path.relative(rule.dir, fullPath) + (isDirectory ? "/" : "");
+    const result = rule.matcher.test(relative);
+    if (result.ignored) ignored = true;
+    else if (result.unignored) ignored = false;
+  }
+  return ignored;
+}
+
 /**
  * Recursively find all source files in a directory.
  */
 function findSourceFiles(
   dir: string,
-  extensions = [".ts", ".tsx", ".js", ".jsx", ".mjs"],
+  extensions = SOURCE_EXTENSIONS,
+  inherited: GitignoreRule[] = [],
 ): string[] {
   const results: string[] = [];
   if (!fs.existsSync(dir)) return results;
 
+  const localRule = readGitignoreRule(dir);
+  const rules = localRule ? [...inherited, localRule] : inherited;
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory() && IGNORED_DIRECTORIES.has(entry.name)) continue;
+    if (isGitignored(fullPath, entry.isDirectory(), rules)) continue;
     if (entry.isDirectory()) {
-      if (
-        entry.name === "node_modules" ||
-        entry.name === ".next" ||
-        entry.name === "dist" ||
-        entry.name === ".git"
-      )
-        continue;
-      results.push(...findSourceFiles(fullPath, extensions));
+      results.push(...findSourceFiles(fullPath, extensions, rules));
     } else if (extensions.some((ext) => entry.name.endsWith(ext))) {
       results.push(fullPath);
     }
@@ -388,12 +430,14 @@ function findSourceFiles(
  * rather than bundled into the vinext application, so reporting their imports
  * or CJS globals as migration blockers produces false positives.
  */
+function isRuntimeSourceFile(file: string): boolean {
+  const basename = path.basename(file);
+  const isTestRunnerConfig = /^(?:jest|playwright|vitest)\.config\.[cm]?[jt]sx?$/.test(basename);
+  return !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(basename) && !isTestRunnerConfig;
+}
+
 function findRuntimeSourceFiles(root: string): string[] {
-  return findSourceFiles(root).filter((file) => {
-    const basename = path.basename(file);
-    const isTestRunnerConfig = /^(?:jest|playwright|vitest)\.config\.[cm]?[jt]sx?$/.test(basename);
-    return !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(basename) && !isTestRunnerConfig;
-  });
+  return findSourceFiles(root).filter(isRuntimeSourceFile);
 }
 
 function isIdentStart(c: string): boolean {
@@ -991,6 +1035,14 @@ export function checkLibraries(root: string): CheckItem[] {
  */
 export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
+  const sourceFiles = findSourceFiles(root);
+  const routeFiles = (dir: string) => {
+    const files = sourceFiles.filter((file) => file.startsWith(`${dir}/`));
+    if (files.length || !fs.lstatSync(dir).isSymbolicLink()) return files;
+    const rules = ancestorGitignoreRules(root, dir);
+    if (isGitignored(dir, true, rules)) return [];
+    return findSourceFiles(dir, SOURCE_EXTENSIONS, rules);
+  };
 
   // Check for pages/ and app/ at root level, then fall back to src/
   const pagesDir = findDir(root, "pages", "src/pages");
@@ -1010,7 +1062,7 @@ export function checkConventions(root: string): CheckItem[] {
     });
 
     // Count pages
-    const pageFiles = findSourceFiles(pagesDir);
+    const pageFiles = routeFiles(pagesDir);
     const pages = pageFiles.filter(
       (f) =>
         !f.includes("/api/") &&
@@ -1040,7 +1092,7 @@ export function checkConventions(root: string): CheckItem[] {
       status: "supported",
     });
 
-    const appFiles = findSourceFiles(appDirPath);
+    const appFiles = routeFiles(appDirPath);
     const pages = appFiles.filter((f) => isAppRouterFile(f, "page"));
     const layouts = appFiles.filter((f) => isAppRouterFile(f, "layout"));
     const routes = appFiles.filter(
@@ -1096,11 +1148,11 @@ export function checkConventions(root: string): CheckItem[] {
   // For __dirname/__filename we use hasFreeCjsGlobal(), a single-pass scanner that
   // skips string literals, template literals, and comments before testing for the
   // identifier, so tokens inside those contexts are never matched.
-  const allSourceFiles = findRuntimeSourceFiles(root);
+  const runtimeSourceFiles = sourceFiles.filter(isRuntimeSourceFile);
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
   const viewTransitionFiles: string[] = [];
   const cjsGlobalFiles: string[] = [];
-  for (const file of allSourceFiles) {
+  for (const file of runtimeSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
     const rel = path.relative(root, file);
 

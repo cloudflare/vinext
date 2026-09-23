@@ -32,6 +32,9 @@ import {
   stripBasePath,
 } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import { reportRequestError } from "./instrumentation.js";
+import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
+import { frameworkTracer } from "./tracer.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -105,6 +108,24 @@ type ExecuteMiddlewareOptions = {
    */
   trailingSlash?: boolean;
 };
+
+function reportProxyError(options: ExecuteMiddlewareOptions, error: unknown): Promise<void> {
+  const url = new URL(options.request.url);
+  return reportRequestError(
+    error,
+    {
+      path: url.pathname + url.search,
+      method: options.request.method,
+      headers: Object.fromEntries(options.request.headers.entries()),
+    },
+    {
+      routerKind: "Pages Router",
+      routePath: "/proxy",
+      routeType: "proxy",
+      revalidateReason: undefined,
+    },
+  );
+}
 
 type RunGeneratedMiddlewareOptions = ExecuteMiddlewareOptions & {
   ctx?: ExecutionContextLike;
@@ -488,9 +509,31 @@ export async function executeMiddleware(
 
   let response: Response | undefined | void;
   try {
-    response = await middlewareFn(nextRequest, fetchEvent);
+    response = await frameworkTracer.runWithDetachedContext(() =>
+      frameworkTracer.withPropagatedContext(options.request.headers, () =>
+        frameworkTracer.trace(
+          {
+            attributes: {
+              "http.method": options.request.method,
+              "http.target": nextRequest.nextUrl.pathname,
+            },
+            name: `middleware ${options.request.method}`,
+            type: "Middleware.execute",
+          },
+          () => middlewareFn(nextRequest, fetchEvent),
+        ),
+      ),
+    );
   } catch (e) {
+    const isDevelopmentNavigationSignal =
+      process.env.NODE_ENV !== "production" && isValidNavigationSignalError(e);
+    if (isDevelopmentNavigationSignal && e instanceof Error) {
+      e.message = `Next.js navigation API is not allowed to be used in ${options.isProxy ? "Proxy" : "Middleware"}.`;
+    }
     console.error("[vinext] Middleware error:", e);
+    if (!isDevelopmentNavigationSignal) {
+      await reportProxyError(options, e);
+    }
     const waitUntilPromises = drainFetchEvent(fetchEvent);
     releaseMiddlewareRequestBody(nextRequest, waitUntilPromises);
     const message = options.includeErrorDetails

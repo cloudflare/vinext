@@ -59,7 +59,6 @@ describe("typed Cloudflare cache config", () => {
     ).toEqual({
       cache: { enabled: true },
       exports: {
-        default: { type: "worker", cache: { enabled: false } },
         CacheMetadata: { type: "durable-object", storage: "sqlite" },
         ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
       },
@@ -90,7 +89,6 @@ describe("typed Cloudflare cache config", () => {
 
     expect(config).toEqual({
       serviceBindingWorker: {
-        type: "worker",
         name: "example-response-store",
         entrypoint: "@cloudflare/workers-response-store/service",
         compatibilityDate: "2026-09-14",
@@ -100,7 +98,6 @@ describe("typed Cloudflare cache config", () => {
         previewUrls: false,
         cache: { enabled: true },
         exports: {
-          default: { type: "worker", cache: { enabled: false } },
           CacheMetadata: { type: "durable-object", storage: "sqlite" },
           ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
         },

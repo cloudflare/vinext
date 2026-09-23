@@ -13,11 +13,10 @@ type WorkerExportFactory<WorkerExport> = {
 
 type ServiceBindingWorkerConfig<
   R2Binding,
-  DurableObjectBinding,
+  DurableObjectBinding extends object,
   WorkerExport,
   DurableObjectExport,
 > = {
-  type: "worker";
   name: string;
   entrypoint: string;
   compatibilityDate: string;
@@ -27,7 +26,6 @@ type ServiceBindingWorkerConfig<
   previewUrls: false;
   cache: { enabled: true };
   exports: {
-    default: WorkerExport;
     CacheMetadata: DurableObjectExport;
     ResponseStoreBinding: WorkerExport;
   };
@@ -40,7 +38,7 @@ type ServiceBindingWorkerConfig<
 type ResponseStoreConfigBindings<
   WorkerBinding,
   R2Binding,
-  DurableObjectBinding,
+  DurableObjectBinding extends object,
   VersionMetadataBinding,
   WorkerExport,
   DurableObjectExport,
@@ -69,7 +67,7 @@ type ResponseStoreConfigExports<WorkerExport, DurableObjectExport> =
 
 type ResponseStoreStorageOptions<
   R2Binding,
-  DurableObjectBinding,
+  DurableObjectBinding extends object,
   VersionMetadataBinding,
   WorkerExport,
   DurableObjectExport,
@@ -92,7 +90,7 @@ type ResponseStoreStorageOptions<
 
 function createResponseStoreWorkerConfig<
   R2Binding,
-  DurableObjectBinding,
+  DurableObjectBinding extends object,
   VersionMetadataBinding,
   WorkerExport,
   DurableObjectExport,
@@ -108,23 +106,30 @@ function createResponseStoreWorkerConfig<
   return {
     cache: { enabled: true as const },
     exports: {
-      default: options.exports.worker({ cache: { enabled: false } }),
-      [CACHE_METADATA_CLASS]: options.exports.durableObject({ storage: "sqlite" }),
+      [CACHE_METADATA_CLASS]: {
+        ...options.exports.durableObject({ storage: "sqlite" }),
+        storage: "sqlite" as const,
+        container: undefined,
+      },
       [RESPONSE_STORE_CACHE_ENTRYPOINT]: options.exports.worker({ cache: { enabled: true } }),
     },
     env: {
       [CACHE_BODIES_BINDING]: options.bindings.r2({ name: options.bucket }),
-      [CACHE_METADATA_BINDING]: options.bindings.durableObject({
+      [CACHE_METADATA_BINDING]: {
+        ...options.bindings.durableObject({
+          worker: options.worker,
+          exportName: CACHE_METADATA_CLASS,
+        }),
         worker: options.worker,
         exportName: CACHE_METADATA_CLASS,
-      }),
+      },
     },
   };
 }
 
 export function createWorkersResponseStoreSelfContainedConfig<
   R2Binding,
-  DurableObjectBinding,
+  DurableObjectBinding extends object,
   VersionMetadataBinding,
   WorkerExport,
   DurableObjectExport,
@@ -150,7 +155,7 @@ export function createWorkersResponseStoreSelfContainedConfig<
 export function createWorkersResponseStoreServiceBindingConfig<
   WorkerBinding,
   R2Binding,
-  DurableObjectBinding,
+  DurableObjectBinding extends object,
   VersionMetadataBinding,
   WorkerExport,
   DurableObjectExport,
@@ -179,7 +184,6 @@ export function createWorkersResponseStoreServiceBindingConfig<
     exports: options.exports,
   });
   const serviceBindingWorker = {
-    type: "worker" as const,
     ...options.worker,
     entrypoint: RESPONSE_STORE_SERVICE_ENTRYPOINT,
     workersDev: false as const,

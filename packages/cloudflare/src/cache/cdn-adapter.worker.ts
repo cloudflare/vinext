@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import "vinext/internal/server/cloudflare-workers-tracing";
 import {
   NEXTJS_CACHE_HEADER,
   VINEXT_PRERENDER_READINESS_PATH,
@@ -13,6 +14,7 @@ import type {
 } from "vinext/server/multi-stage";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
+import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
 import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
 
@@ -400,6 +402,7 @@ function preventResponseCaching(response: Response): Response {
 function markSharedResponseStage(
   response: Response,
   provenanceToken: string,
+  responseStageProps: unknown,
   exposeEntrypointCacheStatus = false,
 ): Response {
   const headers = new Headers(response.headers);
@@ -408,11 +411,15 @@ function markSharedResponseStage(
     SHARED_RESPONSE_STAGE_HEADER,
     cacheStatus ? `${provenanceToken}:${encodeURIComponent(cacheStatus)}` : provenanceToken,
   );
-  return new Response(response.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
+  return traceCachedResponseStart(
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+    cacheStatus,
+    responseStageProps,
+  );
 }
 
 function finalizeGatewayResponse(response: Response, provenanceToken: string): Response {
@@ -690,7 +697,7 @@ export default {
           : stageRequest;
         const response = validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
         return usesSharedCache
-          ? markSharedResponseStage(response, sharedResponseStageProvenance, true)
+          ? markSharedResponseStage(response, sharedResponseStageProvenance, props, true)
           : response;
       } catch (error) {
         if (isResponseStageReadinessRequest(stageRequest)) return responseStageUnavailable();

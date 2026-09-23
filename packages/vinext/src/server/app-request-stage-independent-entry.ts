@@ -4,6 +4,8 @@ import "./server-globals.js";
 import requestRscHandler, {
   __assetPrefix,
   __basePath,
+  __ensureHybridPagesApplication,
+  __ensureInstrumentation,
   __imageAllowedWidths,
   __imageConfig,
   __prerenderSecret,
@@ -37,6 +39,7 @@ import {
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
+  RSC_HEADER,
 } from "./headers.js";
 import { readTrustedPrerenderStateFromHeaders } from "./prerender-route-params.js";
 import { badRequestResponse, notFoundResponse } from "./http-error-responses.js";
@@ -52,6 +55,7 @@ import type {
   VinextRequestStageContext,
 } from "./multi-stage.js";
 import type { WorkerCacheabilityProbeRoute } from "./cacheability-request.js";
+import { consumeFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
 
 export type AppRequestStageEnv = Record<string, unknown>;
 type AppRequestStageContext = ExecutionContextLike & VinextRequestStageContext;
@@ -68,9 +72,22 @@ export function handleRequestStage(
   dispatchResponseStage: DispatchAppWorkerResponseStage,
 ): Promise<Response> {
   const originalRequest = request;
-  return handleRequest(request, env, ctx, dispatchResponseStage, ctx?.assets).then((response) =>
-    applyCdnResponseIdentityHeaders(response, originalRequest),
-  );
+  const handleStage = async () => {
+    await __ensureInstrumentation();
+    const url = new URL(request.url);
+    return traceFrameworkRequest({
+      callback: () =>
+        handleRequest(request, env, ctx, dispatchResponseStage, ctx?.assets).then((response) =>
+          applyCdnResponseIdentityHeaders(response, originalRequest),
+        ),
+      getStatus: (response) => response?.status,
+      headers: request.headers,
+      isRsc: url.pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1",
+      method: request.method,
+      target: url.pathname + url.search,
+    });
+  };
+  return ctx ? runWithExecutionContext(ctx, handleStage) : handleStage();
 }
 
 async function handleRequest(
@@ -110,6 +127,7 @@ async function handleRequest(
     // dispatcher so independently hosted stages are proven ready as a unit.
     // Failed capability checks stay inside the framework-owned namespace.
     if (readinessResponse.status !== 204) return readinessResponse;
+    await __ensureHybridPagesApplication();
   }
 
   let probeMode: VinextCacheabilityProbeMode | null = null;
@@ -175,7 +193,10 @@ async function handleRequest(
     options,
   ) => {
     responseStageDispatched = true;
-    return dispatchResponseStage(stageRequest, props, options);
+    const response = dispatchResponseStage(stageRequest, props, options);
+    return props.kind === "app-full-request"
+      ? response.then(consumeFrameworkRequestRoute)
+      : response;
   };
 
   const handle = () =>

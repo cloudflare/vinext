@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { createRscEmbedTransform } from "../packages/vinext/src/server/app-ssr-stream.js";
 import { normalizeReactFlightPreloadHints } from "../packages/vinext/src/server/rsc-stream-hints.js";
 
 const STYLE_JSON_PADDING = " ".repeat("stylesheet".length - "style".length);
@@ -164,5 +165,76 @@ describe("RSC stream hint helpers", () => {
         ),
       ),
     ).resolves.toBe(payload);
+  });
+
+  it("keeps upstream chunk boundaries instead of emitting one chunk per row", async () => {
+    // Every downstream consumer pays a per-chunk cost, so complete rows in a
+    // chunk must be forwarded together rather than split per Flight row.
+    const encoder = new TextEncoder();
+    const first = encoder.encode('0:D{"name":"page"}\n1:["$","div",null,{}]\n2:I["a",[],"b"]\n');
+    const second = encoder.encode('3:["$","span",null,{}]\n4:"text"\n');
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(first);
+        controller.enqueue(second);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(result.value);
+    }
+
+    expect(chunks).toHaveLength(2);
+    // Chunks without a stylesheet hint are forwarded without copying.
+    expect(chunks[0]).toBe(first);
+    expect(chunks[1]).toBe(second);
+  });
+
+  it("rewrites a hint row split across chunks and forwards the complete prefix", async () => {
+    const payload =
+      '0:D{"name":"page"}\n:HL["/assets/app.css","stylesheet"]\n1:["$","div",null,{}]\n';
+    const splitAt = payload.indexOf("stylesheet");
+    const reader = normalizeReactFlightPreloadHints(
+      streamFromChunks([payload.slice(0, splitAt), payload.slice(splitAt)]),
+    ).getReader();
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      '0:D{"name":"page"}\n',
+      normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n') + '1:["$","div",null,{}]\n',
+    ]);
+  });
+
+  it("keeps binary Flight bodies separate from adjacent text when embedding", async () => {
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode(`0:D{"data":"${"x".repeat(1024)}"}\n1:A1,`);
+    const suffix = encoder.encode('2:["done"]\n');
+    const payload = new Uint8Array(prefix.length + 1 + suffix.length);
+    payload.set(prefix);
+    payload[prefix.length] = 0xff;
+    payload.set(suffix, prefix.length + 1);
+
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(payload);
+        controller.close();
+      },
+    });
+    const embed = createRscEmbedTransform(normalizeReactFlightPreloadHints(source));
+    const scripts = await embed.finalize();
+
+    expect(scripts).toContain('.rsc.push([3,"/w=="])');
+    expect(new Uint8Array(await embed.getRawBuffer())).toEqual(payload);
   });
 });

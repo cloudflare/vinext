@@ -214,6 +214,168 @@ describe("handleMetadataRouteRequest", () => {
     expect(response?.headers.has("x-vinext-metadata-route-cache")).toBe(false);
   });
 
+  it("rejects excluded dynamic metadata images before reading ISR", async () => {
+    let cacheReads = 0;
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/drafts/private/twitter-image",
+      isrRouteKey: (pathname) => pathname,
+      async isrGet() {
+        cacheReads++;
+        throw new Error("excluded metadata routes must not read cached content");
+      },
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "twitter-image",
+          isDynamic: true,
+          filePath: "/tmp/app/drafts/[slug]/twitter-image.tsx",
+          routePrefix: "/drafts/[slug]",
+          routeSegments: ["drafts", "[slug]"],
+          servedUrl: "/drafts/[slug]/twitter-image",
+          patternParts: ["drafts", ":slug", "twitter-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams: () => [{ slug: "public" }],
+            default: () => new Response("private image"),
+          },
+        },
+      ],
+    });
+
+    expect(response?.status).toBe(404);
+    expect(cacheReads).toBe(0);
+  });
+
+  it("keeps double-encoded metadata params distinct from generated params", async () => {
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/drafts/public%20post/twitter-image",
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "twitter-image",
+          isDynamic: true,
+          filePath: "/tmp/app/drafts/[slug]/twitter-image.tsx",
+          routePrefix: "/drafts/[slug]",
+          routeSegments: ["drafts", "[slug]"],
+          servedUrl: "/drafts/[slug]/twitter-image",
+          patternParts: ["drafts", ":slug", "twitter-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams: () => [{ slug: "public post" }],
+            default: () => new Response("encoded alias"),
+          },
+        },
+      ],
+      routePathname: "/drafts/public%2520post/twitter-image",
+    });
+
+    expect(response?.status).toBe(404);
+  });
+
+  it.each([
+    ["public%20post", "public%2520post"],
+    ["public%2Fpost", "public%252Fpost"],
+  ])("uses one decoded param identity for %s", async (generatedSlug, requestSlug) => {
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: `/drafts/${generatedSlug}/twitter-image`,
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "twitter-image",
+          isDynamic: true,
+          filePath: "/tmp/app/drafts/[slug]/twitter-image.tsx",
+          routePrefix: "/drafts/[slug]",
+          routeSegments: ["drafts", "[slug]"],
+          servedUrl: "/drafts/[slug]/twitter-image",
+          patternParts: ["drafts", ":slug", "twitter-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams: () => [{ slug: generatedSlug }],
+            default: async ({ params }: { params: Promise<{ slug: string }> }) =>
+              new Response((await params).slug),
+          },
+        },
+      ],
+      routePathname: `/drafts/${requestSlug}/twitter-image`,
+    });
+
+    expect(response?.status).toBe(200);
+    await expect(response?.text()).resolves.toBe(generatedSlug);
+  });
+
+  it.each([
+    ["undefined", undefined, 200],
+    ["null", null, 200],
+    ["false", false, 200],
+    ["empty array", [], 200],
+    ["omitted", Symbol("omitted"), 404],
+  ])("handles %s optional catch-all static params", async (_label, value, status) => {
+    const staticParams =
+      typeof value === "symbol" ? [{}] : [{ path: value as undefined | null | false | never[] }];
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/docs/twitter-image",
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "twitter-image",
+          isDynamic: true,
+          filePath: "/tmp/app/docs/[[...path]]/twitter-image.tsx",
+          routePrefix: "/docs/[[...path]]",
+          routeSegments: ["docs", "[[...path]]"],
+          servedUrl: "/docs/[[...path]]/twitter-image",
+          patternParts: ["docs", ":path*", "twitter-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams: () => staticParams,
+            default: () => new Response("empty optional"),
+          },
+        },
+      ],
+    });
+
+    expect(response?.status).toBe(status);
+  });
+
+  it.each([
+    ["incomplete", () => [{ slug: "public" }]],
+    ["non-array", () => null],
+  ])("rejects %s metadata static params", async (_label, generateStaticParams) => {
+    let cacheReads = 0;
+    const response = await handleMetadataRouteRequest({
+      cleanPathname: "/teams/private/public/opengraph-image",
+      async isrGet() {
+        cacheReads++;
+        return null;
+      },
+      isrRouteKey: (pathname) => pathname,
+      makeThenableParams,
+      metadataRoutes: [
+        {
+          type: "opengraph-image",
+          isDynamic: true,
+          filePath: "/tmp/app/teams/[team]/[slug]/opengraph-image.tsx",
+          routePrefix: "/teams/[team]/[slug]",
+          routeSegments: ["teams", "[team]", "[slug]"],
+          servedUrl: "/teams/[team]/[slug]/opengraph-image",
+          patternParts: ["teams", ":team", ":slug", "opengraph-image"],
+          contentType: "image/png",
+          module: {
+            dynamicParams: false,
+            generateStaticParams,
+            default: () => new Response("private team"),
+          },
+        },
+      ],
+    });
+
+    expect(response?.status).toBe(404);
+    expect(cacheReads).toBe(0);
+  });
+
   it("does not add an outer metadata cache around shared use-cache functions in development", async () => {
     let metadataCalls = 0;
     let outerReads = 0;

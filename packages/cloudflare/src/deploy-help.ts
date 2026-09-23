@@ -18,6 +18,8 @@ export function formatDeployHelp(): string {
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
     --verbose                Print raw output from internal Cloudflare CLI commands
+    --no-promote             Do not promote the uploaded Worker version to 100%
+                             traffic
     --prerender-all          Pre-render discovered routes after building (future
                              releases will auto-populate the remote cache)
     --prerender-concurrency <count>
@@ -59,8 +61,6 @@ export function formatDeployHelp(): string {
     --dangerously-promote-on-cdn-warm-error
                              Promote even when ordinary staged warmup cannot be
                              verified (never bypasses --warm-cdn-certify)
-    --warm-cdn-no-promote    Leave the warmed Worker version staged at 0% traffic;
-                             production triggers are still applied before warming
     --warm-cdn-promotion-delay <ms>
                              Delay before promotion after warmup (default: 15000)
     --warm-cdn-include-fallbacks
@@ -68,16 +68,18 @@ export function formatDeployHelp(): string {
     -h, --help               Show this help
 
   Experimental:
-    --experimental-tpr               Enable Traffic-aware Pre-Rendering
-    --tpr-coverage <pct>             Traffic coverage target, 0-100 (default: 90)
-    --tpr-limit <count>              Hard cap on pages to pre-render (default: 1000)
-    --tpr-window <hours>             Analytics lookback window in hours (default: 24)
+    --experimental-traffic-aware-warm-cache
+                                     Select CDN pre-warm routes from traffic
+    --traffic-aware-coverage <pct>   Traffic coverage target, 0-100 (default: 90)
+    --traffic-aware-limit <count>    Hard cap on selected routes (default: 1000)
+    --traffic-aware-window <hours>   Analytics lookback window in hours (default: 24)
 
-  TPR (Traffic-aware Pre-Rendering) uses Cloudflare zone analytics to determine
-  which pages get the most traffic and pre-renders them into KV cache during
-  deploy. This feature is experimental and must be explicitly enabled. Requires
-  a custom domain (zone analytics are unavailable on *.workers.dev) and the
-  CLOUDFLARE_API_TOKEN environment variable with Zone.Analytics read permission.
+  Traffic-aware warming uses Cloudflare zone analytics to select the
+  highest-traffic routes, then feeds those routes into the same staged CDN
+  pre-warming flow used by --experimental-warm-cdn-cache. It requires a custom
+  domain and a CLOUDFLARE_API_TOKEN with Zone Analytics read permission.
+
+  Legacy --experimental-tpr and --tpr-* aliases remain supported.
 
   Workers Cache automatically uses tiered caching. Warmed entries can therefore
   be reused outside the data center reached by the warmup request after cache
@@ -92,12 +94,16 @@ export function formatDeployHelp(): string {
     vinext-cloudflare deploy --config dist/server/wrangler.json        Deploy using a generated Wrangler config
     vinext-cloudflare deploy --dry-run                                 Validate setup without building or deploying
     vinext-cloudflare deploy --name my-app                             Deploy with a custom Worker name
+    vinext-cloudflare deploy --no-promote                              Upload a version without changing deployment traffic
     vinext-cloudflare deploy --experimental-warm-cdn-cache              Warm build-discovered paths during version deploy (experimental)
     vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://example.com
                                                                           Warm an explicit production origin
-    vinext-cloudflare deploy --experimental-tpr                        Enable TPR during deploy
-    vinext-cloudflare deploy --experimental-tpr --tpr-coverage 95      Cover 95% of traffic
-    vinext-cloudflare deploy --experimental-tpr --tpr-limit 500        Cap at 500 pages
+    vinext-cloudflare deploy --experimental-traffic-aware-warm-cache
+                                                                          Enable traffic-aware warming
+    vinext-cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-coverage 95
+                                                                          Cover 95% of traffic
+    vinext-cloudflare deploy --experimental-traffic-aware-warm-cache --traffic-aware-limit 500
+                                                                          Cap at 500 routes
 `;
 }
 

@@ -111,6 +111,67 @@ describe("unified Worker fetch handler", () => {
     }
   });
 
+  it("transforms matching multi-stage host entries in dev without enabling staged routing", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-dev-host-entry-"));
+    let server: ViteDevServer | undefined;
+    try {
+      fs.mkdirSync(path.join(root, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(root, "app/page.tsx"),
+        "export default function Page() { return <div>app</div>; }\n",
+      );
+      const hostEntry = "virtual:cloudflare/worker-entry";
+      const stageEntry = path.join(root, "stage-gateway.js");
+      fs.writeFileSync(stageEntry, "export class CacheMetadata {}\n");
+      server = await createServer({
+        root,
+        configFile: false,
+        plugins: [
+          vinext({
+            cache: {
+              cdn: {
+                adapter: "/adapter/cache.js",
+                output: {
+                  entry: stageEntry,
+                  matchesBuild: ({ plugins }) =>
+                    plugins.some(({ name }) => name === "vite-plugin-cloudflare"),
+                  transformHostEntry: ({ code, id }) =>
+                    id.replace(/^\0/, "") === hostEntry
+                      ? `${code}\nexport { CacheMetadata } from ${JSON.stringify(stageEntry)};\n`
+                      : null,
+                  type: "multi-stage",
+                },
+              },
+            },
+          }),
+          {
+            name: "vite-plugin-cloudflare",
+            resolveId(id) {
+              if (id === hostEntry) return `\0${id}`;
+            },
+            load(id) {
+              if (id === `\0${hostEntry}`) return "export default {};";
+            },
+          },
+        ],
+        server: { port: 0 },
+        logLevel: "silent",
+      });
+
+      await expect(server.transformRequest(hostEntry)).resolves.toMatchObject({
+        code: expect.stringContaining("export { CacheMetadata }"),
+      });
+      const workerEntry = await server.pluginContainer.resolveId("virtual:vinext-worker-entry");
+      expect(workerEntry?.id).toBe("\0virtual:vinext-worker-entry");
+      await expect(server.pluginContainer.load(workerEntry!.id)).resolves.toBe(
+        'export { default } from "vinext/server/app-router-entry";',
+      );
+    } finally {
+      await server?.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(["app-router-entry", "pages-router-entry"])(
     "keeps a direct %s main on its ordinary dev entry",
     async (entryName) => {

@@ -82,10 +82,11 @@ import {
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
-import type { AppPageSsrHandler } from "./app-page-stream.js";
+import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
+import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
 import {
   createAppLayoutParamAccessTracker,
@@ -98,6 +99,8 @@ import {
   isRouteCacheabilityProbe,
   markRouteCacheabilityPatternDynamic,
 } from "vinext/shims/cacheability-classification";
+import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
+import { traceResponseStart } from "./response-start-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -113,6 +116,7 @@ type AppPageBackgroundRegenerationErrorContext = {
   routerKind: "App Router";
   routePath: string;
   routeType: "render";
+  shouldReport?: (error: unknown) => boolean;
 };
 type AppPageBackgroundRegenerator = (
   key: string,
@@ -309,7 +313,11 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   cleanPathname: string;
   displayPathname?: string;
   clearRequestContext: () => void;
-  createRscOnErrorHandler: (pathname: string, routePath: string) => AppPageBoundaryOnError;
+  createRscOnErrorHandler: (
+    pathname: string,
+    routePath: string,
+    overrides?: AppRenderErrorContextOverrides,
+  ) => AppPageBoundaryOnError;
   debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
   draftModeSecret: string;
   dynamicConfig?: string;
@@ -627,11 +635,14 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
   const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
+  let response: Response;
   if (!options.pprFallbackShell || !options.pprRuntime) {
-    return await dispatch();
+    response = await dispatch();
+  } else {
+    response = await options.pprRuntime.run(options.pprFallbackShell, dispatch);
   }
 
-  return await options.pprRuntime.run(options.pprFallbackShell, dispatch);
+  return options.isRscRequest ? response : traceResponseStart(response);
 }
 
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
@@ -662,6 +673,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     );
   }
   const isPrerender = process.env.VINEXT_PRERENDER === "1";
+  let traceOperation: "prerender" | "render" = isPrerender ? "prerender" : "render";
   const serveStreamingMetadata = shouldServeStreamingMetadata(
     options.request.headers.get("user-agent") ?? "",
     options.htmlLimitedBots,
@@ -744,7 +756,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       scriptNonce: options.scriptNonce,
     })
   ) {
+    traceOperation = resolveAppPageTraceOperation({
+      hasRequestSearchParams,
+      isDynamicError,
+      isForceStatic,
+      isKnownPrerenderedRoute: options.renderedConcreteUrlPaths !== undefined,
+      isPrerender,
+    });
     const { readAppPageCacheResponse } = await import("./app-page-cache.js");
+    const reportedSsrRevalidationErrors = new Set<unknown>();
+    let revalidationRscErrorTracker: ReturnType<typeof createAppPageRscErrorTracker> | null = null;
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
@@ -837,10 +858,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 serveStreamingMetadata: false,
               },
             );
-            const revalidatedOnError = options.createRscOnErrorHandler(
+            const baseRevalidatedOnError = options.createRscOnErrorHandler(
               options.cleanPathname,
               revalidationTarget.route.pattern,
+              { revalidateReason: "stale" },
             );
+            const baseRevalidatedOnSsrError = options.createRscOnErrorHandler(
+              options.cleanPathname,
+              revalidationTarget.route.pattern,
+              { renderSource: "server-rendering", revalidateReason: "stale" },
+            );
+            revalidationRscErrorTracker = createAppPageRscErrorTracker(baseRevalidatedOnError);
             // No inner runWithFetchDedupe here: this renderFn is already
             // wrapped in runWithFetchDedupe by runAppPageRevalidationContext.
             const rendered = await renderAppPageCacheArtifacts({
@@ -856,7 +884,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               loadSsrHandler: options.loadSsrHandler,
               mountedSlotsHeader: options.mountedSlotsHeader,
               navigationParams: revalidationTarget.navigationParams,
-              onError: revalidatedOnError,
+              isCapturedRscError: revalidationRscErrorTracker.isCapturedError,
+              onError: revalidationRscErrorTracker.onRenderError,
+              onSsrError(error) {
+                reportedSsrRevalidationErrors.add(error);
+                return baseRevalidatedOnSsrError(error, undefined, undefined);
+              },
               reactMaxHeadersLength: options.reactMaxHeadersLength,
               renderToReadableStream: options.renderToReadableStream,
               rootParams: options.rootParams,
@@ -882,6 +915,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           routerKind: "App Router",
           routePath: route.pattern,
           routeType: "render",
+          shouldReport: (error) =>
+            !reportedSsrRevalidationErrors.has(error) &&
+            !revalidationRscErrorTracker?.isCapturedError(error),
         });
       },
     });
@@ -1100,23 +1136,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     discardAppPageRenderState();
   }
 
-  const pageBuildResult = await buildCurrentPageElement();
-  if (pageBuildResult.response) {
-    return pageBuildResult.response;
-  }
-
   const navigationParams = resolveAppPageNavigationParams(
     route,
     options.params,
     options.cleanPathname,
     interceptResult.interceptOpts,
   );
-  options.setNavigationContext({
-    pathname: options.displayPathname ?? options.cleanPathname,
-    searchParams: pageSearchParams,
-    params: navigationParams,
-  });
-
   const layoutClassifications = getEffectiveLayoutClassifications(
     route,
     options.debugClassification,
@@ -1139,10 +1164,19 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     peekDynamicUsage,
     consumeInvalidDynamicUsageError,
     consumeRenderObservationState: consumeAppPageRenderObservationState,
-    createRscOnErrorHandler(pathname, routePath) {
-      return options.createRscOnErrorHandler(pathname, routePath);
+    createRscOnErrorHandler(pathname, routePath, overrides) {
+      return options.createRscOnErrorHandler(pathname, routePath, overrides);
     },
-    element: pageBuildResult.element,
+    async prepareElement() {
+      const pageBuildResult = await buildCurrentPageElement();
+      if (pageBuildResult.response) return { response: pageBuildResult.response };
+      options.setNavigationContext({
+        pathname: options.displayPathname ?? options.cleanPathname,
+        searchParams: pageSearchParams,
+        params: navigationParams,
+      });
+      return { element: pageBuildResult.element };
+    },
     clientReuseManifest: options.clientReuseManifest,
     getDraftModeCookieHeader,
     getFontLinks: options.getFontLinks,
@@ -1172,6 +1206,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isSpeculativePrerender,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
+    traceOperation,
     isrDebug: options.isrDebug,
     isrHtmlKey: options.isrHtmlKey,
     isrRscKey: options.isrRscKey,

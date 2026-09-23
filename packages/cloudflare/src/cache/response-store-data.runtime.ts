@@ -322,24 +322,43 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       throw new Error(`Workers Response Store returned ${response.status}`);
     }
 
-    const entry = deserialize(await response.text());
+    const softTags = [
+      ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
+    ].sort();
+    const getTagExpiration = () => {
+      const key = softTags.join(",");
+      const expirations = this.tagExpirations();
+      let expiration = expirations.get(key);
+      if (!expiration) {
+        expiration = Promise.resolve().then(() => this.store.getTagExpiration(softTags));
+        expirations.set(key, expiration);
+        void expiration.catch(() => {
+          if (expirations.get(key) === expiration) expirations.delete(key);
+        });
+      }
+      return expiration;
+    };
+    const storeStatus = response.headers.get("X-Workers-Response-Store");
+    const body = response.text();
+    const eagerExpiration =
+      softTags.length && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE")
+        ? getTagExpiration().then(
+            (value) => ({ value }) as const,
+            (error: unknown) => ({ error }) as const,
+          )
+        : undefined;
+    const entry = deserialize(await body);
     if (!entry) {
       await this.store.purge({ pathPrefixes: [new URL(request.url).pathname] });
       return null;
     }
 
-    const softTags = [
-      ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
-    ].sort();
     if (softTags.length) {
-      const key = softTags.join(",");
-      const expirations = this.tagExpirations();
-      let expiration = expirations.get(key);
-      if (!expiration) {
-        expiration = this.store.getTagExpiration(softTags);
-        expirations.set(key, expiration);
-      }
-      if ((await expiration) >= entry.lastModified) return null;
+      const expiration = eagerExpiration
+        ? await eagerExpiration
+        : { value: await getTagExpiration() };
+      if ("error" in expiration) throw expiration.error;
+      if (expiration.value >= entry.lastModified) return null;
     }
 
     const age = Date.now() - entry.lastModified;

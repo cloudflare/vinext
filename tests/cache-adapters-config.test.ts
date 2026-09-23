@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, expectTypeOf } from "vite-plus/test";
 import {
   findVinextCacheConfigInPlugins,
   generateCdnCacheAdapterModule,
@@ -22,6 +22,7 @@ import {
   hasUncachedRequestRouting,
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
+  cacheWarmupStatusSource,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
   VIRTUAL_CACHE_ADAPTERS,
   VIRTUAL_CDN_CACHE_ADAPTER,
@@ -37,7 +38,10 @@ import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js"
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import { kvDataAdapter } from "../packages/cloudflare/src/cache/kv-data-adapter.js";
 import { cdnAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.js";
-import { responseStoreAdapter } from "../packages/cloudflare/src/cache/response-store-adapter.js";
+import {
+  responseStoreAdapter,
+  type ResponseStoreAdapterOptions,
+} from "../packages/cloudflare/src/cache/response-store-adapter.js";
 import createKvDataCacheAdapter, {
   KVCacheHandler,
 } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
@@ -106,6 +110,27 @@ describe("generateCacheAdaptersModule", () => {
     );
   });
 
+  it("adds build identity to the origin-managed adapter when the data adapter provides it", () => {
+    const code = generateCacheAdaptersModule({
+      data: {
+        adapter: "my-data-adapter",
+        capabilities: { buildIdentity: "response-header" },
+      },
+    });
+
+    expect(code).toContain('import { DefaultCdnCacheAdapter } from "vinext/shims/cdn-cache";');
+    expect(code).toContain(
+      "process.env.__VINEXT_RSC_BUILD_IDENTITY || process.env.__VINEXT_BUILD_ID",
+    );
+    expect(code).toContain("registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter(");
+    expect(code.indexOf("registerDataCacheHandler(")).toBeLessThan(
+      code.indexOf("registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter("),
+    );
+    expect(code.indexOf("registerCdnCacheAdapter(() => new DefaultCdnCacheAdapter(")).toBeLessThan(
+      code.indexOf("  } catch (error) {"),
+    );
+  });
+
   it("wires both adapters and guards against double registration", () => {
     const code = generateCacheAdaptersModule({
       cdn: { adapter: "@vinext/cloudflare/cache/cdn-adapter" },
@@ -124,11 +149,12 @@ describe("generateCacheAdaptersModule", () => {
 
   it("advertises data-cache availability without importing it into the request stage", () => {
     const code = generateCdnCacheAdapterModule({
-      cdn: { adapter: "my-cdn-adapter" },
+      cdn: { adapter: "my-cdn-adapter", options: { shards: 16 } },
       data: { adapter: "my-data-adapter" },
     });
 
     expect(code).toContain("export const hasConfiguredDataCache = true;");
+    expect(code).toContain('export const configuredCdnCacheAdapterOptions = {"shards":16};');
     expect(code).toContain('from "my-cdn-adapter"');
     expect(code).not.toContain("my-data-adapter");
   });
@@ -215,6 +241,18 @@ describe("kvDataAdapter builder", () => {
     expect(descriptor.adapter.endsWith("kv-data-adapter.runtime.js")).toBe(true);
     expect(descriptor.options).toEqual({ binding: "MY_KV", ttlSeconds: 60 });
     expect(kvDataAdapter().options).toBeUndefined();
+    expect(descriptor.capabilities).toEqual({
+      buildIdentity: "response-header",
+      warmup: "data-cache",
+    });
+    expect(hasBuildIdentityResponseHeader({ data: descriptor })).toBe(true);
+    expect(cacheWarmupStatusSource({ data: descriptor })).toBe("data-cache");
+    expect(
+      hasBuildIdentityResponseHeader({
+        cdn: { adapter: "custom-cdn" },
+        data: descriptor,
+      }),
+    ).toBe(false);
   });
 
   it("validates the binding option at config time", () => {
@@ -452,6 +490,37 @@ describe("responseStoreAdapter builder", () => {
       }),
     ).toBe(
       `export default {};\nexport { CacheMetadata, ResponseStoreBinding, ResponseStoreRevalidator } from ${JSON.stringify(descriptor.cdn.output.entry)};\n`,
+    );
+  });
+
+  it("opts into metadata sharding explicitly", () => {
+    const descriptor = responseStoreAdapter({ shards: 16 });
+    expect(descriptor.cdn.options).toEqual({ shards: 16 });
+    expect(descriptor.data.options).toEqual({ shards: 16 });
+    expect(responseStoreAdapter().cdn.options).toBeUndefined();
+    expect(() => responseStoreAdapter({ shards: 1 })).toThrow(
+      "Workers Response Store shards must be an integer greater than 1",
+    );
+  });
+
+  it.each(["service-binding", "self-contained"] as const)(
+    "passes a metadata location hint into %s mode",
+    (mode) => {
+      const descriptor = responseStoreAdapter({ locationHint: "weur", mode });
+      expect(descriptor.cdn.options).toEqual({ locationHint: "weur" });
+      expect(descriptor.data.options).toEqual({ locationHint: "weur" });
+      expectTypeOf(descriptor.cdn.options?.locationHint).toEqualTypeOf<
+        ResponseStoreAdapterOptions["locationHint"]
+      >();
+    },
+  );
+
+  it("rejects unsupported metadata location hints", () => {
+    expect(() => responseStoreAdapter({ locationHint: "moon" as never })).toThrow(
+      "Workers Response Store locationHint is not supported by Cloudflare",
+    );
+    expect(() => responseStoreAdapter({ locationHint: ["weur"] as never })).toThrow(
+      "Workers Response Store locationHint is not supported by Cloudflare",
     );
   });
 });

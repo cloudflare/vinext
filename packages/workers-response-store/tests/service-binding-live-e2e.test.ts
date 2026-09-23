@@ -5,6 +5,7 @@ import { test } from "vitest";
 const base =
   process.env.LIVE_RESPONSE_STORE_SERVICE_BASE ??
   "https://vinext-workers-response-store-service-client-poc.vinext.workers.dev";
+const EDGE_PURGE_ACCEPTED = process.env.LIVE_RESPONSE_STORE_EDGE_PURGE_MODE !== "disabled";
 
 type PutOptions = {
   cacheControl?: string;
@@ -84,7 +85,7 @@ test("manual refresh loops back into the user Worker without a reverse binding",
   assert.equal(refresh.status, 200);
   assert.deepEqual(await refresh.json(), {
     backingStoreUpdated: true,
-    edgePurgeAccepted: true,
+    edgePurgeAccepted: EDGE_PURGE_ACCEPTED,
   });
 
   const response = await eventually(async () => {

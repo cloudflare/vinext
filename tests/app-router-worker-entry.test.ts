@@ -28,6 +28,9 @@ function workerEntryVirtualModules(): Plugin {
       `
 export const __assetPrefix = "";
 export const __basePath = "";
+export let hybridInitializationCalls = 0;
+export function __ensureHybridPagesApplication() { hybridInitializationCalls++; }
+export function __ensureInstrumentation() {}
 export const __imageAllowedWidths = [];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
@@ -42,6 +45,9 @@ export default async function rscHandler(request) {
       `
 export const __assetPrefix = "";
 export const __basePath = "";
+export let hybridInitializationCalls = 0;
+export function __ensureHybridPagesApplication() { hybridInitializationCalls++; }
+export function __ensureInstrumentation() {}
 export const __imageAllowedWidths = [];
 export const __imageConfig = {};
 export const __prerenderSecret = "worker-prerender-secret";
@@ -133,7 +139,6 @@ describe("App Router Production server worker entry compatibility", () => {
           dispatchResponseStage: () => Promise<Response>,
         ): Promise<Response>;
       };
-
       const response = await entry.handleRequestStage(
         new Request("https://example.com/middleware-data-cache"),
         undefined,
@@ -357,6 +362,9 @@ describe("App Router Production server worker entry compatibility", () => {
           ) => Promise<Response>,
         ): Promise<Response>;
       };
+      const requestEntry = (await server.ssrLoadModule("virtual:vinext-app-request-entry")) as {
+        hybridInitializationCalls: number;
+      };
       const env = { binding: "value" };
       const rejected = await entry.handleRequestStage(
         new Request("https://example.com/rejected", {
@@ -378,7 +386,11 @@ describe("App Router Production server worker entry compatibility", () => {
         async () =>
           new Response(null, {
             status: 204,
-            headers: { "Cache-Control": "no-store", "X-Vinext-Prerender-Readiness": "1" },
+            headers: {
+              "Cache-Control": "no-store",
+              "X-Vinext-Prerender-Readiness": "1",
+              "X-Vinext-Trace-Route": "/application-owned",
+            },
           }),
       );
       const readiness = await entry.handleRequestStage(
@@ -399,6 +411,8 @@ describe("App Router Production server worker entry compatibility", () => {
       expect(await accepted.text()).toBe("ok");
       expect(accepted.headers.get("X-Test-Build-Identity")).toBe("build-a");
       expect(readiness.status).toBe(204);
+      expect(requestEntry.hybridInitializationCalls).toBe(1);
+      expect(readiness.headers.get("X-Vinext-Trace-Route")).toBe("/application-owned");
       expect(readinessDispatch).toHaveBeenCalledWith(
         expect.any(Request),
         { kind: "readiness-test" },
@@ -457,6 +471,9 @@ describe("App Router Production server worker entry compatibility", () => {
           ): Promise<Response>;
         };
       };
+      const rscEntry = (await server.ssrLoadModule("virtual:vinext-rsc-entry")) as {
+        hybridInitializationCalls: number;
+      };
       const routeParams = encodeURIComponent(
         JSON.stringify({
           fallbackParamNames: ["slug"],
@@ -509,10 +526,12 @@ describe("App Router Production server worker entry compatibility", () => {
 
       expect(capturedRequests).toHaveLength(2);
       expect(readiness.status).toBe(204);
+      expect(rscEntry.hybridInitializationCalls).toBe(1);
       expect(readiness.headers.get("cache-control")).toBe("no-store");
       expect(readiness.headers.get("x-vinext-prerender-readiness")).toBe("1");
       expect(unauthorizedReadiness.status).toBe(404);
       expect(unauthorizedReadiness.headers.get("cache-control")).toBe("no-store");
+      expect(rscEntry.hybridInitializationCalls).toBe(1);
       expect(capturedRequests[0].headers.get("x-vinext-prerender-secret")).toBeNull();
       expect(capturedRequests[0].headers.get("x-vinext-prerender-route-params")).toBeNull();
       expect(capturedRequests[1].headers.get("x-vinext-prerender-secret")).toBeNull();

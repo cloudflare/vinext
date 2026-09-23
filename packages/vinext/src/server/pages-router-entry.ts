@@ -20,6 +20,12 @@ import {
 } from "./headers.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { validateCdnRequest } from "./cache-control.js";
+import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
+
+// @ts-expect-error -- virtual modules resolved by vinext at build time
+import { __ensureInstrumentation as ensureRequestStageInstrumentation } from "virtual:vinext-pages-request-entry";
+// @ts-expect-error -- virtual modules resolved by vinext at build time
+import { __ensureInstrumentation as ensureResponseStageInstrumentation } from "virtual:vinext-pages-response-entry";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
@@ -46,6 +52,12 @@ async function handleSingleStageRequest(
   );
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   if (readinessResponse) {
+    if (readinessResponse.status === 204) {
+      await Promise.all([
+        ensureRequestStageInstrumentation(),
+        ensureResponseStageInstrumentation(),
+      ]);
+    }
     return (await validateCdnRequest(request)) ?? readinessResponse;
   }
 
@@ -104,6 +116,9 @@ export default {
     env?: PagesWorkerEnv,
     ctx?: PagesWorkerExecutionContext,
   ): Promise<Response> {
-    return handleSingleStageRequest(request, env, ctx);
+    const handle = () => handleSingleStageRequest(request, env, ctx);
+    return ctx && typeof ctx.waitUntil === "function"
+      ? runWithExecutionContext(ctx as ExecutionContextLike, handle)
+      : handle();
   },
 };

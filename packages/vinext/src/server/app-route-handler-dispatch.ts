@@ -59,6 +59,11 @@ import { buildPageCacheTags } from "./implicit-tags.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { reportRequestError } from "./instrumentation.js";
 import { applyCdnResponseBuildIdentityHeaders } from "./cache-control.js";
+import {
+  isOnDemandRevalidateRequest,
+  PRERENDER_REVALIDATE_HEADER,
+} from "./revalidation-request.js";
+import { traceResponseStart } from "./response-start-tracing.js";
 
 type AppRouteHandlerDispatchRoute = {
   pattern: string;
@@ -80,6 +85,7 @@ type RouteHandlerBackgroundRegenerator = (
 
 type DispatchAppRouteHandlerOptions = {
   basePath?: string;
+  bypassSharedCache?: boolean;
   cleanPathname: string;
   clearRequestContext: () => void;
   draftModeSecret: string;
@@ -172,6 +178,12 @@ async function runInRouteHandlerRevalidationContext(
 export async function dispatchAppRouteHandler(
   options: DispatchAppRouteHandlerOptions,
 ): Promise<Response> {
+  return traceResponseStart(await dispatchAppRouteHandlerImpl(options));
+}
+
+async function dispatchAppRouteHandlerImpl(
+  options: DispatchAppRouteHandlerOptions,
+): Promise<Response> {
   const { route } = options;
   const handler = route.routeHandler;
   const method = options.request.method.toUpperCase();
@@ -242,6 +254,27 @@ export async function dispatchAppRouteHandler(
   }
 
   const resolvedHandlerFn = isAppRouteHandlerFunction(handlerFn) ? handlerFn : undefined;
+  const shouldReadRouteCache =
+    options.bypassSharedCache !== true &&
+    revalidateSeconds !== null &&
+    !getRouteCacheabilityDynamicReason() &&
+    shouldReadAppRouteHandlerCache({
+      dynamicConfig: handler.dynamic,
+      handlerFn: resolvedHandlerFn,
+      isAutoHead,
+      isKnownDynamic: isKnownDynamicAppRoute(route.pattern),
+      isDraftMode: isDraftMode || hasDraftModeTransition,
+      isProduction,
+      method,
+      revalidateSeconds,
+    });
+  const revalidateReason = isOnDemandRevalidateRequest(
+    options.request.headers.get(PRERENDER_REVALIDATE_HEADER),
+  )
+    ? "on-demand"
+    : shouldReadRouteCache
+      ? "stale"
+      : undefined;
 
   // Route handler fetches observe the handler's segment config the same way
   // page fetches do: upstream's app-route module copies `userland.fetchCache`
@@ -255,21 +288,7 @@ export async function dispatchAppRouteHandler(
   setCurrentFetchRevalidate(configuredRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
-  if (
-    revalidateSeconds !== null &&
-    !getRouteCacheabilityDynamicReason() &&
-    shouldReadAppRouteHandlerCache({
-      dynamicConfig: handler.dynamic,
-      handlerFn: resolvedHandlerFn,
-      isAutoHead,
-      isKnownDynamic: isKnownDynamicAppRoute(route.pattern),
-      isDraftMode: isDraftMode || hasDraftModeTransition,
-      isProduction,
-      method,
-      revalidateSeconds,
-    }) &&
-    resolvedHandlerFn
-  ) {
+  if (shouldReadRouteCache && resolvedHandlerFn) {
     const cachedRouteResponse = await readAppRouteHandlerCacheResponse({
       basePath: options.basePath,
       buildPageCacheTags(pathname, extraTags) {
@@ -329,6 +348,7 @@ export async function dispatchAppRouteHandler(
   if (resolvedHandlerFn) {
     const response = await executeAppRouteHandler({
       basePath: options.basePath,
+      bypassSharedCache: options.bypassSharedCache,
       buildPageCacheTags(pathname, extraTags) {
         return buildRouteHandlerPageCacheTags(pathname, extraTags, route.routeSegments);
       },
@@ -358,11 +378,12 @@ export async function dispatchAppRouteHandler(
       middlewareRequestHeaders: options.middlewareRequestHeaders,
       params: options.params === null ? null : makeThenableParams(options.params),
       reportRequestError(error, request, context) {
-        void reportRequestError(error, request, context);
+        return reportRequestError(error, request, context);
       },
       request: options.request,
       expireSeconds: options.expireSeconds,
       revalidateSeconds,
+      revalidateReason,
       routePattern: route.pattern,
       setHeadersAccessPhase,
     });

@@ -16,6 +16,7 @@ const cacheConfigPath = path.join(
   root,
   "examples/response-store-demo/wrangler.response-store.jsonc",
 );
+const responseStoreShards = 4;
 
 let miniflare: Miniflare;
 let workerVersionId: string;
@@ -47,6 +48,20 @@ async function cacheStatus(pathname: string): Promise<{ body: string; status: st
   const response = await request(pathname);
   assert.equal(response.status, 200);
   return { body: await response.text(), status: response.headers.get("x-vinext-cache") };
+}
+
+async function metadataEntries(): Promise<unknown[][]> {
+  const namespace = await miniflare.getDurableObjectNamespace("CACHE_METADATA", "cache");
+  return Promise.all(
+    Array.from({ length: responseStoreShards }, async (_, index) => {
+      const metadata = namespace.getByName(
+        `${workerVersionId}:r2-v1:metadata-shard:${index}-of-${responseStoreShards}`,
+      );
+      const inspect = Reflect.get(metadata, "inspect");
+      assert.equal(typeof inspect, "function");
+      return (await Reflect.apply(inspect, metadata, [])) as unknown[];
+    }),
+  );
 }
 
 beforeEach(async () => {
@@ -92,6 +107,65 @@ afterEach(async () => {
 });
 
 describe("Cloudflare Workers Response Store adapter", () => {
+  test("builds both deployment modes with their configured metadata location hints", async () => {
+    const serviceBinding = (await modules(appOutput, "index.js"))
+      .map(({ contents }) => contents)
+      .join("\n");
+    const selfContained = (await modules(selfContainedAppOutput, "index.js"))
+      .map(({ contents }) => contents)
+      .join("\n");
+
+    assert.match(serviceBinding, /options:\{locationHint:[`"']wnam[`"'],shards:4\}/);
+    assert.match(selfContained, /options:\{locationHint:[`"']weur[`"'],shards:4\}/);
+  });
+
+  test("does not invoke Response Store for a force-dynamic route", async () => {
+    let responseStoreRequests = 0;
+    const isolated = new Miniflare({
+      workers: [
+        {
+          bindings: {
+            CF_VERSION_METADATA: {
+              id: crypto.randomUUID(),
+              tag: "test",
+              timestamp: new Date().toISOString(),
+            },
+          },
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          modules: await modules(appOutput, "index.js"),
+          name: "app",
+          serviceBindings: {
+            ASSETS: async () => new Response(null, { status: 404 }),
+            RESPONSE_STORE: async () => {
+              responseStoreRequests++;
+              return new Response("Response Store must not be invoked", { status: 500 });
+            },
+          },
+        },
+      ],
+    } satisfies MiniflareOptions);
+
+    try {
+      const first = await isolated.dispatchFetch("https://app.test/force-dynamic");
+      const firstBody = await first.text();
+      const second = await isolated.dispatchFetch("https://app.test/force-dynamic");
+      const secondBody = await second.text();
+
+      assert.equal(first.status, 200);
+      assert.equal(second.status, 200);
+      assert.equal(first.headers.get("x-vinext-cache"), "BYPASS");
+      assert.equal(second.headers.get("x-vinext-cache"), "BYPASS");
+      assert.notEqual(
+        htmlValue(firstBody, "force-dynamic-render-id"),
+        htmlValue(secondBody, "force-dynamic-render-id"),
+      );
+      assert.equal(responseStoreRequests, 0);
+    } finally {
+      await isolated.dispose();
+    }
+  });
+
   test("runs cold fills, hits, and SWR loopback in one Worker", async () => {
     const inline = new Miniflare({
       unsafeEphemeralDurableObjects: true,
@@ -172,6 +246,25 @@ describe("Cloudflare Workers Response Store adapter", () => {
       ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
       CacheMetadata: { type: "durable-object", storage: "sqlite" },
     });
+  });
+
+  test("passes adapter sharding into the Response Store", async () => {
+    await Promise.all(
+      Array.from({ length: 16 }, async (_, index) => {
+        const response = await request(`/cached/local?shard=${index}`);
+        assert.equal(response.status, 200);
+        await response.arrayBuffer();
+      }),
+    );
+
+    let counts: number[] = [];
+    for (let attempt = 0; attempt < 50; attempt++) {
+      counts = (await metadataEntries()).map((entries) => entries.length);
+      if (counts.reduce((total, count) => total + count, 0) >= 16) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.ok(counts.reduce((total, count) => total + count, 0) >= 16);
+    assert.ok(counts.filter(Boolean).length > 1, JSON.stringify(counts));
   });
 
   test("validates staged-version warmup requests and exposes build identity", async () => {
@@ -308,11 +401,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
   });
 
   test("returns cold App pages before their bodies complete and publishes them", async () => {
-    const namespace = await miniflare.getDurableObjectNamespace("CACHE_METADATA", "cache");
-    const metadata = namespace.getByName(workerVersionId);
-    const inspect = Reflect.get(metadata, "inspect");
-    assert.equal(typeof inspect, "function");
-    const previousEntries = (await Reflect.apply(inspect, metadata, [])) as unknown[];
+    const previousEntryCount = (await metadataEntries()).flat().length;
     const key = `/streaming-cache?key=${crypto.randomUUID()}`;
     const startedAt = Date.now();
     const first = await request(key);
@@ -330,8 +419,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
 
     let published = false;
     for (let attempt = 0; attempt < 50; attempt++) {
-      const entries = (await Reflect.apply(inspect, metadata, [])) as unknown[];
-      if (entries.length > previousEntries.length) {
+      const entryCount = (await metadataEntries()).flat().length;
+      if (entryCount > previousEntryCount) {
         published = true;
         break;
       }
@@ -355,11 +444,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(second.headers.get("x-vinext-cache"), "HIT");
     assert.equal(await second.text(), await first.text());
 
-    const namespace = await miniflare.getDurableObjectNamespace("CACHE_METADATA", "cache");
-    const metadata = namespace.getByName(workerVersionId);
-    const inspect = Reflect.get(metadata, "inspect");
-    assert.equal(typeof inspect, "function");
-    const serialized = JSON.stringify(await Reflect.apply(inspect, metadata, []));
+    const serialized = JSON.stringify((await metadataEntries()).flat());
     assert.doesNotMatch(serialized, /first-secret|second-secret/);
   });
 
@@ -390,6 +475,18 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const firstPage = await cacheStatus("/use-cache");
     const firstData = htmlValue(firstPage.body, "use-cache-value");
     const firstPageRenders = Number(htmlValue(firstPage.body, "use-cache-route-renders"));
+    const entries = (await metadataEntries()).flat() as Array<{
+      revalidator?: { args?: unknown[]; id?: unknown };
+    }>;
+    const cacheFunctionEntry = entries.find(
+      (entry) => entry.revalidator?.id === "vinext:cache-function",
+    );
+    assert.ok(cacheFunctionEntry);
+    const serializedInvocation = cacheFunctionEntry.revalidator?.args?.[1];
+    assert.ok(typeof serializedInvocation === "string");
+    const invocation = JSON.parse(serializedInvocation) as { referenceId?: unknown };
+    assert.ok(typeof invocation.referenceId === "string");
+    assert.match(invocation.referenceId, /^[0-9a-f]{12}#\$\$vinext_cache_[0-9a-f]{64}$/);
 
     await new Promise((resolve) => setTimeout(resolve, 1_100));
 
@@ -429,7 +526,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const bucket = await miniflare.getR2Bucket("CACHE_BODIES", "cache");
     const objects = await bucket.list();
     assert.equal(objects.objects.length, 1);
-    assert.match(objects.objects[0].key, /\/1$/);
+    assert.match(objects.objects[0].key, /\/r2-v1\/shards-4\/[0-9a-f]{64}\/active$/);
   });
 
   test("never serves a hard-expired use-cache value", async () => {

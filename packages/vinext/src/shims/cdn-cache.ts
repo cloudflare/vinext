@@ -220,6 +220,8 @@ const PENDING_DYNAMIC_CACHE_CONTROL = "no-store, must-revalidate";
 export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = true;
 
+  constructor(private readonly buildIdentity?: string) {}
+
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const { getDataCacheHandler } = await import("./cache-handler.js");
     return getDataCacheHandler().get(key, ctx);
@@ -242,6 +244,10 @@ export class DefaultCdnCacheAdapter implements CdnCacheAdapter {
       return { "Cache-Control": PENDING_DYNAMIC_CACHE_CONTROL };
     }
     return { "Cache-Control": input.cacheControl };
+  }
+
+  buildResponseIdentityHeaders(): CdnResponseHeaders {
+    return this.buildIdentity ? { "X-Vinext-Build-Id": this.buildIdentity } : {};
   }
 
   async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {

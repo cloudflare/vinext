@@ -73,6 +73,26 @@ type TestActionModel = {
   root?: string;
 };
 
+function registerTestServerReference(value: unknown, id: string | null): unknown {
+  if (
+    typeof value !== "function" ||
+    id === null ||
+    typeof Reflect.get(value, "$$id") === "string"
+  ) {
+    return value;
+  }
+  Object.defineProperty(value, "$$id", { configurable: true, value: id });
+  return value;
+}
+
+function getDirectTestActionId(body: FormData): string | null {
+  let actionId: string | null = null;
+  for (const key of body.keys()) {
+    if (key.startsWith("$ACTION_ID_")) actionId = key.slice("$ACTION_ID_".length);
+  }
+  return actionId;
+}
+
 function createMultipartRequest(headers?: HeadersInit): Request {
   const requestHeaders = new Headers({
     "content-type": "multipart/form-data; boundary=vinext",
@@ -123,7 +143,7 @@ function createStreamBodyRequest(body: string, headers?: HeadersInit): Request {
 function createOptions(
   overrides: Partial<HandleProgressiveServerActionRequestOptions> = {},
 ): HandleProgressiveServerActionRequestOptions {
-  return {
+  const options: HandleProgressiveServerActionRequestOptions = {
     actionId: null,
     allowedOrigins: [],
     cleanPathname: "/action-source",
@@ -149,9 +169,14 @@ function createOptions(
     },
     reportRequestError() {},
     request: createMultipartRequest(),
+    routePattern: "/action-source",
     setHeadersAccessPhase,
     ...overrides,
   };
+  const decodeAction = options.decodeAction;
+  options.decodeAction = async (body) =>
+    registerTestServerReference(await decodeAction(body), getDirectTestActionId(body));
+  return options;
 }
 
 type ProgressiveActionRequestResult = Awaited<
@@ -245,7 +270,12 @@ function createRscOptions(
     (({ route: matchedRoute, params, interceptOpts }) =>
       `${matchedRoute.id}:${JSON.stringify(params)}:${interceptOpts?.slot ?? "none"}`);
 
-  return {
+  const options: HandleServerActionRscRequestOptions<
+    string,
+    TestRoute,
+    TestInterceptOptions,
+    TestTemporaryReferences
+  > = {
     actionId: "action-id",
     allowedOrigins: [],
     buildPageElement,
@@ -350,6 +380,10 @@ function createRscOptions(
     currentRoutePathname: overrides.currentRoutePathname ?? cleanPathname,
     matchRoute,
   };
+  const loadServerAction = options.loadServerAction;
+  options.loadServerAction = async (actionId) =>
+    registerTestServerReference(await loadServerAction(actionId), actionId);
+  return options;
 }
 
 describe("app server action execution helpers", () => {
@@ -1050,7 +1084,7 @@ describe("app server action execution helpers", () => {
   it("passes HTTP fallback errors as actionError to be rendered by error boundaries", async () => {
     for (const digest of ["NEXT_NOT_FOUND", "NEXT_HTTP_ERROR_FALLBACK;403"]) {
       const clearContext = vi.fn();
-      const reportedErrors: Error[] = [];
+      const reportedErrors: unknown[] = [];
 
       const result = await handleProgressiveServerActionRequest(
         createOptions({
@@ -1080,8 +1114,10 @@ describe("app server action execution helpers", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/on-request-error/server-action-error/server-action-error.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/on-request-error/server-action-error/server-action-error.test.ts
   it("passes action execution failures as actionError to be rendered by error boundaries", async () => {
-    const reportedErrors: Error[] = [];
+    const reportRequestError = vi.fn();
     // Failure-path renders still need to flush action-set cookies onto the
     // error page response (issue #1483), so the handler captures them here.
     const clearedCookies = vi.fn(() => ["session=1; Path=/"]);
@@ -1099,9 +1135,8 @@ describe("app server action execution helpers", () => {
           };
         },
         getAndClearPendingCookies: clearedCookies,
-        reportRequestError(err) {
-          reportedErrors.push(err);
-        },
+        reportRequestError,
+        routePattern: "/products/[id]",
       }),
     );
 
@@ -1114,7 +1149,17 @@ describe("app server action execution helpers", () => {
       draftCookie: null,
       revalidationKind: 1,
     });
-    expect(reportedErrors.map((e) => e.message)).toEqual(["boom"]);
+    expect(reportRequestError).toHaveBeenCalledWith(
+      error,
+      expect.objectContaining({ path: "/action-source", method: "POST" }),
+      {
+        routerKind: "App Router",
+        routePath: "/products/[id]",
+        routeType: "action",
+        renderSource: "react-server-components-payload",
+        revalidateReason: undefined,
+      },
+    );
     expect(clearedCookies).toHaveBeenCalledTimes(1);
     expect(clearContext).not.toHaveBeenCalled(); // Handled by app-rsc-handler
 
@@ -1152,7 +1197,7 @@ describe("app server action execution helpers", () => {
   // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   it("returns the action-not-found response for progressive action decode misses", async () => {
-    const reportedErrors: Error[] = [];
+    const reportedErrors: unknown[] = [];
     const clearContext = vi.fn();
 
     const response = requireProgressiveActionResponse(
@@ -1226,7 +1271,7 @@ describe("app server action execution helpers", () => {
   // variant did not. See issue #1340.
   it("returns action-not-found when an MPA action targets a page with no server actions", async () => {
     const clearContext = vi.fn();
-    const reportedErrors: Error[] = [];
+    const reportedErrors: unknown[] = [];
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
@@ -1544,11 +1589,13 @@ describe("app server action execution helpers", () => {
     const renderToReadableStream = vi.fn(
       (model: TestActionModel) => new Response(JSON.stringify(model)).body,
     );
+    const createRscOnErrorHandler = vi.fn(() => () => undefined);
 
     const response = await runWithRootParamsScope({ lang: "en" }, () =>
       handleServerActionRscRequest(
         createRscOptions({
           buildPageElement,
+          createRscOnErrorHandler,
           loadServerAction() {
             return Promise.resolve(async () => {
               await Promise.resolve(revalidatePath("/dashboard"));
@@ -1568,6 +1615,15 @@ describe("app server action execution helpers", () => {
       root: "rerendered-page",
       returnValue: { ok: true, data: "updated" },
     });
+    expect(createRscOnErrorHandler).toHaveBeenCalledWith(
+      expect.any(Request),
+      "/dashboard",
+      "/dashboard",
+      {
+        renderSource: "react-server-components-payload",
+        routeType: "action",
+      },
+    );
   });
 
   it("allows deferred post-action render work to read root params", async () => {
@@ -1606,11 +1662,13 @@ describe("app server action execution helpers", () => {
     const renderToReadableStream = vi.fn(
       (model: TestActionModel) => new Response(JSON.stringify(model)).body,
     );
+    const createRscOnErrorHandler = vi.fn(() => () => undefined);
 
     await withEnvVar("__VINEXT_RSC_COMPATIBILITY_ID", "compat-action", async () => {
       const response = await handleServerActionRscRequest(
         createRscOptions({
           buildPageElement,
+          createRscOnErrorHandler,
           loadServerAction() {
             return Promise.resolve(() => {
               deferredRead = deferred.then(() => getRootParam("lang"));
@@ -1629,6 +1687,15 @@ describe("app server action execution helpers", () => {
       expect(response?.headers.get("x-action-revalidated")).toBeNull();
       expect(buildPageElement).not.toHaveBeenCalled();
       expect(setNavigationContext).not.toHaveBeenCalled();
+      expect(createRscOnErrorHandler).toHaveBeenCalledWith(
+        expect.any(Request),
+        "/dashboard",
+        "/dashboard",
+        {
+          renderSource: "react-server-components-payload",
+          routeType: "action",
+        },
+      );
 
       const model = JSON.parse(await response!.text()) as Partial<TestActionModel>;
       expect(model.returnValue).toEqual({ ok: true, data: "action-result" });
@@ -2719,6 +2786,102 @@ describe("app server action execution helpers", () => {
     expect(decodeReply).not.toHaveBeenCalled();
   });
 
+  it("accepts plugin-rsc's hoisted registration for the requested source export", async () => {
+    const action = vi.fn(() => "saved");
+    Object.defineProperty(action, "$$id", {
+      value: "/app/actions.ts#$$hoist_0_save",
+    });
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "/app/actions.ts#save",
+        loadServerAction() {
+          return Promise.resolve(action);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a hoisted registration for a default-exported action", async () => {
+    const action = vi.fn(() => "saved");
+    Object.defineProperty(action, "$$id", {
+      value: "/app/actions.ts#$$hoist_0_save",
+    });
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "/app/actions.ts#default",
+        loadServerAction() {
+          return Promise.resolve(action);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a server action registered under another export alias", async () => {
+    const action = vi.fn(() => "saved");
+    Object.defineProperty(action, "$$id", {
+      value: "/app/actions.ts#submit",
+    });
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "/app/actions.ts#save",
+        loadServerAction() {
+          return Promise.resolve(action);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not mistake a cache-like user export alias for an opaque cache reference", async () => {
+    const action = vi.fn(() => "saved");
+    Object.defineProperty(action, "$$id", {
+      value: "/app/actions.ts#$$vinext_cache_custom",
+    });
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "/app/actions.ts#save",
+        loadServerAction() {
+          return Promise.resolve(action);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(action).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a source export whose registered server-reference id is different", async () => {
+    const hidden = vi.fn(() => "private");
+    Object.defineProperty(hidden, "$$id", {
+      value: `/app/records.ts#$$vinext_cache_${"a".repeat(64)}`,
+    });
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        actionId: "/app/records.ts#readRecord",
+        loadServerAction() {
+          return Promise.resolve(hidden);
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
+    expect(hidden).not.toHaveBeenCalled();
+  });
+
   // Reproduces the prod-build error path where the @vitejs/plugin-rsc server
   // references manifest doesn't include the requested action id. In a build
   // with NO server actions defined at all, the action loader throws
@@ -2729,7 +2892,7 @@ describe("app server action execution helpers", () => {
   // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
   it("returns action-not-found when the prod build has no matching server reference", async () => {
-    const reportedErrors: Error[] = [];
+    const reportedErrors: unknown[] = [];
     const renderToReadableStream = vi.fn();
 
     const response = await handleServerActionRscRequest(
@@ -2754,7 +2917,7 @@ describe("app server action execution helpers", () => {
   });
 
   it("keeps unrelated server action loader failures on the generic error path", async () => {
-    const reportedErrors: Error[] = [];
+    const reportedErrors: unknown[] = [];
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const response = await handleServerActionRscRequest(
@@ -2770,7 +2933,9 @@ describe("app server action execution helpers", () => {
 
     expect(response?.status).toBe(500);
     expect(await response?.text()).toBe("Server action failed: module graph crashed");
-    expect(reportedErrors.map((error) => error.message)).toEqual(["module graph crashed"]);
+    expect(
+      reportedErrors.map((error) => (error instanceof Error ? error.message : String(error))),
+    ).toEqual(["module graph crashed"]);
 
     errorSpy.mockRestore();
   });

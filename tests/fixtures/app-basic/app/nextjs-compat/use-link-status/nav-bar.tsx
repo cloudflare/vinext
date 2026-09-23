@@ -2,6 +2,7 @@
 
 import Link, { useLinkStatus } from "next/link";
 import { useRouter } from "next/navigation";
+import { redirectHome } from "./actions";
 
 function LoadingIndicator({ id }: { id: string }) {
   const { pending } = useLinkStatus();
@@ -24,6 +25,9 @@ export default function NavBar() {
         onClick={() => router.push("/nextjs-compat/use-link-status/post/2")}
       >
         Router push to post 2
+      </button>
+      <button id="server-action-home-btn" onClick={() => redirectHome()}>
+        Server action home
       </button>
     </nav>
   );

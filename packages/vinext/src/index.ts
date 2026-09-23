@@ -12,7 +12,13 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { createIdResolver, createLogger, parseAst, transformWithOxc } from "vite";
+import {
+  createIdResolver,
+  createLogger,
+  isRunnableDevEnvironment,
+  parseAst,
+  transformWithOxc,
+} from "vite";
 import {
   pagesRouter,
   apiRouter,
@@ -99,7 +105,10 @@ import {
   type ResolvedNextConfig,
 } from "./config/next-config.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { mergeServerExternalPackages } from "./config/server-external-packages.js";
+import {
+  findOpenTelemetryPackages,
+  mergeServerExternalPackages,
+} from "./config/server-external-packages.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { validateMiddlewareMatcherPatterns } from "./server/middleware-matcher-pattern.js";
@@ -143,6 +152,7 @@ import { collectInlineCssManifest, injectInlineCssManifestGlobal } from "./build
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { readTrustedRevalidationHostname } from "./server/revalidation-host.js";
 import { installDevStackSourcemapMiddleware } from "./server/dev-stack-sourcemap.js";
+import { traceFrameworkRequest } from "./server/request-tracing.js";
 
 import { invalidateMetadataFileCache, scanMetadataFiles } from "./server/metadata-routes.js";
 
@@ -182,7 +192,10 @@ import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
 import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
-import { createInstrumentationClientTransformPlugin } from "./plugins/instrumentation-client.js";
+import {
+  createInstrumentationClientTransformPlugin,
+  createInstrumentationServerTransformPlugin,
+} from "./plugins/instrumentation-client.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
@@ -685,7 +698,7 @@ function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFrom
       const resolved = await resolve(specifier, cleanModulePath, { skipSelf: true });
       if (!resolved?.id) continue;
 
-      if (isStylesheetSpecifier(specifier)) {
+      if (isStylesheetSpecifier(specifier) || isStylesheetSpecifier(resolved.id)) {
         const asset = resolvedStylesheetToDevManifestAsset(root, resolved.id);
         if (asset) dependencies.push({ type: "stylesheet", asset });
       } else if (
@@ -1083,9 +1096,10 @@ const tsconfigAliasCustomResolver = async function (
 function buildResolveAliasEntries(
   aliasMap: Record<string, string>,
   tsconfigPathAliases: Record<string, string>,
+  explicitAliases: Record<string, string>,
 ): Alias[] {
   return Object.entries(aliasMap).map(([find, replacement]) =>
-    tsconfigPathAliases[find] === replacement
+    Object.hasOwn(tsconfigPathAliases, find) && !Object.hasOwn(explicitAliases, find)
       ? { find, replacement, customResolver: tsconfigAliasCustomResolver }
       : { find, replacement },
   );
@@ -1156,6 +1170,10 @@ const APP_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("app-request-stage-ind
 const APP_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("app-response-stage-entry");
 const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage-entry");
 const PAGES_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("pages-response-stage-entry");
+const WORKER_ROUTER_ENTRIES = new Set([
+  resolveRuntimeEntryModule("app-router-entry"),
+  resolveRuntimeEntryModule("pages-router-entry"),
+]);
 /** Virtual module that registers config-driven cache adapters (see VinextOptions.cache). */
 const RESOLVED_CACHE_ADAPTERS = VIRTUAL_PREFIX + VIRTUAL_CACHE_ADAPTERS;
 /** CDN-only registrar kept out of the data-cache response graph. */
@@ -1475,7 +1493,9 @@ export type VinextOptions = {
 
 type NitroSetupContext = {
   options: {
+    buildDir?: string;
     dev?: boolean;
+    exportConditions?: string[];
     routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
   };
@@ -1519,6 +1539,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
+  let nitroBuildDir: string | undefined;
   let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
@@ -1532,6 +1553,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // initializer guards any unexpected hook ordering.
   let clientAssetsInlineLimit: NonNullable<UserConfig["build"]>["assetsInlineLimit"] = 0;
   let hasCloudflarePlugin = false;
+  let matchedMultiStageOutput: VinextMultiStageOutput | undefined;
   let selectedMultiStageOutput: VinextMultiStageOutput | undefined;
   const isMultiStageServerEnvironment = (environment: {
     config: { build: { ssr?: unknown }; consumer?: string };
@@ -1543,7 +1565,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   };
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
+  let nitroHostRuntime: "node" | "worker" = "node";
   let resolvedServerExternalPackages: string[] = [];
+  let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
@@ -1663,7 +1687,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
-      { prerenderSecret },
+      { nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader, prerenderSecret },
     );
   }
 
@@ -2024,6 +2048,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const commonJsTransform = commonJsPlugin.transform;
   if (typeof commonJsTransform === "function") {
     commonJsPlugin.transform = function environmentAwareCommonJsTransform(code, id, ...args) {
+      const normalizedId = toSlash(stripViteModuleQuery(id));
+      const nitroServicePath =
+        this.environment.name === "nitro" && nitroBuildDir && normalizedId.endsWith("/entry.js")
+          ? path.relative(path.join(canonicalize(nitroBuildDir), "vite/services"), normalizedId)
+          : "";
+      // Nitro service entries are already bundled ESM. Inlined CommonJS
+      // wrappers must not make vite-plugin-commonjs add a second default export.
+      if (/^[^/]+\/entry\.js$/.test(nitroServicePath)) return null;
+
+      // The published runtime and its inlined dependencies were already
+      // converted to ESM by tsdown. Workspace links resolve them outside
+      // node_modules, where vite-plugin-commonjs would otherwise process them
+      // again and can append a duplicate default export.
+      if (isPathInside(__dirname, toSlash(stripViteModuleQuery(id)))) return null;
+
       // The independent optimizeDeps Rolldown build already converted these
       // files to ESM. Running vite-plugin-commonjs over its output would append
       // a second export facade (including a duplicate default export).
@@ -2813,8 +2852,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
         );
         const configuredMultiStageOutput = options.cache?.cdn?.output;
-        selectedMultiStageOutput =
-          !isServeCommand &&
+        matchedMultiStageOutput =
           configuredMultiStageOutput?.type === "multi-stage" &&
           (configuredMultiStageOutput.matchesBuild?.({
             plugins: pluginsFlat as { name?: string }[],
@@ -2822,6 +2860,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             true)
             ? configuredMultiStageOutput
             : undefined;
+        // Dev retains the ordinary single-stage request path, but the host
+        // entry still needs adapter-owned named exports (for example Durable
+        // Object classes declared in Wrangler configuration).
+        selectedMultiStageOutput = isServeCommand ? undefined : matchedMultiStageOutput;
         hasNitroPlugin = pluginsFlat.some(
           (p: unknown) =>
             p &&
@@ -2882,9 +2924,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(nextConfig?.optimizePackageImports ?? []),
         ];
         pagesBundledPackages = new Set(serverTranspilePackages);
+        const openTelemetryPackages = findOpenTelemetryPackages(root);
+        registerNodeOpenTelemetryLoader =
+          env.command === "build" &&
+          !hasCloudflarePlugin &&
+          !hasNitroPlugin &&
+          instrumentationPath !== null &&
+          openTelemetryPackages.includes("@opentelemetry/instrumentation") &&
+          !serverTranspilePackages.includes("@opentelemetry/instrumentation") &&
+          (() => {
+            try {
+              createRequire(path.join(root, "package.json")).resolve(
+                "@opentelemetry/instrumentation/hook.mjs",
+              );
+              return true;
+            } catch {
+              return false;
+            }
+          })();
         const nextServerExternal = mergeServerExternalPackages(
           nextConfig?.serverExternalPackages,
           serverTranspilePackages,
+          openTelemetryPackages,
         );
         resolvedServerExternalPackages = nextServerExternal;
         // Detect if this is a multi-environment build (App Router or Cloudflare).
@@ -2929,6 +2990,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           (typeof config.css?.modules === "object" && "Loader" in config.css.modules)
             ? {}
             : { modules: { Loader: sassComposesLoader.Loader } as CSSModulesOptions };
+
+        // Vite prepends aliases returned by config hooks. Move the existing
+        // explicit entries into our result so they stay ahead of inferred paths,
+        // preserving array order, RegExp matchers, and custom resolvers.
+        const explicitViteAliases = config.resolve?.alias;
+        const userAliasEntries: Alias[] = Array.isArray(explicitViteAliases)
+          ? explicitViteAliases
+          : Object.entries(explicitViteAliases ?? {}).map(([find, replacement]) => ({
+              find,
+              replacement,
+            }));
+        if (config.resolve) {
+          // Vite retains the inline resolve object for server.restart(). Do not
+          // remove aliases from that shared object when arranging this result.
+          config.resolve = { ...config.resolve };
+          delete config.resolve.alias;
+        }
 
         const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
@@ -3155,16 +3233,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // so Vite can transform import.meta.glob("@/...") and import(`@/...`).
             // tsconfig-derived entries carry a customResolver that keeps them out
             // of stylesheet resolution (see tsconfigAliasCustomResolver).
-            alias: buildResolveAliasEntries(
-              {
-                ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
-                ...tsconfigPathAliases,
-                ...nextConfig.aliases,
-                ...nextShimMap,
-                "vinext/server/pages-client-assets": _pagesClientAssetsPath,
-              },
-              tsconfigPathAliases,
-            ),
+            alias: [
+              ...userAliasEntries,
+              ...buildResolveAliasEntries(
+                {
+                  ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
+                  ...tsconfigPathAliases,
+                  ...nextConfig.aliases,
+                  ...nextShimMap,
+                  "vinext/server/pages-client-assets": _pagesClientAssetsPath,
+                },
+                tsconfigPathAliases,
+                { ...nextConfig.aliases, ...nextShimMap },
+              ),
+            ],
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
@@ -3415,6 +3497,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ),
             ]
           : [];
+        // Some build options suppress the dedicated plain-Pages client
+        // environment. During dev, Vite then uses its default client
+        // environment, so seed that optimizer at the top level instead.
+        if (
+          env.command === "serve" &&
+          !hasAppDir &&
+          !hasCloudflarePlugin &&
+          !shouldInjectPlainPagesEnvironments
+        ) {
+          viteConfig.optimizeDeps.include = [...new Set([...incomingInclude, "react-dom/client"])];
+        }
 
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
@@ -3631,6 +3724,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: {
               consumer: "client",
               optimizeDeps: {
+                include: ["react-dom/client"],
                 ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
                 ...depOptimizeNodeEnvOptions,
               },
@@ -3659,6 +3753,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             client: {
               consumer: "client",
               optimizeDeps: {
+                include: ["react-dom/client"],
                 ...(pagesOptimizeEntries.length > 0 ? { entries: pagesOptimizeEntries } : {}),
                 ...depOptimizeNodeEnvOptions,
               },
@@ -3703,7 +3798,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               build: {
                 outDir: "dist/server",
                 ...withBuildBundlerOptions({
-                  input: { index: VIRTUAL_SERVER_ENTRY },
+                  // Nitro dispatches the SSR service as a WinterCG fetch handler;
+                  // the Node server instead consumes the generated context bag.
+                  input: {
+                    index: hasNitroPlugin ? VIRTUAL_WORKER_ENTRY : VIRTUAL_SERVER_ENTRY,
+                  },
                   output: {
                     entryFileNames: "entry.js",
                   },
@@ -4204,6 +4303,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const entry = hasAppDir
               ? "vinext/server/app-router-entry"
               : "vinext/server/pages-router-entry";
+            if (!hasAppDir && hasNitroPlugin) {
+              return [
+                `import worker from ${JSON.stringify(entry)};`,
+                "export default { fetch(request, env, ctx) {",
+                `  return worker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)} });`,
+                "} };",
+              ].join("\n");
+            }
             return `export { default } from ${JSON.stringify(entry)};`;
           }
           if (id === RESOLVED_REQUEST_STAGE) {
@@ -4238,7 +4345,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const metadata: {
               clientEntry: string;
               ssrManifest?: Record<string, string[]>;
-            } = { clientEntry: DEV_PAGES_CLIENT_ENTRY };
+              crossOrigin: "" | "anonymous" | "use-credentials";
+            } = {
+              clientEntry: DEV_PAGES_CLIENT_ENTRY,
+              crossOrigin: nextConfig?.crossOrigin ?? "",
+            };
             const ssrManifest: Record<string, string[]> = {};
             const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
             const pagesRoutes = await pagesRouter(
@@ -4332,7 +4443,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 bodySizeLimitLabel: nextConfig?.serverActionsBodySizeLimitLabel,
                 htmlLimitedBots: nextConfig?.htmlLimitedBots,
                 clientTraceMetadata: nextConfig?.clientTraceMetadata,
+                nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
                 assetPrefix: nextConfig?.assetPrefix,
+                crossOrigin: nextConfig?.crossOrigin,
                 expireTime: nextConfig?.expireTime,
                 reactMaxHeadersLength: nextConfig?.reactMaxHeadersLength,
                 cacheMaxMemorySize: nextConfig?.cacheMaxMemorySize,
@@ -4546,6 +4659,21 @@ export const loadServerActionClient = ${
       },
     },
     {
+      name: "vinext:cloudflare-framework-tracing",
+      transform: {
+        filter: { id: /(?:app|pages)-router-entry\.[cm]?[jt]s(?:\?|$)/ },
+        handler(code, id) {
+          if (!hasCloudflarePlugin) return null;
+          const cleanId = toSlash(stripViteModuleQuery(id));
+          if (!WORKER_ROUTER_ENTRIES.has(cleanId)) return null;
+          return {
+            code: `import "vinext/internal/server/cloudflare-workers-tracing";\n${code}`,
+            map: null,
+          };
+        },
+      },
+    },
+    {
       name: "vinext:pages-client-assets-resolver",
       // The resolver and writer share a build-scoped destination registry.
       // Keep only these focused plugins shared across Vite environments.
@@ -4623,7 +4751,6 @@ export const loadServerActionClient = ${
     },
     {
       name: "vinext:multi-stage-host-entry",
-      apply: "build",
 
       transform: {
         // The adapter owns entry matching. Do not pre-filter by an import
@@ -4634,7 +4761,7 @@ export const loadServerActionClient = ${
         handler(code, id) {
           const environment = this.environment;
           if (!environment || !isMultiStageServerEnvironment(environment)) return null;
-          const transformed = selectedMultiStageOutput?.transformHostEntry?.({ code, id });
+          const transformed = matchedMultiStageOutput?.transformHostEntry?.({ code, id });
           return transformed == null ? null : { code: transformed, map: null };
         },
       },
@@ -4839,7 +4966,14 @@ export const loadServerActionClient = ${
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
-    createInstrumentationClientTransformPlugin(() => instrumentationClientPath),
+    createInstrumentationClientTransformPlugin(
+      () => instrumentationClientPath,
+      () => nextConfig.instrumentationClientRouteManifest,
+    ),
+    createInstrumentationServerTransformPlugin(
+      () => instrumentationPath,
+      () => nextConfig.instrumentationServerValueInjections,
+    ),
     {
       name: "vinext:instrumentation-client-inject",
       enforce: "pre",
@@ -5415,7 +5549,7 @@ export const loadServerActionClient = ${
           if (!hasPagesDir || !handlePagesMiddleware || !isUnsupportedDevPublicRequest(req)) {
             return next();
           }
-          void handlePagesMiddleware(req, res, next);
+          void handlePagesMiddleware(req, res, next).catch(next);
         });
 
         installDevStackSourcemapMiddleware(server);
@@ -5519,32 +5653,27 @@ export const loadServerActionClient = ${
             return false;
           };
 
-          // Run instrumentation.ts register() if present (once at server startup).
-          // Must be inside the returned function so that all environments are
-          // fully registered before getPagesRunner() inspects them.
-          //
-          // App Router: register() is baked into the generated RSC entry as a
-          // top-level await, so it runs inside the Worker process (or RSC Vite
-          // environment) — the same process as request handling. Calling
-          // runInstrumentation() here too would run it a second time in the host
-          // process, which is wrong when @cloudflare/vite-plugin is present.
-          //
-          // Pages Router prod: register() is baked into generateServerEntry() as
-          // a top-level await, so it runs inside the Worker bundle — the same
-          // process as request handling. configureServer() is never called during
-          // a prod build, so there is no double-invocation risk there either.
-          //
-          // We pass getPagesRunner() (createDirectRunner) rather than server so
-          // that this is safe when @cloudflare/vite-plugin is present. That
-          // plugin replaces the SSR environment's hot channel, causing
-          // server.ssrLoadModule() to crash with outsideEmitter. The runner
-          // calls environment.fetchModule() directly and never touches the hot
-          // channel, making it safe with all Vite plugin combinations.
-          if (instrumentationPath && !hasAppDir) {
-            runInstrumentation(getPagesRunner(), instrumentationPath).catch((err) => {
-              console.error("[vinext] Instrumentation error:", err);
-            });
-          }
+          // Environments are ready in this post-configure hook. Initialize before
+          // the first Pages request starts tracing, including in hybrid apps.
+          // App instrumentation must share the request handler's RSC runner for
+          // react-server conditions and module state. Workers initialize in their
+          // own runtime through the generated RSC entry instead of the Node host.
+          const pagesInstrumentationReady = (async () => {
+            if (!instrumentationPath || (hasAppDir && hasCloudflarePlugin)) return;
+            if (hasAppDir) {
+              const environment = server.environments["rsc"];
+              // External runtimes (such as Nitro) initialize in their own entry.
+              if (!isRunnableDevEnvironment(environment)) return;
+              return runInstrumentation(environment.runner, instrumentationPath);
+            } else {
+              return runInstrumentation(getPagesRunner(), instrumentationPath);
+            }
+          })();
+          // Vite's post-configure hook is synchronous. Attach a rejection
+          // handler immediately, then let every Pages request await the original
+          // promise so startup failures are propagated instead of serving
+          // requests without instrumentation.
+          void pagesInstrumentationReady.catch(() => {});
           // App Router request logging in dev server
           //
           // For App Router, the RSC plugin handles requests internally.
@@ -5675,33 +5804,14 @@ export const loadServerActionClient = ${
             });
           }
 
-          handlePagesMiddleware = async (
+          const handlePagesRequest = async (
             req: import("node:http").IncomingMessage,
             res: import("node:http").ServerResponse,
-            next: (err?: unknown) => void,
+            next: (err?: unknown) => void | Promise<void>,
           ): Promise<void> => {
             try {
               let url: string = req.url ?? "/";
               const originalRequestUrl = url;
-
-              // If no pages directory, skip this middleware entirely
-              // (app router is handled by @vitejs/plugin-rsc's built-in middleware)
-              if (!hasPagesDir) return next();
-
-              // Skip Vite internal requests and static files
-              if (
-                url.startsWith("/@") ||
-                url.startsWith("/__vite") ||
-                url.startsWith("/node_modules")
-              ) {
-                return next();
-              }
-
-              // Skip .rsc requests — those are for the App Router RSC handler
-              if (url.split("?")[0].endsWith(".rsc")) {
-                return next();
-              }
-
               // ── Cross-origin request protection (defense-in-depth) ──────
               // The pre-Vite middleware above already blocks cross-origin
               // requests before Vite serves any content. This second check
@@ -6243,7 +6353,10 @@ export const loadServerActionClient = ${
                       nextConfig.images?.qualities,
                     );
                     return encodedLocation
-                      ? new Response(null, { status: 302, headers: { Location: encodedLocation } })
+                      ? new Response(null, {
+                          status: 302,
+                          headers: { Location: encodedLocation },
+                        })
                       : new Response("Invalid image optimization parameters", { status: 400 });
                   }
                   const isRetrievalMethod = req.method === "GET" || req.method === "HEAD";
@@ -6460,12 +6573,76 @@ export const loadServerActionClient = ${
                 );
               }
             } catch (e) {
-              next(e);
+              return next(e);
             }
           };
 
+          handlePagesMiddleware = async (req, res, next): Promise<void> => {
+            const url = req.url ?? "/";
+
+            // If no pages directory, skip this middleware entirely
+            // (app router is handled by @vitejs/plugin-rsc's built-in middleware)
+            if (!hasPagesDir) return next();
+
+            // Skip Vite internal requests and static files
+            if (
+              url.startsWith("/@") ||
+              url.startsWith("/__vite") ||
+              url.startsWith("/node_modules")
+            ) {
+              return next();
+            }
+
+            // Skip .rsc requests — those are for the App Router RSC handler
+            if (url.split("?")[0].endsWith(".rsc")) return next();
+
+            // The Cloudflare dev proxy owns request execution and tracing in
+            // workerd. Do not create a second Node-side request root here.
+            if (hasCloudflarePlugin) return next();
+
+            await pagesInstrumentationReady;
+            const traceHeaders = new Headers();
+            for (const [name, value] of Object.entries(req.headers)) {
+              if (value === undefined || name.startsWith(":")) continue;
+              traceHeaders.set(name, Array.isArray(value) ? value.join(", ") : value);
+            }
+
+            const continueRequest = (error?: unknown): Promise<void> =>
+              new Promise((resolve, reject) => {
+                const finish = () => {
+                  res.off("finish", finish);
+                  res.off("close", finish);
+                  res.off("error", fail);
+                  resolve();
+                };
+                const fail = (responseError: unknown) => {
+                  res.off("finish", finish);
+                  res.off("close", finish);
+                  res.off("error", fail);
+                  reject(responseError);
+                };
+                res.once("finish", finish);
+                res.once("close", finish);
+                res.once("error", fail);
+                try {
+                  next(error);
+                  if (res.writableFinished || res.destroyed) finish();
+                } catch (nextError) {
+                  fail(nextError);
+                }
+              });
+
+            return traceFrameworkRequest({
+              callback: () => handlePagesRequest(req, res, continueRequest),
+              getStatus: () => res.statusCode,
+              headers: traceHeaders,
+              method: req.method ?? "GET",
+              target: url,
+            });
+          };
+
           server.middlewares.use((req, res, next) => {
-            void handlePagesMiddleware!(req, res, next);
+            void handlePagesMiddleware!(req, res, next).catch(next);
           });
         };
       },
@@ -7064,7 +7241,7 @@ export const loadServerActionClient = ${
     // The App Router RSC entry doesn't export vinextConfig (that's a Pages
     // Router pattern), so we write a separate JSON file at build time that
     // prod-server.ts reads at startup for SVG/security header config.
-    // Write BUILD_ID to dist/server/ so post-build tools (TPR, seed-cache) can
+    // Write BUILD_ID to dist/server/ so post-build tools such as seed-cache can
     // read the build identifier without depending on the prerender manifest.
     // Uses writeBundle (not closeBundle) with a one-time write guard so the file
     // is written exactly once per build regardless of how many environments are
@@ -7188,6 +7365,12 @@ export const loadServerActionClient = ${
       name: "vinext:nitro-route-rules",
       nitro: {
         setup: async (nitro: NitroSetupContext) => {
+          nitroBuildDir = nitro.options.buildDir
+            ? path.resolve(root, nitro.options.buildDir)
+            : undefined;
+          nitroHostRuntime = nitro.options.exportConditions?.includes("workerd")
+            ? "worker"
+            : "node";
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
@@ -7420,8 +7603,10 @@ export const loadServerActionClient = ${
               clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
               ssrManifest,
+              cssGraph: runtimeMetadata.cssGraph,
               lazyChunks: runtimeMetadata.lazyChunks ?? undefined,
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
+              crossOrigin: nextConfig.crossOrigin ?? "",
             });
             const buildSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
             if (hasAppDir && hasPagesDir && buildSession) {

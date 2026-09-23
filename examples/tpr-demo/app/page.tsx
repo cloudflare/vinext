@@ -22,12 +22,12 @@ export default function Home() {
           <h1>
             Traffic-aware
             <br />
-            Pre-Rendering
+            Pre-Warming
           </h1>
           <p>
             SSG makes you guess which pages matter. TPR knows. It queries
-            Cloudflare zone analytics at deploy time, pre-renders only the
-            pages that cover 90% of your traffic, and caches them in KV.
+            Cloudflare zone analytics at deploy time, then feeds the routes
+            covering 90% of your traffic into vinext's CDN pre-warmer.
           </p>
         </div>
       </section>

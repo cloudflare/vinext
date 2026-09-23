@@ -599,6 +599,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 ): (...args: TArgs) => Promise<TResult> {
   const cacheVariant = variant ?? "";
   const omitAppPageSearchParamsFromFirstArg = options.appPageDefaultExport === true;
+  // A replayable entry stores this reference ID for Response Store
+  // regeneration. Keep entries produced with an older build's opaque alias
+  // unreachable if a stable deployment/build ID is reused.
+  const cacheFunctionId = options.serverReferenceId
+    ? JSON.stringify([id, options.serverReferenceId])
+    : id;
 
   // In dev mode, skip the shared cache so code changes are immediately
   // visible after HMR. Without this, the MemoryCacheHandler returns stale
@@ -691,14 +697,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           const encoded = await rsc.encodeReply(processedArgs, {
             temporaryReferences: tempRefs,
           });
-          cacheKey = buildUseCacheKey(id, keySeed, await replyToCacheKey(encoded));
+          cacheKey = buildUseCacheKey(cacheFunctionId, keySeed, await replyToCacheKey(encoded));
         } else {
           const argsKey = processedArgs.length > 0 ? stableStringify(processedArgs) : undefined;
-          cacheKey = buildUseCacheKey(id, keySeed, argsKey);
+          cacheKey = buildUseCacheKey(cacheFunctionId, keySeed, argsKey);
         }
       } catch {
         // Non-serializable arguments — run without caching
-        return fn(...callArgs);
+        return (await executeWithContext(fn, callArgs, cacheVariant)).result;
       }
 
       // "use cache: private" uses per-request in-memory cache
@@ -1145,13 +1151,16 @@ async function runCachedFunctionWithContext<
   };
 
   let collectedResult: TCollected | undefined;
-  const result = await cacheContextStorage.run(ctx, async () => {
-    const value = await fn(...args);
-    if (collectResult) {
-      collectedResult = await collectResult(value, ctx);
-    }
-    return value;
-  });
+  const workUnitType: "cache" | "private-cache" = variant === "private" ? "private-cache" : "cache";
+  const result = await workUnitAsyncStorage.run({ type: workUnitType }, () =>
+    cacheContextStorage.run(ctx, async () => {
+      const value = await fn(...args);
+      if (collectResult) {
+        collectedResult = await collectResult(value, ctx);
+      }
+      return value;
+    }),
+  );
 
   if (ctx.invalidDynamicUsageError) {
     throw ctx.invalidDynamicUsageError;

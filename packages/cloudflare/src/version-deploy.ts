@@ -53,7 +53,7 @@ function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readBuildOutputWorkerName(root: string): string {
+export function readBuildOutputWorkerName(root: string): string {
   const configPath = path.join(
     root,
     ".cloudflare",
@@ -61,7 +61,7 @@ function readBuildOutputWorkerName(root: string): string {
     "v0",
     "workers",
     "default",
-    "config.json",
+    "worker.config.json",
   );
   let config: unknown;
   try {
@@ -174,7 +174,7 @@ export function buildCfVersionUploadArgs(
   options: Pick<DeployOptions, "preview" | "env"> & { previewAlias?: string },
 ): CfVersionArgs {
   const mode = options.env || (options.preview ? "preview" : undefined);
-  const args = ["versions", "upload", "--prebuilt"];
+  const args = ["workers", "versions", "create", "--prebuilt"];
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
   if (options.previewAlias) args.push("--preview-alias", options.previewAlias);
   return { args, mode };
@@ -307,8 +307,8 @@ function isMissingWorkerVersionUploadError(error: unknown): boolean {
 
 function withInitialDeployRequiredMessage(): Error {
   const message =
-    "CDN pre-warm needs an existing Cloudflare Worker before it can upload a new Worker version. " +
-    "Run `vinext-cloudflare deploy` once without `--experimental-warm-cdn-cache` to create the Worker, then rerun your pre-warm deploy.";
+    "Version upload needs an existing Cloudflare Worker. " +
+    "Run `vinext-cloudflare deploy` once normally to create the Worker, then rerun the version-based deploy.";
   return new Error(message);
 }
 
@@ -338,6 +338,84 @@ export function parseWranglerDeploymentStatusOutput(output: string): WranglerDep
   return { deploymentId, versions: parseDeploymentVersions(parsed), output };
 }
 
+/** The first entry is the deployment currently serving traffic. */
+export function parseCfDeploymentStatusOutput(output: string): WranglerDeploymentStatus {
+  const parsed = parseJsonObject(output);
+  if (!isRecord(parsed) || !Array.isArray(parsed.deployments) || !parsed.deployments.length) {
+    throw new Error(
+      "Could not parse the active deployment from `cf workers deployments list` output.",
+    );
+  }
+  const current = parsed.deployments[0];
+  const deploymentId = findStringInRecord(current, ["id", "deployment_id", "deploymentId"]);
+  const versions = parseDeploymentVersions(current);
+  if (!deploymentId || !versions.length) {
+    throw new Error(
+      "The active `cf workers deployments list` entry is missing its ID or versions.",
+    );
+  }
+  return { deploymentId, versions, output };
+}
+
+export function runCfDeploymentStatus(
+  root: string,
+  options: { name: string; verbose?: boolean },
+  execute: typeof execFileSync = execFileSync,
+): WranglerDeploymentStatus {
+  return parseCfDeploymentStatusOutput(
+    runCfCommand(
+      root,
+      ["workers", "deployments", "list", "--worker", options.name],
+      execute,
+      options.verbose,
+    ),
+  );
+}
+
+export function runCfVersionDeploy(
+  root: string,
+  versionTraffic: readonly WranglerVersionTraffic[],
+  options: { name: string; verbose?: boolean },
+  _phase: "stage" | "promote-warmed" | "promote-uploaded" = "promote-uploaded",
+  execute: typeof execFileSync = execFileSync,
+): WranglerVersionDeployResult {
+  const versions = versionTraffic.map(({ versionId, percentage }) => ({
+    version_id: versionId,
+    percentage,
+  }));
+  const output = runCfCommand(
+    root,
+    [
+      "workers",
+      "deployments",
+      "create",
+      "--worker",
+      options.name,
+      "--strategy",
+      "percentage",
+      "--versions",
+      JSON.stringify(versions),
+    ],
+    execute,
+    options.verbose,
+  );
+  return { deployedUrl: parseWorkersDevUrl(output), output };
+}
+
+export function runCfTriggersDeploy(
+  root: string,
+  options: { verbose?: boolean },
+  execute: typeof execFileSync = execFileSync,
+): WranglerVersionDeployResult {
+  const output = runCfCommand(
+    root,
+    ["workers", "triggers", "deploy", "--prebuilt"],
+    execute,
+    options.verbose,
+  );
+  return { deployedUrl: parseCdnWarmupDeploymentUrl(output), output };
+}
+
 export function runWranglerVersionUpload(
   root: string,
   options: Pick<DeployOptions, "preview" | "env" | "name" | "config" | "verbose"> & {
@@ -352,9 +430,11 @@ export function runWranglerVersionUpload(
     console.log("\n  Uploading Worker version for production...");
   }
   try {
-    return parseWranglerVersionUploadOutput(
+    const upload = parseWranglerVersionUploadOutput(
       runWranglerCommand(root, args, execute, options.verbose === true),
     );
+    console.log(`  Worker version ID: ${upload.versionId}`);
+    return upload;
   } catch (error) {
     if (isMissingWorkerVersionUploadError(error)) {
       throw withInitialDeployRequiredMessage();

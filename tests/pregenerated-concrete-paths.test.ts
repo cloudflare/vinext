@@ -7,6 +7,7 @@ import {
   normalizePregeneratedPathname,
 } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 import {
+  buildPregeneratedConcretePathTable,
   getPrerenderedConcretePaths,
   isFallbackShellArtifactPath,
 } from "../packages/vinext/src/server/prerender-manifest.js";
@@ -87,6 +88,28 @@ describe("pregenerated concrete paths", () => {
     expect([...getRenderedConcreteUrlPathsForRoute("/:locale/blog/:slug")!]).toEqual([
       "/en/blog/hello world",
     ]);
+  });
+
+  it("retains an empty route-level static params marker", () => {
+    globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS = [["/blog/:slug", []]];
+    initPregeneratedPathsFromGlobals();
+    delete globalThis.__VINEXT_PREGENERATED_CONCRETE_PATHS;
+
+    expect(getRenderedConcreteUrlPathsForRoute("/blog/:slug")).toEqual(new Set());
+  });
+
+  it("builds an empty route marker for on-demand static params", () => {
+    expect(
+      buildPregeneratedConcretePathTable({
+        routes: [
+          {
+            route: "/blog/:slug",
+            status: "skipped",
+            reason: "empty-static-params",
+          },
+        ],
+      }),
+    ).toEqual([["/blog/:slug", []]]);
   });
 
   describe("isFallbackShellArtifactPath", () => {

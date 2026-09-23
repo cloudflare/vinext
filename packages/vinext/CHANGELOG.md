@@ -1,10 +1,38 @@
 # vinext
 
+## 1.0.0-beta.11
+
+### Features
+
+- **Tracing:** emit built-in request, rendering, fetch, metadata, and response spans across the App and Pages Routers (#3296)
+- **Tracing:** add Next.js-compatible OpenTelemetry instrumentation with Sentry and Cloudflare Workers tracing support (#3261)
+- **Response Store:** support for sharded durable objects (#3301)
+
+### Bug Fixes
+
+- **Config:** prioritize explicit aliases over tsconfig paths (#3347)
+- **Cache:** bypass shared lookup for force-dynamic routes (#3346)
+- **Build:** defer user imports until request initialization (#3345)
+- **Cloudflare:** prewarm KV through deployed Workers (#3324)
+- **Dev:** optimize Chakra UI barrel imports (#3317)
+- **Check:** ignore build output from other toolchains (#3231)
+- **Build:** preserve bundled Nitro service exports (#3312)
+- **Server:** align user agent parsing with Next.js (#3202)
+- **Pages:** serve dynamic Pages Router routes under the Nitro preset (#3197) (#3204)
+- **Cache:** expose response store entrypoints in dev (#3306)
+
+### Contributors
+
+- @AhmedElBanna80
+- @hyoban
+- @james-elicx
+- @JamesbbBriz
+
 ## 1.0.0-beta.10
 
 This release includes a new caching library for apps targeting Cloudflare Workers, called Workers Response Store. It is designed to fill the gaps that our other Cloudflare cache adapters struggled with; efficient cache warming, durable backing stores, stable ISR and revalidation, and better internal control of the cache.
 
-To find out more, check out our [caching docs](https://github.com/cloudflare/vinext/blob/main/docs/caching.md). Going forward, the Workers Response Store will be our recommended choice for caching due to the flexibility it provides, and over the coming weeks it shall be stabilised following community feedback.
+To find out more, check out our [caching docs](https://github.com/cloudflare/vinext/blob/main/docs/caching.mdx). Going forward, the Workers Response Store will be our recommended choice for caching due to the flexibility it provides, and over the coming weeks it shall be stabilised following community feedback.
 
 ### Features
 

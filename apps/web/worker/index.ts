@@ -1,44 +1,52 @@
 /** Cloudflare Worker entry point for web-specific APIs and scheduled maintenance. */
+import { tracing } from "cloudflare:workers";
 import handler from "vinext/server/fetch-handler";
 import { addPreviewRobotsHeader, getCanonicalRedirect } from "./seo";
 
 async function sweepPerformanceProfiles(env: Env): Promise<void> {
-  const { results } = await env.DB.prepare(`
-    SELECT object_key
-    FROM performance_profile_objects
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM performance_measurements
-      WHERE profile_object_key = performance_profile_objects.object_key
-    )
-      AND created_at <= datetime('now', '-1 day')
-    ORDER BY created_at
-    LIMIT 100
-  `).all<{ object_key: string }>();
-  for (const { object_key: key } of results) {
-    let deleted;
-    try {
-      deleted = await env.DB.prepare(
-        "DELETE FROM performance_profile_objects WHERE object_key = ? RETURNING object_key",
+  return tracing.enterSpan("vinext.web.sweepPerformanceProfiles", async (span) => {
+    const { results } = await env.DB.prepare(`
+      SELECT object_key
+      FROM performance_profile_objects
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM performance_measurements
+        WHERE profile_object_key = performance_profile_objects.object_key
       )
-        .bind(key)
-        .first<{ object_key: string }>();
-    } catch (error) {
-      console.error("Failed to claim performance profile for sweeping", key, error);
-      continue;
+        AND created_at <= datetime('now', '-1 day')
+      ORDER BY created_at
+      LIMIT 100
+    `).all<{ object_key: string }>();
+    span.setAttribute("vinext.web.sweep.candidate_count", results.length);
+
+    let deletedCount = 0;
+    for (const { object_key: key } of results) {
+      let deleted;
+      try {
+        deleted = await env.DB.prepare(
+          "DELETE FROM performance_profile_objects WHERE object_key = ? RETURNING object_key",
+        )
+          .bind(key)
+          .first<{ object_key: string }>();
+      } catch (error) {
+        console.error("Failed to claim performance profile for sweeping", key, error);
+        continue;
+      }
+      if (!deleted) continue;
+      try {
+        await env.PERFORMANCE_PROFILES.delete(key);
+        deletedCount++;
+      } catch (error) {
+        await env.DB.prepare(
+          "INSERT OR IGNORE INTO performance_profile_objects (object_key) VALUES (?)",
+        )
+          .bind(key)
+          .run();
+        console.error("Failed to sweep performance profile", key, error);
+      }
     }
-    if (!deleted) continue;
-    try {
-      await env.PERFORMANCE_PROFILES.delete(key);
-    } catch (error) {
-      await env.DB.prepare(
-        "INSERT OR IGNORE INTO performance_profile_objects (object_key) VALUES (?)",
-      )
-        .bind(key)
-        .run();
-      console.error("Failed to sweep performance profile", key, error);
-    }
-  }
+    span.setAttribute("vinext.web.sweep.deleted_count", deletedCount);
+  });
 }
 
 async function safeEqual(a: string, b: string): Promise<boolean> {
@@ -145,8 +153,10 @@ export default {
     // Delegate everything else to vinext, forwarding ctx so that
     // ctx.waitUntil() is available to background cache writes and
     // other deferred work via getRequestExecutionContext().
-    const response = await handler.fetch(request, env, ctx);
-    return addPreviewRobotsHeader(request, response);
+    return tracing.enterSpan("vinext.web.request", async () => {
+      const response = await handler.fetch(request, env, ctx);
+      return addPreviewRobotsHeader(request, response);
+    });
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(sweepPerformanceProfiles(env));

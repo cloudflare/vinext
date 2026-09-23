@@ -80,6 +80,19 @@ function createDeferred<T = void>() {
 function createCommonOptions() {
   const waitUntilPromises: Promise<void>[] = [];
   const renderToReadableStream = vi.fn(() => createStream(["flight-data"]));
+  const createRscOnErrorHandler = vi.fn(
+    (
+      _pathname: string,
+      _routePath: string,
+      _overrides?: {
+        renderSource?: string;
+        revalidateReason?: string;
+        routeType?: string;
+      },
+    ): ((error: unknown) => unknown) =>
+      () =>
+        null,
+  );
   const loadSsrHandler = vi.fn(async () => ({
     async handleSsr(
       _rscStream: ReadableStream<Uint8Array>,
@@ -129,6 +142,7 @@ function createCommonOptions() {
 
   return {
     isrSet,
+    createRscOnErrorHandler,
     loadSsrHandler,
     renderErrorBoundaryResponse,
     renderLayoutSpecialError,
@@ -139,9 +153,7 @@ function createCommonOptions() {
       cleanPathname: "/posts/post",
       clearRequestContext() {},
       consumeDynamicUsage: vi.fn(() => false),
-      createRscOnErrorHandler() {
-        return () => null;
-      },
+      createRscOnErrorHandler,
       element: React.createElement("div", null, "page"),
       getDraftModeCookieHeader() {
         return null;
@@ -404,6 +416,10 @@ describe("form state rendering", () => {
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(common.isrSet).not.toHaveBeenCalled();
     await expect(response.text()).resolves.toBe("<html>action state</html>");
+    expect(common.createRscOnErrorHandler).toHaveBeenCalledWith("/posts/post", "/posts/[slug]", {
+      renderSource: "react-server-components-payload",
+      routeType: "action",
+    });
   });
 });
 
@@ -801,6 +817,33 @@ describe("app page render lifecycle", () => {
 
     expect(common.renderErrorBoundaryResponse).not.toHaveBeenCalled();
     await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("wires SSR errors to the server-rendering instrumentation context", async () => {
+    const common = createCommonOptions();
+    const ssrError = new Error("client component failed during SSR");
+    const reportSsrError = vi.fn(() => "ssr-digest");
+    common.createRscOnErrorHandler.mockImplementation((_pathname, _routePath, overrides) =>
+      overrides?.renderSource === "server-rendering" ? reportSsrError : () => null,
+    );
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      async loadSsrHandler() {
+        return {
+          async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+            options?.onSsrError?.(ssrError);
+            return createStream(["<html>page</html>"]);
+          },
+        };
+      },
+    });
+
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(reportSsrError).toHaveBeenCalledWith(ssrError, undefined, undefined);
+    expect(common.createRscOnErrorHandler).toHaveBeenCalledWith("/posts/post", "/posts/[slug]", {
+      renderSource: "server-rendering",
+    });
   });
 
   it("prefers the captured RSC error over an SSR decoder error when rendering the error boundary", async () => {

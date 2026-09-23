@@ -1,9 +1,32 @@
 import { fileURLToPath } from "node:url";
 
+import type { ResponseStoreLocationHint } from "@cloudflare/workers-response-store";
+
 const CLOUDFLARE_WORKER_ENTRY_ID = "virtual:cloudflare/worker-entry";
+const RESPONSE_STORE_LOCATION_HINTS = {
+  afr: true,
+  apac: true,
+  "apac-ne": true,
+  "apac-se": true,
+  eeur: true,
+  enam: true,
+  me: true,
+  oc: true,
+  sam: true,
+  weur: true,
+  wnam: true,
+} satisfies Record<ResponseStoreLocationHint, true>;
 
 export type ResponseStoreAdapterOptions = {
+  /**
+   * Best-effort location for metadata Durable Objects on first creation.
+   * Changing this does not move existing objects and should be treated as a
+   * cache-cold deployment change.
+   */
+  locationHint?: ResponseStoreLocationHint;
   mode?: "self-contained" | "service-binding";
+  /** Split version-scoped metadata across this many Durable Objects. */
+  shards?: number;
 };
 
 /**
@@ -12,10 +35,30 @@ export type ResponseStoreAdapterOptions = {
  * mode keeps the same API and loopback in the application Worker.
  */
 export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) {
+  const locationHint = options.locationHint;
+  if (
+    locationHint !== undefined &&
+    (typeof locationHint !== "string" ||
+      !Object.hasOwn(RESPONSE_STORE_LOCATION_HINTS, locationHint))
+  ) {
+    throw new TypeError("Workers Response Store locationHint is not supported by Cloudflare");
+  }
   const mode = options.mode ?? "service-binding";
   if (mode !== "service-binding" && mode !== "self-contained") {
     throw new Error(`Unknown Workers Response Store mode: ${String(mode)}`);
   }
+  if (
+    options.shards !== undefined &&
+    (!Number.isSafeInteger(options.shards) || options.shards <= 1)
+  ) {
+    throw new TypeError("Workers Response Store shards must be an integer greater than 1");
+  }
+  const configuredOptions: Pick<ResponseStoreAdapterOptions, "locationHint" | "shards"> = {
+    ...(locationHint === undefined ? {} : { locationHint }),
+    ...(options.shards === undefined ? {} : { shards: options.shards }),
+  };
+  const runtimeOptions =
+    Object.keys(configuredOptions).length === 0 ? {} : { options: configuredOptions };
   const workerEntry = fileURLToPath(
     import.meta.resolve(
       mode === "self-contained"
@@ -30,6 +73,7 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
   return {
     cdn: {
       adapter: fileURLToPath(import.meta.resolve("./response-store-cdn.runtime.js")),
+      ...runtimeOptions,
       output: {
         entry: workerEntry,
         matchesBuild({ plugins }: { plugins: readonly { name?: string }[] }) {
@@ -56,6 +100,7 @@ export function responseStoreAdapter(options: ResponseStoreAdapterOptions = {}) 
     },
     data: {
       adapter: fileURLToPath(import.meta.resolve("./response-store-data.runtime.js")),
+      ...runtimeOptions,
     },
   };
 }

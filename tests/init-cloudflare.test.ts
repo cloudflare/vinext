@@ -294,6 +294,28 @@ export default { plugins: [vinext({ cache: responseStoreAdapter({ mode }) }), cl
     expect(output).toContain('responseStoreAdapter({ mode: "self-contained" })');
   });
 
+  it("preserves Response Store sharding when updating its deployment mode", () => {
+    const input = `import vinext from "vinext";
+import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";
+export default { plugins: [vinext({ cache: responseStoreAdapter({ shards: 16 }) })] };
+`;
+    const output = updateViteConfigForCloudflare("vite.config.ts", input, {
+      isAppRouter: false,
+      nativeModulesToStub: [],
+      cache: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "self-contained",
+      },
+    });
+
+    expectValidConfig(output);
+    expect(output).toMatch(
+      /responseStoreAdapter\(\{\s*shards:\s*16\s*,\s*mode:\s*"self-contained"/,
+    );
+  });
+
   it("rejects disabling an existing cache configuration without removing it", () => {
     const input = `import vinext from "vinext";
 import { responseStoreAdapter } from "@vinext/cloudflare/cache/response-store-adapter";

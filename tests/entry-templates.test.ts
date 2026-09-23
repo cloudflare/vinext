@@ -1156,6 +1156,114 @@ describe("App Router entry templates", () => {
     expect(code).toContain('"canUseCanonicalLoadingShell":false');
   });
 
+  it("marks statically known force-dynamic App routes for shared-cache bypass", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-request-routes-"));
+    const staticPage = path.join(tmpDir, "static-page.tsx");
+    const dynamicPage = path.join(tmpDir, "dynamic-page.tsx");
+    const dynamicLayout = path.join(tmpDir, "dynamic-layout.tsx");
+    const dynamicHandler = path.join(tmpDir, "dynamic-route.ts");
+    fs.writeFileSync(staticPage, "export default function Page() { return null; }");
+    fs.writeFileSync(
+      dynamicPage,
+      'export const dynamic = "force-dynamic"; export default function Page() { return null; }',
+    );
+    fs.writeFileSync(
+      dynamicLayout,
+      'export const dynamic = "force-dynamic"; export default function Layout({ children }) { return children; }',
+    );
+    fs.writeFileSync(
+      dynamicHandler,
+      'export const dynamic = "force-dynamic"; export function GET() { return new Response(); }',
+    );
+
+    try {
+      const code = generateAppRequestRscEntry(tmpDir, [
+        { ...minimalAppRoutes[0], pattern: "/static", pagePath: staticPage, layouts: [] },
+        { ...minimalAppRoutes[0], pattern: "/page", pagePath: dynamicPage, layouts: [] },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/layout",
+          pagePath: staticPage,
+          layouts: [dynamicLayout],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/slot-intercept",
+          pagePath: staticPage,
+          layouts: [],
+          parallelSlots: [
+            {
+              key: "modal@slot-intercept/@modal",
+              name: "modal",
+              ownerDir: tmpDir,
+              ownerTreePath: "/slot-intercept",
+              hasPage: false,
+              pagePath: null,
+              defaultPath: null,
+              layoutPath: null,
+              loadingPath: null,
+              errorPath: null,
+              interceptingRoutes: [
+                {
+                  convention: ".",
+                  targetPattern: "/slot-intercept/photo",
+                  sourceMatchPattern: "/slot-intercept",
+                  pagePath: dynamicPage,
+                  layoutPaths: [],
+                  params: [],
+                },
+              ],
+              layoutIndex: 0,
+              routeSegments: null,
+            },
+          ],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/sibling-intercept",
+          pagePath: staticPage,
+          layouts: [],
+          siblingIntercepts: [
+            {
+              convention: ".",
+              targetPattern: "/sibling-intercept/photo",
+              sourceMatchPattern: "/sibling-intercept",
+              pagePath: staticPage,
+              layoutPaths: [dynamicLayout],
+              params: [],
+            },
+          ],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/api",
+          pagePath: null,
+          routePath: dynamicHandler,
+          layouts: [],
+        },
+      ]);
+      const serializedRoutes = code.match(/^const __routes = (.+);$/m)?.[1];
+      expect(serializedRoutes).toBeDefined();
+      const routes = JSON.parse(serializedRoutes!) as Array<{
+        forceDynamic: boolean;
+        pattern: string;
+      }>;
+
+      expect(
+        Object.fromEntries(routes.map((route) => [route.pattern, route.forceDynamic])),
+      ).toEqual({
+        "/api": true,
+        "/layout": true,
+        "/page": true,
+        "/sibling-intercept": true,
+        "/slot-intercept": true,
+        "/static": false,
+      });
+    } finally {
+      fs.rmSync(tmpDir, { force: true, recursive: true });
+    }
+  });
+
   it("preserves exact and generated metadata identities in the App request stage", () => {
     const code = generateAppRequestRscEntry("/tmp/test/app", minimalAppRoutes, null, [
       {
@@ -1330,6 +1438,49 @@ describe("App Router entry templates", () => {
     expect(code).not.toContain("computeRscCacheBustingSearchParam(");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
+  it("registers Node instrumentation before App Router user modules", () => {
+    const instrumentationPath = "/tmp/test/instrumentation.ts";
+    const code = generateRscEntry(
+      "/tmp/test/app",
+      minimalAppRoutes,
+      null,
+      [],
+      null,
+      "",
+      false,
+      { nodeOpenTelemetryLoader: true },
+      instrumentationPath,
+    );
+
+    const loaderIndex = code.indexOf(
+      '__registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs"',
+    );
+    const registrationIndex = code.indexOf("await __ensureInstrumentationRegistered(");
+    const userModuleIndex = code.indexOf("mod_0 = await import(");
+
+    expect(loaderIndex).toBeGreaterThanOrEqual(0);
+    expect(registrationIndex).toBeGreaterThan(loaderIndex);
+    expect(userModuleIndex).toBeGreaterThan(registrationIndex);
+    expect(code).toContain("async function __initializeApplication()");
+    expect(code).toContain("return __applicationInitialization ??= __initializeApplication()");
+    expect(code).not.toContain("const mod_0 = await import(");
+    expect(
+      generateRscEntry(
+        "/tmp/test/app",
+        minimalAppRoutes,
+        null,
+        [],
+        null,
+        "",
+        false,
+        {},
+        instrumentationPath,
+      ),
+    ).not.toContain("node:module");
+  });
+
   it("generateRscEntry only includes the App middleware runtime when middleware exists", () => {
     const withoutMiddleware = generateRscEntry(
       "/tmp/test/app",
@@ -1428,11 +1579,15 @@ describe("App Router entry templates", () => {
 
       expect(withoutMetadataRoutes).not.toContain("metadata-route-response.js");
       expect(withoutMetadataRoutes).not.toContain("file-based-metadata.js");
-      expect(withoutMetadataRoutes).not.toContain("handleMetadataRouteRequest(cleanPathname)");
+      expect(withoutMetadataRoutes).not.toContain(
+        "handleMetadataRouteRequest(cleanPathname, routePathname)",
+      );
       expect(withMetadataRoutes).toContain("metadata-route-response.js");
       expect(withMetadataRoutes).toContain("file-based-metadata.js");
       expect(withMetadataRoutes).toContain("applyFileBasedMetadata: __applyFileBasedMetadata");
-      expect(withMetadataRoutes).toContain("handleMetadataRouteRequest(cleanPathname)");
+      expect(withMetadataRoutes).toContain(
+        "handleMetadataRouteRequest(cleanPathname, routePathname)",
+      );
       expect(withMetadataRoutes).toContain("await __loadMetadataRouteResponse()");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1860,7 +2015,9 @@ describe("Pages Router entry template", () => {
       expect(code).not.toContain("react-dom/server.edge");
       expect(code).not.toContain("createPagesPageHandler");
       expect(code).not.toContain("handlePagesApiRoute");
-      expect(code).toContain("await __ensureInstrumentationRegistered(_instrumentation)");
+      expect(code).toContain(
+        `await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)})`,
+      );
       expect(code).not.toContain("await _instrumentation.register()");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -1894,12 +2051,55 @@ describe("Pages Router entry template", () => {
       expect(code).toContain(JSON.stringify(apiPath));
       expect(code).toContain("createPagesPageHandler");
       expect(code).toContain("handlePagesApiRoute");
+      expect(code).toContain("return _reportRequestError(");
+      expect(code).not.toContain("void _reportRequestError(");
       expect(code).toContain("export const hasMiddleware = true");
-      expect(code).toContain("await __ensureInstrumentationRegistered(_instrumentation)");
+      expect(code).toContain(
+        `await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)})`,
+      );
       expect(code).not.toContain("await _instrumentation.register()");
       expect(code).not.toContain(JSON.stringify(middlewarePath));
       expect(code).not.toContain("runGeneratedMiddleware");
       expect(code).not.toContain("export async function runMiddleware");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
+  it("registers Node instrumentation before Pages Router user modules", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-instrumentation-order-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const instrumentationPath = path.join(tmpDir, "instrumentation.ts");
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      const pagePath = path.join(pagesDir, "index.tsx");
+      fs.writeFileSync(pagePath, "export default function Page() { return null; }");
+      fs.writeFileSync(instrumentationPath, "export function register() {};");
+
+      const code = await generateServerEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+        null,
+        instrumentationPath,
+        [],
+        { nodeOpenTelemetryLoader: true },
+      );
+      const loaderIndex = code.indexOf(
+        '__registerOpenTelemetryLoader("@opentelemetry/instrumentation/hook.mjs"',
+      );
+      const registrationIndex = code.indexOf("await __ensureInstrumentationRegistered(");
+      const userModuleIndex = code.indexOf(`page_0 = await import(${JSON.stringify(pagePath)})`);
+
+      expect(loaderIndex).toBeGreaterThanOrEqual(0);
+      expect(registrationIndex).toBeGreaterThan(loaderIndex);
+      expect(userModuleIndex).toBeGreaterThan(registrationIndex);
+      expect(code).toContain("async function __initializeApplication()");
+      expect(code).toContain("return __applicationInitialization ??= __initializeApplication()");
+      expect(code).not.toContain(`const page_0 = await import(${JSON.stringify(pagePath)})`);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

@@ -24,7 +24,8 @@
     "vinext": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "https://pkg.pr.new/@cloudflare/vite-plugin@15508",
+    "@cloudflare/vite-plugin": "catalog:cloudflare-vite-v2",
+    "@cloudflare/workers-types": "^5.20260904.1",
     "@tailwindcss/postcss": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
@@ -37,7 +38,6 @@
     "react-server-dom-webpack": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
-    "vite": "catalog:cloudflare-vite-v2",
-    "wrangler": "catalog:cloudflare-vite-v2"
+    "vite": "catalog:cloudflare-vite-v2"
   }
 }

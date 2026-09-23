@@ -5,10 +5,13 @@ import {
   ResponseStoreBinding,
   type RevalidationInput,
   type RevalidationService,
+  type ResponseStoreLocationHint,
   type ResponseStoreServiceBinding,
   type ResponseStoreServiceInvocation,
   type WorkersResponseStoreEnv,
   type WorkersResponseStore,
+  validateResponseStoreLocationHint,
+  validateResponseStoreShards,
 } from "./binding";
 import { CacheMetadata } from "./metadata-do";
 
@@ -47,6 +50,14 @@ export type ResponseStoreClientEntrypoint<Env = WorkersResponseStoreClientEnv> =
 ) => WorkerEntrypoint<Env> & WorkersResponseStore;
 
 export type WorkersResponseStoreOptions<Env> = {
+  /**
+   * Best-effort location for metadata Durable Objects on first creation.
+   * Changing this does not move existing objects and should be treated as a
+   * cache-cold deployment change.
+   */
+  locationHint?: ResponseStoreLocationHint;
+  /** Split version-scoped metadata across this many Durable Objects. */
+  shards?: number;
   regenerate(
     input: RevalidationInput,
     context: ResponseStoreRevalidationContext<Env>,
@@ -74,9 +85,12 @@ function createStoreFacade(getStore: () => WorkersResponseStore): WorkersRespons
 export function createWorkersResponseStore<
   Env extends WorkersResponseStoreEnv = WorkersResponseStoreEnv,
 >(options: WorkersResponseStoreOptions<Env>): WorkersResponseStoreDefinition<Env> {
+  const locationHint = validateResponseStoreLocationHint(options.locationHint);
+  const shards = validateResponseStoreShards(options.shards);
   const ResponseStoreRevalidator = createRevalidatorEntrypoint(options);
 
-  const getStore = () => getWorkersResponseStore({ exports: workerExports });
+  const getStore = () =>
+    getWorkersResponseStore({ exports: workerExports }, { locationHint, shards });
 
   return {
     entrypoints: { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding },
@@ -94,6 +108,8 @@ export type WorkersResponseStoreClientEnv = {
 export function createWorkersResponseStoreClient<
   Env extends WorkersResponseStoreClientEnv = WorkersResponseStoreClientEnv,
 >(options: WorkersResponseStoreOptions<Env>): WorkersResponseStoreClientDefinition<Env> {
+  const locationHint = validateResponseStoreLocationHint(options.locationHint);
+  const shards = validateResponseStoreShards(options.shards);
   const ResponseStoreRevalidator = createRevalidatorEntrypoint(options);
 
   class ResponseStoreClient extends WorkerEntrypoint<Env> implements WorkersResponseStore {
@@ -118,6 +134,8 @@ export function createWorkersResponseStoreClient<
       return {
         versionId,
         revalidator: factory({ props: {} }),
+        ...(locationHint === undefined ? {} : { locationHint }),
+        ...(shards === undefined ? {} : { shards }),
       };
     }
 
@@ -169,6 +187,7 @@ export function createWorkersResponseStoreClient<
 
 export type {
   ResponseStoreMutationResult,
+  ResponseStoreLocationHint,
   ResponseStorePurgeOptions,
   ResponseStorePutOptions,
   ResponseStoreRefreshOptions,

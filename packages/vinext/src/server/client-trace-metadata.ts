@@ -40,10 +40,8 @@ const carrierSetter: TextMapSetter = {
  *
  * The implementation mirrors Next.js's `NextTracerImpl.getTracePropagationData`:
  * we call `propagation.inject(activeContext, entries, setter)` and let the
- * setter push entries into our carrier array. When the registered API has a
- * tracer provider but no active span, vinext creates and ends a short-lived
- * span so request-time metadata has the same parent data Next.js exposes;
- * optional OpenTelemetry failures always degrade to no metadata.
+ * setter push entries into our carrier array. Optional OpenTelemetry failures
+ * always degrade to no metadata.
  */
 type OpenTelemetryApi = {
   context: { active(): unknown };
@@ -52,68 +50,29 @@ type OpenTelemetryApi = {
   };
 };
 
-type OpenTelemetryContext = {
-  getValue(key: symbol): unknown;
-  setValue(key: symbol, value: unknown): OpenTelemetryContext;
-};
-
 type OpenTelemetryGlobal = {
   context?: {
-    active(): OpenTelemetryContext;
-    with<T>(context: OpenTelemetryContext, fn: () => T): T;
+    active(): unknown;
   };
   propagation?: {
-    inject(
-      context: OpenTelemetryContext,
-      carrier: ClientTraceDataEntry[],
-      setter: TextMapSetter,
-    ): void;
-  };
-  trace?: {
-    getTracer(name: string): {
-      startSpan(
-        name: string,
-        options: undefined,
-        context: OpenTelemetryContext,
-      ): {
-        end(): void;
-      };
-    };
+    inject(context: unknown, carrier: ClientTraceDataEntry[], setter: TextMapSetter): void;
   };
 };
 
 const OPEN_TELEMETRY_API_SYMBOL = Symbol.for("opentelemetry.js.api.1");
-const OPEN_TELEMETRY_SPAN_SYMBOL = Symbol.for("OpenTelemetry Context Key SPAN");
 
 function getRegisteredOpenTelemetryTraceData(): ClientTraceDataEntry[] | null {
-  let metadataSpan: { end(): void } | null = null;
   try {
     const registry = (globalThis as Record<symbol, unknown>)[OPEN_TELEMETRY_API_SYMBOL] as
       | OpenTelemetryGlobal
       | undefined;
     if (!registry?.context || !registry.propagation) return null;
-    const contextApi = registry.context;
-    const propagation = registry.propagation;
-
-    const activeContext = contextApi.active();
-    const hasActiveSpan = activeContext.getValue(OPEN_TELEMETRY_SPAN_SYMBOL) !== undefined;
-    metadataSpan = hasActiveSpan
-      ? null
-      : (registry.trace
-          ?.getTracer("vinext")
-          .startSpan("vinext.clientTraceMetadata", undefined, activeContext) ?? null);
-    const context = metadataSpan
-      ? activeContext.setValue(OPEN_TELEMETRY_SPAN_SYMBOL, metadataSpan)
-      : activeContext;
+    const context = registry.context.active();
     const entries: ClientTraceDataEntry[] = [];
-    contextApi.with(context, () => {
-      propagation.inject(context, entries, carrierSetter);
-    });
+    registry.propagation.inject(context, entries, carrierSetter);
     return entries;
   } catch {
     return [];
-  } finally {
-    metadataSpan?.end();
   }
 }
 
@@ -176,6 +135,32 @@ export function renderClientTraceMetadataTags(
   return html;
 }
 
+function clientTraceMetadataBlockStart(marker: string): string {
+  return `<!--vinext-client-trace-metadata:${marker}:start-->`;
+}
+
+function clientTraceMetadataBlockEnd(marker: string): string {
+  return `<!--vinext-client-trace-metadata:${marker}:end-->`;
+}
+
+/** Mark only vinext-injected trace metadata for removal from a shared cache copy. */
+export function markClientTraceMetadataBlock(html: string, marker: string | undefined): string {
+  if (!html || !marker) return html;
+  return `${clientTraceMetadataBlockStart(marker)}${html}${clientTraceMetadataBlockEnd(marker)}`;
+}
+
+/** Remove the trace metadata block carrying this render's private marker. */
+export function stripClientTraceMetadataBlock(html: string, marker: string | undefined): string {
+  if (!marker) return html;
+  const start = clientTraceMetadataBlockStart(marker);
+  const end = clientTraceMetadataBlockEnd(marker);
+  const startIndex = html.indexOf(start);
+  if (startIndex === -1) return html;
+  const endIndex = html.indexOf(end, startIndex + start.length);
+  if (endIndex === -1) return html;
+  return html.slice(0, startIndex) + html.slice(endIndex + end.length);
+}
+
 /**
  * Convenience helper: read OTel propagation data, filter against the
  * configured allow-list, and render the resulting `<meta>` tags. Returns an
@@ -186,9 +171,17 @@ export function renderClientTraceMetadataTags(
  * configured/active this is a few `try/catch`-bounded operations and returns
  * `""`.
  */
-export function getClientTraceMetadataHTML(allowList: readonly string[] | undefined): string {
+export function getClientTraceMetadataHTML(
+  allowList: readonly string[] | undefined,
+  isStaticGeneration = false,
+): string {
   if (!allowList || allowList.length === 0) return "";
-  if (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1") return "";
+  if (
+    isStaticGeneration ||
+    (typeof process !== "undefined" && process.env.VINEXT_PRERENDER === "1")
+  ) {
+    return "";
+  }
   const entries = getOpenTelemetryTraceData();
   const filtered = filterClientTraceMetadata(entries, allowList);
   return renderClientTraceMetadataTags(filtered);

@@ -124,6 +124,58 @@ describe("Cloudflare CDN warmup", () => {
     );
   });
 
+  it("skips responses outside an origin-managed data cache", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("html", {
+          headers: {
+            "content-type": "text/html",
+            "x-vinext-build-id": "build-a",
+          },
+        }),
+    );
+
+    const result = await warmCdnCache({
+      expectedBuildId: "build-a",
+      fetchImpl,
+      paths: ["/uncached"],
+      statusSource: "data-cache",
+      strict: true,
+      targetUrl: "https://app.example.com",
+    });
+
+    expect(result).toMatchObject({ failed: 0, skipped: 1, total: 1, warmed: 0 });
+  });
+
+  it("retries an origin-managed data-cache miss during certification", async () => {
+    let attempt = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempt++;
+      return new Response("html", {
+        headers: {
+          "content-type": "text/html",
+          "x-vinext-build-id": "build-a",
+          "x-vinext-cache": attempt === 1 ? "MISS" : "HIT",
+        },
+      });
+    });
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl,
+        paths: ["/uncertified"],
+        requireCacheHit: true,
+        retries: 1,
+        retryDelayMs: 0,
+        statusSource: "data-cache",
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ failed: 0, warmed: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("reads only build-discovered paths and does not require local prerender output", () => {
     writeFile("dist/server/BUILD_ID", "build-a\n");
     writeFile(
@@ -1371,6 +1423,46 @@ describe("Cloudflare CDN warmup", () => {
         ["html", 2],
       ]),
     );
+  });
+
+  it("retries staged CDN certification until the admitted response is reusable", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("cacheable", {
+          headers: {
+            "cache-control": "public, max-age=0, s-maxage=60",
+            "cf-cache-status": "BYPASS",
+            "content-type": "text/html",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response("cacheable", {
+          headers: {
+            "cache-control": "public, max-age=0, s-maxage=60",
+            "cf-cache-status": "HIT",
+            "content-type": "text/html",
+            [VINEXT_CDN_BUILD_ID_HEADER]: "build-a",
+          },
+        }),
+      );
+
+    await expect(
+      warmCdnCache({
+        expectedBuildId: "build-a",
+        fetchImpl: fetchImpl as typeof fetch,
+        paths: ["/cached"],
+        propagatingTarget: true,
+        requireCacheHit: true,
+        retries: 1,
+        retryDelayMs: 0,
+        strict: true,
+        targetUrl: "https://app.example.com",
+      }),
+    ).resolves.toMatchObject({ warmed: 1, skipped: 0, failed: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("does not retry permanent validation failures from the uploaded build", async () => {

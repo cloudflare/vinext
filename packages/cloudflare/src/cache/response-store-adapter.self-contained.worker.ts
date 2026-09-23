@@ -1,3 +1,4 @@
+import "vinext/internal/server/cloudflare-workers-tracing";
 import {
   createWorkersResponseStore,
   type ResponseStoreRevalidatorEntrypoint,
@@ -7,6 +8,8 @@ import type {
   CacheMetadata as CacheMetadataClass,
   ResponseStoreBinding as ResponseStoreBindingClass,
 } from "@cloudflare/workers-response-store/service";
+// @ts-expect-error -- virtual module resolved by vinext at build time
+import { configuredCdnCacheAdapterOptions } from "virtual:vinext-cdn-cache-adapter";
 
 import {
   createVinextResponseStoreHandler,
@@ -14,7 +17,7 @@ import {
 } from "./response-store-adapter.worker.js";
 
 const responseStore = createWorkersResponseStore<WorkersResponseStoreEnv>(
-  createVinextResponseStoreOptions(),
+  createVinextResponseStoreOptions(configuredCdnCacheAdapterOptions),
 );
 
 export const CacheMetadata: typeof CacheMetadataClass = responseStore.entrypoints.CacheMetadata;

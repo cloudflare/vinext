@@ -16,8 +16,7 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: "Path must be a leading-slash route" }, { status: 400 });
   }
 
-  // vinext turns the path into its cache tags and passes them to the configured
-  // Workers Response Store adapter.
+  // vinext turns the path into its cache tags and passes them to the configured adapter.
   await revalidatePath(path);
   return Response.json({ revalidated: true, target: path });
 }

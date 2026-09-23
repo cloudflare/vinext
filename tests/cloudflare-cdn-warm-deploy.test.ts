@@ -136,7 +136,7 @@ function writeTwoStageWorkerArtifact(): void {
 
 function writeBuildOutputWorkerArtifact(): void {
   writeFile(
-    ".cloudflare/output/v0/workers/default/config.json",
+    ".cloudflare/output/v0/workers/default/worker.config.json",
     JSON.stringify({
       manifest: { mainModule: "index.js", modules: {}, type: "partial" },
       name: "my-worker",
@@ -334,6 +334,80 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(hasCdnWarmRequests({ loadingShellPaths: [], paths: [], rscPaths: [] })).toBe(false);
   });
 
+  it("selects traffic-aware routes from a standard warm plan", async () => {
+    const { selectTPRWarmPlan } = await import("../packages/cloudflare/src/deploy.js");
+
+    const selected = selectTPRWarmPlan(
+      {
+        appPaths: ["/hot", "/cold"],
+        loadingShellPaths: ["/hot", "/cold"],
+        pagesDataPaths: ["/_next/data/build/hot.json", "/_next/data/build/cold.json"],
+        pagesPaths: ["/hot", "/cold"],
+        paths: ["/hot", "/cold"],
+        routePatterns: {
+          "/hot": { kind: "app-page", pattern: "/:slug" },
+          "/cold": { kind: "app-page", pattern: "/:slug" },
+          "/_next/data/build/hot.json": {
+            kind: "pages-page",
+            pattern: "/:slug",
+            cacheabilityProbe: { canPrunePattern: true, concretePathname: "/hot" },
+          },
+          "/_next/data/build/cold.json": {
+            kind: "pages-page",
+            pattern: "/:slug",
+            cacheabilityProbe: { canPrunePattern: true, concretePathname: "/cold" },
+          },
+        },
+        rscPaths: ["/hot", "/cold"],
+      },
+      [
+        { path: "/missing", requests: 90 },
+        { path: "/hot/", requests: 9 },
+        { path: "/cold", requests: 1 },
+      ],
+      90,
+      1,
+    );
+
+    expect(selected).toMatchObject({
+      appPaths: ["/hot"],
+      loadingShellPaths: ["/hot"],
+      pagesDataPaths: ["/_next/data/build/hot.json"],
+      pagesPaths: ["/hot"],
+      paths: ["/hot"],
+      rscPaths: ["/hot"],
+    });
+    expect(Object.keys(selected.routePatterns ?? {})).toEqual([
+      "/hot",
+      "/_next/data/build/hot.json",
+    ]);
+  });
+
+  it("aggregates traffic aliases before applying TPR coverage and limits", async () => {
+    const { selectTPRWarmPlan } = await import("../packages/cloudflare/src/deploy.js");
+
+    const selected = selectTPRWarmPlan(
+      {
+        loadingShellPaths: [],
+        paths: ["/hot", "/cold"],
+        routePatterns: {
+          "/hot": { kind: "app-page", pattern: "/:slug" },
+          "/cold": { kind: "app-page", pattern: "/:slug" },
+        },
+        rscPaths: [],
+      },
+      [
+        { path: "/hot", requests: 40 },
+        { path: "/hot/", requests: 35 },
+        { path: "/cold", requests: 25 },
+      ],
+      90,
+      2,
+    );
+
+    expect(selected.paths).toEqual(["/hot", "/cold"]);
+  });
+
   it("rejects promotion delays that Node timers cannot represent before deploying", async () => {
     const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
 
@@ -375,7 +449,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         { buildId: "build-a", routes: {}, version: 1 },
         "cf",
       ),
-    ).toBe(".cloudflare/output/v0/workers/default/config.json");
+    ).toBe(".cloudflare/output/v0/workers/default/worker.config.json");
     expect(
       fs.readFileSync(
         path.join(
@@ -386,6 +460,65 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         "utf8",
       ),
     ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
+  });
+
+  it("stages and promotes a typed-config Worker using cf without Wrangler", async () => {
+    writeBuildOutputWorkerArtifact();
+    writeFile(
+      "node_modules/cf/package.json",
+      JSON.stringify({ name: "cf", bin: { cf: "bin/cf" } }),
+    );
+    writeFile("node_modules/cf/bin/cf", "#!/usr/bin/env node\n");
+    const events: string[] = [];
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("create") && args.includes("versions")) {
+        events.push("upload");
+        return JSON.stringify({
+          id: PROBE_VERSION,
+          preview_url: "https://preview.example.workers.dev",
+        });
+      }
+      if (args.includes("list")) {
+        events.push("status");
+        return JSON.stringify({
+          deployments: [
+            { id: "active", versions: [{ version_id: OLD_VERSION, percentage: 100 }] },
+            { id: "older", versions: [{ version_id: FINAL_VERSION, percentage: 100 }] },
+          ],
+        });
+      }
+      if (args.includes("create") && args.includes("deployments")) {
+        const versions = JSON.parse(args[args.indexOf("--versions") + 1]!);
+        events.push(versions.length === 2 ? "stage" : "promote");
+        return "https://app.example.workers.dev";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Deployed my-worker triggers\n  https://app.example.workers.dev\n";
+      }
+      throw new Error(`Unexpected cf args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        deploymentTool: "cf",
+        allowEmptyWarmPlan: true,
+        discoverWarmPlan: async () => {
+          events.push("discover");
+          return { loadingShellPaths: [], paths: [], rscPaths: [] };
+        },
+        warmCdnTarget: "https://app.example.workers.dev",
+      }),
+    ).resolves.toBe("https://app.example.workers.dev");
+    expect(events).toEqual(["upload", "status", "stage", "triggers", "discover", "promote"]);
+    const args = (execFileSyncMock.mock.calls as Array<[string, string[]]>).map(
+      ([, value]) => value,
+    );
+    expect(args).toContainEqual(
+      expect.arrayContaining(["workers", "deployments", "create", "--strategy", "percentage"]),
+    );
+    expect(args.some((value: string[]) => value.includes("wrangler"))).toBe(false);
   });
 
   it.each([
@@ -783,6 +916,64 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       wrangler.finalManifestSource!.slice("export default ".length, -2),
     ) as string;
     expect(JSON.parse(manifestJson)).toEqual({ buildId: "app-build-a", routes: {}, version: 1 });
+  });
+
+  it("applies route selection after building the cacheability manifest", async () => {
+    writeTwoStageWorkerArtifact();
+    const wrangler = mockTwoStageWrangler();
+    const probed: string[] = [];
+    const warmed: string[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pathname = new URL(formatFetchUrl(input)).pathname;
+      if (new Headers(init?.headers).get(VINEXT_CACHEABILITY_PROBE_HEADER) === "1") {
+        probed.push(pathname);
+        return appPageProbeResponse("static-candidate", pathname);
+      }
+      if (isReadinessFetch(input)) return readinessResponse();
+      warmed.push(pathname);
+      return cacheableHtml();
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deployWithCdnWarmup(tmpDir, [], {
+      cacheabilityProbe: true,
+      config: "dist/server/wrangler.json",
+      discoverWarmPlan: async () => ({
+        appPaths: ["/hot", "/cold"],
+        buildId: "app-build-a",
+        buildIdentity: "app-build-a",
+        loadingShellPaths: [],
+        paths: ["/hot", "/cold"],
+        routePatterns: {
+          ...appPageRoutePatterns(["/hot"], "/hot"),
+          ...appPageRoutePatterns(["/cold"], "/cold"),
+        },
+        rscPaths: [],
+      }),
+      selectWarmPlan: (plan) => ({
+        ...plan,
+        appPaths: ["/hot"],
+        paths: ["/hot"],
+        routePatterns: { "/hot": plan.routePatterns!["/hot"]! },
+      }),
+      warmCdnConcurrency: 1,
+      warmCdnPromotionDelay: 0,
+      warmCdnReadinessProbes: 1,
+      warmCdnRetries: 0,
+    });
+
+    expect(probed).toEqual(["/hot", "/cold"]);
+    expect(warmed).toEqual(["/hot"]);
+    const source = wrangler.finalManifestSource!;
+    const manifest = JSON.parse(
+      JSON.parse(source.slice("export default ".length, -2)) as string,
+    ) as CacheabilityManifest;
+    expect(new Set(Object.keys(manifest.routes))).toEqual(
+      new Set([
+        cacheabilityManifestRouteKey("app-page", "/hot"),
+        cacheabilityManifestRouteKey("app-page", "/cold"),
+      ]),
+    );
   });
 
   it("uses an explicit warm target for both stages of a cacheability-probed deploy", async () => {
@@ -1996,13 +2187,24 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe(true);
   });
 
-  it("discovers binding-backed paths from the staged version before readiness and warming", async () => {
+  it("discovers and certifies binding-backed paths through the staged version", async () => {
     const events: string[] = [];
+    let warmAttempt = 0;
     writeFile("wrangler.jsonc", JSON.stringify({ name: "my-worker" }));
-    vi.mocked(fetch).mockImplementation(async (input, init) => {
-      const headers = new Headers(init?.headers);
-      events.push(isReadinessFetch(input) ? "readiness" : "warm");
-      return headers.get("rsc") === "1" ? cacheableRsc() : cacheableHtml();
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      if (isReadinessFetch(input)) {
+        events.push("readiness");
+        return readinessResponse();
+      }
+      warmAttempt++;
+      events.push(`warm:${warmAttempt === 1 ? "MISS" : "HIT"}`);
+      return new Response("html", {
+        headers: {
+          "content-type": "text/html",
+          "x-vinext-build-id": "app-build-a",
+          "x-vinext-cache": warmAttempt === 1 ? "MISS" : "HIT",
+        },
+      });
     });
     execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
       if (args.includes("upload")) {
@@ -2041,12 +2243,15 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           loadingShellPaths: [],
           paths: ["/cached/intro"],
           rscBuildId: "app-build-a",
-          rscPaths: ["/cached/intro"],
+          rscPaths: [],
         };
       },
+      statusSource: "data-cache",
+      warmCdnCertify: true,
       warmCdnPromotionDelay: 0,
       warmCdnReadinessProbeDelay: 0,
       warmCdnReadinessProbes: 1,
+      warmCdnRetries: 0,
     });
 
     expect(events).toEqual([
@@ -2054,8 +2259,8 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "triggers",
       "discover",
       "readiness",
-      "warm",
-      "warm",
+      "warm:MISS",
+      "warm:HIT",
       "promote",
     ]);
   });

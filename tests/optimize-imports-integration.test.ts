@@ -9,8 +9,15 @@ import vinext from "../packages/vinext/src/index.js";
 
 type BuiltHandler = (request: Request) => Promise<Response>;
 
-function linkWorkspaceDependencies(root: string): void {
-  const source = path.resolve(import.meta.dirname, "../node_modules");
+const CLOUDFLARE_NODE_MODULES = path.resolve(
+  import.meta.dirname,
+  "fixtures/cf-app-basic/node_modules",
+);
+
+function linkWorkspaceDependencies(
+  root: string,
+  source = path.resolve(import.meta.dirname, "../node_modules"),
+): void {
   const target = path.join(root, "node_modules");
   fs.mkdirSync(target, { recursive: true });
   for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
@@ -24,9 +31,9 @@ function linkWorkspaceDependencies(root: string): void {
   }
 }
 
-function createFixture(): string {
+function createFixture(dependenciesRoot?: string): string {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-imports-")));
-  linkWorkspaceDependencies(root);
+  linkWorkspaceDependencies(root, dependenciesRoot);
   fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
   fs.mkdirSync(path.join(root, "app"), { recursive: true });
   fs.writeFileSync(
@@ -143,5 +150,84 @@ describe("optimizePackageImports extensionless re-exports", () => {
     const productionHtml = await productionResponse.text();
     expect(productionHtml).toContain("extensionless-button-server");
     expect(productionHtml).toContain("extensionless-button-client");
+  }, 120000);
+
+  it("renders Chakra client components imported from its root barrel in dev", async () => {
+    root = createFixture(CLOUDFLARE_NODE_MODULES);
+    const transformed = new Map<string, string>();
+    fs.writeFileSync(
+      path.join(root, "wrangler.jsonc"),
+      JSON.stringify({
+        name: "vinext-chakra-dev-test",
+        compatibility_date: "2026-04-01",
+        compatibility_flags: ["nodejs_compat"],
+        main: "vinext/server/fetch-handler",
+        assets: { not_found_handling: "none", binding: "ASSETS" },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(root, "app", "page.tsx"),
+      `import { Box } from "@chakra-ui/react";
+export default function Page() { return <Box>chakra-box</Box>; }`,
+    );
+
+    const packageRoot = path.join(root, "node_modules", "@chakra-ui", "react");
+    const boxRoot = path.join(packageRoot, "components", "box");
+    fs.mkdirSync(boxRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "@chakra-ui/react",
+        version: "3.37.0",
+        type: "module",
+        exports: {
+          ".": { import: { default: "./index.js" } },
+          "./*": "./components/*/index.js",
+          "./package.json": "./package.json",
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(packageRoot, "index.js"),
+      `export { Box } from "./components/box/index.js";`,
+    );
+    fs.writeFileSync(
+      path.join(boxRoot, "index.js"),
+      `"use client";
+import { createContext, createElement } from "react";
+const BoxContext = createContext(null);
+export function Box({ children }) { return createElement("div", null, children); }`,
+    );
+
+    const { cloudflare } = (await import(
+      pathToFileURL(path.join(CLOUDFLARE_NODE_MODULES, "@cloudflare/vite-plugin/dist/index.mjs"))
+        .href
+    )) as {
+      cloudflare: (options: {
+        viteEnvironment: { name: string; childEnvironments: string[] };
+      }) => Plugin;
+    };
+    server = await createServer({
+      root,
+      configFile: false,
+      plugins: [
+        ...createPlugins(root, transformed),
+        cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+      ],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const address = server.httpServer?.address();
+    expect(address && typeof address === "object").toBe(true);
+    if (!address || typeof address !== "object") return;
+
+    const response = await fetch(`http://localhost:${address.port}/`);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("chakra-box");
+
+    const optimizedTarget = toSlash(path.join(boxRoot, "index.js"));
+    expect(transformed.get("rsc:page.tsx")).toContain(optimizedTarget);
+    expect(transformed.get("rsc:page.tsx")).not.toContain(`from "@chakra-ui/react"`);
   }, 120000);
 });

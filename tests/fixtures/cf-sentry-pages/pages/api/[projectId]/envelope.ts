@@ -1,5 +1,5 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { recordSentryErrorReport } from "../../../sentry-test-state";
+import { recordSentryEnvelope } from "../../../sentry-test-state";
 
 export const config = {
   api: {
@@ -23,6 +23,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
   envelope += decoder.decode();
 
-  recordSentryErrorReport(projectId ?? "", envelope);
+  recordSentryEnvelope(projectId ?? "", envelope);
   return res.status(200).json({ ok: true });
 }

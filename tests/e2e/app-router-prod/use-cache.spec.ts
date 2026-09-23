@@ -1,7 +1,61 @@
+import { createHash } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
 test.describe('production "use cache" server function references', () => {
+  test("does not expose server-only cache helpers through derived source identities", async ({
+    request,
+  }) => {
+    const anonymous = await request.get("/use-cache-hidden-reference?record=victim");
+    expect(anonymous.status()).toBe(200);
+    expect(await anonymous.text()).toContain("FORBIDDEN");
+
+    const victim = await request.get("/use-cache-hidden-reference?record=victim", {
+      headers: { Authorization: "Bearer fixture-victim-session" },
+    });
+    expect(victim.status()).toBe(200);
+    expect(await victim.text()).toContain("VICTIM_PRIVATE_RECORD");
+
+    const defaultVictim = await request.get(
+      "/use-cache-hidden-reference?record=victim&source=default",
+      { headers: { Authorization: "Bearer fixture-victim-session" } },
+    );
+    expect(defaultVictim.status()).toBe(200);
+    expect(await defaultVictim.text()).toContain("VICTIM_DEFAULT_PRIVATE_RECORD");
+
+    const predictableReferenceKey = createHash("sha256")
+      .update("app/use-cache-hidden-reference/records.ts")
+      .digest("hex")
+      .slice(0, 12);
+    for (const [exportName, secret] of [
+      ["readRecord", "VICTIM_PRIVATE_RECORD"],
+      ["default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
+    ] as const) {
+      const exploit = await request.post("/use-cache-hidden-reference.rsc", {
+        data: JSON.stringify(["victim"]),
+        headers: {
+          "Content-Type": "text/plain",
+          "x-rsc-action": `${predictableReferenceKey}#${exportName}`,
+        },
+      });
+
+      expect(exploit.status()).toBe(404);
+      expect(exploit.headers()["x-nextjs-action-not-found"]).toBe("1");
+      expect(await exploit.text()).not.toContain(secret);
+    }
+  });
+
+  test("invokes default-exported server actions from cached modules", async ({ page }) => {
+    await page.goto("/use-cache-client-import");
+    await waitForAppRouterHydration(page);
+
+    await page.locator("#call-client-imported-default").click();
+    await expect(page.getByTestId("client-imported-cache-call-count")).toHaveText("1");
+    await expect(page.getByTestId("client-imported-cache-result")).toHaveText(
+      "client-default:direct",
+    );
+  });
+
   test("separates arguments for file-level cached exports imported by a Client Component", async ({
     page,
   }) => {

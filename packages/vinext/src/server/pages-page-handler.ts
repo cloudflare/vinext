@@ -28,6 +28,7 @@ import { mergePagesNotFoundSourceHeaders, resolvePagesPageData } from "./pages-p
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
 import { renderPagesPageResponse } from "./pages-page-response.js";
+import { tracePagesDocumentStream, traceFindPageComponents } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
 import type { RenderPageEnhancers } from "./pages-document-initial-props.js";
@@ -57,6 +58,7 @@ import {
 } from "./isr-cache.js";
 import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { reportRequestError } from "./instrumentation.js";
+import { setFrameworkRequestRoute } from "./request-tracing.js";
 import {
   closeAfterResponse,
   closeAfterResponseWithBody,
@@ -86,6 +88,25 @@ import {
   hasPagesGetInitialProps,
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
+
+export async function renderTracedPagesPageResponse(
+  options: Parameters<typeof renderPagesPageResponse>[0],
+): Promise<Response> {
+  let bodyStream: ReadableStream<Uint8Array> | undefined;
+  try {
+    return await renderPagesPageResponse({
+      ...options,
+      traceDocument: async (callback) => {
+        const result = await tracePagesDocumentStream(options.routePattern, callback);
+        bodyStream = result.bodyStream;
+        return result;
+      },
+    });
+  } catch (error) {
+    if (bodyStream && !bodyStream.locked) await bodyStream.cancel(error).catch(() => {});
+    throw error;
+  }
+}
 
 type PagesStreamedHtmlResponse = Response & {
   __vinextStreamedHtmlResponse?: boolean;
@@ -590,7 +611,7 @@ export function createPagesPageHandler(
     }
 
     const { route, params } = match;
-    const pageModule = route.module;
+    const pageModule = traceFindPageComponents(route.pattern, () => route.module);
     const isStaticPropsRoute = typeof pageModule.getStaticProps === "function";
     const pagesReadiness = buildPagesReadinessNextData({
       pageModule,
@@ -675,6 +696,7 @@ export function createPagesPageHandler(
       ensureFetchPatch();
       try {
         const routePattern = patternToNextFormat(route.pattern);
+        setFrameworkRequestRoute(routePattern);
         const renderStatusCode =
           renderStatusCodeOverride ?? (routePattern === "/404" ? 404 : undefined);
         // Error pages have their own ISR identity even though they render for
@@ -1109,6 +1131,7 @@ export function createPagesPageHandler(
         const pageModuleIds: (string | null | undefined)[] = [];
         if (appAssetPath) pageModuleIds.push(appAssetPath);
         if (route.filePath) pageModuleIds.push(route.filePath);
+        const initialStylesheetHrefs = new Set<string>();
         const assetTags = collectAssetTags({
           manifest,
           moduleIds: pageModuleIds,
@@ -1118,9 +1141,10 @@ export function createPagesPageHandler(
           assetPrefix: vinextConfig.assetPrefix,
           deploymentId: process.env.__VINEXT_DEPLOYMENT_ID || process.env.NEXT_DEPLOYMENT_ID,
           crossOrigin: vinextConfig.crossOrigin,
+          initialStylesheetHrefs,
         });
 
-        let pageResponse = await renderPagesPageResponse({
+        const pageResponseOptions: Parameters<typeof renderPagesPageResponse>[0] = {
           assetTags,
           buildId,
           clearSsrContext() {
@@ -1171,6 +1195,7 @@ export function createPagesPageHandler(
           routeUrl: renderRouteUrl,
           safeJsonStringify,
           scriptNonce,
+          initialStylesheetHrefs,
           crossOrigin: vinextConfig.crossOrigin,
           disableOptimizedLoading: vinextConfig.disableOptimizedLoading,
           statusCode: renderStatusCode,
@@ -1178,7 +1203,8 @@ export function createPagesPageHandler(
           userAgent: request.headers.get("user-agent") ?? undefined,
           ifNoneMatch: request.headers.get("if-none-match") ?? undefined,
           requestCacheControl: request.headers.get("cache-control") ?? undefined,
-        });
+        };
+        let pageResponse = await renderTracedPagesPageResponse(pageResponseOptions);
         if (shouldApplyErrorResponsePolicy) {
           pageResponse = applyPagesErrorCachePolicy(
             pageResponse,
@@ -1190,8 +1216,8 @@ export function createPagesPageHandler(
         return finalizePagesPreviewResponse(pageResponse, preview);
       } catch (e) {
         console.error("[vinext] SSR error:", e);
-        reportRequestError(
-          e instanceof Error ? e : new Error(String(e)),
+        await reportRequestError(
+          e,
           {
             path: url,
             method: request.method,
@@ -1201,10 +1227,15 @@ export function createPagesPageHandler(
             routerKind: "Pages Router",
             routePath: route.pattern,
             routeType: "render",
+            revalidateReason: isOnDemandRevalidateRequest(
+              request.headers.get(PRERENDER_REVALIDATE_HEADER),
+            )
+              ? "on-demand"
+              : typeof pageModule.getStaticProps === "function"
+                ? "stale"
+                : undefined,
           },
-        ).catch(() => {
-          /* ignore reporting errors */
-        });
+        );
 
         // Data requests can't render HTML; avoid recursion if already rendering
         // the error page. Mirrors Next.js base-server.ts: render /500 or _error
@@ -1218,6 +1249,7 @@ export function createPagesPageHandler(
             }
           }
           if (!errorRoute && errorPageRoute) {
+            traceFindPageComponents("/500", () => undefined);
             errorRoute = errorPageRoute;
           }
           if (errorRoute) {

@@ -9,13 +9,13 @@ export default function Contact() {
       <h1>Contact</h1>
       <p className="product-desc">
         This is a static page in the TPR demo. Static pages like this one
-        are always pre-rendered because they consistently appear in the top
+        are always pre-warmed because they consistently appear in the top
         traffic data.
       </p>
       <p className="product-desc">
         In a real application, this would contain a contact form or support
         information. For the purposes of this demo, it demonstrates that
-        TPR correctly identifies and pre-renders high-traffic static pages
+        TPR correctly identifies and pre-warms high-traffic static pages
         alongside dynamic product pages.
       </p>
     </div>

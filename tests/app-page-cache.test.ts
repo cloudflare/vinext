@@ -23,6 +23,12 @@ import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
 import {
+  markClientTraceMetadataBlock,
+  renderClientTraceMetadataTags,
+} from "../packages/vinext/src/server/client-trace-metadata.js";
+import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
   type CdnCacheAdapter,
@@ -1209,6 +1215,114 @@ describe("app page cache helpers", () => {
       },
     ]);
     expect(debugCalls).toEqual([["HTML cache written", "html:/fresh"]]);
+  });
+
+  it("keeps route-identity-divergent HTML out of origin and CDN caches", async () => {
+    const isrSet = vi.fn();
+    const waitUntil = vi.fn();
+    const response = finalizeAppPageHtmlCacheResponse(
+      new Response("<h1>encoded catch-all</h1>", {
+        headers: {
+          "Cache-Control": "public, s-maxage=3600",
+          "X-Vinext-Cache": "MISS",
+        },
+      }),
+      {
+        bypassInterceptionContextCache: true,
+        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        cleanPathname: "/about",
+        consumeDynamicUsage: () => false,
+        getPageTags: () => ["/about"],
+        isrHtmlKey: (pathname) => `html:${pathname}`,
+        isrRscKey: (pathname) => `rsc:${pathname}`,
+        isrSet,
+        revalidateSeconds: 3600,
+        linkHeader: null,
+        waitUntil,
+      },
+    );
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toContain("encoded catch-all");
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(waitUntil).not.toHaveBeenCalled();
+  });
+
+  it("keeps config Link values before framework preloads on bypassed HTML", async () => {
+    const rendered = new Response("<h1>encoded catch-all</h1>", {
+      headers: { Link: '</framework.woff2>; rel="preload"; as="font"' },
+    });
+    markFrameworkLinkHeaders(rendered.headers, rendered.headers.get("link"));
+
+    const response = finalizeAppPageHtmlCacheResponse(rendered, {
+      bypassInterceptionContextCache: true,
+      capturedRscDataPromise: null,
+      cleanPathname: "/about",
+      consumeDynamicUsage: () => false,
+      getPageTags: () => ["/about"],
+      isrHtmlKey: (pathname) => `html:${pathname}`,
+      isrRscKey: (pathname) => `rsc:${pathname}`,
+      isrSet: vi.fn(),
+      revalidateSeconds: 3600,
+      linkHeader: rendered.headers.get("link"),
+    });
+
+    await finalizeAppRscResponse(response, new Request("https://example.com/about"), {
+      basePath: "",
+      configHeaders: [
+        {
+          source: "/about",
+          headers: [{ key: "Link", value: '</config>; rel="describedby"' }],
+        },
+      ],
+      i18nConfig: null,
+      requestContext: {
+        cookies: {},
+        headers: new Headers(),
+        host: "example.com",
+        query: new URLSearchParams(),
+      },
+    });
+
+    expect(response.headers.get("link")).toBe(
+      '</config>; rel="describedby", </framework.woff2>; rel="preload"; as="font"',
+    );
+  });
+
+  it("keeps request trace metadata on the live response but not its shared cache copy", async () => {
+    const marker = "private-render-marker";
+    const authored = '<meta name="baggage" content="application-policy"/>';
+    const injected = markClientTraceMetadataBlock(
+      renderClientTraceMetadataTags([{ key: "baggage", value: "tenant=alice" }]),
+      marker,
+    );
+    const pendingCacheWrites: Promise<void>[] = [];
+    let storedHtml = "";
+
+    const response = finalizeAppPageHtmlCacheResponse(
+      new Response(`<head>${authored}${injected}</head><main>page</main>`),
+      {
+        capturedRscDataPromise: null,
+        cleanPathname: "/traced",
+        clientTraceMetadataMarker: marker,
+        consumeDynamicUsage: () => false,
+        getPageTags: () => ["/traced"],
+        isrHtmlKey: (pathname) => `html:${pathname}`,
+        isrRscKey: (pathname) => `rsc:${pathname}`,
+        async isrSet(_key, data) {
+          storedHtml = data.html;
+        },
+        revalidateSeconds: 60,
+        linkHeader: null,
+        waitUntil(promise) {
+          pendingCacheWrites.push(promise);
+        },
+      },
+    );
+
+    await expect(response.text()).resolves.toContain("tenant=alice");
+    await pendingCacheWrites[0];
+    expect(storedHtml).toBe(`<head>${authored}</head><main>page</main>`);
   });
 
   it("skips HTML and RSC cache writes when dynamic usage appears during stream rendering", async () => {

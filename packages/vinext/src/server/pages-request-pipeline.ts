@@ -48,6 +48,7 @@ import {
 } from "./http-error-responses.js";
 import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
+import { setFrameworkRequestRoute } from "./request-tracing.js";
 
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
@@ -712,7 +713,9 @@ export async function runPagesRequest(
     // Next.js performs the API filesystem check before afterFiles/fallback
     // rewrites. Only a real API match owns the request at this point; a miss
     // must continue through the remaining custom-route phases.
-    if (deps.matchApiRoute && !(await deps.matchApiRoute(apiLookupUrl, request))) return null;
+    const apiMatch = deps.matchApiRoute ? await deps.matchApiRoute(apiLookupUrl, request) : null;
+    if (deps.matchApiRoute && !apiMatch) return null;
+    if (apiMatch) setFrameworkRequestRoute(matchedPathnameForRoute(apiMatch.route.pattern));
     if (typeof deps.handleApi === "function") {
       let apiRequest = request;
       // Prod re-adds basePath only when the original request carried it.
@@ -872,6 +875,9 @@ export async function runPagesRequest(
     // rendered HTML can access them via this argument.
     const stagedHeaders = headersFromRecord(middlewareHeaders);
 
+    if (renderPageMatch) {
+      setFrameworkRequestRoute(matchedPathnameForRoute(renderPageMatch.route.pattern));
+    }
     let response = await deps.renderPage(request, resolvedUrl, initialRenderOptions, stagedHeaders);
 
     // Fallback rewrites if 404 + deferred
@@ -905,6 +911,9 @@ export async function runPagesRequest(
         renderPageMatch = deps.matchPageRoute
           ? deps.matchPageRoute(resolvedPathname, request)
           : null;
+        if (renderPageMatch) {
+          setFrameworkRequestRoute(matchedPathnameForRoute(renderPageMatch.route.pattern));
+        }
         response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
@@ -998,6 +1007,7 @@ export async function runPagesRequest(
   if (prefetchSkipResult) return prefetchSkipResult;
   if (isOutsideBasePathUnclaimed()) return outOfBasePathNotFound();
   refreshDataRewriteHeader();
+  if (devPageMatch) setFrameworkRequestRoute(matchedPathnameForRoute(devPageMatch.route.pattern));
 
   return {
     type: "render",

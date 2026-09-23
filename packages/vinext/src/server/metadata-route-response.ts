@@ -41,6 +41,8 @@ import { buildPageCacheTags } from "./implicit-tags.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { VINEXT_METADATA_ROUTE_CACHE_HEADER } from "./headers.js";
 import { isMetadataResponseCacheable } from "./metadata-route-cache-policy.js";
+import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
+import { decodeMatchedParams } from "../routing/utils.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;
@@ -72,6 +74,7 @@ type MetadataRouteRequestOptions = {
   isrRouteKey?: (pathname: string) => string;
   isrSet?: MetadataRouteCacheSetter;
   makeThenableParams: MetadataRouteMakeThenableParams;
+  routePathname?: string;
   scheduleBackgroundRegeneration?: MetadataRouteBackgroundRegenerator;
 };
 
@@ -82,7 +85,9 @@ type MatchedMetadataRoute = {
 
 type MetadataRouteFunctions = {
   defaultExport: MetadataRouteFunction | null;
+  dynamicParams: boolean | undefined;
   generateImageMetadata: MetadataRouteFunction | null;
+  generateStaticParams: MetadataRouteFunction | null;
   generateSitemaps: MetadataRouteFunction | null;
   hasGeneratedImageMetadata: boolean;
 };
@@ -184,7 +189,14 @@ function getMetadataRouteFunctions(route: MetadataRuntimeRoute): MetadataRouteFu
       : null;
   const functions = {
     defaultExport: route.isDynamic ? readFunction(route.module, "default") : null,
+    dynamicParams:
+      route.isDynamic && typeof route.module?.dynamicParams === "boolean"
+        ? route.module.dynamicParams
+        : undefined,
     generateImageMetadata,
+    generateStaticParams: route.isDynamic
+      ? readFunction(route.module, "generateStaticParams")
+      : null,
     generateSitemaps:
       route.type === "sitemap" && route.isDynamic
         ? readFunction(route.module, "generateSitemaps")
@@ -446,6 +458,52 @@ function matchMetadataRoute(
   }
 
   return cleanPathname === route.servedUrl ? { params: null, imageId: null } : null;
+}
+
+function metadataRouteParamNames(patternParts: readonly string[]): string[] {
+  return patternParts.flatMap((part) => {
+    if (!part.startsWith(":")) return [];
+    return [part.slice(1, part.endsWith("+") || part.endsWith("*") ? -1 : undefined)];
+  });
+}
+
+function metadataRouteOptionalCatchAllParamNames(patternParts: readonly string[]): string[] {
+  return patternParts.flatMap((part) =>
+    part.startsWith(":") && part.endsWith("*") ? [part.slice(1, -1)] : [],
+  );
+}
+
+function metadataRouteRawParams(
+  route: MetadataRuntimeRoute,
+  match: MatchedMetadataRoute,
+  routePathname: string,
+): AppPageParams {
+  const urlParts = routePathname.split("/").filter(Boolean);
+  if (match.imageId !== null) urlParts.pop();
+
+  const params: AppPageParams = Object.create(null);
+  let urlIndex = 0;
+  for (const part of route.patternParts ?? []) {
+    if (!part.startsWith(":")) {
+      urlIndex++;
+      continue;
+    }
+
+    const isCatchAll = part.endsWith("+") || part.endsWith("*");
+    const name = part.slice(1, isCatchAll ? -1 : undefined);
+    if (!isCatchAll) {
+      const value = urlParts[urlIndex++];
+      if (value !== undefined) params[name] = value;
+      continue;
+    }
+
+    const matchedValue = match.params?.[name];
+    const valueCount = Array.isArray(matchedValue) ? matchedValue.length : matchedValue ? 1 : 0;
+    if (valueCount > 0) params[name] = urlParts.slice(urlIndex, urlIndex + valueCount);
+    urlIndex += valueCount;
+  }
+
+  return params;
 }
 
 function findGeneratedSitemapId(entries: unknown, rawId: string): string | null {
@@ -758,6 +816,32 @@ export async function handleMetadataRouteRequest(
     const match = matchMetadataRoute(route, options.cleanPathname, functions, getUrlParts);
     if (!match) {
       continue;
+    }
+
+    const rawParams = route.patternParts
+      ? metadataRouteRawParams(route, match, options.routePathname ?? options.cleanPathname)
+      : Object.create(null);
+    if (route.patternParts) {
+      const runtimeParams = { ...rawParams };
+      decodeMatchedParams(runtimeParams);
+      match.params = runtimeParams;
+    }
+
+    if (route.isDynamic && isImageMetadataRoute(route) && functions.dynamicParams === false) {
+      const validationParams = { ...rawParams };
+      canonicalizeAppPageParams(validationParams);
+      const { validateAppPageDynamicParams } = await import("./app-page-request.js");
+      const dynamicParamsResponse = await validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams: functions.generateStaticParams,
+        isDynamicRoute: Boolean(route.patternParts),
+        optionalCatchAllParamNames: metadataRouteOptionalCatchAllParamNames(
+          route.patternParts ?? [],
+        ),
+        params: validationParams,
+        requiredParamNames: metadataRouteParamNames(route.patternParts ?? []),
+      });
+      if (dynamicParamsResponse) return dynamicParamsResponse;
     }
 
     const render = async (): Promise<RenderedMetadataRoute> => {

@@ -121,7 +121,7 @@ Cloudflare Vite plugin v2 projects can define the same service-binding setup in
 `cloudflare.config.ts` without a second Wrangler config:
 
 ```ts
-import { bindings, defineWorker, exports } from "@cloudflare/vite-plugin/experimental-config";
+import { bindings, defineConfig, defineWorker, exports } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
 const responseStore = createWorkersResponseStoreServiceBindingConfig({
@@ -137,12 +137,45 @@ const responseStore = createWorkersResponseStoreServiceBindingConfig({
 
 export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
 
-export default defineWorker({
-  ...responseStore.applicationWorker,
-  name: "example",
-  entrypoint: "./worker.ts",
+export default defineConfig({
+  worker: defineWorker({
+    ...responseStore.applicationWorker,
+    name: "example",
+    entrypoint: "./worker.ts",
+  }),
 });
 ```
+
+Register the exported auxiliary Worker with the Cloudflare Vite plugin so it
+is built alongside the application:
+
+```ts
+import { cloudflare } from "@cloudflare/vite-plugin";
+import { responseStoreServiceBinding } from "./cloudflare.config.ts";
+
+cloudflare({ auxiliaryWorkers: [{ config: responseStoreServiceBinding }] });
+```
+
+Metadata sharding is opt-in and works in either deployment mode:
+
+```ts
+vinext({ cache: responseStoreAdapter({ shards: 16 }) });
+```
+
+Keys remain pinned to one shard while tag/path mutations fan out across every
+shard. Omit `shards` to retain the original single metadata Durable Object.
+
+To place newly created metadata Durable Objects near a stable traffic and R2
+region, pass a Cloudflare location hint:
+
+```ts
+vinext({ cache: responseStoreAdapter({ locationHint: "weur" }) });
+```
+
+The hint works in both deployment modes, is best-effort, and only affects each
+Durable Object's first creation. Changing it does not relocate existing
+objects; treat the change as a cache-cold deployment and align it with the R2
+bucket's location.
 
 To deploy storage and cache entrypoints with the application instead, select
 self-contained mode:

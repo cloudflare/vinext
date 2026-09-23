@@ -26,12 +26,16 @@ export function clearPregeneratedConcretePaths(): void {
   concreteUrlPathsByRoute.clear();
 }
 
-export function addPregeneratedConcretePath(routePattern: string, pathname: string): void {
-  let paths = concreteUrlPathsByRoute.get(routePattern);
-  if (!paths) {
-    paths = new Set();
-    concreteUrlPathsByRoute.set(routePattern, paths);
+export function addPregeneratedRoute(routePattern: string): void {
+  if (!concreteUrlPathsByRoute.has(routePattern)) {
+    concreteUrlPathsByRoute.set(routePattern, new Set());
   }
+}
+
+export function addPregeneratedConcretePath(routePattern: string, pathname: string): void {
+  addPregeneratedRoute(routePattern);
+  let paths = concreteUrlPathsByRoute.get(routePattern);
+  if (!paths) return;
   paths.add(normalizePregeneratedPathname(pathname));
 }
 
@@ -52,6 +56,7 @@ export function initPregeneratedPathsFromGlobals(): void {
   if (!data) return;
   clearPregeneratedConcretePaths();
   for (const [routePattern, pathnames] of data) {
+    addPregeneratedRoute(routePattern);
     for (const pathname of pathnames) {
       addPregeneratedConcretePath(routePattern, pathname);
     }

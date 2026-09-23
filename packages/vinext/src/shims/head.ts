@@ -110,7 +110,7 @@ export function getSSRHeadHTML(): string {
   ])
     .map((child) => headChildToHTML(child.type as string, child.props as Record<string, unknown>))
     .filter(Boolean)
-    .join("\n  ");
+    .join("");
 }
 
 /**

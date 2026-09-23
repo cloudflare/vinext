@@ -1,14 +1,23 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import type { NextConfig } from "../packages/vinext/src/config/next-config.js";
 import { APP_FIXTURE_DIR, buildAppFixture } from "./helpers.js";
 
 describe("App Router Static export", () => {
   let rscBundlePath: string;
+  let trailingConfig: NextConfig;
+  let trailingRscBundlePath: string;
   const exportDir = path.resolve(APP_FIXTURE_DIR, "out");
 
   beforeAll(async () => {
     rscBundlePath = await buildAppFixture(APP_FIXTURE_DIR);
+    const { loadNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    trailingConfig = {
+      ...(await loadNextConfig(APP_FIXTURE_DIR)),
+      trailingSlash: true,
+    };
+    trailingRscBundlePath = await buildAppFixture(APP_FIXTURE_DIR, trailingConfig);
   }, 120_000);
 
   afterAll(() => {
@@ -68,16 +77,10 @@ describe("App Router Static export", () => {
   it("generates 404/index.html when trailingSlash is enabled", async () => {
     const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
     const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
-    const { loadNextConfig, resolveNextConfig } =
-      await import("../packages/vinext/src/config/next-config.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
 
     const appDir = path.resolve(APP_FIXTURE_DIR, "app");
     const routes = await appRouter(appDir);
-    const trailingConfig = {
-      ...(await loadNextConfig(APP_FIXTURE_DIR)),
-      trailingSlash: true,
-    };
-    const trailingRscBundlePath = await buildAppFixture(APP_FIXTURE_DIR, trailingConfig);
     const config = await resolveNextConfig({ ...trailingConfig, output: "export" });
     const trailingDir = path.resolve(APP_FIXTURE_DIR, "out-trailing-app");
 

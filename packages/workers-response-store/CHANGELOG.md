@@ -1,5 +1,24 @@
 # @cloudflare/workers-response-store
 
+## 0.1.0-beta.1
+
+### Features
+
+- **Response Store:** read response metadata from R2 (#3339)
+- **Response Store:** support for sharded durable objects (#3301)
+
+### Bug Fixes
+
+- **Response Store:** index orphan cleanup lookups (#3303)
+
+### Performance
+
+- **Response Store:** coalesce binding metadata misses (#3304)
+
+### Contributors
+
+- @james-elicx
+
 ## 0.1.0-beta.0
 
 ### Features

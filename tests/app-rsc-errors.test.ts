@@ -15,6 +15,15 @@ function expectDigestError(value: unknown): DigestCarrier {
   return value;
 }
 
+function renderErrorContext(routePath: string) {
+  return {
+    routerKind: "App Router" as const,
+    routePath,
+    routeType: "render" as const,
+    revalidateReason: undefined,
+  };
+}
+
 describe("app RSC error primitives", () => {
   it("uses the same stable digest hash shape as Next.js stringHash", () => {
     expect(errorDigest("message-stack")).toBe("701844781");
@@ -61,7 +70,7 @@ describe("app RSC error primitives", () => {
     const sanitized = sanitizeErrorForClient(original, "production");
     const reportRequestError = vi.fn();
     const onError = createRscOnErrorHandler({
-      errorContext: { routerKind: "App Router", routePath: "/metadata", routeType: "render" },
+      errorContext: renderErrorContext("/metadata"),
       nodeEnv: "production",
       reportRequestError,
       requestInfo: { path: "/metadata", method: "GET", headers: {} },
@@ -95,7 +104,7 @@ describe("app RSC error primitives", () => {
   it("reports a digest-bearing non-signal error and preserves its digest", () => {
     const reportRequestError = vi.fn();
     const onError = createRscOnErrorHandler({
-      errorContext: { routerKind: "App Router", routePath: "/feed", routeType: "render" },
+      errorContext: renderErrorContext("/feed"),
       nodeEnv: "production",
       reportRequestError,
       requestInfo: { path: "/feed", method: "GET", headers: {} },
@@ -115,7 +124,7 @@ describe("app RSC error primitives", () => {
   it("short-circuits bailout-to-CSR and dynamic-server signals without reporting", () => {
     const reportRequestError = vi.fn();
     const onError = createRscOnErrorHandler({
-      errorContext: { routerKind: "App Router", routePath: "/feed", routeType: "render" },
+      errorContext: renderErrorContext("/feed"),
       nodeEnv: "production",
       reportRequestError,
       requestInfo: { path: "/feed", method: "GET", headers: {} },
@@ -151,7 +160,7 @@ describe("app RSC error primitives", () => {
   it("reports generic RSC render errors before returning a production digest", () => {
     const reportRequestError = vi.fn();
     const onError = createRscOnErrorHandler({
-      errorContext: { routerKind: "App Router", routePath: "/feed", routeType: "render" },
+      errorContext: renderErrorContext("/feed"),
       nodeEnv: "production",
       reportRequestError,
       requestInfo: { path: "/feed", method: "GET", headers: {} },
@@ -173,6 +182,7 @@ describe("app RSC error primitives", () => {
         routerKind: "App Router",
         routePath: "/feed",
         routeType: "render",
+        revalidateReason: undefined,
       },
     );
     expect(error).toMatchObject({ digest: errorDigest("render failedstack") });
@@ -208,10 +218,10 @@ describe("app RSC error primitives", () => {
     expect(error).not.toHaveProperty("digest");
   });
 
-  it("reports non-Error thrown values with the previous String(error) message", () => {
+  it("reports non-Error thrown values without changing the public hook value", () => {
     const reportRequestError = vi.fn();
     const onError = createRscOnErrorHandler({
-      errorContext: { routerKind: "App Router", routePath: "/feed", routeType: "render" },
+      errorContext: renderErrorContext("/feed"),
       nodeEnv: "production",
       reportRequestError,
       requestInfo: { path: "/feed", method: "GET", headers: {} },
@@ -221,9 +231,7 @@ describe("app RSC error primitives", () => {
 
     expect(onError(thrownValue)).toBe(errorDigest("[object Object]"));
     expect(reportRequestError).toHaveBeenCalledOnce();
-    expect(reportRequestError.mock.calls[0]?.[0]).toMatchObject({
-      message: "[object Object]",
-    });
+    expect(reportRequestError.mock.calls[0]?.[0]).toBe(thrownValue);
   });
 
   it("logs generic render errors to the dev-server terminal even without instrumentation", () => {
@@ -255,7 +263,7 @@ describe("app RSC error primitives", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const onError = createRscOnErrorHandler({
-        errorContext: { routerKind: "App Router", routePath: "/feed", routeType: "render" },
+        errorContext: renderErrorContext("/feed"),
         nodeEnv: "production",
         reportRequestError() {},
         requestInfo: { path: "/feed", method: "GET", headers: {} },
@@ -319,7 +327,7 @@ describe("app RSC error primitives", () => {
       try {
         const reportRequestError = vi.fn();
         const onError = createRscOnErrorHandler({
-          errorContext: { routerKind: "App Router", routePath: "/feed", routeType: "render" },
+          errorContext: renderErrorContext("/feed"),
           nodeEnv: "development",
           reportRequestError,
           requestInfo: { path: "/feed", method: "GET", headers: {} },

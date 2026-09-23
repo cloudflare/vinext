@@ -67,8 +67,8 @@ describe("buildPrerenderKVPairs", () => {
 
     expect(routeCount).toBe(1);
     expect(pairs.map((pair) => pair.key)).toEqual([
-      "site-a:cache:app:build-1:/about:html",
-      "site-a:cache:app:build-1:/about:rsc",
+      "site-a:cache:app:v2:build-1:/about:html",
+      "site-a:cache:app:v2:build-1:/about:rsc",
     ]);
     expect(pairs.map((pair) => pair.expiration_ttl)).toEqual([123, 123]);
 
@@ -126,7 +126,9 @@ describe("buildPrerenderKVPairs", () => {
     const { routeCount, pairs } = buildPrerenderKVPairs(serverDir, { now: 1_000 });
     expect(routeCount).toBe(1);
     expect(pairs).toHaveLength(1);
-    expect(pairs[0].key).toBe("cache:app:metadata-build:/products/sitemap/hello world.xml:route");
+    expect(pairs[0].key).toBe(
+      "cache:app:v2:metadata-build:/products/sitemap/hello world.xml:route",
+    );
     expect(pairs[0].expiration_ttl).toBe(30 * 24 * 3600);
     expect(JSON.parse(pairs[0].value)).toMatchObject({
       value: {
@@ -168,7 +170,7 @@ describe("buildPrerenderKVPairs", () => {
     expect(routeCount).toBe(1);
     expect(pairs).toHaveLength(1);
     expect(pairs[0]).not.toHaveProperty("expiration_ttl");
-    expect(pairs[0].key).toBe("cache:app:build-static:/static:html");
+    expect(pairs[0].key).toBe("cache:app:v2:build-static:/static:html");
 
     const entry = JSON.parse(pairs[0].value);
     expect(entry.revalidateAt).toBeNull();
@@ -199,7 +201,7 @@ describe("buildPrerenderKVPairs", () => {
     const { pairs } = buildPrerenderKVPairs(serverDir, { now: 3_000 });
 
     expect(pairs.map((pair) => pair.key)).toEqual([
-      "cache:app:build-normalized:/blog/hello world:html",
+      "cache:app:v2:build-normalized:/blog/hello world:html",
     ]);
     const htmlEntry = JSON.parse(pairs[0].value);
     expect(htmlEntry.tags).toContain("/blog/hello world");
@@ -226,8 +228,8 @@ describe("buildPrerenderKVPairs", () => {
       `cache:${appIsrCacheKey(pathname, "html", "abc123")}`,
       `cache:${appIsrCacheKey(pathname, "rsc", "abc123")}`,
     ]);
-    expect(pairs[0].key).toMatch(/^cache:app:abc123:__hash:[0-9a-f]+:html$/);
-    expect(pairs[1].key).toMatch(/^cache:app:abc123:__hash:[0-9a-f]+:rsc$/);
+    expect(pairs[0].key).toMatch(/^cache:app:v2:abc123:__hash:[0-9a-f]+:html$/);
+    expect(pairs[1].key).toMatch(/^cache:app:v2:abc123:__hash:[0-9a-f]+:rsc$/);
   });
 
   it("uses the runtime key space for oversized deploy-time KV keys", () => {
@@ -290,7 +292,7 @@ describe("buildPrerenderKVPairs", () => {
     const { routeCount, pairs } = buildPrerenderKVPairs(serverDir);
 
     expect(routeCount).toBe(1);
-    expect(pairs.map((pair) => pair.key)).toEqual(["cache:app:build-escape:/safe:html"]);
+    expect(pairs.map((pair) => pair.key)).toEqual(["cache:app:v2:build-escape:/safe:html"]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("Skipping prerender KV seed"));
   });
 });

@@ -47,6 +47,7 @@ class TestStore implements WorkersResponseStore {
   ): Promise<ResponseStoreMutationResult> {
     if (this.mutationError) throw this.mutationError;
     this.response = response.clone();
+    this.response.headers.set("X-Workers-Response-Store", "BLOB-FRESH");
     this.options = options;
     return this.putResult;
   }
@@ -278,8 +279,12 @@ test("lazily resolves soft-tag expiration once per request after a candidate hit
     await handler.set("key", null);
 
     await runWithRequestContext(createRequestContext(), async () => {
-      await expect(handler.get("key", { softTags: ["path", "layout"] })).resolves.not.toBeNull();
-      await expect(handler.get("key", { softTags: ["path", "layout"] })).resolves.not.toBeNull();
+      await expect(
+        Promise.all([
+          handler.get("key", { softTags: ["path", "layout"] }),
+          handler.get("key", { softTags: ["layout", "path"] }),
+        ]),
+      ).resolves.not.toContain(null);
     });
 
     expect(store.tagExpirationCalls).toHaveLength(1);
@@ -299,6 +304,115 @@ test("does not resolve soft-tag expiration when the data entry misses", async ()
   const handler = new WorkersResponseStoreCacheHandler(store);
 
   await expect(handler.get("missing", { softTags: ["path"] })).resolves.toBeNull();
+  expect(store.tagExpirationCalls).toHaveLength(0);
+});
+
+test("observes an eager soft-tag failure after finishing the response body", async () => {
+  let releaseBody!: () => void;
+  const bodyBlocked = new Promise<void>((resolve) => {
+    releaseBody = resolve;
+  });
+  let markBodyConsumed!: () => void;
+  const bodyConsumed = new Promise<void>((resolve) => {
+    markBodyConsumed = resolve;
+  });
+  let rejectExpiration!: (error: Error) => void;
+  const expirationBlocked = new Promise<number>((_resolve, reject) => {
+    rejectExpiration = reject;
+  });
+  const store = new TestStore();
+  store.response = new Response(
+    new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          await bodyBlocked;
+          controller.enqueue(
+            new TextEncoder().encode(JSON.stringify({ lastModified: 10_000, value: null })),
+          );
+          controller.close();
+          markBodyConsumed();
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    {
+      headers: {
+        "Content-Type": "application/json",
+        "X-Workers-Response-Store": "BLOB-STALE",
+      },
+    },
+  );
+  store.getTagExpiration = async (tags) => {
+    store.tagExpirationCalls.push(tags);
+    return expirationBlocked;
+  };
+
+  const result = new WorkersResponseStoreCacheHandler(store).get("key", {
+    softTags: ["path"],
+  });
+  let settled = false;
+  void result.then(
+    () => {
+      settled = true;
+    },
+    () => {
+      settled = true;
+    },
+  );
+  const rejected = expect(result).rejects.toThrow("expiration unavailable");
+  await vi.waitFor(() => expect(store.tagExpirationCalls).toHaveLength(1));
+
+  rejectExpiration(new Error("expiration unavailable"));
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  releaseBody();
+  await bodyConsumed;
+  await rejected;
+  expect(settled).toBe(true);
+});
+
+test("retries a suppressed soft-tag failure after purging a corrupt blob", async () => {
+  const store = new TestStore();
+  const purge = vi.spyOn(store, "purge");
+  store.response = new Response("invalid", {
+    headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
+  });
+  let expirationCalls = 0;
+  store.getTagExpiration = (tags) => {
+    store.tagExpirationCalls.push(tags);
+    if (expirationCalls++ === 0) throw new Error("expiration unavailable");
+    return Promise.resolve(0);
+  };
+
+  const handler = new WorkersResponseStoreCacheHandler(store);
+  await runWithRequestContext(createRequestContext(), async () => {
+    await expect(handler.get("corrupt", { softTags: ["path"] })).resolves.toBeNull();
+
+    store.response = new Response(JSON.stringify({ lastModified: 10_000, value: null }), {
+      headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
+    });
+    await expect(handler.get("valid", { softTags: ["path"] })).resolves.not.toBeNull();
+  });
+
+  expect(store.tagExpirationCalls).toHaveLength(2);
+  expect(purge).toHaveBeenCalledOnce();
+});
+
+test("does not speculate soft-tag expiration for invalid or non-ok responses", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+
+  store.response = new Response("invalid");
+  await expect(handler.get("invalid", { softTags: ["path"] })).resolves.toBeNull();
+
+  store.response = new Response("unavailable", {
+    status: 503,
+    headers: { "X-Workers-Response-Store": "BLOB-FRESH" },
+  });
+  await expect(handler.get("unavailable", { softTags: ["path"] })).rejects.toThrow(
+    "Workers Response Store returned 503",
+  );
+
   expect(store.tagExpirationCalls).toHaveLength(0);
 });
 

@@ -18,13 +18,27 @@
  * The result is valid JSON that is also safe to embed in any HTML context
  * without additional escaping.
  */
+const HTML_UNSAFE_JSON_CHAR_RE = /[<>&\u2028\u2029]/;
+const HTML_UNSAFE_JSON_CHARS_RE = /[<>&\u2028\u2029]/g;
+const HTML_UNSAFE_JSON_ESCAPES: Readonly<Record<string, string>> = {
+  "<": "\\u003c",
+  ">": "\\u003e",
+  "&": "\\u0026",
+  "\u2028": "\\u2028",
+  "\u2029": "\\u2029",
+};
+
+function escapeHtmlUnsafeJsonChar(char: string): string {
+  return HTML_UNSAFE_JSON_ESCAPES[char];
+}
+
 export function safeJsonStringify(data: unknown): string {
-  return JSON.stringify(data)
-    .replace(/</g, "\\u003c")
-    .replace(/>/g, "\\u003e")
-    .replace(/&/g, "\\u0026")
-    .replace(/\u2028/g, "\\u2028")
-    .replace(/\u2029/g, "\\u2029");
+  // One scan instead of five chained replace() passes. Most payloads contain
+  // none of these characters, so the common case returns without copying.
+  const json = JSON.stringify(data);
+  if (json === undefined) throw new TypeError("Cannot serialize value as JSON");
+  if (!HTML_UNSAFE_JSON_CHAR_RE.test(json)) return json;
+  return json.replace(HTML_UNSAFE_JSON_CHARS_RE, escapeHtmlUnsafeJsonChar);
 }
 
 export function escapeHtmlAttr(value: string): string {
