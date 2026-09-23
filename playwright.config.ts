@@ -298,6 +298,30 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "cloudflare-static-assets-prerender": {
+    testDir: "./tests/e2e/cloudflare-static-assets-prerender",
+    use: { baseURL: "http://localhost:4214" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../examples/app-router-cloudflare/node_modules node_modules) && npx vp run vinext#build && npx vp run @vinext/cloudflare#build && node ../../../../packages/vinext/dist/cli.js build && npx wrangler dev --config dist/server/wrangler.json --port 4214",
+      cwd: "./tests/e2e/cloudflare-static-assets-prerender/fixture",
+      port: 4214,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
+  "cloudflare-static-export": {
+    testDir: "./tests/e2e/cloudflare-static-export",
+    use: { baseURL: "http://localhost:4215" },
+    server: {
+      command:
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../examples/app-router-cloudflare/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && node ../../static-export/serve-static.mjs dist/client 4215",
+      cwd: "./tests/e2e/cloudflare-static-export/fixture",
+      port: 4215,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
   "static-export-basepath": {
     testDir: "./tests/e2e/static-export-basepath",
     use: { baseURL: "http://localhost:4203/docs" },

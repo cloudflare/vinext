@@ -39,6 +39,7 @@ import { enterPrerenderPhase } from "./prerender-phase.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { resolveBuiltRscEntryPath } from "./server-entry.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
+import { registerPrerenderCloudflareLoader } from "./prerender-cloudflare-loader.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -166,6 +167,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const pagesDir = findDir(root, "pages", "src/pages");
 
   if (!appDir && !pagesDir) return null;
+
+  // The built Worker graph may import cloudflare:workers even when every page
+  // is static (for example the Cloudflare tracing integration). The Node-only
+  // prerender phase must not try to load its workerd-native module.
+  registerPrerenderCloudflareLoader();
 
   // Framework manifests and prerendered routes have one canonical location,
   // independent of where an adapter asks Vite to emit the executable RSC

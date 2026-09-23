@@ -534,11 +534,10 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (platform === "cloudflare" && !options.cloudflare) {
     throw new Error("Cloudflare init options must be resolved before running vinext init.");
   }
-  if (platform === "cloudflare" && options.prerender) {
-    throw new Error(
-      "Cloudflare init does not configure prerendering. Use cache warming during deploy instead.",
-    );
-  }
+  const cloudflareOptions =
+    platform === "cloudflare" && options.prerender
+      ? { ...options.cloudflare!, prerender: true }
+      : options.cloudflare;
   const exec =
     options._exec ??
     ((cmd: string, opts: { cwd: string; stdio: string }) =>
@@ -608,7 +607,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
         existingViteConfigPath,
         today: options._today,
       },
-      options.cloudflare!,
+      cloudflareOptions!,
     );
   }
 
@@ -664,7 +663,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   };
   const platformSetup =
     platform === "cloudflare"
-      ? setupCloudflarePlatform(setupContext, options.cloudflare!)
+      ? setupCloudflarePlatform(setupContext, cloudflareOptions!)
       : setupNodePlatform(setupContext);
   const { generatedViteConfig, skippedViteConfig, generatedPlatformFiles } = platformSetup;
 

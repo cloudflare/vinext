@@ -1407,8 +1407,10 @@ function vinextExpression(
   } else if (cacheEntries.length > 0) {
     optionEntries.push(`cache: { ${cacheEntries.join(", ")} }`);
   }
-  if (options.cdnCache === "static-assets") {
+  if (options.cdnCache === "static-assets" || options.prerender) {
     optionEntries.push('prerender: { routes: "*" }');
+  }
+  if (options.cdnCache === "static-assets") {
     if (path.normalize(assetsDirectory) !== path.normalize("dist/client")) {
       optionEntries.push(`clientOutDir: ${JSON.stringify(assetsDirectory)}`);
     }
@@ -2244,11 +2246,11 @@ function ensureVinextImageOptimizer(
   }
 }
 
-function ensureVinextStaticAssetsOptions(
+function ensureVinextPrerenderOptions(
   output: MagicString,
   config: AstObject,
   vinextBinding: string,
-  assetsDirectory: string,
+  assetsDirectory: string | undefined,
   code: string,
 ): void {
   const call = findPluginCall(config, vinextBinding);
@@ -2273,12 +2275,12 @@ function ensureVinextStaticAssetsOptions(
       output.overwrite(value.start, value.end, '{ routes: "*" }');
     }
   }
-  const clientOutDir = findProperty(optionsObject, "clientOutDir");
-  if (!clientOutDir) {
+  const clientOutDir = assetsDirectory && findProperty(optionsObject, "clientOutDir");
+  if (assetsDirectory && !clientOutDir) {
     if (path.normalize(assetsDirectory) !== path.normalize("dist/client")) {
       additions.push(`    clientOutDir: ${JSON.stringify(assetsDirectory)},`);
     }
-  } else {
+  } else if (assetsDirectory && clientOutDir) {
     const value = clientOutDir.value;
     if (value.type !== "Literal" || typeof value.value !== "string") {
       throw new Error(
@@ -2746,7 +2748,8 @@ export function updateViteConfigForCloudflare(
       (responseStoreExpression ||
         cacheAdditions.length > 0 ||
         imageOptimizerExpression ||
-        cacheOptions.cdnCache === "static-assets")
+        cacheOptions.cdnCache === "static-assets" ||
+        cacheOptions.prerender)
     ) {
       const properties: string[] = [];
       if (responseStoreExpression) {
@@ -2759,8 +2762,10 @@ export function updateViteConfigForCloudflare(
       if (imageOptimizerExpression) {
         properties.push(`images: { optimizer: ${imageOptimizerExpression} }`);
       }
-      if (cacheOptions.cdnCache === "static-assets") {
+      if (cacheOptions.cdnCache === "static-assets" || cacheOptions.prerender) {
         properties.push('prerender: { routes: "*" }');
+      }
+      if (cacheOptions.cdnCache === "static-assets") {
         if (
           options.assetsDirectory &&
           path.normalize(options.assetsDirectory) !== path.normalize("dist/client")
@@ -2786,12 +2791,14 @@ export function updateViteConfigForCloudflare(
       ensureVinextResponseStore(output, config, vinextBinding, responseStoreExpression, code);
       ensureVinextCache(output, config, vinextBinding, cacheAdditions, code);
       ensureVinextImageOptimizer(output, config, vinextBinding, imageOptimizerExpression, code);
-      if (cacheOptions.cdnCache === "static-assets") {
-        ensureVinextStaticAssetsOptions(
+      if (cacheOptions.cdnCache === "static-assets" || cacheOptions.prerender) {
+        ensureVinextPrerenderOptions(
           output,
           config,
           vinextBinding,
-          options.assetsDirectory ?? "dist/client",
+          cacheOptions.cdnCache === "static-assets"
+            ? (options.assetsDirectory ?? "dist/client")
+            : undefined,
           code,
         );
       }

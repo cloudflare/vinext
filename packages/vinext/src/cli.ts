@@ -367,8 +367,8 @@ function printHelp(cmd?: string) {
     --no-install         Update dependency entries without installing them
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
-    --prerender          Node only: configure Vite builds to pre-render all
-                         static routes (default: prompt, with No selected)
+    --prerender          Configure Vite builds to pre-render static routes
+                         (Cloudflare deploy won't serve them unless using Static Assets)
     --warm-cache         Add cache warming to the Cloudflare deploy script
                          (Response Store or Workers Cache, default: prompt with No)
     --experimental-cf    Generate cloudflare.config.ts with the v2 Cloudflare Vite plugin
