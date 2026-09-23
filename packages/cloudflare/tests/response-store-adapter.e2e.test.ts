@@ -822,6 +822,21 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.match(response.headers.get("cache-control") ?? "", /no-store/);
       await response.text();
     }
+
+    // Direct Flight streams before Client SSR can finish. Until the RSC/SSR
+    // render lifecycle can select an error status before headers, it must at
+    // least remain private and never publish the invalid response.
+    for (const query of ["", "?q=read-in-client-page"]) {
+      const url = `/query-error-client/reads${query}${query ? "&" : "?"}_rsc`;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await request(url, {
+          headers: { Accept: "text/x-component", RSC: "1" },
+        });
+        assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+        assert.match(response.headers.get("cache-control") ?? "", /private|no-store/);
+        await response.text();
+      }
+    }
   });
 
   test("keeps slot-only Client Page RSC payloads partitioned by query", async () => {

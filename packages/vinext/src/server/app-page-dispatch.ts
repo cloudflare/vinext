@@ -98,6 +98,7 @@ import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
   isRouteCacheabilityProbe,
+  markRouteCacheabilityFinalResponseUncacheable,
   markRouteCacheabilityPatternDynamic,
 } from "vinext/shims/cacheability-classification";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
@@ -706,6 +707,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     route.mayBeClientPage === true &&
     hasRequestSearchParams &&
     options.queryIndependentCandidate !== true;
+  // A cold Flight response cannot enforce a Client Page's `dynamic = "error"`
+  // contract before its SSR verification finishes. Without a certificate or
+  // completed runtime admission, even an empty-query payload must stay private.
+  const unverifiedStaticErrorClientRsc =
+    options.isRscRequest &&
+    isDynamicError &&
+    route.mayBeClientPage === true &&
+    options.queryIndependentCandidate !== true;
+  if (unverifiedStaticErrorClientRsc) {
+    markRouteCacheabilityFinalResponseUncacheable("unverified static-error Client Page Flight");
+  }
   const pageSearchParams = shouldUseEmptySearchParams
     ? new URLSearchParams()
     : options.searchParams;
@@ -764,6 +776,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     !isRouteCacheabilityProbe() &&
     options.bypassInterceptionContextCache !== true &&
     !queryBearingClientRsc &&
+    !unverifiedStaticErrorClientRsc &&
     !verifyRscThroughSsr &&
     shouldReadAppPageCache({
       isDraftMode,
@@ -1234,7 +1247,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isSpeculativePrerender,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
-    skipSharedRscCache: queryBearingClientRsc || verifyRscThroughSsr,
+    skipSharedRscCache:
+      queryBearingClientRsc || verifyRscThroughSsr || unverifiedStaticErrorClientRsc,
+    unverifiedStaticErrorClientRsc,
     verifyRscThroughSsr,
     queryIndependentCandidate: options.queryIndependentCandidate,
     traceOperation,

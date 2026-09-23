@@ -166,6 +166,8 @@ type RenderAppPageLifecycleOptionsBase = {
   isRscRequest: boolean;
   /** The direct Client Page Flight contains this request's query prop. */
   skipSharedRscCache?: boolean;
+  /** An unverified static-error Client Page Flight must never enter a response cache. */
+  unverifiedStaticErrorClientRsc?: boolean;
   /** Response Store observes Client Component query use by SSR-rendering a cold RSC payload. */
   verifyRscThroughSsr?: boolean;
   queryIndependentCandidate?: boolean;
@@ -820,7 +822,9 @@ async function renderAppPageLifecycleImpl(
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
   const shouldBypassRscCache =
-    shouldBypassRscCacheForSkipTransport || options.bypassInterceptionContextCache === true;
+    shouldBypassRscCacheForSkipTransport ||
+    options.bypassInterceptionContextCache === true ||
+    options.unverifiedStaticErrorClientRsc === true;
   const dynamicStaleTimeSeconds =
     options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
@@ -1015,7 +1019,9 @@ async function renderAppPageLifecycleImpl(
       options.isrDebug?.(
         options.bypassInterceptionContextCache === true
           ? "RSC cache write skipped (unverified interception context)"
-          : "RSC cache write skipped (skip transport payload)",
+          : options.unverifiedStaticErrorClientRsc === true
+            ? "RSC cache write skipped (unverified static-error Client Page)"
+            : "RSC cache write skipped (skip transport payload)",
         options.cleanPathname,
       );
     }

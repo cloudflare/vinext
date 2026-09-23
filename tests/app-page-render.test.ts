@@ -936,6 +936,26 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toContain('dynamic = "error"');
   });
 
+  it("keeps an unverified static-error Client Page Flight private without an ISR write", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isDynamicError: true,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 60,
+      skipSharedRscCache: true,
+      unverifiedStaticErrorClientRsc: true,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {
     const common = createCommonOptions();
 

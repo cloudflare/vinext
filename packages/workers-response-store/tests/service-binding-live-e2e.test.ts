@@ -72,7 +72,8 @@ test("the service-bound callback has a stable Workers Cache identity", async () 
 test("manual refresh loops back into the user Worker without a reverse binding", async () => {
   const path = `/${key("refresh")}`;
   await put(path, "seed", {
-    cacheControl: "public, max-age=2",
+    // Keep expiry out of this manual-refresh assertion even on a slow deploy.
+    cacheControl: "public, max-age=120",
     regeneratedBody: "refreshed",
   });
   await (await read(path)).arrayBuffer();

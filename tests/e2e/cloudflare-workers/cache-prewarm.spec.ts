@@ -361,6 +361,16 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
     expect(rejected.status()).toBe(500);
     expect(rejected.headers()["cache-control"]).toContain("no-store");
     await rejected.dispose();
+    const flightUrl = `${baseURL}/query-error-client/reads${query}${query ? "&" : "?"}_rsc`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const flight = await request.get(flightUrl, { headers: rscHeaders });
+      // Flight's Client SSR verifier can finish after streaming begins. In
+      // that case the result must stay private and must not become a HIT.
+      expect([200, 500]).toContain(flight.status());
+      expect(flight.headers()[cacheStatusHeader]).not.toBe("HIT");
+      expect(flight.headers()["cache-control"]).toMatch(/private|no-store/);
+      await flight.dispose();
+    }
   }
   const slotOnlyPath = `/query-slot-only-client/${suffix}`;
   const slotOnlyFirst = await request.get(
