@@ -36,6 +36,7 @@ export function safeJsonStringify(data: unknown): string {
   // One scan instead of five chained replace() passes. Most payloads contain
   // none of these characters, so the common case returns without copying.
   const json = JSON.stringify(data);
+  if (json === undefined) throw new TypeError("Cannot serialize value as JSON");
   if (!HTML_UNSAFE_JSON_CHAR_RE.test(json)) return json;
   return json.replace(HTML_UNSAFE_JSON_CHARS_RE, escapeHtmlUnsafeJsonChar);
 }
