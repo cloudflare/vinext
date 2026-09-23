@@ -39,7 +39,9 @@ describe("@vercel/og HarfBuzz compatibility", () => {
     expect(result!.code).not.toContain('import("./hb.wasm?module")');
     expect(result!.code).toContain('import("node:fs/promises")');
     expect(fs.readFileSync(path.join(path.dirname(nodeEntry), "hb.wasm"))).toEqual(
-      fs.readFileSync(createRequire(require.resolve("satori")).resolve("harfbuzzjs/hb.wasm")),
+      fs.readFileSync(
+        createRequire(createRequire(nodeEntry).resolve("satori")).resolve("harfbuzzjs/hb.wasm"),
+      ),
     );
   });
 });

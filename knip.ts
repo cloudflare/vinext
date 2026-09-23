@@ -50,9 +50,15 @@ export default {
         // Loaded dynamically by @vitejs/plugin-react when the React Compiler
         // integration test enables `react: { compiler: true }`.
         "oxc-transform-react",
+        // OG tests resolve these from vinext's @vercel/og install, not the root workspace.
+        "@vercel/og",
       ],
     },
     "packages/vinext": {
+      ignoreDependencies: [
+        // Resolve HarfBuzz through @vercel/og's own satori dependency so its WASM matches.
+        "satori",
+      ],
       entry: [
         ...entriesFromPackageJson("packages/vinext/package.json"),
         // Build-time entries referenced by path constant (Vite reads them
