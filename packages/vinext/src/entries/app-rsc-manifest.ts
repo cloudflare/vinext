@@ -47,6 +47,8 @@ type AppRscManifestCode = {
 
 type BuildAppRscManifestCodeOptions = {
   deferEagerImports?: boolean;
+  /** The request-stage build classification must also guard inner ISR reads. */
+  mayBeClientPages?: readonly boolean[];
   routes: AppRoute[];
   metadataRoutes?: MetadataFileRoute[];
   globalErrorPath?: string | null;
@@ -266,7 +268,11 @@ function lazyLoaderArray(
   return `[${filePaths.map((filePath) => (filePath ? imports.getLazyLoaderVar(filePath) : "null")).join(", ")}]`;
 }
 
-function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
+function buildRouteEntries(
+  routes: AppRoute[],
+  imports: ImportAllocator,
+  mayBeClientPages: readonly boolean[] = [],
+): string[] {
   return routes.map((route, routeIdx) => {
     // Pre-compute static-sibling segment names for the matched route's
     // dynamic URL levels. The client router uses this to decide if a cached
@@ -385,6 +391,7 @@ ${interceptEntries.join(",\n")}
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},
+    mayBeClientPage: ${route.pagePath !== null && mayBeClientPages[routeIdx] !== false},
     params: ${JSON.stringify(route.params)},
     staticSiblings: ${JSON.stringify(staticSiblings)},
     rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
@@ -564,7 +571,7 @@ export function buildAppRscManifestCode(
   const metadataRoutes = options.metadataRoutes ?? [];
 
   registerRouteModules(options.routes, imports);
-  const routeEntries = buildRouteEntries(options.routes, imports);
+  const routeEntries = buildRouteEntries(options.routes, imports, options.mayBeClientPages);
 
   const rootRoute = findRootBoundaryRoute(options.routes);
   const rootNotFoundPath = rootRouteBoundaryPath(

@@ -33,6 +33,7 @@ import { ACTION_OWNER_MANIFEST_ID } from "../plugins/action-owner-manifest.js";
 
 const DEFAULT_EXPIRE_TIME = 31_536_000;
 const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
+const UNKNOWN_DYNAMIC_CONFIG = Symbol("unknown route dynamic config");
 
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
@@ -254,10 +255,18 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     }
     return sourceCache.get(filePath) ?? null;
   };
-  const dynamicConfig = (filePath: string | null | undefined): string | null => {
+  const dynamicConfig = (
+    filePath: string | null | undefined,
+  ): string | null | typeof UNKNOWN_DYNAMIC_CONFIG => {
     if (!filePath) return null;
     const source = readSource(filePath);
-    return source === null ? null : (extractExportConstString(source, "dynamic") ?? null);
+    if (source === null) return UNKNOWN_DYNAMIC_CONFIG;
+    const literal = extractExportConstString(source, "dynamic");
+    if (literal !== null) return literal;
+    // An unparseable/nonliteral or re-exported config is not proof of an
+    // absent config. A conservative miss is safer than a shared key whose
+    // renderer later resolves a different effective dynamic mode.
+    return /\bdynamic\b|\bexport\s*\*/.test(source) ? UNKNOWN_DYNAMIC_CONFIG : null;
   };
 
   // A Client Page's searchParams promise is serialized by React before the
@@ -712,6 +721,9 @@ export function generateRscEntry(
   };
   const manifestCode = buildAppRscManifestCode({
     deferEagerImports: Boolean(instrumentationPath),
+    mayBeClientPages: buildAppRequestRouteMetadata(routes).map(
+      (route) => (route as { mayBeClientPage: boolean }).mayBeClientPage,
+    ),
     routes,
     metadataRoutes,
     globalErrorPath,

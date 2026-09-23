@@ -740,6 +740,23 @@ describe("App Router generated manifest construction", () => {
     expect(routeEntry).toContain("loadingTreePositions: [1,2]");
   });
 
+  it("carries possible Client Page classification into the renderer's inner ISR route", () => {
+    const client = { ...minimalAppRoutes[0], pagePath: "/tmp/test/app/client/page.tsx" };
+    const server = { ...minimalAppRoutes[0], pagePath: "/tmp/test/app/server/page.tsx" };
+    const manifest = buildAppRscManifestCode({
+      mayBeClientPages: [true, false],
+      routes: [client, server],
+    });
+
+    expect(manifest.routeEntries[0]).toContain("mayBeClientPage: true");
+    expect(manifest.routeEntries[1]).toContain("mayBeClientPage: false");
+    // If metadata is unavailable, the renderer must not assume that a Page
+    // can safely use the shared pathname-only RSC entry.
+    expect(buildAppRscManifestCode({ routes: [client] }).routeEntries[0]).toContain(
+      "mayBeClientPage: true",
+    );
+  });
+
   it("wires Route Handler generateStaticParams into staged path discovery", () => {
     const route = {
       ...minimalAppRoutes[1],
@@ -1182,6 +1199,8 @@ describe("App Router entry templates", () => {
     const dynamicLayout = path.join(tmpDir, "dynamic-layout.tsx");
     const dynamicHandler = path.join(tmpDir, "dynamic-route.ts");
     const forceStaticPage = path.join(tmpDir, "force-static-page.tsx");
+    const nonliteralDynamicPage = path.join(tmpDir, "nonliteral-dynamic-page.tsx");
+    const reexportedDynamicPage = path.join(tmpDir, "reexported-dynamic-page.tsx");
     const clientPage = path.join(tmpDir, "client-page.tsx");
     const reexportedPage = path.join(tmpDir, "reexported-page.tsx");
     fs.writeFileSync(staticPage, "export default function Page() { return null; }");
@@ -1203,6 +1222,14 @@ describe("App Router entry templates", () => {
     );
     fs.writeFileSync(clientPage, '"use client"; export default function Page() { return null; }');
     fs.writeFileSync(reexportedPage, 'export { default } from "./client-page";');
+    fs.writeFileSync(
+      nonliteralDynamicPage,
+      'const mode = "auto"; export const dynamic = mode; export default function Page() { return null; }',
+    );
+    fs.writeFileSync(
+      reexportedDynamicPage,
+      'export { dynamic } from "./dynamic-page"; export default function Page() { return null; }',
+    );
 
     try {
       const code = generateAppRequestRscEntry(tmpDir, [
@@ -1215,6 +1242,18 @@ describe("App Router entry templates", () => {
         },
         { ...minimalAppRoutes[0], pattern: "/client", pagePath: clientPage, layouts: [] },
         { ...minimalAppRoutes[0], pattern: "/reexport", pagePath: reexportedPage, layouts: [] },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/nonliteral-child",
+          pagePath: nonliteralDynamicPage,
+          layouts: [forceStaticPage],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/reexported-child",
+          pagePath: reexportedDynamicPage,
+          layouts: [forceStaticPage],
+        },
         { ...minimalAppRoutes[0], pattern: "/page", pagePath: dynamicPage, layouts: [] },
         {
           ...minimalAppRoutes[0],
@@ -1319,8 +1358,10 @@ describe("App Router entry templates", () => {
         "/client": false,
         "/force-static": false,
         "/layout": true,
+        "/nonliteral-child": false,
         "/page": true,
         "/reexport": false,
+        "/reexported-child": false,
         "/sibling-force-static": false,
         "/sibling-intercept": true,
         "/slot-intercept": true,
@@ -1330,6 +1371,8 @@ describe("App Router entry templates", () => {
         Object.fromEntries(routes.map((route) => [route.pattern, route.queryIndependentConfig])),
       ).toMatchObject({
         "/force-static": true,
+        "/nonliteral-child": false,
+        "/reexported-child": false,
         "/sibling-force-static": false,
       });
       expect(
@@ -1338,6 +1381,8 @@ describe("App Router entry templates", () => {
         ),
       ).toMatchObject({
         "/force-static": true,
+        "/nonliteral-child": false,
+        "/reexported-child": false,
         "/sibling-force-static": false,
         "/client": false,
       });
