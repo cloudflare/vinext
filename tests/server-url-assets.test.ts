@@ -102,6 +102,26 @@ describe("vinext:server-url-assets transform", () => {
     expect(applies({ name: "rsc", config: { consumer: "server" } })).toBe(true);
     expect(applies({ name: "ssr", config: { consumer: "server" } })).toBe(true);
     expect(applies({ name: "client", config: { consumer: "client" } })).toBe(false);
+    // Nitro re-bundles the built vinext server outputs, whose remaining
+    // `new URL` references point at emitted files next to those outputs.
+    expect(applies({ name: "nitro", config: { consumer: "server" } })).toBe(false);
+  });
+
+  it("pre-filters modules on new URL(..., import.meta.url) calls", () => {
+    const plugin = findPlugin();
+    const filter = (plugin.transform as { filter: { code: RegExp } }).filter.code;
+
+    expect(filter.test(`fetch(new URL("./text-file.txt", import.meta.url));`)).toBe(true);
+    expect(filter.test(`new URL(\n  "./text-file.txt",\n  import.meta.url,\n);`)).toBe(true);
+    // `)` inside the specifier must not end the argument list.
+    expect(filter.test(`fetch(new URL("./Inter (Bold).ttf", import.meta.url));`)).toBe(true);
+    expect(filter.test(`fetch(new URL('./image (1).png', import.meta.url));`)).toBe(true);
+    expect(filter.test("fetch(new URL(`./data (v2).json`, import.meta.url));")).toBe(true);
+    expect(filter.test(`fetch(new URL("./a\\").txt", import.meta.url));`)).toBe(true);
+
+    // import.meta.url outside the new URL(...) argument list.
+    expect(filter.test(`new URL(request.url); console.log(import.meta.url);`)).toBe(false);
+    expect(filter.test(`new URL("./a (1).txt"); console.log(import.meta.url);`)).toBe(false);
   });
 
   it("skips the ssr environment only for App Router builds without pages/", () => {

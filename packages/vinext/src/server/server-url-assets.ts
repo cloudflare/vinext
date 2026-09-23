@@ -13,7 +13,9 @@
  * ship in a lazily imported chunk. This module keeps that registry on
  * `globalThis` (shared across Vite's per-environment module instances) and
  * answers `fetch()` for registered URLs only — arbitrary `file:` URLs still go
- * to the platform fetch, so request-controlled input cannot read local files.
+ * to the platform fetch, so request-controlled input cannot read arbitrary
+ * local files. Like Next.js's `blob:` asset names, a registered URL is matched
+ * by string, so it serves bytes that already ship in the server bundle.
  *
  * Keep this module tiny: the fetch-cache shim imports it on every server
  * bundle's fetch path.

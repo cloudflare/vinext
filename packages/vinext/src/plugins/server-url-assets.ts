@@ -69,8 +69,13 @@ const SERVER_URL_ASSET_ID_SUFFIX = ".js";
 const SERVER_URL_ASSET_ID_RE = /^\0vinext-server-url-asset(?:-bytes)?:.+\.js$/;
 
 // Native pre-filter: a `new URL(` call whose argument list mentions
-// import.meta.url. Deliberately over-inclusive; the AST pass below is exact.
-const NEW_URL_IMPORT_META_URL_RE = /\bnew\s+URL\s*\([^)]*\bimport\.meta\.url\b/;
+// import.meta.url before the first `)` outside a string literal. String
+// literals are skipped whole, so file names such as "./Inter (Bold).ttf" still
+// match; every alternative starts with a different character, so matching does
+// not backtrack between them. Deliberately over-inclusive; the AST pass below
+// is exact.
+const NEW_URL_IMPORT_META_URL_RE =
+  /\bnew\s+URL\s*\((?:[^)"'`]|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|`(?:[^`\\]|\\[\s\S])*`)*?\bimport\.meta\.url\b/;
 const URL_SCHEME_RE = /^[a-z][a-z\d+.-]*:/i;
 const BINDING_PREFIX = "__vinext_server_url_asset";
 
@@ -161,6 +166,12 @@ export function createServerUrlAssetsPlugin(
     applyToEnvironment(environment) {
       // Client builds keep Vite's own `new URL` asset handling (public URLs).
       if (environment.config.consumer !== "server") return false;
+      // Nitro's environment re-bundles the already-built vinext server outputs.
+      // Their project references were rewritten when those outputs were built;
+      // any `new URL` left in them points at an emitted file (e.g. the
+      // @vercel/og WASM fallback) that must stay relative to the deployed
+      // output rather than be pinned to the build directory and inlined again.
+      if (environment.name === "nitro") return false;
       // Without a Pages Router, the App Router `ssr` environment only renders
       // client components, which never fetch server assets. Inlining their
       // `new URL` files would only grow the SSR (and Worker) bundle. Route
