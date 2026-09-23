@@ -260,11 +260,14 @@ export function sanitizeRscChunkFileName(name: string): string {
  * modules that are only reachable through dynamic imports must stay out of the
  * eager framework chunk (issue #2073).
  */
-export function createRscFrameworkChunkOutputConfig() {
+export function createRscFrameworkChunkOutputConfig(
+  leadingGroups: readonly CodeSplittingGroup[] = [],
+) {
   return {
     sanitizeFileName: sanitizeRscChunkFileName,
     codeSplitting: {
       groups: [
+        ...leadingGroups,
         {
           name: "framework",
           test: RSC_FRAMEWORK_CHUNK_TEST,
@@ -311,6 +314,7 @@ type VinextBuildOutput = Exclude<
   readonly unknown[]
 >;
 type VinextCodeSplittingConfig = Exclude<NonNullable<VinextBuildOutput["codeSplitting"]>, boolean>;
+type CodeSplittingGroup = NonNullable<VinextCodeSplittingConfig["groups"]>[number];
 type ChunkFileNames = NonNullable<VinextBuildOutput["chunkFileNames"]>;
 type ChunkFileNameFunction = Exclude<ChunkFileNames, string>;
 

@@ -67,6 +67,67 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
     void consoleErrors;
   });
 
+  // Ported from Next.js: test/e2e/app-dir/next-dynamic-css/next-dynamic-css.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/next-dynamic-css/next-dynamic-css.test.ts
+  //
+  // `inner2.tsx` throws during SSR, so the page recovers through a client
+  // render. `global.css` is imported by a Server Component layout and by a
+  // next/dynamic client component; the client chunk's copy must not be
+  // re-inserted after the CSS Modules and page stylesheet that follow it.
+  test.describe("next-dynamic-css", () => {
+    const NEXT_DYNAMIC_CSS_URL = `${BASE_URL}/next-dynamic-css/page`;
+
+    test("should have correct order of styles between global and css modules", async ({ page }) => {
+      await page.goto(NEXT_DYNAMIC_CSS_URL);
+      const server = page.locator("#server");
+      await expect(server).toHaveText("Hello Server");
+      await expect(server).toHaveCSS("background-color", "rgb(0, 128, 0)");
+      await expect(server).toHaveCSS("color", "rgb(0, 0, 0)");
+    });
+
+    test("should have correct order of styles on client component that is sharing styles with next/dynamic", async ({
+      page,
+    }) => {
+      await page.goto(NEXT_DYNAMIC_CSS_URL);
+      const inner2 = page.locator("#inner2");
+      await expect(inner2).toHaveText("Hello Inner 2");
+      await expect(inner2).toHaveCSS("background-color", "rgb(0, 128, 0)");
+      await expect(inner2).toHaveCSS("color", "rgb(0, 0, 0)");
+    });
+
+    test("should have correct order of styles on next/dynamic loaded component", async ({
+      page,
+    }) => {
+      await page.goto(NEXT_DYNAMIC_CSS_URL);
+      const component = page.locator("#component");
+      await expect(component).toHaveText("Hello Component");
+      await expect(component).toHaveCSS("background-color", "rgb(0, 128, 0)");
+      await expect(component).toHaveCSS("color", "rgb(0, 0, 0)");
+    });
+
+    test("should have correct order of global styles between layout and pages", async ({
+      page,
+    }) => {
+      await page.goto(NEXT_DYNAMIC_CSS_URL);
+      const global = page.locator("#global");
+      await expect(global).toHaveText("Hello Global");
+      await expect(global).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      await expect(global).toHaveCSS("color", "rgb(0, 0, 0)");
+      await expect(page.locator("body")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+    });
+
+    test("links the shared stylesheet once", async ({ page }) => {
+      await page.goto(NEXT_DYNAMIC_CSS_URL);
+      await expect(page.locator("#component")).toHaveText("Hello Component");
+      const stylesheetPaths = await page
+        .locator('link[rel="stylesheet"]')
+        .evaluateAll((links) =>
+          links.map((link) => new URL((link as HTMLLinkElement).href).pathname),
+        );
+      expect(stylesheetPaths).toEqual([...new Set(stylesheetPaths)]);
+    });
+  });
+
   test("preserves request.cf in App Router route handlers without ISR caching", async ({
     request,
   }) => {
