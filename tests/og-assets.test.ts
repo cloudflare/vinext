@@ -68,6 +68,26 @@ describe("vinext:og-assets plugin", () => {
   });
 
   describe("dedup: emitted asset present", () => {
+    it("does not mistake a HarfBuzz callback bridge for hb.wasm", () => {
+      const plugin = createOgAssetsPlugin();
+      const generateBundle = unwrapHook(plugin.generateBundle);
+      const bundle = makeBundle({ chunkCode: 'new URL("./hb.wasm", import.meta.url)' });
+      bundle["_next/static/hb-bridge-i.wasm"] = {
+        type: "asset",
+        fileName: "_next/static/hb-bridge-i.wasm",
+      };
+      bundle["_next/static/hb-ABC.wasm"] = {
+        type: "asset",
+        fileName: "_next/static/hb-ABC.wasm",
+      };
+
+      generateBundle.call(rscCtx, {}, bundle);
+
+      expect(bundle["_next/static/index.edge-AAA.js"].code).toContain(
+        'new URL("./hb-ABC.wasm", import.meta.url)',
+      );
+    });
+
     it("rewrites the Node fallback new URL(...) to the emitted resvg/yoga asset", () => {
       const plugin = createOgAssetsPlugin();
       const generateBundle = unwrapHook(plugin.generateBundle);

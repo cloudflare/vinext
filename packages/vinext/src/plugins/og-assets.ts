@@ -226,7 +226,9 @@ function findEmittedWasmAsset(
   const re = new RegExp(`^${stem}(?:[-.][\\w-]+)?\\.wasm$`);
   for (const output of Object.values(bundle)) {
     if (output.type !== "asset") continue;
-    if (re.test(path.basename(output.fileName))) return output.fileName;
+    const filename = path.basename(output.fileName);
+    if (baseName === "hb.wasm" && filename.startsWith("hb-bridge-")) continue;
+    if (re.test(filename)) return output.fileName;
   }
   return null;
 }
