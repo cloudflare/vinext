@@ -335,6 +335,11 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
         configs.every(
           (config) => config === null || config === "force-static" || config === "error",
         ),
+      // Unlike `error`, force-static substitutes empty searchParams before a
+      // Client Page's props are serialized into the direct RSC payload.
+      queryIndependentForceStatic:
+        ownConfigs.includes("force-static") &&
+        configs.every((config) => config === null || config === "force-static"),
       ids: route.ids ?? null,
       pattern: route.pattern,
       patternParts: route.patternParts,

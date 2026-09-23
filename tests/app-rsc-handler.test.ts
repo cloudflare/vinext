@@ -117,6 +117,7 @@ type TestRoute = {
   forceDynamic?: boolean;
   mayBeClientPage?: boolean;
   queryIndependentConfig?: boolean;
+  queryIndependentForceStatic?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -671,6 +672,38 @@ describe("createAppRscHandler", () => {
     const [, props] = dispatchResponseStage.mock.calls[0]!;
     expect(props.cacheability).not.toMatchObject({ queryIndependentCandidate: true });
     expect(props.cacheability).not.toMatchObject({ queryIndependent: true });
+  });
+
+  it("shares a force-static Client Page RSC variant after its query is substituted", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+      async () => new Response("page"),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => ({
+        params: {},
+        route: createPageRoute({
+          mayBeClientPage: true,
+          queryIndependentConfig: true,
+          queryIndependentForceStatic: true,
+        }),
+      }),
+    });
+    const headers = createRscRequestHeaders();
+    const rscUrl = await createRscRequestUrl("/docs/about?q=first", headers);
+
+    await handler(
+      new Request(`https://example.test${rscUrl}`, { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [, props] = dispatchResponseStage.mock.calls[0]!;
+    expect(props.cacheability).toMatchObject({
+      queryIndependentCandidate: true,
+      queryIndependent: true,
+    });
   });
 
   it.each(["no-cache", "no-store", "max-age=0, no-cache"])(

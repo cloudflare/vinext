@@ -154,8 +154,16 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   await expect(page.getByTestId("query-client-independent-value")).toHaveText(
     "No searchParams used",
   );
-  await page.getByRole("button", { name: "Clicked 0 times" }).click();
-  await expect(page.getByRole("button", { name: "Clicked 1 times" })).toBeVisible();
+  await expect
+    .poll(
+      async () => {
+        const button = page.getByRole("button", { name: /^Clicked \d+ times$/ });
+        if ((await button.textContent()) === "Clicked 0 times") await button.click();
+        return button.textContent();
+      },
+      { message: "Client Page did not hydrate on the preview", timeout: 20_000 },
+    )
+    .toBe("Clicked 1 times");
   await page.getByRole("link", { name: "Open query-dependent Client Page" }).click();
   await expect(page.getByTestId("query-client-dependent-value")).toHaveText("from-navigation");
 
@@ -205,10 +213,18 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   }
   await page.goto(parallelSecondUrl);
   await expect(page.getByTestId("query-parallel-client-late-value")).toHaveText("(unread)");
-  await page.getByRole("button", { name: "Read searchParams" }).click();
-  await expect(page.getByTestId("query-parallel-client-late-value")).toHaveText(
-    parallelSecondQuery,
-  );
+  // A streamed Client Page can show its button before its JS hydrates on the
+  // remote preview. Repeating this idempotent click distinguishes that race
+  // from a genuinely stale/missing current-query promise.
+  await expect
+    .poll(
+      async () => {
+        await page.getByRole("button", { name: "Read searchParams" }).click();
+        return page.getByTestId("query-parallel-client-late-value").textContent();
+      },
+      { message: "parallel Client Page did not read the current query", timeout: 20_000 },
+    )
+    .toBe(parallelSecondQuery);
 
   let forceStaticFirstBody = "";
   await expect
@@ -246,6 +262,28 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   // The ordinary static route above has an HTML-only manifest certificate.
   // An explicit force-static route certifies both HTML and RSC on-demand.
   const rscHeaders = { accept: "text/x-component", RSC: "1" };
+  const errorClientPath = `/query-error-client/${suffix}`;
+  const errorClientFirst = await request.get(
+    `${baseURL}${errorClientPath}?q=error-first-${suffix}&_rsc=error-first-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const errorClientFirstBody = await errorClientFirst.text();
+  const errorClientRepeat = await request.get(
+    `${baseURL}${errorClientPath}?q=error-first-${suffix}&_rsc=error-first-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const errorClientSecond = await request.get(
+    `${baseURL}${errorClientPath}?q=error-second-${suffix}&_rsc=error-second-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const errorClientSecondBody = await errorClientSecond.text();
+  expect(errorClientFirst.ok()).toBe(true);
+  expect(errorClientRepeat.ok()).toBe(true);
+  expect(errorClientSecond.ok()).toBe(true);
+  expect(errorClientFirstBody).toContain(`error-first-${suffix}`);
+  expect(errorClientSecondBody).toContain(`error-second-${suffix}`);
+  expect(errorClientSecondBody).not.toContain(`error-first-${suffix}`);
+  await errorClientRepeat.dispose();
   let forceStaticRscBody = "";
   await expect
     .poll(
@@ -275,6 +313,24 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
       decodeURIComponent(forceStaticSecondRsc.headers()["x-vinext-rendered-path-and-search"] ?? ""),
     ).toBe(`/query-force-static/${suffix}?q=second-${suffix}`);
   }
+
+  const forcedClientPath = `/query-force-static-client/${suffix}`;
+  const forcedClientFirst = await request.get(
+    `${baseURL}${forcedClientPath}?q=first-${suffix}&_rsc=first-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const forcedClientFirstBody = await forcedClientFirst.text();
+  const forcedClientSecond = await request.get(
+    `${baseURL}${forcedClientPath}?q=second-${suffix}&_rsc=second-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const forcedClientSecondBody = await forcedClientSecond.text();
+  expect(forcedClientFirst.ok()).toBe(true);
+  expect(forcedClientSecond.ok()).toBe(true);
+  expect(forcedClientSecond.headers()[cacheStatusHeader]).toBe("HIT");
+  expect(forcedClientSecondBody).toBe(forcedClientFirstBody);
+  expect(forcedClientFirstBody).not.toContain(`first-${suffix}`);
+  expect(forcedClientFirstBody).not.toContain(`second-${suffix}`);
 
   // An on-demand page may prove query independence only after rendering, so
   // Response Store can share its RSC entry while Workers Cache remains conservative.

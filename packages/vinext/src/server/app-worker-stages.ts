@@ -42,6 +42,7 @@ export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope 
   forceDynamic?: boolean;
   mayBeClientPage?: boolean;
   queryIndependentConfig?: boolean;
+  queryIndependentForceStatic?: boolean;
   interceptionContext: string | null;
   interceptionId: string | null;
   isRscRequest: boolean;
@@ -221,6 +222,8 @@ export function isAppWorkerResponseStageProps(
     (props.mayBeClientPage === undefined || typeof props.mayBeClientPage === "boolean") &&
     (props.queryIndependentConfig === undefined ||
       typeof props.queryIndependentConfig === "boolean") &&
+    (props.queryIndependentForceStatic === undefined ||
+      typeof props.queryIndependentForceStatic === "boolean") &&
     (props.interceptionContext === null || typeof props.interceptionContext === "string") &&
     (props.interceptionId === null || typeof props.interceptionId === "string") &&
     typeof props.isRscRequest === "boolean" &&

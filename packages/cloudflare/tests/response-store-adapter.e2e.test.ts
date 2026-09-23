@@ -183,6 +183,38 @@ describe("Cloudflare Workers Response Store adapter", () => {
         decodeURIComponent(secondRsc.headers.get("x-vinext-rendered-path-and-search") ?? ""),
         "/query-on-demand/self-contained-rsc?q=second",
       );
+
+      const unusedClientFirst = await fetch("/query-client-independent?q=first-client");
+      const unusedClientBody = await unusedClientFirst.text();
+      const unusedClientSecond = await fetch("/query-client-independent?q=second-client");
+      assert.equal(unusedClientSecond.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await unusedClientSecond.text(), unusedClientBody);
+      assert.ok(!unusedClientBody.includes("first-client"));
+
+      const readingClientFirst = await fetch("/query-client-dependent?q=first-client");
+      const readingClientBody = await readingClientFirst.text();
+      const readingClientSecond = await fetch("/query-client-dependent?q=second-client");
+      assert.notEqual(readingClientSecond.headers.get("x-vinext-cache"), "HIT");
+      assert.match(readingClientSecond.headers.get("cache-control") ?? "", /no-store/);
+      assert.equal(htmlValue(readingClientBody, "query-client-dependent-value"), "first-client");
+      assert.equal(
+        htmlValue(await readingClientSecond.text(), "query-client-dependent-value"),
+        "second-client",
+      );
+
+      const errorClientFirst = await fetch(
+        "/query-error-client/self-contained?q=first-client&_rsc=first",
+        rscHeaders,
+      );
+      const errorClientFirstBody = await errorClientFirst.text();
+      const errorClientSecond = await fetch(
+        "/query-error-client/self-contained?q=second-client&_rsc=second",
+        rscHeaders,
+      );
+      const errorClientSecondBody = await errorClientSecond.text();
+      assert.ok(errorClientFirstBody.includes("first-client"));
+      assert.ok(errorClientSecondBody.includes("second-client"));
+      assert.ok(!errorClientSecondBody.includes("first-client"));
     } finally {
       await isolated.dispose();
     }
@@ -554,6 +586,31 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.ok(!forceStaticSecond.body.includes('"q","first"'));
     assert.ok(!forceStaticSecond.body.includes("searchParamsFromBrowser:true"));
     assert.doesNotMatch(forceStaticSecond.cacheControl ?? "", /no-store/);
+
+    const forceRscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const forceRscFirst = await request("/query-force-static/rsc-on-demand?q=first&_rsc=first", {
+      headers: forceRscHeaders,
+    });
+    const forceRscFirstBody = await forceRscFirst.text();
+    const forceRscSecond = await request("/query-force-static/rsc-on-demand?q=second&_rsc=second", {
+      headers: forceRscHeaders,
+    });
+    assert.equal(forceRscSecond.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await forceRscSecond.text(), forceRscFirstBody);
+
+    const forcedClientFirst = await request(
+      "/query-force-static-client/rsc-client?q=first-client&_rsc=first",
+      { headers: forceRscHeaders },
+    );
+    const forcedClientFirstBody = await forcedClientFirst.text();
+    const forcedClientSecond = await request(
+      "/query-force-static-client/rsc-client?q=second-client&_rsc=second",
+      { headers: forceRscHeaders },
+    );
+    assert.equal(forcedClientSecond.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await forcedClientSecond.text(), forcedClientFirstBody);
+    assert.ok(!forcedClientFirstBody.includes("first-client"));
+    assert.ok(!forcedClientFirstBody.includes("second-client"));
 
     const handlerFirst = await cacheStatus("/api/query-handler-static?q=first");
     const handlerSecond = await cacheStatus("/api/query-handler-static?q=second");

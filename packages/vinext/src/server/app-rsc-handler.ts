@@ -280,6 +280,7 @@ export type AppRscHandlerRoute = {
   forceDynamic?: boolean;
   mayBeClientPage?: boolean;
   queryIndependentConfig?: boolean;
+  queryIndependentForceStatic?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -1185,7 +1186,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             props.forceDynamic !== true &&
             (props.kind === "app-route-handler"
               ? props.queryIndependentConfig === true
-              : !props.isRscRequest || props.mayBeClientPage !== true) &&
+              : !props.isRscRequest ||
+                props.mayBeClientPage !== true ||
+                props.queryIndependentForceStatic === true) &&
             // A query-changing rewrite needs its server-owned bootstrap.
             hasSameUserQuery(stageRequest.url, props.resolvedUrl);
           let response = await dispatchResponseStage(
@@ -2387,6 +2390,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         forceDynamic: route.forceDynamic === true,
         mayBeClientPage: route.mayBeClientPage === true,
         queryIndependentConfig: route.queryIndependentConfig === true,
+        queryIndependentForceStatic: route.queryIndependentForceStatic === true,
         interceptionContext: isRscRequest ? interceptionContextHeader : null,
         interceptionId: interceptionIdHeader,
         isRscRequest,
@@ -2422,7 +2426,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         queryIndependentCandidate:
           request.method === "GET" &&
           !route.forceDynamic &&
-          (!isRscRequest || !route.mayBeClientPage) &&
+          (!isRscRequest || !route.mayBeClientPage || route.queryIndependentForceStatic === true) &&
           !isProgressiveActionRender &&
           hasSameUserQuery(url.toString(), resolvedUrl),
         middlewareContext,

@@ -1300,6 +1300,7 @@ describe("App Router entry templates", () => {
         forceDynamic: boolean;
         mayBeClientPage: boolean;
         queryIndependentConfig: boolean;
+        queryIndependentForceStatic: boolean;
         pattern: string;
       }>;
 
@@ -1330,6 +1331,15 @@ describe("App Router entry templates", () => {
       ).toMatchObject({
         "/force-static": true,
         "/sibling-force-static": false,
+      });
+      expect(
+        Object.fromEntries(
+          routes.map((route) => [route.pattern, route.queryIndependentForceStatic]),
+        ),
+      ).toMatchObject({
+        "/force-static": true,
+        "/sibling-force-static": false,
+        "/client": false,
       });
     } finally {
       fs.rmSync(tmpDir, { force: true, recursive: true });

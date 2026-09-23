@@ -293,7 +293,9 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
       (page.kind === "app-page" ||
         (page.kind === "app-route-handler" && page.queryIndependentConfig === true)) &&
       page.forceDynamic !== true &&
-      (page.isRscRequest !== true || page.mayBeClientPage !== true) &&
+      (page.isRscRequest !== true ||
+        page.mayBeClientPage !== true ||
+        page.queryIndependentForceStatic === true) &&
       typeof page.resolvedUrl === "string" &&
       cacheability &&
       typeof cacheability === "object" &&
