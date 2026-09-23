@@ -1,5 +1,36 @@
 # vinext
 
+## 1.0.0-beta.12
+
+### Bug Fixes
+
+- **Constants:** guard Node feature detection in browser imports (#3394)
+- **Navigation:** clear pending links on server action redirects (#3393)
+- **Head:** serialize adjacent head tags without whitespace nodes (#3391)
+- **Cache:** protect cache function references (#3385)
+- detect Wrangler with Bun on Windows (#3364)
+- **Cache:** isolate divergent App Router route identities (#3357)
+- **Metadata:** enforce static params for image routes (#3358)
+- **Dev:** initialize App instrumentation in the RSC runner (#3363)
+- **Dev:** pre-optimize Pages hydration runtime (#3356)
+- **Pages:** preserve production CSS graph order (#3314)
+- **Pages:** include resolved CSS aliases in dev manifest (#3355)
+- **App Router:** send anonymous crossOrigin on dynamic preloads and bootstrap hints (#3327)
+
+### Performance
+
+- **Render:** batch Flight chunks and optimize render hot paths (#3402)
+- **Render:** batch inline RSC chunks (#3397)
+
+### Contributors
+
+- @camc314
+- @james-elicx
+- @lyzno1
+- @matthewp
+- @snhsish
+- @yaner-here
+
 ## 1.0.0-beta.11
 
 ### Features
