@@ -79,6 +79,22 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
   ].filter((value): value is string => typeof value === "string");
 }
 
+// Every route walks the same module graph, and each Rolldown getModuleInfo()
+// call crosses into native code, so look each module up once per build pass.
+function memoizeModuleInfo(
+  getModuleInfo: (id: string) => ActionOwnerModuleInfo | null,
+): (id: string) => ActionOwnerModuleInfo | null {
+  const cache = new Map<string, ActionOwnerModuleInfo | null>();
+  return (id) => {
+    let info = cache.get(id);
+    if (info === undefined) {
+      info = getModuleInfo(id);
+      cache.set(id, info);
+    }
+    return info;
+  };
+}
+
 export function collectReachableActionReferences(
   options: {
     canonicalizeModuleId?: (id: string) => string;
@@ -132,13 +148,14 @@ export function collectRscActionReachability(
     sharedRoots?: readonly string[];
   } & ActionOwnerReferenceMaps,
 ): ActionOwnerRouteReachability {
+  const getModuleInfo = memoizeModuleInfo(options.getModuleInfo);
   const routeReachability: ActionOwnerRouteReachability = new Map(
     options.routes.map((route) => [
       route.pattern,
       collectReachableActionReferences({
         canonicalizeModuleId: options.canonicalizeModuleId,
         clientReferenceMetaMap: options.clientReferenceMetaMap,
-        getModuleInfo: options.getModuleInfo,
+        getModuleInfo,
         roots: actionOwnerRouteEntryIds(route),
         serverReferenceMetaMap: options.serverReferenceMetaMap,
       }),
@@ -150,7 +167,7 @@ export function collectRscActionReachability(
       collectReachableActionReferences({
         canonicalizeModuleId: options.canonicalizeModuleId,
         clientReferenceMetaMap: options.clientReferenceMetaMap,
-        getModuleInfo: options.getModuleInfo,
+        getModuleInfo,
         roots: options.sharedRoots,
         serverReferenceMetaMap: options.serverReferenceMetaMap,
       }),
@@ -165,11 +182,16 @@ export async function resolveClientReferenceImportIds(options: {
   routeReachability: ActionOwnerRouteReachability;
 }): Promise<void> {
   const canonicalizeModuleId = options.canonicalizeModuleId ?? ((id: string) => id);
+  const resolvedIdsByImportId = new Map<string, string>();
   for (const reachability of options.routeReachability.values()) {
     const resolvedImportIds = new Set<string>();
     for (const importId of reachability.clientReferenceImportIds) {
-      const resolvedId = (await options.resolveId(importId)) ?? importId;
-      resolvedImportIds.add(canonicalizeModuleId(resolvedId));
+      let resolvedId = resolvedIdsByImportId.get(importId);
+      if (resolvedId === undefined) {
+        resolvedId = canonicalizeModuleId((await options.resolveId(importId)) ?? importId);
+        resolvedIdsByImportId.set(importId, resolvedId);
+      }
+      resolvedImportIds.add(resolvedId);
     }
     reachability.clientReferenceImportIds = resolvedImportIds;
   }
@@ -182,11 +204,12 @@ export function addClientActionReachability(
     routeReachability: ActionOwnerRouteReachability;
   } & ActionOwnerReferenceMaps,
 ): void {
+  const getModuleInfo = memoizeModuleInfo(options.getModuleInfo);
   for (const reachability of options.routeReachability.values()) {
     const clientReachability = collectReachableActionReferences({
       canonicalizeModuleId: options.canonicalizeModuleId,
       clientReferenceMetaMap: options.clientReferenceMetaMap,
-      getModuleInfo: options.getModuleInfo,
+      getModuleInfo,
       roots: [...reachability.clientReferenceImportIds],
       serverReferenceMetaMap: options.serverReferenceMetaMap,
     });
