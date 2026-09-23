@@ -18,4 +18,9 @@ test("Cloudflare Vite plugin exports HTML for direct asset serving", async ({ re
   const response = await request.get("http://localhost:4215/");
   expect(response.status()).toBe(200);
   expect(await response.text()).toContain('<p id="export-probe">build-time</p>');
+
+  const api = await request.get("http://localhost:4215/api/ping");
+  expect(api.status()).toBe(200);
+  expect(api.headers()["x-worker-route"]).toBe("yes");
+  expect(await api.json()).toEqual({ from: "worker" });
 });

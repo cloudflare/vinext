@@ -45,7 +45,7 @@ export default {
         "tests/e2e/nextjs-worker/fixture/**/*.{js,ts,tsx}",
         "tests/e2e/cacheability-components/fixture/{next.config.ts,vite.config.ts,app/**/{page,route}.{ts,tsx}}",
         "tests/e2e/cloudflare-static-assets-prerender/fixture/{vite.config.ts,app/**/route.ts}",
-        "tests/e2e/cloudflare-static-export/fixture/vite.config.ts",
+        "tests/e2e/cloudflare-static-export/fixture/{vite.config.ts,app/**/route.ts}",
       ],
       project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
       ignoreDependencies: [
