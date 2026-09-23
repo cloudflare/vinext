@@ -14,17 +14,18 @@ export function deferUntilStreamConsumed(
     }
   };
 
-  // Read the source directly instead of piping through an intermediate
-  // TransformStream: one stream hop per chunk instead of two. `done` is only
-  // observed after the consumer has pulled every chunk, so cleanup still runs
-  // once the downstream consumer drains the stream.
-  const reader = stream.getReader();
+  const cleanup = new TransformStream<Uint8Array, Uint8Array>({
+    flush() {
+      once();
+    },
+  });
+
+  const reader = stream.pipeThrough(cleanup).getReader();
   return new ReadableStream<Uint8Array>({
     pull(controller) {
       return reader.read().then(
         ({ done, value }) => {
           if (done) {
-            once();
             controller.close();
           } else {
             controller.enqueue(value);
