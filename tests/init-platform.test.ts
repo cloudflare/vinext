@@ -410,6 +410,30 @@ describe("resolveInitPlatform", () => {
 });
 
 describe("resolveInitOptions", () => {
+  it("opts into typed Cloudflare config only on Cloudflare", async () => {
+    const options = await resolveInitOptions(
+      ["--platform=cloudflare", "--experimental-cf", "--cdn-cache=none", "--data-cache=none"],
+      { env: {}, isInteractive: false },
+    );
+    expect(options.cloudflare?.experimentalCf).toBe(true);
+    expect(
+      (
+        await resolveInitOptions(
+          ["--experimental-cf", "--cdn-cache=none", "--image-optimization=none"],
+          {
+            env: { CODEX_THREAD_ID: "test" },
+          },
+        )
+      ).platform,
+    ).toBe("cloudflare");
+    await expect(
+      resolveInitOptions(["--platform=node", "--experimental-cf"], {
+        env: {},
+        isInteractive: false,
+      }),
+    ).rejects.toThrow("--experimental-cf requires --platform=cloudflare");
+  });
+
   it("defaults Cloudflare init to no cache", async () => {
     await expect(resolveInitOptions([], { env: {}, isInteractive: false })).resolves.toEqual({
       platform: "cloudflare",

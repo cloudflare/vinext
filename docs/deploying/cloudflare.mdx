@@ -28,6 +28,14 @@ import { PackageManagerCommand } from "../../apps/web/app/docs/_package-manager"
 
 The initializer creates or updates `vite.config.ts` and `wrangler.jsonc`, then lets you choose caching and image optimization. Commit these generated config files.
 
+To try the typed Cloudflare configuration and `cf` CLI instead of Wrangler, opt in during initialization:
+
+```bash
+npx vinext init --platform=cloudflare --experimental-cf
+```
+
+This creates `cloudflare.config.ts`, pins the experimental Cloudflare Vite plugin and `cf`, and generates scripts for `cf build`, local Vite preview, and `vinext-cloudflare deploy`. Response Store service-binding mode declares its second Worker in the typed config and builds both Workers together. Existing Wrangler configuration is not migrated automatically; move its bindings into the typed config before enabling this option. Create any KV namespace or R2 bucket named in the initializer's next steps before deploying.
+
 ## 2. Authenticate
 
 <PackageManagerCommand
@@ -41,6 +49,8 @@ The initializer creates or updates `vite.config.ts` and `wrangler.jsonc`, then l
 />
 
 Add your Cloudflare account ID to `wrangler.jsonc`, or set `CLOUDFLARE_ACCOUNT_ID`. In CI, use a `CLOUDFLARE_API_TOKEN` instead of browser login.
+
+If you opted into `--experimental-cf`, run `cf auth login` instead. Set your account ID in `cloudflare.config.ts` or via `CLOUDFLARE_ACCOUNT_ID`; no Wrangler CLI or config file is needed for this path.
 
 ## 3. Deploy
 

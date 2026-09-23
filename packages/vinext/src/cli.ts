@@ -1021,6 +1021,8 @@ function printHelp(cmd?: string) {
     --experimental-warm-cdn-cache
                          Add experimental CDN pre-warming to the Cloudflare deploy script
                          (Response Store or Workers Cache, default: prompt with No)
+    --experimental-cf    Generate cloudflare.config.ts with the v2 Cloudflare Vite plugin
+                         and cf CLI instead of Wrangler config and scripts
     --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache, or data-cache
                          (default: none; response-store is the default cache choice)
     --response-store-mode <type>

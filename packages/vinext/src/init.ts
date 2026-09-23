@@ -163,6 +163,7 @@ export function addScripts(
   options: {
     deployResponseStore?: boolean;
     warmCdnCache?: boolean;
+    experimentalCf?: boolean;
     scriptNames?: "namespaced" | "standard";
   } = {},
 ): string[] {
@@ -186,22 +187,32 @@ export function addScripts(
     };
 
     addScript("dev", port === false ? "vinext dev" : `vinext dev --port ${port}`);
-    addScript("build", "vinext build");
+    addScript("build", options.experimentalCf ? "cf build" : "vinext build");
     addScript(
       "start",
       platform === "cloudflare"
-        ? "wrangler dev --config dist/server/wrangler.json"
+        ? options.experimentalCf
+          ? "vite preview"
+          : "wrangler dev --config dist/server/wrangler.json"
         : "vinext start",
     );
 
     if (platform === "cloudflare") {
       addScript(
         "deploy",
-        options.warmCdnCache
-          ? "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
-          : "vinext-cloudflare deploy --config dist/server/wrangler.json",
+        options.experimentalCf
+          ? options.warmCdnCache
+            ? "vinext-cloudflare deploy --experimental-warm-cdn-cache"
+            : "vinext-cloudflare deploy"
+          : options.warmCdnCache
+            ? "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
+            : "vinext-cloudflare deploy --config dist/server/wrangler.json",
       );
-      if (options.deployResponseStore && !pkg.scripts["deploy:response-store"]) {
+      if (
+        options.deployResponseStore &&
+        !options.experimentalCf &&
+        !pkg.scripts["deploy:response-store"]
+      ) {
         pkg.scripts["deploy:response-store"] =
           "wrangler deploy --config wrangler.response-store.jsonc";
         added.push("deploy:response-store");
@@ -244,7 +255,15 @@ export function getInitDependencyGroups(
     ) {
       dependencies.push("@cloudflare/workers-response-store");
     }
-    devDependencies.push("@cloudflare/vite-plugin", "wrangler");
+    if (cloudflare?.experimentalCf) {
+      devDependencies[0] = "vite@8.3.0";
+      devDependencies.push(
+        "@cloudflare/vite-plugin@2.0.0-beta.sha-b747ec8ea",
+        "cf@https://pkg.pr.new/cloudflare/cf@56a42d06a99193547d5112c144f5be09c55fa099",
+      );
+    } else {
+      devDependencies.push("@cloudflare/vite-plugin", "wrangler");
+    }
   }
   return { dependencies, devDependencies };
 }
@@ -268,7 +287,8 @@ export function isDepInstalled(root: string, dep: string): boolean {
       ...pkg.devDependencies,
       ...pkg.peerDependencies,
     };
-    return dep in allDeps;
+    const { name, version, hasExplicitVersion } = parseDependencySpecifier(dep);
+    return name in allDeps && (!hasExplicitVersion || allDeps[name] === version);
   } catch {
     return false;
   }
@@ -388,7 +408,11 @@ async function installDeps(
  * Creates the file if it doesn't exist. Returns true if the file was modified
  * (or created), false if all entries were already present.
  */
-export function updateGitignore(root: string, platform: InitPlatform = "node"): boolean {
+export function updateGitignore(
+  root: string,
+  platform: InitPlatform = "node",
+  experimentalCf = false,
+): boolean {
   const gitignorePath = path.join(root, ".gitignore");
   const entries = [
     {
@@ -399,11 +423,19 @@ export function updateGitignore(root: string, platform: InitPlatform = "node"): 
       entry: ".vinext/",
       coveredBy: new Set(["/.vinext/", "/.vinext", ".vinext/", ".vinext"]),
     },
-    ...(platform === "cloudflare"
+    ...(platform === "cloudflare" && !experimentalCf
       ? [
           {
             entry: ".wrangler/",
             coveredBy: new Set(["/.wrangler/", "/.wrangler", ".wrangler/", ".wrangler"]),
+          },
+        ]
+      : []),
+    ...(experimentalCf
+      ? [
+          {
+            entry: ".cloudflare/",
+            coveredBy: new Set(["/.cloudflare/", "/.cloudflare", ".cloudflare/", ".cloudflare"]),
           },
         ]
       : []),
@@ -591,6 +623,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
       options.cloudflare?.cdnCache === "response-store" &&
       (options.cloudflare.responseStoreMode ?? "service-binding") === "service-binding",
     warmCdnCache: options.cloudflare?.warmCdnCache ?? false,
+    experimentalCf: options.cloudflare?.experimentalCf ?? false,
     scriptNames: options.scriptNames,
   });
 
@@ -614,7 +647,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 5: Update .gitignore ──────────────────────────────────────────
 
-  const updatedGitignore = updateGitignore(root, platform);
+  const updatedGitignore = updateGitignore(root, platform, options.cloudflare?.experimentalCf);
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
@@ -773,7 +806,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
       : "";
   const startCommandDescription =
     platform === "cloudflare"
-      ? "Start the built Worker locally with Wrangler"
+      ? options.cloudflare?.experimentalCf
+        ? "Preview the built Worker locally"
+        : "Start the built Worker locally with Wrangler"
       : "Start vinext production server";
 
   console.log(`
