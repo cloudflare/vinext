@@ -4760,7 +4760,9 @@ export const loadServerActionClient = ${
         filter: { id: /virtual:|\.[cm]?[jt]sx?(?:\?|$)/ },
         handler(code, id) {
           const environment = this.environment;
-          if (!environment || !isMultiStageServerEnvironment(environment)) return null;
+          if (!isServeCommand && (!environment || !isMultiStageServerEnvironment(environment))) {
+            return null;
+          }
           const transformed = matchedMultiStageOutput?.transformHostEntry?.({ code, id });
           return transformed == null ? null : { code: transformed, map: null };
         },
