@@ -324,6 +324,14 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
     expect(errorClientSecondBody).not.toContain(`error-first-${suffix}`);
   }
   await errorClientRepeat.dispose();
+  for (const query of ["", `?q=read-${suffix}`]) {
+    const rejected = await request.get(`${baseURL}/query-error-client/reads${query}`, {
+      headers: { accept: "text/html" },
+    });
+    expect(rejected.status()).toBe(500);
+    expect(rejected.headers()["cache-control"]).toContain("no-store");
+    await rejected.dispose();
+  }
   const slotOnlyPath = `/query-slot-only-client/${suffix}`;
   const slotOnlyFirst = await request.get(
     `${baseURL}${slotOnlyPath}?q=slot-first-${suffix}&_rsc=slot-first-${suffix}`,
@@ -526,6 +534,16 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
       );
     }
   }
+  const nestedClientRscUrl = `${baseURL}/query-ssr-client/${suffix}?q=server-${suffix}&_rsc`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await request.get(nestedClientRscUrl, {
+      headers: { accept: "text/x-component", rsc: "1" },
+    });
+    expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+    expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+    expect(response.headers()["cache-control"]).toMatch(/private|no-store/);
+    await response.dispose();
+  }
 
   const rewriteWithQuery = await request.get(
     `${baseURL}/query-alias-fixed/${suffix}?q=first-${suffix}`,
@@ -650,6 +668,53 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   expect(regeneratedClientBody).toContain("searchParamsFromBrowser:true");
   expect(regeneratedClientBody).not.toContain(`seed-${suffix}`);
   expect(regeneratedClientBody).not.toContain(regenerationQuery);
+
+  const staleRscHeaders = { accept: "text/x-component", rsc: "1" };
+  const staleRscSeedQuery = `seed-rsc-${suffix}`;
+  const staleRscRegenerationQuery = `regenerating-rsc-${suffix}`;
+  const staleRscCurrentQuery = `current-rsc-${suffix}`;
+  const staleRscSeed = await request.get(`${staleClientPath}?q=${staleRscSeedQuery}&_rsc`, {
+    headers: staleRscHeaders,
+  });
+  const staleRscSeedBody = await staleRscSeed.text();
+  expect(staleRscSeed.ok(), JSON.stringify(staleRscSeed.headers())).toBe(true);
+  expect(staleRscSeedBody).not.toContain(staleRscSeedQuery);
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const staleRscTrigger = await request.get(
+    `${staleClientPath}?q=${staleRscRegenerationQuery}&_rsc`,
+    { headers: staleRscHeaders },
+  );
+  expect(staleRscTrigger.ok(), JSON.stringify(staleRscTrigger.headers())).toBe(true);
+  expect(await staleRscTrigger.text()).not.toContain(staleRscRegenerationQuery);
+  let regeneratedRscBody = "";
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`${staleClientPath}?q=${staleRscCurrentQuery}&_rsc`, {
+          headers: staleRscHeaders,
+        });
+        const body = await response.text();
+        expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+        const status = response.headers()[cacheStatusHeader];
+        const renderedPath = decodeURIComponent(
+          response.headers()["x-vinext-rendered-path-and-search"] ?? "",
+        );
+        await response.dispose();
+        if (body !== staleRscSeedBody && (backend === "kv" || status === "HIT")) {
+          regeneratedRscBody = body;
+          if (backend !== "kv") {
+            expect(renderedPath).toBe(`/query-stale-client?q=${staleRscCurrentQuery}`);
+          }
+          return "regenerated";
+        }
+        return "pending";
+      },
+      { message: `${backend} did not regenerate the stale direct RSC artifact`, timeout: 30_000 },
+    )
+    .toBe("regenerated");
+  for (const query of [staleRscSeedQuery, staleRscRegenerationQuery, staleRscCurrentQuery]) {
+    expect(regeneratedRscBody).not.toContain(query);
+  }
   const currentClientQuery = `current-${suffix}`;
   await page.goto(`${staleClientPath}?q=${currentClientQuery}`);
   await expect

@@ -811,6 +811,19 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.ok(!secondBody.includes("first-client-query"), secondBody.slice(0, 600));
   });
 
+  test('rejects a dynamic = "error" Client Page that reads searchParams during SSR', async () => {
+    // Ported from Next.js: test/e2e/app-dir/dynamic-data/dynamic-data.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic-data/dynamic-data.test.ts
+    for (const query of ["", "?q=read-in-client-page"]) {
+      const response = await request(`/query-error-client/reads${query}`, {
+        headers: { Accept: "text/html" },
+      });
+      assert.equal(response.status, 500);
+      assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+      await response.text();
+    }
+  });
+
   test("keeps slot-only Client Page RSC payloads partitioned by query", async () => {
     const rscHeaders = { Accept: "text/x-component", RSC: "1" };
     const pathname = "/query-slot-only-client/identity";
@@ -911,6 +924,38 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.notEqual(htmlValue(fresh.body, "query-stale-client-id"), firstId);
     assert.ok(fresh.body.includes("searchParamsFromBrowser:true"));
     assert.ok(!fresh.body.includes("regenerating-stale-client"));
+  });
+
+  test("regenerates a shared direct RSC artifact without retaining either stale query", async () => {
+    const pathname = "/query-stale-client";
+    const headers = { Accept: "text/x-component", RSC: "1" };
+    const first = await request(`${pathname}?q=seed-rsc&_rsc`, { headers });
+    const firstBody = await first.text();
+    assert.equal(first.status, 200);
+    assert.ok(!firstBody.includes("seed-rsc"));
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await request(`${pathname}?q=regenerating-rsc&_rsc`, { headers });
+    assert.equal(stale.status, 200);
+    assert.ok(!(await stale.text()).includes("regenerating-rsc"));
+
+    let freshBody = firstBody;
+    let freshStatus: string | null = null;
+    let freshPath: string | null = null;
+    for (let attempt = 0; attempt < 100 && freshBody === firstBody; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const fresh = await request(`${pathname}?q=current-rsc&_rsc`, { headers });
+      freshStatus = fresh.headers.get("x-vinext-cache");
+      freshPath = fresh.headers.get("x-vinext-rendered-path-and-search");
+      freshBody = await fresh.text();
+      assert.equal(fresh.status, 200);
+    }
+    assert.notEqual(freshBody, firstBody);
+    assert.equal(freshStatus, "HIT");
+    assert.equal(decodeURIComponent(freshPath ?? ""), `${pathname}?q=current-rsc`);
+    for (const query of ["seed-rsc", "regenerating-rsc", "current-rsc"]) {
+      assert.ok(!freshBody.includes(query), `Flight retained ${query}`);
+    }
   });
 
   test("does not publish query-dependent metadata and does not alias rewritten paths", async () => {

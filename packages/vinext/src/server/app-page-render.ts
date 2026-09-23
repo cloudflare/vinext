@@ -22,6 +22,7 @@ import {
   type LayoutClassificationOptions,
 } from "./app-page-execution.js";
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
+import { getAppPageStaticGenerationErrorMessage } from "./app-static-generation.js";
 import {
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
@@ -942,6 +943,9 @@ async function renderAppPageLifecycleImpl(
                 onSsrSearchParamsAccess: options.isForceStatic
                   ? undefined
                   : () => {
+                      if (options.isDynamicError) {
+                        throw new Error(getAppPageStaticGenerationErrorMessage());
+                      }
                       ssrSearchParamsObserved = true;
                     },
                 onSsrError() {
@@ -1278,6 +1282,9 @@ async function renderAppPageLifecycleImpl(
         onSsrSearchParamsAccess:
           options.queryIndependentCandidate === true && !options.isForceStatic
             ? () => {
+                if (options.isDynamicError) {
+                  throw new Error(getAppPageStaticGenerationErrorMessage());
+                }
                 // SSR runs in a separate Vite environment. A Client Component
                 // reading the query there must veto the RSC render's shared put.
                 ssrSearchParamsObserved = true;
