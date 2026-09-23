@@ -436,7 +436,7 @@ async function streamPageToResponseImpl(
   const styledJsxHTML =
     documentRenderPage.status === "skipped"
       ? await renderStyledJsxStylesHTML(styledJsx, scriptNonce, renderToStringAsync)
-      : "";
+      : documentRenderPage.styledJsxHTML;
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;

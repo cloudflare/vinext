@@ -443,7 +443,9 @@ describe("styled-jsx Pages SSR registry", () => {
     const documentProps =
       await import("../packages/vinext/src/server/pages-document-initial-props.js");
     const pagesStyledJsx = await import("../packages/vinext/src/server/pages-styled-jsx.js");
-    return { registry, documentProps, pagesStyledJsx };
+    const pagesPageData = await import("../packages/vinext/src/server/pages-page-data.js");
+    const pagesPageResponse = await import("../packages/vinext/src/server/pages-page-response.js");
+    return { registry, documentProps, pagesStyledJsx, pagesPageData, pagesPageResponse };
   }
 
   function styledElement(css: string, id = "abc") {
@@ -565,6 +567,7 @@ describe("styled-jsx Pages SSR registry", () => {
     expect(result.bodyHtml).toContain('class="jsx-abc"');
     // Flushed by defaultGetInitialProps, so the rule is emitted exactly once.
     expect(result.stylesHTML).toBe('<style id="__jsx-abc">p.jsx-abc{color:red}</style>');
+    expect(result.styledJsxHTML).toBe("");
   });
 
   it("keeps styles registered by a custom renderPage-only getInitialProps", async () => {
@@ -590,9 +593,115 @@ describe("styled-jsx Pages SSR registry", () => {
 
     expect(result.status).toBe("rendered");
     if (result.status !== "rendered") return;
-    // Next.js still emits the unflushed registry (`styledJsxInsertedHTML`).
-    expect(result.stylesHTML).toBe(
-      '<style id="document-style"></style><style id="__jsx-abc">p.jsx-abc{color:red}</style>',
+    // `styles` belong to the head; Next.js still emits the unflushed registry
+    // (`styledJsxInsertedHTML`) immediately before the React root, so it is
+    // returned separately for the caller to place there.
+    expect(result.stylesHTML).toBe('<style id="document-style"></style>');
+    expect(result.styledJsxHTML).toBe('<style id="__jsx-abc">p.jsx-abc{color:red}</style>');
+  });
+
+  // Regeneration splices a fresh body into the cached document. Interpolated
+  // rules get a new id whenever the data changes, so the cached rules around
+  // the React root must be swapped for the regenerated render's.
+  it("refreshes styled-jsx rules when ISR regeneration re-renders the body", async () => {
+    const { registry, pagesPageData } = await loadRegisteredRuntime();
+    registry.registerStyledJsxRuntime(styledJsx);
+    const renderIsrPassToStringAsync = (element: React.ReactNode) =>
+      renderToString(React.createElement(React.Fragment, null, element));
+    const staleShell = '<style id="__jsx-old">p.jsx-old{color:red}</style>';
+    const staleLate = '<style id="__jsx-late">p.jsx-late{color:red}</style>';
+    const headRule = '<style id="__jsx-head">p.jsx-head{color:green}</style>';
+
+    const html = await pagesPageData.renderPagesIsrHtml({
+      buildId: "build-123",
+      cachedHtml:
+        `<!DOCTYPE html><html><head>${headRule}</head><body>` +
+        `<style id="user-style">.user{}</style>${staleShell}<div id="__next"><p class="jsx-old">stale</p></div>` +
+        `${staleLate}\n  <script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>`,
+      createPageElement: () =>
+        React.createElement(
+          React.Fragment,
+          null,
+          styledElement("p.jsx-new{color:blue}", "new"),
+          styledElement("p.jsx-head{color:green}", "head"),
+        ),
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      pageProps: {},
+      params: {},
+      renderIsrPassToStringAsync,
+      routePattern: "/isr",
+      safeJsonStringify: JSON.stringify,
+    });
+
+    expect(html).toContain(
+      '<style id="user-style">.user{}</style>' +
+        '<style id="__jsx-new">p.jsx-new{color:blue}</style>' +
+        '<div id="__next"><div><p class="jsx-new">styled</p></div>',
     );
+    expect(html).toContain('</div></div>\n  <script id="__NEXT_DATA__"');
+    expect(html).not.toContain("jsx-old");
+    expect(html).not.toContain("jsx-late");
+    // A rule `_document` put in the cached head is not repeated.
+    expect(html.match(/id="__jsx-head"/g)).toHaveLength(1);
+  });
+
+  // The response and the ISR cache write read separate branches of the body
+  // stream; whichever finishes first flushes the late rules, and both copies
+  // must carry them.
+  it("writes late Suspense rules into both the response and the ISR cache copy", async () => {
+    const { registry, pagesPageResponse } = await loadRegisteredRuntime();
+    registry.registerStyledJsxRuntime(styledJsx);
+    const LateStyled = React.lazy(
+      () =>
+        new Promise<{ default: React.ComponentType }>((resolve) => {
+          setTimeout(
+            () => resolve({ default: () => styledElement("p.jsx-late{color:blue}", "late") }),
+            10,
+          );
+        }),
+    );
+    const isrSet = vi.fn(async (_key: string, _value: { html?: string }) => {});
+
+    const response = await pagesPageResponse.renderPagesPageResponse({
+      assetTags: "",
+      buildId: "build-123",
+      clearSsrContext() {},
+      createPageElement: () =>
+        React.createElement(
+          React.Fragment,
+          null,
+          styledElement("p.jsx-shell{color:red}", "shell"),
+          React.createElement(React.Suspense, { fallback: null }, React.createElement(LateStyled)),
+        ),
+      disableOptimizedLoading: false,
+      DocumentComponent: null,
+      fontLinkHeader: "",
+      fontPreloads: [],
+      getFontLinks: () => [],
+      getFontStyles: () => [],
+      gsspRes: null,
+      i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
+      isrCacheKey: (_router, pathname) => `pages:${pathname}`,
+      isrRevalidateSeconds: 60,
+      isrSet,
+      pageProps: {},
+      params: {},
+      renderDocumentToString: async () => "",
+      renderToReadableStream,
+      routePattern: "/late",
+      routeUrl: "/late",
+      safeJsonStringify: JSON.stringify,
+    });
+    const html = await response.text();
+    await vi.waitFor(() => expect(isrSet).toHaveBeenCalledTimes(1));
+    const cachedHtml = isrSet.mock.calls[0]?.[1].html ?? "";
+
+    for (const document of [html, cachedHtml]) {
+      expect(document).toContain(
+        '<style id="__jsx-shell">p.jsx-shell{color:red}</style><div id="__next">',
+      );
+      expect(document).toContain('</div><style id="__jsx-late">p.jsx-late{color:blue}</style>');
+      expect(document.match(/id="__jsx-/g)).toHaveLength(2);
+    }
   });
 });

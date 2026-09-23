@@ -42,8 +42,14 @@ import { isSerializableProps } from "./pages-serializable-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
+import { createPagesStyledJsxCollector } from "vinext/shims/styled-jsx-registry";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { tracePagesData, tracePagesDocument } from "./pages-execution-tracing.js";
+import {
+  renderRegeneratedStyledJsxStylesHTML,
+  stripLeadingStyledJsxStyles,
+  stripTrailingStyledJsxStyles,
+} from "./pages-styled-jsx.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -1075,6 +1081,17 @@ const SSR_HEAD_TAG_PATTERN =
  */
 const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
 
+function findCachedHeadEnd(cachedHtml: string): number {
+  // Blank out raw-text/RCDATA elements before locating the boundary so a
+  // `</head>` string inside one is not mistaken for the closing tag — that
+  // would truncate the scan and leave stale tags behind the fresh head. The
+  // replacement is length-preserving, so the index still maps onto
+  // `cachedHtml`.
+  return cachedHtml
+    .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
+    .indexOf("</head>");
+}
+
 /**
  * Replace the `next/head` region of a cached shell with a freshly collected
  * one.
@@ -1100,14 +1117,7 @@ function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
   // cached head alone rather than deleting the tags we do have.
   if (!freshHead) return cachedHtml;
 
-  // Blank out raw-text/RCDATA elements before locating the boundary so a
-  // `</head>` string inside one is not mistaken for the closing tag — that
-  // would truncate the scan and leave stale tags behind the fresh head. The
-  // replacement is length-preserving, so the index still maps onto
-  // `cachedHtml`.
-  const headEnd = cachedHtml
-    .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
-    .indexOf("</head>");
+  const headEnd = findCachedHeadEnd(cachedHtml);
   if (headEnd < 0) return cachedHtml;
 
   const matches = [...cachedHtml.slice(0, headEnd).matchAll(SSR_HEAD_TAG_PATTERN)];
@@ -1122,10 +1132,17 @@ function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
   );
 }
 
+/**
+ * Splice a regenerated body (and `__NEXT_DATA__`) into a cached document.
+ * `styledJsxHTML` holds the regenerated render's styled-jsx rules, or is
+ * `null` when styled-jsx is not in use; when set, it replaces the rules the
+ * cached render emitted around the React root (see `pages-styled-jsx.ts`).
+ */
 function rewritePagesCachedHtml(
   cachedHtml: string,
   freshBody: string,
   nextDataScript: string,
+  styledJsxHTML: string | null,
 ): string {
   const bodyMarker = '<div id="__next">';
   const bodyStart = cachedHtml.indexOf(bodyMarker);
@@ -1139,15 +1156,25 @@ function rewritePagesCachedHtml(
   if (contentStart >= 0 && nextDataStart >= 0) {
     const region = cachedHtml.slice(contentStart, nextDataStart);
     const lastCloseDiv = region.lastIndexOf("</div>");
-    const gap = lastCloseDiv >= 0 ? region.slice(lastCloseDiv + 6) : "";
+    let gap = lastCloseDiv >= 0 ? region.slice(lastCloseDiv + 6) : "";
     const nextDataEnd = cachedHtml.indexOf("</script>", nextDataStart) + 9;
     const tail = cachedHtml.slice(nextDataEnd);
+    let beforeRoot = cachedHtml.slice(0, bodyStart);
+    if (styledJsxHTML !== null) {
+      // The cached render's shell rules sit right before the root and its
+      // late (Suspense) rules right after the root closes. Regeneration
+      // collects every rule up front, so all of them go before the root.
+      beforeRoot = stripTrailingStyledJsxStyles(beforeRoot) + styledJsxHTML;
+      gap = stripLeadingStyledJsxStyles(gap);
+    }
 
-    return cachedHtml.slice(0, contentStart) + freshBody + "</div>" + gap + nextDataScript + tail;
+    return beforeRoot + bodyMarker + freshBody + "</div>" + gap + nextDataScript + tail;
   }
 
   return (
-    '<!DOCTYPE html>\n<html>\n<head>\n</head>\n<body>\n  <div id="__next">' +
+    "<!DOCTYPE html>\n<html>\n<head>\n</head>\n<body>\n  " +
+    (styledJsxHTML ?? "") +
+    bodyMarker +
     freshBody +
     "</div>\n  " +
     nextDataScript +
@@ -1159,8 +1186,12 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
   const renderProps = options.props ?? { pageProps: options.pageProps };
   const collectHead = options.collectIsrHeadHTML;
   let freshHead = "";
+  // Collect styled-jsx rules like the foreground render does (`null` unless
+  // the app loaded a module compiled by the styled-jsx plugin).
+  const styledJsx = createPagesStyledJsxCollector();
+  const pageElement = options.createPageElement(renderProps);
   const freshBody = await options.renderIsrPassToStringAsync(
-    options.createPageElement(renderProps),
+    styledJsx ? styledJsx.wrap(pageElement) : pageElement,
     collectHead &&
       (async () => {
         freshHead = collectHead();
@@ -1181,11 +1212,16 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
     vinext: options.vinext,
   });
 
-  return rewritePagesCachedHtml(
-    refreshCachedHeadTags(options.cachedHtml, freshHead),
-    freshBody,
-    nextDataScript,
-  );
+  const cachedHtml = refreshCachedHeadTags(options.cachedHtml, freshHead);
+  const styledJsxHTML = styledJsx
+    ? await renderRegeneratedStyledJsxStylesHTML(
+        styledJsx,
+        cachedHtml.slice(0, Math.max(findCachedHeadEnd(cachedHtml), 0)),
+        (element) => options.renderIsrPassToStringAsync(element),
+      )
+    : null;
+
+  return rewritePagesCachedHtml(cachedHtml, freshBody, nextDataScript, styledJsxHTML);
 }
 
 export async function resolvePagesPageData(

@@ -47,7 +47,7 @@ export type PagesStyledJsxCollector = {
    * flush of this render (e.g. with the shell, before a Suspense boundary
    * registered it again) is not returned twice.
    */
-  flushStyles(nonce?: string): ReactElement[];
+  flushStyles(nonce?: string): ReactElement<{ id?: string }>[];
 };
 
 /**

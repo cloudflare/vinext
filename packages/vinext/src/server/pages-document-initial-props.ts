@@ -142,7 +142,8 @@ type DocumentRenderPageInput = {
  *                  normal `loadUserDocumentInitialProps` fast path, which may
  *                  invoke `getInitialProps` itself.
  *   - `rendered` — `renderPage` produced the body. `bodyHtml` is the rendered
- *                  page string, `stylesHTML` the rendered `styles`, `docProps`
+ *                  page string, `stylesHTML` the rendered `styles`,
+ *                  `styledJsxHTML` the leftover styled-jsx rules, `docProps`
  *                  the remaining props to spread onto `<Document>`, and `head`
  *                  the head nodes returned by `getInitialProps` (forward them to
  *                  `setDocumentInitialHead()` — do NOT call
@@ -154,6 +155,8 @@ type RunDocumentRenderPageResult =
       status: "rendered";
       bodyHtml: string;
       stylesHTML: string;
+      /** Leftover styled-jsx rules, for the caller to emit before the React root. */
+      styledJsxHTML: string;
       docProps: Record<string, unknown>;
       head: ReactNode[];
     };
@@ -266,13 +269,20 @@ export async function runDocumentRenderPage(
   }
   // styled-jsx rules still in the registry (the user's `getInitialProps` called
   // `ctx.renderPage()` without `ctx.defaultGetInitialProps()`). Next.js emits
-  // this leftover `styledJsxInsertedHTML` just outside the React root; the
-  // head tail is the equivalent spot in vinext's streamed shell.
-  stylesHTML += await renderStyledJsxStylesHTML(
+  // this leftover `styledJsxInsertedHTML` immediately before the React root
+  // (`contentHTML` in render.tsx), so callers place it there too.
+  const styledJsxHTML = await renderStyledJsxStylesHTML(
     input.styledJsx,
     input.scriptNonce,
     input.renderStylesToString,
   );
 
-  return { status: "rendered", bodyHtml: docInitialProps.html, stylesHTML, docProps, head };
+  return {
+    status: "rendered",
+    bodyHtml: docInitialProps.html,
+    stylesHTML,
+    styledJsxHTML,
+    docProps,
+    head,
+  };
 }

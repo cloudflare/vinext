@@ -92,3 +92,62 @@ export async function appendLateStyledJsxStyles(
   if (bodyClose === -1) return shellSuffix + stylesHTML;
   return shellSuffix.slice(0, bodyClose) + stylesHTML + shellSuffix.slice(bodyClose);
 }
+
+const STYLED_JSX_STYLE_OPEN = '<style id="__jsx-';
+const STYLE_CLOSE = "</style>";
+
+/**
+ * Remove the run of styled-jsx `<style id="__jsx-…">` elements `html` ends
+ * with: the shell rules `insertStyledJsxBeforePagesRoot` placed right before
+ * the React root of a cached document.
+ */
+export function stripTrailingStyledJsxStyles(html: string): string {
+  let end = html.length;
+  while (html.endsWith(STYLE_CLOSE, end)) {
+    const closeStart = end - STYLE_CLOSE.length;
+    const start = html.lastIndexOf(STYLED_JSX_STYLE_OPEN, closeStart);
+    // Only strip a single, complete styled-jsx element ending right here.
+    if (start === -1 || html.indexOf(STYLE_CLOSE, start) !== closeStart) break;
+    end = start;
+  }
+  return html.slice(0, end);
+}
+
+/**
+ * Remove the run of styled-jsx `<style id="__jsx-…">` elements `html` starts
+ * with: the late rules `appendLateStyledJsxStyles` placed right after the
+ * React root of a cached document closed.
+ */
+export function stripLeadingStyledJsxStyles(html: string): string {
+  let start = 0;
+  while (html.startsWith(STYLED_JSX_STYLE_OPEN, start)) {
+    const close = html.indexOf(STYLE_CLOSE, start);
+    if (close === -1) break;
+    start = close + STYLE_CLOSE.length;
+  }
+  return html.slice(start);
+}
+
+/**
+ * Render the rules registered while ISR regeneration re-rendered a page body.
+ *
+ * Next.js regenerates the whole document, so its styles always match the
+ * body. vinext's regeneration splices a fresh body into the cached document,
+ * whose rules were collected from the previous render — interpolated
+ * (`${props.color}`) rules get a new id whenever the data changes, so the
+ * caller swaps the cached rules around the React root for these. `_document`
+ * is not re-rendered, so rules a custom `getInitialProps()` put in the cached
+ * `<head>` stay there and are not repeated.
+ */
+export async function renderRegeneratedStyledJsxStylesHTML(
+  styledJsx: PagesStyledJsxCollector,
+  cachedHeadHTML: string,
+  renderStylesToString: RenderStylesToString,
+): Promise<string> {
+  const styles = styledJsx.flushStyles().filter((style) => {
+    const id = style.props.id;
+    return id === undefined || !cachedHeadHTML.includes(`id="${id}"`);
+  });
+  if (styles.length === 0) return "";
+  return renderStylesToString(React.createElement(React.Fragment, null, styles));
+}

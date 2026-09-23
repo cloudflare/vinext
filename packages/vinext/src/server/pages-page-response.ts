@@ -659,11 +659,13 @@ export async function renderPagesPageResponse(
   // Without a `getInitialProps` override Next.js passes the registry's styles
   // straight to `_document` as `styles`. Collected once the shell is ready,
   // alongside the `next/head` tags above; see `pages-styled-jsx.ts` for why
-  // they are emitted right before the React root.
+  // they are emitted right before the React root. A custom `getInitialProps()`
+  // that never called `ctx.defaultGetInitialProps()` leaves rules behind,
+  // which Next.js emits at that same spot.
   const styledJsxHTML =
     documentRenderPage.status === "skipped"
       ? await renderStyledJsxStylesHTML(styledJsx, options.scriptNonce, renderStylesToString)
-      : "";
+      : documentRenderPage.styledJsxHTML;
   const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
     assetTags: options.assetTags,
     disableOptimizedLoading: options.disableOptimizedLoading,
