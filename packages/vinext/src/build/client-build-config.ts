@@ -260,8 +260,18 @@ export function sanitizeRscChunkFileName(name: string): string {
  * modules that are only reachable through dynamic imports must stay out of the
  * eager framework chunk (issue #2073).
  */
+/**
+ * A name-function `codeSplitting` group placed ahead of the framework group.
+ * Declared structurally so the published types don't reference Rolldown.
+ */
+type LeadingCodeSplittingGroup = {
+  name: (moduleId: string) => string | null;
+  minSize?: number;
+  priority?: number;
+};
+
 export function createRscFrameworkChunkOutputConfig(
-  leadingGroups: readonly CodeSplittingGroup[] = [],
+  leadingGroups: readonly LeadingCodeSplittingGroup[] = [],
 ) {
   return {
     sanitizeFileName: sanitizeRscChunkFileName,
@@ -314,7 +324,6 @@ type VinextBuildOutput = Exclude<
   readonly unknown[]
 >;
 type VinextCodeSplittingConfig = Exclude<NonNullable<VinextBuildOutput["codeSplitting"]>, boolean>;
-type CodeSplittingGroup = NonNullable<VinextCodeSplittingConfig["groups"]>[number];
 type ChunkFileNames = NonNullable<VinextBuildOutput["chunkFileNames"]>;
 type ChunkFileNameFunction = Exclude<ChunkFileNames, string>;
 

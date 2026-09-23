@@ -33,7 +33,7 @@ export function toDocumentStylesheetHref(url: string, documentUrl: string): stri
   return resolved.pathname + resolved.search + resolved.hash;
 }
 
-export function loadAppStylesheet(url: string, nonce?: string): void {
+function loadAppStylesheet(url: string, nonce?: string): void {
   const href = toDocumentStylesheetHref(url, document.baseURI);
   if (requestedHrefs.has(href)) return;
   requestedHrefs.add(href);
