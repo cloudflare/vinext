@@ -121,7 +121,7 @@ describe("app route handler dispatch", () => {
     { dynamic: "force-dynamic", label: "force-dynamic", revalidate: 60 },
     { draft: true, label: "draft mode", revalidate: 60 },
   ])(
-    "does not label $label App Route errors as stale",
+    "reports the correct revalidation reason for $label App Route errors",
     async ({ draft = false, dynamic, revalidate }) => {
       const onRequestError = vi.fn();
       globalThis.__VINEXT_onRequestErrorHandler__ = onRequestError;
@@ -162,12 +162,13 @@ describe("app route handler dispatch", () => {
         });
 
         expect(response.status).toBe(500);
-        expect(isrGet).not.toHaveBeenCalled();
+        if (revalidate === false) expect(isrGet).toHaveBeenCalledOnce();
+        else expect(isrGet).not.toHaveBeenCalled();
         expect(onRequestError.mock.calls[0]?.[2]).toEqual({
           routerKind: "App Router",
           routePath: "/api/uncached",
           routeType: "route",
-          revalidateReason: undefined,
+          revalidateReason: revalidate === false ? "stale" : undefined,
         });
       } finally {
         delete globalThis.__VINEXT_onRequestErrorHandler__;
