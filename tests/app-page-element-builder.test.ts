@@ -1110,16 +1110,18 @@ describe("buildPageElements", () => {
       },
     });
     const pageElement = (result as Record<string, React.ReactNode>)["page:/client-isr"];
-    if (!React.isValidElement<{ searchParams: Promise<Record<string, unknown>> }>(pageElement)) {
+    if (
+      !React.isValidElement<{ serverProvidedSearchParams: Record<string, unknown> }>(pageElement)
+    ) {
       throw new Error("Expected client page element");
     }
 
-    // React serializes this prop before the Client Page runs. Serialization
-    // must not classify a Client Page that never reads the prop as dynamic.
-    await pageElement.props.searchParams;
+    // The actual Page's promise is constructed only inside the client boundary.
+    // Neither constructing nor serializing that boundary observes the query.
+    expect(pageElement.props.serverProvidedSearchParams).toEqual({});
 
     expect(markDynamicUsageMock).not.toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalledWith("searchParams");
   });
 
   it("attaches route-state slot bindings for active, default, and unmatched slots", async () => {

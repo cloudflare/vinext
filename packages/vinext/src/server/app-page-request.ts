@@ -159,6 +159,7 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     buildOptions?: {
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
+      queryFromNavigationForClientPage?: boolean;
     },
   ) => Promise<TElement>;
   cleanPathname: string;

@@ -1387,6 +1387,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          queryFromNavigationForClientPage:
+            buildOptions?.queryFromNavigationForClientPage === true,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           isProduction: process.env.NODE_ENV === "production",
         }, layoutParamAccess, displayPathname, scriptNonce);

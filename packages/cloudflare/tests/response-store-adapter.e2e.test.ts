@@ -508,6 +508,93 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(htmlValue(error.body, "query-error-id").length > 0, true);
   });
 
+  test("keeps an unused-searchParams Client Page cacheable without leaking its RSC query", async () => {
+    // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    const empty = await cacheStatus("/query-client-independent");
+    let queried = await cacheStatus("/query-client-independent?q=first-client");
+    for (let attempt = 0; attempt < 40 && queried.status !== "HIT"; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      queried = await cacheStatus("/query-client-independent?q=first-client");
+    }
+    const otherQuery = await cacheStatus("/query-client-independent?q=second-client");
+    assert.equal(queried.status, "HIT");
+    assert.equal(otherQuery.status, "HIT");
+    assert.equal(otherQuery.body, queried.body);
+    assert.equal(htmlValue(empty.body, "query-client-independent-value"), "No searchParams used");
+    assert.equal(
+      htmlValue(otherQuery.body, "query-client-independent-value"),
+      "No searchParams used",
+    );
+    assert.ok(!otherQuery.body.includes("first-client"));
+
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const firstRsc = await request("/query-client-independent?q=rsc-first&_rsc=first", {
+      headers: rscHeaders,
+    });
+    const firstRscBody = await firstRsc.text();
+    let repeatedRsc = await request("/query-client-independent?q=rsc-first&_rsc=first", {
+      headers: rscHeaders,
+    });
+    for (
+      let attempt = 0;
+      attempt < 40 && repeatedRsc.headers.get("x-vinext-cache") !== "HIT";
+      attempt++
+    ) {
+      await repeatedRsc.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      repeatedRsc = await request("/query-client-independent?q=rsc-first&_rsc=first", {
+        headers: rscHeaders,
+      });
+    }
+    assert.equal(repeatedRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await repeatedRsc.text(), firstRscBody);
+    const secondRsc = await request("/query-client-independent?q=rsc-second&_rsc=second", {
+      headers: rscHeaders,
+    });
+    const secondRscBody = await secondRsc.text();
+    assert.equal(firstRsc.status, 200);
+    assert.equal(secondRsc.status, 200);
+    assert.notEqual(secondRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.match(secondRsc.headers.get("content-type") ?? "", /^text\/x-component/);
+    // A shared RSC HIT is valid only if the payload does not carry the first request's query.
+    if (secondRsc.headers.get("x-vinext-cache") === "HIT") {
+      assert.ok(!secondRscBody.includes("rsc-first"), secondRscBody.slice(0, 600));
+    }
+    assert.ok(!firstRscBody.includes("rsc-second"));
+    assert.equal(
+      decodeURIComponent(secondRsc.headers.get("x-vinext-rendered-path-and-search") ?? ""),
+      "/query-client-independent?q=rsc-second",
+    );
+
+    // The RSC-only request cannot observe whether the Client Page reads its
+    // prop. A fresh query for a reading Client Page must not hit another query's entry.
+    const dependentEmpty = await request("/query-client-dependent?_rsc=empty", {
+      headers: rscHeaders,
+    });
+    const dependentQuery = await request("/query-client-dependent?q=rsc-dependent&_rsc=dependent", {
+      headers: rscHeaders,
+    });
+    assert.equal(dependentEmpty.status, 200);
+    assert.equal(dependentQuery.status, 200);
+    assert.notEqual(dependentQuery.headers.get("x-vinext-cache"), "HIT");
+    assert.ok(!(await dependentQuery.text()).includes("rsc-first"));
+    await dependentEmpty.body?.cancel();
+  });
+
+  test("keeps the first queried Client Page HTML query-neutral for an empty-query hit", async () => {
+    const first = await cacheStatus("/query-client-independent?q=first-visitor");
+    assert.equal(first.status, "MISS");
+    assert.ok(!first.body.includes("first-visitor"));
+    let empty = await cacheStatus("/query-client-independent");
+    for (let attempt = 0; attempt < 40 && empty.status !== "HIT"; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      empty = await cacheStatus("/query-client-independent");
+    }
+    assert.equal(empty.status, "HIT");
+    assert.equal(empty.body, first.body);
+  });
+
   test("keeps explicitly public query-dependent pages partitioned by the full query", async () => {
     for (const [query, value] of [
       ["", "(empty)"],

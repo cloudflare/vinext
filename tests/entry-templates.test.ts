@@ -990,6 +990,25 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.globalNotFoundImportSpecifier).toBeNull();
   });
 
+  it("retains literal Client Page route config when the RSC import is a client reference", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-client-page-config-"));
+    try {
+      const pagePath = path.join(tmpDir, "page.tsx");
+      fs.writeFileSync(
+        pagePath,
+        '"use client";\nexport const revalidate = 60;\nexport const dynamic = "force-static";\nexport default function Page() {}\n',
+      );
+      const manifest = buildAppRscManifestCode({
+        routes: [{ ...minimalAppRoutes[0], pagePath }],
+      });
+      expect(manifest.imports.join("\n")).toContain(
+        `import(${JSON.stringify(pagePath)}).then((mod) => ({ ...mod, ...{"dynamic":"force-static","revalidate":60} }))`,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("serializes graph-minted ids without leaking the filesystem root", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-rsc-manifest-"));
     const appDir = path.join(tmpDir, "app");

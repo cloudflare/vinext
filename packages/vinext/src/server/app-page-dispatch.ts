@@ -306,6 +306,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     options?: {
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
+      queryFromNavigationForClientPage?: boolean;
       serveStreamingMetadata?: boolean;
     },
   ) => Promise<AppPageElement>;
@@ -1092,6 +1093,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           {
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
+            queryFromNavigationForClientPage:
+              options.queryIndependentCandidate === true && !options.isRscRequest && !isForceStatic,
             serveStreamingMetadata: placeGeneratedMetadataInBody,
           },
         );

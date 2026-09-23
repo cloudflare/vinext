@@ -2264,6 +2264,23 @@ export function useSearchParams(): ReadonlyURLSearchParams {
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
+/** The Client Page boundary needs the current query without itself counting as a read. */
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
+export function useClientPageSearchParams(): ReadonlyURLSearchParams {
+  if (isServer) return getServerSearchParamsSnapshot();
+  const renderSnapshot = useClientNavigationRenderSnapshot();
+  const searchParams = React.useSyncExternalStore(
+    subscribeToNavigation,
+    getSearchParamsSnapshot,
+    getServerSearchParamsSnapshot,
+  );
+  if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
+    return renderSnapshot.searchParams;
+  }
+  return searchParams;
+}
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
+
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 /**
  * Returns the dynamic params for the current route.

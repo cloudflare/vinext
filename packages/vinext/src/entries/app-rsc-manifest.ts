@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import { toSlash } from "pathslash";
+import { extractExportConstNumber, extractExportConstString } from "../build/report.js";
 import {
   appRouteHasMainTreeLoadingBoundary,
   computeAppRouteStaticSiblings,
@@ -132,13 +134,34 @@ function createImportAllocator(deferEagerImports: boolean): ImportAllocator {
 
       const varName = `load_${lazyIdx++}`;
       const absPath = toSlash(filePath);
+      // The RSC import of a Client Page is a client reference: its route
+      // segment exports are not available at runtime. Keep literal config in
+      // the generated loader so an unused query can still have an ISR policy.
+      let clientConfig: Record<string, string | number | boolean> | null = null;
+      try {
+        const source = fs.readFileSync(filePath, "utf8");
+        if (source.includes('"use client"') || source.includes("'use client'")) {
+          const dynamic = extractExportConstString(source, "dynamic");
+          const revalidate = extractExportConstNumber(source, "revalidate");
+          clientConfig = {
+            ...(dynamic === null ? {} : { dynamic }),
+            ...(revalidate === null
+              ? {}
+              : { revalidate: revalidate === Infinity ? false : revalidate }),
+          };
+        }
+      } catch {
+        // An unreadable source cannot certify route config.
+      }
       // `filePath` is a trusted filesystem-scan result (route.pagePath /
       // route.routePath), the same input and trust model as the eager
       // `import * as ${var} from ${JSON.stringify(absPath)}` in getImportVar
       // above. CodeQL flags the `import()` form as dynamic code construction,
       // but this is a build-time codegen template with a JSON-encoded absolute
       // path, not runtime-attacker-controlled input — a false positive.
-      imports.push(`const ${varName} = () => import(${JSON.stringify(absPath)});`);
+      imports.push(
+        `const ${varName} = () => import(${JSON.stringify(absPath)})${clientConfig && Object.keys(clientConfig).length > 0 ? `.then((mod) => ({ ...mod, ...${JSON.stringify(clientConfig)} }))` : ""};`,
+      );
       lazyMap.set(filePath, varName);
       return varName;
     },

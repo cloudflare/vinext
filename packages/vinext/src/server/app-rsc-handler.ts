@@ -1181,7 +1181,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             props.forceDynamic !== true &&
             (props.kind === "app-route-handler"
               ? props.queryIndependentConfig === true
-              : props.mayBeClientPage !== true || props.queryIndependentConfig === true) &&
+              : !props.isRscRequest ||
+                props.mayBeClientPage !== true ||
+                props.queryIndependentConfig === true) &&
             // A query-changing rewrite needs its server-owned bootstrap.
             hasSameUserQuery(stageRequest.url, props.resolvedUrl);
           let response = await dispatchResponseStage(
@@ -2418,7 +2420,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         queryIndependentCandidate:
           request.method === "GET" &&
           !route.forceDynamic &&
-          (!route.mayBeClientPage || route.queryIndependentConfig === true) &&
+          (!isRscRequest || !route.mayBeClientPage || route.queryIndependentConfig === true) &&
           !isProgressiveActionRender &&
           hasSameUserQuery(url.toString(), resolvedUrl),
         middlewareContext,

@@ -1,4 +1,5 @@
 import { Suspense, createElement } from "react";
+import { ClientPageRoot } from "vinext/shims/client-page-root";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import {
   prepareAppPageHead,
@@ -157,6 +158,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   renderMode?: AppRscRenderMode;
   /** Observe page `searchParams` access for cache-safety classification. */
   observePageSearchParamsAccess?: boolean;
+  /** Keep the Flight payload query-neutral for a shared HTML candidate. */
+  queryFromNavigationForClientPage?: boolean;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
   /** Whether generated metadata may stream into the response body. */
@@ -261,6 +264,7 @@ export async function buildPageElements<
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
+    queryFromNavigationForClientPage = false,
     serveStreamingMetadata,
     isProduction = process.env.NODE_ENV === "production",
   } = pageRequest;
@@ -555,9 +559,6 @@ export async function buildPageElements<
   void streamingMetadataOutlet?.catch(() => null);
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
-  // React serializes Client Page props before the component can read them.
-  // Serialization of an empty thenable is not evidence that the page used it.
-  const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
   const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
   const hasPageLoadingBoundary =
     resolveAppPageLoadingModuleAtOrAbove(route, pageTreePosition) !== null ||
@@ -581,14 +582,20 @@ export async function buildPageElements<
   ) => {
     if (isReactOwnedAppComponent(PageComponent)) {
       const invocationProps = { ...props };
-      if (searchParams) {
+      if (!searchParams) return createElement(PageComponent, invocationProps);
+      if (
+        (PageComponent as { $$typeof?: symbol }).$$typeof !== Symbol.for("react.client.reference")
+      ) {
         invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
-              markDynamic: hasRequestSearchParams,
-            })
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
           : makeThenableParams(pageSearchParams);
+        return createElement(PageComponent, invocationProps);
       }
-      return createElement(PageComponent, invocationProps);
+      return createElement(ClientPageRoot, {
+        Component: PageComponent,
+        props: invocationProps,
+        serverProvidedSearchParams: queryFromNavigationForClientPage ? null : pageSearchParams,
+      });
     }
 
     const PageInvoker = () => {

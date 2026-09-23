@@ -101,6 +101,64 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   await expect(page.getByTestId("query-independent-client-value")).toHaveText(`second-${suffix}`);
 
   const cacheStatusHeader = backend === "workers-cache" ? "cf-cache-status" : "x-vinext-cache";
+  // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  // Merely being a Client Page must not disable default caching when it never
+  // reads the searchParams prop. The first request intentionally has no query.
+  const clientPath = "/query-client-independent";
+  const clientFirst = await request.get(`${baseURL}${clientPath}`);
+  expect(clientFirst.ok(), JSON.stringify(clientFirst.headers())).toBe(true);
+  const clientFirstBody = await clientFirst.text();
+  expect(clientFirstBody).toContain(
+    'data-testid="query-client-independent-value">No searchParams used</output>',
+  );
+  let clientHitBody = "";
+  await expect
+    .poll(
+      async () => {
+        const hit = await request.get(`${baseURL}${clientPath}?q=first-${suffix}`);
+        const status = hit.headers()[cacheStatusHeader];
+        if (status === "HIT") clientHitBody = await hit.text();
+        await hit.dispose();
+        return status;
+      },
+      { message: `${backend} did not cache the unused-searchParams Client Page`, timeout: 30_000 },
+    )
+    .toBe("HIT");
+  const clientOther = await request.get(`${baseURL}${clientPath}?q=second-${suffix}`);
+  const clientOtherBody = await clientOther.text();
+  expect(clientOther.ok(), JSON.stringify(clientOther.headers())).toBe(true);
+  expect(clientOther.headers()[cacheStatusHeader]).toBe("HIT");
+  expect(clientOtherBody).toBe(clientHitBody);
+  expect(clientOtherBody).not.toContain(`first-${suffix}`);
+
+  const clientRscFirst = await request.get(
+    `${baseURL}${clientPath}?q=rsc-first-${suffix}&_rsc=first-${suffix}`,
+    { headers: { accept: "text/x-component", RSC: "1" } },
+  );
+  const clientRscFirstBody = await clientRscFirst.text();
+  const clientRscSecond = await request.get(
+    `${baseURL}${clientPath}?q=rsc-second-${suffix}&_rsc=second-${suffix}`,
+    { headers: { accept: "text/x-component", RSC: "1" } },
+  );
+  const clientRscSecondBody = await clientRscSecond.text();
+  expect(clientRscFirst.ok(), JSON.stringify(clientRscFirst.headers())).toBe(true);
+  expect(clientRscSecond.ok(), JSON.stringify(clientRscSecond.headers())).toBe(true);
+  expect(clientRscSecond.headers()["content-type"]).toContain("text/x-component");
+  if (clientRscSecond.headers()[cacheStatusHeader] === "HIT") {
+    expect(clientRscSecondBody).not.toContain(`rsc-first-${suffix}`);
+  }
+  expect(clientRscFirstBody).not.toContain(`rsc-second-${suffix}`);
+
+  await page.goto(`${baseURL}${clientPath}?q=second-${suffix}`);
+  await expect(page.getByTestId("query-client-independent-value")).toHaveText(
+    "No searchParams used",
+  );
+  await page.getByRole("button", { name: "Clicked 0 times" }).click();
+  await expect(page.getByRole("button", { name: "Clicked 1 times" })).toBeVisible();
+  await page.getByRole("link", { name: "Open query-dependent Client Page" }).click();
+  await expect(page.getByTestId("query-client-dependent-value")).toHaveText("from-navigation");
+
   let forceStaticFirstBody = "";
   await expect
     .poll(
