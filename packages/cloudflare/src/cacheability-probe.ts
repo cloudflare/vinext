@@ -766,10 +766,16 @@ export async function probeStagedWorkerCacheability(options: {
         rscResult.version === 1 &&
         rscResult.kind === result.kind &&
         rscResult.pattern === result.pattern &&
-        (rscResult.routePathname === undefined ||
-          normalizeCacheabilityRoutePathname(rscResult.routePathname) === group.routePathname) &&
+        typeof rscResult.routePathname === "string" &&
+        rscResult.routePathname.startsWith("/") &&
+        !rscResult.routePathname.includes("?") &&
+        !rscResult.routePathname.includes("#") &&
+        normalizeCacheabilityRoutePathname(rscResult.routePathname) === group.routePathname &&
         rscResult.state === "static-candidate" &&
         rscResult.rendererStatic === true &&
+        rscResult.scope !== "pattern" &&
+        rscResult.terminal !== true &&
+        rscResult.retryable !== true &&
         rscResult.status === 200;
     }
     const patternIsDefinitelyDynamic =
