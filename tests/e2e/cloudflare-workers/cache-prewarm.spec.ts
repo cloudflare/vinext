@@ -317,6 +317,7 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
     const publicId = /data-testid="query-public-id"[^>]*>([^<]+)/.exec(firstBody)?.[1];
     expect(publicId).toBeTruthy();
     expect(publicId).not.toBe(previousPublicId);
+    let cachedPublicId = publicId;
     if (backend !== "kv") {
       let hitBody = "";
       await expect
@@ -336,10 +337,16 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
           },
         )
         .toBe("HIT");
-      expect(hitBody).toBe(firstBody);
+      // A second edge isolate can miss before the warmup write becomes visible
+      // and publish its own render. Only Workers Cache promises the same body
+      // for the first fill and the HIT; Response Store must preserve the query.
+      if (backend === "workers-cache") expect(hitBody).toBe(firstBody);
       expect(hitBody).toContain(`data-testid="query-public-value">${value}</output>`);
+      cachedPublicId = /data-testid="query-public-id"[^>]*>([^<]+)/.exec(hitBody)?.[1];
+      expect(cachedPublicId).toBeTruthy();
+      expect(cachedPublicId).not.toBe(previousPublicId);
     }
-    previousPublicId = publicId;
+    previousPublicId = cachedPublicId;
   }
 
   const dynamicUrl = `${baseURL}/force-dynamic?cache-e2e=${randomUUID()}`;
