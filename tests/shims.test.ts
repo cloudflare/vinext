@@ -7865,6 +7865,32 @@ describe('"use cache" runtime', () => {
     expect(observeSearchParams).not.toHaveBeenCalled();
   });
 
+  // Next.js: use-cache-wrapper.ts passes `makeErroringSearchParamsForUseCache()`
+  // to a public page cache whose serialized args omit searchParams.
+  it("gives replayed page props searchParams that reject inside the cache scope", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => ({ q: (await props.searchParams!).q }),
+      "/fixture/app/cached/replay-access/page.tsx:default",
+      "",
+      { appPageSegmentFunction: true },
+    );
+
+    // A Response Store replay decodes page props without searchParams.
+    await expect(cached({ params: makeThenableParams({ slug: "same" }) })).rejects.toThrow(
+      /`searchParams` cannot be called inside "use cache"/,
+    );
+  });
+
   it('rejects app page searchParams access inside page default "use cache"', async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");

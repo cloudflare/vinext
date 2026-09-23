@@ -49,7 +49,8 @@ import {
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
-import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
+import { isDraftModeEnabled, markDynamicUsage, throwIfInsideCacheScope } from "./headers.js";
+import { makeThenableParams } from "./thenable-params.js";
 import {
   createPprFallbackShellSuspensePromise,
   trackPprFallbackShellCacheTask,
@@ -602,6 +603,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 ): (...args: TArgs) => Promise<TResult> {
   const cacheVariant = variant ?? "";
   const omitAppPageSearchParamsFromFirstArg = options.appPageSegmentFunction === true;
+  // Rendered page props carry searchParams that throw inside a public cache
+  // scope. When they are absent, as on a Response Store replay of the encoded
+  // args, access must still fail like Next's erroring searchParams.
+  const fillAppPageSearchParams = omitAppPageSearchParamsFromFirstArg && cacheVariant !== "private";
   // A replayable entry stores this reference ID for Response Store
   // regeneration. Keep entries produced with an older build's opaque alias
   // unreachable if a stable deployment/build ID is reused.
@@ -674,7 +679,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const executionArgs = hasCaptureEnvelope
         ? [captures, ...admittedArgs.slice(1)]
         : admittedArgs;
-      const callArgs = executionArgs as TArgs;
+      const callArgs = (
+        fillAppPageSearchParams ? withErroringPageSearchParams(executionArgs) : executionArgs
+      ) as TArgs;
 
       // Build the cache key. Use encodeReply (RSC protocol) when available —
       // it correctly handles React elements as temporary references (excluded
@@ -1403,6 +1410,29 @@ function omitSearchParamsFromPageProps(args: readonly unknown[]): unknown[] {
   }
   const { searchParams: _searchParams, ...pageProps } = props as Record<string, unknown>;
   return [pageProps, ...rest];
+}
+
+/**
+ * Give page props without `searchParams` (a Response Store replay of args
+ * encoded by `omitSearchParamsFromPageProps`) a value that throws on access
+ * inside the cache scope, like Next.js's `makeErroringSearchParamsForUseCache`,
+ * instead of `undefined`.
+ */
+function withErroringPageSearchParams(args: readonly unknown[]): readonly unknown[] {
+  const [props, ...rest] = args;
+  if (
+    props === null ||
+    typeof props !== "object" ||
+    Array.isArray(props) ||
+    "searchParams" in props
+  ) {
+    return args;
+  }
+  const searchParams = makeThenableParams(
+    {},
+    { observeParamAccess: () => throwIfInsideCacheScope("searchParams") },
+  );
+  return [{ ...props, searchParams }, ...rest];
 }
 
 function unwrapThenableObjectArray(
