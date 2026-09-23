@@ -15,7 +15,7 @@ function getDependencyUpgradeDeps(
   for (const [dependency, recommendation] of Object.entries(recommendations)) {
     try {
       const version = findPackageVersion(req.resolve(dependency), dependency);
-      if (version && needsStableUpgrade(version, recommendation.minimumVersion)) {
+      if (version && isVersionBelow(version, recommendation.minimumVersion)) {
         return recommendation.upgrades;
       }
     } catch {
@@ -41,7 +41,9 @@ export function getReactUpgradeDeps(
       const version = /^[~^]?([0-9]+(?:\.[0-9]+){0,2}(?:-[0-9A-Za-z.*-]+)?)(?:\.[x*])?$/.exec(
         declared ?? "",
       )?.[1];
-      if (version && needsStableUpgrade(version, [19, 2, 6])) {
+      // Config-only init will install stable RSDW. A declared React canary must
+      // move with it, even when its numeric version is above the stable floor.
+      if (version && (version.includes("-") || isVersionBelow(version, [19, 2, 6]))) {
         const upgrades = ["react@latest", "react-dom@latest"];
         const rsdw =
           pkg.dependencies?.["react-server-dom-webpack"] ??
@@ -60,10 +62,7 @@ export function getReactUpgradeDeps(
   });
 }
 
-function needsStableUpgrade(version: string, minimum: [number, number, number]): boolean {
-  // Stable RSDW cannot be paired with a React canary, even one whose numeric
-  // version is above the minimum stable version.
-  if (version.includes("-")) return true;
+function isVersionBelow(version: string, minimum: [number, number, number]): boolean {
   const current = version.split(".").map((part) => parseInt(part, 10));
   for (let index = 0; index < minimum.length; index++) {
     if ((current[index] ?? 0) !== minimum[index]) return (current[index] ?? 0) < minimum[index];

@@ -506,6 +506,20 @@ describe("getReactUpgradeDeps", () => {
     expect(deps).toEqual([]);
   });
 
+  it("does not replace an installed React canary during a normal build", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.3.0-canary-a1b2c3d4-20260901");
+
+    expect(getReactUpgradeDeps(tmpDir)).toEqual([]);
+  });
+
+  it("still upgrades installed canaries below the RSDW security floor", () => {
+    setupProject(tmpDir, { router: "app" });
+    setupFakeReact(tmpDir, "19.2.5-canary-a1b2c3d4-20260901");
+
+    expect(getReactUpgradeDeps(tmpDir)).toEqual(["react@latest", "react-dom@latest"]);
+  });
+
   it("returns upgrade deps when React major is below 19", () => {
     setupProject(tmpDir, { router: "app" });
     setupFakeReact(tmpDir, "18.3.1");
