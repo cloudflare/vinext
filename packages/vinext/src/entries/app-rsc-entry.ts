@@ -263,13 +263,53 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     if (source === null) return UNKNOWN_DYNAMIC_CONFIG;
     const literal = extractExportConstString(source, "dynamic");
     if (literal !== null) return literal;
-    // An unparseable/nonliteral or re-exported config is not proof of an
-    // absent config. A conservative miss is safer than a shared key whose
-    // renderer later resolves a different effective dynamic mode.
-    // Unicode escapes can spell an exported identifier without its literal
-    // name appearing in source (for example, `\u0064ynamic`). Treat those
-    // modules as unknown rather than certifying an inherited static contract.
-    return /\\u|\bdynamic\b|\bexport\s*\*/.test(source) ? UNKNOWN_DYNAMIC_CONFIG : null;
+    // Absence of a dynamic export must be proven structurally: comments and
+    // escapes can hide valid exports from a text search. Treat nonliteral
+    // values, re-exports, and parse failures as unknown rather than inheriting
+    // a parent's static contract under a shared cache key.
+    try {
+      const result = parseSync(filePath, source, {
+        astType: "ts",
+        lang: "tsx",
+        sourceType: "module",
+      });
+      if (result.errors.some((error) => error.severity === "Error")) {
+        return UNKNOWN_DYNAMIC_CONFIG;
+      }
+      for (const node of result.program.body) {
+        if (node.type === "ExportAllDeclaration") return UNKNOWN_DYNAMIC_CONFIG;
+        if (node.type !== "ExportNamedDeclaration" || node.exportKind === "type") continue;
+        if (
+          node.specifiers.some(
+            (specifier) =>
+              (specifier.exported.type === "Identifier"
+                ? specifier.exported.name
+                : specifier.exported.value) === "dynamic",
+          )
+        ) {
+          return UNKNOWN_DYNAMIC_CONFIG;
+        }
+        if (
+          node.declaration?.type === "VariableDeclaration" &&
+          node.declaration.declarations.some(
+            (declaration) =>
+              declaration.id.type !== "Identifier" || declaration.id.name === "dynamic",
+          )
+        ) {
+          return UNKNOWN_DYNAMIC_CONFIG;
+        }
+        if (
+          (node.declaration?.type === "FunctionDeclaration" ||
+            node.declaration?.type === "ClassDeclaration") &&
+          node.declaration.id?.name === "dynamic"
+        ) {
+          return UNKNOWN_DYNAMIC_CONFIG;
+        }
+      }
+      return null;
+    } catch {
+      return UNKNOWN_DYNAMIC_CONFIG;
+    }
   };
 
   // A Client Page's searchParams promise is serialized by React before the

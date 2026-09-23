@@ -1204,6 +1204,8 @@ describe("App Router entry templates", () => {
     const nonliteralDynamicPage = path.join(tmpDir, "nonliteral-dynamic-page.tsx");
     const reexportedDynamicPage = path.join(tmpDir, "reexported-dynamic-page.tsx");
     const escapedDynamicPage = path.join(tmpDir, "escaped-dynamic-page.tsx");
+    const starExportDynamicPage = path.join(tmpDir, "star-export-dynamic-page.tsx");
+    const starExportConfig = path.join(tmpDir, "cfg.ts");
     const clientPage = path.join(tmpDir, "client-page.tsx");
     const reexportedPage = path.join(tmpDir, "reexported-page.tsx");
     fs.writeFileSync(staticPage, "export default function Page() { return null; }");
@@ -1237,6 +1239,11 @@ describe("App Router entry templates", () => {
       escapedDynamicPage,
       'const mode = "auto"; export { mode as \\u0064ynamic }; export default function Page() { return null; }',
     );
+    fs.writeFileSync(
+      starExportDynamicPage,
+      'export/**/ * from "./cfg"; export default function Page() { return null; }',
+    );
+    fs.writeFileSync(starExportConfig, 'export const dynamic = "auto";');
 
     try {
       const code = generateAppRequestRscEntry(tmpDir, [
@@ -1265,6 +1272,12 @@ describe("App Router entry templates", () => {
           ...minimalAppRoutes[0],
           pattern: "/escaped-child",
           pagePath: escapedDynamicPage,
+          layouts: [forceStaticPage],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/star-export-child",
+          pagePath: starExportDynamicPage,
           layouts: [forceStaticPage],
         },
         { ...minimalAppRoutes[0], pattern: "/page", pagePath: dynamicPage, layouts: [] },
@@ -1379,6 +1392,7 @@ describe("App Router entry templates", () => {
         "/sibling-force-static": false,
         "/sibling-intercept": true,
         "/slot-intercept": true,
+        "/star-export-child": false,
         "/static": false,
       });
       expect(
@@ -1389,6 +1403,7 @@ describe("App Router entry templates", () => {
         "/nonliteral-child": false,
         "/reexported-child": false,
         "/sibling-force-static": false,
+        "/star-export-child": false,
       });
       expect(
         Object.fromEntries(
@@ -1400,6 +1415,7 @@ describe("App Router entry templates", () => {
         "/nonliteral-child": false,
         "/reexported-child": false,
         "/sibling-force-static": false,
+        "/star-export-child": false,
         "/client": false,
       });
     } finally {
