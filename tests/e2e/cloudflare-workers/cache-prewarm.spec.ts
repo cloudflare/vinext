@@ -606,6 +606,7 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
     )
     .toBe("regenerated");
   expect(regeneratedClientBody).toContain("searchParamsFromBrowser:true");
+  expect(regeneratedClientBody).not.toContain(`seed-${suffix}`);
   expect(regeneratedClientBody).not.toContain(regenerationQuery);
   const currentClientQuery = `current-${suffix}`;
   await page.goto(`${staleClientPath}?q=${currentClientQuery}`);
