@@ -315,7 +315,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4215" },
     server: {
       command:
-        "(test -e node_modules || test -L node_modules || ln -s ../../../../examples/app-router-cloudflare/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && node ../../static-export/serve-static.mjs dist/client 4215",
+        "(test -e node_modules || test -L node_modules || ln -s ../../../../examples/app-router-cloudflare/node_modules node_modules) && npx vp run vinext#build && node ../../../../packages/vinext/dist/cli.js build && npx wrangler dev --config dist/server/wrangler.json --port 4215",
       cwd: "./tests/e2e/cloudflare-static-export/fixture",
       port: 4215,
       reuseExistingServer: !process.env.CI,

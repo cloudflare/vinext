@@ -8,8 +8,14 @@ export function registerPrerenderCloudflareLoader(): void {
   registered = true;
   const stub = `
     export const tracing = undefined;
+    function unavailable() {
+      throw new Error("Cloudflare bindings are unavailable during build-time prerendering. Use deployment pre-warming for binding-dependent routes.");
+    }
     export const env = new Proxy({}, {
-      get() { throw new Error("Cloudflare bindings are unavailable during build-time prerendering. Use deployment pre-warming for binding-dependent routes."); }
+      get: unavailable,
+      has: unavailable,
+      ownKeys: unavailable,
+      getOwnPropertyDescriptor: unavailable,
     });
     export function waitUntil() {
       throw new Error("Cloudflare waitUntil is unavailable during build-time prerendering.");
