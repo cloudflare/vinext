@@ -213,16 +213,15 @@ deploy does not need `wrangler.jsonc`.
 
 Named auxiliary Workers in Build Output are deployed with `cf` before the entry
 Worker. This currently requires vinext to project each auxiliary Worker as the
-default Build Output for a separate `cf deploy --prebuilt`, because `cf@0.10.0`
-only deploys the default Worker. The generated `cloudflare.config.ts` remains
-the source of truth; no auxiliary Wrangler config is required.
+default Build Output for a separate `cf deploy --prebuilt`; `cf deploy --prebuilt`
+deploys the default Worker, not the named auxiliary outputs. The generated
+`cloudflare.config.ts` remains the source of truth; no auxiliary Wrangler config
+is required.
 
-Experimental staged CDN warming is currently a hybrid flow: `cf` builds and
-uploads the Worker version, while Wrangler reads deployment status, stages and
-promotes traffic, and applies triggers when needed. Until `cf` supports those
-control-plane operations, warming also needs an equivalent Wrangler config for
-trigger and version-metadata configuration. This is an alternative path for
-trying `cf`, not a replacement for vinext's default Wrangler deployment path.
+Experimental staged CDN warming uses `cf` to upload a version, read deployment
+status, stage and promote traffic, and apply triggers. Typed-config projects do
+not need an equivalent Wrangler config. Existing Wrangler-configured projects
+continue to use Wrangler for this flow.
 
 With Vite+, use `vpx @vinext/cloudflare deploy`, or
 `vp exec vinext-cloudflare deploy` when running the locally installed bin.

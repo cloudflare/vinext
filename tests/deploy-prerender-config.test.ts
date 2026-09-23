@@ -181,6 +181,10 @@ function writeProjectWithInlineNextConfig(nextConfig: string): void {
 
 function writeCfBuildOutputScaffolding(): void {
   writeFile("cloudflare.config.ts", "export default {};\n");
+  writeFile(
+    ".cloudflare/output/v0/workers/default/worker.config.json",
+    JSON.stringify({ name: "inline-next-config-app" }),
+  );
   writeFile("node_modules/cf/package.json", JSON.stringify({ name: "cf", bin: { cf: "bin/cf" } }));
   writeFile("node_modules/cf/bin/cf", "#!/usr/bin/env node\n");
 }
