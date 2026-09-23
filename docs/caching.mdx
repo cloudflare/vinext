@@ -142,8 +142,6 @@ Workers Cache can serve a response without rerunning the render stage. Middlewar
 
 This setup is fast when an entry is present at the edge, but Workers Cache is distributed rather than one globally shared cache. A response cached in one region may still miss in another. Tiered caching can reduce this duplication, but without a durable response store a regional miss or eviction can require another render. The KV data cache is also eventually consistent.
 
-The Workers Cache adapter supports staged cache warming through the Cloudflare deploy command. Warming is less direct because Workers Cache admission is controlled by response headers rather than a programmatic `put` API. vinext must render and probe routes to build a cacheability manifest, then make requests to fill the cache; it cannot simply upload known responses into Workers Cache. HTML and RSC payloads also use separate cache entries, so warming needs separate HTTP requests to seed both.
-
 ## KV data cache
 
 You can use Workers KV without Workers Cache:
@@ -167,6 +165,20 @@ Add the matching namespace to `wrangler.jsonc`:
 ```
 
 This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
+
+## Cache warming
+
+Cache warming is optional during Cloudflare deploys. With a configured cache adapter, run:
+
+```sh
+npx @vinext/cloudflare deploy --experimental-warm-cdn-cache
+```
+
+For an existing deployment serving 100% of traffic from one version, vinext uploads the new Worker, stages it at 0%, discovers routes through the staged Worker with its real bindings, checks readiness, and requests eligible responses to fill the configured cache before promoting the version. Unlike a local prerender and KV bulk upload, rendering happens in the deployed Worker. Static exports (`output: "export"`) still need local prerendered files.
+
+The default warmup makes one fill request per admitted cache identity. Add `--warm-cdn-certify` to require a second, header-only request that proves warmed entries are reusable before promotion. If staging or required warmup fails, the command stops rather than promoting an unverified version; inspect the deployment state before retrying. A first deployment cannot use this staged flow: deploy normally once, then enable warming on subsequent deploys. The command also needs a reachable production route or custom domain and a Worker name for staged version overrides; use `--warm-cdn-target https://example.com` if the target origin cannot be inferred.
+
+Only discoverable, cacheable route identities are warmed; dynamic parameters and query variants are not all enumerated automatically. HTML, RSC, and Pages Router data use separate requests where applicable. For Workers Cache, a warm request does not guarantee a cache hit in every region. See [Cloudflare's Workers Caching documentation](https://developers.cloudflare.com/workers/cache/).
 
 ## Which option should I choose?
 
