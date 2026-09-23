@@ -1203,6 +1203,7 @@ describe("App Router entry templates", () => {
     const forceStaticPage = path.join(tmpDir, "force-static-page.tsx");
     const nonliteralDynamicPage = path.join(tmpDir, "nonliteral-dynamic-page.tsx");
     const reexportedDynamicPage = path.join(tmpDir, "reexported-dynamic-page.tsx");
+    const escapedDynamicPage = path.join(tmpDir, "escaped-dynamic-page.tsx");
     const clientPage = path.join(tmpDir, "client-page.tsx");
     const reexportedPage = path.join(tmpDir, "reexported-page.tsx");
     fs.writeFileSync(staticPage, "export default function Page() { return null; }");
@@ -1232,6 +1233,10 @@ describe("App Router entry templates", () => {
       reexportedDynamicPage,
       'export { dynamic } from "./dynamic-page"; export default function Page() { return null; }',
     );
+    fs.writeFileSync(
+      escapedDynamicPage,
+      'const mode = "auto"; export { mode as \\u0064ynamic }; export default function Page() { return null; }',
+    );
 
     try {
       const code = generateAppRequestRscEntry(tmpDir, [
@@ -1254,6 +1259,12 @@ describe("App Router entry templates", () => {
           ...minimalAppRoutes[0],
           pattern: "/reexported-child",
           pagePath: reexportedDynamicPage,
+          layouts: [forceStaticPage],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/escaped-child",
+          pagePath: escapedDynamicPage,
           layouts: [forceStaticPage],
         },
         { ...minimalAppRoutes[0], pattern: "/page", pagePath: dynamicPage, layouts: [] },
@@ -1358,6 +1369,7 @@ describe("App Router entry templates", () => {
       ).toEqual({
         "/api": true,
         "/client": false,
+        "/escaped-child": false,
         "/force-static": false,
         "/layout": true,
         "/nonliteral-child": false,
@@ -1373,6 +1385,7 @@ describe("App Router entry templates", () => {
         Object.fromEntries(routes.map((route) => [route.pattern, route.queryIndependentConfig])),
       ).toMatchObject({
         "/force-static": true,
+        "/escaped-child": false,
         "/nonliteral-child": false,
         "/reexported-child": false,
         "/sibling-force-static": false,
@@ -1383,6 +1396,7 @@ describe("App Router entry templates", () => {
         ),
       ).toMatchObject({
         "/force-static": true,
+        "/escaped-child": false,
         "/nonliteral-child": false,
         "/reexported-child": false,
         "/sibling-force-static": false,

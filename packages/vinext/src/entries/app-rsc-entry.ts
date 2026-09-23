@@ -266,7 +266,10 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
     // An unparseable/nonliteral or re-exported config is not proof of an
     // absent config. A conservative miss is safer than a shared key whose
     // renderer later resolves a different effective dynamic mode.
-    return /\bdynamic\b|\bexport\s*\*/.test(source) ? UNKNOWN_DYNAMIC_CONFIG : null;
+    // Unicode escapes can spell an exported identifier without its literal
+    // name appearing in source (for example, `\u0064ynamic`). Treat those
+    // modules as unknown rather than certifying an inherited static contract.
+    return /\\u|\bdynamic\b|\bexport\s*\*/.test(source) ? UNKNOWN_DYNAMIC_CONFIG : null;
   };
 
   // A Client Page's searchParams promise is serialized by React before the
