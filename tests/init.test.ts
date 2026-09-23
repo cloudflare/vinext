@@ -832,13 +832,10 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(readFile(tmpDir, "vite.config.ts")).toContain('vinext({ prerender: { routes: "*" } })');
   });
 
-  it("rejects prerender for Cloudflare init", async () => {
+  it("configures prerender for Cloudflare init when explicitly requested", async () => {
     setupProject(tmpDir, { router: "app" });
-
-    await expect(runInit(tmpDir, { prerender: true })).rejects.toThrow(
-      "Cloudflare init does not configure prerendering",
-    );
-    expect(fs.existsSync(path.join(tmpDir, "vite.config.ts"))).toBe(false);
+    await runInit(tmpDir, { prerender: true });
+    expect(readFile(tmpDir, "vite.config.ts")).toContain('prerender: { routes: "*" }');
   });
 
   it("prints explicit steps to finish Cloudflare KV setup", async () => {

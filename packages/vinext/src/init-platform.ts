@@ -19,6 +19,7 @@ export type CloudflareInitOptions = {
   imageOptimization: InitImageOptimization;
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
+  prerender?: boolean;
 };
 
 export const INIT_PLATFORMS = {
@@ -232,9 +233,13 @@ export async function resolveInitOptions(
   const platformOptions = await INIT_PLATFORMS[platform].options(args, options);
   const explicitWarmCdnCache = parseWarmCdnCacheArg(args);
   const explicitPrerender = parsePrerenderArg(args);
-  if (platform === "cloudflare" && explicitPrerender === true) {
+  if (
+    platform === "cloudflare" &&
+    platformOptions?.cdnCache === "static-assets" &&
+    explicitPrerender === false
+  ) {
     throw new Error(
-      "--prerender is only supported by Node init. For Cloudflare, choose --cdn-cache=static-assets for build-time prerendering or use --experimental-warm-cdn-cache with Workers Cache or Workers Response Store.",
+      "--no-prerender cannot be used with --cdn-cache=static-assets, which requires build-time prerendering.",
     );
   }
   const supportsWarmCdnCache =
@@ -248,9 +253,9 @@ export async function resolveInitOptions(
   }
 
   const prerender =
-    platform === "node"
-      ? (explicitPrerender ?? (await resolveInitPrerender(args, options)))
-      : false;
+    platform === "cloudflare" && platformOptions?.cdnCache === "static-assets"
+      ? false // The selected adapter already enables prerendering in its generated config.
+      : (explicitPrerender ?? (await resolveInitPrerender(args, options, platform)));
   const warmCdnCache =
     platform === "cloudflare" && supportsWarmCdnCache
       ? await resolveInitWarmCdnCache(args, options)
@@ -261,7 +266,7 @@ export async function resolveInitOptions(
     prerender,
     cloudflare:
       platform === "cloudflare" && platformOptions
-        ? { ...platformOptions, warmCdnCache }
+        ? { ...platformOptions, warmCdnCache, ...(prerender ? { prerender: true } : {}) }
         : undefined,
   };
 }
@@ -269,6 +274,7 @@ export async function resolveInitOptions(
 export async function resolveInitPrerender(
   args: string[],
   options: PlatformPromptOptions = {},
+  platform: InitPlatform = "node",
 ): Promise<boolean> {
   const explicitPrerender = parsePrerenderArg(args);
   if (explicitPrerender !== undefined) return explicitPrerender;
@@ -285,7 +291,13 @@ export async function resolveInitPrerender(
 
   try {
     while (true) {
-      const answer = (await question("  Pre-render all static routes after build? [y/N]: "))
+      const answer = (
+        await question(
+          platform === "cloudflare"
+            ? "  Pre-render all static routes after build? (not served by Cloudflare deploy unless using Static Assets) [y/N]: "
+            : "  Pre-render all static routes after build? [y/N]: ",
+        )
+      )
         .trim()
         .toLowerCase();
       if (answer === "") {
