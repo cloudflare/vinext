@@ -113,7 +113,7 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   expect(forceStaticSecond.ok()).toBe(true);
   expect(forceStaticSecondBody).toBe(forceStaticFirstBody);
   expect(forceStaticSecondBody).not.toContain(`first-${suffix}`);
-  expect(forceStaticSecondBody).toContain("searchParamsFromBrowser:true");
+  expect(forceStaticSecondBody).not.toContain("searchParamsFromBrowser:true");
   if (backend !== "kv") {
     expect(forceStaticSecond.headers()[cacheStatusHeader]).toBe("HIT");
   }

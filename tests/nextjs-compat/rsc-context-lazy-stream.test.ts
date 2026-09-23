@@ -45,15 +45,15 @@
  * React hydration mismatch error #418 whenever any "use client" component
  * called usePathname() or useSearchParams().
  *
- * Fix: the SSR entry embeds the pathname, searchParams, and params in the
- * symbol-backed navigation runtime RSC bootstrap in <head>. The browser entry
- * restores that state before hydrateRoot() so the client snapshot matches the
- * server.
+ * Fix: the SSR entry embeds the pathname and params in the symbol-backed
+ * navigation runtime RSC bootstrap in <head>. When HTML may be shared across
+ * query strings, the browser entry reads its own URL for searchParams before
+ * hydrateRoot() so the snapshot matches SSR without storing a visitor's query.
  *
  * The tests verify:
  *   1. The HTML <head> contains the navigation runtime RSC bootstrap
  *   2. The embedded pathname matches the actual request path
- *   3. The embedded searchParams matches the actual query string
+ *   3. The browser-query marker is present when the embedded query is omitted
  *   4. The bootstrap params carry dynamic segment values
  *   5. The SSR-rendered values from usePathname()/useSearchParams() agree with
  *      the navigation bootstrap — ensuring getServerSnapshot will match
@@ -209,9 +209,17 @@ function extractRscBootstrap(html: string): {
   expect(navSeparator, "navigation runtime nav payload not found").toBeGreaterThan(-1);
   const end = html.indexOf("})</script>", navSeparator);
   expect(end, "navigation runtime RSC bootstrap script was not closed").toBeGreaterThan(-1);
+  const optionalMetadata = html
+    .slice(navSeparator, end)
+    .search(/,(?:searchParamsFromBrowser|dynamicStaleTimeSeconds):/);
   return {
     params: JSON.parse(html.slice(paramsStart, navSeparator)),
-    nav: JSON.parse(html.slice(navSeparator + ",nav:".length, end)),
+    nav: JSON.parse(
+      html.slice(
+        navSeparator + ",nav:".length,
+        optionalMetadata < 0 ? end : navSeparator + optionalMetadata,
+      ),
+    ),
   };
 }
 
@@ -296,21 +304,18 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
   //
   // With the navigation bootstrap:
   //   - SSR renders: <span id="nav-search-q">hello</span>
-  //   - browser entry calls setNavigationContext with new URLSearchParams([["q","hello"]])
+  //   - browser entry restores searchParams from window.location.search
   //   - getServerSnapshot returns: "hello"
   //   → React sees "hello" = "hello" → no mismatch
 
-  it("navigation runtime searchParams carries query params from request URL", async () => {
+  it("query-shareable HTML omits the request query from its navigation bootstrap", async () => {
     const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=hello&page=3`);
     const html = await res.text();
 
     const { nav } = extractRscBootstrap(html);
 
-    // Serialised as array of [key, value] pairs to preserve duplicates.
-    expect(nav.searchParams).toEqual([
-      ["q", "hello"],
-      ["page", "3"],
-    ]);
+    expect(nav.searchParams).toEqual([]);
+    expect(html).toContain("searchParamsFromBrowser:true");
   });
 
   it("navigation runtime searchParams agrees with SSR-rendered useSearchParams() output", async () => {
@@ -321,13 +326,11 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     expect(html).toContain('<span id="nav-search-q">hello</span>');
     expect(html).toContain('<span id="nav-search-page">3</span>');
 
-    // Embedded payload must match
+    // The browser restores the query from its own URL; the shared HTML
+    // deliberately carries no query-bearing navigation snapshot.
     const { nav } = extractRscBootstrap(html);
-
-    // new URLSearchParams(nav.searchParams) reconstructs the same params
-    const sp = new URLSearchParams(nav.searchParams);
-    expect(sp.get("q")).toBe("hello");
-    expect(sp.get("page")).toBe("3");
+    expect(nav.searchParams).toEqual([]);
+    expect(html).toContain("searchParamsFromBrowser:true");
   });
 
   it("SSR-rendered useSearchParams() reflects query params (confirms parity source)", async () => {
@@ -337,8 +340,8 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     // The SSR path: RSC environment sets navigation context from request URL,
     // passes it to SSR environment via handleSsr(rscStream, navContext, ...).
     // The SSR environment's useSearchParams() reads navContext.searchParams.
-    // The embedded navigation payload comes from the same navContext.
-    // Both should reflect the request query string.
+    // The bootstrap restores the query from window.location.search instead
+    // of embedding the request's query in a potentially shared response.
     expect(html).toContain('<span id="nav-search-q">hello</span>');
     expect(html).toContain('<span id="nav-search-page">3</span>');
     expect(html).toContain(`<span id="nav-pathname">${NAV_ROUTE}</span>`);
@@ -360,10 +363,12 @@ describe("navigation runtime RSC bootstrap: nav context embedded for hydration s
     // </script> injection.
     expect(html).not.toContain(`"q":"${specialQ}"`);
 
-    // But when we parse the embedded JSON, the value round-trips correctly.
+    // The SSR content is safely escaped; the shared bootstrap omits the query
+    // and lets the browser read the same value from its own location.
     const { nav } = extractRscBootstrap(html);
-    const sp = new URLSearchParams(nav.searchParams);
-    expect(sp.get("q")).toBe(specialQ);
+    expect(nav.searchParams).toEqual([]);
+    expect(html).toContain("searchParamsFromBrowser:true");
+    expect(html).toContain("foo&lt;bar&gt;&amp;baz");
   });
 
   // 6. Bootstrap params for dynamic segment routes

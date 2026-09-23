@@ -328,9 +328,13 @@ function buildHeadInjectionHtml(
 ): string {
   const navPayload = {
     pathname: navContext.pathname,
-    // Pathname-shared HTML must not expose the first requester's query to a
-    // later requester, even if the browser ignores that embedded value.
-    searchParams: searchParamsFromBrowser ? [] : [...navContext.searchParams.entries()],
+    // A pathname-shared artifact must not embed the first requester's query.
+    // force-static keeps searchParams empty on the client too, while ordinary
+    // static pages recover their query from the browser after hydration.
+    searchParams:
+      searchParamsFromBrowser || navContext.isForceStatic
+        ? []
+        : [...navContext.searchParams.entries()],
   };
   const rscMetadataScript = createInlineScriptTag(
     createNavigationRuntimeRscMetadataScript(

@@ -44,10 +44,16 @@ function htmlValue(html: string, testId: string): string {
   return value;
 }
 
-async function cacheStatus(pathname: string): Promise<{ body: string; status: string | null }> {
+async function cacheStatus(
+  pathname: string,
+): Promise<{ body: string; cacheControl: string | null; status: string | null }> {
   const response = await request(pathname);
   assert.equal(response.status, 200);
-  return { body: await response.text(), status: response.headers.get("x-vinext-cache") };
+  return {
+    body: await response.text(),
+    cacheControl: response.headers.get("cache-control"),
+    status: response.headers.get("x-vinext-cache"),
+  };
 }
 
 async function metadataEntries(): Promise<unknown[][]> {
@@ -459,6 +465,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
       const secondNested = await cacheStatus(pathname);
       assert.notEqual(firstNested.status, "HIT");
       assert.notEqual(secondNested.status, "HIT", pathname);
+      assert.match(secondNested.cacheControl ?? "", /no-store/);
       assert.equal(
         htmlValue(secondNested.body, "query-ssr-client-value"),
         new URL(pathname, "https://app.test").searchParams.get("q") || "(empty)",
@@ -478,7 +485,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(forceStaticSecond.body, forceStaticFirst.body);
     assert.equal(htmlValue(forceStaticSecond.body, "query-force-static-value"), "(empty)");
     assert.ok(!forceStaticSecond.body.includes('"q","first"'));
-    assert.ok(forceStaticSecond.body.includes("searchParamsFromBrowser:true"));
+    assert.ok(!forceStaticSecond.body.includes("searchParamsFromBrowser:true"));
 
     const firstWithQuery = await cacheStatus("/query-independent?reverse=first");
     const afterQuery = await cacheStatus("/query-independent");

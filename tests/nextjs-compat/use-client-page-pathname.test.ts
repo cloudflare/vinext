@@ -40,9 +40,17 @@ function extractRscBootstrap(html: string): {
   expect(navSeparator, "navigation runtime nav payload not found").toBeGreaterThan(-1);
   const end = html.indexOf("})</script>", navSeparator);
   expect(end, "navigation runtime RSC bootstrap script was not closed").toBeGreaterThan(-1);
+  const optionalMetadata = html
+    .slice(navSeparator, end)
+    .search(/,(?:searchParamsFromBrowser|dynamicStaleTimeSeconds):/);
   return {
     params: JSON.parse(html.slice(paramsStart, navSeparator)),
-    nav: JSON.parse(html.slice(navSeparator + ",nav:".length, end)),
+    nav: JSON.parse(
+      html.slice(
+        navSeparator + ",nav:".length,
+        optionalMetadata < 0 ? end : navSeparator + optionalMetadata,
+      ),
+    ),
   };
 }
 
@@ -90,14 +98,14 @@ describe('"use client" page component: usePathname() SSR (issue #688)', () => {
     expect(html).toContain('<span id="client-page-search-string">q=hello&amp;page=2</span>');
   });
 
-  it("navigation runtime searchParams matches query string", async () => {
+  it("navigation runtime sources the query from the browser without embedding it", async () => {
     const res = await fetch(`${_baseUrl}${ROUTE}?q=test`);
     const html = await res.text();
 
     const { nav } = extractRscBootstrap(html);
-    const sp = new URLSearchParams(nav.searchParams);
-
-    expect(sp.get("q")).toBe("test");
+    expect(nav.searchParams).toEqual([]);
+    expect(html).toContain("searchParamsFromBrowser:true");
+    expect(html).toContain('<span id="client-page-search-q">test</span>');
   });
 
   // Ported from Next.js: test/e2e/app-dir/app/index.test.ts

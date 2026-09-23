@@ -1205,7 +1205,8 @@ async function renderAppPageLifecycleImpl(
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
-        queryFromBrowserForSharedHtml: options.queryIndependentCandidate === true,
+        queryFromBrowserForSharedHtml:
+          options.queryIndependentCandidate === true && !options.isForceStatic,
         onSsrSearchParamsAccess:
           options.queryIndependentCandidate === true
             ? () => {
