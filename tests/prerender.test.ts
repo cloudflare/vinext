@@ -1357,6 +1357,27 @@ describe("prerenderApp — default mode (app-basic)", () => {
     expect(html).toContain('"staleTimeSeconds":30');
   });
 
+  // Ported from Next.js: test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  // A "use cache" page receives `{ params, searchParams }`. Next.js leaves
+  // searchParams out of a public page cache's key and serialized arguments, so
+  // reading them must not turn the build-time render dynamic.
+  it.each(["inline", "file"])(
+    'prerenders %s "use cache" pages that receive page props',
+    (directive) => {
+      const r = findRoute(results, `/use-cache-page-props/${directive}/prerendered`);
+      expect(r).toMatchObject({
+        route: `/use-cache-page-props/${directive}/:slug`,
+        status: "rendered",
+      });
+      const html = fs.readFileSync(
+        path.join(outDir, `use-cache-page-props/${directive}/prerendered.html`),
+        "utf-8",
+      );
+      expect(html).toContain("prerendered");
+    },
+  );
+
   it("renders inline server actions during the production build phase", () => {
     const r = findRoute(results, "/prerender-inline-server-action");
     expect(r).toMatchObject({

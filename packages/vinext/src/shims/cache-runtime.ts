@@ -840,7 +840,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           if (options.serverReferenceId && options.encodeInvocationArgs) {
             try {
               cacheFunctionInvocation = {
-                encryptedArgs: await options.encodeInvocationArgs(admittedArgs),
+                // Like the cache key, a public page cache replays without the
+                // page's searchParams: encoding them would read search params
+                // and turn every cached page render dynamic.
+                encryptedArgs: await options.encodeInvocationArgs(
+                  omitAppPageSearchParamsFromFirstArg
+                    ? omitSearchParamsFromPageProps(admittedArgs)
+                    : admittedArgs,
+                ),
                 referenceId: options.serverReferenceId,
                 rootParams: Object.fromEntries(
                   Object.entries(rootParams ?? {}).filter((entry) => entry[1] !== undefined),
@@ -1379,6 +1386,20 @@ function unwrapThenableObjects(
     result[key] = unwrapThenableObjects((value as any)[key]);
   }
   return result;
+}
+
+/**
+ * Drop `searchParams` from an App Router page component's props. Next.js omits
+ * them from both the cache key and the serialized arguments of a public
+ * `"use cache"` page (use-cache-wrapper.ts, `isPageSegmentFunction`).
+ */
+export function omitSearchParamsFromPageProps(args: readonly unknown[]): unknown[] {
+  const [props, ...rest] = args;
+  if (props === null || typeof props !== "object" || !("searchParams" in props)) {
+    return [...args];
+  }
+  const { searchParams: _searchParams, ...pageProps } = props as Record<string, unknown>;
+  return [pageProps, ...rest];
 }
 
 function unwrapThenableObjectArray(

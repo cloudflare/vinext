@@ -776,6 +776,59 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result?.code).toContain('"appPageDefaultExport":true');
   });
 
+  // Next.js passes `$$isPage` to any "use cache" page component, including an
+  // inline directive in the default export (create-component-tree.tsx).
+  it.each([
+    [
+      "export default function",
+      `export default async function Page(props) { "use cache"; return null; }`,
+    ],
+    [
+      "export default identifier",
+      `async function Page(props) { "use cache"; return null; }\nexport default Page;`,
+    ],
+    [
+      "export specifier",
+      `const Page = async (props) => { "use cache"; return null; };\nexport { Page as default };`,
+    ],
+  ])("marks inline App Page default exports (%s)", async (_label, code) => {
+    const plugins = await getPlugins();
+    await configureVinext(plugins);
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const pageId = path.join(APP_FIXTURE_DIR, "app", "inline-cache", "page.tsx");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      code,
+      pageId,
+    );
+
+    expect(result?.code).toContain('"appPageDefaultExport":true');
+  });
+
+  it("does not mark inline caches that are not the App Page default export", async () => {
+    const plugins = await getPlugins();
+    await configureVinext(plugins);
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const pageId = path.join(APP_FIXTURE_DIR, "app", "inline-helper", "page.tsx");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      [
+        `async function load(props) { "use cache"; return props; }`,
+        `export default async function Page(props) { return load(props); }`,
+      ].join("\n"),
+      pageId,
+    );
+
+    expect(result?.code).toContain("registerCachedFunction");
+    expect(result?.code).not.toContain('"appPageDefaultExport":true');
+  });
+
   it.each(["ssr", "client"])(
     "emits server-reference proxies for file-level cache exports in the %s graph",
     async (environmentName) => {

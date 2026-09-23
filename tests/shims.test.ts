@@ -7815,6 +7815,56 @@ describe('"use cache" runtime', () => {
     expect(observeSearchParams).not.toHaveBeenCalled();
   });
 
+  // Ported behaviour from Next.js: test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
+  // A "use cache" page that takes props must stay prerenderable: Next.js omits
+  // searchParams from the serialized arguments of a public page cache.
+  it("omits page default export searchParams from replayable invocation args", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const observeSearchParams = vi.fn();
+    const encodeInvocationArgs = vi.fn(async (args: unknown[]) => {
+      // Encoding walks every argument property, like encodeReply does.
+      JSON.stringify(args, (_key, value) =>
+        value && typeof value === "object" ? { ...value } : value,
+      );
+      return "encrypted";
+    });
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, unknown>>;
+      }) => ({ slug: (await props.params).slug }),
+      "/fixture/app/cached/replay/page.tsx:default",
+      "",
+      {
+        appPageDefaultExport: true,
+        encodeInvocationArgs,
+        serverReferenceId: "fixture#cached",
+      },
+    );
+
+    await expect(
+      cached({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams(
+          { q: "first" },
+          { observeParamAccess: observeSearchParams },
+        ),
+      }),
+    ).resolves.toEqual({ slug: "same" });
+
+    expect(encodeInvocationArgs).toHaveBeenCalledTimes(1);
+    const [[replayProps]] = encodeInvocationArgs.mock.calls[0] as [[Record<string, unknown>]];
+    expect(Object.keys(replayProps)).toEqual(["params"]);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+  });
+
   it('rejects app page searchParams access inside page default "use cache"', async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");

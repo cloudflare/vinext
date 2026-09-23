@@ -105,14 +105,9 @@ function acceptsSecondArgument(
   );
 }
 
-function isAppPageDefaultExport(
-  options: Options,
-  id: string,
-  name: string,
-  isModuleDirective: boolean,
-): boolean {
+function isAppPageModule(options: Options, id: string): boolean {
   const appDir = options.getAppDir();
-  if (!isModuleDirective || name !== "default" || !appDir) return false;
+  if (!appDir) return false;
   const modulePath = stripViteModuleQuery(id);
   const moduleFileName = path.basename(modulePath);
   return (
@@ -120,6 +115,62 @@ function isAppPageDefaultExport(
     path.parse(moduleFileName).name === "page" &&
     options.matchesPageExtension(moduleFileName)
   );
+}
+
+function isFunctionNode(node: unknown): boolean {
+  const type = (node as { type?: unknown } | null | undefined)?.type;
+  return (
+    type === "FunctionDeclaration" ||
+    type === "FunctionExpression" ||
+    type === "ArrowFunctionExpression"
+  );
+}
+
+/**
+ * Find the function a module exports as `default`: a direct
+ * `export default function`, or a top-level function referenced by
+ * `export default Page` / `export { Page as default }`. Returns the AST node
+ * itself so callers can match the hoisted directive's `valueNode` by identity.
+ */
+export function findDefaultExportFunction(ast: Program): object | undefined {
+  let localName: string | undefined;
+  for (const statement of ast.body) {
+    if (statement.type === "ExportDefaultDeclaration") {
+      if (isFunctionNode(statement.declaration)) return statement.declaration as object;
+      if (statement.declaration.type === "Identifier") localName = statement.declaration.name;
+    } else if (statement.type === "ExportNamedDeclaration" && !statement.source) {
+      for (const specifier of statement.specifiers) {
+        const exported =
+          specifier.exported.type === "Identifier"
+            ? specifier.exported.name
+            : String(specifier.exported.value);
+        if (exported === "default" && specifier.local.type === "Identifier") {
+          localName = specifier.local.name;
+        }
+      }
+    }
+  }
+  if (localName === undefined) return undefined;
+
+  for (const statement of ast.body) {
+    const declaration =
+      statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+    if (declaration?.type === "FunctionDeclaration" && declaration.id?.name === localName) {
+      return declaration;
+    }
+    if (declaration?.type !== "VariableDeclaration") continue;
+    for (const declarator of declaration.declarations) {
+      if (
+        declarator.id.type === "Identifier" &&
+        declarator.id.name === localName &&
+        declarator.init &&
+        isFunctionNode(declarator.init)
+      ) {
+        return declarator.init;
+      }
+    }
+  }
+  return undefined;
 }
 
 function shouldTransformModuleExport(name: string, id: string, meta: ModuleExportMeta): boolean {
@@ -192,18 +243,13 @@ function getFunctionDirectiveExportNames(
 }
 
 function getCacheWrapperOptions(
-  options: Options,
-  id: string,
-  name: string,
-  isModuleDirective: boolean,
+  appPageDefaultExport: boolean,
   meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
 ): CacheWrapperOptions {
   const argumentCount = getArgumentCount(meta);
   return {
     acceptsSecondArgument: acceptsSecondArgument(meta),
-    ...(isAppPageDefaultExport(options, id, name, isModuleDirective)
-      ? { appPageDefaultExport: true }
-      : {}),
+    ...(appPageDefaultExport ? { appPageDefaultExport: true } : {}),
     ...(argumentCount === undefined ? {} : { argumentCount }),
   };
 }
@@ -336,6 +382,12 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           return magicStringTransformResult(result.output, { hires: "boundary", source: id });
         }
 
+        // Next.js passes `$$isPage` to a page component that is a "use cache"
+        // function, whether the directive is file-level or inline in the
+        // default export, so both shapes omit searchParams from the cache key.
+        const appPageModule = isAppPageModule(options, id);
+        const appPageDefaultFunction =
+          appPageModule && !moduleDirective ? findDefaultExportFunction(ast) : undefined;
         const secureExports = new Set<string>();
         const wrap = (
           value: string,
@@ -347,8 +399,11 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           const variant = directiveMatch[1] ?? "";
           const secureName = secureExportName(name);
           secureExports.add(secureName);
+          const appPageDefaultExport = isModuleDirective
+            ? appPageModule && name === "default"
+            : appPageDefaultFunction !== undefined && meta.valueNode === appPageDefaultFunction;
           const wrapperOptions = {
-            ...getCacheWrapperOptions(options, id, name, isModuleDirective, meta),
+            ...getCacheWrapperOptions(appPageDefaultExport, meta),
             serverReferenceId: `${reference.referenceKey}#${secureName}`,
           };
           return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;
