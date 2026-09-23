@@ -561,7 +561,8 @@ async function runBuild(info: ProjectInfo, env: string | undefined, mode: string
 
 async function populateKVCacheFromPrerenderedArtifacts(
   root: string,
-  wranglerEnv: string | undefined,
+  deploymentTool: DeploymentTool,
+  env: string | undefined,
   cacheConfig: VinextCacheConfig | null,
 ): Promise<void> {
   // `loadDeployViteConfigMetadata` returns null unless a cache adapter is declared.
@@ -580,9 +581,10 @@ async function populateKVCacheFromPrerenderedArtifacts(
     return;
   }
 
-  await runWranglerKVBulkPut(root, {
+  await runKVBulkPut(root, {
     binding: kvConfig.binding,
-    env: wranglerEnv,
+    deploymentTool,
+    env,
     pairs,
   });
 
@@ -738,10 +740,11 @@ export function buildWranglerInvocation(
   return { ...buildNodeCliInvocation(wranglerBin, args, nodeExecutable), env };
 }
 
-export async function runWranglerKVBulkPut(
+export async function runKVBulkPut(
   root: string,
   options: {
     binding: string;
+    deploymentTool: DeploymentTool;
     env?: string;
     pairs: KVBulkPair[];
     tempDir?: string;
@@ -749,10 +752,24 @@ export async function runWranglerKVBulkPut(
   execute: typeof spawn = spawn,
   nodeExecutable: string = process.execPath,
 ): Promise<void> {
+  const cfNamespaceId = (() => {
+    if (options.deploymentTool !== "cf") return undefined;
+    const configPath = path.join(root, ".cloudflare/output/v0/workers/default/worker.config.json");
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8")) as {
+      env?: Record<string, { type?: unknown; id?: unknown }>;
+    };
+    const binding = config.env?.[options.binding];
+    if (binding?.type !== "kv" || typeof binding.id !== "string" || !binding.id) {
+      throw new Error(
+        `[vinext] Generated Cloudflare Build Output does not declare KV binding ${JSON.stringify(options.binding)} with a namespace ID.`,
+      );
+    }
+    return binding.id;
+  })();
   const tempDir = fs.mkdtempSync(path.join(options.tempDir ?? os.tmpdir(), "vinext-kv-bulk-"));
 
   try {
-    const wranglerBin = resolveWranglerBin(root);
+    const cliBin = cfNamespaceId ? resolveCfBin(root) : resolveWranglerBin(root);
     const totalChunks = Math.ceil(options.pairs.length / KV_BULK_PUT_CHUNK_SIZE);
     for (let i = 0; i < totalChunks; i++) {
       const filePath = path.join(tempDir, `prerender-kv-${i}.json`);
@@ -761,12 +778,22 @@ export async function runWranglerKVBulkPut(
         (i + 1) * KV_BULK_PUT_CHUNK_SIZE,
       );
       fs.writeFileSync(filePath, JSON.stringify(chunk), "utf-8");
-      const { args } = buildWranglerKVBulkPutArgs({
-        binding: options.binding,
-        env: options.env,
-        filePath,
-      });
-      const invocation = buildNodeCliInvocation(wranglerBin, args, nodeExecutable);
+      const args = cfNamespaceId
+        ? [
+            "kv",
+            "bulk",
+            "update",
+            cfNamespaceId,
+            "--body",
+            `@${filePath}`,
+            ...(options.env ? ["--mode", validateWranglerEnvName(options.env)] : []),
+          ]
+        : buildWranglerKVBulkPutArgs({
+            binding: options.binding,
+            env: options.env,
+            filePath,
+          }).args;
+      const invocation = buildNodeCliInvocation(cliBin, args, nodeExecutable);
       const child = execute(invocation.file, invocation.args, {
         cwd: root,
         stdio: "inherit",
@@ -781,7 +808,11 @@ export async function runWranglerKVBulkPut(
           }
 
           const exitReason = signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`;
-          reject(new Error(`Wrangler KV bulk put failed with ${exitReason}.`));
+          reject(
+            new Error(
+              `${cfNamespaceId ? "cf" : "Wrangler"} KV bulk upload failed with ${exitReason}.`,
+            ),
+          );
         });
       });
     }
@@ -1335,7 +1366,8 @@ async function deployUploadedVersionWithCdnWarmup(
       statusSource: options.statusSource,
     });
 
-  const wranglerConfig = parseWranglerConfig(root, options.config);
+  const wranglerConfig =
+    options.deploymentTool === "cf" ? null : parseWranglerConfig(root, options.config);
   let deploymentStatus: WranglerDeploymentStatus;
   try {
     deploymentStatus = runDeploymentStatus(root, wranglerOptions);
@@ -1852,7 +1884,8 @@ async function deployWithCacheabilityProbe(
       stagedProbe.deployedUrl ?? probeUpload.previewUrl,
       options,
     );
-    const wranglerConfig = parseWranglerConfig(root, wranglerOptions.config);
+    const wranglerConfig =
+      options.deploymentTool === "cf" ? null : parseWranglerConfig(root, wranglerOptions.config);
     const workerName =
       options.name ??
       probeUpload.workerName ??
@@ -2093,15 +2126,6 @@ function getWranglerTargetEnv(options: Pick<DeployOptions, "preview" | "env">): 
   return options.env || (options.preview ? "preview" : undefined);
 }
 
-function resolveWranglerFallbackEnv(
-  root: string,
-  configPath: string | undefined,
-  mode: string | undefined,
-): string | undefined {
-  const config = parseWranglerConfig(root, configPath);
-  return mode && config?.env && Object.hasOwn(config.env, mode) ? mode : undefined;
-}
-
 type ParsedWranglerConfig = NonNullable<ReturnType<typeof parseWranglerConfig>>;
 
 export function resolveDeploymentControlPlaneOptions(
@@ -2215,10 +2239,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     );
   }
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
-  const wranglerFallbackEnv =
-    deploymentTool === "cf"
-      ? resolveWranglerFallbackEnv(root, options.config, deployEnv)
-      : deployEnv;
+  const wranglerFallbackEnv = deploymentTool === "cf" ? undefined : deployEnv;
   loadDotenv({ root, mode: viteMode });
 
   console.log("\n  vinext-cloudflare deploy\n");
@@ -2281,12 +2302,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // their Worker entry (setCacheHandler / setDataCacheHandler / setCdnCacheAdapter)
   // are still considered configured and must not be blocked.
   if (info.hasISR && !viteConfigHasCacheAdapter(root) && !workerEntryHasCacheHandler(root)) {
-    throw new Error(formatMissingCacheAdapterError({}));
+    throw new Error(formatMissingCacheAdapterError({ typedConfig: deploymentTool === "cf" }));
   }
 
   if (!viteConfigHasImageAdapter(root)) {
     console.log();
-    console.log(formatImageOptimizationHint());
+    console.log(formatImageOptimizationHint(deploymentTool === "cf"));
   }
 
   if (options.dryRun) {
@@ -2352,6 +2373,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         config: options.config,
         env: wranglerFallbackEnv,
         hostname: warmCdnTarget ? new URL(warmCdnTarget).hostname : undefined,
+        typedConfig: deploymentTool === "cf",
         window: Math.max(1, options.tprWindow ?? 24),
       })
     : null;
@@ -2461,7 +2483,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
     try {
       await populateKVCacheFromPrerenderedArtifacts(
         root,
-        wranglerFallbackEnv,
+        deploymentTool,
+        deploymentTool === "cf" ? deployEnv : wranglerFallbackEnv,
         viteConfigMetadata.cacheConfig,
       );
     } catch (error) {

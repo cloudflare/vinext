@@ -22,7 +22,7 @@ import {
   resolveDeploymentControlPlaneOptions,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
-  runWranglerKVBulkPut,
+  runKVBulkPut,
   runCfAuxiliaryWorkerDeploys,
   runCfDeploy,
   runWranglerDeploy,
@@ -680,7 +680,7 @@ describe("cf Build Output deployment", () => {
       "response-store-service-binding",
     );
     fs.mkdirSync(auxiliaryDir, { recursive: true });
-    writeFile(auxiliaryDir, "config.json", JSON.stringify({ name: "response-store" }));
+    writeFile(auxiliaryDir, "worker.config.json", JSON.stringify({ name: "response-store" }));
     writeFile(
       path.join(tmpDir, ".cloudflare", "output", "v0"),
       "config.json",
@@ -696,7 +696,7 @@ describe("cf Build Output deployment", () => {
         "v0",
         "workers",
         "default",
-        "config.json",
+        "worker.config.json",
       );
       expect(JSON.parse(fs.readFileSync(projectedConfig, "utf8"))).toEqual({
         name: "response-store",
@@ -769,7 +769,70 @@ describe("parseWorkerDeploymentUrl", () => {
   });
 });
 
-describe("runWranglerKVBulkPut", () => {
+describe("runKVBulkPut", () => {
+  it("uses the generated KV namespace with cf and never invokes Wrangler", async () => {
+    writeCfPackageForTest(tmpDir);
+    writeFile(
+      tmpDir,
+      ".cloudflare/output/v0/workers/default/worker.config.json",
+      JSON.stringify({ env: { VINEXT_KV_CACHE: { type: "kv", id: "namespace-id" } } }),
+    );
+    let observed: Parameters<typeof spawn> | undefined;
+    let bulkFilePath = "";
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      observed = args;
+      bulkFilePath = (args[1] as string[])[6]!.slice(1);
+      expect(JSON.parse(fs.readFileSync(bulkFilePath, "utf8"))).toEqual([
+        { key: "cache-key", value: "cache-value" },
+      ]);
+      return createMockChildProcess();
+    }) as typeof spawn;
+
+    await runKVBulkPut(
+      tmpDir,
+      {
+        binding: "VINEXT_KV_CACHE",
+        deploymentTool: "cf",
+        env: "preview",
+        pairs: [{ key: "cache-key", value: "cache-value" }],
+        tempDir: tmpDir,
+      },
+      execute,
+    );
+
+    expect(observed?.[1]).toEqual([
+      fs.realpathSync(path.join(tmpDir, "node_modules/cf/bin/cf")),
+      "kv",
+      "bulk",
+      "update",
+      "namespace-id",
+      "--body",
+      `@${bulkFilePath}`,
+      "--mode",
+      "preview",
+    ]);
+    expect(observed?.[2]).toMatchObject({ cwd: tmpDir, shell: false, stdio: "inherit" });
+    expect(fs.existsSync(path.dirname(bulkFilePath))).toBe(false);
+  });
+
+  it("rejects a missing generated KV binding before uploading", async () => {
+    writeCfPackageForTest(tmpDir);
+    writeFile(
+      tmpDir,
+      ".cloudflare/output/v0/workers/default/worker.config.json",
+      JSON.stringify({ env: { VINEXT_KV_CACHE: { type: "r2", name: "wrong" } } }),
+    );
+    const execute = vi.fn() as unknown as typeof spawn;
+    await expect(
+      runKVBulkPut(
+        tmpDir,
+        { binding: "VINEXT_KV_CACHE", deploymentTool: "cf", pairs: [] },
+        execute,
+      ),
+    ).rejects.toThrow('does not declare KV binding "VINEXT_KV_CACHE"');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("writes prerender pairs to a temporary file and invokes Wrangler without a shell", async () => {
     writeWranglerPackageForTest(tmpDir);
     let observed: Parameters<typeof spawn> | undefined;
@@ -783,10 +846,11 @@ describe("runWranglerKVBulkPut", () => {
       return createMockChildProcess();
     }) as typeof spawn;
 
-    await runWranglerKVBulkPut(
+    await runKVBulkPut(
       tmpDir,
       {
         binding: "VINEXT_KV_CACHE",
+        deploymentTool: "wrangler",
         env: "staging",
         pairs: [
           {
@@ -836,10 +900,11 @@ describe("runWranglerKVBulkPut", () => {
       return createMockChildProcess();
     }) as typeof spawn;
 
-    await runWranglerKVBulkPut(
+    await runKVBulkPut(
       tmpDir,
       {
         binding: "VINEXT_KV_CACHE",
+        deploymentTool: "wrangler",
         pairs: Array.from({ length: 26 }, (_, i) => ({
           key: `cache:app:v2:build:/route-${i}:html`,
           value: String(i),
@@ -1647,6 +1712,12 @@ describe("formatMissingCacheAdapterError", () => {
     expect(msg).toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
   });
 
+  it("points typed-config projects to their Cloudflare config instead of Wrangler", () => {
+    const message = formatMissingCacheAdapterError({ typedConfig: true });
+    expect(message).toContain("cloudflare.config.ts");
+    expect(message).not.toContain("wrangler");
+  });
+
   it("no longer references the cdn adapter", () => {
     const msg = formatMissingCacheAdapterError({});
     expect(msg).not.toContain("cdnAdapter");
@@ -1660,6 +1731,12 @@ describe("formatImageOptimizationHint", () => {
     expect(message).toContain("--image-optimization=cloudflare-images");
     expect(message).toContain("imagesOptimizer()");
     expect(message).toContain("IMAGES binding");
+  });
+
+  it("points typed-config projects to cloudflare.config.ts instead of Wrangler", () => {
+    const message = formatImageOptimizationHint(true);
+    expect(message).toContain("cloudflare.config.ts");
+    expect(message).not.toContain("Wrangler");
   });
 });
 
@@ -2569,6 +2646,19 @@ describe("getMissingDeps", () => {
 
     const missing = getMissingDeps(info);
     expect(missing).toContainEqual(expect.objectContaining({ name: "wrangler" }));
+  });
+
+  it("does not require wrangler for a typed Cloudflare config", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = false;
+    info.hasRscPlugin = true;
+
+    expect(getMissingDeps(info, () => true)).not.toContainEqual(
+      expect.objectContaining({ name: "wrangler" }),
+    );
   });
 
   it("reports missing @vitejs/plugin-rsc for App Router", () => {

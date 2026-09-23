@@ -505,15 +505,23 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SERVICE_NAME: ${{ needs.response_store.outputs.service_name }}
           DEMO_SERVICE_NAME: pr-${{ github.event.pull_request.number }}-response-store-demo-response-store
-          WEB_SERVICE_NAME: pr-${{ github.event.pull_request.number }}-vinext-web-response-store
           PR_ACTION: ${{ github.event.action }}
         run: |
           if [[ "$PR_ACTION" == "closed" ]]; then
             vp exec wrangler delete "$DEMO_SERVICE_NAME" --force
-            vp exec wrangler delete "$WEB_SERVICE_NAME" --force
           elif [[ -n "$SERVICE_NAME" ]]; then
             vp exec wrangler delete "$SERVICE_NAME" --force
           fi
+
+      - name: Delete web Response Store preview Worker
+        if: github.event.action == 'closed'
+        continue-on-error: true
+        working-directory: apps/web
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WEB_SERVICE_NAME: pr-${{ github.event.pull_request.number }}-vinext-web-response-store
+        run: vp exec cf workers delete "$WEB_SERVICE_NAME" --force
 
       - name: Delete named preview Workers
         if: github.event.action == 'closed'

@@ -576,7 +576,7 @@ export function getMissingDeps(
   if (!info.hasCloudflarePlugin) {
     missing.push({ name: "@cloudflare/vite-plugin", version: "latest" });
   }
-  if (!info.hasWrangler) {
+  if (!info.hasWrangler && !fs.existsSync(path.join(info.root, "cloudflare.config.ts"))) {
     missing.push({ name: "wrangler", version: "latest" });
   }
   if (!_isResolvable(info.root, "@vitejs/plugin-react")) {

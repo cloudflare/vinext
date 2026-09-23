@@ -5,7 +5,7 @@
  * the standard CDN pre-warming flow.
  *
  * Flow:
- *   1. Parse wrangler config to find the custom domain
+ *   1. Find the custom domain in the generated Worker or Wrangler config
  *   2. Resolve the Cloudflare zone for the custom domain
  *   3. Query zone analytics (GraphQL) for top pages by request count
  *   4. Return the ranked candidates for standard route resolution and selection
@@ -15,6 +15,8 @@
  * domain, API token, or traffic data exists.
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import { parseWranglerConfig } from "./wrangler-config.js";
 
 export { parseWranglerConfig };
@@ -30,6 +32,8 @@ export type TPROptions = {
   env?: string;
   /** Explicit domain used to resolve the analytics zone, overriding Wrangler routes. */
   hostname?: string;
+  /** Read domains from generated Build Output instead of a Wrangler config. */
+  typedConfig?: boolean;
   /** Analytics lookback window in hours. Default: 24. */
   window: number;
 };
@@ -253,10 +257,26 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
   const apiToken = process.env.CLOUDFLARE_API_TOKEN;
   if (!apiToken) return skip("no CLOUDFLARE_API_TOKEN set");
 
-  const wranglerConfig = options.hostname ? null : parseWranglerConfig(root, config);
-  if (!wranglerConfig && !options.hostname) return skip("could not parse wrangler config");
+  const wranglerConfig =
+    options.hostname || options.typedConfig ? null : parseWranglerConfig(root, config);
+  const buildOutputConfigPath = path.join(
+    root,
+    ".cloudflare/output/v0/workers/default/worker.config.json",
+  );
+  const typedDomains: unknown =
+    options.typedConfig && !options.hostname && fs.existsSync(buildOutputConfigPath)
+      ? (JSON.parse(fs.readFileSync(buildOutputConfigPath, "utf8")) as { domains?: unknown })
+          .domains
+      : undefined;
+  if (!wranglerConfig && !options.hostname && !options.typedConfig)
+    return skip("could not parse wrangler config");
   const hostname =
     options.hostname ??
+    (Array.isArray(typedDomains)
+      ? typedDomains.find(
+          (domain): domain is string => typeof domain === "string" && domain.length > 0,
+        )
+      : undefined) ??
     wranglerConfig?.env?.[options.env ?? ""]?.customDomain ??
     wranglerConfig?.customDomain;
   if (!hostname) {

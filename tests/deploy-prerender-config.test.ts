@@ -274,6 +274,16 @@ describe("deploy prerender config wiring", () => {
     );
   });
 
+  it("accepts a typed Cloudflare app without a Wrangler config", async () => {
+    writeProject("false");
+    fs.rmSync(path.join(tmpDir, "wrangler.jsonc"));
+    writeCfBuildOutputScaffolding();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deploy({ root: tmpDir, dryRun: true })).resolves.toBeUndefined();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it("runs prerender during deploy when vinext config uses the true shorthand", async () => {
     writeProject("true");
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
@@ -776,6 +786,44 @@ describe("deploy prerender config wiring", () => {
       "--remote",
     ]);
     expect(calls.at(-1)?.[1]).toEqual([expect.stringContaining("wrangler"), "deploy"]);
+  });
+
+  it("uploads prerendered KV entries with cf for typed configs without Wrangler", async () => {
+    writeProject('{ routes: "*" }', '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    fs.rmSync(path.join(tmpDir, "wrangler.jsonc"));
+    writeCfBuildOutputScaffolding();
+    writeFile(
+      ".cloudflare/output/v0/workers/default/worker.config.json",
+      JSON.stringify({ name: "prerender-config-app", env: { MY_KV: { type: "kv", id: "kv-id" } } }),
+    );
+    runPrerenderMock.mockImplementationOnce(async () => {
+      writeFile(
+        "dist/server/vinext-prerender.json",
+        JSON.stringify({
+          buildId: "build-1",
+          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+        }),
+      );
+      writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
+      return { routes: [] };
+    });
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    const calls = vi.mocked(spawn).mock.calls;
+    const kvCall = calls.find(([, args]) => (args as string[]).includes("bulk"));
+    expect(kvCall?.[1]).toEqual([
+      expect.stringContaining("/cf"),
+      "kv",
+      "bulk",
+      "update",
+      "kv-id",
+      "--body",
+      expect.stringMatching(/^@.*\.json$/),
+    ]);
+    expect(calls.at(-1)?.[1]).toEqual([expect.stringContaining("/cf"), "deploy", "--prebuilt"]);
+    expect(calls.every(([, args]) => !(args as string[])[0]?.includes("wrangler"))).toBe(true);
   });
 
   it("continues deploy when configured KV prerender upload fails", async () => {
