@@ -740,6 +740,10 @@ async function renderAppPageLifecycleImpl(
     return dynamicUsageObserved || ssrSearchParamsObserved;
   };
   const finalizeRenderDynamicUsage = (): boolean => {
+    // The Flight stream can finish before its separate SSR validation branch.
+    // Its earlier completion must not freeze a negative observation while a
+    // Client Component is still reading searchParams in SSR.
+    if (ssrSearchParamsObserved) dynamicUsageObserved = true;
     if (!dynamicUsageFinalized) {
       consumeRenderDynamicUsage();
       dynamicUsageFinalized = true;

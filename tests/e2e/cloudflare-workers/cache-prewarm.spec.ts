@@ -38,6 +38,38 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
 
   expect(consecutiveReady, `${backend} Worker did not finish promotion`).toBe(5);
 
+  if (backend === "workers-cache") {
+    const { prerenderSecret } = JSON.parse(
+      fs.readFileSync("examples/response-store-demo/dist/server/vinext-server.json", "utf-8"),
+    ) as { prerenderSecret: string };
+    // A direct Flight render alone cannot observe a Client Page reading its
+    // searchParams promise. The staged probe must also finish the SSR branch
+    // before it certifies a query-independent RSC artifact.
+    for (const [pathname, state, rendererStatic] of [
+      ["/query-client-independent", "static-candidate", true],
+      ["/query-client-dependent", "dynamic", false],
+    ] as const) {
+      const classification = await request.get(`${baseURL}${pathname}?q=observed&_rsc`, {
+        headers: {
+          accept: "text/x-component",
+          rsc: "1",
+          "x-vinext-cacheability-probe": "1",
+          "x-vinext-cacheability-probe-route": encodeURIComponent(
+            JSON.stringify(["app-page", pathname]),
+          ),
+          "x-vinext-prerender-secret": prerenderSecret,
+        },
+      });
+      expect(classification.ok(), JSON.stringify(classification.headers())).toBe(true);
+      await expect(classification.json()).resolves.toMatchObject({
+        kind: "app-page",
+        pattern: pathname,
+        rendererStatic,
+        state,
+      });
+    }
+  }
+
   const warmed = await request.get(`${baseURL}/cached/intro`, {
     headers: { accept: "text/html" },
   });
