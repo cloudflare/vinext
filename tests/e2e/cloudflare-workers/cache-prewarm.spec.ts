@@ -220,8 +220,8 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   }
 
   // Explicit public policy may cache a dynamic response, but only under its
-  // *full* query. The prewarm user-agent synchronously commits the Response
-  // Store entry so this assertion does not race background publication.
+  // *full* query. Response Store commits warmup synchronously, but another
+  // isolate can retain a short-lived negative lookup after that commit.
   let previousPublicId: string | undefined;
   for (const value of [`first-${suffix}`, `second-${suffix}`]) {
     const url = `${baseURL}/query-public?q=${value}`;
@@ -229,18 +229,32 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
       headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
     });
     const firstBody = await first.text();
-    const second = await request.get(url);
-    const secondBody = await second.text();
     expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
-    expect(second.ok(), JSON.stringify(second.headers())).toBe(true);
     expect(firstBody).toContain(`data-testid="query-public-value">${value}</output>`);
-    expect(secondBody).toContain(`data-testid="query-public-value">${value}</output>`);
     const publicId = /data-testid="query-public-id"[^>]*>([^<]+)/.exec(firstBody)?.[1];
     expect(publicId).toBeTruthy();
     expect(publicId).not.toBe(previousPublicId);
     if (backend !== "kv") {
-      expect(second.headers()[cacheStatusHeader]).toBe("HIT");
-      expect(secondBody).toBe(firstBody);
+      let hitBody = "";
+      await expect
+        .poll(
+          async () => {
+            const response = await request.get(url);
+            const status = response.headers()[cacheStatusHeader];
+            const body = await response.text();
+            expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+            if (status === "HIT") hitBody = body;
+            await response.dispose();
+            return status;
+          },
+          {
+            message: `${backend} did not publish the query-specific public response`,
+            timeout: 10_000,
+          },
+        )
+        .toBe("HIT");
+      expect(hitBody).toBe(firstBody);
+      expect(hitBody).toContain(`data-testid="query-public-value">${value}</output>`);
     }
     previousPublicId = publicId;
   }

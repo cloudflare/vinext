@@ -4,10 +4,6 @@ import QuerySsrClient from "./query-client";
 
 export const revalidate = 60;
 
-export function generateStaticParams() {
-  return [];
-}
-
 export default function QuerySsrClientPage() {
   return (
     <main>
