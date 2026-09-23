@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, it } from "vite-plus/test";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -50,6 +51,35 @@ describe("@vercel/og HarfBuzz compatibility", () => {
     );
     expect(result!.code).not.toContain('import("./hb.wasm?module")');
     expect(result!.code).toContain('import("node:fs/promises")');
+    expect(result!.code).toContain('if (error.code !== "ENOENT") throw error');
+    expect(result!.code).toContain(
+      'fs.readFile(__vi_createRequire(require.resolve("satori")).resolve("harfbuzzjs/hb.wasm"))',
+    );
     expect(fs.readdirSync(path.dirname(nodeEntry))).toEqual(installedFiles);
+  });
+
+  it("loads the original WASM in Node dev without writing to the OG package", () => {
+    const result = transform.handler(fs.readFileSync(nodeEntry, "utf8"), nodeEntry);
+    expect(result).not.toBeNull();
+    const code = result!.code;
+    const loaderEnd = code.indexOf("\n});\n", code.indexOf("var __vi_hb_mod")) + 5;
+    expect(loaderEnd).toBeGreaterThan(5);
+
+    const fakeOgDistDir = path.join(generatedRoot, "node_modules", "@vercel", "og", "dist");
+    fs.mkdirSync(fakeOgDistDir, { recursive: true });
+    const satoriEntry = createRequire(nodeEntry).resolve("satori");
+    fs.symlinkSync(
+      path.dirname(path.dirname(satoriEntry)),
+      path.join(generatedRoot, "node_modules", "satori"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const loaderPath = path.join(fakeOgDistDir, "loader.mjs");
+    fs.writeFileSync(
+      loaderPath,
+      `${code.slice(0, loaderEnd)}\nif (!(await __vi_hb_mod instanceof WebAssembly.Module)) process.exit(1);\n`,
+    );
+
+    expect(execFileSync(process.execPath, [loaderPath], { encoding: "utf8" })).toBe("");
+    expect(fs.existsSync(path.join(fakeOgDistDir, "hb.wasm"))).toBe(false);
   });
 });

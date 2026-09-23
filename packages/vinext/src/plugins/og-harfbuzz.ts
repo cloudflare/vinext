@@ -93,7 +93,10 @@ export function createOgHarfbuzzPlugin(): Plugin {
 
         if (id.includes("index.node.js")) {
           loader = `var __vi_hb_mod = import("node:fs/promises").then(function(fs) {
-  return fs.readFile(new URL("./hb.wasm", import.meta.url)).then(function(bytes) { return WebAssembly.compile(bytes); });
+  return fs.readFile(new URL("./hb.wasm", import.meta.url)).catch(function(error) {
+    if (error.code !== "ENOENT") throw error;
+    return fs.readFile(__vi_createRequire(require.resolve("satori")).resolve("harfbuzzjs/hb.wasm"));
+  }).then(function(bytes) { return WebAssembly.compile(bytes); });
 });\n`;
           preamble = `import { createRequire as __vi_createRequire } from "node:module";
 import { dirname as __vi_dirname } from "node:path";
