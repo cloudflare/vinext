@@ -671,9 +671,10 @@ vinext automatically loads dotenv files for `dev`, `build`, `start`, and `deploy
 
 Vite evaluates all static config imports before plugin hooks, regardless of import order. Unlike
 the old CLI, the thin aliases cannot preload `.env` before config evaluation. For config-time
-values, use Vite's [`loadEnv`](https://vite.dev/config/#using-environment-variables-in-config) in
-a config factory and read its returned values rather than relying on `process.env` in a static
-import. Pass a custom `envDir` explicitly to `loadEnv` if you use one.
+values, use Vite's [`loadEnv(mode, process.cwd(), "")`](https://vite.dev/config/#using-environment-variables-in-config)
+in a config factory and read its returned values rather than relying on `process.env` in a static
+import. The empty prefix includes server-only variables; use your custom `envDir` in place of
+`process.cwd()` if you have one.
 
 Load order matches Next.js (highest priority first):
 
