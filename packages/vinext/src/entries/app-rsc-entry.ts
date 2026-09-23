@@ -299,6 +299,8 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   };
 
   return routes.map((route) => {
+    const parallelSlots = route.parallelSlots ?? [];
+    const siblingIntercepts = route.siblingIntercepts ?? [];
     const ownConfigs = (
       route.routePath ? [route.routePath] : [...route.layouts, route.pagePath]
     ).map(dynamicConfig);
@@ -308,7 +310,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
         : [
             ...route.layouts,
             route.pagePath,
-            ...route.parallelSlots.flatMap((slot) => [
+            ...parallelSlots.flatMap((slot) => [
               slot.layoutPath,
               ...(slot.configLayoutPaths ?? []),
               slot.pagePath ?? slot.defaultPath,
@@ -317,7 +319,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
                 intercept.pagePath,
               ]),
             ]),
-            ...route.siblingIntercepts.flatMap((intercept) => [
+            ...siblingIntercepts.flatMap((intercept) => [
               ...intercept.layoutPaths,
               intercept.pagePath,
             ]),
@@ -330,12 +332,12 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
         !route.routePath &&
         [
           route.pagePath,
-          ...route.parallelSlots.flatMap((slot) => [
+          ...parallelSlots.flatMap((slot) => [
             slot.pagePath,
             slot.defaultPath,
             ...slot.interceptingRoutes.map((intercept) => intercept.pagePath),
           ]),
-          ...route.siblingIntercepts.map((intercept) => intercept.pagePath),
+          ...siblingIntercepts.map((intercept) => intercept.pagePath),
         ].some(mayBeClientPage),
       // Only a literal static/error segment contract is a pre-render guarantee
       // for paths that were not prerendered. An ordinary successful probe is not.
@@ -361,7 +363,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       layouts: [],
       layoutTreePositions: [],
       slots: Object.fromEntries(
-        route.parallelSlots.map((slot) => [
+        parallelSlots.map((slot) => [
           slot.key,
           {
             id: slot.id ?? null,
@@ -386,7 +388,7 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
           },
         ]),
       ),
-      siblingIntercepts: route.siblingIntercepts.map((intercept) => ({
+      siblingIntercepts: siblingIntercepts.map((intercept) => ({
         id: intercept.id ?? null,
         targetPattern: intercept.targetPattern,
         sourceMatchPattern: intercept.sourceMatchPattern,
