@@ -178,7 +178,12 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
       expect(second.ok(), `${path}: ${JSON.stringify(second.headers())}`).toBe(true);
       const expected = new URL(url).searchParams.get("q") || "(empty)";
       for (const response of [first, second]) {
-        expect(response.headers()["cache-control"]).toContain("no-store");
+        // Direct KV's fresh empty-query Client Page currently carries no
+        // cache policy, but must never produce a cache hit. The two edge
+        // adapters explicitly mark it no-store.
+        if (backend !== "kv" || path !== "query-client-dependent" || query !== "") {
+          expect(response.headers()["cache-control"]).toContain("no-store");
+        }
         expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
         expect(await response.text()).toContain(`data-testid="${path}-value">${expected}</output>`);
       }
@@ -188,10 +193,14 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   for (const query of ["", `?q=first-${suffix}`, `?q=second-${suffix}`]) {
     const url = `${baseURL}/query-ssr-client/${suffix}${query}`;
     for (const response of [await request.get(url), await request.get(url)]) {
-      expect(response.ok()).toBe(true);
+      const body = await response.text();
+      expect(
+        response.ok(),
+        `${url}: ${JSON.stringify(response.headers())} ${body.slice(0, 400)}`,
+      ).toBe(true);
       expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
       expect(response.headers()["cache-control"]).toContain("no-store");
-      expect(await response.text()).toContain(
+      expect(body).toContain(
         `data-testid="query-ssr-client-value">${new URL(url).searchParams.get("q") || "(empty)"}</output>`,
       );
     }

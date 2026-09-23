@@ -423,6 +423,35 @@ const handler = {
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
       const cacheability =
         props !== null && typeof props === "object" ? Reflect.get(props, "cacheability") : null;
+      // React serializes a Client Page's searchParams promise before the Page
+      // runs, so the completed server render cannot distinguish a consumed
+      // promise from an unused prop. Until that observation can be made at the
+      // Client Page boundary, neither an empty query nor a single successful
+      // render is proof that its default response is static. Explicit static
+      // route config and explicit public response policy retain their policy.
+      if (
+        props !== null &&
+        typeof props === "object" &&
+        Reflect.get(props, "kind") === "app-page" &&
+        Reflect.get(props, "mayBeClientPage") === true &&
+        Reflect.get(props, "queryIndependentConfig") !== true &&
+        cacheability !== null &&
+        typeof cacheability === "object" &&
+        Reflect.get(cacheability, "policyHeaders") === null
+      ) {
+        const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "bypass");
+        const headers = new Headers(rendered.headers);
+        headers.set("Cache-Control", "no-store, must-revalidate");
+        return publicResponse(
+          new Response(rendered.body, {
+            headers,
+            status: rendered.status,
+            statusText: rendered.statusText,
+          }),
+          "BYPASS",
+          props,
+        );
+      }
       const canSeedRsc =
         isWarmup &&
         props !== null &&

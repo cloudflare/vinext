@@ -593,6 +593,29 @@ describe("app page render lifecycle", () => {
     expect(consumeDynamicUsage).toHaveBeenCalledTimes(2);
   });
 
+  it("persists an on-demand force-static RSC response with indefinite revalidation", async () => {
+    // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isForceStatic: true,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: Infinity,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("flight-data");
+    expect(common.waitUntilPromises).toHaveLength(1);
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "rsc:/posts/post",
+      expect.objectContaining({ kind: "APP_PAGE", rscData: expect.any(ArrayBuffer) }),
+      { cacheControl: { revalidate: Infinity }, tags: ["_N_T_/posts/post"] },
+    );
+  });
+
   it("omits RSC cache state and skips cache writes when stream-time searchParams usage is dynamic", async () => {
     const common = createCommonOptions();
     const streamGate = createDeferred();

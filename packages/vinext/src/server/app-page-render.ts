@@ -881,8 +881,18 @@ async function renderAppPageLifecycleImpl(
     !options.isDraftMode &&
     !options.isForceDynamic &&
     !shouldBypassRscCache;
+  // An on-demand static RSC render still needs its bytes captured for the
+  // persistent ISR entry, even though its cache life cannot change later.
+  const shouldCaptureIndefiniteRsc =
+    options.isRscRequest &&
+    revalidateSeconds === Infinity &&
+    options.isProgressiveActionRender !== true &&
+    !options.isDraftMode &&
+    !options.isForceDynamic &&
+    !shouldBypassRscCache;
   const shouldCaptureRscForCacheMetadata =
-    (options.isProduction || options.isPrerender === true) && mayResolveCacheLifeAfterHeaders;
+    (options.isProduction || options.isPrerender === true) &&
+    (mayResolveCacheLifeAfterHeaders || shouldCaptureIndefiniteRsc);
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
     new ReadableStream<Uint8Array>({
       start(controller) {

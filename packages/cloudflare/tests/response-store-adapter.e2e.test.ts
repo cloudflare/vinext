@@ -229,6 +229,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
 
       const clientEmpty = await inline.dispatchFetch("https://app.test/query-client-dependent");
       const clientEmptyBody = await clientEmpty.text();
+      assert.match(clientEmpty.headers.get("cache-control") ?? "", /no-store/);
+      assert.notEqual(clientEmpty.headers.get("x-vinext-cache"), "HIT");
       const clientQuery = await inline.dispatchFetch(
         "https://app.test/query-client-dependent?q=second",
       );
@@ -438,6 +440,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     // read it. A cached empty-query response must never answer a later query.
     const clientEmpty = await cacheStatus("/query-client-dependent");
     const clientWithQuery = await cacheStatus("/query-client-dependent?q=second");
+    assert.match(clientEmpty.cacheControl ?? "", /no-store/);
     assert.notEqual(clientWithQuery.status, "HIT");
     assert.equal(htmlValue(clientEmpty.body, "query-client-dependent-value"), "(empty)");
     assert.equal(htmlValue(clientWithQuery.body, "query-client-dependent-value"), "second");
