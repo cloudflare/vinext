@@ -1439,8 +1439,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
   return ((input: string | URL | Request, init?: RequestInit) => {
     // `new URL("./asset", import.meta.url)` references in server code resolve
     // to build-registered assets that the platform fetch cannot load (see
-    // server/server-url-assets.ts). Like Next.js's edge `fetchInlineAsset`,
-    // answer them before any caching or dedupe work.
+    // server/server-url-assets.ts). Next.js's edge sandbox answers them in
+    // `fetchInlineAsset`, beneath its patched fetch; answering first here skips
+    // pointless cache and dedupe work for bytes that already ship in the bundle.
     const serverUrlAssetResponse = fetchServerUrlAsset(input);
     if (serverUrlAssetResponse !== undefined) return serverUrlAssetResponse;
     if ((init?.next as InternalNextFetchOptions | undefined)?.internal === true) {

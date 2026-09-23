@@ -145,8 +145,9 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  // Server `new URL(<file>, import.meta.url)` references are answered before
-  // any network, cache or dedupe work, like Next.js's edge `fetchInlineAsset`:
+  // Server `new URL(<file>, import.meta.url)` references are served from the
+  // bundle, like Next.js's edge `fetchInlineAsset`, and vinext answers them
+  // before any network, cache or dedupe work:
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/sandbox/fetch-inline-assets.ts
   it("serves registered server URL assets without the network or the cache", async () => {
     const stateKey = Symbol.for("vinext.serverUrlAssets");
