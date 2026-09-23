@@ -18,6 +18,7 @@ import {
   setHeadersContext,
 } from "vinext/shims/headers";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import {
   closeAfterResponse,
   createRequestContext,
@@ -692,11 +693,19 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
   const hasRequestSearchParams =
     !shouldUseEmptySearchParams && hasSearchParams(options.searchParams);
-  // A Client Page's direct Flight payload serializes its query prop without
-  // observing an access. Never read or write that variant under the inner
-  // pathname-only ISR key; the outer adapters can retain full-query identity.
+  // A direct Flight render does not execute Client Components. Response Store
+  // verifies their searchParams use before admission; the staged Workers Cache
+  // probe needs the same completed observation before certifying an RSC artifact.
+  const verifyRscThroughSsr =
+    options.isRscRequest &&
+    options.queryIndependentCandidate === true &&
+    (getCdnCacheAdapter().deferCompletedPageResponseAdmission !== undefined ||
+      isRouteCacheabilityProbe());
   const queryBearingClientRsc =
-    options.isRscRequest && route.mayBeClientPage === true && hasRequestSearchParams;
+    options.isRscRequest &&
+    route.mayBeClientPage === true &&
+    hasRequestSearchParams &&
+    options.queryIndependentCandidate !== true;
   const pageSearchParams = shouldUseEmptySearchParams
     ? new URLSearchParams()
     : options.searchParams;
@@ -755,6 +764,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     !isRouteCacheabilityProbe() &&
     options.bypassInterceptionContextCache !== true &&
     !queryBearingClientRsc &&
+    !verifyRscThroughSsr &&
     shouldReadAppPageCache({
       isDraftMode,
       isForceDynamic,
@@ -864,7 +874,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 queryFromNavigationForClientPage:
                   options.queryIndependentCandidate === true &&
-                  !options.isRscRequest &&
+                  (!options.isRscRequest ||
+                    Object.keys(revalidationTarget.route.slots ?? {}).length === 0) &&
                   revalidationDynamicConfig !== "force-static",
                 // Cache regeneration produces a complete static artifact, so metadata
                 // must be resolved into <head> before the artifact is stored.
@@ -1105,7 +1116,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
             queryFromNavigationForClientPage:
-              options.queryIndependentCandidate === true && !options.isRscRequest && !isForceStatic,
+              options.queryIndependentCandidate === true &&
+              (!options.isRscRequest || Object.keys(route.slots ?? {}).length === 0) &&
+              !isForceStatic,
             serveStreamingMetadata: placeGeneratedMetadataInBody,
           },
         );
@@ -1221,7 +1234,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isSpeculativePrerender,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
-    skipSharedRscCache: queryBearingClientRsc,
+    skipSharedRscCache: queryBearingClientRsc || verifyRscThroughSsr,
+    verifyRscThroughSsr,
     queryIndependentCandidate: options.queryIndependentCandidate,
     traceOperation,
     isrDebug: options.isrDebug,

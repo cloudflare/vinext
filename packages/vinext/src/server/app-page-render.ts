@@ -36,6 +36,7 @@ import {
   createAppPageRscErrorTracker,
   createAppPageSsrErrorHandler,
   deferUntilStreamConsumed,
+  isAppSsrRenderResult,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
@@ -164,6 +165,8 @@ type RenderAppPageLifecycleOptionsBase = {
   isRscRequest: boolean;
   /** The direct Client Page Flight contains this request's query prop. */
   skipSharedRscCache?: boolean;
+  /** Response Store observes Client Component query use by SSR-rendering a cold RSC payload. */
+  verifyRscThroughSsr?: boolean;
   queryIndependentCandidate?: boolean;
   traceOperation?: "prerender" | "render";
   onRenderComplete?: (completion: Promise<void>) => void;
@@ -730,10 +733,11 @@ async function renderAppPageLifecycleImpl(
   // observation directly into this RSC render's final admission decision.
   let ssrSearchParamsObserved = false;
   const consumeRenderDynamicUsage = (): boolean => {
+    if (ssrSearchParamsObserved) dynamicUsageObserved = true;
     if (!dynamicUsageObserved) {
-      dynamicUsageObserved = ssrSearchParamsObserved || options.consumeDynamicUsage();
+      dynamicUsageObserved = options.consumeDynamicUsage();
     }
-    return dynamicUsageObserved;
+    return dynamicUsageObserved || ssrSearchParamsObserved;
   };
   const finalizeRenderDynamicUsage = (): boolean => {
     if (!dynamicUsageFinalized) {
@@ -906,6 +910,51 @@ async function renderAppPageLifecycleImpl(
         }
       },
     });
+  // A direct Flight render does not execute Client Components. Completed-response
+  // admission (and the staged Workers Cache probe) runs the SSR boundary on
+  // a second branch of the same Flight stream, without buffering the outgoing
+  // branch or making another cache request. Never publish if SSR fails.
+  const rscSsrVerification =
+    options.verifyRscThroughSsr && !pprFallbackShellRsc
+      ? (() => {
+          const [foreground, forSsr] = rscStream.tee();
+          rscStream = foreground;
+          return (async () => {
+            const ssrHandler = await options.loadSsrHandler();
+            let ssrFailed = false;
+            const result = await ssrHandler.handleSsr(
+              forSsr,
+              options.getNavigationContext(),
+              createAppPageFontData({
+                getLinks: options.getFontLinks,
+                getPreloads: options.getFontPreloads,
+                getStyles: options.getFontStyles,
+              }),
+              {
+                rootParams: options.rootParams,
+                isForceStatic: options.isForceStatic,
+                queryFromBrowserForSharedHtml: true,
+                fallbackToErrorDocumentOnShellError: false,
+                onSsrSearchParamsAccess: options.isForceStatic
+                  ? undefined
+                  : () => {
+                      ssrSearchParamsObserved = true;
+                    },
+                onSsrError() {
+                  ssrFailed = true;
+                },
+              },
+            );
+            await Promise.all([
+              (isAppSsrRenderResult(result) ? result.htmlStream : result).pipeTo(
+                new WritableStream<Uint8Array>(),
+              ),
+              isAppSsrRenderResult(result) ? result.renderComplete : undefined,
+            ]);
+            return !ssrFailed;
+          })().catch(() => false);
+        })()
+      : null;
   const rscCapture = pprFallbackShellRsc
     ? {
         ssrStream: createBufferedRscStream(false),
@@ -1058,6 +1107,7 @@ async function renderAppPageLifecycleImpl(
         options.isProduction && shouldCaptureRscForCacheMetadata && !options.skipSharedRscCache
           ? capturedRscDataRef.value
           : null,
+      waitForRscSsrVerification: rscSsrVerification,
       bypassInterceptionContextCache: options.bypassInterceptionContextCache,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,

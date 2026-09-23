@@ -180,6 +180,7 @@ async function handleRequest(
   }
   const requiresCompletedResponseAdmission =
     cdnCacheAdapter.requiresCompletedResponseAdmission === true;
+  const runtimeOnlyAdmission = cdnCacheAdapter.deferCompletedPageResponseAdmission !== undefined;
   if (
     !finalizeCacheabilityResponse &&
     (__rscCacheabilityManifest || requiresCompletedResponseAdmission) &&
@@ -189,7 +190,7 @@ async function handleRequest(
     const admissionContext = cacheability.createWorkerCacheabilityAdmissionContext(
       ctx,
       request,
-      __rscCacheabilityManifest,
+      runtimeOnlyAdmission ? null : __rscCacheabilityManifest,
       process.env.__VINEXT_BUILD_ID,
       requiresCompletedResponseAdmission,
       cdnCacheAdapter.responseVary,

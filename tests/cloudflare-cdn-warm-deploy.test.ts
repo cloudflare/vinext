@@ -701,6 +701,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status-2",
       "readiness",
       "probe:/about",
+      "probe:/about:rsc",
       "probe:/pages-about",
       "probe:/api/data",
       // Probe one representative for every pattern before probing siblings so
@@ -753,7 +754,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           kind: "app-page",
           pattern: "/:slug",
           runtimePaths: ["/dynamic"],
-          staticPaths: { html: ["/about"] },
+          staticPaths: { html: ["/about"], "rsc-full": ["/about"] },
           state: "runtime-check",
         }),
         expect.objectContaining({

@@ -186,12 +186,14 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
     ...(staticPaths ? { staticPaths } : {}),
   };
 
-  const observedPaths = new Set<string>();
-  for (const tokens of [runtimePaths, ...Object.values(staticPaths ?? {})]) {
+  // The same pathname may have independently certified HTML and RSC artifacts.
+  // A runtime path must still never overlap any certified static artifact.
+  const runtimePathSet = new Set(
+    (runtimePaths ?? []).map((token) => expandPathToken(pathPrefix, token)!),
+  );
+  for (const tokens of Object.values(staticPaths ?? {})) {
     for (const token of tokens ?? []) {
-      const pathname = expandPathToken(pathPrefix, token)!;
-      if (observedPaths.has(pathname)) return null;
-      observedPaths.add(pathname);
+      if (runtimePathSet.has(expandPathToken(pathPrefix, token)!)) return null;
     }
   }
   return key === cacheabilityManifestRouteKey(parsed.kind, parsed.pattern) ? parsed : null;

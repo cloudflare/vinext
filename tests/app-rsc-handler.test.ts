@@ -233,6 +233,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
             })
         : undefined),
     publicFiles: overrides.publicFiles ?? new Set<string>(),
+    queryIndependentAppPage: overrides.queryIndependentAppPage,
     registerCacheAdapters: () => {},
     renderNotFound: overrides.renderNotFound ?? (async () => null),
     renderPagesFallback: overrides.renderPagesFallback,
@@ -672,6 +673,46 @@ describe("createAppRscHandler", () => {
     const [, props] = dispatchResponseStage.mock.calls[0]!;
     expect(props.cacheability).not.toMatchObject({ queryIndependentCandidate: true });
     expect(props.cacheability).not.toMatchObject({ queryIndependent: true });
+  });
+
+  it("shares a Client Page RSC variant only when both HTML and RSC artifacts were proved static", async () => {
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+      async () => new Response("page"),
+    );
+    const queryIndependentAppPage = vi.fn(
+      (_pattern: string, _pathname: string, representation: string) =>
+        representation === "html" || representation === "rsc-full",
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: () => ({ params: {}, route: createPageRoute({ mayBeClientPage: true }) }),
+      queryIndependentAppPage,
+    });
+    const headers = createRscRequestHeaders();
+    const rscUrl = await createRscRequestUrl("/docs/about?q=first", headers);
+
+    await handler(
+      new Request(`https://example.test${rscUrl}`, { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      isRscRequest: true,
+      mayBeClientPage: true,
+      renderMode: "navigation",
+      mountedSlotsHeader: null,
+      interceptionContext: null,
+      interceptionId: null,
+      hasParallelSlots: false,
+    });
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      cacheability: { queryIndependentCandidate: true, queryIndependent: true },
+      hasParallelSlots: false,
+    });
+    expect(queryIndependentAppPage).toHaveBeenCalledWith("/about", "/about", "html");
+    expect(queryIndependentAppPage).toHaveBeenCalledWith("/about", "/about", "rsc-full");
   });
 
   it("shares a force-static Client Page RSC variant after its query is substituted", async () => {

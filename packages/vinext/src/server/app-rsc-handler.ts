@@ -44,6 +44,7 @@ import {
   getRequestExecutionContext,
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { pickRootParams, setRootParams, type RootParams } from "vinext/shims/root-params";
 import {
   closeAfterResponse,
@@ -1175,6 +1176,29 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               );
             }
           }
+          const runtimeAdmission =
+            getCdnCacheAdapter().deferCompletedPageResponseAdmission !== undefined;
+          const ordinaryClientRsc =
+            props.kind === "app-page" &&
+            props.isRscRequest &&
+            props.mayBeClientPage === true &&
+            props.hasParallelSlots === false &&
+            props.renderMode === "navigation" &&
+            props.mountedSlotsHeader === null &&
+            props.interceptionContext === null &&
+            props.interceptionId === null;
+          const clientRscRepresentation = ordinaryClientRsc ? "rsc-full" : null;
+          const certifiedClientRsc =
+            !runtimeAdmission &&
+            props.kind === "app-page" &&
+            clientRscRepresentation !== null &&
+            options.queryIndependentAppPage?.(props.routePattern, props.routePathname, "html") ===
+              true &&
+            options.queryIndependentAppPage?.(
+              props.routePattern,
+              props.routePathname,
+              clientRscRepresentation,
+            ) === true;
           const candidate =
             // An authenticated cacheability probe bypasses writes, but must
             // render with the same query observer as the eventual shared
@@ -1188,7 +1212,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               ? props.queryIndependentConfig === true
               : !props.isRscRequest ||
                 props.mayBeClientPage !== true ||
-                props.queryIndependentForceStatic === true) &&
+                props.queryIndependentForceStatic === true ||
+                ((runtimeAdmission || responseStageProbeMode === "probe") && ordinaryClientRsc) ||
+                certifiedClientRsc) &&
             // A query-changing rewrite needs its server-owned bootstrap.
             hasSameUserQuery(stageRequest.url, props.resolvedUrl);
           let response = await dispatchResponseStage(
@@ -1201,7 +1227,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                 ...(candidate ? { queryIndependentCandidate: true } : {}),
                 ...(candidate &&
                 (props.queryIndependentConfig === true ||
-                  (props.kind === "app-page" &&
+                  certifiedClientRsc ||
+                  (!runtimeAdmission &&
+                    props.kind === "app-page" &&
                     options.queryIndependentAppPage?.(
                       props.routePattern,
                       props.routePathname,
@@ -2389,6 +2417,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         draftModeCookie,
         forceDynamic: route.forceDynamic === true,
         mayBeClientPage: route.mayBeClientPage === true,
+        hasParallelSlots: Object.keys(route.slots ?? {}).length > 0,
         queryIndependentConfig: route.queryIndependentConfig === true,
         queryIndependentForceStatic: route.queryIndependentForceStatic === true,
         interceptionContext: isRscRequest ? interceptionContextHeader : null,

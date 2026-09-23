@@ -145,6 +145,10 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   expect(clientRscFirst.ok(), JSON.stringify(clientRscFirst.headers())).toBe(true);
   expect(clientRscSecond.ok(), JSON.stringify(clientRscSecond.headers())).toBe(true);
   expect(clientRscSecond.headers()["content-type"]).toContain("text/x-component");
+  if (backend !== "kv") {
+    expect(clientRscSecond.headers()[cacheStatusHeader]).toBe("HIT");
+    expect(clientRscSecondBody).toBe(clientRscFirstBody);
+  }
   expect(clientRscSecondBody).not.toContain(`rsc-first-${suffix}`);
   expect(clientRscFirstBody).not.toContain(`rsc-second-${suffix}`);
 
@@ -278,9 +282,15 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   expect(errorClientFirst.ok()).toBe(true);
   expect(errorClientRepeat.ok()).toBe(true);
   expect(errorClientSecond.ok()).toBe(true);
-  expect(errorClientFirstBody).toContain(`error-first-${suffix}`);
-  expect(errorClientSecondBody).toContain(`error-second-${suffix}`);
-  expect(errorClientSecondBody).not.toContain(`error-first-${suffix}`);
+  if (backend === "response-store") {
+    expect(errorClientSecond.headers()[cacheStatusHeader]).toBe("HIT");
+    expect(errorClientSecondBody).toBe(errorClientFirstBody);
+    expect(errorClientFirstBody).not.toContain(`error-first-${suffix}`);
+  } else {
+    expect(errorClientFirstBody).toContain(`error-first-${suffix}`);
+    expect(errorClientSecondBody).toContain(`error-second-${suffix}`);
+    expect(errorClientSecondBody).not.toContain(`error-first-${suffix}`);
+  }
   await errorClientRepeat.dispose();
   const slotOnlyPath = `/query-slot-only-client/${suffix}`;
   const slotOnlyFirst = await request.get(

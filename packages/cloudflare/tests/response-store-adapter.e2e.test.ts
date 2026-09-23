@@ -212,8 +212,9 @@ describe("Cloudflare Workers Response Store adapter", () => {
         rscHeaders,
       );
       const errorClientSecondBody = await errorClientSecond.text();
-      assert.ok(errorClientFirstBody.includes("first-client"));
-      assert.ok(errorClientSecondBody.includes("second-client"));
+      assert.equal(errorClientSecond.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(errorClientSecondBody, errorClientFirstBody);
+      assert.ok(!errorClientFirstBody.includes("first-client"));
       assert.ok(!errorClientSecondBody.includes("first-client"));
     } finally {
       await isolated.dispose();
@@ -623,10 +624,25 @@ describe("Cloudflare Workers Response Store adapter", () => {
       headers: forceRscHeaders,
     });
     const forceRscFirstBody = await forceRscFirst.text();
-    const forceRscSecond = await request("/query-force-static/rsc-on-demand?q=second&_rsc=second", {
+    let forceRscSecond = await request("/query-force-static/rsc-on-demand?q=second&_rsc=second", {
       headers: forceRscHeaders,
     });
-    assert.equal(forceRscSecond.headers.get("x-vinext-cache"), "HIT");
+    for (
+      let attempt = 0;
+      attempt < 40 && forceRscSecond.headers.get("x-vinext-cache") !== "HIT";
+      attempt++
+    ) {
+      await forceRscSecond.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      forceRscSecond = await request("/query-force-static/rsc-on-demand?q=second&_rsc=second", {
+        headers: forceRscHeaders,
+      });
+    }
+    assert.equal(
+      forceRscSecond.headers.get("x-vinext-cache"),
+      "HIT",
+      JSON.stringify(Object.fromEntries(forceRscSecond.headers)),
+    );
     assert.equal(await forceRscSecond.text(), forceRscFirstBody);
 
     const forcedClientFirst = await request(
@@ -708,7 +724,8 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(secondRsc.status, 200);
     assert.ok(!firstRscBody.includes('E{"digest"'), "first RSC payload contains a render error");
     assert.ok(!secondRscBody.includes('E{"digest"'), "second RSC payload contains a render error");
-    assert.notEqual(secondRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(secondRscBody, firstRscBody);
     assert.match(secondRsc.headers.get("content-type") ?? "", /^text\/x-component/);
     assert.ok(!secondRscBody.includes("rsc-first"), secondRscBody.slice(0, 600));
     assert.ok(!firstRscBody.includes("rsc-second"));
@@ -717,19 +734,43 @@ describe("Cloudflare Workers Response Store adapter", () => {
       "/query-client-independent?q=rsc-second",
     );
 
-    // The RSC-only request cannot observe whether the Client Page reads its
-    // prop. A fresh query for a reading Client Page must not hit another query's entry.
+    // A direct RSC miss must SSR-validate the Client Page before admission.
+    // Neither a same-query repeat nor a different query may hit a dynamic Page.
     const dependentEmpty = await request("/query-client-dependent?_rsc=empty", {
       headers: rscHeaders,
     });
     const dependentQuery = await request("/query-client-dependent?q=rsc-dependent&_rsc=dependent", {
       headers: rscHeaders,
     });
+    const dependentRepeat = await request(
+      "/query-client-dependent?q=rsc-dependent&_rsc=dependent",
+      {
+        headers: rscHeaders,
+      },
+    );
     assert.equal(dependentEmpty.status, 200);
     assert.equal(dependentQuery.status, 200);
+    assert.notEqual(dependentRepeat.headers.get("x-vinext-cache"), "HIT");
     assert.notEqual(dependentQuery.headers.get("x-vinext-cache"), "HIT");
     assert.ok(!(await dependentQuery.text()).includes("rsc-first"));
+    await dependentRepeat.body?.cancel();
     await dependentEmpty.body?.cancel();
+  });
+
+  test("does not cache direct RSC when a nested Client Component reads useSearchParams", async () => {
+    // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    const headers = { Accept: "text/x-component", RSC: "1" };
+    for (const query of ["", "?q=first", "?q=second", "?q=first"]) {
+      const separator = query ? "&" : "?";
+      const response = await request(`/query-ssr-client/nested${query}${separator}_rsc=nested`, {
+        headers,
+      });
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+      assert.match(response.headers.get("cache-control") ?? "", /private|no-store/);
+      await response.text();
+    }
   });
 
   test("keeps the first queried Client Page HTML query-neutral for an empty-query hit", async () => {
@@ -745,7 +786,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(empty.body, first.body);
   });
 
-  test("keeps dynamic-error Client Page RSC payloads partitioned by query", async () => {
+  test("shares a query-neutral dynamic-error Client Page RSC artifact", async () => {
     const rscHeaders = { Accept: "text/x-component", RSC: "1" };
     const pathname = "/query-error-client/identity";
     const firstUrl = `${pathname}?q=first-client-query&_rsc=identity`;
@@ -763,9 +804,10 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(first.headers.get("content-type") ?? "", /^text\/x-component/);
     assert.equal(repeat.headers.get("x-vinext-cache"), "HIT");
     assert.equal(repeatBody, firstBody);
-    assert.notEqual(second.headers.get("x-vinext-cache"), "HIT");
-    assert.ok(firstBody.includes("first-client-query"), firstBody.slice(0, 600));
-    assert.ok(secondBody.includes("second-client-query"), secondBody.slice(0, 600));
+    assert.equal(second.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(secondBody, firstBody);
+    assert.ok(!firstBody.includes("first-client-query"), firstBody.slice(0, 600));
+    assert.ok(!secondBody.includes("second-client-query"), secondBody.slice(0, 600));
     assert.ok(!secondBody.includes("first-client-query"), secondBody.slice(0, 600));
   });
 

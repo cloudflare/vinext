@@ -41,6 +41,7 @@ export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope 
   cleanPathname: string;
   forceDynamic?: boolean;
   mayBeClientPage?: boolean;
+  hasParallelSlots?: boolean;
   queryIndependentConfig?: boolean;
   queryIndependentForceStatic?: boolean;
   interceptionContext: string | null;
@@ -220,6 +221,7 @@ export function isAppWorkerResponseStageProps(
     props.cleanPathname.startsWith("/") &&
     (props.forceDynamic === undefined || typeof props.forceDynamic === "boolean") &&
     (props.mayBeClientPage === undefined || typeof props.mayBeClientPage === "boolean") &&
+    (props.hasParallelSlots === undefined || typeof props.hasParallelSlots === "boolean") &&
     (props.queryIndependentConfig === undefined ||
       typeof props.queryIndependentConfig === "boolean") &&
     (props.queryIndependentForceStatic === undefined ||
