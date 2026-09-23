@@ -741,6 +741,25 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.ok(!secondBody.includes("first-client-query"), secondBody.slice(0, 600));
   });
 
+  test("keeps slot-only Client Page RSC payloads partitioned by query", async () => {
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const pathname = "/query-slot-only-client/identity";
+    const first = await request(`${pathname}?q=first-slot-query&_rsc=first`, {
+      headers: rscHeaders,
+    });
+    const firstBody = await first.text();
+    const second = await request(`${pathname}?q=second-slot-query&_rsc=second`, {
+      headers: rscHeaders,
+    });
+    const secondBody = await second.text();
+
+    assert.equal(first.status, 200, firstBody.slice(0, 500));
+    assert.equal(second.status, 200, secondBody.slice(0, 500));
+    assert.ok(firstBody.includes("first-slot-query"));
+    assert.ok(secondBody.includes("second-slot-query"));
+    assert.ok(!secondBody.includes("first-slot-query"));
+  });
+
   test("does not serialize a parallel Client Page's unused query into shared HTML", async () => {
     const pathname = "/query-parallel-client/slot";
     const first = await cacheStatus(`${pathname}?q=parallel-first`);

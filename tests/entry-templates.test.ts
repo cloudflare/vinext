@@ -743,13 +743,15 @@ describe("App Router generated manifest construction", () => {
   it("carries possible Client Page classification into the renderer's inner ISR route", () => {
     const client = { ...minimalAppRoutes[0], pagePath: "/tmp/test/app/client/page.tsx" };
     const server = { ...minimalAppRoutes[0], pagePath: "/tmp/test/app/server/page.tsx" };
+    const slotOnly = { ...minimalAppRoutes[0], pagePath: null, routePath: null };
     const manifest = buildAppRscManifestCode({
-      mayBeClientPages: [true, false],
-      routes: [client, server],
+      mayBeClientPages: [true, false, true],
+      routes: [client, server, slotOnly],
     });
 
     expect(manifest.routeEntries[0]).toContain("mayBeClientPage: true");
     expect(manifest.routeEntries[1]).toContain("mayBeClientPage: false");
+    expect(manifest.routeEntries[2]).toContain("mayBeClientPage: true");
     // If metadata is unavailable, the renderer must not assume that a Page
     // can safely use the shared pathname-only RSC entry.
     expect(buildAppRscManifestCode({ routes: [client] }).routeEntries[0]).toContain(

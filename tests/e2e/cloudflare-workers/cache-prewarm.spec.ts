@@ -284,6 +284,22 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   expect(errorClientSecondBody).toContain(`error-second-${suffix}`);
   expect(errorClientSecondBody).not.toContain(`error-first-${suffix}`);
   await errorClientRepeat.dispose();
+  const slotOnlyPath = `/query-slot-only-client/${suffix}`;
+  const slotOnlyFirst = await request.get(
+    `${baseURL}${slotOnlyPath}?q=slot-first-${suffix}&_rsc=slot-first-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const slotOnlyFirstBody = await slotOnlyFirst.text();
+  const slotOnlySecond = await request.get(
+    `${baseURL}${slotOnlyPath}?q=slot-second-${suffix}&_rsc=slot-second-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const slotOnlySecondBody = await slotOnlySecond.text();
+  expect(slotOnlyFirst.ok()).toBe(true);
+  expect(slotOnlySecond.ok()).toBe(true);
+  expect(slotOnlyFirstBody).toContain(`slot-first-${suffix}`);
+  expect(slotOnlySecondBody).toContain(`slot-second-${suffix}`);
+  expect(slotOnlySecondBody).not.toContain(`slot-first-${suffix}`);
   let forceStaticRscBody = "";
   await expect
     .poll(
@@ -329,8 +345,11 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   expect(forcedClientSecond.ok()).toBe(true);
   expect(forcedClientSecond.headers()[cacheStatusHeader]).toBe("HIT");
   expect(forcedClientSecondBody).toBe(forcedClientFirstBody);
+  expect(forcedClientFirstBody).not.toContain('E{"digest"');
   expect(forcedClientFirstBody).not.toContain(`first-${suffix}`);
   expect(forcedClientFirstBody).not.toContain(`second-${suffix}`);
+  await page.goto(`${baseURL}${forcedClientPath}?q=second-${suffix}`);
+  await expect(page.getByTestId("query-force-static-client-page-value")).toHaveText("(empty)");
 
   // An on-demand page may prove query independence only after rendering, so
   // Response Store can share its RSC entry while Workers Cache remains conservative.

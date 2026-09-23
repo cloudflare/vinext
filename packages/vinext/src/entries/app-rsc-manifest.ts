@@ -391,7 +391,7 @@ ${interceptEntries.join(",\n")}
     pattern: ${JSON.stringify(route.pattern)},
     patternParts: ${JSON.stringify(route.patternParts)},
     isDynamic: ${route.isDynamic},
-    mayBeClientPage: ${route.pagePath !== null && mayBeClientPages[routeIdx] !== false},
+    mayBeClientPage: ${!route.routePath && mayBeClientPages[routeIdx] !== false},
     params: ${JSON.stringify(route.params)},
     staticSiblings: ${JSON.stringify(staticSiblings)},
     rootParamNames: ${JSON.stringify(route.rootParamNames ?? [])},
