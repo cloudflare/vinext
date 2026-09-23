@@ -131,12 +131,13 @@ function isTagInTable(table: Uint8Array, byte: number): boolean {
  * Rewrite stylesheet preload hints in a React Flight stream.
  *
  * The rewrite is byte-length preserving, so this transform keeps React's
- * chunk boundaries instead of re-emitting one chunk per Flight row. Every
+ * text chunk boundaries instead of re-emitting one chunk per Flight row. Every
  * downstream consumer (the tee, the SSR Flight client, the inline RSC embed,
  * RSC response wrappers) pays a per-chunk cost, and splitting per row
  * multiplied the chunk count roughly 8x on content-heavy pages. Chunks with
  * no stylesheet hint are forwarded as-is without copying; only rows whose
- * tag is `HL` are decoded and inspected.
+ * tag is `HL` are decoded and inspected. Length-prefixed bodies remain separate
+ * so binary bytes do not force adjacent text through the embed's base64 path.
  */
 export function normalizeReactFlightPreloadHints(
   stream: ReadableStream<Uint8Array>,
@@ -158,6 +159,7 @@ export function normalizeReactFlightPreloadHints(
         const byteLength = bytes.byteLength;
         // Offset of the first byte not yet known to belong to a complete row.
         let offset = 0;
+        let emittedThrough = 0;
         // Copy-on-write output: only allocate when a hint row is rewritten.
         let output = bytes;
         let ownsOutput = bytes !== chunk;
@@ -165,8 +167,12 @@ export function normalizeReactFlightPreloadHints(
         while (offset < byteLength) {
           if (rawBytesRemaining > 0) {
             const length = Math.min(rawBytesRemaining, byteLength - offset);
+            if (offset > emittedThrough)
+              controller.enqueue(output.subarray(emittedThrough, offset));
+            controller.enqueue(bytes.subarray(offset, offset + length));
             rawBytesRemaining -= length;
             offset += length;
+            emittedThrough = offset;
             continue;
           }
 
@@ -223,8 +229,12 @@ export function normalizeReactFlightPreloadHints(
         }
 
         if (offset < byteLength) carry = bytes.slice(offset);
-        if (offset > 0) {
-          controller.enqueue(offset === byteLength ? output : output.subarray(0, offset));
+        if (offset > emittedThrough) {
+          controller.enqueue(
+            offset === byteLength && emittedThrough === 0
+              ? output
+              : output.subarray(emittedThrough, offset),
+          );
         }
       },
       flush(controller) {

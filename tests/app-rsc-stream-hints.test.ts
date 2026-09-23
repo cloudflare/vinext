@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
+import { createRscEmbedTransform } from "../packages/vinext/src/server/app-ssr-stream.js";
 import { normalizeReactFlightPreloadHints } from "../packages/vinext/src/server/rsc-stream-hints.js";
 
 const STYLE_JSON_PADDING = " ".repeat("stylesheet".length - "style".length);
@@ -213,5 +214,27 @@ describe("RSC stream hint helpers", () => {
       '0:D{"name":"page"}\n',
       normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n') + '1:["$","div",null,{}]\n',
     ]);
+  });
+
+  it("keeps binary Flight bodies separate from adjacent text when embedding", async () => {
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode(`0:D{"data":"${"x".repeat(1024)}"}\n1:A1,`);
+    const suffix = encoder.encode('2:["done"]\n');
+    const payload = new Uint8Array(prefix.length + 1 + suffix.length);
+    payload.set(prefix);
+    payload[prefix.length] = 0xff;
+    payload.set(suffix, prefix.length + 1);
+
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(payload);
+        controller.close();
+      },
+    });
+    const embed = createRscEmbedTransform(normalizeReactFlightPreloadHints(source));
+    const scripts = await embed.finalize();
+
+    expect(scripts).toContain('.rsc.push([3,"/w=="])');
+    expect(new Uint8Array(await embed.getRawBuffer())).toEqual(payload);
   });
 });
