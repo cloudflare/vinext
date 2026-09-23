@@ -28,6 +28,13 @@ test("Node prerender packages HTML and RSC into the Static Assets binding", asyn
   expect(rsc.status()).toBe(200);
   expect(await rsc.text()).toContain("Prebuilt about page");
 
+  // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  const queriedHtml = await request.get(`${base}/about?source=nav`);
+  expect(queriedHtml.headers()["x-vinext-cache"]).toBe("HIT");
+  const queriedRsc = await request.get(`${base}/about?source=nav`, { headers: { RSC: "1" } });
+  expect(queriedRsc.headers()["x-vinext-cache"]).toBe("HIT");
+
   const api = await request.get(`${base}/api/ping`);
   expect(api.status()).toBe(200);
   expect(await api.json()).toEqual({ from: "worker" });
