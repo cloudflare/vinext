@@ -132,7 +132,7 @@ function isFunctionNode(node: unknown): boolean {
  * `export default Page` / `export { Page as default }`. Returns the AST node
  * itself so callers can match the hoisted directive's `valueNode` by identity.
  */
-export function findDefaultExportFunction(ast: Program): object | undefined {
+function findDefaultExportFunction(ast: Program): object | undefined {
   let localName: string | undefined;
   for (const statement of ast.body) {
     if (statement.type === "ExportDefaultDeclaration") {

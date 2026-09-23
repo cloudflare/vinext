@@ -1393,7 +1393,7 @@ function unwrapThenableObjects(
  * them from both the cache key and the serialized arguments of a public
  * `"use cache"` page (use-cache-wrapper.ts, `isPageSegmentFunction`).
  */
-export function omitSearchParamsFromPageProps(args: readonly unknown[]): unknown[] {
+function omitSearchParamsFromPageProps(args: readonly unknown[]): unknown[] {
   const [props, ...rest] = args;
   if (props === null || typeof props !== "object" || !("searchParams" in props)) {
     return [...args];
