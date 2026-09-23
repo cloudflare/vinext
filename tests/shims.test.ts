@@ -7792,7 +7792,7 @@ describe('"use cache" runtime', () => {
       },
       "/fixture/app/cached/page.tsx:default",
       "",
-      { appPageDefaultExport: true },
+      { appPageSegmentFunction: true },
     );
 
     const first = await cached({
@@ -7843,7 +7843,7 @@ describe('"use cache" runtime', () => {
       "/fixture/app/cached/replay/page.tsx:default",
       "",
       {
-        appPageDefaultExport: true,
+        appPageSegmentFunction: true,
         encodeInvocationArgs,
         serverReferenceId: "fixture#cached",
       },
@@ -7887,7 +7887,7 @@ describe('"use cache" runtime', () => {
       },
       "/fixture/app/cached/page.tsx:default",
       "",
-      { appPageDefaultExport: true },
+      { appPageSegmentFunction: true },
     );
 
     await expect(
@@ -7933,7 +7933,7 @@ describe('"use cache" runtime', () => {
       },
       "/fixture/app/cached/caught/page.tsx:default",
       "",
-      { appPageDefaultExport: true },
+      { appPageSegmentFunction: true },
     );
 
     await expect(

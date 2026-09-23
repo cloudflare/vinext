@@ -86,6 +86,17 @@ async function transformRsc(source: string): Promise<string> {
   return result!.code;
 }
 
+/** Map each registered cache function's name to whether it is a page segment function. */
+function getPageSegmentFlagsByCacheName(code: string): Record<string, boolean> {
+  const flags: Record<string, boolean> = {};
+  for (const match of code.matchAll(
+    /registerCachedFunction\(.*?, "[^"]*:([^":]+)", "[^"]*", (\{[^}]*\})\)/g,
+  )) {
+    flags[match[1]!] = JSON.parse(match[2]!).appPageSegmentFunction === true;
+  }
+  return flags;
+}
+
 describe("plugin-rsc inline use-cache references", () => {
   it("supports an explicitly registered RSC plugin", async () => {
     const plugins = await getPlugins({ manualRsc: true });
@@ -773,7 +784,7 @@ describe("plugin-rsc inline use-cache references", () => {
       pageId,
     );
 
-    expect(result?.code).toContain('"appPageDefaultExport":true');
+    expect(result?.code).toContain('"appPageSegmentFunction":true');
   });
 
   // Next.js passes `$$isPage` to any "use cache" page component, including an
@@ -791,6 +802,7 @@ describe("plugin-rsc inline use-cache references", () => {
       "export specifier",
       `const Page = async (props) => { "use cache"; return null; };\nexport { Page as default };`,
     ],
+    ["export default arrow", `export default async (props) => { "use cache"; return null; };`],
   ])("marks inline App Page default exports (%s)", async (_label, code) => {
     const plugins = await getPlugins();
     await configureVinext(plugins);
@@ -805,7 +817,7 @@ describe("plugin-rsc inline use-cache references", () => {
       pageId,
     );
 
-    expect(result?.code).toContain('"appPageDefaultExport":true');
+    expect(result?.code).toContain('"appPageSegmentFunction":true');
   });
 
   it("does not mark inline caches that are not the App Page default export", async () => {
@@ -826,7 +838,83 @@ describe("plugin-rsc inline use-cache references", () => {
     );
 
     expect(result?.code).toContain("registerCachedFunction");
-    expect(result?.code).not.toContain('"appPageDefaultExport":true');
+    expect(result?.code).not.toContain('"appPageSegmentFunction":true');
+  });
+
+  // Next.js also passes `$$isPage` to a "use cache" generateMetadata or
+  // generateViewport in a page file (resolve-metadata.ts), since they receive
+  // the page's `{ params, searchParams }` props.
+  it("marks file-level App Page metadata exports but not other exports", async () => {
+    const plugins = await getPlugins();
+    await configureVinext(plugins);
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const pageId = path.join(APP_FIXTURE_DIR, "app", "file-metadata", "page.tsx");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      [
+        `"use cache";`,
+        `export async function generateStaticParams() { return []; }`,
+        `export async function generateMetadata(props) { return {}; }`,
+        `export const generateViewport = async (props) => ({});`,
+        `export default async function Page(props) { return null; }`,
+      ].join("\n"),
+      pageId,
+    );
+
+    expect(getPageSegmentFlagsByCacheName(result!.code)).toEqual({
+      default: true,
+      generateMetadata: true,
+      generateStaticParams: false,
+      generateViewport: true,
+    });
+  });
+
+  it("marks inline App Page metadata exports but not other inline caches", async () => {
+    const plugins = await getPlugins();
+    await configureVinext(plugins);
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const pageId = path.join(APP_FIXTURE_DIR, "app", "inline-metadata", "page.tsx");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      [
+        `export async function generateMetadata(props) { "use cache"; return {}; }`,
+        `async function viewport(props) { "use cache"; return {}; }`,
+        `export { viewport as generateViewport };`,
+        `async function load(props) { "use cache"; return props; }`,
+        `export default async function Page(props) { return load(props); }`,
+      ].join("\n"),
+      pageId,
+    );
+
+    expect(getPageSegmentFlagsByCacheName(result!.code)).toEqual({
+      $$hoist_0_generateMetadata: true,
+      $$hoist_1_viewport: true,
+      $$hoist_2_load: false,
+    });
+  });
+
+  it("does not mark inline metadata caches in App layouts", async () => {
+    const plugins = await getPlugins();
+    await configureVinext(plugins);
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const layoutId = path.join(APP_FIXTURE_DIR, "app", "inline-metadata", "layout.tsx");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      `export async function generateMetadata(props) { "use cache"; return {}; }`,
+      layoutId,
+    );
+
+    expect(result?.code).toContain("registerCachedFunction");
+    expect(result?.code).not.toContain('"appPageSegmentFunction":true');
   });
 
   it.each(["ssr", "client"])(

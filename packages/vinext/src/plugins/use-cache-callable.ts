@@ -24,7 +24,7 @@ type Options = {
 
 type CacheWrapperOptions = {
   acceptsSecondArgument: boolean;
-  appPageDefaultExport?: boolean;
+  appPageSegmentFunction?: boolean;
   argumentCount?: number;
   serverReferenceId?: string;
 };
@@ -127,50 +127,80 @@ function isFunctionNode(node: unknown): boolean {
 }
 
 /**
- * Find the function a module exports as `default`: a direct
- * `export default function`, or a top-level function referenced by
- * `export default Page` / `export { Page as default }`. Returns the AST node
- * itself so callers can match the hoisted directive's `valueNode` by identity.
+ * Exports of an App Router page file that Next.js treats as page segment
+ * functions (`$$isPage`, use-cache-wrapper.ts `isPageSegmentFunction`): the
+ * page component, plus the page's generateMetadata/generateViewport, which
+ * receive the same `{ params, searchParams }` props.
  */
-function findDefaultExportFunction(ast: Program): object | undefined {
-  let localName: string | undefined;
+const APP_PAGE_SEGMENT_EXPORT_NAMES = new Set(["default", "generateMetadata", "generateViewport"]);
+
+/**
+ * Find the top-level functions a page module exports as page segment
+ * functions: a direct `export default function` / `export async function
+ * generateMetadata`, or a top-level function referenced by `export default
+ * Page` / `export { Page as default }`. Returns the AST nodes themselves so
+ * callers can match a hoisted directive's `valueNode` by identity.
+ */
+function findAppPageSegmentFunctions(ast: Program): Set<object> {
+  const functions = new Set<object>();
+  const localNames = new Set<string>();
+  const addFunctionDeclarator = (
+    declarator: { id: { type: string; name?: string }; init?: unknown },
+    names: ReadonlySet<string>,
+  ) => {
+    if (
+      declarator.id.type === "Identifier" &&
+      declarator.id.name !== undefined &&
+      names.has(declarator.id.name) &&
+      isFunctionNode(declarator.init)
+    ) {
+      functions.add(declarator.init as object);
+    }
+  };
+
   for (const statement of ast.body) {
     if (statement.type === "ExportDefaultDeclaration") {
-      if (isFunctionNode(statement.declaration)) return statement.declaration as object;
-      if (statement.declaration.type === "Identifier") localName = statement.declaration.name;
-    } else if (statement.type === "ExportNamedDeclaration" && !statement.source) {
-      for (const specifier of statement.specifiers) {
-        const exported =
-          specifier.exported.type === "Identifier"
-            ? specifier.exported.name
-            : String(specifier.exported.value);
-        if (exported === "default" && specifier.local.type === "Identifier") {
-          localName = specifier.local.name;
-        }
+      if (isFunctionNode(statement.declaration)) functions.add(statement.declaration);
+      else if (statement.declaration.type === "Identifier") {
+        localNames.add(statement.declaration.name);
+      }
+      continue;
+    }
+    if (statement.type !== "ExportNamedDeclaration" || statement.source) continue;
+    const declaration = statement.declaration;
+    if (declaration?.type === "FunctionDeclaration") {
+      if (declaration.id && APP_PAGE_SEGMENT_EXPORT_NAMES.has(declaration.id.name)) {
+        functions.add(declaration);
+      }
+    } else if (declaration?.type === "VariableDeclaration") {
+      for (const declarator of declaration.declarations) {
+        addFunctionDeclarator(declarator, APP_PAGE_SEGMENT_EXPORT_NAMES);
+      }
+    }
+    for (const specifier of statement.specifiers) {
+      const exported =
+        specifier.exported.type === "Identifier"
+          ? specifier.exported.name
+          : String(specifier.exported.value);
+      if (APP_PAGE_SEGMENT_EXPORT_NAMES.has(exported) && specifier.local.type === "Identifier") {
+        localNames.add(specifier.local.name);
       }
     }
   }
-  if (localName === undefined) return undefined;
+  if (localNames.size === 0) return functions;
 
   for (const statement of ast.body) {
     const declaration =
       statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
-    if (declaration?.type === "FunctionDeclaration" && declaration.id?.name === localName) {
-      return declaration;
-    }
-    if (declaration?.type !== "VariableDeclaration") continue;
-    for (const declarator of declaration.declarations) {
-      if (
-        declarator.id.type === "Identifier" &&
-        declarator.id.name === localName &&
-        declarator.init &&
-        isFunctionNode(declarator.init)
-      ) {
-        return declarator.init;
+    if (declaration?.type === "FunctionDeclaration") {
+      if (declaration.id && localNames.has(declaration.id.name)) functions.add(declaration);
+    } else if (declaration?.type === "VariableDeclaration") {
+      for (const declarator of declaration.declarations) {
+        addFunctionDeclarator(declarator, localNames);
       }
     }
   }
-  return undefined;
+  return functions;
 }
 
 function shouldTransformModuleExport(name: string, id: string, meta: ModuleExportMeta): boolean {
@@ -243,13 +273,13 @@ function getFunctionDirectiveExportNames(
 }
 
 function getCacheWrapperOptions(
-  appPageDefaultExport: boolean,
+  appPageSegmentFunction: boolean,
   meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
 ): CacheWrapperOptions {
   const argumentCount = getArgumentCount(meta);
   return {
     acceptsSecondArgument: acceptsSecondArgument(meta),
-    ...(appPageDefaultExport ? { appPageDefaultExport: true } : {}),
+    ...(appPageSegmentFunction ? { appPageSegmentFunction: true } : {}),
     ...(argumentCount === undefined ? {} : { argumentCount }),
   };
 }
@@ -382,12 +412,13 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           return magicStringTransformResult(result.output, { hires: "boundary", source: id });
         }
 
-        // Next.js passes `$$isPage` to a page component that is a "use cache"
-        // function, whether the directive is file-level or inline in the
-        // default export, so both shapes omit searchParams from the cache key.
+        // Next.js passes `$$isPage` to a page component (and the page's
+        // generateMetadata/generateViewport) that is a "use cache" function,
+        // whether the directive is file-level or inline in the exported
+        // function, so both shapes omit searchParams from the cache key.
         const appPageModule = isAppPageModule(options, id);
-        const appPageDefaultFunction =
-          appPageModule && !moduleDirective ? findDefaultExportFunction(ast) : undefined;
+        const appPageSegmentFunctions =
+          appPageModule && !moduleDirective ? findAppPageSegmentFunctions(ast) : undefined;
         const secureExports = new Set<string>();
         const wrap = (
           value: string,
@@ -399,11 +430,11 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           const variant = directiveMatch[1] ?? "";
           const secureName = secureExportName(name);
           secureExports.add(secureName);
-          const appPageDefaultExport = isModuleDirective
-            ? appPageModule && name === "default"
-            : appPageDefaultFunction !== undefined && meta.valueNode === appPageDefaultFunction;
+          const appPageSegmentFunction = isModuleDirective
+            ? appPageModule && APP_PAGE_SEGMENT_EXPORT_NAMES.has(name)
+            : meta.valueNode !== undefined && appPageSegmentFunctions?.has(meta.valueNode) === true;
           const wrapperOptions = {
-            ...getCacheWrapperOptions(appPageDefaultExport, meta),
+            ...getCacheWrapperOptions(appPageSegmentFunction, meta),
             serverReferenceId: `${reference.referenceKey}#${secureName}`,
           };
           return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;

@@ -1670,7 +1670,7 @@ describe("buildPageElements", () => {
       },
       "/fixture/app/cached/page.tsx:default",
       "",
-      { appPageDefaultExport: true },
+      { appPageSegmentFunction: true },
     );
     const route = createSyntheticRoute({
       page: createSyntheticPageModule(CachedPage),
@@ -1705,7 +1705,7 @@ describe("buildPageElements", () => {
       },
       "/fixture/app/cached/@modal/page.tsx:default",
       "",
-      { appPageDefaultExport: true },
+      { appPageSegmentFunction: true },
     );
     const route = createSyntheticRoute({
       page: createSyntheticPageModule(MainPage),
@@ -1748,7 +1748,7 @@ describe("buildPageElements", () => {
       },
       "/fixture/app/cached/@modal/(.)photo/page.tsx:default",
       "",
-      { appPageDefaultExport: true },
+      { appPageSegmentFunction: true },
     );
     const route = createSyntheticRoute({
       page: createSyntheticPageModule(MainPage),

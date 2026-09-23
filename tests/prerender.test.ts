@@ -1359,9 +1359,10 @@ describe("prerenderApp — default mode (app-basic)", () => {
 
   // Ported from Next.js: test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components-allow-otel-spans/cache-components-allow-otel-spans.test.ts
-  // A "use cache" page receives `{ params, searchParams }`. Next.js leaves
-  // searchParams out of a public page cache's key and serialized arguments, so
-  // reading them must not turn the build-time render dynamic.
+  // A "use cache" page, and its "use cache" generateMetadata/generateViewport,
+  // receive `{ params, searchParams }`. Next.js leaves searchParams out of a
+  // public page cache's key and serialized arguments, so reading them must not
+  // turn the build-time render dynamic.
   it.each(["inline", "file"])(
     'prerenders %s "use cache" pages that receive page props',
     (directive) => {
@@ -1375,6 +1376,7 @@ describe("prerenderApp — default mode (app-basic)", () => {
         "utf-8",
       );
       expect(html).toContain("prerendered");
+      expect(html).toContain("<title>use cache page props prerendered</title>");
     },
   );
 

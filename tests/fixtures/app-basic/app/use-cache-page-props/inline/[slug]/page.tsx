@@ -6,6 +6,13 @@ export function generateStaticParams() {
   return [{ slug: "prerendered" }];
 }
 
+// Page metadata functions receive the page's props too, so they also leave
+// searchParams out of their cache key and serialized arguments.
+export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }) {
+  "use cache";
+  return { title: `use cache page props ${(await params).slug}` };
+}
+
 export default async function InlineUseCachePropsPage({
   params,
 }: {

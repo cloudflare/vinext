@@ -568,13 +568,16 @@ export type RegisterCachedFunctionOptions = {
    */
   acceptsSecondArgument?: boolean;
   /**
-   * Internal transform metadata for file-level `"use cache"` default exports
-   * in App Router `page.*` files. Page components receive framework-owned
-   * `{ params, searchParams }` props. React may copy that props object before
-   * invocation, so this invariant must live at the cached function boundary
-   * rather than on the intermediate createElement config object.
+   * Internal transform metadata for App Router page segment functions: a
+   * `"use cache"` page component (file-level or inline directive) and a
+   * page file's generateMetadata/generateViewport. They receive
+   * framework-owned `{ params, searchParams }` props. React may copy that
+   * props object before invocation, so this invariant must live at the cached
+   * function boundary rather than on the intermediate createElement config
+   * object. Mirrors Next.js's `$$isPage` (use-cache-wrapper.ts,
+   * `isPageSegmentFunction`).
    */
-  appPageDefaultExport?: boolean;
+  appPageSegmentFunction?: boolean;
   /** Number of declared arguments supplied by the directive transform. */
   argumentCount?: number;
   decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
@@ -598,7 +601,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   options: RegisterCachedFunctionOptions = {},
 ): (...args: TArgs) => Promise<TResult> {
   const cacheVariant = variant ?? "";
-  const omitAppPageSearchParamsFromFirstArg = options.appPageDefaultExport === true;
+  const omitAppPageSearchParamsFromFirstArg = options.appPageSegmentFunction === true;
   // A replayable entry stores this reference ID for Response Store
   // regeneration. Keep entries produced with an older build's opaque alias
   // unreachable if a stable deployment/build ID is reused.
