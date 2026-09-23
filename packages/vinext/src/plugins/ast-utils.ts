@@ -59,6 +59,63 @@ export function isIdentifierNamed(value: ESTree.Node | null | undefined, name: s
   return value?.type === "Identifier" && value.name === name;
 }
 
+function isImportMetaNode(value: ESTree.Node): boolean {
+  return (
+    value.type === "MetaProperty" &&
+    isIdentifierNamed(value.meta, "import") &&
+    isIdentifierNamed(value.property, "meta")
+  );
+}
+
+/** Matches the plain `import.meta.url` member expression (not `import.meta?.url`). */
+export function isImportMetaUrlNode(value: ESTree.Node): value is ESTree.MemberExpression {
+  return (
+    value.type === "MemberExpression" &&
+    isImportMetaNode(value.object) &&
+    isIdentifierNamed(value.property, "url")
+  );
+}
+
+/** Whether the module's directive prologue contains `directive` (e.g. `"use client"`). */
+export function hasDirective(ast: ESTree.Program, directive: string): boolean {
+  for (const statement of ast.body) {
+    if (
+      statement.type !== "ExpressionStatement" ||
+      !("directive" in statement) ||
+      typeof statement.directive !== "string"
+    ) {
+      return false;
+    }
+    if (statement.directive === directive) return true;
+  }
+  return false;
+}
+
+/**
+ * Offset just past a module's hashbang and directive prologue (`"use client"`,
+ * `"use server"`, ...). Code injected here keeps the shebang on line 1 and the
+ * directives first, so later directive detection still sees them.
+ */
+export function findDirectivePrologueEnd(ast: ESTree.Program): number {
+  // A shebang (`#!...`) lives outside ast.body but must stay the first bytes of
+  // the file, so the injection floor starts after it. Inserting at offset 0
+  // would move the shebang off line 1 and produce invalid output.
+  let end = ast.hashbang?.end ?? 0;
+
+  for (const statement of ast.body) {
+    if (
+      statement.type !== "ExpressionStatement" ||
+      statement.expression.type !== "Literal" ||
+      typeof statement.expression.value !== "string"
+    ) {
+      break;
+    }
+    end = statement.end;
+  }
+
+  return end;
+}
+
 export function getAstName(node: ESTree.Node | null | undefined): string | null {
   if (node?.type === "Identifier") return node.name;
   if (node?.type === "Literal" && typeof node.value === "string") return node.value;

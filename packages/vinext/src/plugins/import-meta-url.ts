@@ -29,8 +29,10 @@ import { canonicalizeFilePath, isPathInsideOrEqual, stripViteModuleQuery } from 
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
+  findDirectivePrologueEnd,
   forEachAstChild,
   isIdentifierNamed,
+  isImportMetaUrlNode,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
 } from "./ast-utils.js";
@@ -965,22 +967,6 @@ function analyzeServerCjsGlobals(ast: ESTree.Program): ServerCjsAnalysis {
   return { reads, moduleBindings };
 }
 
-function isImportMetaNode(value: ESTree.Node): boolean {
-  return (
-    value.type === "MetaProperty" &&
-    isIdentifierNamed(value.meta, "import") &&
-    isIdentifierNamed(value.property, "meta")
-  );
-}
-
-function isImportMetaUrlNode(value: ESTree.Node): value is ESTree.MemberExpression {
-  return (
-    value.type === "MemberExpression" &&
-    isImportMetaNode(value.object) &&
-    isIdentifierNamed(value.property, "url")
-  );
-}
-
 // Accepts both import.meta.url (MemberExpression) and import.meta?.url
 // (ChainExpression wrapping a MemberExpression) so that the new URL() skip
 // correctly handles optional-chained base arguments.
@@ -1021,24 +1007,4 @@ function isChainExpressionWrappingImportMetaUrl(
 // `new window.URL(...)`. Matches Vite's own asset-detection scope.
 function isNewUrlExpression(value: ESTree.Node): value is ESTree.NewExpression {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
-}
-
-function findDirectivePrologueEnd(ast: ESTree.Program): number {
-  // A shebang (`#!...`) lives outside ast.body but must stay the first bytes of
-  // the file, so the injection floor starts after it. Inserting at offset 0
-  // would move the shebang off line 1 and produce invalid output.
-  let end = ast.hashbang?.end ?? 0;
-
-  for (const statement of ast.body) {
-    if (
-      statement.type !== "ExpressionStatement" ||
-      statement.expression.type !== "Literal" ||
-      typeof statement.expression.value !== "string"
-    ) {
-      break;
-    }
-    end = statement.end;
-  }
-
-  return end;
 }

@@ -30,6 +30,32 @@ registerFrameworkTracingIntegration({
 });
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
+
+// Ported from Next.js: test/e2e/edge-compiler-can-import-blob-assets/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/edge-compiler-can-import-blob-assets/index.test.ts
+// plus test/integration/server-asset-modules/test/index.test.ts for the
+// Node.js `fs.readFile(new URL(...))` read of the same file.
+async function expectServerUrlAssets(origin: string): Promise<void> {
+  const textRes = await fetch(`${origin}/api/edge-blob-assets?handler=text-file`);
+  expect(textRes.status).toBe(200);
+  expect(await textRes.text()).toContain("Hello, from text-file.txt!");
+
+  const imageRes = await fetch(`${origin}/api/edge-blob-assets?handler=image-file`);
+  expect(imageRes.status).toBe(200);
+  const image = Buffer.from(await imageRes.arrayBuffer());
+  expect(image.equals(fs.readFileSync(path.join(FIXTURE_DIR, "server-assets/image.png")))).toBe(
+    true,
+  );
+
+  const nodeModuleRes = await fetch(`${origin}/api/edge-blob-assets?handler=from-node-module`);
+  expect(nodeModuleRes.status).toBe(200);
+  expect(await nodeModuleRes.json()).toMatchObject({ name: "react" });
+
+  const readRes = await fetch(`${origin}/api/server-asset-read`);
+  expect(readRes.status).toBe(200);
+  expect(await readRes.json()).toEqual({ content: "Hello, from text-file.txt!\n" });
+}
+
 const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps }) {
   return <Component {...pageProps} />;
 }
@@ -1935,6 +1961,10 @@ export default class CustomDocument extends Document {
       hello: "world",
       query: { a: "b" },
     });
+  });
+
+  it("serves fetch(new URL(file, import.meta.url)) assets from edge API routes in dev", async () => {
+    await expectServerUrlAssets(baseUrl);
   });
 
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
@@ -7120,6 +7150,10 @@ describe("Production server middleware (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("serves fetch(new URL(file, import.meta.url)) assets from edge API routes", async () => {
+    await expectServerUrlAssets(prodUrl);
   });
 
   // Next.js `next start` sends `text/html; charset=utf-8` for every HTML
