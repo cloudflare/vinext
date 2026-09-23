@@ -10,7 +10,7 @@ catalogs:
       specifier: 2.0.0-beta.sha-b747ec8ea
       version: 2.0.0-beta.sha-b747ec8ea
     cf:
-      specifier: 0.13.0
+      specifier: https://pkg.pr.new/cloudflare/cf@56a42d06a99193547d5112c144f5be09c55fa099
       version: 0.13.0
   default:
     '@cloudflare/kumo':
@@ -426,7 +426,7 @@ importers:
         version: 0.5.34(react-dom@19.2.7(react@19.2.7))(react-server-dom-webpack@19.2.7(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(react@19.2.7)(vite@8.3.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(yaml@2.9.0))
       cf:
         specifier: catalog:cloudflare-vite-v2
-        version: 0.13.0(@types/node@25.9.2)
+        version: https://pkg.pr.new/cloudflare/cf@56a42d06a99193547d5112c144f5be09c55fa099(@types/node@25.9.2)
       drizzle-kit:
         specifier: 'catalog:'
         version: 0.31.10
@@ -7165,8 +7165,9 @@ packages:
   ccount@2.0.1:
     resolution: {integrity: sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==}
 
-  cf@0.13.0:
-    resolution: {integrity: sha512-ZiLaIXkHQIefoQMO4+77SqOsp+tSkq+Ytrg2Qjvj5Aho4UXTqgKxptvj/nvd1chm49fAQRwGsz/aL/qveLAosQ==}
+  cf@https://pkg.pr.new/cloudflare/cf@56a42d06a99193547d5112c144f5be09c55fa099:
+    resolution: {tarball: https://pkg.pr.new/cloudflare/cf@56a42d06a99193547d5112c144f5be09c55fa099}
+    version: 0.13.0
     engines: {node: '>=22'}
     hasBin: true
 
@@ -15149,7 +15150,7 @@ snapshots:
 
   ccount@2.0.1: {}
 
-  cf@0.13.0(@types/node@25.9.2):
+  cf@https://pkg.pr.new/cloudflare/cf@56a42d06a99193547d5112c144f5be09c55fa099(@types/node@25.9.2):
     dependencies:
       blake3-wasm: 2.1.5
       miniflare: 5.20260921.0-alpha(@types/node@25.9.2)

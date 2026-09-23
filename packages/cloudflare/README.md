@@ -213,10 +213,8 @@ deploy needs neither `wrangler.jsonc` nor the Wrangler package. If prerendered
 routes use the KV data adapter, the generated Worker config supplies the KV
 namespace ID for a `cf kv bulk update` upload.
 
-Named auxiliary Workers in Build Output are deployed with `cf` before the entry
-Worker. This currently requires vinext to project each auxiliary Worker as the
-default Build Output for a separate `cf deploy --prebuilt`; `cf deploy --prebuilt`
-deploys the default Worker, not the named auxiliary outputs. The generated
+Named auxiliary Workers in Build Output are deployed with
+`cf deploy --prebuilt --worker <name>` before the entry Worker. The generated
 `cloudflare.config.ts` remains the source of truth; no auxiliary Wrangler config
 is required.
 

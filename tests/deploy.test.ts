@@ -681,24 +681,12 @@ describe("cf Build Output deployment", () => {
     );
     fs.mkdirSync(auxiliaryDir, { recursive: true });
     writeFile(auxiliaryDir, "worker.config.json", JSON.stringify({ name: "response-store" }));
-    writeFile(
-      path.join(tmpDir, ".cloudflare", "output", "v0"),
-      "config.json",
-      JSON.stringify({ accountId: "example-account" }),
-    );
     const invocations: Parameters<typeof spawn>[] = [];
     const execute = ((...args: Parameters<typeof spawn>) => {
       invocations.push(args);
-      const projectedConfig = path.join(
-        String(args[2]?.cwd),
-        ".cloudflare",
-        "output",
-        "v0",
-        "workers",
-        "default",
-        "worker.config.json",
-      );
-      expect(JSON.parse(fs.readFileSync(projectedConfig, "utf8"))).toEqual({
+      expect(
+        JSON.parse(fs.readFileSync(path.join(auxiliaryDir, "worker.config.json"), "utf8")),
+      ).toEqual({
         name: "response-store",
       });
       return createMockChildProcess();
@@ -712,13 +700,14 @@ describe("cf Build Output deployment", () => {
       fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
       "deploy",
       "--prebuilt",
+      "--worker",
+      "response-store-service-binding",
     ]);
     expect(invocations[0]?.[2]).toMatchObject({
-      env: { CLOUDFLARE_ACCOUNT_ID: "example-account" },
+      cwd: tmpDir,
       shell: false,
       stdio: "inherit",
     });
-    expect(fs.existsSync(String(invocations[0]?.[2]?.cwd))).toBe(false);
   });
 });
 

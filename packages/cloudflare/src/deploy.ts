@@ -935,51 +935,27 @@ export async function runCfAuxiliaryWorkerDeploys(
     .map((entry) => entry.name)
     .sort();
   const { args } = buildCfDeployArgs(options);
-  const settings = path.join(root, ".cloudflare", "output", "v0", "config.json");
-  const accountId = fs.existsSync(settings)
-    ? (JSON.parse(fs.readFileSync(settings, "utf8")) as { accountId?: unknown }).accountId
-    : undefined;
 
   for (const worker of auxiliaryWorkers) {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-cf-auxiliary-"));
-    try {
-      const projectedOutput = path.join(tempRoot, ".cloudflare", "output", "v0");
-      const projectedWorkers = path.join(projectedOutput, "workers");
-      fs.mkdirSync(projectedWorkers, { recursive: true });
-      fs.symlinkSync(
-        path.join(workersDir, worker),
-        path.join(projectedWorkers, "default"),
-        process.platform === "win32" ? "junction" : "dir",
-      );
-      if (fs.existsSync(settings))
-        fs.copyFileSync(settings, path.join(projectedOutput, "config.json"));
-
-      console.log(`\n  Deploying auxiliary Build Output Worker: ${worker}...`);
-      const child = execute(process.execPath, [resolveCfBin(root), ...args], {
-        cwd: tempRoot,
-        env: {
-          ...process.env,
-          ...(typeof accountId === "string" ? { CLOUDFLARE_ACCOUNT_ID: accountId } : {}),
-        },
-        stdio: "inherit",
-        shell: false,
+    console.log(`\n  Deploying auxiliary Build Output Worker: ${worker}...`);
+    const child = execute(process.execPath, [resolveCfBin(root), ...args, "--worker", worker], {
+      cwd: root,
+      stdio: "inherit",
+      shell: false,
+    });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => {
+        if (code === 0) resolve();
+        else {
+          reject(
+            new Error(
+              `cf deploy failed for auxiliary Worker ${worker} with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}.`,
+            ),
+          );
+        }
       });
-      await new Promise<void>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code, signal) => {
-          if (code === 0) resolve();
-          else {
-            reject(
-              new Error(
-                `cf deploy failed for auxiliary Worker ${worker} with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}.`,
-              ),
-            );
-          }
-        });
-      });
-    } finally {
-      fs.rmSync(tempRoot, { recursive: true, force: true });
-    }
+    });
   }
 }
 
