@@ -1648,6 +1648,30 @@ describe("init — dependency installation", () => {
     });
   });
 
+  it("aligns an existing RSC canary when upgrading React without installing", async () => {
+    const canary = "19.3.0-canary-65a56d0e-20241020";
+    setupProject(tmpDir, {
+      router: "app",
+      extraPkg: {
+        dependencies: {
+          react: canary,
+          "react-dom": canary,
+          "react-server-dom-webpack": canary,
+          next: "^15.0.0",
+        },
+      },
+    });
+
+    const { execCalls } = await runInit(tmpDir, { install: false });
+    const pkg = readPkg(tmpDir) as { dependencies: Record<string, string> };
+    expect(execCalls).toEqual([]);
+    expect(pkg.dependencies).toMatchObject({
+      react: "latest",
+      "react-dom": "latest",
+      "react-server-dom-webpack": "latest",
+    });
+  });
+
   it("updates old React dependency entries without installing when install is disabled", async () => {
     setupProject(tmpDir, { router: "app" });
     setupFakeReact(tmpDir, "19.2.3");

@@ -42,7 +42,12 @@ export function getReactUpgradeDeps(
         declared ?? "",
       )?.[1];
       if (version && needsStableUpgrade(version, [19, 2, 6])) {
-        return ["react@latest", "react-dom@latest"];
+        const upgrades = ["react@latest", "react-dom@latest"];
+        const rsdw =
+          pkg.dependencies?.["react-server-dom-webpack"] ??
+          pkg.devDependencies?.["react-server-dom-webpack"];
+        if (rsdw && rsdw !== "latest") upgrades.push("react-server-dom-webpack@latest");
+        return upgrades;
       }
     }
     return [];
