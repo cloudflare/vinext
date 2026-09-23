@@ -1087,7 +1087,11 @@ function deploymentWorkerName(options: DeploymentControlPlaneOptions): string {
 
 function runDeploymentStatus(root: string, options: DeploymentControlPlaneOptions) {
   return options.deploymentTool === "cf"
-    ? runCfDeploymentStatus(root, { name: deploymentWorkerName(options), verbose: options.verbose })
+    ? runCfDeploymentStatus(root, {
+        name: deploymentWorkerName(options),
+        env: options.env,
+        verbose: options.verbose,
+      })
     : runWranglerDeploymentStatus(root, options);
 }
 
@@ -1101,7 +1105,7 @@ function runVersionDeploy(
     ? runCfVersionDeploy(
         root,
         traffic,
-        { name: deploymentWorkerName(options), verbose: options.verbose },
+        { name: deploymentWorkerName(options), env: options.env, verbose: options.verbose },
         phase,
       )
     : runWranglerVersionDeploy(root, traffic, options, phase);
@@ -1585,7 +1589,7 @@ async function deployUploadedVersionWithCdnWarmup(
         const message = error instanceof Error ? error.message : String(error);
         throw new StagedWarmupError(
           `${message} CDN warmup cannot confirm that the uploaded Worker remains staged at 0% traffic; ` +
-            "production Worker triggers/routes remain applied. Inspect `wrangler deployments status` before continuing.",
+            "production Worker triggers/routes remain applied. Inspect the active Worker deployment before continuing.",
           { cause: error },
         );
       }
@@ -1828,7 +1832,7 @@ async function deployWithCacheabilityProbe(
     const message = error instanceof Error ? error.message : String(error);
     throw new StagedWarmupError(
       `${message} The probe staging command completed, but its current deployment state could not be confirmed; ` +
-        "production Worker triggers/routes were not changed. Inspect `wrangler deployments status` and remove the staged probe version if necessary.",
+        "production Worker triggers/routes were not changed. Inspect the active Worker deployment and remove the staged probe version if necessary.",
       { cause: error },
     );
   }
@@ -2169,7 +2173,7 @@ function getStagedVersionCleanupNote(): string {
   return (
     "The uploaded version may remain staged at 0% with the previous version still serving 100% traffic; " +
     "Worker triggers/routes may also have changed because trigger deployment runs before warming. " +
-    "Rerun deploy to promote it or use `wrangler versions deploy` to choose the desired version split."
+    "Rerun deploy to promote it or create a deployment with the desired version split."
   );
 }
 
@@ -2177,7 +2181,7 @@ function withPromotedVersionTriggerNote(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
   return new Error(
     `${message} The uploaded version may already be promoted to 100%, but Worker triggers/routes may not be updated; ` +
-      "rerun deploy or `wrangler triggers deploy` after fixing the trigger error.",
+      "rerun deploy or apply the Worker triggers after fixing the trigger error.",
     {
       cause: error,
     },
@@ -2188,7 +2192,7 @@ function withPromotedVersionWarmupNote(error: unknown): Error {
   const message = error instanceof Error ? error.message : String(error);
   return new Error(
     `${message} The uploaded version is already promoted to 100% and its Worker triggers/routes were updated; ` +
-      "rerun deploy to retry cache warming or roll back with `wrangler versions deploy`.",
+      "rerun deploy to retry cache warming or create a deployment for the previous version.",
     { cause: error },
   );
 }

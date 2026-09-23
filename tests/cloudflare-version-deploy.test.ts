@@ -452,5 +452,18 @@ describe("Cloudflare Wrangler version deployment helpers", () => {
       [bin, "workers", "triggers", "deploy", "--prebuilt"],
       expect.objectContaining({ cwd: root, shell: false }),
     );
+
+    runCfDeploymentStatus(root, { name: "my-worker", env: "staging" }, execute as never);
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      [bin, "workers", "deployments", "list", "--worker", "my-worker", "--mode", "staging"],
+      expect.objectContaining({ cwd: root, shell: false }),
+    );
+    runCfTriggersDeploy(root, { env: "staging" }, execute as never);
+    expect(execute).toHaveBeenCalledWith(
+      process.execPath,
+      [bin, "workers", "triggers", "deploy", "--prebuilt", "--mode", "staging"],
+      expect.objectContaining({ cwd: root, shell: false }),
+    );
   });
 });

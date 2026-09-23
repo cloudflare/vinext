@@ -121,7 +121,12 @@ Cloudflare Vite plugin v2 projects can define the same service-binding setup in
 `cloudflare.config.ts` without a second Wrangler config:
 
 ```ts
-import { bindings, defineConfig, defineWorker, exports } from "@cloudflare/vite-plugin/experimental-config";
+import {
+  bindings,
+  defineConfig,
+  defineWorker,
+  exports,
+} from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
 const responseStore = createWorkersResponseStoreServiceBindingConfig({

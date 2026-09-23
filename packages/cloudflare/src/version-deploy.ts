@@ -359,13 +359,20 @@ export function parseCfDeploymentStatusOutput(output: string): WranglerDeploymen
 
 export function runCfDeploymentStatus(
   root: string,
-  options: { name: string; verbose?: boolean },
+  options: { name: string; env?: string; verbose?: boolean },
   execute: typeof execFileSync = execFileSync,
 ): WranglerDeploymentStatus {
   return parseCfDeploymentStatusOutput(
     runCfCommand(
       root,
-      ["workers", "deployments", "list", "--worker", options.name],
+      [
+        "workers",
+        "deployments",
+        "list",
+        "--worker",
+        options.name,
+        ...(options.env ? ["--mode", validateWranglerEnvName(options.env)] : []),
+      ],
       execute,
       options.verbose,
     ),
@@ -375,7 +382,7 @@ export function runCfDeploymentStatus(
 export function runCfVersionDeploy(
   root: string,
   versionTraffic: readonly WranglerVersionTraffic[],
-  options: { name: string; verbose?: boolean },
+  options: { name: string; env?: string; verbose?: boolean },
   _phase: "stage" | "promote-warmed" | "promote-uploaded" = "promote-uploaded",
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionDeployResult {
@@ -395,6 +402,7 @@ export function runCfVersionDeploy(
       "percentage",
       "--versions",
       JSON.stringify(versions),
+      ...(options.env ? ["--mode", validateWranglerEnvName(options.env)] : []),
     ],
     execute,
     options.verbose,
@@ -404,12 +412,18 @@ export function runCfVersionDeploy(
 
 export function runCfTriggersDeploy(
   root: string,
-  options: { verbose?: boolean },
+  options: { env?: string; verbose?: boolean },
   execute: typeof execFileSync = execFileSync,
 ): WranglerVersionDeployResult {
   const output = runCfCommand(
     root,
-    ["workers", "triggers", "deploy", "--prebuilt"],
+    [
+      "workers",
+      "triggers",
+      "deploy",
+      "--prebuilt",
+      ...(options.env ? ["--mode", validateWranglerEnvName(options.env)] : []),
+    ],
     execute,
     options.verbose,
   );
