@@ -913,9 +913,9 @@ export async function probeStagedWorkerCacheability(options: {
   }
   if (limitFailure) throw limitFailure;
   // Next.js classifies every generateStaticParams result independently. Store
-  // each observed concrete path exactly once, then compact the shared route
-  // prefix. Paired HTML/RSC or HTML/data representations reuse the path's
-  // membership but must pass their own completed-render admission check.
+  // each observed concrete path under one route record, then compact the
+  // shared prefix. Paired RSC gets a separate certificate only after its own
+  // completed probe; other paired variants use final-render admission.
   for (const pattern of patterns.values()) {
     if (pattern.pruned) {
       classified += 1;
