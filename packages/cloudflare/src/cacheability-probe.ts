@@ -400,6 +400,7 @@ export async function probeStagedWorkerCacheability(options: {
   };
   type ConcretePathGroup = {
     deferred: boolean;
+    pairedRscStatic?: boolean;
     pattern: PatternClassification;
     primary: CdnWarmTarget;
     result?: ConcretePathResult;
@@ -731,6 +732,52 @@ export async function probeStagedWorkerCacheability(options: {
     ) {
       group.pattern.results.set(group.resultKey, classification);
     }
+    // The HTML render observes its own RSC tree and Client Component SSR, but
+    // cannot certify the separately requested Flight representation. Probe that
+    // exact artifact only after the HTML artifact itself proved static.
+    const pairedRsc =
+      target.kind === "html" &&
+      result.status === 200 &&
+      classification.state === "static-candidate" &&
+      classification.rendererStatic
+        ? group.targets.find((candidate) => candidate.kind === "rsc-full")
+        : undefined;
+    if (pairedRsc && !resolvedRouteChanged && !resolvedPathnameChanged) {
+      const rscResult = await probeTarget({
+        expectedBuildId: options.expectedResponseBuildId,
+        fetchImpl: options.fetchImpl ?? fetch,
+        getDeadlineAt,
+        headers: options.headers,
+        retries,
+        retryDelayMs,
+        phaseTimeoutMs,
+        secret,
+        target: pairedRsc,
+        targetUrl: options.targetUrl,
+        timeoutMs,
+      });
+      if (rscResult.phaseTimedOut) {
+        phaseTimedOut = true;
+        return "done";
+      }
+      lastProgressAt = Date.now();
+      probed += 1;
+      group.pairedRscStatic =
+        rscResult.version === 1 &&
+        rscResult.kind === result.kind &&
+        rscResult.pattern === result.pattern &&
+        typeof rscResult.routePathname === "string" &&
+        rscResult.routePathname.startsWith("/") &&
+        !rscResult.routePathname.includes("?") &&
+        !rscResult.routePathname.includes("#") &&
+        normalizeCacheabilityRoutePathname(rscResult.routePathname) === group.routePathname &&
+        rscResult.state === "static-candidate" &&
+        rscResult.rendererStatic === true &&
+        rscResult.scope !== "pattern" &&
+        rscResult.terminal !== true &&
+        rscResult.retryable !== true &&
+        rscResult.status === 200;
+    }
     const patternIsDefinitelyDynamic =
       result.state === "dynamic" && result.scope === "pattern" && group.pattern.canPrune;
     if (patternIsDefinitelyDynamic) {
@@ -872,9 +919,9 @@ export async function probeStagedWorkerCacheability(options: {
   }
   if (limitFailure) throw limitFailure;
   // Next.js classifies every generateStaticParams result independently. Store
-  // each observed concrete path exactly once, then compact the shared route
-  // prefix. Paired HTML/RSC or HTML/data representations reuse the path's
-  // membership but must pass their own completed-render admission check.
+  // each observed concrete path under one route record, then compact the
+  // shared prefix. Paired RSC gets a separate certificate only after its own
+  // completed probe; other paired variants use final-render admission.
   for (const pattern of patterns.values()) {
     if (pattern.pruned) {
       classified += 1;
@@ -903,6 +950,7 @@ export async function probeStagedWorkerCacheability(options: {
     }
 
     const rendererStaticTargets = new Map<string, CdnWarmTarget>();
+    const pairedStaticRscPaths = new Set<string>();
     const runtimePathSet = new Set<string>();
     for (const group of pattern.groups) {
       if (group.deferred) {
@@ -918,6 +966,7 @@ export async function probeStagedWorkerCacheability(options: {
           if (!previous || targetPreference(group.primary) < targetPreference(previous)) {
             rendererStaticTargets.set(group.routePathname, group.primary);
           }
+          if (group.pairedRscStatic) pairedStaticRscPaths.add(group.routePathname);
         } else {
           runtimePathSet.add(group.routePathname);
         }
@@ -946,6 +995,9 @@ export async function probeStagedWorkerCacheability(options: {
       const paths = staticPaths[staticTarget.kind] ?? [];
       paths.push(routePathname);
       staticPaths[staticTarget.kind] = paths;
+      if (pairedStaticRscPaths.has(routePathname)) {
+        (staticPaths["rsc-full"] ??= []).push(routePathname);
+      }
     }
     for (const paths of Object.values(staticPaths)) paths?.sort();
     const allObservedPathsStatic =
@@ -971,18 +1023,28 @@ export async function probeStagedWorkerCacheability(options: {
                 pattern: pattern.route.pattern,
                 state: "static-candidate",
               }
-            : result.rendererStatic
+            : result.rendererStatic && pairedStaticRscPaths.has(soleGroup.routePathname)
               ? {
                   kind: pattern.route.kind,
                   pattern: pattern.route.pattern,
                   state: "runtime-check",
-                  staticRepresentation: result.representation,
+                  staticPaths: {
+                    html: [soleGroup.routePathname],
+                    "rsc-full": [soleGroup.routePathname],
+                  },
                 }
-              : {
-                  kind: pattern.route.kind,
-                  pattern: pattern.route.pattern,
-                  state: "runtime-check",
-                }
+              : result.rendererStatic
+                ? {
+                    kind: pattern.route.kind,
+                    pattern: pattern.route.pattern,
+                    state: "runtime-check",
+                    staticRepresentation: result.representation,
+                  }
+                : {
+                    kind: pattern.route.kind,
+                    pattern: pattern.route.pattern,
+                    state: "runtime-check",
+                  }
           : {
               kind: pattern.route.kind,
               pattern: pattern.route.pattern,

@@ -391,6 +391,17 @@ describe("KVCacheHandler", () => {
       expect(kv.delete).toHaveBeenCalledWith("cache:bad-expire");
     });
 
+    it("accepts cache control with revalidate: false", async () => {
+      store.set(
+        "cache:never-revalidate",
+        validEntry(null, { cacheControl: { revalidate: false } }),
+      );
+
+      const result = await handler.get("never-revalidate");
+      expect(result?.cacheControl).toEqual({ revalidate: false });
+      expect(kv.delete).not.toHaveBeenCalled();
+    });
+
     it("rejects entry with unknown value kind", async () => {
       store.set("cache:bad-kind", validEntry({ kind: "UNKNOWN_KIND", data: {} }));
       const result = await handler.get("bad-kind");
@@ -637,6 +648,56 @@ describe("KVCacheHandler", () => {
 
       const hit = await handler.get("stale-round-trip");
       expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: 300, stale: 30 });
+    });
+
+    it("round-trips an indefinitely cached APP_PAGE without serializing Infinity", async () => {
+      await handler.set(
+        "static-app-page",
+        {
+          kind: "APP_PAGE",
+          html: "<div>static</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: Infinity }, revalidate: Infinity },
+      );
+
+      const raw = store.get("cache:static-app-page");
+      expect(raw).toBeTruthy();
+      const stored = JSON.parse(raw!);
+      expect(stored.cacheControl.revalidate).toBe(false);
+      expect(stored.revalidateAt).toBeNull();
+      expect(kv.put.mock.calls.at(-1)?.[2]?.expirationTtl).toBeUndefined();
+
+      const hit = await handler.get("static-app-page");
+      expect(hit?.cacheControl).toEqual({ revalidate: false });
+      expect(hit?.cacheState).toBeUndefined();
+      expect(hit?.value).toMatchObject({ kind: "APP_PAGE", html: "<div>static</div>" });
+    });
+
+    it("round-trips an indefinitely cached APP_ROUTE without serializing Infinity", async () => {
+      await handler.set(
+        "static-route-handler",
+        {
+          kind: "APP_ROUTE",
+          body: new TextEncoder().encode("static handler").buffer,
+          headers: {},
+          status: 200,
+        },
+        { cacheControl: { revalidate: Infinity }, revalidate: Infinity },
+      );
+
+      const raw = store.get("cache:static-route-handler");
+      expect(raw).toBeTruthy();
+      expect(JSON.parse(raw!).cacheControl.revalidate).toBe(false);
+      expect(kv.put.mock.calls.at(-1)?.[2]?.expirationTtl).toBeUndefined();
+      const hit = await handler.get("static-route-handler");
+      expect(hit?.cacheControl).toEqual({ revalidate: false });
+      expect(hit?.value?.kind).toBe("APP_ROUTE");
+      if (hit?.value?.kind !== "APP_ROUTE") throw new Error("Expected APP_ROUTE cache entry");
+      expect(new TextDecoder().decode(hit.value.body)).toBe("static handler");
     });
 
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {

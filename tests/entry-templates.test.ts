@@ -740,6 +740,25 @@ describe("App Router generated manifest construction", () => {
     expect(routeEntry).toContain("loadingTreePositions: [1,2]");
   });
 
+  it("carries possible Client Page classification into the renderer's inner ISR route", () => {
+    const client = { ...minimalAppRoutes[0], pagePath: "/tmp/test/app/client/page.tsx" };
+    const server = { ...minimalAppRoutes[0], pagePath: "/tmp/test/app/server/page.tsx" };
+    const slotOnly = { ...minimalAppRoutes[0], pagePath: null, routePath: null };
+    const manifest = buildAppRscManifestCode({
+      mayBeClientPages: [true, false, true],
+      routes: [client, server, slotOnly],
+    });
+
+    expect(manifest.routeEntries[0]).toContain("mayBeClientPage: true");
+    expect(manifest.routeEntries[1]).toContain("mayBeClientPage: false");
+    expect(manifest.routeEntries[2]).toContain("mayBeClientPage: true");
+    // If metadata is unavailable, the renderer must not assume that a Page
+    // can safely use the shared pathname-only RSC entry.
+    expect(buildAppRscManifestCode({ routes: [client] }).routeEntries[0]).toContain(
+      "mayBeClientPage: true",
+    );
+  });
+
   it("wires Route Handler generateStaticParams into staged path discovery", () => {
     const route = {
       ...minimalAppRoutes[1],
@@ -990,6 +1009,25 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.globalNotFoundImportSpecifier).toBeNull();
   });
 
+  it("retains literal Client Page route config when the RSC import is a client reference", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-client-page-config-"));
+    try {
+      const pagePath = path.join(tmpDir, "page.tsx");
+      fs.writeFileSync(
+        pagePath,
+        '"use client";\nexport const revalidate = 60;\nexport const dynamic = "force-static";\nexport default function Page() {}\n',
+      );
+      const manifest = buildAppRscManifestCode({
+        routes: [{ ...minimalAppRoutes[0], pagePath }],
+      });
+      expect(manifest.imports.join("\n")).toContain(
+        `import(${JSON.stringify(pagePath)}).then((mod) => ({ ...mod, ...{"dynamic":"force-static","revalidate":60} }))`,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("serializes graph-minted ids without leaking the filesystem root", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-rsc-manifest-"));
     const appDir = path.join(tmpDir, "app");
@@ -1162,6 +1200,14 @@ describe("App Router entry templates", () => {
     const dynamicPage = path.join(tmpDir, "dynamic-page.tsx");
     const dynamicLayout = path.join(tmpDir, "dynamic-layout.tsx");
     const dynamicHandler = path.join(tmpDir, "dynamic-route.ts");
+    const forceStaticPage = path.join(tmpDir, "force-static-page.tsx");
+    const nonliteralDynamicPage = path.join(tmpDir, "nonliteral-dynamic-page.tsx");
+    const reexportedDynamicPage = path.join(tmpDir, "reexported-dynamic-page.tsx");
+    const escapedDynamicPage = path.join(tmpDir, "escaped-dynamic-page.tsx");
+    const starExportDynamicPage = path.join(tmpDir, "star-export-dynamic-page.tsx");
+    const starExportConfig = path.join(tmpDir, "cfg.ts");
+    const clientPage = path.join(tmpDir, "client-page.tsx");
+    const reexportedPage = path.join(tmpDir, "reexported-page.tsx");
     fs.writeFileSync(staticPage, "export default function Page() { return null; }");
     fs.writeFileSync(
       dynamicPage,
@@ -1175,10 +1221,65 @@ describe("App Router entry templates", () => {
       dynamicHandler,
       'export const dynamic = "force-dynamic"; export function GET() { return new Response(); }',
     );
+    fs.writeFileSync(
+      forceStaticPage,
+      'export const dynamic = "force-static"; export default function Page() { return null; }',
+    );
+    fs.writeFileSync(clientPage, '"use client"; export default function Page() { return null; }');
+    fs.writeFileSync(reexportedPage, 'export { default } from "./client-page";');
+    fs.writeFileSync(
+      nonliteralDynamicPage,
+      'const mode = "auto"; export const dynamic = mode; export default function Page() { return null; }',
+    );
+    fs.writeFileSync(
+      reexportedDynamicPage,
+      'export { dynamic } from "./dynamic-page"; export default function Page() { return null; }',
+    );
+    fs.writeFileSync(
+      escapedDynamicPage,
+      'const mode = "auto"; export { mode as \\u0064ynamic }; export default function Page() { return null; }',
+    );
+    fs.writeFileSync(
+      starExportDynamicPage,
+      'export/**/ * from "./cfg"; export default function Page() { return null; }',
+    );
+    fs.writeFileSync(starExportConfig, 'export const dynamic = "auto";');
 
     try {
       const code = generateAppRequestRscEntry(tmpDir, [
         { ...minimalAppRoutes[0], pattern: "/static", pagePath: staticPage, layouts: [] },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/force-static",
+          pagePath: forceStaticPage,
+          layouts: [],
+        },
+        { ...minimalAppRoutes[0], pattern: "/client", pagePath: clientPage, layouts: [] },
+        { ...minimalAppRoutes[0], pattern: "/reexport", pagePath: reexportedPage, layouts: [] },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/nonliteral-child",
+          pagePath: nonliteralDynamicPage,
+          layouts: [forceStaticPage],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/reexported-child",
+          pagePath: reexportedDynamicPage,
+          layouts: [forceStaticPage],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/escaped-child",
+          pagePath: escapedDynamicPage,
+          layouts: [forceStaticPage],
+        },
+        {
+          ...minimalAppRoutes[0],
+          pattern: "/star-export-child",
+          pagePath: starExportDynamicPage,
+          layouts: [forceStaticPage],
+        },
         { ...minimalAppRoutes[0], pattern: "/page", pagePath: dynamicPage, layouts: [] },
         {
           ...minimalAppRoutes[0],
@@ -1236,6 +1337,22 @@ describe("App Router entry templates", () => {
         },
         {
           ...minimalAppRoutes[0],
+          pattern: "/sibling-force-static",
+          pagePath: staticPage,
+          layouts: [],
+          siblingIntercepts: [
+            {
+              convention: ".",
+              targetPattern: "/sibling-force-static/photo",
+              sourceMatchPattern: "/sibling-force-static",
+              pagePath: forceStaticPage,
+              layoutPaths: [],
+              params: [],
+            },
+          ],
+        },
+        {
+          ...minimalAppRoutes[0],
           pattern: "/api",
           pagePath: null,
           routePath: dynamicHandler,
@@ -1246,18 +1363,60 @@ describe("App Router entry templates", () => {
       expect(serializedRoutes).toBeDefined();
       const routes = JSON.parse(serializedRoutes!) as Array<{
         forceDynamic: boolean;
+        mayBeClientPage: boolean;
+        queryIndependentConfig: boolean;
+        queryIndependentForceStatic: boolean;
         pattern: string;
       }>;
+
+      expect(
+        Object.fromEntries(routes.map((route) => [route.pattern, route.mayBeClientPage])),
+      ).toMatchObject({
+        "/client": true,
+        "/reexport": true,
+        "/static": false,
+      });
 
       expect(
         Object.fromEntries(routes.map((route) => [route.pattern, route.forceDynamic])),
       ).toEqual({
         "/api": true,
+        "/client": false,
+        "/escaped-child": false,
+        "/force-static": false,
         "/layout": true,
+        "/nonliteral-child": false,
         "/page": true,
+        "/reexport": false,
+        "/reexported-child": false,
+        "/sibling-force-static": false,
         "/sibling-intercept": true,
         "/slot-intercept": true,
+        "/star-export-child": false,
         "/static": false,
+      });
+      expect(
+        Object.fromEntries(routes.map((route) => [route.pattern, route.queryIndependentConfig])),
+      ).toMatchObject({
+        "/force-static": true,
+        "/escaped-child": false,
+        "/nonliteral-child": false,
+        "/reexported-child": false,
+        "/sibling-force-static": false,
+        "/star-export-child": false,
+      });
+      expect(
+        Object.fromEntries(
+          routes.map((route) => [route.pattern, route.queryIndependentForceStatic]),
+        ),
+      ).toMatchObject({
+        "/force-static": true,
+        "/escaped-child": false,
+        "/nonliteral-child": false,
+        "/reexported-child": false,
+        "/sibling-force-static": false,
+        "/star-export-child": false,
+        "/client": false,
       });
     } finally {
       fs.rmSync(tmpDir, { force: true, recursive: true });

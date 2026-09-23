@@ -396,7 +396,9 @@ jobs:
           PLAYWRIGHT_PROJECT: cloudflare-workers
           VINEXT_E2E_CACHE_BACKEND: ${{ matrix.example.cache_backend }}
           VINEXT_E2E_BASE_URL: https://prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}.vinext.workers.dev
-        run: vp exec playwright test tests/e2e/cloudflare-workers/cache-prewarm.spec.ts
+        run: |
+          vp exec playwright install chromium
+          vp exec playwright test tests/e2e/cloudflare-workers/cache-prewarm.spec.ts
 
       - name: Delete cache prewarm E2E Worker
         if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true

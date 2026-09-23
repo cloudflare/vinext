@@ -458,16 +458,25 @@ export class KVCacheHandler implements CacheHandler {
     }
     const tags = [...tagSet];
 
-    // Resolve effective revalidate — data overrides ctx.
+    // Resolve effective revalidate — numeric data values override ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
-    let effectiveRevalidate: number | undefined;
+    let effectiveRevalidate: number | false | undefined;
     let effectiveExpire: number | undefined;
-    effectiveRevalidate = readCacheControlNumberField(ctx, "revalidate");
+    const contextCacheControl = isUnknownRecord(ctx?.cacheControl) ? ctx.cacheControl : undefined;
+    const configuredRevalidate = contextCacheControl?.revalidate ?? ctx?.revalidate;
+    effectiveRevalidate =
+      typeof configuredRevalidate === "number" || configuredRevalidate === false
+        ? configuredRevalidate
+        : undefined;
     effectiveExpire = readCacheControlNumberField(ctx, "expire");
     const effectiveStale = readCacheControlNumberField(ctx, "stale");
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       effectiveRevalidate = data.revalidate;
     }
+    // Infinity is vinext's runtime representation of `revalidate = false`.
+    // Preserve the public CacheHandler contract before crossing JSON, where
+    // Infinity would otherwise become null and poison the stored entry.
+    if (effectiveRevalidate === Infinity) effectiveRevalidate = false;
     if (effectiveRevalidate === 0) return Promise.resolve();
 
     const now = Date.now();
@@ -480,7 +489,7 @@ export class KVCacheHandler implements CacheHandler {
         ? now + effectiveExpire * 1000
         : null;
     const cacheControl: CacheControlMetadata | undefined =
-      typeof effectiveRevalidate === "number"
+      effectiveRevalidate !== undefined
         ? {
             revalidate: effectiveRevalidate,
             ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
@@ -684,7 +693,9 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   }
   if (obj.cacheControl !== undefined) {
     if (!isUnknownRecord(obj.cacheControl)) return null;
-    if (typeof obj.cacheControl.revalidate !== "number") return null;
+    if (obj.cacheControl.revalidate !== false && typeof obj.cacheControl.revalidate !== "number") {
+      return null;
+    }
     if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
       return null;
     }

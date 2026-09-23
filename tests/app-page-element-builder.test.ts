@@ -1083,7 +1083,9 @@ describe("buildPageElements", () => {
     await expect(renderElementEntry(result, "slot:modal:/")).resolves.toContain("memo slot");
   });
 
-  it("records serialized queryless searchParams without marking client pages dynamic", async () => {
+  it("does not infer Client Page dynamic use from serializing an empty searchParams promise", async () => {
+    // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
     const ClientPage = Object.assign(() => null, {
       $$typeof: Symbol.for("react.client.reference"),
     });
@@ -1108,14 +1110,21 @@ describe("buildPageElements", () => {
       },
     });
     const pageElement = (result as Record<string, React.ReactNode>)["page:/client-isr"];
-    if (!React.isValidElement<{ searchParams: Promise<Record<string, unknown>> }>(pageElement)) {
+    if (
+      !React.isValidElement<{ serverProvidedSearchParams: Record<string, unknown> }>(pageElement)
+    ) {
       throw new Error("Expected client page element");
     }
 
-    await pageElement.props.searchParams;
+    // The actual Page's promise is constructed only inside the client boundary.
+    // Neither constructing nor serializing that boundary observes the query.
+    expect(pageElement.props.serverProvidedSearchParams).toEqual({});
+    expect(Object.getPrototypeOf(pageElement.props.serverProvidedSearchParams)).toBe(
+      Object.prototype,
+    );
 
     expect(markDynamicUsageMock).not.toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalledWith("searchParams");
   });
 
   it("attaches route-state slot bindings for active, default, and unmatched slots", async () => {

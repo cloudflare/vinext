@@ -96,6 +96,7 @@ async function renderAppPageCacheArtifactsImpl(
   });
   const rscCapture = teeAppPageRscStreamForCapture(rscStream, options.captureRscData);
   const capturedRscDataRef: { value: Promise<ArrayBuffer> | null } = { value: null };
+  let ssrSearchParamsObserved = false;
   const fontPreloads = options.getFontPreloads();
   const ssrHandler = await options.loadSsrHandler();
   const htmlResult = await ssrHandler.handleSsr(
@@ -114,6 +115,14 @@ async function renderAppPageCacheArtifactsImpl(
       waitForAllReady: options.waitForAllReady,
       isStaticGeneration: true,
       isForceStatic: options.isForceStatic,
+      onSsrSearchParamsAccess:
+        options.isForceStatic === true
+          ? undefined
+          : () => {
+              // Client Pages execute in the separate SSR environment. Fold a
+              // completed prop read into this RSC render's cache proof.
+              ssrSearchParamsObserved = true;
+            },
       onSsrError:
         options.onSsrError && options.isCapturedRscError
           ? createAppPageSsrErrorHandler((error) => {
@@ -160,7 +169,10 @@ async function renderAppPageCacheArtifactsImpl(
     getCollectedFetchTags(),
     options.route.routeSegments,
   );
-  const observationState = consumeAppPageRenderObservationState();
+  const observedState = consumeAppPageRenderObservationState();
+  const observationState = ssrSearchParamsObserved
+    ? { ...observedState, requestApis: [...observedState.requestApis, "searchParams" as const] }
+    : observedState;
   consumeInvalidDynamicUsageError();
   consumeDynamicUsage();
 

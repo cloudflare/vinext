@@ -54,6 +54,8 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   expireSeconds?: number;
   revalidateSeconds: number | null;
+  /** A direct RSC miss must also finish its Client Component SSR query-use observation. */
+  waitForRscSsrVerification?: Promise<boolean> | null;
 };
 
 type FinalizeAppPageHtmlCacheResponseOptions = {
@@ -105,6 +107,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   expireSeconds?: number;
   revalidateSeconds: number | null;
   waitUntil?: (promise: Promise<void>) => void;
+  waitForRscSsrVerification?: Promise<boolean> | null;
 };
 
 function applyPendingDynamicCdnHeaders(
@@ -204,38 +207,43 @@ function finalizeEvaluatedAppPageResponse(
   const finish = (): void => {
     if (completed) return;
     completed = true;
-
-    let outcome: RouteCacheabilityOutcome;
-    if (
-      options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
-      options.consumeDynamicUsage()
-    ) {
-      outcome = {
-        cacheable: false,
-        dynamicUsage: true,
-        reason: "dynamic API used during render",
-      };
-    } else if (
-      response.headers.has("set-cookie") ||
-      hasExplicitNonCacheableResponsePolicy(response.headers)
-    ) {
-      outcome = { cacheable: false, reason: "response explicitly opts out of shared caching" };
-    } else {
-      const cacheControl = resolveAppPageCacheControl({
-        expireSeconds: options.expireSeconds,
-        requestCacheLife: options.getRequestCacheLife?.(),
-        revalidateSeconds: options.revalidateSeconds,
-      });
-      outcome = cacheControl
-        ? {
-            cacheable: true,
-            cacheControl: appPageCacheControlHeader(cacheControl),
-            tags: options.getPageTags(),
-          }
-        : { cacheable: false, reason: "render did not produce a cache policy" };
-    }
-    options.consumeRenderObservationState?.();
-    complete(outcome);
+    void (async () => {
+      if (options.waitForRscSsrVerification && !(await options.waitForRscSsrVerification)) {
+        complete({ cacheable: false, reason: "RSC SSR verification failed" });
+        return;
+      }
+      let outcome: RouteCacheabilityOutcome;
+      if (
+        options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
+        options.consumeDynamicUsage()
+      ) {
+        outcome = {
+          cacheable: false,
+          dynamicUsage: true,
+          reason: "dynamic API used during render",
+        };
+      } else if (
+        response.headers.has("set-cookie") ||
+        hasExplicitNonCacheableResponsePolicy(response.headers)
+      ) {
+        outcome = { cacheable: false, reason: "response explicitly opts out of shared caching" };
+      } else {
+        const cacheControl = resolveAppPageCacheControl({
+          expireSeconds: options.expireSeconds,
+          requestCacheLife: options.getRequestCacheLife?.(),
+          revalidateSeconds: options.revalidateSeconds,
+        });
+        outcome = cacheControl
+          ? {
+              cacheable: true,
+              cacheControl: appPageCacheControlHeader(cacheControl),
+              tags: options.getPageTags(),
+            }
+          : { cacheable: false, reason: "render did not produce a cache policy" };
+      }
+      options.consumeRenderObservationState?.();
+      complete(outcome);
+    })().catch(() => complete({ cacheable: false, reason: "RSC admission did not complete" }));
   };
 
   if (!response.body) {

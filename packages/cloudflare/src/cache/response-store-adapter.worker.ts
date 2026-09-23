@@ -279,16 +279,44 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
 async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
   // The stored loopback request includes transport headers that change on every
   // edge invocation; only stable response-stage selectors belong in the key.
+  // Ordinary App Page artifacts are admitted only after a completed render.
+  // A read of searchParams makes that render private, so the shared lookup can
+  // discard user query values without ever writing query-dependent bytes.
+  // Explicit public policies are different: they can cache dynamic output and
+  // must keep the complete query in their key.
+  let requestUrl = invocation.request.url;
+  let props = invocation.props;
+  if (props && typeof props === "object") {
+    const page = props as Record<string, unknown>;
+    const cacheability = page.cacheability;
+    if (
+      (page.kind === "app-page" ||
+        (page.kind === "app-route-handler" && page.queryIndependentConfig === true)) &&
+      page.forceDynamic !== true &&
+      typeof page.resolvedUrl === "string" &&
+      cacheability &&
+      typeof cacheability === "object" &&
+      Reflect.get(cacheability, "queryIndependentCandidate") === true &&
+      Reflect.get(cacheability, "policyHeaders") === null
+    ) {
+      const url = new URL(requestUrl);
+      url.search = "";
+      requestUrl = url.toString();
+      const resolvedUrl = new URL(page.resolvedUrl, url);
+      resolvedUrl.search = "";
+      props = { ...page, resolvedUrl: resolvedUrl.pathname + resolvedUrl.hash };
+    }
+  }
   const identity = JSON.stringify([
     invocation.request.method,
-    invocation.request.url,
-    invocation.props,
+    requestUrl,
+    props,
     invocation.request.headers,
   ]);
   const digest = new Uint8Array(
     await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity)),
   );
-  const url = new URL(invocation.request.url);
+  const url = new URL(requestUrl);
   url.searchParams.set(
     RESPONSE_STORE_KEY_PARAM,
     `v1.${[...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`,
@@ -393,11 +421,17 @@ const handler = {
       }
 
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
+      const cacheability =
+        props !== null && typeof props === "object" ? Reflect.get(props, "cacheability") : null;
       const canSeedRsc =
         isWarmup &&
         props !== null &&
         typeof props === "object" &&
         Reflect.get(props, "kind") === "app-page" &&
+        Reflect.get(props, "forceDynamic") !== true &&
+        cacheability !== null &&
+        typeof cacheability === "object" &&
+        Reflect.get(cacheability, "policyHeaders") === null &&
         Reflect.get(props, "isRscRequest") === false &&
         Reflect.get(props, "matchKind") === "request" &&
         Reflect.get(props, "interceptionContext") === null &&

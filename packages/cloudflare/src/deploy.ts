@@ -1726,7 +1726,7 @@ async function deployWithCacheabilityProbe(
       }
 
       console.log(
-        `  CDN warmup: probing ${concreteRoutePathCount} concrete route path${concreteRoutePathCount === 1 ? "" : "s"} once across ${routePatternCount} pattern${routePatternCount === 1 ? "" : "s"}; filtering ${targets.length} candidate warm request identit${targets.length === 1 ? "y" : "ies"}...`,
+        `  CDN warmup: probing ${concreteRoutePathCount} concrete route path${concreteRoutePathCount === 1 ? "" : "s"} across ${routePatternCount} pattern${routePatternCount === 1 ? "" : "s"}, then verifying paired RSC artifacts where HTML is static; filtering ${targets.length} candidate warm request identit${targets.length === 1 ? "y" : "ies"}...`,
       );
     } else {
       const fallbackPatternCount = plan.fallbackRoutePatterns?.length ?? 0;

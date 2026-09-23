@@ -164,9 +164,12 @@ export async function readAppRouteHandlerCacheResponse(
           );
           const routeCacheValue = await buildAppRouteCacheValue(response);
           await options.isrSet(routeKey, routeCacheValue, {
-            cacheControl: isrCacheControl(options.revalidateSeconds, {
-              expireSeconds: options.expireSeconds,
-            }),
+            cacheControl: isrCacheControl(
+              options.revalidateSeconds === Infinity ? false : options.revalidateSeconds,
+              {
+                expireSeconds: options.expireSeconds,
+              },
+            ),
             tags: routeTags,
           });
           options.isrDebug?.("route regen complete", routeKey);

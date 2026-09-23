@@ -137,11 +137,13 @@ function writeTwoStageWorkerArtifact(): void {
 function appPageProbeResponse(
   state: "static-candidate" | "probe-failed" = "static-candidate",
   pattern = "/about",
+  routePathname?: string,
 ) {
   return Response.json(
     {
       kind: "app-page",
       pattern,
+      ...(routePathname ? { routePathname } : {}),
       ...(state === "probe-failed" ? { reason: "render classification failed" } : {}),
       ...(state === "static-candidate" ? { rendererStatic: true } : {}),
       state,
@@ -585,7 +587,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
             { headers: { [VINEXT_CDN_BUILD_ID_HEADER]: "app-build-a" } },
           );
         }
-        return appPageProbeResponse("static-candidate", "/:slug");
+        return appPageProbeResponse("static-candidate", "/:slug", pathname);
       }
       if (isReadinessFetch(input)) events.push("readiness");
       else {
@@ -701,6 +703,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       "status-2",
       "readiness",
       "probe:/about",
+      "probe:/about:rsc",
       "probe:/pages-about",
       "probe:/api/data",
       // Probe one representative for every pattern before probing siblings so
@@ -753,7 +756,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           kind: "app-page",
           pattern: "/:slug",
           runtimePaths: ["/dynamic"],
-          staticPaths: { html: ["/about"] },
+          staticPaths: { html: ["/about"], "rsc-full": ["/about"] },
           state: "runtime-check",
         }),
         expect.objectContaining({

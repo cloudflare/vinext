@@ -2245,11 +2245,29 @@ export function useSearchParams(): ReadonlyURLSearchParams {
       // into the static HTML while the browser fills in the real URL values.
       throw new NavigationBailoutToCSRError("useSearchParams()");
     }
+    ctx?.onServerSearchParamsAccess?.();
     markPprFallbackShellDynamicBoundary();
     // During SSR for "use client" components, the navigation context may not be set.
     // getServerSearchParamsSnapshot also covers the Pages Router compat shim.
     return getServerSearchParamsSnapshot();
   }
+  const renderSnapshot = useClientNavigationRenderSnapshot();
+  const searchParams = React.useSyncExternalStore(
+    subscribeToNavigation,
+    getSearchParamsSnapshot,
+    getServerSearchParamsSnapshot,
+  );
+  if (renderSnapshot && (getClientNavigationState()?.navigationSnapshotActiveCount ?? 0) > 0) {
+    return renderSnapshot.searchParams;
+  }
+  return searchParams;
+}
+/* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
+
+/** The Client Page boundary needs the current query without itself counting as a read. */
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
+export function useClientPageSearchParams(): ReadonlyURLSearchParams {
+  if (isServer) return getServerSearchParamsSnapshot();
   const renderSnapshot = useClientNavigationRenderSnapshot();
   const searchParams = React.useSyncExternalStore(
     subscribeToNavigation,

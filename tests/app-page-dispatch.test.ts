@@ -301,6 +301,7 @@ type CreateDispatchOptionsOverrides = {
   isProgressiveActionRender?: DispatchOptions["isProgressiveActionRender"];
   isProduction?: boolean;
   isRscRequest?: boolean;
+  queryIndependentCandidate?: DispatchOptions["queryIndependentCandidate"];
   isrRscKey?: DispatchOptions["isrRscKey"];
   isrGet?: DispatchOptions["isrGet"];
   isrSet?: DispatchOptions["isrSet"];
@@ -386,6 +387,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     isProgressiveActionRender: overrides.isProgressiveActionRender,
     isProduction: overrides.isProduction ?? false,
     isRscRequest: overrides.isRscRequest ?? false,
+    queryIndependentCandidate: overrides.queryIndependentCandidate,
     isrGet,
     isrHtmlKey(pathname: string) {
       return `html:${pathname}`;
@@ -3024,8 +3026,105 @@ describe("app page dispatch", () => {
     );
   });
 
+  it("keeps regenerated Client Page HTML independent of the triggering query", async () => {
+    let scheduledRender: unknown = null;
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "query-neutral Client Page"),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      isProduction: true,
+      isrGet: async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "<html>stale</html>",
+            undefined,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("query-neutral Flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>regenerated</html>"]);
+        },
+      }),
+      queryIndependentCandidate: true,
+      revalidateSeconds: 1,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+      searchParams: new URLSearchParams("q=triggering-query"),
+    });
+
+    const response = await dispatchAppPage(options);
+    await expect(response.text()).resolves.toBe("<html>stale</html>");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") throw new Error("expected stale regeneration");
+    await scheduledRender();
+
+    expect(buildPageElement).toHaveBeenCalledOnce();
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+      queryFromNavigationForClientPage: true,
+    });
+    expect(buildPageElement.mock.calls[0]?.[3].toString()).toBe("");
+  });
+
+  it("rejects stale regeneration when a Client Page starts reading searchParams", async () => {
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet: async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "<html>previous static artifact</html>",
+            undefined,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          // The page was static when seeded, but its Client Page now reads the
+          // prop during SSR. The SSR environment must report this to the
+          // RSC environment before its regenerated proof is persisted.
+          captureOptions?.onSsrSearchParamsAccess?.();
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("new Flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>query-dependent regeneration</html>"]);
+        },
+      }),
+      queryIndependentCandidate: true,
+      revalidateSeconds: 1,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+      searchParams: new URLSearchParams("q=triggering-query"),
+    });
+
+    const response = await dispatchAppPage(options);
+    await expect(response.text()).resolves.toBe("<html>previous static artifact</html>");
+    expect(typeof scheduledRender).toBe("function");
+    if (typeof scheduledRender !== "function") throw new Error("expected stale regeneration");
+    await expect(scheduledRender()).rejects.toThrow(/changed from static to dynamic.*searchParams/);
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   it.each(["page", "metadata"] as const)(
-    "records searchParams access when stale regeneration reads them in %s",
+    "rejects a static-to-dynamic stale regeneration when %s reads searchParams",
     async (reader) => {
       async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
         if (reader !== "page") return React.createElement("main", null, "static body");
@@ -3120,14 +3219,10 @@ describe("app page dispatch", () => {
         throw new Error("expected stale response to schedule regeneration");
       }
 
-      await scheduledRender();
-
-      expect(
-        written.map(
-          (value) =>
-            value.renderObservation?.requestApis.find((api) => api.kind === "searchParams")?.status,
-        ),
-      ).toEqual(["observed", "observed"]);
+      await expect(scheduledRender()).rejects.toThrow(
+        /changed from static to dynamic.*searchParams/,
+      );
+      expect(written).toEqual([]);
     },
   );
 

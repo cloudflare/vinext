@@ -22,6 +22,7 @@ import {
   type LayoutClassificationOptions,
 } from "./app-page-execution.js";
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
+import { getAppPageStaticGenerationErrorMessage } from "./app-static-generation.js";
 import {
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
@@ -36,6 +37,7 @@ import {
   createAppPageRscErrorTracker,
   createAppPageSsrErrorHandler,
   deferUntilStreamConsumed,
+  isAppSsrRenderResult,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
@@ -162,6 +164,13 @@ type RenderAppPageLifecycleOptionsBase = {
   probePageBeforeRender?: boolean;
   omitPendingDynamicCacheState?: boolean;
   isRscRequest: boolean;
+  /** The direct Client Page Flight contains this request's query prop. */
+  skipSharedRscCache?: boolean;
+  /** An unverified static-error Client Page Flight must never enter a response cache. */
+  unverifiedStaticErrorClientRsc?: boolean;
+  /** Response Store observes Client Component query use by SSR-rendering a cold RSC payload. */
+  verifyRscThroughSsr?: boolean;
+  queryIndependentCandidate?: boolean;
   traceOperation?: "prerender" | "render";
   onRenderComplete?: (completion: Promise<void>) => void;
   isrDebug?: AppPageDebugLogger;
@@ -723,11 +732,21 @@ async function renderAppPageLifecycleImpl(
   // cannot hide it from the other.
   let dynamicUsageObserved = false;
   let dynamicUsageFinalized = false;
+  // The SSR environment has a separate request state. Bridge its client-hook
+  // observation directly into this RSC render's final admission decision.
+  let ssrSearchParamsObserved = false;
   const consumeRenderDynamicUsage = (): boolean => {
-    if (!dynamicUsageObserved) dynamicUsageObserved = options.consumeDynamicUsage();
-    return dynamicUsageObserved;
+    if (ssrSearchParamsObserved) dynamicUsageObserved = true;
+    if (!dynamicUsageObserved) {
+      dynamicUsageObserved = options.consumeDynamicUsage();
+    }
+    return dynamicUsageObserved || ssrSearchParamsObserved;
   };
   const finalizeRenderDynamicUsage = (): boolean => {
+    // The Flight stream can finish before its separate SSR validation branch.
+    // Its earlier completion must not freeze a negative observation while a
+    // Client Component is still reading searchParams in SSR.
+    if (ssrSearchParamsObserved) dynamicUsageObserved = true;
     if (!dynamicUsageFinalized) {
       consumeRenderDynamicUsage();
       dynamicUsageFinalized = true;
@@ -803,7 +822,9 @@ async function renderAppPageLifecycleImpl(
   const shouldBypassRscCacheForSkipTransport =
     options.isRscRequest && isSkipTransportEnabled(skipDisposition);
   const shouldBypassRscCache =
-    shouldBypassRscCacheForSkipTransport || options.bypassInterceptionContextCache === true;
+    shouldBypassRscCacheForSkipTransport ||
+    options.bypassInterceptionContextCache === true ||
+    options.unverifiedStaticErrorClientRsc === true;
   const dynamicStaleTimeSeconds =
     options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
@@ -875,8 +896,18 @@ async function renderAppPageLifecycleImpl(
     !options.isDraftMode &&
     !options.isForceDynamic &&
     !shouldBypassRscCache;
+  // An on-demand static RSC render still needs its bytes captured for the
+  // persistent ISR entry, even though its cache life cannot change later.
+  const shouldCaptureIndefiniteRsc =
+    options.isRscRequest &&
+    revalidateSeconds === Infinity &&
+    options.isProgressiveActionRender !== true &&
+    !options.isDraftMode &&
+    !options.isForceDynamic &&
+    !shouldBypassRscCache;
   const shouldCaptureRscForCacheMetadata =
-    (options.isProduction || options.isPrerender === true) && mayResolveCacheLifeAfterHeaders;
+    (options.isProduction || options.isPrerender === true) &&
+    (mayResolveCacheLifeAfterHeaders || shouldCaptureIndefiniteRsc);
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -888,6 +919,54 @@ async function renderAppPageLifecycleImpl(
         }
       },
     });
+  // A direct Flight render does not execute Client Components. Completed-response
+  // admission (and the staged Workers Cache probe) runs the SSR boundary on
+  // a second branch of the same Flight stream, without buffering the outgoing
+  // branch or making another cache request. Never publish if SSR fails.
+  const rscSsrVerification =
+    options.verifyRscThroughSsr && !pprFallbackShellRsc
+      ? (() => {
+          const [foreground, forSsr] = rscStream.tee();
+          rscStream = foreground;
+          return (async () => {
+            const ssrHandler = await options.loadSsrHandler();
+            let ssrFailed = false;
+            const result = await ssrHandler.handleSsr(
+              forSsr,
+              options.getNavigationContext(),
+              createAppPageFontData({
+                getLinks: options.getFontLinks,
+                getPreloads: options.getFontPreloads,
+                getStyles: options.getFontStyles,
+              }),
+              {
+                rootParams: options.rootParams,
+                isForceStatic: options.isForceStatic,
+                queryFromBrowserForSharedHtml: true,
+                fallbackToErrorDocumentOnShellError: false,
+                onSsrSearchParamsAccess: options.isForceStatic
+                  ? undefined
+                  : () => {
+                      if (options.isDynamicError) {
+                        throw new Error(getAppPageStaticGenerationErrorMessage());
+                      }
+                      ssrSearchParamsObserved = true;
+                    },
+                onSsrError() {
+                  ssrFailed = true;
+                },
+              },
+            );
+            await Promise.all([
+              (isAppSsrRenderResult(result) ? result.htmlStream : result).pipeTo(
+                new WritableStream<Uint8Array>(),
+              ),
+              isAppSsrRenderResult(result) ? result.renderComplete : undefined,
+            ]);
+            return !ssrFailed;
+          })().catch(() => false);
+        })()
+      : null;
   const rscCapture = pprFallbackShellRsc
     ? {
         ssrStream: createBufferedRscStream(false),
@@ -940,7 +1019,9 @@ async function renderAppPageLifecycleImpl(
       options.isrDebug?.(
         options.bypassInterceptionContextCache === true
           ? "RSC cache write skipped (unverified interception context)"
-          : "RSC cache write skipped (skip transport payload)",
+          : options.unverifiedStaticErrorClientRsc === true
+            ? "RSC cache write skipped (unverified static-error Client Page)"
+            : "RSC cache write skipped (skip transport payload)",
         options.cleanPathname,
       );
     }
@@ -1037,7 +1118,10 @@ async function renderAppPageLifecycleImpl(
 
     return finalizeAppPageRscCacheResponse(devRscResponse, {
       capturedRscDataPromise:
-        options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
+        options.isProduction && shouldCaptureRscForCacheMetadata && !options.skipSharedRscCache
+          ? capturedRscDataRef.value
+          : null,
+      waitForRscSsrVerification: rscSsrVerification,
       bypassInterceptionContextCache: options.bypassInterceptionContextCache,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,
@@ -1199,6 +1283,20 @@ async function renderAppPageLifecycleImpl(
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
+        queryFromBrowserForSharedHtml:
+          options.queryIndependentCandidate === true && !options.isForceStatic,
+        onSsrSearchParamsAccess:
+          (options.isDynamicError || options.queryIndependentCandidate === true) &&
+          !options.isForceStatic
+            ? () => {
+                if (options.isDynamicError) {
+                  throw new Error(getAppPageStaticGenerationErrorMessage());
+                }
+                // SSR runs in a separate Vite environment. A Client Component
+                // reading the query there must veto the RSC render's shared put.
+                ssrSearchParamsObserved = true;
+              }
+            : undefined,
         onSsrError: createAppPageSsrErrorHandler(onSsrError, rscErrorTracker.isCapturedError),
       });
     },

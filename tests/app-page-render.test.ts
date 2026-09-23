@@ -593,6 +593,29 @@ describe("app page render lifecycle", () => {
     expect(consumeDynamicUsage).toHaveBeenCalledTimes(2);
   });
 
+  it("persists an on-demand force-static RSC response with indefinite revalidation", async () => {
+    // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-static/app-static.test.ts
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isForceStatic: true,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: Infinity,
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("flight-data");
+    expect(common.waitUntilPromises).toHaveLength(1);
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).toHaveBeenCalledWith(
+      "rsc:/posts/post",
+      expect.objectContaining({ kind: "APP_PAGE", rscData: expect.any(ArrayBuffer) }),
+      { cacheControl: { revalidate: Infinity }, tags: ["_N_T_/posts/post"] },
+    );
+  });
+
   it("omits RSC cache state and skips cache writes when stream-time searchParams usage is dynamic", async () => {
     const common = createCommonOptions();
     const streamGate = createDeferred();
@@ -887,6 +910,50 @@ describe("app page render lifecycle", () => {
 
     expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(ssrError, "ssr");
     await expect(response.text()).resolves.toBe("boundary:ssr-decoder");
+  });
+
+  it('rejects Client Page query access under dynamic = "error" even without a shared cache candidate', async () => {
+    // Next.js enforces the segment contract when searchParams is read, not
+    // only when an outer cache adapter intends to share the response.
+    // See: packages/next/src/server/request/search-params.ts
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isDynamicError: true,
+      queryIndependentCandidate: false,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          options?.onSsrSearchParamsAccess?.();
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+    });
+
+    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('dynamic = "error"') }),
+      "ssr",
+    );
+    await expect(response.text()).resolves.toContain('dynamic = "error"');
+  });
+
+  it("keeps an unverified static-error Client Page Flight private without an ISR write", async () => {
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isDynamicError: true,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 60,
+      skipSharedRscCache: true,
+      unverifiedStaticErrorClientRsc: true,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {

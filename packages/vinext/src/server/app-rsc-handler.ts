@@ -44,6 +44,7 @@ import {
   getRequestExecutionContext,
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { pickRootParams, setRootParams, type RootParams } from "vinext/shims/root-params";
 import {
   closeAfterResponse,
@@ -233,6 +234,14 @@ function rewriteCachePathname(sourcePathname: string, resolvedPathname: string):
   return `${sourcePathname}?__vinext_rewrite=${encodeURIComponent(resolvedPathname)}`;
 }
 
+function hasSameUserQuery(originalUrl: string, resolvedUrl: string): boolean {
+  const original = new URL(originalUrl);
+  const resolved = new URL(resolvedUrl, original);
+  stripRscCacheBustingSearchParam(original);
+  stripRscCacheBustingSearchParam(resolved);
+  return original.search === resolved.search;
+}
+
 function requestOptsOutOfWorkerResponseStage(
   request: Request,
   options: Pick<CreateAppRscHandlerOptions<AppRscHandlerRoute>, "draftModeSecret">,
@@ -270,6 +279,9 @@ export type AppRscHandlerRoute = {
   __loadRouteHandler?: unknown;
   canUseCanonicalLoadingShell?: boolean;
   forceDynamic?: boolean;
+  mayBeClientPage?: boolean;
+  queryIndependentConfig?: boolean;
+  queryIndependentForceStatic?: boolean;
   isDynamic: boolean;
   layouts?: readonly unknown[];
   layoutTreePositions?: readonly number[];
@@ -330,6 +342,7 @@ type DispatchMatchedPageOptions<TRoute> = {
   interceptionPathname: string;
   isProgressiveActionRender: boolean;
   isRscRequest: boolean;
+  queryIndependentCandidate?: boolean;
   middlewareContext: AppRscMiddlewareContext;
   mountedSlotsHeader: string | null;
   params: AppPageParams;
@@ -524,6 +537,12 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   ) => AppRscRouteMatch<TRoute> | null;
   matchRoute: (pathname: string) => AppRscRouteMatch<TRoute> | null;
   matchRequestRoute?: (pathname: string) => AppRscRouteMatch<TRoute> | null;
+  /** Build-bound proof for an exact prerendered App Page representation. */
+  queryIndependentAppPage?: (
+    routePattern: string,
+    routePathname: string,
+    representation: "html" | "rsc-full" | "rsc-loading-shell",
+  ) => boolean;
   runMiddleware?: (options: RunAppMiddlewareOptions) => Promise<ApplyAppMiddlewareResult>;
   publicFiles: ReadonlySet<string>;
   prefetchInlining?: PrefetchInliningConfig;
@@ -1157,6 +1176,47 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               );
             }
           }
+          const runtimeAdmission =
+            getCdnCacheAdapter().deferCompletedPageResponseAdmission !== undefined;
+          const ordinaryClientRsc =
+            props.kind === "app-page" &&
+            props.isRscRequest &&
+            props.mayBeClientPage === true &&
+            props.hasParallelSlots === false &&
+            props.renderMode === "navigation" &&
+            props.mountedSlotsHeader === null &&
+            props.interceptionContext === null &&
+            props.interceptionId === null;
+          const clientRscRepresentation = ordinaryClientRsc ? "rsc-full" : null;
+          const certifiedClientRsc =
+            !runtimeAdmission &&
+            props.kind === "app-page" &&
+            clientRscRepresentation !== null &&
+            options.queryIndependentAppPage?.(props.routePattern, props.routePathname, "html") ===
+              true &&
+            options.queryIndependentAppPage?.(
+              props.routePattern,
+              props.routePathname,
+              clientRscRepresentation,
+            ) === true;
+          const candidate =
+            // An authenticated cacheability probe bypasses writes, but must
+            // render with the same query observer as the eventual shared
+            // response. Otherwise an empty-query Client Page can be falsely
+            // certified and fail static-to-dynamic on the live request.
+            (cache === "shared" || responseStageProbeMode === "probe") &&
+            responseStagePolicy === null &&
+            (props.kind === "app-page" || props.kind === "app-route-handler") &&
+            props.forceDynamic !== true &&
+            (props.kind === "app-route-handler"
+              ? props.queryIndependentConfig === true
+              : !props.isRscRequest ||
+                props.mayBeClientPage !== true ||
+                props.queryIndependentForceStatic === true ||
+                ((runtimeAdmission || responseStageProbeMode === "probe") && ordinaryClientRsc) ||
+                certifiedClientRsc) &&
+            // A query-changing rewrite needs its server-owned bootstrap.
+            hasSameUserQuery(stageRequest.url, props.resolvedUrl);
           let response = await dispatchResponseStage(
             dispatchRequest,
             {
@@ -1164,6 +1224,23 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               cacheability: {
                 ...props.cacheability,
                 policyHeaders: responseStagePolicy,
+                ...(candidate ? { queryIndependentCandidate: true } : {}),
+                ...(candidate &&
+                (props.queryIndependentConfig === true ||
+                  certifiedClientRsc ||
+                  (!runtimeAdmission &&
+                    props.kind === "app-page" &&
+                    options.queryIndependentAppPage?.(
+                      props.routePattern,
+                      props.routePathname,
+                      !props.isRscRequest
+                        ? "html"
+                        : props.renderMode === "prefetch-loading-shell"
+                          ? "rsc-loading-shell"
+                          : "rsc-full",
+                    )))
+                  ? { queryIndependent: true }
+                  : {}),
               },
             },
             { cache },
@@ -2289,6 +2366,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         cleanPathname,
         draftModeCookie,
         forceDynamic: route.forceDynamic === true,
+        queryIndependentConfig: route.queryIndependentConfig === true,
         interceptionContext: interceptionContextHeader,
         interceptionId: interceptionIdHeader,
         isRscRequest,
@@ -2338,6 +2416,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         cleanPathname,
         draftModeCookie,
         forceDynamic: route.forceDynamic === true,
+        mayBeClientPage: route.mayBeClientPage === true,
+        hasParallelSlots: Object.keys(route.slots ?? {}).length > 0,
+        queryIndependentConfig: route.queryIndependentConfig === true,
+        queryIndependentForceStatic: route.queryIndependentForceStatic === true,
         interceptionContext: isRscRequest ? interceptionContextHeader : null,
         interceptionId: interceptionIdHeader,
         isRscRequest,
@@ -2368,6 +2450,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         interceptionPathname: cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
         isProgressiveActionRender,
         isRscRequest,
+        // Direct ISR also shares completed pathname artifacts. The HTML
+        // bootstrap must not retain the first requester's query on a hit.
+        queryIndependentCandidate:
+          request.method === "GET" &&
+          !route.forceDynamic &&
+          (!isRscRequest || !route.mayBeClientPage || route.queryIndependentForceStatic === true) &&
+          !isProgressiveActionRender &&
+          hasSameUserQuery(url.toString(), resolvedUrl),
         middlewareContext,
         mountedSlotsHeader,
         params: renderParams,

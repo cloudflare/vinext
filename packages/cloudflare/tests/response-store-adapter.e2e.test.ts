@@ -44,10 +44,16 @@ function htmlValue(html: string, testId: string): string {
   return value;
 }
 
-async function cacheStatus(pathname: string): Promise<{ body: string; status: string | null }> {
+async function cacheStatus(
+  pathname: string,
+): Promise<{ body: string; cacheControl: string | null; status: string | null }> {
   const response = await request(pathname);
   assert.equal(response.status, 200);
-  return { body: await response.text(), status: response.headers.get("x-vinext-cache") };
+  return {
+    body: await response.text(),
+    cacheControl: response.headers.get("cache-control"),
+    status: response.headers.get("x-vinext-cache"),
+  };
 }
 
 async function metadataEntries(): Promise<unknown[][]> {
@@ -119,6 +125,102 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(selfContained, /options:\{locationHint:[`"']weur[`"'],shards:4\}/);
   });
 
+  test("shares query-independent HTML and RSC in the self-contained deployment", async () => {
+    const isolated = new Miniflare({
+      unsafeEphemeralDurableObjects: true,
+      workers: [
+        {
+          bindings: {
+            CF_VERSION_METADATA: {
+              id: crypto.randomUUID(),
+              tag: "test",
+              timestamp: new Date().toISOString(),
+            },
+          },
+          compatibilityDate: "2026-04-08",
+          compatibilityFlags: ["nodejs_compat", "experimental"],
+          durableObjects: {
+            CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+          },
+          modules: await modules(selfContainedAppOutput, "index.js"),
+          name: "app",
+          r2Buckets: { CACHE_BODIES: crypto.randomUUID() },
+          serviceBindings: {
+            ASSETS: async () => new Response(null, { status: 404 }),
+          },
+        },
+      ],
+    } satisfies MiniflareOptions);
+
+    try {
+      const fetch = (pathname: string, headers?: Record<string, string>) =>
+        isolated.dispatchFetch(`https://app.test${pathname}`, { headers });
+      const firstHtml = await fetch("/query-on-demand/self-contained-html?q=first");
+      const firstHtmlBody = await firstHtml.text();
+      const secondHtml = await fetch("/query-on-demand/self-contained-html?q=second");
+      assert.equal(firstHtml.status, 200);
+      assert.equal(firstHtml.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(secondHtml.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await secondHtml.text(), firstHtmlBody);
+      assert.ok(!firstHtmlBody.includes('"q","first"'));
+      assert.ok(firstHtmlBody.includes("searchParamsFromBrowser:true"));
+
+      const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+      const firstRsc = await fetch(
+        "/query-on-demand/self-contained-rsc?q=first&_rsc=first",
+        rscHeaders,
+      );
+      const firstRscBody = await firstRsc.text();
+      const secondRsc = await fetch(
+        "/query-on-demand/self-contained-rsc?q=second&_rsc=second",
+        rscHeaders,
+      );
+      assert.equal(firstRsc.status, 200);
+      assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await secondRsc.text(), firstRscBody);
+      assert.equal(
+        decodeURIComponent(secondRsc.headers.get("x-vinext-rendered-path-and-search") ?? ""),
+        "/query-on-demand/self-contained-rsc?q=second",
+      );
+
+      const unusedClientFirst = await fetch("/query-client-independent?q=first-client");
+      const unusedClientBody = await unusedClientFirst.text();
+      const unusedClientSecond = await fetch("/query-client-independent?q=second-client");
+      assert.equal(unusedClientSecond.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await unusedClientSecond.text(), unusedClientBody);
+      assert.ok(!unusedClientBody.includes("first-client"));
+
+      const readingClientFirst = await fetch("/query-client-dependent?q=first-client");
+      const readingClientBody = await readingClientFirst.text();
+      const readingClientSecond = await fetch("/query-client-dependent?q=second-client");
+      assert.notEqual(readingClientSecond.headers.get("x-vinext-cache"), "HIT");
+      assert.match(readingClientSecond.headers.get("cache-control") ?? "", /no-store/);
+      assert.equal(htmlValue(readingClientBody, "query-client-dependent-value"), "first-client");
+      assert.equal(
+        htmlValue(await readingClientSecond.text(), "query-client-dependent-value"),
+        "second-client",
+      );
+
+      const errorClientFirst = await fetch(
+        "/query-error-client/self-contained?q=first-client&_rsc=first",
+        rscHeaders,
+      );
+      const errorClientFirstBody = await errorClientFirst.text();
+      const errorClientSecond = await fetch(
+        "/query-error-client/self-contained?q=second-client&_rsc=second",
+        rscHeaders,
+      );
+      const errorClientSecondBody = await errorClientSecond.text();
+      assert.equal(errorClientSecond.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(errorClientSecondBody, errorClientFirstBody);
+      assert.ok(!errorClientFirstBody.includes("first-client"));
+      assert.ok(!errorClientSecondBody.includes("first-client"));
+    } finally {
+      await isolated.dispose();
+    }
+  });
+
   test("does not invoke Response Store for a force-dynamic route", async () => {
     let responseStoreRequests = 0;
     const isolated = new Miniflare({
@@ -152,7 +254,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
       const second = await isolated.dispatchFetch("https://app.test/force-dynamic");
       const secondBody = await second.text();
 
-      assert.equal(first.status, 200);
+      assert.equal(first.status, 200, firstBody.slice(0, 500));
       assert.equal(second.status, 200);
       assert.equal(first.headers.get("x-vinext-cache"), "BYPASS");
       assert.equal(second.headers.get("x-vinext-cache"), "BYPASS");
@@ -199,6 +301,85 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.equal(first.headers.get("x-vinext-cache"), "MISS");
       assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
       assert.equal(await hit.text(), firstBody);
+
+      const independent = await inline.dispatchFetch(
+        "https://app.test/query-on-demand/self-contained?q=first",
+      );
+      const independentBody = await independent.text();
+      const otherQuery = await inline.dispatchFetch(
+        "https://app.test/query-on-demand/self-contained?q=second",
+      );
+      assert.equal(independent.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(otherQuery.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await otherQuery.text(), independentBody);
+
+      const dependent = await inline.dispatchFetch("https://app.test/query-dependent?q=first");
+      const dependentBody = await dependent.text();
+      const otherDependent = await inline.dispatchFetch(
+        "https://app.test/query-dependent?q=second",
+      );
+      assert.notEqual(dependent.headers.get("x-vinext-cache"), "HIT");
+      assert.notEqual(otherDependent.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(htmlValue(dependentBody, "query-dependent-value"), "first");
+      assert.equal(htmlValue(await otherDependent.text(), "query-dependent-value"), "second");
+
+      const clientEmpty = await inline.dispatchFetch("https://app.test/query-client-dependent");
+      const clientEmptyBody = await clientEmpty.text();
+      assert.match(clientEmpty.headers.get("cache-control") ?? "", /no-store/);
+      assert.notEqual(clientEmpty.headers.get("x-vinext-cache"), "HIT");
+      const clientQuery = await inline.dispatchFetch(
+        "https://app.test/query-client-dependent?q=second",
+      );
+      assert.notEqual(clientQuery.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(htmlValue(clientEmptyBody, "query-client-dependent-value"), "(empty)");
+      assert.equal(htmlValue(await clientQuery.text(), "query-client-dependent-value"), "second");
+
+      const publicWarmup = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-warmup",
+        { headers: { "user-agent": "vinext-cloudflare-cdn-warm" } },
+      );
+      const publicWarmupBody = await publicWarmup.text();
+      assert.equal(publicWarmup.status, 200, publicWarmupBody.slice(0, 500));
+      assert.equal(publicWarmup.headers.get("x-vinext-cache"), "MISS");
+      const publicHit = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-warmup",
+      );
+      assert.equal(publicHit.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(
+        htmlValue(await publicHit.text(), "query-public-id"),
+        htmlValue(publicWarmupBody, "query-public-id"),
+      );
+      const publicOtherQuery = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-other",
+      );
+      const publicOtherBody = await publicOtherQuery.text();
+      assert.equal(publicOtherQuery.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(htmlValue(publicOtherBody, "query-public-value"), "self-contained-other");
+      assert.notEqual(
+        htmlValue(publicOtherBody, "query-public-id"),
+        htmlValue(publicWarmupBody, "query-public-id"),
+      );
+
+      const publicRscHeaders = { Accept: "text/x-component", RSC: "1" };
+      const firstPublicRsc = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-rsc-first&_rsc=public",
+        { headers: publicRscHeaders },
+      );
+      const firstPublicRscBody = await firstPublicRsc.text();
+      const repeatedPublicRsc = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-rsc-first&_rsc=public",
+        { headers: publicRscHeaders },
+      );
+      assert.equal(repeatedPublicRsc.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(await repeatedPublicRsc.text(), firstPublicRscBody);
+      const otherPublicRsc = await inline.dispatchFetch(
+        "https://app.test/query-public?q=self-contained-rsc-second&_rsc=public",
+        { headers: publicRscHeaders },
+      );
+      const otherPublicRscBody = await otherPublicRsc.text();
+      assert.equal(otherPublicRsc.headers.get("x-vinext-cache"), "MISS");
+      assert.ok(otherPublicRscBody.includes("self-contained-rsc-second"));
+      assert.ok(!otherPublicRscBody.includes("self-contained-rsc-first"));
 
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const stale = await fetch();
@@ -251,7 +432,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
   test("passes adapter sharding into the Response Store", async () => {
     await Promise.all(
       Array.from({ length: 16 }, async (_, index) => {
-        const response = await request(`/cached/local?shard=${index}`);
+        const response = await request(`/query-on-demand/shard-${index}`);
         assert.equal(response.status, 200);
         await response.arrayBuffer();
       }),
@@ -333,6 +514,524 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(await secondRsc.text(), firstBody);
   });
 
+  test("shares only completed query-independent App page artifacts across user queries", async () => {
+    // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    const first = await cacheStatus("/query-independent?q=first");
+    const second = await cacheStatus("/query-independent?q=second");
+    assert.equal(second.status, "HIT");
+    assert.equal(
+      htmlValue(first.body, "query-independent-id"),
+      htmlValue(second.body, "query-independent-id"),
+    );
+
+    const fromEmpty = await cacheStatus("/query-on-demand/a");
+    const fromQuery = await cacheStatus("/query-on-demand/a?q=second");
+    assert.equal(fromQuery.status, "HIT");
+    assert.equal(
+      htmlValue(fromEmpty.body, "query-on-demand-id"),
+      htmlValue(fromQuery.body, "query-on-demand-id"),
+    );
+    const firstQueryFill = await cacheStatus("/query-on-demand/query-first?q=first");
+    const secondQueryHit = await cacheStatus("/query-on-demand/query-first?q=second");
+    assert.equal(secondQueryHit.status, "HIT");
+    assert.equal(secondQueryHit.body, firstQueryFill.body);
+    assert.ok(!secondQueryHit.body.includes('"q","first"'));
+    assert.ok(secondQueryHit.body.includes("searchParamsFromBrowser:true"));
+    const otherPath = await cacheStatus("/query-on-demand/b?q=second");
+    assert.notEqual(
+      htmlValue(fromEmpty.body, "query-on-demand-id"),
+      htmlValue(otherPath.body, "query-on-demand-id"),
+    );
+
+    for (const pathname of [
+      "/query-dependent",
+      "/query-dependent?q=first",
+      "/query-dependent?q=second",
+    ]) {
+      const firstDynamic = await cacheStatus(pathname);
+      const secondDynamic = await cacheStatus(pathname);
+      assert.notEqual(firstDynamic.status, "HIT");
+      assert.notEqual(secondDynamic.status, "HIT");
+      assert.equal(
+        htmlValue(secondDynamic.body, "query-dependent-value"),
+        new URL(pathname, "https://app.test").searchParams.get("q") || "(empty)",
+      );
+      assert.notEqual(
+        htmlValue(firstDynamic.body, "query-dependent-id"),
+        htmlValue(secondDynamic.body, "query-dependent-id"),
+      );
+    }
+
+    // A Client Page's empty-query prop is serialized before its component can
+    // read it. A cached empty-query response must never answer a later query.
+    const clientEmpty = await cacheStatus("/query-client-dependent");
+    const clientWithQuery = await cacheStatus("/query-client-dependent?q=second");
+    assert.match(clientEmpty.cacheControl ?? "", /no-store/);
+    assert.notEqual(clientWithQuery.status, "HIT");
+    assert.equal(htmlValue(clientEmpty.body, "query-client-dependent-value"), "(empty)");
+    assert.equal(htmlValue(clientWithQuery.body, "query-client-dependent-value"), "second");
+    assert.notEqual((await cacheStatus("/query-client-dependent")).status, "HIT");
+
+    // A Server Page may forward an otherwise unread searchParams promise to a
+    // Client Component. React's serialization must count as dynamic usage.
+    const forwardedEmpty = await cacheStatus("/query-prop-to-client");
+    const forwardedQuery = await cacheStatus("/query-prop-to-client?q=second");
+    assert.notEqual(forwardedEmpty.status, "HIT");
+    assert.notEqual(forwardedQuery.status, "HIT");
+    assert.equal(htmlValue(forwardedEmpty.body, "query-prop-to-client-value"), "(empty)");
+    assert.equal(htmlValue(forwardedQuery.body, "query-prop-to-client-value"), "second");
+    assert.notEqual((await cacheStatus("/query-prop-to-client")).status, "HIT");
+
+    // The Server Page may be query-independent while a nested Client
+    // Component reads useSearchParams during SSR. That completed HTML cannot
+    // be admitted under the pathname key.
+    for (const pathname of [
+      "/query-ssr-client/nested",
+      "/query-ssr-client/nested?q=first",
+      "/query-ssr-client/nested?q=second",
+    ]) {
+      const firstNested = await cacheStatus(pathname);
+      const secondNested = await cacheStatus(pathname);
+      assert.notEqual(firstNested.status, "HIT");
+      assert.notEqual(secondNested.status, "HIT", pathname);
+      assert.match(secondNested.cacheControl ?? "", /no-store/);
+      assert.equal(
+        htmlValue(secondNested.body, "query-ssr-client-value"),
+        new URL(pathname, "https://app.test").searchParams.get("q") || "(empty)",
+      );
+      assert.notEqual(
+        htmlValue(firstNested.body, "query-ssr-client-id"),
+        htmlValue(secondNested.body, "query-ssr-client-id"),
+      );
+    }
+
+    const forced = await cacheStatus("/query-force-static?q=ignored");
+    assert.equal(htmlValue(forced.body, "query-force-static-value"), "(empty)");
+    assert.equal((await cacheStatus("/query-force-static?q=different")).status, "HIT");
+    const forceStaticFirst = await cacheStatus("/query-force-static/on-demand?q=first");
+    const forceStaticSecond = await cacheStatus("/query-force-static/on-demand?q=second");
+    assert.equal(forceStaticSecond.status, "HIT");
+    assert.equal(forceStaticSecond.body, forceStaticFirst.body);
+    assert.equal(htmlValue(forceStaticSecond.body, "query-force-static-value"), "(empty)");
+    assert.equal(htmlValue(forceStaticSecond.body, "query-force-static-client-value"), "(empty)");
+    assert.ok(!forceStaticSecond.body.includes('"q","first"'));
+    assert.ok(!forceStaticSecond.body.includes("searchParamsFromBrowser:true"));
+    assert.doesNotMatch(forceStaticSecond.cacheControl ?? "", /no-store/);
+
+    const forceRscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const forceRscFirst = await request("/query-force-static/rsc-on-demand?q=first&_rsc=first", {
+      headers: forceRscHeaders,
+    });
+    const forceRscFirstBody = await forceRscFirst.text();
+    let forceRscSecond = await request("/query-force-static/rsc-on-demand?q=second&_rsc=second", {
+      headers: forceRscHeaders,
+    });
+    for (
+      let attempt = 0;
+      attempt < 40 && forceRscSecond.headers.get("x-vinext-cache") !== "HIT";
+      attempt++
+    ) {
+      await forceRscSecond.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      forceRscSecond = await request("/query-force-static/rsc-on-demand?q=second&_rsc=second", {
+        headers: forceRscHeaders,
+      });
+    }
+    assert.equal(
+      forceRscSecond.headers.get("x-vinext-cache"),
+      "HIT",
+      JSON.stringify(Object.fromEntries(forceRscSecond.headers)),
+    );
+    assert.equal(await forceRscSecond.text(), forceRscFirstBody);
+
+    const forcedClientFirst = await request(
+      "/query-force-static-client/rsc-client?q=first-client&_rsc=first",
+      { headers: forceRscHeaders },
+    );
+    const forcedClientFirstBody = await forcedClientFirst.text();
+    const forcedClientSecond = await request(
+      "/query-force-static-client/rsc-client?q=second-client&_rsc=second",
+      { headers: forceRscHeaders },
+    );
+    assert.equal(forcedClientSecond.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await forcedClientSecond.text(), forcedClientFirstBody);
+    assert.ok(!forcedClientFirstBody.includes("first-client"));
+    assert.ok(!forcedClientFirstBody.includes("second-client"));
+
+    const handlerFirst = await cacheStatus("/api/query-handler-static?q=first");
+    const handlerSecond = await cacheStatus("/api/query-handler-static?q=second");
+    assert.equal(handlerSecond.status, "HIT");
+    assert.equal(handlerSecond.body, handlerFirst.body);
+    assert.equal(JSON.parse(handlerSecond.body).search, "");
+
+    const firstWithQuery = await cacheStatus("/query-independent?reverse=first");
+    const afterQuery = await cacheStatus("/query-independent");
+    assert.equal(firstWithQuery.status, "HIT");
+    assert.equal(afterQuery.status, "HIT");
+
+    const error = await cacheStatus("/query-error?q=ignored");
+    assert.equal((await cacheStatus("/query-error?q=another")).status, "HIT");
+    assert.equal(htmlValue(error.body, "query-error-id").length > 0, true);
+  });
+
+  test("keeps an unused-searchParams Client Page cacheable without leaking its RSC query", async () => {
+    // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    const empty = await cacheStatus("/query-client-independent");
+    let queried = await cacheStatus("/query-client-independent?q=first-client");
+    for (let attempt = 0; attempt < 40 && queried.status !== "HIT"; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      queried = await cacheStatus("/query-client-independent?q=first-client");
+    }
+    const otherQuery = await cacheStatus("/query-client-independent?q=second-client");
+    assert.equal(queried.status, "HIT");
+    assert.equal(otherQuery.status, "HIT");
+    assert.equal(otherQuery.body, queried.body);
+    assert.equal(htmlValue(empty.body, "query-client-independent-value"), "No searchParams used");
+    assert.equal(
+      htmlValue(otherQuery.body, "query-client-independent-value"),
+      "No searchParams used",
+    );
+    assert.ok(!otherQuery.body.includes("first-client"));
+
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const firstRsc = await request("/query-client-independent?q=rsc-first&_rsc=first", {
+      headers: rscHeaders,
+    });
+    const firstRscBody = await firstRsc.text();
+    let repeatedRsc = await request("/query-client-independent?q=rsc-first&_rsc=first", {
+      headers: rscHeaders,
+    });
+    for (
+      let attempt = 0;
+      attempt < 40 && repeatedRsc.headers.get("x-vinext-cache") !== "HIT";
+      attempt++
+    ) {
+      await repeatedRsc.body?.cancel();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      repeatedRsc = await request("/query-client-independent?q=rsc-first&_rsc=first", {
+        headers: rscHeaders,
+      });
+    }
+    assert.equal(repeatedRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await repeatedRsc.text(), firstRscBody);
+    const secondRsc = await request("/query-client-independent?q=rsc-second&_rsc=second", {
+      headers: rscHeaders,
+    });
+    const secondRscBody = await secondRsc.text();
+    assert.equal(firstRsc.status, 200);
+    assert.equal(secondRsc.status, 200);
+    assert.ok(!firstRscBody.includes('E{"digest"'), "first RSC payload contains a render error");
+    assert.ok(!secondRscBody.includes('E{"digest"'), "second RSC payload contains a render error");
+    assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(secondRscBody, firstRscBody);
+    assert.match(secondRsc.headers.get("content-type") ?? "", /^text\/x-component/);
+    assert.ok(!secondRscBody.includes("rsc-first"), secondRscBody.slice(0, 600));
+    assert.ok(!firstRscBody.includes("rsc-second"));
+    assert.equal(
+      decodeURIComponent(secondRsc.headers.get("x-vinext-rendered-path-and-search") ?? ""),
+      "/query-client-independent?q=rsc-second",
+    );
+
+    // A direct RSC miss must SSR-validate the Client Page before admission.
+    // Neither a same-query repeat nor a different query may hit a dynamic Page.
+    const dependentEmpty = await request("/query-client-dependent?_rsc=empty", {
+      headers: rscHeaders,
+    });
+    const dependentQuery = await request("/query-client-dependent?q=rsc-dependent&_rsc=dependent", {
+      headers: rscHeaders,
+    });
+    const dependentRepeat = await request(
+      "/query-client-dependent?q=rsc-dependent&_rsc=dependent",
+      {
+        headers: rscHeaders,
+      },
+    );
+    assert.equal(dependentEmpty.status, 200);
+    assert.equal(dependentQuery.status, 200);
+    assert.notEqual(dependentRepeat.headers.get("x-vinext-cache"), "HIT");
+    assert.notEqual(dependentQuery.headers.get("x-vinext-cache"), "HIT");
+    assert.ok(!(await dependentQuery.text()).includes("rsc-first"));
+    await dependentRepeat.body?.cancel();
+    await dependentEmpty.body?.cancel();
+  });
+
+  test("does not cache direct RSC when a nested Client Component reads useSearchParams", async () => {
+    // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    const headers = { Accept: "text/x-component", RSC: "1" };
+    for (const query of ["", "?q=first", "?q=second", "?q=first"]) {
+      const separator = query ? "&" : "?";
+      const response = await request(`/query-ssr-client/nested${query}${separator}_rsc=nested`, {
+        headers,
+      });
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+      assert.match(response.headers.get("cache-control") ?? "", /private|no-store/);
+      await response.text();
+    }
+  });
+
+  test("keeps the first queried Client Page HTML query-neutral for an empty-query hit", async () => {
+    const first = await cacheStatus("/query-client-independent?q=first-visitor");
+    assert.equal(first.status, "MISS");
+    assert.ok(!first.body.includes("first-visitor"));
+    let empty = await cacheStatus("/query-client-independent");
+    for (let attempt = 0; attempt < 40 && empty.status !== "HIT"; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      empty = await cacheStatus("/query-client-independent");
+    }
+    assert.equal(empty.status, "HIT");
+    assert.equal(empty.body, first.body);
+  });
+
+  test("shares a query-neutral dynamic-error Client Page RSC artifact", async () => {
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const pathname = "/query-error-client/identity";
+    const firstUrl = `${pathname}?q=first-client-query&_rsc=identity`;
+    const secondUrl = `${pathname}?q=second-client-query&_rsc=identity`;
+    const first = await request(firstUrl, { headers: rscHeaders });
+    const firstBody = await first.text();
+    const repeat = await request(firstUrl, { headers: rscHeaders });
+    const repeatBody = await repeat.text();
+    const second = await request(secondUrl, { headers: rscHeaders });
+    const secondBody = await second.text();
+
+    assert.equal(first.status, 200, firstBody.slice(0, 500));
+    assert.equal(repeat.status, 200, repeatBody.slice(0, 500));
+    assert.equal(second.status, 200, secondBody.slice(0, 500));
+    assert.match(first.headers.get("content-type") ?? "", /^text\/x-component/);
+    assert.equal(repeat.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(repeatBody, firstBody);
+    assert.equal(second.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(secondBody, firstBody);
+    assert.ok(!firstBody.includes("first-client-query"), firstBody.slice(0, 600));
+    assert.ok(!secondBody.includes("second-client-query"), secondBody.slice(0, 600));
+    assert.ok(!secondBody.includes("first-client-query"), secondBody.slice(0, 600));
+  });
+
+  test('rejects a dynamic = "error" Client Page that reads searchParams during SSR', async () => {
+    // Ported from Next.js: test/e2e/app-dir/dynamic-data/dynamic-data.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic-data/dynamic-data.test.ts
+    for (const query of ["", "?q=read-in-client-page"]) {
+      const response = await request(`/query-error-client/reads${query}`, {
+        headers: { Accept: "text/html" },
+      });
+      assert.equal(response.status, 500);
+      assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+      await response.text();
+    }
+
+    // Direct Flight streams before Client SSR can finish. Until the RSC/SSR
+    // render lifecycle can select an error status before headers, it must at
+    // least remain private and never publish the invalid response.
+    for (const query of ["", "?q=read-in-client-page"]) {
+      const url = `/query-error-client/reads${query}${query ? "&" : "?"}_rsc`;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await request(url, {
+          headers: { Accept: "text/x-component", RSC: "1" },
+        });
+        assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+        assert.match(response.headers.get("cache-control") ?? "", /private|no-store/);
+        await response.text();
+      }
+    }
+  });
+
+  test("keeps slot-only Client Page RSC payloads partitioned by query", async () => {
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const pathname = "/query-slot-only-client/identity";
+    const first = await request(`${pathname}?q=first-slot-query&_rsc=first`, {
+      headers: rscHeaders,
+    });
+    const firstBody = await first.text();
+    const second = await request(`${pathname}?q=second-slot-query&_rsc=second`, {
+      headers: rscHeaders,
+    });
+    const secondBody = await second.text();
+
+    assert.equal(first.status, 200, firstBody.slice(0, 500));
+    assert.equal(second.status, 200, secondBody.slice(0, 500));
+    assert.ok(firstBody.includes("first-slot-query"));
+    assert.ok(secondBody.includes("second-slot-query"));
+    assert.ok(!secondBody.includes("first-slot-query"));
+  });
+
+  test("does not serialize a parallel Client Page's unused query into shared HTML", async () => {
+    const pathname = "/query-parallel-client/slot";
+    const first = await cacheStatus(`${pathname}?q=parallel-first`);
+    assert.ok(!first.body.includes("parallel-first"));
+    let second = await cacheStatus(`${pathname}?q=parallel-second`);
+    for (let attempt = 0; attempt < 40 && second.status !== "HIT"; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      second = await cacheStatus(`${pathname}?q=parallel-second`);
+    }
+    assert.equal(second.status, "HIT");
+    assert.equal(second.body, first.body);
+    assert.ok(!second.body.includes("parallel-second"));
+  });
+
+  test("keeps explicitly public query-dependent pages partitioned by the full query", async () => {
+    for (const [query, value] of [
+      ["", "(empty)"],
+      ["?q=first", "first"],
+      ["?q=second", "second"],
+    ]) {
+      const first = await cacheStatus(`/query-public${query}`);
+      const second = await cacheStatus(`/query-public${query}`);
+      assert.equal(first.status, "MISS");
+      assert.equal(second.status, "HIT");
+      assert.equal(htmlValue(second.body, "query-public-value"), value);
+      assert.equal(
+        htmlValue(first.body, "query-public-id"),
+        htmlValue(second.body, "query-public-id"),
+      );
+    }
+
+    const warmed = await request("/query-public?q=prewarmed", {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    const warmedBody = await warmed.text();
+    assert.equal(warmed.status, 200, warmedBody.slice(0, 500));
+    assert.equal(warmed.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(htmlValue(warmedBody, "query-public-value"), "prewarmed");
+    const hit = await cacheStatus("/query-public?q=prewarmed");
+    assert.equal(hit.status, "HIT");
+    assert.equal(htmlValue(hit.body, "query-public-id"), htmlValue(warmedBody, "query-public-id"));
+
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    for (const value of ["first-rsc", "second-rsc"]) {
+      const pathname = `/query-public?q=${value}&_rsc=public`;
+      const firstRsc = await request(pathname, { headers: rscHeaders });
+      const firstRscBody = await firstRsc.text();
+      const repeatedRsc = await request(pathname, { headers: rscHeaders });
+      assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
+      assert.equal(repeatedRsc.headers.get("x-vinext-cache"), "HIT");
+      assert.match(repeatedRsc.headers.get("content-type") ?? "", /^text\/x-component/);
+      assert.ok(firstRscBody.includes(value), firstRscBody.slice(0, 600));
+      assert.equal(await repeatedRsc.text(), firstRscBody);
+      if (value === "second-rsc") {
+        assert.ok(!firstRscBody.includes("first-rsc"), firstRscBody.slice(0, 600));
+      }
+    }
+  });
+
+  test("regenerates a shared Client Page without storing the stale request's query", async () => {
+    const pathname = "/query-stale-client";
+    const first = await cacheStatus(`${pathname}?q=first-stale-client`);
+    const firstId = htmlValue(first.body, "query-stale-client-id");
+    assert.ok(first.body.includes("searchParamsFromBrowser:true"));
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await cacheStatus(`${pathname}?q=regenerating-stale-client`);
+    assert.equal(htmlValue(stale.body, "query-stale-client-id"), firstId);
+
+    let fresh = await cacheStatus(`${pathname}?q=after-stale-client`);
+    for (
+      let attempt = 0;
+      attempt < 40 && htmlValue(fresh.body, "query-stale-client-id") === firstId;
+      attempt++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      fresh = await cacheStatus(`${pathname}?q=after-stale-client`);
+    }
+    assert.notEqual(htmlValue(fresh.body, "query-stale-client-id"), firstId);
+    assert.ok(fresh.body.includes("searchParamsFromBrowser:true"));
+    assert.ok(!fresh.body.includes("regenerating-stale-client"));
+  });
+
+  test("regenerates a shared direct RSC artifact without retaining either stale query", async () => {
+    const pathname = "/query-stale-client";
+    const headers = { Accept: "text/x-component", RSC: "1" };
+    const first = await request(`${pathname}?q=seed-rsc&_rsc`, { headers });
+    const firstBody = await first.text();
+    assert.equal(first.status, 200);
+    assert.ok(!firstBody.includes("seed-rsc"));
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await request(`${pathname}?q=regenerating-rsc&_rsc`, { headers });
+    assert.equal(stale.status, 200);
+    assert.ok(!(await stale.text()).includes("regenerating-rsc"));
+
+    let freshBody = firstBody;
+    let freshStatus: string | null = null;
+    let freshPath: string | null = null;
+    for (let attempt = 0; attempt < 100 && freshBody === firstBody; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const fresh = await request(`${pathname}?q=current-rsc&_rsc`, { headers });
+      freshStatus = fresh.headers.get("x-vinext-cache");
+      freshPath = fresh.headers.get("x-vinext-rendered-path-and-search");
+      freshBody = await fresh.text();
+      assert.equal(fresh.status, 200);
+    }
+    assert.notEqual(freshBody, firstBody);
+    assert.equal(freshStatus, "HIT");
+    assert.equal(decodeURIComponent(freshPath ?? ""), `${pathname}?q=current-rsc`);
+    for (const query of ["seed-rsc", "regenerating-rsc", "current-rsc"]) {
+      assert.ok(!freshBody.includes(query), `Flight retained ${query}`);
+    }
+  });
+
+  test("does not publish query-dependent metadata and does not alias rewritten paths", async () => {
+    for (const query of ["", "?q=first", "?q=second"]) {
+      const first = await cacheStatus(`/query-metadata${query}`);
+      const second = await cacheStatus(`/query-metadata${query}`);
+      assert.notEqual(first.status, "HIT");
+      assert.notEqual(second.status, "HIT");
+      assert.match(second.body, new RegExp(`Query metadata: ${query ? query.slice(3) : ""}`));
+    }
+    const source = await cacheStatus("/query-alias/rewrite?q=one");
+    const repeat = await cacheStatus("/query-alias/rewrite?q=two");
+    assert.equal(repeat.status, "HIT");
+    assert.equal(
+      htmlValue(source.body, "query-on-demand-id"),
+      htmlValue(repeat.body, "query-on-demand-id"),
+    );
+    const destination = await cacheStatus("/query-on-demand/rewrite?q=three");
+    assert.equal(destination.status, "MISS");
+
+    // A rewrite that changes the query has a server-owned bootstrap and is
+    // deliberately not eligible for pathname sharing.
+    const fixedFirst = await cacheStatus("/query-alias-fixed/rewrite?q=one");
+    const fixedSecond = await cacheStatus("/query-alias-fixed/rewrite?q=two");
+    assert.notEqual(fixedSecond.status, "HIT");
+    assert.notEqual(
+      htmlValue(fixedFirst.body, "query-on-demand-id"),
+      htmlValue(fixedSecond.body, "query-on-demand-id"),
+    );
+    assert.ok(!fixedFirst.body.includes("searchParamsFromBrowser:true"));
+  });
+
+  test("keeps HTML and RSC separate while sharing each query-independent representation", async () => {
+    const pathname = "/query-on-demand/representations";
+    const html = await cacheStatus(`${pathname}?q=html`);
+    assert.equal(html.status, "MISS");
+
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const firstRsc = await request(`${pathname}?q=first&_rsc=first`, { headers: rscHeaders });
+    const firstBody = await firstRsc.text();
+    assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
+    assert.match(firstRsc.headers.get("content-type") ?? "", /^text\/x-component/);
+
+    const secondRsc = await request(`${pathname}?q=second&_rsc=second`, {
+      headers: rscHeaders,
+    });
+    assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await secondRsc.text(), firstBody);
+    assert.equal(
+      decodeURIComponent(secondRsc.headers.get("x-vinext-rendered-path-and-search") ?? ""),
+      `${pathname}?q=second`,
+    );
+
+    const secondHtml = await cacheStatus(`${pathname}?q=other`);
+    assert.equal(secondHtml.status, "HIT");
+    assert.equal(
+      htmlValue(secondHtml.body, "query-on-demand-id"),
+      htmlValue(html.body, "query-on-demand-id"),
+    );
+  });
+
   test("seeds canonical RSC from one HTML warmup request", async () => {
     const pathname = "/cached/intro";
     const html = await request(pathname, {
@@ -358,7 +1057,9 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(rsc.headers.get("content-type") ?? "", /^text\/x-component/);
     assert.ok((await rsc.arrayBuffer()).byteLength > 0);
 
-    const retryPath = `${pathname}?retry=1`;
+    // A different query on `pathname` now selects the same completed App page
+    // artifact. Use a distinct ISR pathname to exercise a genuinely cold fill.
+    const retryPath = "/cached/intro-retry";
     const storedHtml = await request(retryPath);
     assert.equal(storedHtml.headers.get("x-vinext-cache"), "MISS");
     await storedHtml.arrayBuffer();
@@ -369,7 +1070,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(retriedWarmup.headers.get("x-vinext-cache"), "MISS");
     await retriedWarmup.arrayBuffer();
 
-    const repairedRsc = await request(`${retryPath}&_rsc`, {
+    const repairedRsc = await request(`${retryPath}?_rsc`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     assert.equal(repairedRsc.headers.get("x-vinext-cache"), "HIT");
@@ -431,6 +1132,9 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const second = await request(key);
     assert.equal(second.headers.get("x-vinext-cache"), "HIT");
     assert.equal(await second.text(), body);
+    const otherQuery = await request(`/streaming-cache?key=${crypto.randomUUID()}`);
+    assert.equal(otherQuery.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await otherQuery.text(), body);
   });
 
   test("does not persist credentials or fragment a public entry by them", async () => {

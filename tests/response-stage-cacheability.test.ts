@@ -183,7 +183,7 @@ describe("response-stage cacheability", () => {
     await expect(admitted.text()).resolves.toBe("shell");
   });
 
-  it("completes manifest-certified pages before returning static-to-dynamic failures", async () => {
+  it("ignores build manifests for Response Store and uses the completed runtime outcome", async () => {
     const route = { kind: "app-page" as const, pattern: "/page", state: "static-candidate" };
     const rawManifest = JSON.stringify({
       buildId: "build-a",
@@ -221,9 +221,10 @@ describe("response-stage cacheability", () => {
       },
     );
 
-    expect(deferred).toBe(false);
-    expect(response.status).toBe(500);
-    await expect(response.text()).resolves.toContain("changed from static to dynamic");
+    expect(deferred).toBe(true);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    await expect(response.text()).resolves.toBe("dynamic");
   });
 
   it("runs authenticated probes even when the response transport bypasses caching", async () => {

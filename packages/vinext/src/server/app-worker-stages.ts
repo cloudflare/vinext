@@ -6,7 +6,7 @@ import type {
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 10;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 11;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -40,6 +40,10 @@ export type AppMatchedWorkerResponseStageProps = AppWorkerResponseStageEnvelope 
   canonicalPathname: string;
   cleanPathname: string;
   forceDynamic?: boolean;
+  mayBeClientPage?: boolean;
+  hasParallelSlots?: boolean;
+  queryIndependentConfig?: boolean;
+  queryIndependentForceStatic?: boolean;
   interceptionContext: string | null;
   interceptionId: string | null;
   isRscRequest: boolean;
@@ -216,6 +220,12 @@ export function isAppWorkerResponseStageProps(
     typeof props.cleanPathname === "string" &&
     props.cleanPathname.startsWith("/") &&
     (props.forceDynamic === undefined || typeof props.forceDynamic === "boolean") &&
+    (props.mayBeClientPage === undefined || typeof props.mayBeClientPage === "boolean") &&
+    (props.hasParallelSlots === undefined || typeof props.hasParallelSlots === "boolean") &&
+    (props.queryIndependentConfig === undefined ||
+      typeof props.queryIndependentConfig === "boolean") &&
+    (props.queryIndependentForceStatic === undefined ||
+      typeof props.queryIndependentForceStatic === "boolean") &&
     (props.interceptionContext === null || typeof props.interceptionContext === "string") &&
     (props.interceptionId === null || typeof props.interceptionId === "string") &&
     typeof props.isRscRequest === "boolean" &&
@@ -272,6 +282,9 @@ function isResponseStageCacheability(value: unknown): value is VinextResponseSta
       cacheability.representation === "pages-data" ||
       cacheability.representation === "rsc-full" ||
       cacheability.representation === "rsc-loading-shell") &&
+    (cacheability.queryIndependent === undefined || cacheability.queryIndependent === true) &&
+    (cacheability.queryIndependentCandidate === undefined ||
+      cacheability.queryIndependentCandidate === true) &&
     typeof cacheability.resolvedRoutePathname === "string" &&
     cacheability.resolvedRoutePathname.startsWith("/")
   );

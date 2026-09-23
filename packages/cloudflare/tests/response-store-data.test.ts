@@ -85,6 +85,19 @@ test("only attaches loopback regeneration to replayable requests", async () => {
   expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
 });
 
+test("preserves indefinite cache control for replayable App page entries", async () => {
+  const store = new TestStore();
+  const handler = new WorkersResponseStoreCacheHandler(store);
+
+  await runWithResponseStoreInvocation("static-get", true, () =>
+    handler.set("static", null, { cacheControl: { revalidate: Infinity } }),
+  );
+
+  expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
+  expect(store.options?.revalidator).toEqual({ id: "vinext:data", args: ["static", "static-get"] });
+  expect((await handler.get("static"))?.cacheControl?.revalidate).toBe(false);
+});
+
 test("prefers a cache function invocation over route replay", async () => {
   const store = new TestStore();
   const invocation = {

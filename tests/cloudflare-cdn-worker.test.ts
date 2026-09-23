@@ -172,6 +172,99 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     vi.unstubAllGlobals();
   });
 
+  it("uses a certified App Page pathname key while restoring the current query on a streaming miss", async () => {
+    const requests: Request[] = [];
+    const seen: Array<{ url: string; resolvedUrl: unknown; queryTransport: string | null }> = [];
+    const cache = new Map<string, Response>();
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(
+        request,
+        {
+          kind: "app-page",
+          resolvedUrl: new URL(request.url).pathname + new URL(request.url).search,
+          cacheability: { policyHeaders: null, queryIndependent: true },
+        },
+        { cache: "shared" },
+      ),
+    );
+    stages.response.mockImplementation((request, _env, _ctx, props) => {
+      seen.push({
+        url: request.url,
+        resolvedUrl: props.resolvedUrl,
+        queryTransport: request.headers.get("x-vinext-internal-render-query"),
+      });
+      return new Response("query-independent", {
+        headers: { "Cloudflare-CDN-Cache-Control": "public, max-age=60" },
+      });
+    });
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      async fetch(request: Request) {
+        requests.push(request);
+        const hit = cache.get(request.url);
+        if (hit) return hit.clone();
+        const response = await createEntrypoint(props).fetch(request);
+        cache.set(request.url, response.clone());
+        return response;
+      },
+    }));
+    const context = { exports: { VinextCachedResponse: binding } };
+
+    const first = await worker.fetch(new Request("https://example.com/page?q=first"), {}, context);
+    expect(await first.text()).toBe("query-independent");
+    const hit = await worker.fetch(new Request("https://example.com/page?q=second"), {}, context);
+    expect(await hit.text()).toBe("query-independent");
+    expect(requests[0]!.url).toBe(requests[1]!.url);
+    expect(seen).toEqual([
+      {
+        url: "https://example.com/page?q=first",
+        resolvedUrl: "/page?q=first",
+        queryTransport: null,
+      },
+    ]);
+
+    const untrusted = await worker.fetch(
+      new Request("https://example.com/page?q=third", {
+        headers: { "x-vinext-internal-render-query": '["?q=forged","?q=forged"]' },
+      }),
+      {},
+      context,
+    );
+    await untrusted.text();
+    expect(requests[2]!.url).toBe(requests[0]!.url);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("keeps unproven App pages and oversized queries on their full-query keys", async () => {
+    const requests: Request[] = [];
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(
+        request,
+        {
+          kind: "app-page",
+          resolvedUrl: new URL(request.url).pathname + new URL(request.url).search,
+          cacheability: { policyHeaders: null, queryIndependent: request.url.includes("large=") },
+        },
+        { cache: "shared" },
+      ),
+    );
+    const binding = vi.fn(() => ({
+      fetch(request: Request) {
+        requests.push(request);
+        return new Response("ok");
+      },
+    }));
+    const context = { exports: { VinextCachedResponse: binding } };
+    for (const url of [
+      "https://example.com/page?q=first",
+      "https://example.com/page?q=second",
+      `https://example.com/page?large=${"x".repeat(9000)}`,
+    ]) {
+      await worker.fetch(new Request(url), {}, context);
+    }
+    expect(requests[0]!.url).not.toBe(requests[1]!.url);
+    expect(new URL(requests[2]!.url).searchParams.get("large")).toBe("x".repeat(9000));
+  });
+
   it("exports the cached stage as a named WorkerEntrypoint class", () => {
     expect(typeof VinextCachedResponse).toBe("function");
     expect(typeof VinextCachedResponse.prototype.fetch).toBe("function");

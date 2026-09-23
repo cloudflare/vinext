@@ -328,7 +328,13 @@ function buildHeadInjectionHtml(
 ): string {
   const navPayload = {
     pathname: navContext.pathname,
-    searchParams: [...navContext.searchParams.entries()],
+    // A pathname-shared artifact must not embed the first requester's query.
+    // force-static keeps searchParams empty on the client too, while ordinary
+    // static pages recover their query from the browser after hydration.
+    searchParams:
+      searchParamsFromBrowser || navContext.isForceStatic
+        ? []
+        : [...navContext.searchParams.entries()],
   };
   const rscMetadataScript = createInlineScriptTag(
     createNavigationRuntimeRscMetadataScript(
@@ -411,6 +417,8 @@ export async function handleSsr(
     isStaticGeneration?: boolean;
     /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
     isForceStatic?: boolean;
+    queryFromBrowserForSharedHtml?: boolean;
+    onSsrSearchParamsAccess?: () => void;
     fallbackToErrorDocumentOnShellError?: boolean;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
@@ -422,6 +430,7 @@ export async function handleSsr(
       ...requireNavigationContext(navContext),
       isStaticGeneration: options?.isStaticGeneration,
       isForceStatic: options?.isForceStatic,
+      onServerSearchParamsAccess: options?.onSsrSearchParamsAccess,
     };
 
     await clientReferencePreloader.preload();
@@ -733,7 +742,9 @@ export async function handleSsr(
             insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,
             fontHTML,
             options?.dynamicStaleTimeSeconds,
-            options?.isStaticGeneration === true ? options.isForceStatic !== true : undefined,
+            options?.isStaticGeneration === true
+              ? options.isForceStatic !== true
+              : options?.queryFromBrowserForSharedHtml === true || undefined,
             options?.scriptNonce,
           );
         };

@@ -186,12 +186,14 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
     ...(staticPaths ? { staticPaths } : {}),
   };
 
-  const observedPaths = new Set<string>();
-  for (const tokens of [runtimePaths, ...Object.values(staticPaths ?? {})]) {
+  // The same pathname may have independently certified HTML and RSC artifacts.
+  // A runtime path must still never overlap any certified static artifact.
+  const runtimePathSet = new Set(
+    (runtimePaths ?? []).map((token) => expandPathToken(pathPrefix, token)!),
+  );
+  for (const tokens of Object.values(staticPaths ?? {})) {
     for (const token of tokens ?? []) {
-      const pathname = expandPathToken(pathPrefix, token)!;
-      if (observedPaths.has(pathname)) return null;
-      observedPaths.add(pathname);
+      if (runtimePathSet.has(expandPathToken(pathPrefix, token)!)) return null;
     }
   }
   return key === cacheabilityManifestRouteKey(parsed.kind, parsed.pattern) ? parsed : null;
@@ -324,6 +326,20 @@ export function cacheabilityRoutePathname(
   );
 }
 
+function includesSortedPath(paths: readonly string[] | undefined, token: string): boolean {
+  if (!paths) return false;
+  let low = 0;
+  let high = paths.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const candidate = paths[middle];
+    if (candidate === token) return true;
+    if (candidate < token) low = middle + 1;
+    else high = middle - 1;
+  }
+  return false;
+}
+
 export function cacheabilityManifestRouteState(
   route: CacheabilityManifestRoute,
   routePathname: string,
@@ -342,19 +358,8 @@ export function cacheabilityManifestRouteState(
     }
     pathToken = pathname.slice(route.pathPrefix.length);
   }
-  const includesPath = (paths: readonly string[] | undefined): boolean => {
-    if (!paths) return false;
-    let low = 0;
-    let high = paths.length - 1;
-    while (low <= high) {
-      const middle = (low + high) >>> 1;
-      const candidate = paths[middle];
-      if (candidate === pathToken) return true;
-      if (candidate < pathToken) low = middle + 1;
-      else high = middle - 1;
-    }
-    return false;
-  };
+  const includesPath = (paths: readonly string[] | undefined): boolean =>
+    includesSortedPath(paths, pathToken);
 
   if (representation && includesPath(route.staticPaths?.[representation])) {
     return "static-candidate";
@@ -376,6 +381,32 @@ export function cacheabilityManifestRouteState(
   }
   if (route.allowUnknown === true) return route.unknownState ?? route.state;
   return null;
+}
+
+/** Only an exact, completed static artifact certifies a query-independent Worker lookup.
+ * A route-wide static-candidate or unknown fallback may reflect one queryless
+ * probe and cannot authorize a pathname key for a different query.
+ */
+export function isQueryIndependentManifestArtifact(
+  route: CacheabilityManifestRoute,
+  routePathname: string,
+  representation: CacheabilityRepresentation,
+): boolean {
+  if (route.kind !== "app-page") return false;
+  const pathname = normalizeCacheabilityRoutePathname(routePathname);
+  if (
+    route.staticRepresentation === representation &&
+    !/(^|\/):/.test(route.pattern) &&
+    normalizeCacheabilityRoutePathname(route.pattern) === pathname
+  ) {
+    return true;
+  }
+  const paths = route.staticPaths?.[representation];
+  if (!paths) return false;
+  const token = route.pathPrefix ? pathname.slice(route.pathPrefix.length) : pathname;
+  return (
+    (!route.pathPrefix || pathname.startsWith(route.pathPrefix)) && includesSortedPath(paths, token)
+  );
 }
 
 export function findCacheabilityManifestRoute(

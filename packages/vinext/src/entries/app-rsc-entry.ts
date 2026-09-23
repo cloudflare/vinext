@@ -9,6 +9,7 @@
  */
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { parseSync } from "vite";
 import { buildAppRscManifestCode } from "./app-rsc-manifest.js";
 import { resolveEntryPath } from "./runtime-entry-module.js";
 import { toSlash } from "pathslash";
@@ -32,6 +33,7 @@ import { ACTION_OWNER_MANIFEST_ID } from "../plugins/action-owner-manifest.js";
 
 const DEFAULT_EXPIRE_TIME = 31_536_000;
 const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
+const UNKNOWN_DYNAMIC_CONFIG = Symbol("unknown route dynamic config");
 
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
@@ -124,6 +126,10 @@ const appRequestStageContextPath = resolveEntryPath(
 );
 const appRequestStageDispatchPath = resolveEntryPath(
   "../server/app-request-stage-dispatch.js",
+  import.meta.url,
+);
+const cacheabilityManifestPath = resolveEntryPath(
+  "../server/cacheability-manifest.js",
   import.meta.url,
 );
 const appRouteModuleLoaderPath = resolveEntryPath(
@@ -239,97 +245,212 @@ type AppRouterConfig = {
 
 function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   const sourceCache = new Map<string, string | null>();
-  const forcesDynamic = (filePath: string | null | undefined): boolean => {
-    if (!filePath) return false;
-    let source = sourceCache.get(filePath);
-    if (source === undefined) {
+  const readSource = (filePath: string): string | null => {
+    if (!sourceCache.has(filePath)) {
       try {
-        source = fs.readFileSync(filePath, "utf8");
+        sourceCache.set(filePath, fs.readFileSync(filePath, "utf8"));
       } catch {
-        source = null;
+        sourceCache.set(filePath, null);
       }
-      sourceCache.set(filePath, source);
     }
-    return source !== null && extractExportConstString(source, "dynamic") === "force-dynamic";
+    return sourceCache.get(filePath) ?? null;
+  };
+  const dynamicConfig = (
+    filePath: string | null | undefined,
+  ): string | null | typeof UNKNOWN_DYNAMIC_CONFIG => {
+    if (!filePath) return null;
+    const source = readSource(filePath);
+    if (source === null) return UNKNOWN_DYNAMIC_CONFIG;
+    const literal = extractExportConstString(source, "dynamic");
+    if (literal !== null) return literal;
+    // Absence of a dynamic export must be proven structurally: comments and
+    // escapes can hide valid exports from a text search. Treat nonliteral
+    // values, re-exports, and parse failures as unknown rather than inheriting
+    // a parent's static contract under a shared cache key.
+    try {
+      const result = parseSync(filePath, source, {
+        astType: "ts",
+        lang: "tsx",
+        sourceType: "module",
+      });
+      if (result.errors.some((error) => error.severity === "Error")) {
+        return UNKNOWN_DYNAMIC_CONFIG;
+      }
+      for (const node of result.program.body) {
+        if (node.type === "ExportAllDeclaration") return UNKNOWN_DYNAMIC_CONFIG;
+        if (node.type !== "ExportNamedDeclaration" || node.exportKind === "type") continue;
+        if (
+          node.specifiers.some(
+            (specifier) =>
+              (specifier.exported.type === "Identifier"
+                ? specifier.exported.name
+                : specifier.exported.value) === "dynamic",
+          )
+        ) {
+          return UNKNOWN_DYNAMIC_CONFIG;
+        }
+        if (
+          node.declaration?.type === "VariableDeclaration" &&
+          node.declaration.declarations.some(
+            (declaration) =>
+              declaration.id.type !== "Identifier" || declaration.id.name === "dynamic",
+          )
+        ) {
+          return UNKNOWN_DYNAMIC_CONFIG;
+        }
+        if (
+          (node.declaration?.type === "FunctionDeclaration" ||
+            node.declaration?.type === "ClassDeclaration") &&
+          node.declaration.id?.name === "dynamic"
+        ) {
+          return UNKNOWN_DYNAMIC_CONFIG;
+        }
+      }
+      return null;
+    } catch {
+      return UNKNOWN_DYNAMIC_CONFIG;
+    }
   };
 
-  return routes.map((route) => ({
-    canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
-    forceDynamic: route.routePath
-      ? forcesDynamic(route.routePath)
-      : [
-          ...route.layouts,
-          route.pagePath,
-          ...route.parallelSlots.flatMap((slot) => [
-            slot.layoutPath,
-            ...(slot.configLayoutPaths ?? []),
-            slot.pagePath ?? slot.defaultPath,
-            ...slot.interceptingRoutes.flatMap((intercept) => [
+  // A Client Page's searchParams promise is serialized by React before the
+  // component runs. An empty-query render cannot prove that the client won't
+  // read the promise later. Only a directly declared Server Page is eligible
+  // for cross-query reuse; re-exports and unparseable modules fail closed.
+  const mayBeClientPage = (filePath: string | null | undefined): boolean => {
+    if (!filePath) return false;
+    const source = readSource(filePath);
+    if (source === null || source.includes('"use client"') || source.includes("'use client'")) {
+      return true;
+    }
+    try {
+      const result = parseSync(filePath, source, {
+        astType: "ts",
+        lang: "tsx",
+        sourceType: "module",
+      });
+      return (
+        result.errors.some((error) => error.severity === "Error") ||
+        !result.program.body.some(
+          (node) =>
+            node.type === "ExportDefaultDeclaration" &&
+            node.declaration.type === "FunctionDeclaration",
+        )
+      );
+    } catch {
+      return true;
+    }
+  };
+
+  return routes.map((route) => {
+    const parallelSlots = route.parallelSlots ?? [];
+    const siblingIntercepts = route.siblingIntercepts ?? [];
+    const ownConfigs = (
+      route.routePath ? [route.routePath] : [...route.layouts, route.pagePath]
+    ).map(dynamicConfig);
+    const configs = (
+      route.routePath
+        ? [route.routePath]
+        : [
+            ...route.layouts,
+            route.pagePath,
+            ...parallelSlots.flatMap((slot) => [
+              slot.layoutPath,
+              ...(slot.configLayoutPaths ?? []),
+              slot.pagePath ?? slot.defaultPath,
+              ...slot.interceptingRoutes.flatMap((intercept) => [
+                ...intercept.layoutPaths,
+                intercept.pagePath,
+              ]),
+            ]),
+            ...siblingIntercepts.flatMap((intercept) => [
               ...intercept.layoutPaths,
               intercept.pagePath,
             ]),
+          ]
+    ).map(dynamicConfig);
+    return {
+      canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
+      forceDynamic: configs.includes("force-dynamic"),
+      mayBeClientPage:
+        !route.routePath &&
+        [
+          route.pagePath,
+          ...parallelSlots.flatMap((slot) => [
+            slot.pagePath,
+            slot.defaultPath,
+            ...slot.interceptingRoutes.map((intercept) => intercept.pagePath),
           ]),
-          ...route.siblingIntercepts.flatMap((intercept) => [
-            ...intercept.layoutPaths,
-            intercept.pagePath,
-          ]),
-        ].some(forcesDynamic),
-    ids: route.ids ?? null,
-    pattern: route.pattern,
-    patternParts: route.patternParts,
-    isDynamic: route.isDynamic,
-    params: route.params,
-    rootParamNames: route.rootParamNames ?? [],
-    page: route.pagePath ? true : null,
-    routeHandler: route.routePath ? true : null,
-    routeSegments: route.routeSegments,
-    layouts: [],
-    layoutTreePositions: [],
-    slots: Object.fromEntries(
-      route.parallelSlots.map((slot) => [
-        slot.key,
-        {
-          id: slot.id ?? null,
-          name: slot.name,
-          intercepts: slot.interceptingRoutes.map((intercept) => ({
-            id: intercept.id ?? null,
-            targetPattern: intercept.targetPattern,
-            sourceMatchPattern: intercept.sourceMatchPattern,
-            sourcePageSegments: intercept.sourcePageSegments,
-            interceptLayouts: [],
-            interceptLayoutSegments: intercept.layoutSegments ?? [],
-            interceptBranchSegments: intercept.branchSegments ?? [],
-            interceptLoadings: [],
-            interceptLoadingTreePositions: intercept.loadingTreePositions ?? [],
-            interceptNotFoundBranchSegments:
-              intercept.notFoundBranchSegments ?? intercept.branchSegments ?? [],
-            page: null,
-            notFound: null,
-            notFoundTreePosition: intercept.notFoundTreePosition ?? null,
-            params: intercept.params,
-          })),
-        },
-      ]),
-    ),
-    siblingIntercepts: route.siblingIntercepts.map((intercept) => ({
-      id: intercept.id ?? null,
-      targetPattern: intercept.targetPattern,
-      sourceMatchPattern: intercept.sourceMatchPattern,
-      sourcePageSegments: intercept.sourcePageSegments,
-      slotId: intercept.slotId ?? null,
-      interceptLayouts: [],
-      interceptLayoutSegments: intercept.layoutSegments ?? [],
-      interceptBranchSegments: intercept.branchSegments ?? [],
-      interceptLoadings: [],
-      interceptLoadingTreePositions: intercept.loadingTreePositions ?? [],
-      interceptNotFoundBranchSegments:
-        intercept.notFoundBranchSegments ?? intercept.branchSegments ?? [],
-      page: null,
-      notFound: null,
-      notFoundTreePosition: intercept.notFoundTreePosition ?? null,
-      params: intercept.params,
-    })),
-  }));
+          ...siblingIntercepts.map((intercept) => intercept.pagePath),
+        ].some(mayBeClientPage),
+      // Only a literal static/error segment contract is a pre-render guarantee
+      // for paths that were not prerendered. An ordinary successful probe is not.
+      queryIndependentConfig:
+        ownConfigs.some((config) => config === "force-static" || config === "error") &&
+        configs.every(
+          (config) => config === null || config === "force-static" || config === "error",
+        ),
+      // Unlike `error`, force-static substitutes empty searchParams before a
+      // Client Page's props are serialized into the direct RSC payload.
+      queryIndependentForceStatic:
+        ownConfigs.includes("force-static") &&
+        configs.every((config) => config === null || config === "force-static"),
+      ids: route.ids ?? null,
+      pattern: route.pattern,
+      patternParts: route.patternParts,
+      isDynamic: route.isDynamic,
+      params: route.params,
+      rootParamNames: route.rootParamNames ?? [],
+      page: route.pagePath ? true : null,
+      routeHandler: route.routePath ? true : null,
+      routeSegments: route.routeSegments,
+      layouts: [],
+      layoutTreePositions: [],
+      slots: Object.fromEntries(
+        parallelSlots.map((slot) => [
+          slot.key,
+          {
+            id: slot.id ?? null,
+            name: slot.name,
+            intercepts: slot.interceptingRoutes.map((intercept) => ({
+              id: intercept.id ?? null,
+              targetPattern: intercept.targetPattern,
+              sourceMatchPattern: intercept.sourceMatchPattern,
+              sourcePageSegments: intercept.sourcePageSegments,
+              interceptLayouts: [],
+              interceptLayoutSegments: intercept.layoutSegments ?? [],
+              interceptBranchSegments: intercept.branchSegments ?? [],
+              interceptLoadings: [],
+              interceptLoadingTreePositions: intercept.loadingTreePositions ?? [],
+              interceptNotFoundBranchSegments:
+                intercept.notFoundBranchSegments ?? intercept.branchSegments ?? [],
+              page: null,
+              notFound: null,
+              notFoundTreePosition: intercept.notFoundTreePosition ?? null,
+              params: intercept.params,
+            })),
+          },
+        ]),
+      ),
+      siblingIntercepts: siblingIntercepts.map((intercept) => ({
+        id: intercept.id ?? null,
+        targetPattern: intercept.targetPattern,
+        sourceMatchPattern: intercept.sourceMatchPattern,
+        sourcePageSegments: intercept.sourcePageSegments,
+        slotId: intercept.slotId ?? null,
+        interceptLayouts: [],
+        interceptLayoutSegments: intercept.layoutSegments ?? [],
+        interceptBranchSegments: intercept.branchSegments ?? [],
+        interceptLoadings: [],
+        interceptLoadingTreePositions: intercept.loadingTreePositions ?? [],
+        interceptNotFoundBranchSegments:
+          intercept.notFoundBranchSegments ?? intercept.branchSegments ?? [],
+        page: null,
+        notFound: null,
+        notFoundTreePosition: intercept.notFoundTreePosition ?? null,
+        params: intercept.params,
+      })),
+    };
+  });
 }
 
 /** Generate the module-free App request stage used by multi-stage Worker outputs. */
@@ -363,6 +484,8 @@ import ${JSON.stringify(serverGlobalsPath)};
 import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler";
 import { createAppRscRouteMatcher as __createAppRscRouteMatcher } from ${JSON.stringify(appRscRouteMatchingPath)};
 import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stringify(appRequestStageDispatchPath)};
+import __rawCacheabilityManifest from "virtual:vinext-cacheability-manifest";
+import { parseCacheabilityManifest as __parseCacheabilityManifest, findCacheabilityManifestRoute as __findCacheabilityManifestRoute, isQueryIndependentManifestArtifact as __isQueryIndependentManifestArtifact } from ${JSON.stringify(cacheabilityManifestPath)};
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 import { clearAppRequestStageContext as __clearRequestContext, setAppRequestStageNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestStageContextPath)};
 import { matchRoutePattern as __matchRoutePattern } from ${JSON.stringify(routePatternPath)};
@@ -428,6 +551,7 @@ export const __imageConfig = ${JSON.stringify({
 const __routes = ${JSON.stringify(requestRoutes)};
 const __routeMatcher = __createAppRscRouteMatcher(__routes);
 const __metadataRouteMatchers = ${JSON.stringify(metadataRouteMatchers)};
+const __cacheabilityManifest = __parseCacheabilityManifest(__rawCacheabilityManifest, process.env.__VINEXT_BUILD_ID);
 
 function matchRoute(pathname) { return __routeMatcher.matchRoute(pathname); }
 function matchRequestRoute(pathname) { return __routeMatcher.matchRequestRoute(pathname); }
@@ -479,6 +603,11 @@ const __requestHandler = createAppRscRequestHandler({
   isMetadataRoute: __isMetadataPath,
   isDev: process.env.NODE_ENV !== "production",
   hasInterceptionId,
+  queryIndependentAppPage(routePattern, routePathname, representation) {
+    if (!__cacheabilityManifest) return false;
+    const route = __findCacheabilityManifestRoute(__cacheabilityManifest, "app-page", routePattern);
+    return route !== null && __isQueryIndependentManifestArtifact(route, routePathname, representation);
+  },
   matchRoute,
   matchRequestRoute,
   matchInterceptRoute(pathname, sourcePathname, interceptionId) {
@@ -637,6 +766,9 @@ export function generateRscEntry(
   };
   const manifestCode = buildAppRscManifestCode({
     deferEagerImports: Boolean(instrumentationPath),
+    mayBeClientPages: buildAppRequestRouteMetadata(routes).map(
+      (route) => (route as { mayBeClientPage: boolean }).mayBeClientPage,
+    ),
     routes,
     metadataRoutes,
     globalErrorPath,
@@ -1252,6 +1384,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     interceptionPathname,
     isProgressiveActionRender,
     isRscRequest,
+    queryIndependentCandidate,
     middlewareContext,
     mountedSlotsHeader,
     params,
@@ -1316,6 +1449,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           renderMode,
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          queryFromNavigationForClientPage:
+            buildOptions?.queryFromNavigationForClientPage === true,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           isProduction: process.env.NODE_ENV === "production",
         }, layoutParamAccess, displayPathname, scriptNonce);
@@ -1365,6 +1500,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isProgressiveActionRender,
       isProduction: process.env.NODE_ENV === "production",
       isRscRequest,
+      queryIndependentCandidate,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
       isrHtmlKey(pathname) {

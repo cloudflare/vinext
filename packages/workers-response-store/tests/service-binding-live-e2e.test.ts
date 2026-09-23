@@ -72,7 +72,8 @@ test("the service-bound callback has a stable Workers Cache identity", async () 
 test("manual refresh loops back into the user Worker without a reverse binding", async () => {
   const path = `/${key("refresh")}`;
   await put(path, "seed", {
-    cacheControl: "public, max-age=2",
+    // Keep expiry out of this manual-refresh assertion even on a slow deploy.
+    cacheControl: "public, max-age=120",
     regeneratedBody: "refreshed",
   });
   await (await read(path)).arrayBuffer();
@@ -87,6 +88,13 @@ test("manual refresh loops back into the user Worker without a reverse binding",
     backingStoreUpdated: true,
     edgePurgeAccepted: EDGE_PURGE_ACCEPTED,
   });
+
+  if (!EDGE_PURGE_ACCEPTED) {
+    // The backing store has committed the manual refresh, but an unpurged
+    // edge response can remain stale until expiry and then regenerate with
+    // reason "expired". It cannot prove the manual response's headers.
+    return;
+  }
 
   const response = await eventually(async () => {
     const candidate = await read(path);

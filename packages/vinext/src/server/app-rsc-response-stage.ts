@@ -418,6 +418,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
             props.matchKind === "resolved" ? props.cleanPathname : normalized.requestCleanPathname,
           isProgressiveActionRender: false,
           isRscRequest: normalized.isRscRequest,
+          queryIndependentCandidate: props.cacheability.queryIndependentCandidate === true,
           middlewareContext,
           mountedSlotsHeader: normalized.mountedSlotsHeader,
           params: renderParams,

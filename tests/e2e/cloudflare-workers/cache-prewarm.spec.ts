@@ -6,11 +6,12 @@ const backend = process.env.VINEXT_E2E_CACHE_BACKEND;
 
 test("deployment pre-warming and force-dynamic bypass work with the configured cache", async ({
   baseURL,
+  page,
   request,
 }) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   if (!baseURL) throw new Error("deployed test requires a base URL");
-  test.setTimeout(90_000);
+  test.setTimeout(180_000);
 
   const testStartedAt = Date.now();
   const buildId = fs
@@ -36,6 +37,38 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   } while (Date.now() < deadline);
 
   expect(consecutiveReady, `${backend} Worker did not finish promotion`).toBe(5);
+
+  if (backend === "workers-cache") {
+    const { prerenderSecret } = JSON.parse(
+      fs.readFileSync("examples/response-store-demo/dist/server/vinext-server.json", "utf-8"),
+    ) as { prerenderSecret: string };
+    // A direct Flight render alone cannot observe a Client Page reading its
+    // searchParams promise. The staged probe must also finish the SSR branch
+    // before it certifies a query-independent RSC artifact.
+    for (const [pathname, state, rendererStatic] of [
+      ["/query-client-independent", "static-candidate", true],
+      ["/query-client-dependent", "dynamic", false],
+    ] as const) {
+      const classification = await request.get(`${baseURL}${pathname}?q=observed&_rsc`, {
+        headers: {
+          accept: "text/x-component",
+          rsc: "1",
+          "x-vinext-cacheability-probe": "1",
+          "x-vinext-cacheability-probe-route": encodeURIComponent(
+            JSON.stringify(["app-page", pathname]),
+          ),
+          "x-vinext-prerender-secret": prerenderSecret,
+        },
+      });
+      expect(classification.ok(), JSON.stringify(classification.headers())).toBe(true);
+      await expect(classification.json()).resolves.toMatchObject({
+        kind: "app-page",
+        pattern: pathname,
+        rendererStatic,
+        state,
+      });
+    }
+  }
 
   const warmed = await request.get(`${baseURL}/cached/intro`, {
     headers: { accept: "text/html" },
@@ -79,6 +112,668 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
     cachedAt,
     slug: "intro",
   });
+
+  // The demo is deployed with each cache adapter. A statically observed App
+  // page reuses its artifact across user queries; query-dependent output must
+  // retain the query that produced it.
+  const suffix = randomUUID();
+  const independentFirst = await request.get(`${baseURL}/query-independent?q=first-${suffix}`);
+  const firstIndependentBody = await independentFirst.text();
+  expect(independentFirst.ok()).toBe(true);
+  const independentSecond = await request.get(`${baseURL}/query-independent?q=second-${suffix}`);
+  const secondIndependentBody = await independentSecond.text();
+  expect(independentSecond.ok()).toBe(true);
+  expect(secondIndependentBody).toBe(firstIndependentBody);
+  expect(secondIndependentBody).not.toContain(`first-${suffix}`);
+  expect(secondIndependentBody).toContain("searchParamsFromBrowser:true");
+  expect(
+    independentSecond.headers()[backend === "workers-cache" ? "cf-cache-status" : "x-vinext-cache"],
+  ).toBe("HIT");
+  await page.goto(`${baseURL}/query-independent?q=second-${suffix}`);
+  await expect(page.getByTestId("query-independent-client-value")).toHaveText(`second-${suffix}`);
+
+  const cacheStatusHeader = backend === "workers-cache" ? "cf-cache-status" : "x-vinext-cache";
+  // Ported from Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  // Merely being a Client Page must not disable default caching when it never
+  // reads the searchParams prop. The first request intentionally has no query.
+  const clientPath = "/query-client-independent";
+  const clientFirst = await request.get(`${baseURL}${clientPath}`);
+  expect(clientFirst.ok(), JSON.stringify(clientFirst.headers())).toBe(true);
+  const clientFirstBody = await clientFirst.text();
+  expect(clientFirstBody).toContain(
+    'data-testid="query-client-independent-value">No searchParams used</output>',
+  );
+  let clientHitBody = "";
+  await expect
+    .poll(
+      async () => {
+        const hit = await request.get(`${baseURL}${clientPath}?q=first-${suffix}`);
+        const status = hit.headers()[cacheStatusHeader];
+        if (status === "HIT") clientHitBody = await hit.text();
+        await hit.dispose();
+        return status;
+      },
+      { message: `${backend} did not cache the unused-searchParams Client Page`, timeout: 30_000 },
+    )
+    .toBe("HIT");
+  const clientOther = await request.get(`${baseURL}${clientPath}?q=second-${suffix}`);
+  const clientOtherBody = await clientOther.text();
+  expect(clientOther.ok(), JSON.stringify(clientOther.headers())).toBe(true);
+  expect(clientOther.headers()[cacheStatusHeader]).toBe("HIT");
+  expect(clientOtherBody).toBe(clientHitBody);
+  expect(clientOtherBody).not.toContain(`first-${suffix}`);
+
+  const clientRscFirst = await request.get(
+    `${baseURL}${clientPath}?q=rsc-first-${suffix}&_rsc=first-${suffix}`,
+    { headers: { accept: "text/x-component", RSC: "1" } },
+  );
+  const clientRscFirstBody = await clientRscFirst.text();
+  const clientRscSecond = await request.get(
+    `${baseURL}${clientPath}?q=rsc-second-${suffix}&_rsc=second-${suffix}`,
+    { headers: { accept: "text/x-component", RSC: "1" } },
+  );
+  const clientRscSecondBody = await clientRscSecond.text();
+  expect(clientRscFirst.ok(), JSON.stringify(clientRscFirst.headers())).toBe(true);
+  expect(clientRscSecond.ok(), JSON.stringify(clientRscSecond.headers())).toBe(true);
+  expect(clientRscSecond.headers()["content-type"]).toContain("text/x-component");
+  if (backend !== "kv") {
+    expect(clientRscSecond.headers()[cacheStatusHeader]).toBe("HIT");
+    expect(clientRscSecondBody).toBe(clientRscFirstBody);
+  }
+  expect(clientRscSecondBody).not.toContain(`rsc-first-${suffix}`);
+  expect(clientRscFirstBody).not.toContain(`rsc-second-${suffix}`);
+
+  await page.goto(`${baseURL}${clientPath}?q=second-${suffix}`);
+  await expect(page.getByTestId("query-client-independent-value")).toHaveText(
+    "No searchParams used",
+  );
+  await expect
+    .poll(
+      async () => {
+        const button = page.getByRole("button", { name: /^Clicked \d+ times$/ });
+        if ((await button.textContent()) === "Clicked 0 times") await button.click();
+        return button.textContent();
+      },
+      { message: "Client Page did not hydrate on the preview", timeout: 20_000 },
+    )
+    .toBe("Clicked 1 times");
+  await page.getByRole("link", { name: "Open query-dependent Client Page" }).click();
+  await expect(page.getByTestId("query-client-dependent-value")).toHaveText("from-navigation");
+
+  // A parallel-slot Client Page receives searchParams through the slot wiring.
+  // Even when it never reads the prop during render, the unused query must not
+  // survive in the pathname-shared HTML's inlined Flight payload.
+  const parallelPath = `/query-parallel-client/${suffix}`;
+  const parallelFirstQuery = `first-${suffix}`;
+  const parallelSecondQuery = `second-${suffix}`;
+  const parallelFirstUrl = `${baseURL}${parallelPath}?q=${parallelFirstQuery}`;
+  const parallelSecondUrl = `${baseURL}${parallelPath}?q=${parallelSecondQuery}`;
+  const parallelFirst = await request.get(parallelFirstUrl);
+  const parallelFirstBody = await parallelFirst.text();
+  expect(parallelFirst.ok(), JSON.stringify(parallelFirst.headers())).toBe(true);
+  expect(parallelFirstBody).toContain("No searchParams used during render");
+  expect(parallelFirstBody).not.toContain(parallelFirstQuery);
+  const parallelSecond = await request.get(parallelSecondUrl);
+  const parallelSecondBody = await parallelSecond.text();
+  expect(parallelSecond.ok(), JSON.stringify(parallelSecond.headers())).toBe(true);
+  expect(parallelSecondBody).not.toContain(parallelFirstQuery);
+  expect(parallelSecondBody).not.toContain(parallelSecondQuery);
+  if (backend === "response-store") {
+    await expect
+      .poll(
+        async () => {
+          const first = await request.get(parallelFirstUrl);
+          const second = await request.get(parallelSecondUrl);
+          try {
+            const statuses = `${first.headers()[cacheStatusHeader]}/${second.headers()[cacheStatusHeader]}`;
+            if (statuses !== "HIT/HIT") return statuses;
+            const firstBody = await first.text();
+            const secondBody = await second.text();
+            expect(firstBody).not.toContain(parallelFirstQuery);
+            expect(secondBody).not.toContain(parallelSecondQuery);
+            return firstBody === secondBody ? "HIT/HIT/same" : "HIT/HIT/different";
+          } finally {
+            await first.dispose();
+            await second.dispose();
+          }
+        },
+        { message: "Response Store did not share the parallel-slot HTML", timeout: 30_000 },
+      )
+      .toBe("HIT/HIT/same");
+  } else if (backend === "workers-cache") {
+    // An on-demand route has no pre-lookup static certificate for Workers Cache.
+    expect(parallelSecond.headers()[cacheStatusHeader]).not.toBe("HIT");
+  }
+  await page.goto(parallelSecondUrl);
+  await expect(page.getByTestId("query-parallel-client-late-value")).toHaveText("(unread)");
+  // A streamed Client Page can show its button before its JS hydrates on the
+  // remote preview. Repeating this idempotent click distinguishes that race
+  // from a genuinely stale/missing current-query promise.
+  await expect
+    .poll(
+      async () => {
+        await page.getByRole("button", { name: "Read searchParams" }).click();
+        return page.getByTestId("query-parallel-client-late-value").textContent();
+      },
+      { message: "parallel Client Page did not read the current query", timeout: 20_000 },
+    )
+    .toBe(parallelSecondQuery);
+
+  let forceStaticFirstBody = "";
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(
+          `${baseURL}/query-force-static/${suffix}?q=first-${suffix}`,
+        );
+        const status = response.status();
+        const cacheStatus = response.headers()[cacheStatusHeader];
+        const body = await response.text();
+        await response.dispose();
+        if (status < 200 || status >= 300) return `HTTP ${status}`;
+        if (cacheStatus === "HIT") forceStaticFirstBody = body;
+        return cacheStatus;
+      },
+      { message: `${backend} did not publish the force-static response`, timeout: 30_000 },
+    )
+    .toBe("HIT");
+  const forceStaticSecond = await request.get(
+    `${baseURL}/query-force-static/${suffix}?q=second-${suffix}`,
+  );
+  const forceStaticSecondBody = await forceStaticSecond.text();
+  expect(forceStaticSecond.ok()).toBe(true);
+  expect(forceStaticSecondBody).toBe(forceStaticFirstBody);
+  expect(forceStaticSecondBody).not.toContain(`first-${suffix}`);
+  expect(forceStaticSecondBody).not.toContain("searchParamsFromBrowser:true");
+  expect(forceStaticSecondBody).toContain(
+    'data-testid="query-force-static-client-value">(empty)</output>',
+  );
+  await page.goto(`${baseURL}/query-force-static/${suffix}?q=second-${suffix}`);
+  await expect(page.getByTestId("query-force-static-client-value")).toHaveText("(empty)");
+  expect(forceStaticSecond.headers()[cacheStatusHeader]).toBe("HIT");
+
+  // The ordinary static route above has an HTML-only manifest certificate.
+  // An explicit force-static route certifies both HTML and RSC on-demand.
+  const rscHeaders = { accept: "text/x-component", RSC: "1" };
+  const waitForResponseStoreRscPair = async (
+    firstUrl: string,
+    secondUrl: string,
+    message: string,
+  ) => {
+    let settledBody = "";
+    let settledHeaders: Record<string, string> = {};
+    await expect
+      .poll(
+        async () => {
+          const first = await request.get(firstUrl, { headers: rscHeaders });
+          const second = await request.get(secondUrl, { headers: rscHeaders });
+          try {
+            expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+            expect(second.ok(), JSON.stringify(second.headers())).toBe(true);
+            const statuses = `${first.headers()[cacheStatusHeader]}/${second.headers()[cacheStatusHeader]}`;
+            if (statuses !== "HIT/HIT") return statuses;
+            const firstBody = await first.text();
+            const secondBody = await second.text();
+            if (firstBody !== secondBody) return "HIT/HIT/different";
+            settledBody = secondBody;
+            settledHeaders = second.headers();
+            return "HIT/HIT/same";
+          } finally {
+            await first.dispose();
+            await second.dispose();
+          }
+        },
+        { message, timeout: 30_000 },
+      )
+      .toBe("HIT/HIT/same");
+    return { body: settledBody, headers: settledHeaders };
+  };
+  const errorClientPath = `/query-error-client/${suffix}`;
+  const errorClientFirstUrl = `${baseURL}${errorClientPath}?q=error-first-${suffix}&_rsc=error-first-${suffix}`;
+  const errorClientSecondUrl = `${baseURL}${errorClientPath}?q=error-second-${suffix}&_rsc=error-second-${suffix}`;
+  const errorClientFirst = await request.get(errorClientFirstUrl, { headers: rscHeaders });
+  const errorClientFirstBody = await errorClientFirst.text();
+  expect(errorClientFirst.ok()).toBe(true);
+  await errorClientFirst.dispose();
+  if (backend === "response-store") {
+    const settled = await waitForResponseStoreRscPair(
+      errorClientFirstUrl,
+      errorClientSecondUrl,
+      "Response Store did not share the dynamic-error Client Page RSC",
+    );
+    expect(settled.body).not.toContain(`error-first-${suffix}`);
+    expect(settled.body).not.toContain(`error-second-${suffix}`);
+    expect(errorClientFirstBody).not.toContain(`error-first-${suffix}`);
+  } else {
+    const errorClientSecond = await request.get(errorClientSecondUrl, { headers: rscHeaders });
+    const errorClientSecondBody = await errorClientSecond.text();
+    expect(errorClientSecond.ok()).toBe(true);
+    expect(errorClientFirstBody).toContain(`error-first-${suffix}`);
+    expect(errorClientSecondBody).toContain(`error-second-${suffix}`);
+    expect(errorClientSecondBody).not.toContain(`error-first-${suffix}`);
+    await errorClientSecond.dispose();
+  }
+  for (const query of ["", `?q=read-${suffix}`]) {
+    const rejected = await request.get(`${baseURL}/query-error-client/reads${query}`, {
+      headers: { accept: "text/html" },
+    });
+    expect(rejected.status()).toBe(500);
+    expect(rejected.headers()["cache-control"]).toContain("no-store");
+    await rejected.dispose();
+    const flightUrl = `${baseURL}/query-error-client/reads${query}${query ? "&" : "?"}_rsc`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const flight = await request.get(flightUrl, { headers: rscHeaders });
+      // Flight's Client SSR verifier can finish after streaming begins. In
+      // that case the result must stay private and must not become a HIT.
+      expect([200, 500]).toContain(flight.status());
+      expect(flight.headers()[cacheStatusHeader]).not.toBe("HIT");
+      expect(flight.headers()["cache-control"]).toMatch(/private|no-store/);
+      await flight.dispose();
+    }
+  }
+  const slotOnlyPath = `/query-slot-only-client/${suffix}`;
+  const slotOnlyFirst = await request.get(
+    `${baseURL}${slotOnlyPath}?q=slot-first-${suffix}&_rsc=slot-first-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const slotOnlyFirstBody = await slotOnlyFirst.text();
+  const slotOnlySecond = await request.get(
+    `${baseURL}${slotOnlyPath}?q=slot-second-${suffix}&_rsc=slot-second-${suffix}`,
+    { headers: rscHeaders },
+  );
+  const slotOnlySecondBody = await slotOnlySecond.text();
+  expect(slotOnlyFirst.ok()).toBe(true);
+  expect(slotOnlySecond.ok()).toBe(true);
+  expect(slotOnlyFirstBody).toContain(`slot-first-${suffix}`);
+  expect(slotOnlySecondBody).toContain(`slot-second-${suffix}`);
+  expect(slotOnlySecondBody).not.toContain(`slot-first-${suffix}`);
+  let forceStaticRscBody = "";
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(
+          `${baseURL}/query-force-static/${suffix}?q=first-${suffix}&_rsc=first-${suffix}`,
+          { headers: rscHeaders },
+        );
+        const cacheStatus = response.headers()[cacheStatusHeader];
+        if (cacheStatus === "HIT") forceStaticRscBody = await response.text();
+        await response.dispose();
+        return cacheStatus;
+      },
+      { message: `${backend} did not publish the force-static RSC response`, timeout: 30_000 },
+    )
+    .toBe("HIT");
+  const forceStaticSecondRsc = await request.get(
+    `${baseURL}/query-force-static/${suffix}?q=second-${suffix}&_rsc=second-${suffix}`,
+    { headers: rscHeaders },
+  );
+  expect(forceStaticSecondRsc.ok()).toBe(true);
+  expect(forceStaticSecondRsc.headers()["content-type"]).toContain("text/x-component");
+  expect(await forceStaticSecondRsc.text()).toBe(forceStaticRscBody);
+  expect(forceStaticSecondRsc.headers()[cacheStatusHeader]).toBe("HIT");
+  if (backend !== "kv") {
+    expect(
+      decodeURIComponent(forceStaticSecondRsc.headers()["x-vinext-rendered-path-and-search"] ?? ""),
+    ).toBe(`/query-force-static/${suffix}?q=second-${suffix}`);
+  }
+
+  const forcedClientPath = `/query-force-static-client/${suffix}`;
+  const forcedClientFirstUrl = `${baseURL}${forcedClientPath}?q=first-${suffix}&_rsc=first-${suffix}`;
+  const forcedClientSecondUrl = `${baseURL}${forcedClientPath}?q=second-${suffix}&_rsc=second-${suffix}`;
+  const forcedClientFirst = await request.get(forcedClientFirstUrl, { headers: rscHeaders });
+  const forcedClientFirstBody = await forcedClientFirst.text();
+  expect(forcedClientFirst.ok()).toBe(true);
+  await forcedClientFirst.dispose();
+  if (backend === "response-store") {
+    const settled = await waitForResponseStoreRscPair(
+      forcedClientFirstUrl,
+      forcedClientSecondUrl,
+      "Response Store did not share the force-static Client Page RSC",
+    );
+    expect(settled.body).not.toContain('E{"digest"');
+    expect(settled.body).not.toContain(`first-${suffix}`);
+    expect(settled.body).not.toContain(`second-${suffix}`);
+  } else {
+    const forcedClientSecond = await request.get(forcedClientSecondUrl, { headers: rscHeaders });
+    const forcedClientSecondBody = await forcedClientSecond.text();
+    expect(forcedClientSecond.ok()).toBe(true);
+    expect(forcedClientSecond.headers()[cacheStatusHeader]).toBe("HIT");
+    expect(forcedClientSecondBody).toBe(forcedClientFirstBody);
+    expect(forcedClientFirstBody).not.toContain('E{"digest"');
+    expect(forcedClientFirstBody).not.toContain(`first-${suffix}`);
+    expect(forcedClientFirstBody).not.toContain(`second-${suffix}`);
+    await forcedClientSecond.dispose();
+  }
+  await page.goto(`${baseURL}${forcedClientPath}?q=second-${suffix}`);
+  await expect(page.getByTestId("query-force-static-client-page-value")).toHaveText("(empty)");
+
+  // An on-demand page may prove query independence only after rendering, so
+  // Response Store can share its RSC entry while Workers Cache remains conservative.
+  // See Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+  const ordinaryPath = `/query-on-demand/${suffix}-rsc`;
+  const firstRscUrl = `${baseURL}${ordinaryPath}?q=first-${suffix}&_rsc=first-${suffix}`;
+  const secondRscUrl = `${baseURL}${ordinaryPath}?q=second-${suffix}&_rsc=second-${suffix}`;
+  const ordinaryRscFirst = await request.get(firstRscUrl, { headers: rscHeaders });
+  const ordinaryRscBody = await ordinaryRscFirst.text();
+  expect(ordinaryRscFirst.ok(), JSON.stringify(ordinaryRscFirst.headers())).toBe(true);
+  expect(ordinaryRscFirst.headers()["content-type"]).toContain("text/x-component");
+  expect(ordinaryRscBody).toContain(`${suffix}-rsc`);
+  let ordinaryRscSecondHeaders: Record<string, string>;
+  let ordinaryRscSecondBody: string;
+  if (backend === "response-store") {
+    // Separate isolates can briefly miss the same key and publish competing
+    // renders. Compare two settled HITs, not either cold render.
+    const settled = await waitForResponseStoreRscPair(
+      firstRscUrl,
+      secondRscUrl,
+      "Response Store did not share the on-demand RSC page",
+    );
+    ordinaryRscSecondHeaders = settled.headers;
+    ordinaryRscSecondBody = settled.body;
+  } else {
+    const second = await request.get(secondRscUrl, { headers: rscHeaders });
+    expect(second.ok(), JSON.stringify(second.headers())).toBe(true);
+    ordinaryRscSecondHeaders = second.headers();
+    ordinaryRscSecondBody = await second.text();
+    await second.dispose();
+  }
+  expect(ordinaryRscSecondHeaders["content-type"]).toContain("text/x-component");
+  expect(ordinaryRscSecondBody).toContain(`${suffix}-rsc`);
+  if (backend === "workers-cache") {
+    expect(ordinaryRscSecondHeaders[cacheStatusHeader]).not.toBe("HIT");
+  }
+  if (backend !== "kv") {
+    expect(
+      decodeURIComponent(ordinaryRscSecondHeaders["x-vinext-rendered-path-and-search"] ?? ""),
+    ).toBe(`${ordinaryPath}?q=second-${suffix}`);
+  }
+
+  // A force-static Route Handler strips the query and reuses its pathname artifact.
+  // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts
+  const handlerFirst = await request.get(`${baseURL}/api/query-handler-static?q=first-${suffix}`);
+  expect(handlerFirst.ok(), JSON.stringify(handlerFirst.headers())).toBe(true);
+  const firstHandlerBody = (await handlerFirst.json()) as { id: string; search: string };
+  await expect
+    .poll(
+      async () => {
+        const repeated = await request.get(`${baseURL}/api/query-handler-static?q=first-${suffix}`);
+        const body = (await repeated.json()) as { id: string; search: string };
+        await repeated.dispose();
+        return body.id;
+      },
+      { message: `${backend} did not persist the force-static handler`, timeout: 10_000 },
+    )
+    .toBe(firstHandlerBody.id);
+  const handlerSecond = await request.get(`${baseURL}/api/query-handler-static?q=second-${suffix}`);
+  expect(handlerSecond.ok(), JSON.stringify(handlerSecond.headers())).toBe(true);
+  expect(await handlerSecond.json()).toEqual(firstHandlerBody);
+  expect(firstHandlerBody.search).toBe("");
+  if (backend !== "kv") expect(handlerSecond.headers()[cacheStatusHeader]).toBe("HIT");
+
+  for (const path of ["query-dependent", "query-client-dependent", "query-prop-to-client"]) {
+    // The empty-query response is a particularly dangerous source of false
+    // static certification: its thenable carries no enumerable query keys.
+    for (const query of ["", `?q=first-${suffix}`, `?q=second-${suffix}`, ""]) {
+      const url = `${baseURL}/${path}${query}`;
+      const first = await request.get(url);
+      const second = await request.get(url);
+      expect(first.ok(), `${path}: ${JSON.stringify(first.headers())}`).toBe(true);
+      expect(second.ok(), `${path}: ${JSON.stringify(second.headers())}`).toBe(true);
+      const expected = new URL(url).searchParams.get("q") || "(empty)";
+      for (const response of [first, second]) {
+        // Direct KV's fresh empty-query Client Page currently carries no
+        // cache policy, but must never produce a cache hit. The two edge
+        // adapters explicitly mark it no-store.
+        if (backend !== "kv" || path !== "query-client-dependent" || query !== "") {
+          expect(response.headers()["cache-control"]).toContain("no-store");
+        }
+        expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+        expect(await response.text()).toContain(`data-testid="${path}-value">${expected}</output>`);
+      }
+    }
+  }
+
+  // Metadata reading searchParams makes even the empty-query response dynamic.
+  for (const query of ["", `?q=first-${suffix}`, `?q=second-${suffix}`, ""]) {
+    const url = `${baseURL}/query-metadata${query}`;
+    for (const response of [await request.get(url), await request.get(url)]) {
+      expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+      expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+      expect(response.headers()["cache-control"]).toContain("no-store");
+      expect(await response.text()).toContain(
+        `<title>Query metadata: ${new URL(url).searchParams.get("q") ?? ""}</title>`,
+      );
+    }
+  }
+
+  for (const query of ["", `?q=first-${suffix}`, `?q=second-${suffix}`]) {
+    const url = `${baseURL}/query-ssr-client/${suffix}${query}`;
+    for (const response of [await request.get(url), await request.get(url)]) {
+      const body = await response.text();
+      expect(
+        response.ok(),
+        `${url}: ${JSON.stringify(response.headers())} ${body.slice(0, 400)}`,
+      ).toBe(true);
+      expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+      expect(response.headers()["cache-control"]).toContain("no-store");
+      expect(body).toContain(
+        `data-testid="query-ssr-client-value">${new URL(url).searchParams.get("q") || "(empty)"}</output>`,
+      );
+    }
+  }
+  const nestedClientRscUrl = `${baseURL}/query-ssr-client/${suffix}?q=server-${suffix}&_rsc`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await request.get(nestedClientRscUrl, {
+      headers: { accept: "text/x-component", rsc: "1" },
+    });
+    expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+    expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+    expect(response.headers()["cache-control"]).toMatch(/private|no-store/);
+    await response.dispose();
+  }
+
+  const rewriteWithQuery = await request.get(
+    `${baseURL}/query-alias-fixed/${suffix}?q=first-${suffix}`,
+  );
+  expect(rewriteWithQuery.ok()).toBe(true);
+  expect(await rewriteWithQuery.text()).not.toContain("searchParamsFromBrowser:true");
+  const rewriteWithOtherQuery = await request.get(
+    `${baseURL}/query-alias-fixed/${suffix}?q=second-${suffix}`,
+  );
+  expect(rewriteWithOtherQuery.ok()).toBe(true);
+  if (backend !== "kv") {
+    expect(rewriteWithOtherQuery.headers()[cacheStatusHeader]).not.toBe("HIT");
+  }
+
+  // Explicit public policy may cache a dynamic response, but only under its
+  // *full* query. Response Store commits warmup synchronously, but another
+  // isolate can retain a short-lived negative lookup after that commit.
+  let previousPublicId: string | undefined;
+  for (const value of [`first-${suffix}`, `second-${suffix}`]) {
+    const url = `${baseURL}/query-public?q=${value}`;
+    const first = await request.get(url, {
+      headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    const firstBody = await first.text();
+    expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+    expect(firstBody).toContain(`data-testid="query-public-value">${value}</output>`);
+    const publicId = /data-testid="query-public-id"[^>]*>([^<]+)/.exec(firstBody)?.[1];
+    expect(publicId).toBeTruthy();
+    expect(publicId).not.toBe(previousPublicId);
+    let cachedPublicId = publicId;
+    if (backend !== "kv") {
+      let hitBody = "";
+      await expect
+        .poll(
+          async () => {
+            const response = await request.get(url);
+            const status = response.headers()[cacheStatusHeader];
+            const body = await response.text();
+            expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+            if (status === "HIT") hitBody = body;
+            await response.dispose();
+            return status;
+          },
+          {
+            message: `${backend} did not publish the query-specific public response`,
+            timeout: 10_000,
+          },
+        )
+        .toBe("HIT");
+      // A second edge isolate can miss before the warmup write becomes visible
+      // and publish its own render. Only Workers Cache promises the same body
+      // for the first fill and the HIT; Response Store must preserve the query.
+      if (backend === "workers-cache") expect(hitBody).toBe(firstBody);
+      expect(hitBody).toContain(`data-testid="query-public-value">${value}</output>`);
+      cachedPublicId = /data-testid="query-public-id"[^>]*>([^<]+)/.exec(hitBody)?.[1];
+      expect(cachedPublicId).toBeTruthy();
+      expect(cachedPublicId).not.toBe(previousPublicId);
+    }
+    previousPublicId = cachedPublicId;
+  }
+
+  const publicRscHeaders = { accept: "text/x-component", RSC: "1" };
+  let previousPublicRscValue: string | undefined;
+  for (const value of [`rsc-first-${suffix}`, `rsc-second-${suffix}`]) {
+    const url = `${baseURL}/query-public?q=${value}&_rsc=public-${suffix}`;
+    const first = await request.get(url, {
+      headers: { ...publicRscHeaders, "user-agent": "vinext-cloudflare-cdn-warm" },
+    });
+    const firstBody = await first.text();
+    expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+    expect(first.headers()["content-type"]).toContain("text/x-component");
+    expect(firstBody).toContain(value);
+    if (previousPublicRscValue) expect(firstBody).not.toContain(previousPublicRscValue);
+    if (backend !== "kv") {
+      await expect
+        .poll(
+          async () => {
+            const response = await request.get(url, { headers: publicRscHeaders });
+            const body = await response.text();
+            expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+            expect(response.headers()["content-type"]).toContain("text/x-component");
+            expect(body).toContain(value);
+            if (previousPublicRscValue) expect(body).not.toContain(previousPublicRscValue);
+            await response.dispose();
+            return response.headers()[cacheStatusHeader];
+          },
+          { message: `${backend} did not publish the query-specific public RSC`, timeout: 10_000 },
+        )
+        .toBe("HIT");
+    }
+    previousPublicRscValue = value;
+  }
+
+  const staleClientPath = `${baseURL}/query-stale-client`;
+  const seededClient = await request.get(`${staleClientPath}?q=seed-${suffix}`);
+  const seededClientBody = await seededClient.text();
+  expect(seededClient.ok(), JSON.stringify(seededClient.headers())).toBe(true);
+  const seededClientId = /data-testid="query-stale-client-id"[^>]*>([^<]+)/.exec(
+    seededClientBody,
+  )?.[1];
+  expect(seededClientId).toBeTruthy();
+  await new Promise((resolve) => setTimeout(resolve, 1_100));
+  const regenerationQuery = `regenerating-${suffix}`;
+  const staleClient = await request.get(`${staleClientPath}?q=${regenerationQuery}`);
+  expect(staleClient.ok(), JSON.stringify(staleClient.headers())).toBe(true);
+  await staleClient.dispose();
+  let regeneratedClientBody = "";
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`${staleClientPath}?q=${regenerationQuery}`);
+        const body = await response.text();
+        expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+        await response.dispose();
+        const id = /data-testid="query-stale-client-id"[^>]*>([^<]+)/.exec(body)?.[1];
+        if (id && id !== seededClientId) regeneratedClientBody = body;
+        return id && id !== seededClientId ? "regenerated" : "pending";
+      },
+      { message: `${backend} did not regenerate the stale Client Page`, timeout: 30_000 },
+    )
+    .toBe("regenerated");
+  expect(regeneratedClientBody).toContain("searchParamsFromBrowser:true");
+  expect(regeneratedClientBody).not.toContain(`seed-${suffix}`);
+  expect(regeneratedClientBody).not.toContain(regenerationQuery);
+
+  const staleRscHeaders = { accept: "text/x-component", rsc: "1" };
+  const staleRscSeedQuery = `seed-rsc-${suffix}`;
+  const staleRscRegenerationQuery = `regenerating-rsc-${suffix}`;
+  const staleRscCurrentQuery = `current-rsc-${suffix}`;
+  const staleRscSeed = await request.get(`${staleClientPath}?q=${staleRscSeedQuery}&_rsc`, {
+    headers: staleRscHeaders,
+  });
+  const staleRscSeedBody = await staleRscSeed.text();
+  expect(staleRscSeed.ok(), JSON.stringify(staleRscSeed.headers())).toBe(true);
+  await staleRscSeed.dispose();
+  if (backend === "kv") {
+    // KV retains its full-query direct-RSC identity. Its Flight bytes may carry
+    // the current query, but a second query must never receive those bytes.
+    expect(staleRscSeedBody).toContain(staleRscSeedQuery);
+    const isolated = await request.get(`${staleClientPath}?q=${staleRscCurrentQuery}&_rsc`, {
+      headers: staleRscHeaders,
+    });
+    const isolatedBody = await isolated.text();
+    expect(isolated.ok(), JSON.stringify(isolated.headers())).toBe(true);
+    expect(isolated.headers()[cacheStatusHeader]).not.toBe("HIT");
+    expect(isolatedBody).toContain(staleRscCurrentQuery);
+    expect(isolatedBody).not.toContain(staleRscSeedQuery);
+    await isolated.dispose();
+  } else {
+    expect(staleRscSeedBody).not.toContain(staleRscSeedQuery);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const staleRscTrigger = await request.get(
+      `${staleClientPath}?q=${staleRscRegenerationQuery}&_rsc`,
+      { headers: staleRscHeaders },
+    );
+    expect(staleRscTrigger.ok(), JSON.stringify(staleRscTrigger.headers())).toBe(true);
+    expect(await staleRscTrigger.text()).not.toContain(staleRscRegenerationQuery);
+    await staleRscTrigger.dispose();
+    let regeneratedRscBody = "";
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(`${staleClientPath}?q=${staleRscCurrentQuery}&_rsc`, {
+            headers: staleRscHeaders,
+          });
+          const body = await response.text();
+          expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+          const status = response.headers()[cacheStatusHeader];
+          const renderedPath = decodeURIComponent(
+            response.headers()["x-vinext-rendered-path-and-search"] ?? "",
+          );
+          await response.dispose();
+          if (body !== staleRscSeedBody && status === "HIT") {
+            regeneratedRscBody = body;
+            expect(renderedPath).toBe(`/query-stale-client?q=${staleRscCurrentQuery}`);
+            return "regenerated";
+          }
+          return "pending";
+        },
+        { message: `${backend} did not regenerate the stale direct RSC artifact`, timeout: 30_000 },
+      )
+      .toBe("regenerated");
+    for (const query of [staleRscSeedQuery, staleRscRegenerationQuery, staleRscCurrentQuery]) {
+      expect(regeneratedRscBody).not.toContain(query);
+    }
+  }
+  const currentClientQuery = `current-${suffix}`;
+  await page.goto(`${staleClientPath}?q=${currentClientQuery}`);
+  await expect
+    .poll(
+      async () => {
+        await page.getByRole("button", { name: "Read searchParams" }).click();
+        return page.getByTestId("query-stale-client-value").textContent();
+      },
+      {
+        message: "regenerated Client Page did not hydrate with the current query",
+        timeout: 20_000,
+      },
+    )
+    .toBe(currentClientQuery);
 
   const dynamicUrl = `${baseURL}/force-dynamic?cache-e2e=${randomUUID()}`;
   const firstDynamic = await request.get(dynamicUrl);

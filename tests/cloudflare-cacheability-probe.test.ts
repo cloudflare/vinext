@@ -721,7 +721,7 @@ describe("staged Worker cacheability probes", () => {
     expect(result).toMatchObject({ classified: 3, probed: 3, skipped: 0 });
   });
 
-  it("authorizes every App representation from one concrete-path probe", async () => {
+  it("certifies paired App HTML and RSC only after separate completed probes", async () => {
     const root = createProbeRoot();
     const route = optimizableRoute("/posts/:slug");
     const html = { ...target("/posts/one"), route };
@@ -738,6 +738,7 @@ describe("staged Worker cacheability probes", () => {
         kind: "app-page",
         pattern: route.pattern,
         rendererStatic: true,
+        routePathname: "/posts/one",
         state: "static-candidate",
         status: 200,
         version: 1,
@@ -753,8 +754,8 @@ describe("staged Worker cacheability probes", () => {
       targets: [rsc, html],
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ classified: 1, probed: 1, skipped: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 1, probed: 2, skipped: 0 });
     expect(result.cacheableTargets).toEqual([html, rsc]);
     expect(result.speculativeTargets).toEqual([rsc]);
     expect(Object.values(result.manifest.routes)).toEqual([
@@ -764,7 +765,7 @@ describe("staged Worker cacheability probes", () => {
         unknownState: "static-candidate",
         pattern: route.pattern,
         state: "runtime-check",
-        staticPaths: { html: ["/posts/one"] },
+        staticPaths: { html: ["/posts/one"], "rsc-full": ["/posts/one"] },
       }),
     ]);
   });
@@ -1141,6 +1142,47 @@ describe("staged Worker cacheability probes", () => {
         staticRepresentation: "html",
       }),
     ]);
+  });
+
+  it("requires an exact completed RSC proof for a literal static Client Page", async () => {
+    const root = createProbeRoot();
+    const route = { kind: "app-page" as const, pattern: "/client" };
+    const html = { ...target("/client"), route };
+    const rsc = {
+      headers: { Accept: "text/x-component", RSC: "1" },
+      kind: "rsc-full" as const,
+      label: "/client (RSC full)",
+      pathname: "/client?_rsc",
+      route,
+      sourcePathname: "/client",
+    };
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async (_input, init) =>
+        Response.json({
+          kind: "app-page",
+          pattern: route.pattern,
+          rendererStatic: true,
+          state: "static-candidate",
+          status: 200,
+          version: 1,
+          ...(new Headers(init?.headers).get("RSC") === "1"
+            ? { routePathname: "/unexpected" }
+            : {}),
+        }),
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [html, rsc],
+    });
+    expect(result.failures).toEqual([]);
+    expect(result.probed).toBe(2);
+    expect(result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/client")]).toEqual({
+      kind: "app-page",
+      pattern: "/client",
+      state: "runtime-check",
+      staticRepresentation: "html",
+    });
   });
 
   it("requires matching discovered route ownership before sharing an HTML classification", async () => {
@@ -1760,7 +1802,7 @@ describe("staged Worker cacheability probes", () => {
     ]);
   });
 
-  it("does not duplicate a concrete-path probe for conditional RSC policy", async () => {
+  it("does not certify an RSC artifact with a dynamic representation-specific policy", async () => {
     const root = createProbeRoot();
     const route = {
       cacheabilityProbe: { canPrunePattern: false },
@@ -1799,8 +1841,8 @@ describe("staged Worker cacheability probes", () => {
       targets: [rsc, html],
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({ classified: 1, dynamic: 0, probed: 1, skipped: 0 });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ classified: 1, dynamic: 0, probed: 2, skipped: 0 });
     expect(result.cacheableTargets).toEqual([html, rsc]);
     expect(result.speculativeTargets).toEqual([rsc]);
     expect(Object.values(result.manifest.routes)).toEqual([
@@ -1934,6 +1976,7 @@ describe("staged Worker cacheability probes", () => {
         kind: "app-page",
         pattern: "/docs/:slug",
         rendererStatic: !isDynamic,
+        routePathname: pathname,
         scope: isDynamic ? "identity" : undefined,
         state: isDynamic ? "dynamic" : "static-candidate",
         status: 200,
@@ -1953,11 +1996,11 @@ describe("staged Worker cacheability probes", () => {
       targets: [...rscTargets, ...htmlTargets],
     });
 
-    expect(fetchImpl).toHaveBeenCalledTimes(pathCount);
+    expect(fetchImpl).toHaveBeenCalledTimes(pathCount * 2 - 1);
     expect(result).toMatchObject({
       classified: 1,
       dynamic: 1,
-      probed: pathCount,
+      probed: pathCount * 2 - 1,
       skipped: 0,
     });
     expect(result.cacheableTargets).toHaveLength((pathCount - 1) * 2 + 1);
@@ -1970,12 +2013,13 @@ describe("staged Worker cacheability probes", () => {
         state: "runtime-check",
         staticPaths: {
           html: Array.from({ length: pathCount - 1 }, (_, index) => `${index}`).sort(),
+          "rsc-full": Array.from({ length: pathCount - 1 }, (_, index) => `${index}`).sort(),
         },
       }),
     ]);
-    // One exact path string per cacheable render is the irreducible safety
-    // information. It is still far smaller than per-HTML/RSC route records.
-    expect(Buffer.byteLength(JSON.stringify(result.manifest))).toBeLessThan(20 * 1024);
+    // Both independently certified representations remain compacted under one
+    // route record, well below the artifact limit even for many concrete paths.
+    expect(Buffer.byteLength(JSON.stringify(result.manifest))).toBeLessThan(40 * 1024);
     expect(progress.at(-1)).toBe(pathCount);
   });
 

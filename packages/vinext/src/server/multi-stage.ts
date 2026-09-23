@@ -50,6 +50,10 @@ export type VinextCacheFunctionInvocation = {
 export type VinextResponseStageCacheability = {
   /** Safe positive next.config policy needed for CDN-level Next.js parity. */
   policyHeaders: Array<[string, string]> | null;
+  /** Request-stage proof that an App Page representation ignores user query values. */
+  queryIndependent?: true;
+  /** Eligible for completed-render query-independent admission (not a pre-lookup proof). */
+  queryIndependentCandidate?: true;
   /** Present only after the request stage authenticates an internal probe. */
   probeMode: VinextCacheabilityProbeMode | null;
   /** Resolved route pathname used for manifest authorization after outer rewrites. */

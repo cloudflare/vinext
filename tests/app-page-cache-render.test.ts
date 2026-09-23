@@ -46,6 +46,37 @@ function createStream(chunks: string[]): ReadableStream<Uint8Array> {
 }
 
 describe("renderAppPageCacheArtifacts", () => {
+  it.each([false, true])(
+    "bridges a Client Page SSR query read into regeneration proof (force-static: %s)",
+    async (isForceStatic) => {
+      const result = await renderAppPageCacheArtifacts({
+        captureRscData: false,
+        cleanPathname: "/query-client",
+        element: React.createElement("main", null, "client page"),
+        getFontLinks: () => [],
+        getFontPreloads: () => [],
+        getFontStyles: () => [],
+        getNavigationContext: () => null,
+        isForceStatic,
+        loadSsrHandler: async () => ({
+          async handleSsr(_stream, _context, _fonts, options) {
+            options?.onSsrSearchParamsAccess?.();
+            return createStream(["<html>client page</html>"]);
+          },
+        }),
+        navigationParams: {},
+        onError: () => undefined,
+        renderToReadableStream: () => createStream(["flight"]),
+        route: { pattern: "/query-client", routeSegments: ["query-client"] },
+      });
+
+      expect(result.htmlRenderObservation.requestApis).toContainEqual({
+        kind: "searchParams",
+        status: isForceStatic ? "notObserved" : "observed",
+      });
+    },
+  );
+
   it("records a recovered regeneration error on the exact framework span", async () => {
     recordedSpans.length = 0;
     const failure = new TypeError("recovered regeneration failure");

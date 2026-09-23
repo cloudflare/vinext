@@ -23,6 +23,8 @@ export type NavigationContext = {
   isStaticGeneration?: boolean;
   /** `dynamic = "force-static"` suppresses the static useSearchParams bailout. */
   isForceStatic?: boolean;
+  /** SSR-only bridge into the RSC render's completed-response admission. */
+  onServerSearchParamsAccess?: () => void;
 };
 
 type NavigationContextsGlobal = typeof globalThis & {

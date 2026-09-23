@@ -58,7 +58,7 @@ export async function withResponseStageCacheability(
     context = cacheability.createWorkerCacheabilityAdmissionContext(
       context,
       options.request,
-      options.rawManifest,
+      adapter.deferCompletedPageResponseAdmission ? null : options.rawManifest,
       options.buildId,
       adapter.requiresCompletedResponseAdmission === true,
       adapter.responseVary,
