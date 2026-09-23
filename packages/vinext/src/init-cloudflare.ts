@@ -371,7 +371,7 @@ function setupExperimentalCfPlatform(
   };
 }
 
-export function generateTypedCloudflareConfig(
+function generateTypedCloudflareConfig(
   info: CloudflareProjectInfo,
   options: CloudflareInitOptions,
   today = new Date().toISOString().split("T")[0],

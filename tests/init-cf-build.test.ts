@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { spawn, spawnSync } from "node:child_process";
 import { init } from "../packages/vinext/src/init.js";
 
@@ -91,7 +92,7 @@ describe("experimental cf init build", () => {
           ["preview", "--host", "127.0.0.1", "--port", "0"],
           {
             cwd: root,
-            env: { ...process.env, CI: "true" },
+            env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
             stdio: ["ignore", "pipe", "pipe"],
           },
         );
@@ -100,11 +101,11 @@ describe("experimental cf init build", () => {
           const url = await new Promise<string>((resolve, reject) => {
             const timer = setTimeout(
               () => reject(new Error(`Vite preview did not start: ${output}`)),
-              20_000,
+              30_000,
             );
             const onOutput = (chunk: Buffer) => {
               output += chunk.toString();
-              const match = output.match(/http:\/\/127\.0\.0\.1:\d+\//);
+              const match = stripVTControlCharacters(output).match(/http:\/\/127\.0\.0\.1:\d+\//);
               if (match) {
                 clearTimeout(timer);
                 resolve(match[0]);
