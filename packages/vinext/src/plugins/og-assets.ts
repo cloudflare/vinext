@@ -48,6 +48,7 @@ import path from "pathslash";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import MagicString from "magic-string";
+import { resolveHarfbuzzWasmPath } from "./og-harfbuzz.js";
 import { OgAssetOwnership } from "./og-asset-ownership.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
@@ -217,8 +218,9 @@ const OG_WASM_ASSETS = ["resvg.wasm", "yoga.wasm", "hb.wasm"] as const;
  * @returns the emitted asset's `fileName` (relative to outDir), or null.
  */
 function findEmittedWasmAsset(
-  bundle: Record<string, { type: string; fileName: string }>,
+  bundle: Record<string, { type: string; fileName: string; source?: string | Uint8Array }>,
   baseName: string,
+  expectedSource?: Buffer,
 ): string | null {
   const stem = baseName.replace(/\.wasm$/, "");
   // Matches `resvg.wasm`, Vite's default `resvg-<hash>.wasm`, or the
@@ -227,7 +229,13 @@ function findEmittedWasmAsset(
   for (const output of Object.values(bundle)) {
     if (output.type !== "asset") continue;
     const filename = path.basename(output.fileName);
-    if (baseName === "hb.wasm" && filename.startsWith("hb-bridge-")) continue;
+    if (
+      expectedSource &&
+      (typeof output.source === "string" ||
+        !output.source ||
+        !Buffer.from(output.source).equals(expectedSource))
+    )
+      continue;
     if (re.test(filename)) return output.fileName;
   }
   return null;
@@ -325,7 +333,15 @@ export function createOgAssetsPlugin(): Plugin {
           const referenced = chunks.some((c) => c.code.includes(base));
           if (!referenced) continue;
 
-          const emitted = findEmittedWasmAsset(bundle as never, base);
+          const emitted = findEmittedWasmAsset(
+            bundle as never,
+            base,
+            base === "hb.wasm"
+              ? fs.readFileSync(
+                  resolveHarfbuzzWasmPath(createRequire(import.meta.url).resolve("@vercel/og")),
+                )
+              : undefined,
+          );
 
           for (const chunk of chunks) {
             const re = fallbackUrlRegex(base);
@@ -394,14 +410,24 @@ export function createOgAssetsPlugin(): Plugin {
         );
         if (referencedAssets.length === 0) return;
 
-        // Find @vercel/og in node_modules. The OG transforms materialize any
-        // missing WASM sources there earlier in the build.
+        // Find @vercel/og in node_modules and copy only the missing WASM sources.
         try {
           const require = createRequire(import.meta.url);
           const ogPkgPath = require.resolve("@vercel/og/package.json");
           const ogDistDir = path.join(path.dirname(ogPkgPath), "dist");
 
-          copyMissingOgWasm({ outDir, sourceDir: ogDistDir, assets: referencedAssets });
+          copyMissingOgWasm({
+            outDir,
+            sourceDir: ogDistDir,
+            assets: referencedAssets.filter((asset) => asset !== "hb.wasm"),
+          });
+          if (referencedAssets.includes("hb.wasm")) {
+            copyMissingOgWasm({
+              outDir,
+              sourceDir: path.dirname(resolveHarfbuzzWasmPath(ogPkgPath)),
+              assets: ["hb.wasm"],
+            });
+          }
         } catch {
           // @vercel/og not installed — nothing to copy
         }

@@ -1,7 +1,12 @@
 import fs from "node:fs";
 import { createRequire } from "node:module";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
+
+export function resolveHarfbuzzWasmPath(ogEntry: string): string {
+  const require = createRequire(ogEntry);
+  return toSlash(createRequire(require.resolve("satori")).resolve("harfbuzzjs/hb.wasm"));
+}
 
 function bridgeWasm(signature: string): Uint8Array {
   const typeCodes: Record<string, number> = { i: 127, p: 127, j: 126, f: 125, d: 124, e: 111 };
@@ -44,9 +49,14 @@ function bridgeWasm(signature: string): Uint8Array {
 }
 
 export function createOgHarfbuzzPlugin(): Plugin {
+  let generatedDir: string;
+
   return {
     name: "vinext:og-harfbuzz",
     enforce: "pre",
+    configResolved(config) {
+      generatedDir = path.join(config.root, ".vinext", "og-assets");
+    },
     transform: {
       filter: { id: /@vercel\/og.*index\.(?:edge|node)\.js/ },
       handler(code, id) {
@@ -57,11 +67,7 @@ export function createOgHarfbuzzPlugin(): Plugin {
     });`;
         if (!code.includes(initializer)) return null;
 
-        const require = createRequire(id);
-        const distDir = path.dirname(id);
-        const harfbuzzPath = createRequire(require.resolve("satori")).resolve("harfbuzzjs/hb.wasm");
-        const wasmPath = path.join(distDir, "hb.wasm");
-        if (!fs.existsSync(wasmPath)) fs.copyFileSync(harfbuzzPath, wasmPath);
+        const harfbuzzPath = resolveHarfbuzzWasmPath(id);
 
         let patched = code
           .replace("_scriptName = self.location.href;", '_scriptName = self.location?.href || "";')
@@ -78,7 +84,7 @@ export function createOgHarfbuzzPlugin(): Plugin {
       } }).then(hbjs);
     });`,
           );
-        let loader = `var __vi_hb_mod = import("./hb.wasm?module").then(function(m) { return m.default; }).catch(function() {
+        let loader = `var __vi_hb_mod = import(${JSON.stringify(`${harfbuzzPath}?module`)}).then(function(m) { return m.default; }).catch(function() {
   return import("node:fs/promises").then(function(fs) {
     return fs.readFile(new URL("./hb.wasm", import.meta.url)).then(function(bytes) { return WebAssembly.compile(bytes); });
   });
@@ -95,6 +101,7 @@ import { fileURLToPath as __vi_fileURLToPath } from "node:url";
 var require = __vi_createRequire(import.meta.url);
 var __dirname = __vi_dirname(__vi_fileURLToPath(import.meta.url));\n`;
         } else {
+          fs.mkdirSync(generatedDir, { recursive: true });
           const signatures = [
             ...new Set(
               [...code.matchAll(/(?:\}|\w+)\s*,\s*"([vipjfde]+)"\);/g)].map((match) => match[1]),
@@ -102,9 +109,9 @@ var __dirname = __vi_dirname(__vi_fileURLToPath(import.meta.url));\n`;
           ];
           const imports = signatures.map((signature, index) => {
             const filename = `hb-bridge-${signature}.wasm`;
-            const filePath = path.join(distDir, filename);
+            const filePath = path.join(generatedDir, filename);
             if (!fs.existsSync(filePath)) fs.writeFileSync(filePath, bridgeWasm(signature));
-            return `import __vi_hb_bridge_${index} from "./${filename}?module";`;
+            return `import __vi_hb_bridge_${index} from ${JSON.stringify(`${filePath}?module`)};`;
           });
           preamble = `${imports.join("\n")}\nvar __vi_hb_bridges = { ${signatures
             .map((signature, index) => `${JSON.stringify(signature)}: __vi_hb_bridge_${index}`)
