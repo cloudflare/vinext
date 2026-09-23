@@ -1,5 +1,7 @@
 import { getHeadersAccessPhase } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { getRequestExecutionContext } from "./request-context.js";
+import type { CacheControlMetadata } from "./cache-handler.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -60,11 +62,26 @@ export type UnstableCacheObservation = Readonly<{
   tagHash: string | null;
 }>;
 
+/**
+ * A shared `"use cache"` invocation this request already collected, keyed by the
+ * key its value was stored under. Retained only while the invocation's handler
+ * write is still settling, so a repeat lookup can reuse the collected value and
+ * inherit its metadata without waiting for persistence (issue #3321).
+ */
+export type RetainedUseCacheInvocation = {
+  /** The value the producing invocation returned to its caller. */
+  result: unknown;
+  tags: readonly string[];
+  cacheControl: CacheControlMetadata;
+  rootParamNames: ReadonlySet<string> | undefined;
+};
+
 export type CacheState = {
   actionRevalidationKind: ActionRevalidationKind;
   pendingRevalidatedTags: Set<string>;
   pendingRevalidations: Set<Promise<void>>;
   requestScopedCacheLife: CacheLifeConfig | null;
+  retainedUseCacheInvocations: Map<string, RetainedUseCacheInvocation>;
   unstableCacheObservations: Map<string, UnstableCacheObservation>;
   unstableCacheRevalidation: UnstableCacheRevalidationMode;
 };
@@ -82,6 +99,7 @@ const fallbackState = (globalState[FALLBACK_KEY] ??= {
   pendingRevalidatedTags: new Set<string>(),
   pendingRevalidations: new Set<Promise<void>>(),
   requestScopedCacheLife: null,
+  retainedUseCacheInvocations: new Map<string, RetainedUseCacheInvocation>(),
   unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
   unstableCacheRevalidation: "foreground",
 } satisfies CacheState) as CacheState;
@@ -109,6 +127,7 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     requestScopedCacheLife: null,
+    retainedUseCacheInvocations: new Map<string, RetainedUseCacheInvocation>(),
     unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
     unstableCacheRevalidation: "foreground",
   };
@@ -203,6 +222,69 @@ export async function _drainPendingRevalidations(): Promise<void> {
     }
   }
   if (didReject) throw firstRejection;
+}
+
+/**
+ * Hand cache work to the request lifecycle instead of the caller.
+ *
+ * Runtimes with an ExecutionContext keep the isolate alive through
+ * `waitUntil`, and request boundaries await queued work before the response is
+ * finalized. Returns false when no lifecycle owns the work, so the caller
+ * decides how to settle it.
+ *
+ * @internal
+ */
+export function _scheduleRequestScopedCacheWork(promise: Promise<void>): boolean {
+  const executionContext = getRequestExecutionContext();
+  const queued = _queuePendingRevalidation(promise);
+  if (executionContext) {
+    executionContext.waitUntil(promise);
+  } else if (!queued) {
+    void promise.catch((error) => {
+      console.error("[vinext] cache revalidation failed:", error);
+    });
+  }
+  return queued || executionContext !== null;
+}
+
+/**
+ * Retain a just-collected `"use cache"` invocation for the rest of the request,
+ * keyed by the key its value is stored under.
+ *
+ * The record bridges the window between collection and the handler write
+ * settling: a repeat lookup in the same request reads it instead of re-executing
+ * the cached function. A no-op outside a request scope — there, the write is
+ * awaited before the value is returned, so no window exists.
+ *
+ * @internal
+ */
+export function _retainUseCacheInvocation(
+  key: string,
+  invocation: RetainedUseCacheInvocation,
+): void {
+  if (!hasRequestScopedCacheState()) return;
+  getCacheState().retainedUseCacheInvocations.set(key, invocation);
+}
+
+/**
+ * Read the retained `"use cache"` invocation stored under `key`, if any.
+ *
+ * @internal
+ */
+export function _readRetainedUseCacheInvocation(key: string): RetainedUseCacheInvocation | null {
+  if (!hasRequestScopedCacheState()) return null;
+  return getCacheState().retainedUseCacheInvocations.get(key) ?? null;
+}
+
+/**
+ * Drop a retained invocation once its handler write has settled. Later lookups
+ * then read the entry from the handler like any other request.
+ *
+ * @internal
+ */
+export function _releaseRetainedUseCacheInvocation(key: string): void {
+  if (!hasRequestScopedCacheState()) return;
+  getCacheState().retainedUseCacheInvocations.delete(key);
 }
 
 export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {

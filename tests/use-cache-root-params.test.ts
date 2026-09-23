@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { IncrementalCacheValue } from "../packages/vinext/src/shims/cache-handler.js";
 
 vi.mock("@vitejs/plugin-rsc/react/rsc", () => {
   const encoder = new TextEncoder();
@@ -120,4 +121,152 @@ describe('"use cache" root-param entry generation', () => {
     await expect(invoke()).resolves.toBe("en");
     expect(calls).toBe(1);
   });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+function entryTags(
+  data: IncrementalCacheValue | null,
+  ctx: Record<string, unknown> | undefined,
+): string[] {
+  const fromData = data && "tags" in data && Array.isArray(data.tags) ? data.tags : [];
+  const fromCtx = Array.isArray(ctx?.tags) ? (ctx.tags as string[]) : [];
+  return [...(fromData as string[]), ...fromCtx];
+}
+
+describe('"use cache" nested invocation propagation', () => {
+  beforeEach(async () => {
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+    const knownRootParams = Reflect.get(
+      globalThis,
+      Symbol.for("vinext.cacheRuntime.knownRootParamsByFunctionId"),
+    ) as Map<string, Set<string>> | undefined;
+    knownRootParams?.clear();
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
+  // (the `use-cache-dedup` fixture)
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/use-cache.test.ts
+  //
+  // The fixture's cache handler holds the English inner write until both outer
+  // entries reach `set()`. Two outer caches share one inner cache, and the inner
+  // must hand its root-param dependency to both outer scopes as soon as it has
+  // collected — a render that waited for the handler write instead would either
+  // stall or key `outerTwo` without `lang`, letting the French request reuse the
+  // English entry. Failing this test without the fix shows up as a timeout,
+  // because the render never finishes while the inner write is held.
+  it("propagates a nested invocation's root params while its write is pending", async () => {
+    const { setCacheHandler, MemoryCacheHandler, cacheTag } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const knownRootParams = Reflect.get(
+      globalThis,
+      Symbol.for("vinext.cacheRuntime.knownRootParamsByFunctionId"),
+    ) as Map<string, Set<string>>;
+
+    const observedOuters = new Set<string>();
+    const writtenKeys: string[] = [];
+    const innerWriteHeld = deferred<void>();
+    const bothOuterWritesSeen = deferred<void>();
+
+    class DelayingHandler extends MemoryCacheHandler {
+      override async set(
+        key: string,
+        data: IncrementalCacheValue | null,
+        ctx?: Record<string, unknown>,
+      ): Promise<void> {
+        const tags = entryTags(data, ctx);
+        writtenKeys.push(key);
+        const isRedirect = tags.some((tag) => tag.startsWith("__vinext_use_cache_root_param__:"));
+        const outer = tags.find((tag) => tag === "nested-outer-one" || tag === "nested-outer-two");
+        if (outer !== undefined && !isRedirect) {
+          observedOuters.add(outer);
+          if (observedOuters.size === 2) bothOuterWritesSeen.resolve();
+        }
+        // Hold only the English inner value: a French request calls one outer.
+        if (tags.includes("nested-language-en") && outer === undefined && !isRedirect) {
+          await innerWriteHeld.promise;
+        }
+        return super.set(key, data, ctx);
+      }
+    }
+    setCacheHandler(new DelayingHandler());
+
+    let innerCalls = 0;
+    const inner = registerCachedFunction(async () => {
+      innerCalls++;
+      const language = await getRootParam("lang");
+      cacheTag("nested-inner", `nested-language-${String(language)}`);
+      return language;
+    }, "test:nested-propagation-inner");
+    const outerOne = registerCachedFunction(async () => {
+      cacheTag("nested-outer-one");
+      return inner();
+    }, "test:nested-propagation-outer-one");
+    const outerTwo = registerCachedFunction(async () => {
+      cacheTag("nested-outer-two");
+      return inner();
+    }, "test:nested-propagation-outer-two");
+
+    const render = (lang: string, prime: boolean) => {
+      const pendingWrites: Promise<unknown>[] = [];
+      return {
+        pendingWrites,
+        result: runWithRequestContext(
+          createRequestContext({
+            executionContext: {
+              waitUntil(promise: Promise<unknown>) {
+                pendingWrites.push(promise);
+              },
+              passThroughOnException() {},
+            },
+          }),
+          () =>
+            runWithRootParamsScope({ lang }, async () => {
+              const first = prime ? await outerOne() : null;
+              return { first, second: await outerTwo() };
+            }),
+        ),
+      };
+    };
+
+    const english = render("en", true);
+    await expect(english.result).resolves.toEqual({ first: "en", second: "en" });
+    // The second outer inherited the collected value instead of re-running the
+    // inner cache while its write was still held.
+    expect(innerCalls).toBe(1);
+
+    // Both outer entries reached the handler before the inner write was released:
+    // propagation happens at collection, not at persistence.
+    await bothOuterWritesSeen.promise;
+    expect(observedOuters.size).toBe(2);
+    innerWriteHeld.resolve();
+    await Promise.all(english.pendingWrites);
+    // Each outer cache stored its value under the root params its inner cache
+    // read, so a request with other root params cannot read it.
+    const outerValueKeys = writtenKeys.filter(
+      (key) =>
+        (key.includes("outer-one") || key.includes("outer-two")) && key.includes("root-params"),
+    );
+    expect(outerValueKeys).toHaveLength(2);
+
+    // A later request with different root params must not reuse the English entry.
+    knownRootParams.clear();
+    const french = render("fr", false);
+    await expect(french.result).resolves.toEqual({ first: null, second: "fr" });
+    await Promise.all(french.pendingWrites);
+  }, 5000);
 });

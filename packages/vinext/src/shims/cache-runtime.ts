@@ -30,15 +30,20 @@
 
 import {
   getDataCacheHandler,
-  type CachedFetchValue,
   type CacheControlMetadata,
+  type CacheHandler,
   type CacheHandlerValue,
+  type CachedFetchValue,
 } from "./cache-handler.js";
 import {
   cacheLifeProfiles,
   _hasPendingRevalidatedTag,
-  _setRequestScopedCacheLife,
+  _readRetainedUseCacheInvocation,
   _registerCacheContextAccessor,
+  _releaseRetainedUseCacheInvocation,
+  _retainUseCacheInvocation,
+  _scheduleRequestScopedCacheWork,
+  _setRequestScopedCacheLife,
   type CacheLifeConfig,
 } from "./cache-request-state.js";
 import { VINEXT_RSC_MARKER_HEADER } from "../server/headers.js";
@@ -752,6 +757,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // by the handler's own exception.
       let existing: CacheHandlerValue | null = null;
       if (!_hasPendingRevalidatedTag(softTags)) {
+        // An earlier invocation in this request may have collected this entry
+        // while its handler write is still settling. Serve that value and its
+        // metadata: a lookup that waited for the write would instead re-execute
+        // the function and inherit nothing (issue #3321). Retained records live
+        // only for this request and only until the write settles, so this cannot
+        // serve another request's data.
+        const retained = serveRetainedUseCacheInvocation(cacheKey, softTags);
+        if (retained !== null) return retained.result as TResult;
         try {
           existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
         } catch (error) {
@@ -835,76 +848,87 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // Serialization ran while the cache ALS was active so lazy Server
       // Component work is reflected in `ctx` before selecting the final key.
       if (collectedResult?.cacheEntry) {
-        try {
-          let cacheFunctionInvocation: VinextCacheFunctionInvocation | undefined;
-          if (options.serverReferenceId && options.encodeInvocationArgs) {
-            try {
-              cacheFunctionInvocation = {
-                encryptedArgs: await options.encodeInvocationArgs(admittedArgs),
-                referenceId: options.serverReferenceId,
-                rootParams: Object.fromEntries(
-                  Object.entries(rootParams ?? {}).filter((entry) => entry[1] !== undefined),
-                ) as Record<string, string | string[]>,
-                softTags,
-              };
-            } catch {
-              // Some request-local values cannot be replayed after this render.
-            }
+        let cacheFunctionInvocation: VinextCacheFunctionInvocation | undefined;
+        if (options.serverReferenceId && options.encodeInvocationArgs) {
+          try {
+            cacheFunctionInvocation = {
+              encryptedArgs: await options.encodeInvocationArgs(admittedArgs),
+              referenceId: options.serverReferenceId,
+              rootParams: Object.fromEntries(
+                Object.entries(rootParams ?? {}).filter((entry) => entry[1] !== undefined),
+              ) as Record<string, string | string[]>,
+              softTags,
+            };
+          } catch {
+            // Some request-local values cannot be replayed after this render.
           }
-          const serialized = collectedResult.cacheEntry;
-          const cacheValue = {
-            kind: "FETCH",
-            data: {
-              headers: serialized.headers,
-              body: serialized.body,
-              url: cacheKey,
-            },
-            tags: ctx.tags,
-            revalidate: revalidateSeconds,
-          } satisfies CachedFetchValue;
-          const cacheContext = {
-            fetchCache: true,
-            tags: ctx.tags,
-            ...(cacheFunctionInvocation ? { cacheFunctionInvocation } : {}),
-            cacheControl: {
-              revalidate: revalidateSeconds,
-              expire: effectiveLife.expire,
-              // Persisted so a later hit re-registers the same claim; otherwise
-              // the enclosing render's minimum depends on cache temperature.
-              stale: effectiveLife.stale,
-            },
-          };
+        }
+        const serialized = collectedResult.cacheEntry;
+        const cacheValue = {
+          kind: "FETCH",
+          data: {
+            headers: serialized.headers,
+            body: serialized.body,
+            url: cacheKey,
+          },
+          tags: ctx.tags,
+          revalidate: revalidateSeconds,
+        } satisfies CachedFetchValue;
+        const cacheControl: CacheControlMetadata = {
+          revalidate: revalidateSeconds,
+          expire: effectiveLife.expire,
+          // Persisted so a later hit re-registers the same claim; otherwise
+          // the enclosing render's minimum depends on cache temperature.
+          stale: effectiveLife.stale,
+        };
+        const cacheContext = {
+          fetchCache: true,
+          tags: ctx.tags,
+          ...(cacheFunctionInvocation ? { cacheFunctionInvocation } : {}),
+          cacheControl,
+        };
+        const rootParamSpecificKey =
+          rootParamNames && rootParamNames.size > 0 && rootParams
+            ? coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames)
+            : null;
+        // The key a repeat lookup in this request recomputes, and therefore the
+        // key the retained record must use.
+        const storedKey = rootParamSpecificKey ?? cacheKey;
+        // `revalidate: 0` entries are dynamic by construction: the read path
+        // treats them as stale and re-executes, so retention must not resurrect
+        // them.
+        const retainable = revalidateSeconds > 0;
 
-          if (rootParamNames && rootParamNames.size > 0 && rootParams) {
-            const specificCacheKey =
-              coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, rootParamNames);
-            const redirectTags = [
-              ...ctx.tags,
-              ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
-            ];
-            await handler.set(
-              coarseCacheKey,
-              {
-                kind: "FETCH",
-                data: {
-                  headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
-                  body: "",
-                  url: coarseCacheKey,
-                },
-                tags: redirectTags,
-                revalidate: revalidateSeconds,
-              },
-              { ...cacheContext, tags: redirectTags },
-            );
-            // Write the useful entry last. A bounded LRU that can retain only
-            // one of the pair must keep the specific value, not the redirect.
-            cacheValue.data.url = specificCacheKey;
-            await handler.set(specificCacheKey, cacheValue, cacheContext);
-          } else {
-            await handler.set(cacheKey, cacheValue, cacheContext);
+        const cacheWrite = persistUseCacheEntry({
+          handler,
+          coarseCacheKey,
+          cacheKey,
+          rootParamSpecificKey,
+          rootParamNames,
+          revalidateSeconds,
+          cacheValue,
+          cacheContext,
+          tags: ctx.tags,
+        });
+        if (retainable) {
+          _retainUseCacheInvocation(storedKey, {
+            result: collectedResult.result,
+            tags: ctx.tags,
+            cacheControl,
+            rootParamNames,
+          });
+        }
+        if (_scheduleRequestScopedCacheWork(cacheWrite)) {
+          // The value and the metadata above are already published; only
+          // persistence is still outstanding, so nothing on the render path may
+          // wait for it. The retained record is dropped once the write settles,
+          // after which lookups read the entry from the handler again.
+          if (retainable) {
+            void cacheWrite.finally(() => _releaseRetainedUseCacheInvocation(storedKey));
           }
-        } catch {
-          // A handler failure skips caching but must not fail the render.
+        } else {
+          await cacheWrite;
+          if (retainable) _releaseRetainedUseCacheInvocation(storedKey);
         }
       }
 
@@ -1031,6 +1055,87 @@ function propagateCacheTagsToRequest(tags: readonly string[] | undefined): void 
     return;
   }
   addCollectedRequestTags(tags);
+}
+
+/**
+ * Serve a lookup from a `"use cache"` invocation this request already collected
+ * but whose handler write is still settling.
+ *
+ * The collected value is returned with the same metadata the data-cache HIT path
+ * propagates: the invocation's cache control (which also feeds the enclosing
+ * scope's minimum-wins lifetime), its tags, and the root params it read. That is
+ * what lets an outer cache scope key and describe itself correctly without
+ * waiting for persistence (issue #3321).
+ *
+ * Returns null when nothing is retained for the key, mirroring a cache miss.
+ */
+function serveRetainedUseCacheInvocation(
+  cacheKey: string,
+  softTags: readonly string[],
+): { result: unknown } | null {
+  const retained = _readRetainedUseCacheInvocation(cacheKey);
+  if (retained === null) return null;
+  if (_hasPendingRevalidatedTag([...retained.tags, ...softTags])) return null;
+  recordRequestScopedCacheControl(retained.cacheControl);
+  propagateCacheTagsToRequest(retained.tags);
+  propagateRootParamNamesToParent(retained.rootParamNames);
+  return { result: retained.result };
+}
+
+/**
+ * Persist a collected `"use cache"` value.
+ *
+ * Never rejects: a handler failure (a transient KV error, or a key the store
+ * rejects) skips caching but must not fail the render.
+ *
+ * When the invocation read root params, the coarse key receives a redirect entry
+ * naming those params so a reader can rebuild the specific key, and the value
+ * goes to the specific key. The value is written last so a bounded LRU that can
+ * retain only one of the pair keeps the value, not the redirect.
+ */
+async function persistUseCacheEntry(options: {
+  handler: CacheHandler;
+  coarseCacheKey: string;
+  cacheKey: string;
+  rootParamSpecificKey: string | null;
+  rootParamNames: ReadonlySet<string> | undefined;
+  revalidateSeconds: number;
+  cacheValue: CachedFetchValue;
+  cacheContext: Record<string, unknown>;
+  tags: readonly string[];
+}): Promise<void> {
+  try {
+    if (options.rootParamSpecificKey === null) {
+      await options.handler.set(options.cacheKey, options.cacheValue, options.cacheContext);
+      return;
+    }
+    const redirectTags = [
+      ...options.tags,
+      ...[...(options.rootParamNames ?? [])].map((name) => ROOT_PARAM_TAG_PREFIX + name),
+    ];
+    await options.handler.set(
+      options.coarseCacheKey,
+      {
+        kind: "FETCH",
+        data: {
+          headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
+          body: "",
+          url: options.coarseCacheKey,
+        },
+        tags: redirectTags,
+        revalidate: options.revalidateSeconds,
+      } satisfies CachedFetchValue,
+      { ...options.cacheContext, tags: redirectTags },
+    );
+    options.cacheValue.data.url = options.rootParamSpecificKey;
+    await options.handler.set(
+      options.rootParamSpecificKey,
+      options.cacheValue,
+      options.cacheContext,
+    );
+  } catch {
+    // A handler failure skips caching but must not fail the render.
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -31,7 +31,6 @@ import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
-import { getRequestExecutionContext } from "./request-context.js";
 import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
 import { addCollectedRequestTags, getCurrentFetchSoftTags } from "./fetch-cache.js";
 import {
@@ -39,7 +38,7 @@ import {
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
   _hasPendingRevalidatedTag,
   _markPendingRevalidatedTag,
-  _queuePendingRevalidation,
+  _scheduleRequestScopedCacheWork,
   _setRequestScopedCacheLife,
   cacheLifeProfiles,
   getRegisteredCacheContext,
@@ -66,15 +65,7 @@ export type { ExecutionContextLike } from "./request-context.js";
 export { runWithExecutionContext, getRequestExecutionContext } from "./request-context.js";
 
 function scheduleRevalidation(promise: Promise<void>): undefined {
-  const executionContext = getRequestExecutionContext();
-  const queued = _queuePendingRevalidation(promise);
-  if (executionContext) {
-    executionContext.waitUntil(promise);
-  } else if (!queued) {
-    void promise.catch((error) => {
-      console.error("[vinext] cache revalidation failed:", error);
-    });
-  }
+  _scheduleRequestScopedCacheWork(promise);
   return undefined;
 }
 
