@@ -296,34 +296,64 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   // The ordinary static route above has an HTML-only manifest certificate.
   // An explicit force-static route certifies both HTML and RSC on-demand.
   const rscHeaders = { accept: "text/x-component", RSC: "1" };
+  const waitForResponseStoreRscPair = async (
+    firstUrl: string,
+    secondUrl: string,
+    message: string,
+  ) => {
+    let settledBody = "";
+    let settledHeaders: Record<string, string> = {};
+    await expect
+      .poll(
+        async () => {
+          const first = await request.get(firstUrl, { headers: rscHeaders });
+          const second = await request.get(secondUrl, { headers: rscHeaders });
+          try {
+            expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+            expect(second.ok(), JSON.stringify(second.headers())).toBe(true);
+            const statuses = `${first.headers()[cacheStatusHeader]}/${second.headers()[cacheStatusHeader]}`;
+            if (statuses !== "HIT/HIT") return statuses;
+            const firstBody = await first.text();
+            const secondBody = await second.text();
+            if (firstBody !== secondBody) return "HIT/HIT/different";
+            settledBody = secondBody;
+            settledHeaders = second.headers();
+            return "HIT/HIT/same";
+          } finally {
+            await first.dispose();
+            await second.dispose();
+          }
+        },
+        { message, timeout: 30_000 },
+      )
+      .toBe("HIT/HIT/same");
+    return { body: settledBody, headers: settledHeaders };
+  };
   const errorClientPath = `/query-error-client/${suffix}`;
-  const errorClientFirst = await request.get(
-    `${baseURL}${errorClientPath}?q=error-first-${suffix}&_rsc=error-first-${suffix}`,
-    { headers: rscHeaders },
-  );
+  const errorClientFirstUrl = `${baseURL}${errorClientPath}?q=error-first-${suffix}&_rsc=error-first-${suffix}`;
+  const errorClientSecondUrl = `${baseURL}${errorClientPath}?q=error-second-${suffix}&_rsc=error-second-${suffix}`;
+  const errorClientFirst = await request.get(errorClientFirstUrl, { headers: rscHeaders });
   const errorClientFirstBody = await errorClientFirst.text();
-  const errorClientRepeat = await request.get(
-    `${baseURL}${errorClientPath}?q=error-first-${suffix}&_rsc=error-first-${suffix}`,
-    { headers: rscHeaders },
-  );
-  const errorClientSecond = await request.get(
-    `${baseURL}${errorClientPath}?q=error-second-${suffix}&_rsc=error-second-${suffix}`,
-    { headers: rscHeaders },
-  );
-  const errorClientSecondBody = await errorClientSecond.text();
   expect(errorClientFirst.ok()).toBe(true);
-  expect(errorClientRepeat.ok()).toBe(true);
-  expect(errorClientSecond.ok()).toBe(true);
+  await errorClientFirst.dispose();
   if (backend === "response-store") {
-    expect(errorClientSecond.headers()[cacheStatusHeader]).toBe("HIT");
-    expect(errorClientSecondBody).toBe(errorClientFirstBody);
+    const settled = await waitForResponseStoreRscPair(
+      errorClientFirstUrl,
+      errorClientSecondUrl,
+      "Response Store did not share the dynamic-error Client Page RSC",
+    );
+    expect(settled.body).not.toContain(`error-first-${suffix}`);
+    expect(settled.body).not.toContain(`error-second-${suffix}`);
     expect(errorClientFirstBody).not.toContain(`error-first-${suffix}`);
   } else {
+    const errorClientSecond = await request.get(errorClientSecondUrl, { headers: rscHeaders });
+    const errorClientSecondBody = await errorClientSecond.text();
+    expect(errorClientSecond.ok()).toBe(true);
     expect(errorClientFirstBody).toContain(`error-first-${suffix}`);
     expect(errorClientSecondBody).toContain(`error-second-${suffix}`);
     expect(errorClientSecondBody).not.toContain(`error-first-${suffix}`);
+    await errorClientSecond.dispose();
   }
-  await errorClientRepeat.dispose();
   for (const query of ["", `?q=read-${suffix}`]) {
     const rejected = await request.get(`${baseURL}/query-error-client/reads${query}`, {
       headers: { accept: "text/html" },
@@ -379,23 +409,32 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   }
 
   const forcedClientPath = `/query-force-static-client/${suffix}`;
-  const forcedClientFirst = await request.get(
-    `${baseURL}${forcedClientPath}?q=first-${suffix}&_rsc=first-${suffix}`,
-    { headers: rscHeaders },
-  );
+  const forcedClientFirstUrl = `${baseURL}${forcedClientPath}?q=first-${suffix}&_rsc=first-${suffix}`;
+  const forcedClientSecondUrl = `${baseURL}${forcedClientPath}?q=second-${suffix}&_rsc=second-${suffix}`;
+  const forcedClientFirst = await request.get(forcedClientFirstUrl, { headers: rscHeaders });
   const forcedClientFirstBody = await forcedClientFirst.text();
-  const forcedClientSecond = await request.get(
-    `${baseURL}${forcedClientPath}?q=second-${suffix}&_rsc=second-${suffix}`,
-    { headers: rscHeaders },
-  );
-  const forcedClientSecondBody = await forcedClientSecond.text();
   expect(forcedClientFirst.ok()).toBe(true);
-  expect(forcedClientSecond.ok()).toBe(true);
-  expect(forcedClientSecond.headers()[cacheStatusHeader]).toBe("HIT");
-  expect(forcedClientSecondBody).toBe(forcedClientFirstBody);
-  expect(forcedClientFirstBody).not.toContain('E{"digest"');
-  expect(forcedClientFirstBody).not.toContain(`first-${suffix}`);
-  expect(forcedClientFirstBody).not.toContain(`second-${suffix}`);
+  await forcedClientFirst.dispose();
+  if (backend === "response-store") {
+    const settled = await waitForResponseStoreRscPair(
+      forcedClientFirstUrl,
+      forcedClientSecondUrl,
+      "Response Store did not share the force-static Client Page RSC",
+    );
+    expect(settled.body).not.toContain('E{"digest"');
+    expect(settled.body).not.toContain(`first-${suffix}`);
+    expect(settled.body).not.toContain(`second-${suffix}`);
+  } else {
+    const forcedClientSecond = await request.get(forcedClientSecondUrl, { headers: rscHeaders });
+    const forcedClientSecondBody = await forcedClientSecond.text();
+    expect(forcedClientSecond.ok()).toBe(true);
+    expect(forcedClientSecond.headers()[cacheStatusHeader]).toBe("HIT");
+    expect(forcedClientSecondBody).toBe(forcedClientFirstBody);
+    expect(forcedClientFirstBody).not.toContain('E{"digest"');
+    expect(forcedClientFirstBody).not.toContain(`first-${suffix}`);
+    expect(forcedClientFirstBody).not.toContain(`second-${suffix}`);
+    await forcedClientSecond.dispose();
+  }
   await page.goto(`${baseURL}${forcedClientPath}?q=second-${suffix}`);
   await expect(page.getByTestId("query-force-static-client-page-value")).toHaveText("(empty)");
 
@@ -416,32 +455,13 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   if (backend === "response-store") {
     // Separate isolates can briefly miss the same key and publish competing
     // renders. Compare two settled HITs, not either cold render.
-    ordinaryRscSecondHeaders = {};
-    ordinaryRscSecondBody = "";
-    await expect
-      .poll(
-        async () => {
-          const first = await request.get(firstRscUrl, { headers: rscHeaders });
-          const second = await request.get(secondRscUrl, { headers: rscHeaders });
-          try {
-            expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
-            expect(second.ok(), JSON.stringify(second.headers())).toBe(true);
-            const statuses = `${first.headers()[cacheStatusHeader]}/${second.headers()[cacheStatusHeader]}`;
-            if (statuses !== "HIT/HIT") return statuses;
-            const firstBody = await first.text();
-            const secondBody = await second.text();
-            if (firstBody !== secondBody) return "HIT/HIT/different";
-            ordinaryRscSecondHeaders = second.headers();
-            ordinaryRscSecondBody = secondBody;
-            return "HIT/HIT/same";
-          } finally {
-            await first.dispose();
-            await second.dispose();
-          }
-        },
-        { message: "Response Store did not share the on-demand RSC page", timeout: 30_000 },
-      )
-      .toBe("HIT/HIT/same");
+    const settled = await waitForResponseStoreRscPair(
+      firstRscUrl,
+      secondRscUrl,
+      "Response Store did not share the on-demand RSC page",
+    );
+    ordinaryRscSecondHeaders = settled.headers;
+    ordinaryRscSecondBody = settled.body;
   } else {
     const second = await request.get(secondRscUrl, { headers: rscHeaders });
     expect(second.ok(), JSON.stringify(second.headers())).toBe(true);
@@ -678,42 +698,57 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   });
   const staleRscSeedBody = await staleRscSeed.text();
   expect(staleRscSeed.ok(), JSON.stringify(staleRscSeed.headers())).toBe(true);
-  expect(staleRscSeedBody).not.toContain(staleRscSeedQuery);
-  await new Promise((resolve) => setTimeout(resolve, 1_100));
-  const staleRscTrigger = await request.get(
-    `${staleClientPath}?q=${staleRscRegenerationQuery}&_rsc`,
-    { headers: staleRscHeaders },
-  );
-  expect(staleRscTrigger.ok(), JSON.stringify(staleRscTrigger.headers())).toBe(true);
-  expect(await staleRscTrigger.text()).not.toContain(staleRscRegenerationQuery);
-  let regeneratedRscBody = "";
-  await expect
-    .poll(
-      async () => {
-        const response = await request.get(`${staleClientPath}?q=${staleRscCurrentQuery}&_rsc`, {
-          headers: staleRscHeaders,
-        });
-        const body = await response.text();
-        expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
-        const status = response.headers()[cacheStatusHeader];
-        const renderedPath = decodeURIComponent(
-          response.headers()["x-vinext-rendered-path-and-search"] ?? "",
-        );
-        await response.dispose();
-        if (body !== staleRscSeedBody && (backend === "kv" || status === "HIT")) {
-          regeneratedRscBody = body;
-          if (backend !== "kv") {
+  await staleRscSeed.dispose();
+  if (backend === "kv") {
+    // KV retains its full-query direct-RSC identity. Its Flight bytes may carry
+    // the current query, but a second query must never receive those bytes.
+    expect(staleRscSeedBody).toContain(staleRscSeedQuery);
+    const isolated = await request.get(`${staleClientPath}?q=${staleRscCurrentQuery}&_rsc`, {
+      headers: staleRscHeaders,
+    });
+    const isolatedBody = await isolated.text();
+    expect(isolated.ok(), JSON.stringify(isolated.headers())).toBe(true);
+    expect(isolated.headers()[cacheStatusHeader]).not.toBe("HIT");
+    expect(isolatedBody).toContain(staleRscCurrentQuery);
+    expect(isolatedBody).not.toContain(staleRscSeedQuery);
+    await isolated.dispose();
+  } else {
+    expect(staleRscSeedBody).not.toContain(staleRscSeedQuery);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const staleRscTrigger = await request.get(
+      `${staleClientPath}?q=${staleRscRegenerationQuery}&_rsc`,
+      { headers: staleRscHeaders },
+    );
+    expect(staleRscTrigger.ok(), JSON.stringify(staleRscTrigger.headers())).toBe(true);
+    expect(await staleRscTrigger.text()).not.toContain(staleRscRegenerationQuery);
+    await staleRscTrigger.dispose();
+    let regeneratedRscBody = "";
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(`${staleClientPath}?q=${staleRscCurrentQuery}&_rsc`, {
+            headers: staleRscHeaders,
+          });
+          const body = await response.text();
+          expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
+          const status = response.headers()[cacheStatusHeader];
+          const renderedPath = decodeURIComponent(
+            response.headers()["x-vinext-rendered-path-and-search"] ?? "",
+          );
+          await response.dispose();
+          if (body !== staleRscSeedBody && status === "HIT") {
+            regeneratedRscBody = body;
             expect(renderedPath).toBe(`/query-stale-client?q=${staleRscCurrentQuery}`);
+            return "regenerated";
           }
-          return "regenerated";
-        }
-        return "pending";
-      },
-      { message: `${backend} did not regenerate the stale direct RSC artifact`, timeout: 30_000 },
-    )
-    .toBe("regenerated");
-  for (const query of [staleRscSeedQuery, staleRscRegenerationQuery, staleRscCurrentQuery]) {
-    expect(regeneratedRscBody).not.toContain(query);
+          return "pending";
+        },
+        { message: `${backend} did not regenerate the stale direct RSC artifact`, timeout: 30_000 },
+      )
+      .toBe("regenerated");
+    for (const query of [staleRscSeedQuery, staleRscRegenerationQuery, staleRscCurrentQuery]) {
+      expect(regeneratedRscBody).not.toContain(query);
+    }
   }
   const currentClientQuery = `current-${suffix}`;
   await page.goto(`${staleClientPath}?q=${currentClientQuery}`);

@@ -912,6 +912,30 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("boundary:ssr-decoder");
   });
 
+  it('rejects Client Page query access under dynamic = "error" even without a shared cache candidate', async () => {
+    // Next.js enforces the segment contract when searchParams is read, not
+    // only when an outer cache adapter intends to share the response.
+    // See: packages/next/src/server/request/search-params.ts
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isDynamicError: true,
+      queryIndependentCandidate: false,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          options?.onSsrSearchParamsAccess?.();
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+    });
+
+    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('dynamic = "error"') }),
+      "ssr",
+    );
+    await expect(response.text()).resolves.toContain('dynamic = "error"');
+  });
+
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {
     const common = createCommonOptions();
 

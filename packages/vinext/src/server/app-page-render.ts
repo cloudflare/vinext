@@ -1280,7 +1280,8 @@ async function renderAppPageLifecycleImpl(
         queryFromBrowserForSharedHtml:
           options.queryIndependentCandidate === true && !options.isForceStatic,
         onSsrSearchParamsAccess:
-          options.queryIndependentCandidate === true && !options.isForceStatic
+          (options.isDynamicError || options.queryIndependentCandidate === true) &&
+          !options.isForceStatic
             ? () => {
                 if (options.isDynamicError) {
                   throw new Error(getAppPageStaticGenerationErrorMessage());
