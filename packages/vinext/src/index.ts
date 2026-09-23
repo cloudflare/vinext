@@ -207,6 +207,7 @@ import { validateMiddlewareModuleExports } from "./plugins/middleware-export-val
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { createOgHarfbuzzPlugin } from "./plugins/og-harfbuzz.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -7715,6 +7716,7 @@ export const loadServerActionClient = ${
     // Handle `import x from '*.wasm?module'` — see
     // src/plugins/wasm-module-import.ts. Fixes #1351.
     createWasmModuleImportPlugin(),
+    createOgHarfbuzzPlugin(),
     {
       // @vercel/og WASM patch — universal (workerd + Node.js)
       //

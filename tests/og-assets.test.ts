@@ -183,6 +183,22 @@ describe("vinext:og-assets plugin", () => {
   });
 
   describe("fallback: no emitted asset (copyMissingOgWasm helper)", () => {
+    it.each(["rsc", "ssr"])("points a nested %s chunk at the root copy", (environment) => {
+      const plugin = createOgAssetsPlugin();
+      const generateBundle = unwrapHook(plugin.generateBundle);
+      const chunk = {
+        type: "chunk",
+        fileName: "_next/static/index.node.js",
+        code: 'new URL("./hb.wasm", import.meta.url)',
+        map: null,
+      };
+      const bundle = { [chunk.fileName]: chunk };
+
+      generateBundle.call({ environment: { name: environment } }, {}, bundle);
+
+      expect(chunk.code).toContain('new URL("../../hb.wasm", import.meta.url)');
+    });
+
     // Tested via the pure helper with an injected source dir so the assertion
     // is hermetic — it does not depend on the real @vercel/og install (whose
     // yoga.wasm only exists as a side effect of the og-font-patch transform).
@@ -219,16 +235,16 @@ describe("vinext:og-assets plugin", () => {
   });
 
   describe("guards", () => {
-    it("ignores non-rsc environments", () => {
+    it("ignores client environments", () => {
       const plugin = createOgAssetsPlugin();
       const generateBundle = unwrapHook(plugin.generateBundle);
 
       const chunkCode = "new URL(`./resvg.wasm`,import.meta.url);";
       const bundle = makeBundle({ chunkCode, resvgAsset: "_next/static/resvg-BBB.wasm" });
 
-      generateBundle.call({ environment: { name: "ssr" } }, {}, bundle);
+      generateBundle.call({ environment: { name: "client" } }, {}, bundle);
 
-      // Untouched: the ssr environment is not handled.
+      // Untouched: the client environment is not handled.
       expect(bundle["_next/static/index.edge-AAA.js"].code).toContain(
         "new URL(`./resvg.wasm`,import.meta.url)",
       );
