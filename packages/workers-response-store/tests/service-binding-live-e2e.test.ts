@@ -89,6 +89,13 @@ test("manual refresh loops back into the user Worker without a reverse binding",
     edgePurgeAccepted: EDGE_PURGE_ACCEPTED,
   });
 
+  if (!EDGE_PURGE_ACCEPTED) {
+    // The backing store has committed the manual refresh, but an unpurged
+    // edge response can remain stale until expiry and then regenerate with
+    // reason "expired". It cannot prove the manual response's headers.
+    return;
+  }
+
   const response = await eventually(async () => {
     const candidate = await read(path);
     const body = await candidate.clone().text();
