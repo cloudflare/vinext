@@ -6,6 +6,7 @@ import { useClientPageSearchParams } from "./navigation.js";
 import { makeThenableParams } from "./thenable-params.js";
 
 type SearchParams = Record<string, string | string[]>;
+const cachedClientSearchParams = new WeakMap<object, Promise<SearchParams>>();
 
 function toPageSearchParams(search: URLSearchParams): SearchParams {
   const result: SearchParams = Object.create(null);
@@ -49,8 +50,14 @@ export function ClientPageRoot({
           },
         }
       : undefined;
-  return createElement(Component, {
-    ...props,
-    searchParams: makeThenableParams(searchParams, observer),
-  });
+  // React retries a Client Page from scratch after use(searchParams) suspends.
+  // Reuse the same promise for the stable navigation snapshot (or RSC prop),
+  // as Next.js does, so the retry can observe its resolved value.
+  const source = serverProvidedSearchParams ?? currentSearchParams;
+  let thenable = cachedClientSearchParams.get(source);
+  if (!thenable) {
+    thenable = makeThenableParams(searchParams, observer);
+    cachedClientSearchParams.set(source, thenable);
+  }
+  return createElement(Component, { ...props, searchParams: thenable });
 }
