@@ -172,45 +172,59 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   // See Next.js: test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
   const ordinaryPath = `/query-on-demand/${suffix}-rsc`;
-  const ordinaryRscFirst = await request.get(
-    `${baseURL}${ordinaryPath}?q=first-${suffix}&_rsc=first-${suffix}`,
-    { headers: rscHeaders },
-  );
+  const firstRscUrl = `${baseURL}${ordinaryPath}?q=first-${suffix}&_rsc=first-${suffix}`;
+  const secondRscUrl = `${baseURL}${ordinaryPath}?q=second-${suffix}&_rsc=second-${suffix}`;
+  const ordinaryRscFirst = await request.get(firstRscUrl, { headers: rscHeaders });
   const ordinaryRscBody = await ordinaryRscFirst.text();
   expect(ordinaryRscFirst.ok(), JSON.stringify(ordinaryRscFirst.headers())).toBe(true);
   expect(ordinaryRscFirst.headers()["content-type"]).toContain("text/x-component");
   expect(ordinaryRscBody).toContain(`${suffix}-rsc`);
+  let ordinaryRscSecondHeaders: Record<string, string>;
+  let ordinaryRscSecondBody: string;
   if (backend === "response-store") {
+    // Separate isolates can briefly miss the same key and publish competing
+    // renders. Compare two settled HITs, not either cold render.
+    ordinaryRscSecondHeaders = {};
+    ordinaryRscSecondBody = "";
     await expect
       .poll(
         async () => {
-          const response = await request.get(
-            `${baseURL}${ordinaryPath}?q=first-${suffix}&_rsc=first-${suffix}`,
-            { headers: rscHeaders },
-          );
-          const status = response.headers()[cacheStatusHeader];
-          await response.dispose();
-          return status;
+          const first = await request.get(firstRscUrl, { headers: rscHeaders });
+          const second = await request.get(secondRscUrl, { headers: rscHeaders });
+          try {
+            expect(first.ok(), JSON.stringify(first.headers())).toBe(true);
+            expect(second.ok(), JSON.stringify(second.headers())).toBe(true);
+            const statuses = `${first.headers()[cacheStatusHeader]}/${second.headers()[cacheStatusHeader]}`;
+            if (statuses !== "HIT/HIT") return statuses;
+            const firstBody = await first.text();
+            const secondBody = await second.text();
+            if (firstBody !== secondBody) return "HIT/HIT/different";
+            ordinaryRscSecondHeaders = second.headers();
+            ordinaryRscSecondBody = secondBody;
+            return "HIT/HIT/same";
+          } finally {
+            await first.dispose();
+            await second.dispose();
+          }
         },
-        { message: "Response Store did not publish the on-demand RSC page", timeout: 30_000 },
+        { message: "Response Store did not share the on-demand RSC page", timeout: 30_000 },
       )
-      .toBe("HIT");
+      .toBe("HIT/HIT/same");
+  } else {
+    const second = await request.get(secondRscUrl, { headers: rscHeaders });
+    expect(second.ok(), JSON.stringify(second.headers())).toBe(true);
+    ordinaryRscSecondHeaders = second.headers();
+    ordinaryRscSecondBody = await second.text();
+    await second.dispose();
   }
-  const ordinaryRscSecond = await request.get(
-    `${baseURL}${ordinaryPath}?q=second-${suffix}&_rsc=second-${suffix}`,
-    { headers: rscHeaders },
-  );
-  expect(ordinaryRscSecond.ok(), JSON.stringify(ordinaryRscSecond.headers())).toBe(true);
-  expect(ordinaryRscSecond.headers()["content-type"]).toContain("text/x-component");
-  const ordinaryRscSecondBody = await ordinaryRscSecond.text();
+  expect(ordinaryRscSecondHeaders["content-type"]).toContain("text/x-component");
   expect(ordinaryRscSecondBody).toContain(`${suffix}-rsc`);
-  if (backend === "response-store") {
-    expect(ordinaryRscSecond.headers()[cacheStatusHeader]).toBe("HIT");
-    expect(ordinaryRscSecondBody).toBe(ordinaryRscBody);
+  if (backend === "workers-cache") {
+    expect(ordinaryRscSecondHeaders[cacheStatusHeader]).not.toBe("HIT");
   }
   if (backend !== "kv") {
     expect(
-      decodeURIComponent(ordinaryRscSecond.headers()["x-vinext-rendered-path-and-search"] ?? ""),
+      decodeURIComponent(ordinaryRscSecondHeaders["x-vinext-rendered-path-and-search"] ?? ""),
     ).toBe(`${ordinaryPath}?q=second-${suffix}`);
   }
 
