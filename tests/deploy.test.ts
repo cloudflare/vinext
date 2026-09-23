@@ -23,7 +23,6 @@ import {
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
   runKVBulkPut,
-  runCfAuxiliaryWorkerDeploys,
   runCfDeploy,
   runWranglerDeploy,
   validateWranglerEnvName,
@@ -669,7 +668,7 @@ describe("cf Build Output deployment", () => {
     expect(observed?.[2]).toMatchObject({ shell: false });
   });
 
-  it("deploys auxiliary Workers from their generated Build Output", async () => {
+  it("deploys named Build Output Workers before the default Worker", async () => {
     writeCfPackageForTest(tmpDir);
     const auxiliaryDir = path.join(
       tmpDir,
@@ -677,37 +676,62 @@ describe("cf Build Output deployment", () => {
       "output",
       "v0",
       "workers",
-      "response-store-service-binding",
+      "z-response-store-service-binding",
     );
     fs.mkdirSync(auxiliaryDir, { recursive: true });
     writeFile(auxiliaryDir, "worker.config.json", JSON.stringify({ name: "response-store" }));
+    mkdir(tmpDir, ".cloudflare/output/v0/workers/a-service");
     const invocations: Parameters<typeof spawn>[] = [];
     const execute = ((...args: Parameters<typeof spawn>) => {
       invocations.push(args);
-      expect(
-        JSON.parse(fs.readFileSync(path.join(auxiliaryDir, "worker.config.json"), "utf8")),
-      ).toEqual({
-        name: "response-store",
-      });
-      return createMockChildProcess();
+      return createMockChildProcess(
+        args[1].includes("--worker") ? "" : "https://app.example.workers.dev\n",
+      );
     }) as typeof spawn;
 
-    await runCfAuxiliaryWorkerDeploys(tmpDir, {}, execute);
+    await expect(runCfDeploy(tmpDir, { env: "staging" }, execute)).resolves.toBe(
+      "https://app.example.workers.dev",
+    );
 
-    expect(invocations).toHaveLength(1);
+    expect(invocations).toHaveLength(3);
     expect(invocations[0]?.[0]).toBe(process.execPath);
-    expect(invocations[0]?.[1]).toEqual([
-      fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
-      "deploy",
-      "--prebuilt",
-      "--worker",
-      "response-store-service-binding",
+    const cfBin = fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf"));
+    expect(invocations.map(([, args]) => args)).toEqual([
+      [cfBin, "deploy", "--prebuilt", "--mode", "staging", "--worker", "a-service"],
+      [
+        cfBin,
+        "deploy",
+        "--prebuilt",
+        "--mode",
+        "staging",
+        "--worker",
+        "z-response-store-service-binding",
+      ],
+      [cfBin, "deploy", "--prebuilt", "--mode", "staging"],
     ]);
-    expect(invocations[0]?.[2]).toMatchObject({
-      cwd: tmpDir,
-      shell: false,
-      stdio: "inherit",
-    });
+    for (const [, , options] of invocations) {
+      expect(options).toMatchObject({ cwd: tmpDir, shell: false });
+    }
+    expect(invocations.map(([, , options]) => options?.stdio)).toEqual([
+      "inherit",
+      "inherit",
+      ["inherit", "pipe", "pipe"],
+    ]);
+  });
+
+  it("does not deploy the default Worker if a named Worker fails", async () => {
+    writeCfPackageForTest(tmpDir);
+    mkdir(tmpDir, ".cloudflare/output/v0/workers/response-store");
+    const invocations: Parameters<typeof spawn>[] = [];
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      invocations.push(args);
+      return createMockChildProcess("", 1);
+    }) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, {}, execute)).rejects.toThrow(
+      "cf deploy failed for auxiliary Worker response-store with exit code 1",
+    );
+    expect(invocations).toHaveLength(1);
   });
 });
 

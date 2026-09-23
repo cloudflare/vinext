@@ -353,10 +353,11 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          vp exec node --input-type=module -e '
-            import { runCfAuxiliaryWorkerDeploys } from "@vinext/cloudflare/internal/deploy";
-            await runCfAuxiliaryWorkerDeploys(process.cwd());
-          '
+          for worker_dir in .cloudflare/output/v0/workers/*; do
+            if [[ -d "$worker_dir" && ! -L "$worker_dir" && "${worker_dir##*/}" != default ]]; then
+              vp exec cf deploy --prebuilt --worker "${worker_dir##*/}"
+            fi
+          done
           vp exec cf workers versions create --prebuilt --preview-alias pr-${{ github.event.pull_request.number }}
 
       - name: Deploy Named Preview Worker
