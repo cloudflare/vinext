@@ -505,9 +505,12 @@ async function executeAppRouteHandlerImpl(
         try {
           const routeCacheValue = await buildAppRouteCacheValue(routeClone);
           await options.isrSet(routeKey, routeCacheValue, {
-            cacheControl: isrCacheControl(revalidateSeconds, {
-              expireSeconds: options.expireSeconds,
-            }),
+            cacheControl: isrCacheControl(
+              revalidateSeconds === Infinity ? false : revalidateSeconds,
+              {
+                expireSeconds: options.expireSeconds,
+              },
+            ),
             tags: routeTags,
           });
           options.isrDebug?.("route cache written", routeKey);

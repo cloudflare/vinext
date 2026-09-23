@@ -677,6 +677,29 @@ describe("KVCacheHandler", () => {
       expect(hit?.value).toMatchObject({ kind: "APP_PAGE", html: "<div>static</div>" });
     });
 
+    it("round-trips an indefinitely cached APP_ROUTE without serializing Infinity", async () => {
+      await handler.set(
+        "static-route-handler",
+        {
+          kind: "APP_ROUTE",
+          body: new TextEncoder().encode("static handler").buffer,
+          headers: {},
+          status: 200,
+        },
+        { cacheControl: { revalidate: Infinity }, revalidate: Infinity },
+      );
+
+      const raw = store.get("cache:static-route-handler");
+      expect(raw).toBeTruthy();
+      expect(JSON.parse(raw!).cacheControl.revalidate).toBe(false);
+      expect(kv.put.mock.calls.at(-1)?.[2]?.expirationTtl).toBeUndefined();
+      const hit = await handler.get("static-route-handler");
+      expect(hit?.cacheControl).toEqual({ revalidate: false });
+      expect(hit?.value?.kind).toBe("APP_ROUTE");
+      if (hit?.value?.kind !== "APP_ROUTE") throw new Error("Expected APP_ROUTE cache entry");
+      expect(new TextDecoder().decode(hit.value.body)).toBe("static handler");
+    });
+
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);

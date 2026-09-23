@@ -172,7 +172,18 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts
   const handlerFirst = await request.get(`${baseURL}/api/query-handler-static?q=first-${suffix}`);
   expect(handlerFirst.ok(), JSON.stringify(handlerFirst.headers())).toBe(true);
-  const firstHandlerBody = await handlerFirst.json();
+  const firstHandlerBody = (await handlerFirst.json()) as { id: string; search: string };
+  await expect
+    .poll(
+      async () => {
+        const repeated = await request.get(`${baseURL}/api/query-handler-static?q=first-${suffix}`);
+        const body = (await repeated.json()) as { id: string; search: string };
+        await repeated.dispose();
+        return body.id;
+      },
+      { message: `${backend} did not persist the force-static handler`, timeout: 10_000 },
+    )
+    .toBe(firstHandlerBody.id);
   const handlerSecond = await request.get(`${baseURL}/api/query-handler-static?q=second-${suffix}`);
   expect(handlerSecond.ok(), JSON.stringify(handlerSecond.headers())).toBe(true);
   expect(await handlerSecond.json()).toEqual(firstHandlerBody);
