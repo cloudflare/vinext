@@ -565,10 +565,8 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
             const body = await response.text();
             expect(response.ok(), JSON.stringify(response.headers())).toBe(true);
             expect(response.headers()["content-type"]).toContain("text/x-component");
-            if (response.headers()[cacheStatusHeader] === "HIT") {
-              expect(body).toContain(value);
-              if (previousPublicRscValue) expect(body).not.toContain(previousPublicRscValue);
-            }
+            expect(body).toContain(value);
+            if (previousPublicRscValue) expect(body).not.toContain(previousPublicRscValue);
             await response.dispose();
             return response.headers()[cacheStatusHeader];
           },
