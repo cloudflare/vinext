@@ -11,12 +11,24 @@ export function registerPrerenderCloudflareLoader(): void {
     function unavailable() {
       throw new Error("Cloudflare bindings are unavailable during build-time prerendering. Use deployment pre-warming for binding-dependent routes.");
     }
-    export const env = new Proxy({}, {
+    const inaccessible = new Proxy({}, {
       get: unavailable,
       has: unavailable,
       ownKeys: unavailable,
       getOwnPropertyDescriptor: unavailable,
     });
+    export const env = inaccessible;
+    export const exports = inaccessible;
+    export const cache = inaccessible;
+    export class WorkerEntrypoint { constructor() { unavailable(); } }
+    export class DurableObject { constructor() { unavailable(); } }
+    export class RpcTarget { constructor() { unavailable(); } }
+    export class WorkflowEntrypoint { constructor() { unavailable(); } }
+    export class WorkflowStep { constructor() { unavailable(); } }
+    export function RpcStub() { unavailable(); }
+    export function withEnv() { unavailable(); }
+    export function withExports() { unavailable(); }
+    export function withEnvAndExports() { unavailable(); }
     export function waitUntil() {
       throw new Error("Cloudflare waitUntil is unavailable during build-time prerendering.");
     }
