@@ -70,7 +70,7 @@ To prefill configured caches before promoting a new Worker version, see [Cache w
 
 ## Use Workers bindings
 
-Import `env` from `cloudflare:workers` in Server Components, Route Handlers, and Server Actions. Configure each binding in Wrangler as usual.
+Import `env` from `cloudflare:workers` in Server Components, Route Handlers, and Server Actions. Configure each binding in `wrangler.jsonc`, or in `cloudflare.config.ts` when using `--experimental-cf`.
 
 ```tsx
 import { env } from "cloudflare:workers";
