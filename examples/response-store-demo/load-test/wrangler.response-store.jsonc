@@ -1,0 +1,37 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "vinext-response-store-load-test-cache",
+  "main": "../node_modules/@cloudflare/workers-response-store/dist/service.js",
+  "compatibility_date": "2026-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "account_id": "d48e2eb599d9aa075d5e682deaecc518",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.01,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": true
+    }
+  },
+  "cache": { "enabled": true },
+  "placement": { "region": "aws:eu-west-2" },
+  "exports": {
+    "default": { "type": "worker", "cache": { "enabled": false } },
+    "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },
+    "CacheMetadata": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "r2_buckets": [
+    {
+      "binding": "CACHE_BODIES",
+      "bucket_name": "vinext-response-store-load-test-bodies"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "CACHE_METADATA", "class_name": "CacheMetadata" }]
+  }
+}
