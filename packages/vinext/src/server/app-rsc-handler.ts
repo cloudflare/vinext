@@ -1177,9 +1177,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           const candidate =
             cache === "shared" &&
             responseStagePolicy === null &&
-            props.kind === "app-page" &&
+            (props.kind === "app-page" || props.kind === "app-route-handler") &&
             props.forceDynamic !== true &&
-            props.mayBeClientPage !== true &&
+            (props.kind === "app-route-handler"
+              ? props.queryIndependentConfig === true
+              : props.mayBeClientPage !== true || props.queryIndependentConfig === true) &&
             // A query-changing rewrite needs its server-owned bootstrap.
             hasSameUserQuery(stageRequest.url, props.resolvedUrl);
           let response = await dispatchResponseStage(
@@ -1192,15 +1194,16 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                 ...(candidate ? { queryIndependentCandidate: true } : {}),
                 ...(candidate &&
                 (props.queryIndependentConfig === true ||
-                  options.queryIndependentAppPage?.(
-                    props.routePattern,
-                    props.routePathname,
-                    !props.isRscRequest
-                      ? "html"
-                      : props.renderMode === "prefetch-loading-shell"
-                        ? "rsc-loading-shell"
-                        : "rsc-full",
-                  ))
+                  (props.kind === "app-page" &&
+                    options.queryIndependentAppPage?.(
+                      props.routePattern,
+                      props.routePathname,
+                      !props.isRscRequest
+                        ? "html"
+                        : props.renderMode === "prefetch-loading-shell"
+                          ? "rsc-loading-shell"
+                          : "rsc-full",
+                    )))
                   ? { queryIndependent: true }
                   : {}),
               },
@@ -2415,7 +2418,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         queryIndependentCandidate:
           request.method === "GET" &&
           !route.forceDynamic &&
-          !route.mayBeClientPage &&
+          (!route.mayBeClientPage || route.queryIndependentConfig === true) &&
           !isProgressiveActionRender &&
           hasSameUserQuery(url.toString(), resolvedUrl),
         middlewareContext,

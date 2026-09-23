@@ -492,6 +492,12 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.ok(!forceStaticSecond.body.includes("searchParamsFromBrowser:true"));
     assert.doesNotMatch(forceStaticSecond.cacheControl ?? "", /no-store/);
 
+    const handlerFirst = await cacheStatus("/api/query-handler-static?q=first");
+    const handlerSecond = await cacheStatus("/api/query-handler-static?q=second");
+    assert.equal(handlerSecond.status, "HIT");
+    assert.equal(handlerSecond.body, handlerFirst.body);
+    assert.equal(JSON.parse(handlerSecond.body).search, "");
+
     const firstWithQuery = await cacheStatus("/query-independent?reverse=first");
     const afterQuery = await cacheStatus("/query-independent");
     assert.equal(firstWithQuery.status, "HIT");

@@ -9,7 +9,7 @@ export function generateStaticParams() {
   return [];
 }
 
-export default async function QueryForceStaticOnDemandPage({
+async function QueryForceStaticOnDemandPage({
   searchParams,
 }: {
   searchParams: Promise<{ q?: string }>;
@@ -23,3 +23,6 @@ export default async function QueryForceStaticOnDemandPage({
     </main>
   );
 }
+
+// Exercise a valid Server Page whose default export is not a function declaration.
+export default QueryForceStaticOnDemandPage;

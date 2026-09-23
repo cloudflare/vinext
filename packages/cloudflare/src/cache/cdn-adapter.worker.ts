@@ -384,7 +384,7 @@ function restoreResponseStageRequest(
   };
 }
 
-/** Select the shared App Page entry before rendering, but carry the original
+/** Select the shared App entry before rendering, but carry the original
  * query outside the entrypoint URL and props for a cold render. The certificate
  * comes from the trusted request stage, never from an inbound request header.
  */
@@ -396,7 +396,7 @@ function queryIndependentAppPageInvocation(
   const page = props as Record<string, unknown>;
   const cacheability = page.cacheability;
   if (
-    page.kind !== "app-page" ||
+    (page.kind !== "app-page" && page.kind !== "app-route-handler") ||
     typeof page.resolvedUrl !== "string" ||
     !cacheability ||
     typeof cacheability !== "object" ||
@@ -440,7 +440,11 @@ function restoreQueryIndependentAppPageInvocation(
     )
       return null;
     const props = invocation.props as Record<string, unknown>;
-    if (props.kind !== "app-page" || typeof props.resolvedUrl !== "string") return null;
+    if (
+      (props.kind !== "app-page" && props.kind !== "app-route-handler") ||
+      typeof props.resolvedUrl !== "string"
+    )
+      return null;
     const request = new URL(invocation.requestUrl);
     request.search = searches[0];
     const resolved = new URL(props.resolvedUrl, request);

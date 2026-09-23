@@ -324,6 +324,20 @@ export function cacheabilityRoutePathname(
   );
 }
 
+function includesSortedPath(paths: readonly string[] | undefined, token: string): boolean {
+  if (!paths) return false;
+  let low = 0;
+  let high = paths.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const candidate = paths[middle];
+    if (candidate === token) return true;
+    if (candidate < token) low = middle + 1;
+    else high = middle - 1;
+  }
+  return false;
+}
+
 export function cacheabilityManifestRouteState(
   route: CacheabilityManifestRoute,
   routePathname: string,
@@ -342,19 +356,8 @@ export function cacheabilityManifestRouteState(
     }
     pathToken = pathname.slice(route.pathPrefix.length);
   }
-  const includesPath = (paths: readonly string[] | undefined): boolean => {
-    if (!paths) return false;
-    let low = 0;
-    let high = paths.length - 1;
-    while (low <= high) {
-      const middle = (low + high) >>> 1;
-      const candidate = paths[middle];
-      if (candidate === pathToken) return true;
-      if (candidate < pathToken) low = middle + 1;
-      else high = middle - 1;
-    }
-    return false;
-  };
+  const includesPath = (paths: readonly string[] | undefined): boolean =>
+    includesSortedPath(paths, pathToken);
 
   if (representation && includesPath(route.staticPaths?.[representation])) {
     return "static-candidate";
@@ -399,7 +402,9 @@ export function isQueryIndependentManifestArtifact(
   const paths = route.staticPaths?.[representation];
   if (!paths) return false;
   const token = route.pathPrefix ? pathname.slice(route.pathPrefix.length) : pathname;
-  return (!route.pathPrefix || pathname.startsWith(route.pathPrefix)) && paths.includes(token);
+  return (
+    (!route.pathPrefix || pathname.startsWith(route.pathPrefix)) && includesSortedPath(paths, token)
+  );
 }
 
 export function findCacheabilityManifestRoute(

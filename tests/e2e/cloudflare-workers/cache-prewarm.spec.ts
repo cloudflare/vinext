@@ -11,7 +11,7 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
 }) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   if (!baseURL) throw new Error("deployed test requires a base URL");
-  test.setTimeout(90_000);
+  test.setTimeout(180_000);
 
   const testStartedAt = Date.now();
   const buildId = fs
@@ -166,6 +166,18 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
       decodeURIComponent(forceStaticSecondRsc.headers()["x-vinext-rendered-path-and-search"] ?? ""),
     ).toBe(`/query-force-static/${suffix}?q=second-${suffix}`);
   }
+
+  // A force-static Route Handler strips the query and reuses its pathname artifact.
+  // Ported from Next.js: test/e2e/app-dir/app-routes/app-custom-routes.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts
+  const handlerFirst = await request.get(`${baseURL}/api/query-handler-static?q=first-${suffix}`);
+  expect(handlerFirst.ok(), JSON.stringify(handlerFirst.headers())).toBe(true);
+  const firstHandlerBody = await handlerFirst.json();
+  const handlerSecond = await request.get(`${baseURL}/api/query-handler-static?q=second-${suffix}`);
+  expect(handlerSecond.ok(), JSON.stringify(handlerSecond.headers())).toBe(true);
+  expect(await handlerSecond.json()).toEqual(firstHandlerBody);
+  expect(firstHandlerBody.search).toBe("");
+  if (backend !== "kv") expect(handlerSecond.headers()[cacheStatusHeader]).toBe("HIT");
 
   for (const path of ["query-dependent", "query-client-dependent", "query-prop-to-client"]) {
     // The empty-query response is a particularly dangerous source of false

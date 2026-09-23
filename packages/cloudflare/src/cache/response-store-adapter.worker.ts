@@ -290,9 +290,10 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
     const page = props as Record<string, unknown>;
     const cacheability = page.cacheability;
     if (
-      page.kind === "app-page" &&
+      (page.kind === "app-page" ||
+        (page.kind === "app-route-handler" && page.queryIndependentConfig === true)) &&
       page.forceDynamic !== true &&
-      page.mayBeClientPage !== true &&
+      (page.mayBeClientPage !== true || page.queryIndependentConfig === true) &&
       typeof page.resolvedUrl === "string" &&
       cacheability &&
       typeof cacheability === "object" &&

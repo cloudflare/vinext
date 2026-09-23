@@ -290,7 +290,9 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
   };
 
   return routes.map((route) => {
-    const ownConfigs = [...route.layouts, route.pagePath].map(dynamicConfig);
+    const ownConfigs = (
+      route.routePath ? [route.routePath] : [...route.layouts, route.pagePath]
+    ).map(dynamicConfig);
     const configs = (
       route.routePath
         ? [route.routePath]
@@ -329,7 +331,6 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       // Only a literal static/error segment contract is a pre-render guarantee
       // for paths that were not prerendered. An ordinary successful probe is not.
       queryIndependentConfig:
-        !route.routePath &&
         ownConfigs.some((config) => config === "force-static" || config === "error") &&
         configs.every(
           (config) => config === null || config === "force-static" || config === "error",
