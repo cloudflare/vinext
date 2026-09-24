@@ -9,28 +9,32 @@
  * tests/e2e/cloudflare-workers/dynamic-preload.spec.ts. These tests pin the build
  * and runtime pieces that make them pass: the shared stylesheet gets one href
  * in both the RSC and client builds, it precedes its importer's own CSS, and
- * the client preload helper hands stylesheets to the App Router runtime.
+ * the client preload helper hands stylesheets to the App Router runtime, which
+ * still holds the chunk until its stylesheet has been fetched.
  */
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   assignSharedCssChunkNames,
   hoistIsolatedCss,
 } from "../packages/vinext/src/plugins/shared-css-chunks.js";
 import { patchPreloadHelperForAppStylesheets } from "../packages/vinext/src/plugins/app-stylesheet-preload.js";
-import { toDocumentStylesheetHref } from "../packages/vinext/src/server/app-browser-stylesheets.js";
+import {
+  installAppStylesheetLoader,
+  toDocumentStylesheetHref,
+} from "../packages/vinext/src/server/app-browser-stylesheets.js";
 import { APP_STYLESHEET_LOADER_KEY } from "../packages/vinext/src/utils/app-stylesheet-loader.js";
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 
-async function writeFile(file: string, source: string): Promise<void> {
+async function writeFile(file: string, source: string | Buffer): Promise<void> {
   await fsp.mkdir(path.dirname(file), { recursive: true });
-  await fsp.writeFile(file, source, "utf8");
+  await fsp.writeFile(file, source);
 }
 
 async function listFiles(dir: string): Promise<string[]> {
@@ -116,7 +120,10 @@ describe("hoistIsolatedCss", () => {
 
 describe("patchPreloadHelperForAppStylesheets", () => {
   // Mirrors the stylesheet branch of Vite's `preload()` helper source.
-  const helper = `promise = allSettled(deps.map((dep) => {
+  const helper = `const links = document.getElementsByTagName("link");
+		const cspNonceMeta = document.querySelector("meta[property=csp-nonce]");
+		const cspNonce = cspNonceMeta?.nonce || cspNonceMeta?.getAttribute("nonce");
+		promise = allSettled(deps.map((dep) => {
 			dep = assetsURL(dep, importerUrl);
 			dep = importMetaResolve(dep);
 			if (dep in seen) return;
@@ -141,6 +148,91 @@ describe("patchPreloadHelperForAppStylesheets", () => {
 
   it("returns null when Vite's helper changes shape", () => {
     expect(patchPreloadHelperForAppStylesheets("export const preload = () => {}")).toBeNull();
+    // The hand-off reads `dep`, `isCss` and `cspNonce`; renamed bindings would
+    // otherwise throw a ReferenceError for every CSS dependency at runtime.
+    expect(patchPreloadHelperForAppStylesheets(helper.replaceAll("cspNonce", "nonce"))).toBeNull();
+    expect(
+      patchPreloadHelperForAppStylesheets(helper.replace("const isCss = dep.", "const isCss = d.")),
+    ).toBeNull();
+  });
+});
+
+describe("App Router stylesheet loader", () => {
+  class FakeLink extends EventTarget {
+    rel = "";
+    as = "";
+    crossOrigin: string | null = null;
+    href = "";
+    readonly attributes = new Map<string, string>();
+    setAttribute(name: string, value: string): void {
+      this.attributes.set(name, value);
+    }
+  }
+
+  function installFakeDocument() {
+    const appended: FakeLink[] = [];
+    vi.stubGlobal("document", {
+      baseURI: "https://example.com/page",
+      createElement: () => new FakeLink(),
+      head: { appendChild: (link: FakeLink) => appended.push(link) },
+    });
+    installAppStylesheetLoader();
+    const load = (globalThis as Record<symbol, unknown>)[Symbol.for(APP_STYLESHEET_LOADER_KEY)] as (
+      url: string,
+      nonce?: string,
+    ) => Promise<void> | undefined;
+    return { appended, load };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete (globalThis as Record<symbol, unknown>)[Symbol.for(APP_STYLESHEET_LOADER_KEY)];
+  });
+
+  it("holds the chunk until the stylesheet has been fetched, like Vite's helper", async () => {
+    const { appended, load } = installFakeDocument();
+    const url = "https://example.com/_next/static/css/loader-wait.abc.css";
+
+    const loaded = load(url, "nonce-value");
+    expect(loaded).toBeInstanceOf(Promise);
+    expect(appended).toHaveLength(1);
+    const [link] = appended;
+    expect(link.rel).toBe("preload");
+    expect(link.as).toBe("style");
+    expect(link.crossOrigin).toBe("");
+    expect(link.href).toBe("/_next/static/css/loader-wait.abc.css");
+    expect(link.attributes.get("nonce")).toBe("nonce-value");
+
+    let settled = false;
+    void loaded!.then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+
+    link.dispatchEvent(new Event("load"));
+    await loaded;
+    expect(settled).toBe(true);
+
+    // A later chunk sharing the stylesheet waits on the same fetch.
+    expect(load(url)).toBe(loaded);
+    expect(appended).toHaveLength(1);
+  });
+
+  it("rejects like Vite's helper when the stylesheet fails to load", async () => {
+    const { appended, load } = installFakeDocument();
+    const url = "https://example.com/_next/static/css/loader-error.abc.css";
+
+    const loaded = load(url);
+    appended[0].dispatchEvent(new Event("error"));
+    await expect(loaded).rejects.toThrow(`Unable to preload CSS for ${url}`);
+
+    // A retried import fetches again rather than replaying the failure.
+    const retried = load(url);
+    expect(retried).not.toBe(loaded);
+    expect(appended).toHaveLength(2);
+    appended[1].dispatchEvent(new Event("load"));
+    await expect(retried).resolves.toBeUndefined();
   });
 });
 
@@ -165,25 +257,27 @@ describe("toDocumentStylesheetHref", () => {
 });
 
 describe("shared Server/Client Component stylesheets in production", () => {
-  it("emits one stylesheet href for both builds and orders it before the layout CSS", async () => {
-    const fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-shared-css-"));
-    try {
-      await fsp.symlink(ROOT_NODE_MODULES, path.join(fixtureRoot, "node_modules"), "junction");
-      await writeFile(
-        path.join(fixtureRoot, "package.json"),
-        `${JSON.stringify({ type: "module", dependencies: {} }, null, 2)}\n`,
-      );
-      await writeFile(
-        path.join(fixtureRoot, "app", "shared.css"),
-        ".shared-marker { color: rgb(1, 2, 3); }\n",
-      );
-      await writeFile(
-        path.join(fixtureRoot, "app", "layout.module.css"),
-        ".layout { color: rgb(4, 5, 6); }\n",
-      );
-      await writeFile(
-        path.join(fixtureRoot, "app", "layout.tsx"),
-        `import "./shared.css";
+  // 1x1 PNG, well under Vite's default 4 KiB `assetsInlineLimit`.
+  const TINY_PNG = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+    "base64",
+  );
+
+  /**
+   * Build an app whose root layout (Server Component) and a next/dynamic
+   * client component both import `app/shared.css`, then return the client
+   * output and plugin-rsc's assets manifest.
+   */
+  async function buildSharedStylesheetApp(
+    fixtureRoot: string,
+    options: { sharedCss: string; files?: Record<string, string | Buffer> },
+  ) {
+    await fsp.symlink(ROOT_NODE_MODULES, path.join(fixtureRoot, "node_modules"), "junction");
+    const files: Record<string, string | Buffer> = {
+      "package.json": `${JSON.stringify({ type: "module", dependencies: {} }, null, 2)}\n`,
+      "app/shared.css": options.sharedCss,
+      "app/layout.module.css": ".layout { color: rgb(4, 5, 6); }\n",
+      "app/layout.tsx": `import "./shared.css";
 import styles from "./layout.module.css";
 import Client from "./client";
 
@@ -191,10 +285,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return <html><body className={styles.layout}><Client />{children}</body></html>;
 }
 `,
-      );
-      await writeFile(
-        path.join(fixtureRoot, "app", "client.tsx"),
-        `"use client";
+      "app/client.tsx": `"use client";
 import dynamic from "next/dynamic";
 
 const Lazy = dynamic(() => import("./lazy"));
@@ -203,41 +294,61 @@ export default function Client() {
   return <Lazy />;
 }
 `,
-      );
-      await writeFile(
-        path.join(fixtureRoot, "app", "lazy.tsx"),
-        `import "./shared.css";
+      "app/lazy.tsx": `import "./shared.css";
 
 export default function Lazy() {
   return <p className="shared-marker">lazy</p>;
 }
 `,
-      );
-      await writeFile(
-        path.join(fixtureRoot, "app", "page.tsx"),
-        `export default function Page() {
+      "app/page.tsx": `export default function Page() {
   return <p>home</p>;
 }
 `,
-      );
+      ...options.files,
+    };
+    for (const [file, source] of Object.entries(files)) {
+      await writeFile(path.join(fixtureRoot, file), source);
+    }
 
-      const builder = await createBuilder({
-        root: fixtureRoot,
-        configFile: false,
-        plugins: [vinext({ appDir: fixtureRoot })],
-        logLevel: "silent",
-      });
-      await builder.buildApp();
+    const builder = await createBuilder({
+      root: fixtureRoot,
+      configFile: false,
+      plugins: [vinext({ appDir: fixtureRoot })],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
 
-      const clientFiles = await listFiles(path.join(fixtureRoot, "dist", "client"));
-      const sharedCss = clientFiles.filter((file) =>
-        /\/_next\/static\/css\/shared\.[\w-]+\.css$/.test(file),
-      );
+    const clientDir = path.join(fixtureRoot, "dist", "client");
+    const clientFiles = await listFiles(clientDir);
+    const sharedCss = clientFiles.filter((file) =>
+      /\/_next\/static\/css\/shared\.[\w-]+\.css$/.test(file),
+    );
+    const assetsManifest = (
+      await import(
+        pathToFileURL(path.join(fixtureRoot, "dist", "server", "__vite_rsc_assets_manifest.js"))
+          .href
+      )
+    ).default as { serverResources: Record<string, { css: string[] }> };
+    const layoutResources = Object.entries(assetsManifest.serverResources).find(([key]) =>
+      key.endsWith("app/layout.tsx"),
+    )?.[1];
+    const chunkSources = await Promise.all(
+      clientFiles.filter((file) => file.endsWith(".js")).map((file) => fsp.readFile(file, "utf8")),
+    );
+    const toHref = (file: string) => `/${path.relative(clientDir, file).split(path.sep).join("/")}`;
+    return { clientFiles, sharedCss, layoutResources, chunkSources, toHref };
+  }
+
+  it("emits one stylesheet href for both builds and orders it before the layout CSS", async () => {
+    const fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-shared-css-"));
+    try {
+      const { clientFiles, sharedCss, layoutResources, chunkSources, toHref } =
+        await buildSharedStylesheetApp(fixtureRoot, {
+          sharedCss: ".shared-marker { color: rgb(1, 2, 3); }\n",
+        });
+
       expect(sharedCss).toHaveLength(1);
-      const sharedHref = `/${path
-        .relative(path.join(fixtureRoot, "dist", "client"), sharedCss[0])
-        .split(path.sep)
-        .join("/")}`;
+      const sharedHref = toHref(sharedCss[0]);
       expect(await fsp.readFile(sharedCss[0], "utf8")).toContain(".shared-marker");
 
       // The shared rules live only in the isolated file on both sides.
@@ -246,23 +357,35 @@ export default function Lazy() {
         expect(await fsp.readFile(file, "utf8")).not.toContain(".shared-marker");
       }
 
-      const assetsManifest = (
-        await import(
-          pathToFileURL(path.join(fixtureRoot, "dist", "server", "__vite_rsc_assets_manifest.js"))
-            .href
-        )
-      ).default as { serverResources: Record<string, { css: string[] }> };
-      const layoutResources = Object.entries(assetsManifest.serverResources).find(([key]) =>
-        key.endsWith("app/layout.tsx"),
-      )?.[1];
       expect(layoutResources?.css[0]).toBe(sharedHref);
       expect(layoutResources?.css.length).toBeGreaterThan(1);
-
-      const clientChunks = clientFiles.filter((file) => file.endsWith(".js"));
-      const chunkSources = await Promise.all(
-        clientChunks.map((file) => fsp.readFile(file, "utf8")),
-      );
       expect(chunkSources.some((code) => code.includes(APP_STYLESHEET_LOADER_KEY))).toBe(true);
+    } finally {
+      await fsp.rm(fixtureRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 120_000);
+
+  it("keeps one href when the RSC and client builds compile the stylesheet differently", async () => {
+    const fixtureRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-shared-css-url-"));
+    try {
+      // Only the client environment disables asset inlining, so the RSC copy
+      // of this stylesheet inlines the image as a data URL and the client copy
+      // references a file. The client chunk must still point at the RSC file.
+      const { clientFiles, sharedCss, layoutResources, chunkSources, toHref } =
+        await buildSharedStylesheetApp(fixtureRoot, {
+          sharedCss: ".shared-marker { color: rgb(1, 2, 3); background: url(./dot.png); }\n",
+          files: { "app/dot.png": TINY_PNG },
+        });
+
+      expect(sharedCss).toHaveLength(1);
+      const sharedHref = toHref(sharedCss[0]);
+      expect(layoutResources?.css[0]).toBe(sharedHref);
+      const sharedFileName = path.basename(sharedCss[0]);
+      expect(chunkSources.some((code) => code.includes(sharedFileName))).toBe(true);
+      for (const file of clientFiles.filter((candidate) => candidate.endsWith(".css"))) {
+        if (file === sharedCss[0]) continue;
+        expect(await fsp.readFile(file, "utf8")).not.toContain(".shared-marker");
+      }
     } finally {
       await fsp.rm(fixtureRoot, { recursive: true, force: true }).catch(() => {});
     }

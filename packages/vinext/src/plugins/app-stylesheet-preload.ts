@@ -11,6 +11,10 @@
  * the server stylesheets yet, so the helper appends its own copy last and that
  * copy wins the cascade.
  *
+ * The loader returns a promise that settles once the stylesheet has been
+ * fetched, so, as with Vite's helper, the chunk still evaluates only after its
+ * CSS is available and a CSS failure still surfaces as `vite:preloadError`.
+ *
  * Only the production preload helper exists in builds, so dev is unaffected.
  * When the App Router runtime has not installed a loader (Pages Router pages in
  * a hybrid build), the helper keeps Vite's DOM insertion.
@@ -18,8 +22,9 @@
 import type { Plugin } from "vite";
 import { APP_STYLESHEET_LOADER_KEY } from "../utils/app-stylesheet-loader.js";
 
-const PRELOAD_HELPER_ID = "\0vite/preload-helper.js";
 const LINK_CREATION = 'const link = document.createElement("link");';
+// Bindings the hand-off reads; their absence means Vite's helper changed.
+const REQUIRED_BINDINGS = ["const cspNonce = ", "const isCss = dep."];
 
 /**
  * Insert the loader hand-off ahead of the helper's `<link>` creation. Returns
@@ -27,7 +32,11 @@ const LINK_CREATION = 'const link = document.createElement("link");';
  */
 export function patchPreloadHelperForAppStylesheets(code: string): string | null {
   const index = code.indexOf(LINK_CREATION);
-  if (index === -1 || !code.includes("const isCss = ")) return null;
+  if (index === -1) return null;
+  for (const binding of REQUIRED_BINDINGS) {
+    const bindingIndex = code.indexOf(binding);
+    if (bindingIndex === -1 || bindingIndex > index) return null;
+  }
   const handOff =
     "if (isCss) {" +
     ` const vinextLoadStylesheet = globalThis[Symbol.for(${JSON.stringify(APP_STYLESHEET_LOADER_KEY)})];` +
@@ -45,8 +54,7 @@ export function createAppStylesheetPreloadPlugin(): Plugin {
     },
     transform: {
       filter: { id: /^\0vite\/preload-helper\.js$/ },
-      handler(code, id) {
-        if (id !== PRELOAD_HELPER_ID) return null;
+      handler(code) {
         const patched = patchPreloadHelperForAppStylesheets(code);
         if (patched === null) {
           this.warn(

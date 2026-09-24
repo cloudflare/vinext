@@ -19,7 +19,7 @@ const CLIENT_STYLESHEET_PRECEDENCE = "vite-rsc/client-reference";
 type ClientStylesheet = { href: string; nonce: string | undefined };
 
 let stylesheets: readonly ClientStylesheet[] = [];
-const requestedHrefs = new Set<string>();
+const requestedStylesheets = new Map<string, Promise<void>>();
 const listeners = new Set<() => void>();
 
 /**
@@ -33,15 +33,49 @@ export function toDocumentStylesheetHref(url: string, documentUrl: string): stri
   return resolved.pathname + resolved.search + resolved.hash;
 }
 
-function loadAppStylesheet(url: string, nonce?: string): void {
+/**
+ * Fetch a stylesheet without applying it. React's `preload()` returns nothing
+ * to wait on, so insert the hint here; `preload()` then finds it by href
+ * instead of inserting a second one.
+ */
+function fetchStylesheet(url: string, href: string, nonce: string | undefined): Promise<void> {
+  const link = document.createElement("link");
+  link.rel = "preload";
+  link.as = "style";
+  link.crossOrigin = "";
+  link.href = href;
+  if (nonce) link.setAttribute("nonce", nonce);
+  const loaded = new Promise<void>((resolve, reject) => {
+    link.addEventListener("load", () => resolve());
+    // Same failure Vite's helper reports, so `vite:preloadError` still fires.
+    link.addEventListener("error", () => reject(new Error(`Unable to preload CSS for ${url}`)));
+  });
+  document.head.appendChild(link);
+  return loaded;
+}
+
+function loadAppStylesheet(url: string, nonce?: string): Promise<void> {
   const href = toDocumentStylesheetHref(url, document.baseURI);
-  if (requestedHrefs.has(href)) return;
-  requestedHrefs.add(href);
-  // Vite's helper would have fetched the file before evaluating the chunk.
-  // Start the fetch now; the stylesheet itself is applied when React commits it.
-  preload(href, { as: "style", crossOrigin: "", nonce: nonce || undefined });
-  stylesheets = [...stylesheets, { href, nonce: nonce || undefined }];
+  const requested = requestedStylesheets.get(href);
+  if (requested) return requested;
+  const stylesheetNonce = nonce || undefined;
+  // Vite's helper waits for a chunk's CSS before evaluating the chunk, so the
+  // component never renders unstyled. Keep that: the returned promise settles
+  // once the file is fetched, and React applies it when it commits the link.
+  const loaded = fetchStylesheet(url, href, stylesheetNonce);
+  requestedStylesheets.set(href, loaded);
+  // Let a retried import (e.g. next/dynamic's `retry`) fetch again instead of
+  // replaying the failure.
+  void loaded.catch(() => {
+    if (requestedStylesheets.get(href) === loaded) requestedStylesheets.delete(href);
+  });
+  if (stylesheets.some((stylesheet) => stylesheet.href === href)) return loaded;
+  // Registering the hint with React makes the stylesheet resource wait for
+  // the stylesheet itself (not just the hint) before a transition commits.
+  preload(href, { as: "style", crossOrigin: "", nonce: stylesheetNonce });
+  stylesheets = [...stylesheets, { href, nonce: stylesheetNonce }];
   for (const listener of listeners) listener();
+  return loaded;
 }
 
 export function installAppStylesheetLoader(): void {
@@ -52,8 +86,10 @@ export function installAppStylesheetLoader(): void {
 export function AppClientStylesheets(): ReactNode {
   const [rendered, setRendered] = useState(stylesheets);
   useEffect(() => {
-    // A transition batches with the navigation that imported the chunk, so
-    // React holds that commit until the new stylesheet has loaded.
+    // When a lazy component starts the import during a render, React gives
+    // this update the lanes being rendered, so the stylesheet commits with the
+    // tree that needs it. Otherwise the transition still holds the commit
+    // until the stylesheet has loaded.
     const update = () => startTransition(() => setRendered(stylesheets));
     listeners.add(update);
     // Pick up stylesheets requested between this render and the subscription.

@@ -1,4 +1,5 @@
 import { expect, test } from "../fixtures";
+import { waitForAppRouterHydration } from "../helpers";
 import {
   FIXTURE_HOOK_TIMEOUT_MS,
   startFixtureDevServer,
@@ -114,6 +115,57 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
       await expect(global).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
       await expect(global).toHaveCSS("color", "rgb(0, 0, 0)");
       await expect(page.locator("body")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+    });
+
+    // vinext addition: the server stylesheets and the next/dynamic chunk's
+    // stylesheets arrive together during a client-side navigation, the other
+    // path where React has not committed the shared stylesheet yet.
+    test("keeps the cascade after a soft navigation", async ({ page }) => {
+      type SoftNavWindow = Window & { __softNavMarker?: boolean };
+      await page.goto(`${BASE_URL}/next-dynamic-css/nav`);
+      await waitForAppRouterHydration(page);
+      await page.evaluate(() => {
+        (window as SoftNavWindow).__softNavMarker = true;
+      });
+      await page.click("#to-page");
+      const component = page.locator("#component");
+      await expect(component).toHaveText("Hello Component");
+      expect(await page.evaluate(() => (window as SoftNavWindow).__softNavMarker)).toBe(true);
+      await expect(page.locator("#server")).toHaveCSS("background-color", "rgb(0, 128, 0)");
+      await expect(page.locator("#server")).toHaveCSS("color", "rgb(0, 0, 0)");
+      await expect(page.locator("#inner2")).toHaveCSS("background-color", "rgb(0, 128, 0)");
+      await expect(page.locator("#inner2")).toHaveCSS("color", "rgb(0, 0, 0)");
+      await expect(component).toHaveCSS("background-color", "rgb(0, 128, 0)");
+      await expect(component).toHaveCSS("color", "rgb(0, 0, 0)");
+      await expect(page.locator("#global")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+      await expect(page.locator("body")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+    });
+
+    // vinext addition: an import() started outside a render (an event
+    // handler) commits through its own update, so the chunk must not
+    // evaluate before its stylesheet has loaded or it renders unstyled.
+    test("does not render an on-demand chunk before its stylesheet", async ({ page }) => {
+      type PanelWindow = Window & { __panelFirstBackground?: string };
+      // Make the stylesheet reliably slower than the JavaScript chunk.
+      await page.route("**/_next/static/css/panel*.css", async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await route.continue();
+      });
+      await page.goto(`${BASE_URL}/next-dynamic-css/on-demand`);
+      await waitForAppRouterHydration(page);
+      await page.evaluate(() => {
+        new MutationObserver((_records, observer) => {
+          const panel = document.getElementById("panel");
+          if (!panel) return;
+          (window as PanelWindow).__panelFirstBackground = getComputedStyle(panel).backgroundColor;
+          observer.disconnect();
+        }).observe(document.body, { childList: true, subtree: true });
+      });
+      await page.click("#open-panel");
+      await expect(page.locator("#panel")).toHaveCSS("background-color", "rgb(0, 128, 0)");
+      expect(await page.evaluate(() => (window as PanelWindow).__panelFirstBackground)).toBe(
+        "rgb(0, 128, 0)",
+      );
     });
 
     test("links the shared stylesheet once", async ({ page }) => {
