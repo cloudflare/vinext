@@ -254,13 +254,6 @@ export function sanitizeRscChunkFileName(name: string): string {
 }
 
 /**
- * Output config that isolates React (and the RSC flight runtime) into a
- * dedicated "framework" chunk in the RSC server build. See
- * {@link RSC_FRAMEWORK_CHUNK_TEST} for the motivation (issue #1549). Framework
- * modules that are only reachable through dynamic imports must stay out of the
- * eager framework chunk (issue #2073).
- */
-/**
  * A name-function `codeSplitting` group placed ahead of the framework group.
  * Declared structurally so the published types don't reference Rolldown.
  */
@@ -270,6 +263,14 @@ type LeadingCodeSplittingGroup = {
   priority?: number;
 };
 
+/**
+ * Output config that isolates React (and the RSC flight runtime) into a
+ * dedicated "framework" chunk in the RSC server build. See
+ * {@link RSC_FRAMEWORK_CHUNK_TEST} for the motivation (issue #1549). Framework
+ * modules that are only reachable through dynamic imports must stay out of the
+ * eager framework chunk (issue #2073). `leadingGroups` (e.g. vinext's shared
+ * Server/Client stylesheet chunks) are matched before the framework group.
+ */
 export function createRscFrameworkChunkOutputConfig(
   leadingGroups: readonly LeadingCodeSplittingGroup[] = [],
 ) {
