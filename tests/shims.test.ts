@@ -7935,6 +7935,83 @@ describe('"use cache" runtime', () => {
     );
   });
 
+  // An inline cache function that closes over values is bound to a capture
+  // envelope, so its page props arrive as the second argument. Key omission,
+  // replay-arg omission and the erroring replay fallback must all target them.
+  it("locates page props after an inline capture envelope", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const envelope = { captured: true };
+    const decryptCaptures = async (value: unknown) =>
+      value === envelope ? ["captured-value"] : undefined;
+    const encodeInvocationArgs = vi.fn(async (args: unknown[]) => {
+      // Encoding walks every argument property, like encodeReply does.
+      JSON.stringify(args, (_key, value) =>
+        value && typeof value === "object" ? { ...value } : value,
+      );
+      return "encrypted";
+    });
+    type PageProps = {
+      params: Promise<{ slug: string }>;
+      searchParams?: Promise<Record<string, unknown>>;
+    };
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (captures: unknown[], props: PageProps) => {
+        callCount++;
+        return { capture: captures[0], slug: (await props.params).slug };
+      },
+      "/fixture/app/cached/captures/page.tsx:$$hoist_0_Page",
+      "",
+      {
+        appPageSegmentFunction: true,
+        argumentCount: 1,
+        decryptCaptures,
+        encodeInvocationArgs,
+        serverReferenceId: "fixture#captures",
+      },
+    ) as (envelope: unknown, props: PageProps) => Promise<unknown>;
+
+    const observeSearchParams = vi.fn();
+    const pageProps = (q: string): PageProps => ({
+      params: makeThenableParams({ slug: "same" }),
+      searchParams: makeThenableParams({ q }, { observeParamAccess: observeSearchParams }),
+    });
+
+    await expect(cached(envelope, pageProps("first"))).resolves.toEqual({
+      capture: "captured-value",
+      slug: "same",
+    });
+    await expect(cached(envelope, pageProps("second"))).resolves.toEqual({
+      capture: "captured-value",
+      slug: "same",
+    });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+    expect(encodeInvocationArgs).toHaveBeenCalledTimes(1);
+    const [[replayEnvelope, replayProps]] = encodeInvocationArgs.mock.calls[0] as [
+      [unknown, Record<string, unknown>],
+    ];
+    expect(replayEnvelope).toBe(envelope);
+    expect(Object.keys(replayProps)).toEqual(["params"]);
+
+    const readsSearchParams = registerCachedFunction(
+      async (_captures: unknown[], props: PageProps) => ({ q: (await props.searchParams!).q }),
+      "/fixture/app/cached/captures-replay/page.tsx:$$hoist_0_Page",
+      "",
+      { appPageSegmentFunction: true, argumentCount: 1, decryptCaptures },
+    ) as (envelope: unknown, props: PageProps) => Promise<unknown>;
+    // A Response Store replay decodes page props without searchParams.
+    await expect(
+      readsSearchParams(envelope, { params: makeThenableParams({ slug: "same" }) }),
+    ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
+  });
+
   it('rejects app page searchParams access inside page default "use cache"', async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");

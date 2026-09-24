@@ -962,6 +962,44 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(getPageSegmentFlagsByCacheName(result!.code)).toEqual({ $$hoist_0_load: false });
   });
 
+  // Page segment functions are always top-level, and plugin-rsc only binds
+  // captures from non-module scopes, so they never get a capture envelope.
+  // The runtime still locates page props after one (cache-runtime.ts).
+  it("does not bind captures for App Page segment functions that read module bindings", async () => {
+    const plugins = await getPlugins();
+    await configureVinext(plugins);
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const pageId = path.join(APP_FIXTURE_DIR, "app", "module-bindings", "page.tsx");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      [
+        `let label = "page";`,
+        `async function meta(props) { "use cache"; return { title: label }; }`,
+        `export const generateMetadata = meta;`,
+        `export default async function Page(props) {`,
+        `  "use cache";`,
+        `  const suffix = label;`,
+        `  async function inner() { "use cache"; return suffix; }`,
+        `  return inner();`,
+        `}`,
+      ].join("\n"),
+      pageId,
+    );
+
+    expect(getPageSegmentFlagsByCacheName(result!.code)).toEqual({
+      $$hoist_0_meta: true,
+      $$hoist_1_Page: true,
+      $$hoist_2_inner: false,
+    });
+    // Only the nested, unflagged function closes over a non-module binding.
+    expect([...result!.code.matchAll(/encryptCacheCaptures\(\[(\w+)\]\)/g)]).toEqual([
+      expect.arrayContaining(["suffix"]),
+    ]);
+  });
+
   it("does not mark inline metadata caches in App layouts", async () => {
     const plugins = await getPlugins();
     await configureVinext(plugins);

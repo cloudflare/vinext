@@ -606,12 +606,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   // may read them, so they stay in its cache key (use-cache-wrapper.ts restores
   // `outerSearchParams` when `isPrivate`).
   const omitAppPageSearchParams = cacheVariant !== "private";
-  const omitAppPageSearchParamsFromFirstArg =
+  const omitAppPagePropsSearchParams =
     omitAppPageSearchParams && options.appPageSegmentFunction === true;
-  // Rendered page props carry searchParams that throw inside a public cache
-  // scope. When they are absent, as on a Response Store replay of the encoded
-  // args, access must still fail like Next's erroring searchParams.
-  const fillAppPageSearchParams = omitAppPageSearchParamsFromFirstArg;
   // A replayable entry stores this reference ID for Response Store
   // regeneration. Keep entries produced with an older build's opaque alias
   // unreachable if a stable deployment/build ID is reused.
@@ -684,8 +680,20 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const executionArgs = hasCaptureEnvelope
         ? [captures, ...admittedArgs.slice(1)]
         : admittedArgs;
+      // Page props follow the capture envelope when there is one. The index is
+      // the same in `admittedArgs` (envelope) and `executionArgs` (captures).
+      const pagePropsIndex = omitAppPagePropsSearchParams
+        ? hasCaptureEnvelope
+          ? 1
+          : 0
+        : undefined;
+      // Rendered page props carry searchParams that throw inside a public cache
+      // scope. When they are absent, as on a Response Store replay of the
+      // encoded args, access must still fail like Next's erroring searchParams.
       const callArgs = (
-        fillAppPageSearchParams ? withErroringPageSearchParams(executionArgs) : executionArgs
+        pagePropsIndex === undefined
+          ? executionArgs
+          : withErroringPageSearchParams(executionArgs, pagePropsIndex)
       ) as TArgs;
 
       // Build the cache key. Use encodeReply (RSC protocol) when available —
@@ -696,7 +704,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         const processedArgs =
           executionArgs.length > 0
             ? unwrapThenableObjectArray(executionArgs, {
-                omitAppPageSearchParamsFromFirstArg,
+                pagePropsIndex,
                 omitMarkedAppPageSearchParams: omitAppPageSearchParams,
               })
             : [];
@@ -862,9 +870,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
                 // page's searchParams: encoding them would read search params
                 // and turn every cached page render dynamic.
                 encryptedArgs: await options.encodeInvocationArgs(
-                  omitAppPageSearchParamsFromFirstArg
-                    ? omitSearchParamsFromPageProps(admittedArgs)
-                    : admittedArgs,
+                  pagePropsIndex === undefined
+                    ? admittedArgs
+                    : omitSearchParamsFromPageProps(admittedArgs, pagePropsIndex),
                 ),
                 referenceId: options.serverReferenceId,
                 rootParams: Object.fromEntries(
@@ -1364,7 +1372,8 @@ type UnwrapThenableObjectsOptions = {
 };
 
 type UnwrapThenableObjectArrayOptions = {
-  omitAppPageSearchParamsFromFirstArg: boolean;
+  /** Index of the page props whose searchParams are omitted, if any. */
+  pagePropsIndex: number | undefined;
   omitMarkedAppPageSearchParams: boolean;
 };
 
@@ -1414,41 +1423,43 @@ function unwrapThenableObjects(value: unknown, options: UnwrapThenableObjectsOpt
   return result;
 }
 
-/**
- * Drop `searchParams` from an App Router page component's props. Next.js omits
- * them from both the cache key and the serialized arguments of a public
- * `"use cache"` page (use-cache-wrapper.ts, `isPageSegmentFunction`).
- */
-function omitSearchParamsFromPageProps(args: readonly unknown[]): unknown[] {
-  const [props, ...rest] = args;
-  if (props === null || typeof props !== "object" || !("searchParams" in props)) {
-    return [...args];
-  }
-  const { searchParams: _searchParams, ...pageProps } = props as Record<string, unknown>;
-  return [pageProps, ...rest];
+function isPagePropsObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
- * Give page props without `searchParams` (a Response Store replay of args
- * encoded by `omitSearchParamsFromPageProps`) a value that throws on access
- * inside the cache scope, like Next.js's `makeErroringSearchParamsForUseCache`,
- * instead of `undefined`.
+ * Drop `searchParams` from the App Router page props at `index` (after a
+ * capture envelope, if any). Next.js omits them from both the cache key and
+ * the serialized arguments of a public `"use cache"` page (use-cache-wrapper.ts,
+ * `isPageSegmentFunction`).
  */
-function withErroringPageSearchParams(args: readonly unknown[]): readonly unknown[] {
-  const [props, ...rest] = args;
-  if (
-    props === null ||
-    typeof props !== "object" ||
-    Array.isArray(props) ||
-    "searchParams" in props
-  ) {
-    return args;
-  }
-  const searchParams = makeThenableParams(
-    {},
-    { observeParamAccess: () => throwIfInsideCacheScope("searchParams") },
-  );
-  return [{ ...props, searchParams }, ...rest];
+function omitSearchParamsFromPageProps(args: readonly unknown[], index: number): unknown[] {
+  const result = [...args];
+  const props = args[index];
+  if (!isPagePropsObject(props) || !("searchParams" in props)) return result;
+  const { searchParams: _searchParams, ...pageProps } = props;
+  result[index] = pageProps;
+  return result;
+}
+
+/**
+ * Give page props at `index` without `searchParams` (a Response Store replay of
+ * args encoded by `omitSearchParamsFromPageProps`) a value that throws on
+ * access inside the cache scope, like Next.js's
+ * `makeErroringSearchParamsForUseCache`, instead of `undefined`.
+ */
+function withErroringPageSearchParams(args: readonly unknown[], index: number): readonly unknown[] {
+  const props = args[index];
+  if (!isPagePropsObject(props) || "searchParams" in props) return args;
+  const result = [...args];
+  result[index] = {
+    ...props,
+    searchParams: makeThenableParams(
+      {},
+      { observeParamAccess: () => throwIfInsideCacheScope("searchParams") },
+    ),
+  };
+  return result;
 }
 
 function unwrapThenableObjectArray(
@@ -1457,7 +1468,7 @@ function unwrapThenableObjectArray(
 ): unknown[] {
   return values.map((value, index) =>
     unwrapThenableObjects(value, {
-      omitAppPageSearchParamsAtRoot: index === 0 && options.omitAppPageSearchParamsFromFirstArg,
+      omitAppPageSearchParamsAtRoot: index === options.pagePropsIndex,
       omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
     }),
   );
