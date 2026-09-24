@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { VinextCacheFunctionInvocation } from "../packages/vinext/src/server/multi-stage.js";
 
 const flight = vi.hoisted(() => {
@@ -6,21 +6,50 @@ const flight = vi.hoisted(() => {
     return "then" in value && typeof value.then === "function";
   }
 
+  // Like React's `ReactPromise`: it inherits from `Promise.prototype` without
+  // being a native promise, its `then` returns nothing, and its own enumerable
+  // fields are React's internal chunk state.
+  const chunkPromises = new WeakMap<object, Promise<unknown>>();
+  const chunkPrototype = Object.create(Promise.prototype, {
+    // eslint-disable-next-line unicorn/no-thenable
+    then: {
+      value(
+        this: object,
+        resolve?: (value: unknown) => void,
+        reject?: (reason: unknown) => void,
+      ): void {
+        void chunkPromises.get(this)?.then(resolve, reject);
+      },
+    },
+  });
+  function createChunk(promise: Promise<unknown>): object {
+    const chunk: Record<string, unknown> = Object.assign(Object.create(chunkPrototype), {
+      status: "pending",
+      value: null,
+      reason: null,
+    });
+    chunkPromises.set(chunk, promise);
+    promise.then(
+      (value) => {
+        Object.assign(chunk, { status: "fulfilled", value });
+      },
+      (reason) => {
+        Object.assign(chunk, { status: "rejected", reason });
+      },
+    );
+    return chunk;
+  }
+
   // Flight writes each object once, so repeated references and cycles decode
   // to one shared value. A promise is serialized as its resolved value without
-  // its own fields, and decodes to a thenable whose own enumerable fields are
-  // React's internal chunk state.
+  // its own fields, and decodes to a React chunk.
   function roundTrip(value: unknown): unknown {
     const decoded = new Map<object, unknown>();
     const decode = (value: unknown): unknown => {
       if (typeof value !== "object" || value === null) return value;
       if (decoded.has(value)) return decoded.get(value);
       if (isThenable(value)) {
-        const chunk = Object.assign(Promise.resolve(value).then(decode), {
-          status: "pending",
-          value: null,
-          reason: null,
-        });
+        const chunk = createChunk(Promise.resolve(value).then(decode));
         decoded.set(value, chunk);
         return chunk;
       }
@@ -328,150 +357,111 @@ describe("cache-callable-runtime", () => {
     expect(await restoredLater).toBe(restored);
   });
 
-  it("scans and serializes one read of each getter", async () => {
-    const { decodeCacheArguments, encodeCacheArguments } =
-      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
-    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
-    let reads = 0;
-    const record: Record<string, unknown> = {
-      get wrapped() {
-        reads++;
-        return Promise.resolve({ params: makeThenableParams({ slug: String(reads) }) });
-      },
-    };
-    record.self = record;
-    const shared = { record };
-    const args = [
-      shared,
-      shared,
-      Promise.resolve(record),
-      new Map([["record", record]]),
-      makeThenableParams({ record }),
-    ];
-
-    type Wrapped = { params: Promise<unknown> & { slug: string } };
-    type Restored = { wrapped: Promise<Wrapped>; self: unknown };
-    const [restoredShared, restoredAlias, restoredPromise, restoredMap, restoredOuter] =
-      decodeCacheArguments(flight.roundTrip(await encodeCacheArguments(args))) as [
-        { record: Restored },
-        unknown,
-        Promise<Restored>,
-        Map<string, Restored>,
-        Promise<{ record: Restored }> & { record: Restored },
-      ];
-
-    expect(reads).toBe(1);
-    expect(Object.getOwnPropertyDescriptor(record, "wrapped")).toHaveProperty("get");
-    const restored = restoredShared.record;
-    const { params } = await restored.wrapped;
-    expect(params.slug).toBe("1");
-    expect(await params).toEqual({ slug: "1" });
-    expect(restored.self).toBe(restored);
-    expect(restoredAlias).toBe(restoredShared);
-    expect(await restoredPromise).toBe(restored);
-    expect(restoredMap.get("record")).toBe(restored);
-    expect(restoredOuter.record).toBe(restored);
-    expect((await restoredOuter).record).toBe(restored);
-  });
-
-  it("copies values that point back at a getter's ancestors", async () => {
-    const { decodeCacheArguments, encodeCacheArguments } =
-      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
-    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
-    let reads = 0;
-    const getterRecord = {
-      get params() {
-        reads++;
-        return makeThenableParams({ slug: String(reads) });
-      },
-    };
-    const sibling: Record<string, unknown> = {};
-    const root = { getterRecord, sibling, siblings: new Set([sibling]) };
-    sibling.parent = root;
-    sibling.later = Promise.resolve([root]);
-
-    type Root = {
-      getterRecord: { params: Promise<unknown> & { slug: string } };
-      sibling: { parent: unknown; later: Promise<unknown[]> };
-      siblings: Set<unknown>;
-    };
-    const [restored] = decodeCacheArguments(
-      flight.roundTrip(await encodeCacheArguments([root])),
-    ) as [Root];
-
-    expect(reads).toBe(1);
-    expect(restored.getterRecord.params.slug).toBe("1");
-    expect(restored.sibling.parent).toBe(restored);
-    expect((await restored.sibling.later)[0]).toBe(restored);
-    expect(restored.siblings.has(restored.sibling)).toBe(true);
-  });
-
   it("scans every array index Flight serializes", async () => {
     const { decodeCacheArguments, encodeCacheArguments } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");
     const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
-    let hiddenReads = 0;
     const hidden: unknown[] = [];
     Object.defineProperty(hidden, 0, {
       enumerable: false,
-      get() {
-        hiddenReads++;
-        return makeThenableParams({ slug: `hidden-${hiddenReads}` });
-      },
+      value: makeThenableParams({ slug: "hidden" }),
     });
-    let sparseReads = 0;
-    const sparse: unknown[] = [];
+    const sparse: unknown[] = [makeThenableParams({ slug: "sparse" })];
     sparse.length = 3;
-    Object.defineProperty(sparse, 0, {
-      enumerable: true,
-      get() {
-        sparseReads++;
-        return makeThenableParams({ slug: `sparse-${sparseReads}` });
-      },
-    });
 
     type Params = Promise<unknown> & { slug: string };
     const [restoredHidden, restoredSparse] = decodeCacheArguments(
       flight.roundTrip(await encodeCacheArguments([hidden, sparse])),
     ) as [Params[], Params[]];
 
-    expect(hiddenReads).toBe(1);
-    expect(sparseReads).toBe(1);
     expect(restoredHidden).toHaveLength(1);
-    expect(restoredHidden[0].slug).toBe("hidden-1");
-    expect(await restoredHidden[0]).toEqual({ slug: "hidden-1" });
+    expect(restoredHidden[0].slug).toBe("hidden");
+    expect(await restoredHidden[0]).toEqual({ slug: "hidden" });
     expect(restoredSparse).toHaveLength(3);
-    expect(restoredSparse[0].slug).toBe("sparse-1");
+    expect(restoredSparse[0].slug).toBe("sparse");
     expect(restoredSparse.slice(1)).toEqual([undefined, undefined]);
   });
 
-  it("reads an inherited accessor at an array hole once", async () => {
-    const { decodeCacheArguments, encodeCacheArguments } =
+  it("refuses to encode arguments that hold getters, without running them", async () => {
+    const { encodeCacheArguments } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");
     const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
     let reads = 0;
-    const prototype = Object.create(Array.prototype, {
-      1: {
-        get() {
-          reads++;
-          return makeThenableParams({ slug: String(reads) });
-        },
+    const getter = {
+      get() {
+        reads++;
+        return makeThenableParams({ slug: String(reads) });
+      },
+    };
+    const record = Object.defineProperty({}, "params", { ...getter, enumerable: true });
+    const promiseField = Object.defineProperty(Promise.resolve({ slug: "a" }), "slug", {
+      ...getter,
+      enumerable: true,
+    });
+    const inherited: unknown[] = ["first"];
+    inherited.length = 2;
+    Object.setPrototypeOf(inherited, Object.create(Array.prototype, { 1: getter }));
+
+    for (const value of [record, promiseField, inherited]) {
+      await expect(encodeCacheArguments([{ value }])).rejects.toThrow(
+        "Cache function arguments with getters cannot be replayed",
+      );
+    }
+    expect(reads).toBe(0);
+  });
+
+  it("does not record a replay for arguments that hold getters", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const handler = new MemoryCacheHandler();
+    const set = vi.spyOn(handler, "set");
+    setCacheHandler(handler);
+
+    const cached = registerCachedFunction(
+      async (options: { slug: string }) => `${options.slug}:${crypto.randomUUID()}`,
+      "test:getter-args",
+      "",
+      { argumentCount: 1, serverReferenceId: "test#getter-args" },
+    );
+
+    await cached({
+      get slug() {
+        return "a";
       },
     });
-    const sparse: unknown[] = ["first"];
-    sparse.length = 2;
-    Object.setPrototypeOf(sparse, prototype);
 
-    type Params = Promise<unknown> & { slug: string };
-    const [restored] = decodeCacheArguments(
-      flight.roundTrip(await encodeCacheArguments([sparse])),
-    ) as [[string, Params]];
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(set.mock.calls[0]?.[2]).not.toHaveProperty("cacheFunctionInvocation");
+  });
 
-    expect(reads).toBe(1);
-    expect(restored).toHaveLength(2);
-    expect(restored[0]).toBe("first");
-    expect(restored[1].slug).toBe("1");
-    expect(await restored[1]).toEqual({ slug: "1" });
+  it("still encodes captures that hold getters", async () => {
+    const { encryptCacheCaptures, registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { MemoryCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      // The capture envelope is replaced by the decrypted captures.
+      async (captures: unknown) => (captures as [{ slug: string }])[0].slug,
+      "test:getter-captures",
+      "",
+      { serverReferenceId: "test#getter-captures" },
+    );
+
+    const result = await cached(
+      encryptCacheCaptures([
+        {
+          get slug() {
+            return "captured";
+          },
+        },
+      ]),
+    );
+
+    expect(result).toBe("captured");
   });
 
   it("rejects payloads without recorded promise fields", async () => {
