@@ -27,6 +27,7 @@ import {
   fetchServerUrlAsset,
   registerServerUrlAsset,
 } from "../packages/vinext/src/server/server-url-assets.js";
+import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 
 type Hook = (...args: unknown[]) => unknown;
 
@@ -127,7 +128,7 @@ const TRIVIA_REFERENCE_SOURCES = [
 ];
 
 function registrationImport(binding: string, assetPath: string): string {
-  return `import ${binding} from ${JSON.stringify(`${REGISTRATION_PREFIX}${toSlash(assetPath)}.js`)};`;
+  return `import ${binding} from ${safeJsonStringify(`${REGISTRATION_PREFIX}${toSlash(assetPath)}.js`)};`;
 }
 
 describe("vinext:server-url-assets transform", () => {
@@ -489,7 +490,7 @@ describe("vinext:server-url-assets generated modules", () => {
     const code = await result;
 
     expect(code).toContain(
-      `registerServerUrlAsset(${JSON.stringify(pathToFileURL(textFile).href)}, () => import(${JSON.stringify(`${BYTES_PREFIX}${assetPath}.js`)}))`,
+      `registerServerUrlAsset(${safeJsonStringify(pathToFileURL(textFile).href)}, () => import(${safeJsonStringify(`${BYTES_PREFIX}${assetPath}.js`)}))`,
     );
     expect(code).toMatch(
       /import \{ registerServerUrlAsset \} from ".*server-url-assets\.(?:ts|js)";/,

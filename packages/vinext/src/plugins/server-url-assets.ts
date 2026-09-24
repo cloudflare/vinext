@@ -53,6 +53,7 @@ import path, { toSlash } from "pathslash";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import { parseAst, type ESTree, type Plugin, type ResolvedConfig } from "vite";
 import { resolveRuntimeEntryModule } from "../entries/runtime-entry-module.js";
+import { safeJsonStringify } from "../server/html.js";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 import {
@@ -199,16 +200,16 @@ function serverUrlAssetModuleId(prefix: string, assetPath: string): string {
 
 function serverUrlAssetModuleCode(runtimeModule: string, assetPath: string): string {
   return [
-    `import { registerServerUrlAsset } from ${JSON.stringify(runtimeModule)};`,
-    `export default registerServerUrlAsset(${JSON.stringify(pathToFileURL(assetPath).href)}, () => import(${JSON.stringify(serverUrlAssetModuleId(SERVER_URL_ASSET_BYTES_PREFIX, assetPath))}));`,
+    `import { registerServerUrlAsset } from ${safeJsonStringify(runtimeModule)};`,
+    `export default registerServerUrlAsset(${safeJsonStringify(pathToFileURL(assetPath).href)}, () => import(${safeJsonStringify(serverUrlAssetModuleId(SERVER_URL_ASSET_BYTES_PREFIX, assetPath))}));`,
     "",
   ].join("\n");
 }
 
 function serverUrlAssetBytesModuleCode(runtimeModule: string, bytes: Buffer): string {
   return [
-    `import { decodeServerUrlAsset } from ${JSON.stringify(runtimeModule)};`,
-    `export default decodeServerUrlAsset(${JSON.stringify(bytes.toString("base64"))});`,
+    `import { decodeServerUrlAsset } from ${safeJsonStringify(runtimeModule)};`,
+    `export default decodeServerUrlAsset(${safeJsonStringify(bytes.toString("base64"))});`,
     "",
   ].join("\n");
 }
@@ -440,7 +441,7 @@ export function createServerUrlAssetsPlugin(
         const imports = Array.from(
           bindings,
           ([assetPath, binding]) =>
-            `import ${binding} from ${JSON.stringify(serverUrlAssetModuleId(SERVER_URL_ASSET_PREFIX, assetPath))};`,
+            `import ${binding} from ${safeJsonStringify(serverUrlAssetModuleId(SERVER_URL_ASSET_PREFIX, assetPath))};`,
         ).join("\n");
         const insertAt = findDirectivePrologueEnd(ast);
         output.appendLeft(insertAt, insertAt === 0 ? `${imports}\n` : `\n${imports}\n`);
