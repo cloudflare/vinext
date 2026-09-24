@@ -39,15 +39,6 @@ async function renderToString(element: React.ReactElement): Promise<string> {
   return new Response(stream).text();
 }
 
-function createFakeCompilerPlugin(code: string) {
-  return createStyledJsxPlugin(process.cwd(), {
-    importModule: async () => ({
-      loadBindings: async () => undefined,
-      transform: async () => ({ code }),
-    }),
-  });
-}
-
 afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
@@ -245,6 +236,40 @@ describe("styled-jsx compatibility plugin", () => {
     // Reloaded once: later changes leave the (now populated) module alone.
     watchChange(path.join(root, "components/Lazy.jsx"), "update");
     expect(invalidateModule).toHaveBeenCalledTimes(1);
+  });
+
+  // Workspace packages linked into the app's dependencies are compiled as
+  // source (unlike installed dependencies), possibly only once loaded lazily.
+  it("scans and watches linked workspace packages for styled-jsx", async () => {
+    const createLinkedProject = (linkedSource: string) => {
+      const root = createProject({ "pages/index.jsx": "export default () => <p>plain</p>;" });
+      const linked = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-linked-"));
+      temporaryDirectories.push(linked);
+      writeSource(linked, "package.json", '{"name":"linked"}');
+      writeSource(linked, "src/Styled.jsx", linkedSource);
+      // Dependencies of the linked package are not its source.
+      writeSource(
+        linked,
+        "node_modules/dep/index.jsx",
+        "export default () => <style jsx>{c}</style>;",
+      );
+      fs.symlinkSync(linked, path.join(root, "node_modules", "linked"), "dir");
+      return { root, linked };
+    };
+
+    const styled = createLinkedProject("export default () => <style jsx>{`p{color:red}`}</style>;");
+    expect(await createStyledJsxPlugin(styled.root).api!.projectUsesStyledJsx()).toBe(true);
+
+    const { root, linked } = createLinkedProject("export default () => <p>linked</p>;");
+    const { plugin, watchChange } = startDevPlugin(root);
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(false);
+
+    watchChange(path.join(linked, "node_modules/dep/index.jsx"));
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(false);
+
+    writeSource(linked, "src/Styled.jsx", "export default () => <style jsx>{css}</style>;");
+    watchChange(path.join(fs.realpathSync(linked), "src/Styled.jsx"), "update");
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(true);
   });
 
   // The usage regex also matches comments and strings, and vinext does not
@@ -484,35 +509,46 @@ describe("styled-jsx compatibility plugin", () => {
     expect(result.code).toContain("export function getServerSideProps()");
   });
 
-  it("registers the Pages SSR runtime from compiled server modules", async () => {
-    const compiled = 'import _JSXStyle from "styled-jsx/style";\nexport default _JSXStyle;';
-    const plugin = createFakeCompilerPlugin(compiled);
-    const transformHook = plugin.transform as {
-      handler(this: unknown, source: string, id: string): Promise<{ code: string }>;
-    };
-    const transformIn = (environment: unknown) =>
-      transformHook.handler.call(
+  // Every compiled `<style jsx>` renders `styled-jsx/style`, whether this
+  // plugin compiled it or a dependency shipped it precompiled (and so is never
+  // transformed here). Loading it on the server registers the Pages runtime.
+  it("registers the Pages SSR runtime wherever styled-jsx/style is imported", async () => {
+    const plugin = createStyledJsxPlugin(process.cwd());
+    const resolveId = plugin.resolveId as ResolveIdHook;
+    const rawStyle = requireFromNext.resolve("styled-jsx/style");
+    const resolveIn = (
+      environment: unknown,
+      importer = "/app/node_modules/precompiled/index.js",
+      kind?: string,
+    ) =>
+      resolveId.handler.call(
         { environment },
-        "export default <style jsx>{`p{color:red}`}</style>",
-        "/app/pages/index.jsx",
+        "styled-jsx/style",
+        importer,
+        kind ? ({ kind } as { scan?: boolean }) : {},
       );
+    const ssr = { name: "ssr", mode: "build", config: { consumer: "server" } };
 
-    const ssr = await transformIn({ name: "ssr", config: { consumer: "server" } });
-    // Appended after the compiler output so its source map stays aligned.
-    expect(ssr.code.startsWith(compiled)).toBe(true);
-    expect(ssr.code).toContain(SSR_REGISTRY_IMPORT);
-    const client = await transformIn({ name: "client", config: { consumer: "client" } });
-    expect(client.code).not.toContain(SSR_REGISTRY_IMPORT);
-    const rsc = await transformIn({ name: "rsc", config: { consumer: "server" } });
-    expect(rsc.code).not.toContain(SSR_REGISTRY_IMPORT);
-
-    const cssOnly = createFakeCompilerPlugin("export const className = 'jsx-123';");
-    const cssOnlyResult = await (cssOnly.transform as typeof transformHook).handler.call(
-      { environment: { name: "ssr", config: { consumer: "server" } } },
-      'import css from "styled-jsx/css"; export const styles = css.resolve`p{color:red}`;',
-      "/app/styles.js",
+    expect(resolveIn(ssr)).toBe("\0vinext-styled-jsx-style");
+    expect(resolveIn(ssr, "/app/pages/index.jsx", "import-statement")).toBe(
+      "\0vinext-styled-jsx-style",
     );
-    expect(cssOnlyResult.code).not.toContain(SSR_REGISTRY_IMPORT);
+    // Not in the browser or RSC, not for the wrapper's own import (or the
+    // registration's), and not for `require()` callers, which may use the
+    // export directly rather than through `.default`.
+    expect(resolveIn({ name: "client", mode: "build", config: { consumer: "client" } })).toBe(
+      rawStyle,
+    );
+    expect(resolveIn({ name: "rsc", mode: "build", config: { consumer: "server" } })).toBe(
+      rawStyle,
+    );
+    expect(resolveIn(ssr, "\0vinext-styled-jsx-style")).toBe(rawStyle);
+    expect(resolveIn(ssr, "\0virtual:vinext-styled-jsx-ssr-registry")).toBe(rawStyle);
+    expect(resolveIn(ssr, "/app/node_modules/cjs/index.js", "require-call")).toBe(rawStyle);
+
+    const wrapper = await (plugin.load as LoadHook).handler("\0vinext-styled-jsx-style");
+    expect(wrapper).toContain(SSR_REGISTRY_IMPORT);
+    expect(wrapper).toContain('export { default } from "styled-jsx/style";');
   });
 
   it("serves the SSR registry module that hands styled-jsx to vinext", async () => {

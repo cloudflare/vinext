@@ -8866,6 +8866,174 @@ describe("Pages Router styled-jsx in lazily loaded modules", () => {
   }, 60_000);
 });
 
+// styled-jsx reaching the page from outside the app's own sources. Next.js
+// wraps every Pages render in the registry, so their rules are collected too.
+describe("Pages Router styled-jsx from dependencies and linked packages", () => {
+  const lazyFixtureDir = path.resolve(import.meta.dirname, "fixtures/pages-styled-jsx-lazy");
+  const workspaceNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+  const temporaryRoots: string[] = [];
+
+  afterAll(() => {
+    for (const root of temporaryRoots) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** `<base>/app`: the lazy fixture without its styled-jsx component and page. */
+  async function createApp(base: string, page: string): Promise<string> {
+    const app = path.join(base, "app");
+    await fsp.cp(lazyFixtureDir, app, {
+      recursive: true,
+      filter: (src) =>
+        !src.includes(`${path.sep}node_modules`) &&
+        !src.includes(`${path.sep}components`) &&
+        !src.endsWith(`${path.sep}pages${path.sep}index.jsx`),
+    });
+    await fsp.symlink(workspaceNodeModules, path.join(app, "node_modules"), "dir");
+    await fsp.writeFile(path.join(app, "pages", "index.jsx"), page);
+    return app;
+  }
+
+  async function createBase(prefix: string): Promise<string> {
+    const base = fs.realpathSync(await fsp.mkdtemp(path.join(os.tmpdir(), prefix)));
+    temporaryRoots.push(base);
+    return base;
+  }
+
+  // A dependency that ships styled-jsx precompiled: its `styled-jsx/style`
+  // import is not compiled by vinext, and nothing in the app uses styled-jsx.
+  it("renders rules from a precompiled styled-jsx dependency in dev and prod", async () => {
+    const base = await createBase("vinext-styled-jsx-precompiled-");
+    const app = await createApp(
+      base,
+      `import PrecompiledStyled from "../vendor/node_modules/precompiled-styled/index.js";
+
+export default function Page() {
+  return (
+    <main>
+      <PrecompiledStyled />
+    </main>
+  );
+}
+`,
+    );
+    const packageDir = path.join(app, "vendor", "node_modules", "precompiled-styled");
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "precompiled-styled", type: "module", main: "index.js" }),
+    );
+    // What styled-jsx's compiler emits for `<style jsx>{\`p { color: teal; }\`}</style>`.
+    await fsp.writeFile(
+      path.join(packageDir, "index.js"),
+      `import _JSXStyle from "styled-jsx/style";
+import { jsx, jsxs } from "react/jsx-runtime";
+
+export default function PrecompiledStyled() {
+  return jsxs("div", {
+    className: "jsx-4d5ea9a1",
+    children: [
+      jsx(_JSXStyle, { id: "4d5ea9a1", children: "p.jsx-4d5ea9a1{color:teal}" }),
+      jsx("p", { id: "precompiled-styled", className: "jsx-4d5ea9a1", children: "precompiled" }),
+    ],
+  });
+}
+`,
+    );
+    const expectPrecompiledRule = (html: string) => {
+      expect(html).toContain('<p id="precompiled-styled" class="jsx-4d5ea9a1">precompiled</p>');
+      expect(getStyledJsxStyles(html).get("__jsx-4d5ea9a1")).toBe("p.jsx-4d5ea9a1{color:teal}");
+    };
+
+    const dev = await startFixtureServer(app);
+    try {
+      const res = await fetch(`${dev.baseUrl}/`);
+      expect(res.status).toBe(200);
+      expectPrecompiledRule(await res.text());
+    } finally {
+      await dev.server.close();
+    }
+
+    const outDir = path.join(app, "dist");
+    await buildPagesFixtureToOutDir(app, outDir);
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const prodServer = unwrapStartedProdServer(
+      await startProdServer({ port: 0, host: "127.0.0.1", outDir }),
+    );
+    try {
+      const { port } = prodServer.address() as { port: number };
+      const res = await fetch(`http://127.0.0.1:${port}/`);
+      expect(res.status).toBe(200);
+      expectPrecompiledRule(await res.text());
+    } finally {
+      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+    }
+  }, 120_000);
+
+  // A workspace package linked into the app's dependencies (outside the app
+  // root) is compiled as source, but only once it loads. Reached only through
+  // next/dynamic, it must still have its rules on the first dev request.
+  it("renders rules from a lazily loaded linked package on the first dev request", async () => {
+    const base = await createBase("vinext-styled-jsx-linked-");
+    await fsp.writeFile(
+      path.join(base, "pnpm-workspace.yaml"),
+      "packages:\n  - app\n  - linked-styled\n",
+    );
+    const app = await createApp(
+      base,
+      `import dynamic from "next/dynamic";
+
+const LinkedStyled = dynamic(() => import("linked-styled"));
+
+export default function Page() {
+  return (
+    <main>
+      <LinkedStyled />
+    </main>
+  );
+}
+`,
+    );
+    const packageDir = path.join(base, "linked-styled");
+    await fsp.mkdir(packageDir);
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: "linked-styled", type: "module", exports: "./index.jsx" }),
+    );
+    await fsp.writeFile(
+      path.join(packageDir, "index.jsx"),
+      `export default function LinkedStyled() {
+  return (
+    <div>
+      <style jsx>{\`
+        p {
+          color: olive;
+        }
+      \`}</style>
+      <p id="linked-styled">linked</p>
+    </div>
+  );
+}
+`,
+    );
+    await fsp.symlink(workspaceNodeModules, path.join(packageDir, "node_modules"), "dir");
+    // npm/yarn workspaces link packages into the workspace root's node_modules.
+    await fsp.mkdir(path.join(base, "node_modules"));
+    await fsp.symlink(packageDir, path.join(base, "node_modules", "linked-styled"), "dir");
+
+    const dev = await startFixtureServer(app);
+    try {
+      const res = await fetch(`${dev.baseUrl}/`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      const tag = html.match(/<p\b[^>]*\bid="linked-styled"[^>]*>/)?.[0] ?? "";
+      const className = getHtmlAttr(tag, "class");
+      expect(className).toMatch(/^jsx-[\w-]+$/);
+      expect(getStyledJsxStyles(html).get(`__${className}`)).toBe(`p.${className}{color:olive}`);
+    } finally {
+      await dev.server.close();
+    }
+  }, 60_000);
+});
+
 describe("Production Pages Router SSR streaming", () => {
   let outDir: string;
   let prodServer: import("node:http").Server;
