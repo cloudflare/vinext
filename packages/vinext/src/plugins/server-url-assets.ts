@@ -34,11 +34,12 @@
  * Only project modules are rewritten (not node_modules) and only when the
  * literal resolves to an existing non-script file, so worker scripts,
  * runtime-computed URLs and remote URLs keep their current behaviour.
- * Client code is left alone: `"use client"` modules, the App Router `ssr`
+ * App Router client code is left alone, so browser assets never bloat server
+ * or Worker bundles: `"use client"` modules in the RSC environment, the `ssr`
  * environment when there is no Pages Router (it only renders client
- * components) and, in hybrid App + Pages builds, `ssr` modules reachable only
- * through client references, so browser assets never bloat server or Worker
- * bundles.
+ * components) and, in hybrid App + Pages builds, `ssr` modules that only App
+ * Router client references reach. Code the Pages Router runs on the server is
+ * rewritten even when it carries `"use client"`, which the Pages Router ignores.
  */
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -72,6 +73,9 @@ const SERVER_URL_ASSET_ID_SUFFIX = ".js";
 // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
 const SERVER_URL_ASSET_ID_RE = /^\0vinext-server-url-asset(?:-bytes)?:.+\.js$/;
 
+// plugin-rsc's synthetic modules that import the App Router client references
+// on the SSR side (`virtual:vite-rsc/client-references` and its groups).
+const RSC_CLIENT_REFERENCES_ID_PREFIX = "\0virtual:vite-rsc/client-references";
 const URL_SCHEME_RE = /^[a-z][a-z\d+.-]*:/i;
 const BINDING_PREFIX = "__vinext_server_url_asset";
 
@@ -155,21 +159,22 @@ type ModuleGraphInfo = {
 };
 
 /**
- * Modules of a (scanned) SSR graph that are reachable only through App Router
- * client references: everything not reachable from an entry without entering
- * a `"use client"` boundary, boundaries included. Modules that the Pages Router
- * or other server code also reach stay out of the set.
+ * Modules of a (scanned) SSR graph that only App Router client references
+ * reach: everything not reachable from an entry without passing through
+ * plugin-rsc's synthetic client-reference branch. The Pages Router imports
+ * components directly, so a `"use client"` component shared by both routers,
+ * and everything it imports, stays out of the set.
  */
 export function collectClientReferenceOnlyModules(options: {
   moduleIds: Iterable<string>;
   getModuleInfo: (id: string) => ModuleGraphInfo | null;
-  isClientReference: (id: string) => boolean;
+  isClientReferenceBranch: (id: string) => boolean;
 }): Set<string> {
   const moduleIds = [...options.moduleIds];
   const pending = moduleIds.filter((id) => options.getModuleInfo(id)?.isEntry === true);
   const serverReachable = new Set<string>();
   for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
-    if (serverReachable.has(id) || options.isClientReference(id)) continue;
+    if (serverReachable.has(id) || options.isClientReferenceBranch(id)) continue;
     serverReachable.add(id);
     const info = options.getModuleInfo(id);
     if (info) pending.push(...info.importedIds, ...info.dynamicallyImportedIds);
@@ -189,17 +194,19 @@ export function createServerUrlAssetsPlugin(
   let rscManager: RscPluginManager | undefined;
   // Hybrid App + Pages builds keep the `ssr` environment for the Pages Router,
   // but it also renders App Router client components, whose `new URL` assets
-  // belong to the browser build. The `"use client"` check below only sees the
-  // boundary module itself, so plugin-rsc's SSR scan build (which runs before
-  // the real SSR build) supplies the modules reachable only through client
-  // references. Modules missing from the scan are rewritten, the safe default.
+  // belong to the browser build. A `"use client"` directive cannot tell them
+  // apart: it does not cover a component's own imports, and the Pages Router
+  // runs a component shared with `app/` as ordinary server code. plugin-rsc's
+  // SSR scan build (which runs before the real SSR build) supplies the modules
+  // that only its client-reference branch reaches. Modules missing from the
+  // scan are rewritten, the safe default.
   //
   // Dev has no scan and its module graph only knows the importers seen so far,
-  // so a helper first reached from a client component could never be rewritten
-  // for a Pages route that imports it later. Dev therefore rewrites every
-  // server-environment module; for relative specifiers the SSR href matches
-  // the `file:` URL that dev already produced, and the bytes stay in lazily
-  // loaded dev modules.
+  // so a module first reached from a client component could never be rewritten
+  // for a Pages route that imports it later. Dev therefore rewrites every `ssr`
+  // module, `"use client"` ones included; for relative specifiers the SSR href
+  // matches the `file:` URL that dev already produced, and the bytes stay in
+  // lazily loaded dev modules.
   let clientReferenceOnlySsrModules: ReadonlySet<string> | undefined;
 
   return {
@@ -232,11 +239,10 @@ export function createServerUrlAssetsPlugin(
 
     buildEnd(error) {
       if (error || this.environment.name !== "ssr" || !rscManager?.isScanBuild) return;
-      const clientReferences = rscManager.clientReferenceMetaMap;
       clientReferenceOnlySsrModules = collectClientReferenceOnlyModules({
         moduleIds: this.getModuleIds(),
         getModuleInfo: (id) => this.getModuleInfo(id),
-        isClientReference: (id) => Object.hasOwn(clientReferences, id),
+        isClientReferenceBranch: (id) => id.startsWith(RSC_CLIENT_REFERENCES_ID_PREFIX),
       });
     },
 
@@ -299,10 +305,12 @@ export function createServerUrlAssetsPlugin(
         } catch {
           return null;
         }
-        // Client components also render in server environments (hybrid
-        // App + Pages builds keep `ssr`); like the App Router `ssr` skip, their
-        // assets are for the browser, so leave them to the client build.
-        if (hasDirective(ast, "use client")) return null;
+        // The RSC environment replaces `"use client"` modules with client
+        // references, so their code (and its assets) never runs there. In other
+        // server environments the directive is inert for the Pages Router,
+        // which runs the module as server code; App Router-only client code in
+        // hybrid `ssr` builds is excluded above instead.
+        if (this.environment.name === "rsc" && hasDirective(ast, "use client")) return null;
 
         const references: Array<{ start: number; end: number; specifier: string }> = [];
         walkAst(ast, (node) => {

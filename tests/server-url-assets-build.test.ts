@@ -7,10 +7,11 @@
  * inlined into server or Worker output:
  *   - App Router without pages/: the `ssr` environment only renders client
  *     components and is skipped entirely.
- *   - Any server environment: `"use client"` modules are skipped (hybrid
- *     App + Pages builds keep `ssr`, which also runs the Pages Router).
- *   - Hybrid `ssr`: modules reachable only through `"use client"` boundaries
- *     are skipped too, while modules the Pages Router also imports are kept.
+ *   - `rsc`: `"use client"` modules are client references and are skipped.
+ *   - Hybrid App + Pages `ssr`: modules that only App Router client references
+ *     reach are skipped, `"use client"` or not. Modules the Pages Router also
+ *     imports are kept, including a `"use client"` component shared with
+ *     `app/` (the Pages Router runs it on the server) and its imports.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -25,6 +26,8 @@ const CLIENT_COMPONENT_ASSET = "vinext-use-client-component-asset";
 const CLIENT_HELPER_ASSET = "vinext-client-only-helper-asset";
 const PAGES_API_ASSET = "vinext-pages-api-server-asset";
 const SHARED_HELPER_ASSET = "vinext-shared-helper-server-asset";
+const SHARED_COMPONENT_ASSET = "vinext-shared-use-client-component-asset";
+const SHARED_COMPONENT_HELPER_ASSET = "vinext-shared-use-client-helper-asset";
 
 const tempRoots: string[] = [];
 
@@ -77,12 +80,19 @@ async function buildFixture(options: { withPagesRouter: boolean }) {
 }
 `,
     "app/page.tsx": `import { ClientAsset } from "./client-asset";
+import { SharedWidget } from "../components/shared-widget";
 
 export default function Page() {
-  return <ClientAsset />;
+  return (
+    <>
+      <ClientAsset />
+      <SharedWidget text="app" />
+    </>
+  );
 }
 `,
-    // A "use client" component: skipped in every server environment.
+    // A "use client" component that only the App Router uses: client code in
+    // every server environment.
     "app/client-asset.tsx": `"use client";
 import { helperAssetHref } from "./client-helper";
 import { sharedAssetUrl } from "../lib/shared-helper";
@@ -104,6 +114,28 @@ export function ClientAsset() {
 }
 `,
     "lib/shared-helper.txt": SHARED_HELPER_ASSET,
+    // A "use client" component used by the App Router and, in hybrid builds,
+    // by a Pages page whose getServerSideProps fetches its assets. Its helper
+    // is only reachable through the component.
+    "components/shared-widget.tsx": `"use client";
+import { sharedWidgetHelperUrl } from "./shared-widget-helper";
+
+export async function loadSharedWidgetText() {
+  const own = await fetch(new URL("./shared-widget.txt", import.meta.url));
+  const helper = await fetch(sharedWidgetHelperUrl());
+  return (await own.text()) + (await helper.text());
+}
+
+export function SharedWidget({ text }: { text: string }) {
+  return <p>{text}</p>;
+}
+`,
+    "components/shared-widget-helper.ts": `export function sharedWidgetHelperUrl() {
+  return new URL("./shared-widget-helper.txt", import.meta.url);
+}
+`,
+    "components/shared-widget.txt": SHARED_COMPONENT_ASSET,
+    "components/shared-widget-helper.txt": SHARED_COMPONENT_HELPER_ASSET,
     "app/client-component.txt": CLIENT_COMPONENT_ASSET,
     "app/client-helper.txt": CLIENT_HELPER_ASSET,
     "app/api/route-asset/route.ts": `export const runtime = "edge";
@@ -145,6 +177,16 @@ export default function handler(request: Request) {
 }
 `,
           "server-assets/pages.txt": PAGES_API_ASSET,
+          "pages/widget.tsx": `import { loadSharedWidgetText, SharedWidget } from "../components/shared-widget";
+
+export async function getServerSideProps() {
+  return { props: { text: await loadSharedWidgetText() } };
+}
+
+export default function WidgetPage({ text }: { text: string }) {
+  return <SharedWidget text={text} />;
+}
+`,
         }
       : {}),
   });
@@ -172,7 +214,7 @@ export default function handler(request: Request) {
 }
 
 describe("vinext:server-url-assets environment scoping", () => {
-  it("skips the App Router ssr environment and use client modules", async () => {
+  it("skips the App Router ssr environment and client references", async () => {
     const output = await buildFixture({ withPagesRouter: false });
 
     // Route handlers run in `rsc` and keep their inlined asset.
@@ -182,13 +224,15 @@ describe("vinext:server-url-assets environment scoping", () => {
     expect(output.allServerCode).not.toContain(inlinedBytes(CLIENT_COMPONENT_ASSET));
     expect(output.allServerCode).not.toContain(inlinedBytes(CLIENT_HELPER_ASSET));
     expect(output.allServerCode).not.toContain(inlinedBytes(SHARED_HELPER_ASSET));
+    expect(output.allServerCode).not.toContain(inlinedBytes(SHARED_COMPONENT_ASSET));
+    expect(output.allServerCode).not.toContain(inlinedBytes(SHARED_COMPONENT_HELPER_ASSET));
     expect(output.ssrCode).not.toContain(inlinedBytes(ROUTE_ASSET));
     // The client build still emits the browser assets.
     expect(output.clientFiles).toContain(CLIENT_COMPONENT_ASSET);
     expect(output.clientFiles).toContain(CLIENT_HELPER_ASSET);
   }, 120_000);
 
-  it("keeps the ssr environment for the Pages Router but still skips use client modules", async () => {
+  it("keeps Pages Router code in ssr but skips App Router-only client code", async () => {
     const output = await buildFixture({ withPagesRouter: true });
 
     expect(output.rscCode).toContain(inlinedBytes(ROUTE_ASSET));
@@ -200,6 +244,11 @@ describe("vinext:server-url-assets environment scoping", () => {
     expect(output.allServerCode).not.toContain(inlinedBytes(CLIENT_HELPER_ASSET));
     // A helper the Pages Router also imports is still served on the server.
     expect(output.ssrCode).toContain(inlinedBytes(SHARED_HELPER_ASSET));
+    // So is a helper reachable only through a "use client" component that the
+    // Pages Router also imports, and that component itself: the Pages Router
+    // runs both on the server.
+    expect(output.ssrCode).toContain(inlinedBytes(SHARED_COMPONENT_HELPER_ASSET));
+    expect(output.ssrCode).toContain(inlinedBytes(SHARED_COMPONENT_ASSET));
     expect(output.clientFiles).toContain(CLIENT_COMPONENT_ASSET);
     expect(output.clientFiles).toContain(CLIENT_HELPER_ASSET);
   }, 120_000);

@@ -85,10 +85,11 @@ async function transform(
   code: string,
   resolve: (specifier: string) => Promise<{ id: string; external?: boolean } | null> = async () =>
     null,
+  environmentName = "rsc",
 ): Promise<string | null> {
   const plugin = findPlugin();
   const result = (await unwrapHook(plugin.transform).call(
-    { resolve: (specifier: string) => resolve(specifier) },
+    { environment: { name: environmentName }, resolve: (specifier: string) => resolve(specifier) },
     code,
     importer,
   )) as { code: string } | null;
@@ -186,7 +187,7 @@ describe("vinext:server-url-assets transform", () => {
     expect(appliesTo(false)).toEqual(["rsc", "ssr", "my_worker"]);
   });
 
-  it("skips use client modules, whose assets belong to the browser build", async () => {
+  it("skips use client modules in the RSC environment, which only holds client references", async () => {
     const reference = `export const url = new URL("../../src/text-file.txt", import.meta.url);`;
     expect(await transform(`"use client";\n${reference}`)).toBeNull();
     expect(await transform(`"use strict";\n'use client';\n${reference}`)).toBeNull();
@@ -194,6 +195,18 @@ describe("vinext:server-url-assets transform", () => {
     expect(await transform(`${reference}\n"use client";`)).toContain(
       registrationImport("__vinext_server_url_asset0", textFile),
     );
+  });
+
+  it("rewrites use client modules in other server environments, where the Pages Router runs them", async () => {
+    // Without a plugin-rsc scan (dev, Pages-only builds) the directive alone
+    // cannot say whether the Pages Router runs the module on the server.
+    const reference = `export const url = new URL("../../src/text-file.txt", import.meta.url);`;
+    for (const environmentName of ["ssr", "my_worker"]) {
+      expect(
+        await transform(`"use client";\n${reference}`, undefined, environmentName),
+        environmentName,
+      ).toContain(registrationImport("__vinext_server_url_asset0", textFile));
+    }
   });
 
   // Ported from Next.js: test/e2e/edge-compiler-can-import-blob-assets/app/pages/api/edge.js
@@ -293,7 +306,7 @@ describe("vinext:server-url-assets transform", () => {
   it("skips modules without a parseable absolute id", async () => {
     const plugin = findPlugin();
     const result = await unwrapHook(plugin.transform).call(
-      { resolve: async () => null },
+      { environment: { name: "rsc" }, resolve: async () => null },
       `new URL("./text-file.txt", import.meta.url)`,
       "virtual-module.js",
     );
@@ -302,22 +315,29 @@ describe("vinext:server-url-assets transform", () => {
 });
 
 describe("collectClientReferenceOnlyModules", () => {
-  it("keeps modules the server reaches and collects the client reference closure", () => {
-    // A hybrid App + Pages `ssr` graph: the Pages Router and the App Router
-    // client references share one environment.
+  it("keeps modules the Pages Router reaches and collects the client-reference-only closure", () => {
+    // A hybrid App + Pages `ssr` graph: the Pages Router and plugin-rsc's
+    // client-reference branch share one environment.
+    const clientReferences = "\0virtual:vite-rsc/client-references";
+    const clientReferenceGroup = `${clientReferences}/group/app`;
     const graph: Record<string, { imports?: string[]; dynamic?: string[]; entry?: boolean }> = {
-      "ssr-entry": { entry: true, imports: ["pages-entry", "client-references"] },
-      "pages-entry": { dynamic: ["pages/api/edge.ts"] },
+      "ssr-entry": { entry: true, imports: ["pages-entry", clientReferences] },
+      "pages-entry": { dynamic: ["pages/api/edge.ts", "pages/widget.tsx"] },
       "pages/api/edge.ts": { imports: ["lib/shared.ts"] },
-      "client-references": { dynamic: ["app/button.tsx", "app/panel.tsx"] },
-      // Client references, and a cycle back into one of them.
+      // A Pages page importing a "use client" component that App Router
+      // pages also use: the Pages Router runs it (and its imports) on the server.
+      "pages/widget.tsx": { imports: ["components/widget.tsx"] },
+      [clientReferences]: { dynamic: [clientReferenceGroup, "components/widget.tsx"] },
+      [clientReferenceGroup]: { imports: ["app/button.tsx", "app/panel.tsx"] },
+      // App Router-only client references, and a cycle back into one of them.
       "app/button.tsx": { imports: ["app/button-helper.ts", "lib/shared.ts"] },
       "app/panel.tsx": { imports: ["app/panel-helper.ts"] },
       "app/button-helper.ts": { imports: ["app/button.tsx"] },
       "app/panel-helper.ts": {},
+      "components/widget.tsx": { imports: ["components/widget-helper.ts"] },
+      "components/widget-helper.ts": {},
       "lib/shared.ts": {},
     };
-    const clientReferences = new Set(["app/button.tsx", "app/panel.tsx"]);
 
     const clientOnly = collectClientReferenceOnlyModules({
       moduleIds: Object.keys(graph),
@@ -331,10 +351,12 @@ describe("collectClientReferenceOnlyModules", () => {
             }
           : null;
       },
-      isClientReference: (id) => clientReferences.has(id),
+      isClientReferenceBranch: (id) => id.startsWith(clientReferences),
     });
 
     expect([...clientOnly].sort()).toEqual([
+      clientReferences,
+      clientReferenceGroup,
       "app/button-helper.ts",
       "app/button.tsx",
       "app/panel-helper.ts",
