@@ -35,9 +35,9 @@
  * literal resolves to an existing file, so runtime-computed URLs and remote
  * URLs keep their current behaviour. Like webpack, the file's extension does
  * not matter (`fetch(new URL("./payload.js", import.meta.url))` loads the
- * source text); the surrounding expression does: a URL that loads code —
- * `new Worker(url)`, `new SharedWorker(url)` or `import(url)` — stays a
- * runtime URL.
+ * source text); the surrounding expression does: a URL built anywhere inside
+ * the operand of a code load — `new Worker(...)`, `new SharedWorker(...)` or
+ * `import(...)` — stays a runtime URL.
  * App Router client code is left alone, so browser assets never bloat server
  * or Worker bundles: `"use client"` modules in the RSC environment, the `ssr`
  * environment when there is no Pages Router (it only renders client
@@ -101,28 +101,19 @@ function isWorkerConstructor(callee: ESTree.Node): boolean {
 }
 
 /**
- * The `new URL(...)` expression a code-loading operand is built from: the URL
- * itself, `url.href` or `url.toString()`.
+ * Add every `new URL(...)` built anywhere inside a code-loading operand to
+ * `target`. Deliberately structural rather than shape-matched, so `url`,
+ * `url.href`, `url["href"]`, `String(url)`, `` `${url}` ``, `a ? url : b` and
+ * forms not listed here all keep loading a runnable module.
  */
-function codeLoadingUrlExpression(operand: ESTree.Node | null | undefined): ESTree.Node | null {
-  const value = unwrapExpression(operand);
-  if (
-    value?.type === "MemberExpression" &&
-    !value.computed &&
-    isIdentifierNamed(value.property, "href")
-  ) {
-    return unwrapExpression(value.object);
-  }
-  if (
-    value?.type === "CallExpression" &&
-    value.arguments.length === 0 &&
-    value.callee.type === "MemberExpression" &&
-    !value.callee.computed &&
-    isIdentifierNamed(value.callee.property, "toString")
-  ) {
-    return unwrapExpression(value.callee.object);
-  }
-  return value;
+function collectCodeLoadingUrls(
+  operand: ESTree.Node | null | undefined,
+  target: Set<ESTree.Node>,
+): void {
+  if (!operand) return;
+  walkAst(operand, (node) => {
+    if (node.type === "NewExpression" && isIdentifierNamed(node.callee, "URL")) target.add(node);
+  });
 }
 
 async function isServerUrlAssetFile(filePath: string): Promise<boolean> {
@@ -360,12 +351,11 @@ export function createServerUrlAssetsPlugin(
         // worker plugin claims the same `new Worker(new URL(...))` shape).
         const codeLoadingUrls = new Set<ESTree.Node>();
         walkAst(ast, (node) => {
+          // Pre-order: the code load is visited before the URLs inside it.
           if (node.type === "NewExpression" && isWorkerConstructor(node.callee)) {
-            const url = codeLoadingUrlExpression(node.arguments[0]);
-            if (url) codeLoadingUrls.add(url);
+            collectCodeLoadingUrls(node.arguments[0], codeLoadingUrls);
           } else if (node.type === "ImportExpression") {
-            const url = codeLoadingUrlExpression(node.source);
-            if (url) codeLoadingUrls.add(url);
+            collectCodeLoadingUrls(node.source, codeLoadingUrls);
           }
           if (node.type !== "NewExpression" || !isIdentifierNamed(node.callee, "URL")) return;
           if (codeLoadingUrls.has(node)) return false;
