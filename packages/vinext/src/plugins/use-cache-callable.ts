@@ -8,7 +8,7 @@ import type {
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
 import { parseAstAsync, type Plugin } from "vite";
-import { isPathInside, NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
+import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
@@ -17,14 +17,11 @@ type Program = Awaited<ReturnType<typeof parseAstAsync>>;
 type Options = {
   projectRoot: string;
   cacheRuntime: string;
-  getAppDir: () => string | undefined;
-  matchesPageExtension: (fileName: string) => boolean;
   allowMissingRsc?: boolean;
 };
 
 type CacheWrapperOptions = {
   acceptsSecondArgument: boolean;
-  appPageSegmentFunction?: boolean;
   argumentCount?: number;
   serverReferenceId?: string;
 };
@@ -105,120 +102,6 @@ function acceptsSecondArgument(
   );
 }
 
-function isAppPageModule(options: Options, id: string): boolean {
-  const appDir = options.getAppDir();
-  if (!appDir) return false;
-  const modulePath = stripViteModuleQuery(id);
-  const moduleFileName = path.basename(modulePath);
-  return (
-    isPathInside(appDir, modulePath) &&
-    path.parse(moduleFileName).name === "page" &&
-    options.matchesPageExtension(moduleFileName)
-  );
-}
-
-function isFunctionNode(node: unknown): boolean {
-  const type = (node as { type?: unknown } | null | undefined)?.type;
-  return (
-    type === "FunctionDeclaration" ||
-    type === "FunctionExpression" ||
-    type === "ArrowFunctionExpression"
-  );
-}
-
-/**
- * Exports of an App Router page file that Next.js treats as page segment
- * functions (`$$isPage`, use-cache-wrapper.ts `isPageSegmentFunction`): the
- * page component, plus the page's generateMetadata/generateViewport, which
- * receive the same `{ params, searchParams }` props.
- */
-const APP_PAGE_SEGMENT_EXPORT_NAMES = new Set(["default", "generateMetadata", "generateViewport"]);
-
-/**
- * Follow a top-level binding through identifier aliases (`const Exported =
- * Page`, including chains) to the function node it holds. Stops on a cycle or
- * on any value that is neither a function nor an identifier.
- */
-function resolveTopLevelFunction(
-  bindings: ReadonlyMap<string, unknown>,
-  name: string,
-): object | undefined {
-  const seen = new Set<string>();
-  let current = name;
-  while (!seen.has(current)) {
-    seen.add(current);
-    const value = bindings.get(current);
-    if (isFunctionNode(value)) return value as object;
-    const alias = value as { type?: unknown; name?: unknown } | null | undefined;
-    if (alias?.type !== "Identifier" || typeof alias.name !== "string") return undefined;
-    current = alias.name;
-  }
-  return undefined;
-}
-
-/**
- * Find the top-level functions a page module exports as page segment
- * functions: a direct `export default function` / `export async function
- * generateMetadata`, or a top-level function referenced by `export default
- * Page` / `export { Page as default }` / `export const generateMetadata =
- * meta`, following identifier aliases. Returns the AST nodes themselves so
- * callers can match a hoisted directive's `valueNode` by identity.
- */
-function findAppPageSegmentFunctions(ast: Program): Set<object> {
-  const functions = new Set<object>();
-  // Top-level binding name -> its function declaration or variable initializer.
-  const bindings = new Map<string, unknown>();
-  const exportedLocalNames: string[] = [];
-
-  for (const statement of ast.body) {
-    if (statement.type === "ExportDefaultDeclaration") {
-      const declaration = statement.declaration;
-      if (isFunctionNode(declaration)) {
-        functions.add(declaration);
-        if (declaration.type === "FunctionDeclaration" && declaration.id) {
-          bindings.set(declaration.id.name, declaration);
-        }
-      } else if (declaration.type === "Identifier") {
-        exportedLocalNames.push(declaration.name);
-      }
-      continue;
-    }
-    const isLocalExport = statement.type === "ExportNamedDeclaration" && !statement.source;
-    const declaration =
-      statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
-    if (declaration?.type === "FunctionDeclaration" && declaration.id) {
-      bindings.set(declaration.id.name, declaration);
-      if (isLocalExport && APP_PAGE_SEGMENT_EXPORT_NAMES.has(declaration.id.name)) {
-        exportedLocalNames.push(declaration.id.name);
-      }
-    } else if (declaration?.type === "VariableDeclaration") {
-      for (const declarator of declaration.declarations) {
-        if (declarator.id.type !== "Identifier") continue;
-        bindings.set(declarator.id.name, declarator.init);
-        if (isLocalExport && APP_PAGE_SEGMENT_EXPORT_NAMES.has(declarator.id.name)) {
-          exportedLocalNames.push(declarator.id.name);
-        }
-      }
-    }
-    if (statement.type !== "ExportNamedDeclaration" || !isLocalExport) continue;
-    for (const specifier of statement.specifiers) {
-      const exported =
-        specifier.exported.type === "Identifier"
-          ? specifier.exported.name
-          : String(specifier.exported.value);
-      if (APP_PAGE_SEGMENT_EXPORT_NAMES.has(exported) && specifier.local.type === "Identifier") {
-        exportedLocalNames.push(specifier.local.name);
-      }
-    }
-  }
-
-  for (const name of exportedLocalNames) {
-    const fn = resolveTopLevelFunction(bindings, name);
-    if (fn) functions.add(fn);
-  }
-  return functions;
-}
-
 function shouldTransformModuleExport(name: string, id: string, meta: ModuleExportMeta): boolean {
   if (
     meta.isFunction === false &&
@@ -289,13 +172,11 @@ function getFunctionDirectiveExportNames(
 }
 
 function getCacheWrapperOptions(
-  appPageSegmentFunction: boolean,
   meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
 ): CacheWrapperOptions {
   const argumentCount = getArgumentCount(meta);
   return {
     acceptsSecondArgument: acceptsSecondArgument(meta),
-    ...(appPageSegmentFunction ? { appPageSegmentFunction: true } : {}),
     ...(argumentCount === undefined ? {} : { argumentCount }),
   };
 }
@@ -428,29 +309,21 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           return magicStringTransformResult(result.output, { hires: "boundary", source: id });
         }
 
-        // Next.js passes `$$isPage` to a page component (and the page's
-        // generateMetadata/generateViewport) that is a "use cache" function,
-        // whether the directive is file-level or inline in the exported
-        // function, so both shapes omit searchParams from the cache key.
-        const appPageModule = isAppPageModule(options, id);
-        const appPageSegmentFunctions =
-          appPageModule && !moduleDirective ? findAppPageSegmentFunctions(ast) : undefined;
+        // Page semantics (omitting searchParams) are not decided here: like
+        // Next.js, the page and page metadata call sites pass `$$isPage` to a
+        // cache function, wherever it is defined (see cache-runtime.ts).
         const secureExports = new Set<string>();
         const wrap = (
           value: string,
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-          isModuleDirective: boolean,
         ) => {
           const variant = directiveMatch[1] ?? "";
           const secureName = secureExportName(name);
           secureExports.add(secureName);
-          const appPageSegmentFunction = isModuleDirective
-            ? appPageModule && APP_PAGE_SEGMENT_EXPORT_NAMES.has(name)
-            : meta.valueNode !== undefined && appPageSegmentFunctions?.has(meta.valueNode) === true;
           const wrapperOptions = {
-            ...getCacheWrapperOptions(appPageSegmentFunction, meta),
+            ...getCacheWrapperOptions(meta),
             serverReferenceId: `${reference.referenceKey}#${secureName}`,
           };
           return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;
@@ -461,9 +334,8 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-          isModuleDirective: boolean,
         ) => {
-          const cached = wrap(value, name, directiveMatch, meta, isModuleDirective);
+          const cached = wrap(value, name, directiveMatch, meta);
           const secureName = secureExportName(name);
           needsReactServer = true;
           return `(${secureName} = $$VinextReactServer.registerServerReference(${cached}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(secureName)}))`;
@@ -482,7 +354,7 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
                 return true;
               },
               runtime: (value, name, meta) =>
-                runtime(value, name, matchUseCacheDirective(moduleDirective), meta, true),
+                runtime(value, name, matchUseCacheDirective(moduleDirective), meta),
             })
           : transforms.transformHoistInlineDirective(code, ast, {
               directive: USE_CACHE_DIRECTIVE_CANDIDATE,
@@ -490,7 +362,7 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
               hoistRuntime: true,
               noExport: true,
               runtime: (value, name, meta) =>
-                runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta, false),
+                runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta),
               encode: (value) => `$$cacheRuntime.encryptCacheCaptures(${value})`,
               decode: (value) => value,
             });

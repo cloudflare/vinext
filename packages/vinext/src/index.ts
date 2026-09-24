@@ -1801,8 +1801,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           projectRoot: earlyBaseDir,
           cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
             .href,
-          getAppDir: () => appDir,
-          matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
         });
         const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
         if (useServerIndex === -1) {
@@ -1821,8 +1819,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     manualUseCachePluginPromise = createUseCacheCallablePlugin({
       projectRoot: earlyBaseDir,
       cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime")).href,
-      getAppDir: () => appDir,
-      matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
       allowMissingRsc: true,
     });
   }

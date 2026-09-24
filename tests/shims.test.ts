@@ -7771,51 +7771,51 @@ describe('"use cache" runtime', () => {
     expect(observeSearchParams).not.toHaveBeenCalled();
   });
 
+  /** Props as a framework page or page-metadata call site passes them to a cache function. */
+  function asPageInvocation<T extends object>(props: T): T {
+    return { ...props, $$isPage: true };
+  }
+
   // Next.js: use-cache-wrapper.ts keeps `searchParams` in a private page
   // cache's serialized args and cache key (`if (isPrivate)`), since private
   // caches may read them.
   it.each([
-    ["transform metadata", true],
-    ["marked page props", false],
-  ])(
-    'keeps searchParams in "use cache: private" page keys (%s)',
-    async (_label, viaTransformMetadata) => {
-      const { registerCachedFunction, markAppPagePropsForUseCache, clearPrivateCache } =
-        await import("../packages/vinext/src/shims/cache-runtime.js");
-      const { makeThenableParams } =
-        await import("../packages/vinext/src/shims/thenable-params.js");
-      clearPrivateCache();
+    ["$$isPage marker", true],
+    ["probe-marked page props", false],
+  ])('keeps searchParams in "use cache: private" page keys (%s)', async (_label, viaPageMarker) => {
+    const { registerCachedFunction, markAppPagePropsForUseCache, clearPrivateCache } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    clearPrivateCache();
 
-      let callCount = 0;
-      const cached = registerCachedFunction(
-        async (props: {
-          params: Promise<{ slug: string }>;
-          searchParams: Promise<Record<string, string>>;
-        }) => {
-          callCount++;
-          return { q: (await props.searchParams).q };
-        },
-        `/fixture/app/private-${String(viaTransformMetadata)}/page.tsx:default`,
-        "private",
-        viaTransformMetadata ? { appPageSegmentFunction: true } : {},
-      );
-      const pageProps = (q: string) => {
-        const props = {
-          params: makeThenableParams({ slug: "same" }),
-          searchParams: makeThenableParams({ q }),
-        };
-        return viaTransformMetadata ? props : markAppPagePropsForUseCache(props);
+    let callCount = 0;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, string>>;
+      }) => {
+        callCount++;
+        return { q: (await props.searchParams).q };
+      },
+      `/fixture/app/private-${String(viaPageMarker)}/page.tsx:default`,
+      "private",
+    );
+    const pageProps = (q: string) => {
+      const props = {
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q }),
       };
+      return viaPageMarker ? asPageInvocation(props) : markAppPagePropsForUseCache(props);
+    };
 
-      await expect(cached(pageProps("first"))).resolves.toEqual({ q: "first" });
-      await expect(cached(pageProps("second"))).resolves.toEqual({ q: "second" });
-      expect(callCount).toBe(2);
-      await expect(cached(pageProps("first"))).resolves.toEqual({ q: "first" });
-      expect(callCount).toBe(2);
-    },
-  );
+    await expect(cached(pageProps("first"))).resolves.toEqual({ q: "first" });
+    await expect(cached(pageProps("second"))).resolves.toEqual({ q: "second" });
+    expect(callCount).toBe(2);
+    await expect(cached(pageProps("first"))).resolves.toEqual({ q: "first" });
+    expect(callCount).toBe(2);
+  });
 
-  it("omits page default export searchParams from use cache keys via transform metadata", async () => {
+  it("omits page searchParams from use cache keys for `$$isPage` invocations", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { setCacheHandler, MemoryCacheHandler } =
@@ -7836,24 +7836,30 @@ describe('"use cache" runtime', () => {
       },
       "/fixture/app/cached/page.tsx:default",
       "",
-      { appPageSegmentFunction: true },
     );
 
-    const first = await cached({
-      params: makeThenableParams({ slug: "same" }),
-      searchParams: makeThenableParams({ q: "first" }, { observeParamAccess: observeSearchParams }),
-    });
+    const first = await cached(
+      asPageInvocation({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams(
+          { q: "first" },
+          { observeParamAccess: observeSearchParams },
+        ),
+      }),
+    );
     expect(first).toEqual({ slug: "same" });
     expect(callCount).toBe(1);
     expect(observeSearchParams).not.toHaveBeenCalled();
 
-    const second = await cached({
-      params: makeThenableParams({ slug: "same" }),
-      searchParams: makeThenableParams(
-        { q: "second" },
-        { observeParamAccess: observeSearchParams },
-      ),
-    });
+    const second = await cached(
+      asPageInvocation({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams(
+          { q: "second" },
+          { observeParamAccess: observeSearchParams },
+        ),
+      }),
+    );
     expect(second).toEqual({ slug: "same" });
     expect(callCount).toBe(1);
     expect(observeSearchParams).not.toHaveBeenCalled();
@@ -7887,20 +7893,21 @@ describe('"use cache" runtime', () => {
       "/fixture/app/cached/replay/page.tsx:default",
       "",
       {
-        appPageSegmentFunction: true,
         encodeInvocationArgs,
         serverReferenceId: "fixture#cached",
       },
     );
 
     await expect(
-      cached({
-        params: makeThenableParams({ slug: "same" }),
-        searchParams: makeThenableParams(
-          { q: "first" },
-          { observeParamAccess: observeSearchParams },
-        ),
-      }),
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeThenableParams(
+            { q: "first" },
+            { observeParamAccess: observeSearchParams },
+          ),
+        }),
+      ),
     ).resolves.toEqual({ slug: "same" });
 
     expect(encodeInvocationArgs).toHaveBeenCalledTimes(1);
@@ -7927,13 +7934,13 @@ describe('"use cache" runtime', () => {
       }) => ({ q: (await props.searchParams!).q }),
       "/fixture/app/cached/replay-access/page.tsx:default",
       "",
-      { appPageSegmentFunction: true },
     );
 
-    // A Response Store replay decodes page props without searchParams.
-    await expect(cached({ params: makeThenableParams({ slug: "same" }) })).rejects.toThrow(
-      /`searchParams` cannot be called inside "use cache"/,
-    );
+    // A Response Store replay decodes page props without searchParams but
+    // with the `$$isPage` marker.
+    await expect(
+      cached(asPageInvocation({ params: makeThenableParams({ slug: "same" }) })),
+    ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
   });
 
   // Next.js passes `$$isPage` to a "use cache" function invoked as a page
@@ -7962,7 +7969,6 @@ describe('"use cache" runtime', () => {
     };
     let callCount = 0;
     let receivedPropKeys: string[] = [];
-    // No `appPageSegmentFunction`: defined outside the page file.
     const cached = registerCachedFunction(
       async (props: PageProps) => {
         callCount++;
@@ -8015,7 +8021,6 @@ describe('"use cache" runtime', () => {
 
     const receivedPropKeys: string[][] = [];
     let metadataCalls = 0;
-    // Imported from another module, so no `appPageSegmentFunction` flag.
     const generateMetadata = registerCachedFunction(
       async (props: { params: Promise<{ slug: string }> }) => {
         metadataCalls++;
@@ -8140,7 +8145,6 @@ describe('"use cache" runtime', () => {
       "/fixture/app/cached/captures/page.tsx:$$hoist_0_Page",
       "",
       {
-        appPageSegmentFunction: true,
         argumentCount: 1,
         decryptCaptures,
         encodeInvocationArgs,
@@ -8154,11 +8158,11 @@ describe('"use cache" runtime', () => {
       searchParams: makeThenableParams({ q }, { observeParamAccess: observeSearchParams }),
     });
 
-    await expect(cached(envelope, pageProps("first"))).resolves.toEqual({
+    await expect(cached(envelope, asPageInvocation(pageProps("first")))).resolves.toEqual({
       capture: "captured-value",
       slug: "same",
     });
-    await expect(cached(envelope, pageProps("second"))).resolves.toEqual({
+    await expect(cached(envelope, asPageInvocation(pageProps("second")))).resolves.toEqual({
       capture: "captured-value",
       slug: "same",
     });
@@ -8175,11 +8179,14 @@ describe('"use cache" runtime', () => {
       async (_captures: unknown[], props: PageProps) => ({ q: (await props.searchParams!).q }),
       "/fixture/app/cached/captures-replay/page.tsx:$$hoist_0_Page",
       "",
-      { appPageSegmentFunction: true, argumentCount: 1, decryptCaptures },
+      { argumentCount: 1, decryptCaptures },
     ) as (envelope: unknown, props: PageProps) => Promise<unknown>;
     // A Response Store replay decodes page props without searchParams.
     await expect(
-      readsSearchParams(envelope, { params: makeThenableParams({ slug: "same" }) }),
+      readsSearchParams(
+        envelope,
+        asPageInvocation({ params: makeThenableParams({ slug: "same" }) }),
+      ),
     ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
   });
 
@@ -8205,22 +8212,25 @@ describe('"use cache" runtime', () => {
       },
       "/fixture/app/cached/page.tsx:default",
       "",
-      { appPageSegmentFunction: true },
     );
 
     await expect(
-      cached({
-        params: makeThenableParams({ slug: "same" }),
-        searchParams: makeObservedAppPageSearchParamsThenable({ q: "first" }),
-      }),
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeObservedAppPageSearchParamsThenable({ q: "first" }),
+        }),
+      ),
     ).rejects.toThrow(/cannot be called inside "use cache"/);
     expect(callCount).toBe(1);
 
     await expect(
-      cached({
-        params: makeThenableParams({ slug: "same" }),
-        searchParams: makeObservedAppPageSearchParamsThenable({ q: "second" }),
-      }),
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeObservedAppPageSearchParamsThenable({ q: "second" }),
+        }),
+      ),
     ).rejects.toThrow(/cannot be called inside "use cache"/);
     expect(callCount).toBe(2);
   });
@@ -8251,22 +8261,25 @@ describe('"use cache" runtime', () => {
       },
       "/fixture/app/cached/caught/page.tsx:default",
       "",
-      { appPageSegmentFunction: true },
     );
 
     await expect(
-      cached({
-        params: makeThenableParams({ slug: "same" }),
-        searchParams: makeObservedAppPageSearchParamsThenable({ q: "first" }),
-      }),
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeObservedAppPageSearchParamsThenable({ q: "first" }),
+        }),
+      ),
     ).rejects.toThrow(/cannot be called inside "use cache"/);
     expect(callCount).toBe(1);
 
     await expect(
-      cached({
-        params: makeThenableParams({ slug: "same" }),
-        searchParams: makeObservedAppPageSearchParamsThenable({ q: "second" }),
-      }),
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeObservedAppPageSearchParamsThenable({ q: "second" }),
+        }),
+      ),
     ).rejects.toThrow(/cannot be called inside "use cache"/);
     expect(callCount).toBe(2);
   });

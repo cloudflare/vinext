@@ -573,18 +573,6 @@ export type RegisterCachedFunctionOptions = {
    * transform records this separately for metadata parent resolution.
    */
   acceptsSecondArgument?: boolean;
-  /**
-   * Internal transform metadata for App Router page segment functions defined
-   * in a page file: a `"use cache"` page component (file-level or inline
-   * directive) and the page's generateMetadata/generateViewport. They receive
-   * framework-owned `{ params, searchParams }` props. The page and metadata
-   * invocation sites also pass Next.js's enumerable `$$isPage` marker to any
-   * cache function (use-cache-wrapper.ts, `isPageSegmentFunction`), which
-   * covers cached functions imported or re-exported from other modules; this
-   * flag keeps page semantics for the page file's own functions on any call
-   * path.
-   */
-  appPageSegmentFunction?: boolean;
   /** Number of declared arguments supplied by the directive transform. */
   argumentCount?: number;
   decryptCaptures?: (value: unknown) => Promise<unknown[] | undefined>;
@@ -679,10 +667,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // the same in `args`/`admittedArgs` (envelope) and `executionArgs`
       // (captures).
       const pagePropsArgIndex = hasCaptureEnvelope ? 1 : 0;
-      // Like Next.js, the page component and page metadata invocation sites
-      // mark the props of a cache function with `$$isPage`. Read and remove it
-      // so page semantics follow the invocation, including for a cached
-      // function defined in or re-exported from another module.
+      // Like Next.js (use-cache-wrapper.ts, `isPageSegmentFunction`), page
+      // semantics come only from the invocation: the page component, page
+      // probe and page metadata/viewport call sites mark a cache function's
+      // props with `$$isPage`, and Response Store replay args keep it. Where
+      // the function is defined does not matter, and a direct user call is an
+      // ordinary cache call. Read and remove the marker here.
       const invocationPageProps = args[pagePropsArgIndex];
       const isPageInvocation = hasUseCachePageMarker(invocationPageProps);
       const invocationArgs = isPageInvocation
@@ -697,11 +687,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const executionArgs = hasCaptureEnvelope
         ? [captures, ...admittedArgs.slice(1)]
         : admittedArgs;
-      // The transform flags page segment functions defined in the page file;
-      // the invocation marker covers the rest.
-      const isPageSegmentFunction = isPageInvocation || options.appPageSegmentFunction === true;
       const pagePropsIndex =
-        omitAppPageSearchParams && isPageSegmentFunction ? pagePropsArgIndex : undefined;
+        omitAppPageSearchParams && isPageInvocation ? pagePropsArgIndex : undefined;
       // Rendered page props carry searchParams that throw inside a public cache
       // scope. When they are absent, as on a Response Store replay of the
       // encoded args, access must still fail like Next's erroring searchParams.
@@ -1460,8 +1447,7 @@ function withoutUseCachePageMarker(props: Record<string, unknown>): Record<strin
  * the page props at `index` (after a capture envelope, if any), as Next.js does
  * for the serialized arguments (use-cache-wrapper.ts, `isPageSegmentFunction`),
  * and keep the `$$isPage` marker so a replay regains page semantics, including
- * the erroring searchParams fallback, for cached functions defined outside the
- * page file.
+ * the erroring searchParams fallback.
  */
 function toReplayablePageArgs(args: readonly unknown[], index: number): unknown[] {
   const props = args[index];

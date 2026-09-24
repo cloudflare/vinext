@@ -235,17 +235,6 @@ function expectNoSearchParamsObservation(): void {
   expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
 }
 
-// A cached page is a page segment function either through the transform flag
-// (defined in the page file) or through the `$$isPage` invocation marker alone
-// (imported or re-exported from another module, as Next.js detects it).
-const CACHED_PAGE_REGISTRATIONS: readonly (readonly [
-  string,
-  { appPageSegmentFunction?: boolean },
-])[] = [
-  ["page-file flag", { appPageSegmentFunction: true }],
-  ["invocation marker", {}],
-];
-
 async function expectCachedRenderIgnoresQuery(options: {
   expectedText: string;
   getCallCount: () => number;
@@ -1667,157 +1656,145 @@ describe("buildPageElements", () => {
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
   });
 
-  it.each(CACHED_PAGE_REGISTRATIONS)(
-    "keeps a cached primary page query-inert through the React render path (%s)",
-    async (_label, registerOptions) => {
-      await resetUseCacheRuntime();
-      const { registerCachedFunction } =
-        await import("../packages/vinext/src/shims/cache-runtime.js");
+  it("keeps a cached primary page query-inert through the React render path", async () => {
+    await resetUseCacheRuntime();
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
 
-      let pageCalls = 0;
-      let receivedPropKeys: string[] = [];
-      const CachedPage = registerCachedFunction(
-        async (props: { params: Promise<{ slug: string }> }): Promise<string> => {
-          pageCalls++;
-          receivedPropKeys = Object.keys(props);
-          const resolvedParams = await props.params;
-          return `primary:${resolvedParams.slug}`;
+    let pageCalls = 0;
+    let receivedPropKeys: string[] = [];
+    const CachedPage = registerCachedFunction(
+      async (props: { params: Promise<{ slug: string }> }): Promise<string> => {
+        pageCalls++;
+        receivedPropKeys = Object.keys(props);
+        const resolvedParams = await props.params;
+        return `primary:${resolvedParams.slug}`;
+      },
+      "/fixture/app/cached/page.tsx:default",
+      "",
+    );
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(CachedPage),
+      loading: { default: () => null },
+      layouts: [],
+      routeSegments: ["cached"],
+      pattern: "/cached",
+    });
+
+    await expectCachedRenderIgnoresQuery({
+      expectedText: "primary:same",
+      getCallCount: () => pageCalls,
+      render: (query) => buildAndRenderElement(route, "page:/cached", query),
+    });
+    // The cache wrapper removes the `$$isPage` marker before user code runs.
+    expect(receivedPropKeys).toEqual(["params", "searchParams"]);
+  });
+
+  it("keeps a cached active slot page query-inert through the React render path", async () => {
+    await resetUseCacheRuntime();
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+
+    function MainPage(): React.ReactNode {
+      return React.createElement("div", null, "main");
+    }
+
+    let slotCalls = 0;
+    const CachedSlotPage = registerCachedFunction(
+      async ({ params }: { params: Promise<Record<string, unknown>> }): Promise<string> => {
+        slotCalls++;
+        await params;
+        return "slot:cached";
+      },
+      "/fixture/app/cached/@modal/page.tsx:default",
+      "",
+    );
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(MainPage),
+      loading: { default: () => null },
+      layouts: [],
+      routeSegments: ["cached"],
+      pattern: "/cached",
+      slots: {
+        "@modal": {
+          name: "modal",
+          page: createSyntheticPageModule(CachedSlotPage),
+          layoutIndex: -1,
+          routeSegments: [],
         },
-        "/fixture/app/cached/page.tsx:default",
-        "",
-        registerOptions,
+      },
+    });
+
+    await expectCachedRenderIgnoresQuery({
+      expectedText: "slot:cached",
+      getCallCount: () => slotCalls,
+      render: (query) => buildAndRenderElement(route, "slot:modal:/", query),
+    });
+  });
+
+  it("keeps a cached intercepting slot page query-inert through the React render path", async () => {
+    await resetUseCacheRuntime();
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+
+    function MainPage(): React.ReactNode {
+      return React.createElement("div", null, "main");
+    }
+
+    let interceptCalls = 0;
+    const CachedInterceptPage = registerCachedFunction(
+      async ({ params }: { params: Promise<Record<string, unknown>> }): Promise<string> => {
+        interceptCalls++;
+        await params;
+        return "intercept:cached";
+      },
+      "/fixture/app/cached/@modal/(.)photo/page.tsx:default",
+      "",
+    );
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(MainPage),
+      loading: { default: () => null },
+      layouts: [],
+      routeSegments: ["cached"],
+      pattern: "/cached",
+      slots: {
+        "@modal": {
+          name: "modal",
+          default: createSyntheticPageModule(() => null),
+          layoutIndex: -1,
+          routeSegments: [],
+        },
+      },
+    });
+    const renderIntercept = async (query: string): Promise<string> => {
+      const result = await buildPageElements(
+        createBaseOptions({
+          route,
+          routePath: "/cached",
+          searchParams: new URLSearchParams({ q: query }),
+          opts: {
+            interceptSlotKey: "@modal",
+            interceptPage: createSyntheticPageModule(CachedInterceptPage),
+          },
+        }),
       );
-      const route = createSyntheticRoute({
-        page: createSyntheticPageModule(CachedPage),
-        loading: { default: () => null },
-        layouts: [],
-        routeSegments: ["cached"],
-        pattern: "/cached",
-      });
-
-      await expectCachedRenderIgnoresQuery({
-        expectedText: "primary:same",
-        getCallCount: () => pageCalls,
-        render: (query) => buildAndRenderElement(route, "page:/cached", query),
-      });
-      // The cache wrapper removes the `$$isPage` marker before user code runs.
-      expect(receivedPropKeys).toEqual(["params", "searchParams"]);
-    },
-  );
-
-  it.each(CACHED_PAGE_REGISTRATIONS)(
-    "keeps a cached active slot page query-inert through the React render path (%s)",
-    async (_label, registerOptions) => {
-      await resetUseCacheRuntime();
-      const { registerCachedFunction } =
-        await import("../packages/vinext/src/shims/cache-runtime.js");
-
-      function MainPage(): React.ReactNode {
-        return React.createElement("div", null, "main");
+      const record = result as Record<string, unknown>;
+      const element = record["slot:modal:/"];
+      if (!React.isValidElement(element)) {
+        throw new Error("Expected intercepting slot element");
       }
 
-      let slotCalls = 0;
-      const CachedSlotPage = registerCachedFunction(
-        async ({ params }: { params: Promise<Record<string, unknown>> }): Promise<string> => {
-          slotCalls++;
-          await params;
-          return "slot:cached";
-        },
-        "/fixture/app/cached/@modal/page.tsx:default",
-        "",
-        registerOptions,
-      );
-      const route = createSyntheticRoute({
-        page: createSyntheticPageModule(MainPage),
-        loading: { default: () => null },
-        layouts: [],
-        routeSegments: ["cached"],
-        pattern: "/cached",
-        slots: {
-          "@modal": {
-            name: "modal",
-            page: createSyntheticPageModule(CachedSlotPage),
-            layoutIndex: -1,
-            routeSegments: [],
-          },
-        },
-      });
+      markDynamicUsageMock.mockClear();
+      markRenderRequestApiUsageMock.mockClear();
+      return renderElementEntry(result, "slot:modal:/");
+    };
 
-      await expectCachedRenderIgnoresQuery({
-        expectedText: "slot:cached",
-        getCallCount: () => slotCalls,
-        render: (query) => buildAndRenderElement(route, "slot:modal:/", query),
-      });
-    },
-  );
-
-  it.each(CACHED_PAGE_REGISTRATIONS)(
-    "keeps a cached intercepting slot page query-inert through the React render path (%s)",
-    async (_label, registerOptions) => {
-      await resetUseCacheRuntime();
-      const { registerCachedFunction } =
-        await import("../packages/vinext/src/shims/cache-runtime.js");
-
-      function MainPage(): React.ReactNode {
-        return React.createElement("div", null, "main");
-      }
-
-      let interceptCalls = 0;
-      const CachedInterceptPage = registerCachedFunction(
-        async ({ params }: { params: Promise<Record<string, unknown>> }): Promise<string> => {
-          interceptCalls++;
-          await params;
-          return "intercept:cached";
-        },
-        "/fixture/app/cached/@modal/(.)photo/page.tsx:default",
-        "",
-        registerOptions,
-      );
-      const route = createSyntheticRoute({
-        page: createSyntheticPageModule(MainPage),
-        loading: { default: () => null },
-        layouts: [],
-        routeSegments: ["cached"],
-        pattern: "/cached",
-        slots: {
-          "@modal": {
-            name: "modal",
-            default: createSyntheticPageModule(() => null),
-            layoutIndex: -1,
-            routeSegments: [],
-          },
-        },
-      });
-      const renderIntercept = async (query: string): Promise<string> => {
-        const result = await buildPageElements(
-          createBaseOptions({
-            route,
-            routePath: "/cached",
-            searchParams: new URLSearchParams({ q: query }),
-            opts: {
-              interceptSlotKey: "@modal",
-              interceptPage: createSyntheticPageModule(CachedInterceptPage),
-            },
-          }),
-        );
-        const record = result as Record<string, unknown>;
-        const element = record["slot:modal:/"];
-        if (!React.isValidElement(element)) {
-          throw new Error("Expected intercepting slot element");
-        }
-
-        markDynamicUsageMock.mockClear();
-        markRenderRequestApiUsageMock.mockClear();
-        return renderElementEntry(result, "slot:modal:/");
-      };
-
-      await expectCachedRenderIgnoresQuery({
-        expectedText: "intercept:cached",
-        getCallCount: () => interceptCalls,
-        render: renderIntercept,
-      });
-    },
-  );
+    await expectCachedRenderIgnoresQuery({
+      expectedText: "intercept:cached",
+      getCallCount: () => interceptCalls,
+      render: renderIntercept,
+    });
+  });
 
   it("does NOT call markDynamicUsage just because the request query has content", async () => {
     function NoSearchPage(): React.ReactNode {
@@ -2643,48 +2620,44 @@ describe("probeAppPage", () => {
     expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
   });
 
-  it.each(CACHED_PAGE_REGISTRATIONS)(
-    "derives the same cache key for a cached page in probe and render (%s)",
-    async (_label, registerOptions) => {
-      await resetUseCacheRuntime();
-      const { registerCachedFunction } =
-        await import("../packages/vinext/src/shims/cache-runtime.js");
+  it("derives the same cache key for a cached page in probe and render", async () => {
+    await resetUseCacheRuntime();
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
 
-      let pageCalls = 0;
-      const CachedPage = registerCachedFunction(
-        async (props: { params: Promise<{ slug: string }> }): Promise<string> => {
-          pageCalls++;
-          return `probed:${(await props.params).slug}`;
-        },
-        "/fixture/app/cached-probe/page.tsx:default",
-        "",
-        registerOptions,
-      );
+    let pageCalls = 0;
+    const CachedPage = registerCachedFunction(
+      async (props: { params: Promise<{ slug: string }> }): Promise<string> => {
+        pageCalls++;
+        return `probed:${(await props.params).slug}`;
+      },
+      "/fixture/app/cached-probe/page.tsx:default",
+      "",
+    );
 
-      await Promise.resolve(
-        probeAppPage({
-          asyncRouteParams: makeThenableParams({ slug: "same" }),
-          pageComponent: CachedPage,
-          searchParams: new URLSearchParams("q=probe"),
-        }),
-      );
-      expect(pageCalls).toBe(1);
-      expectNoSearchParamsObservation();
+    await Promise.resolve(
+      probeAppPage({
+        asyncRouteParams: makeThenableParams({ slug: "same" }),
+        pageComponent: CachedPage,
+        searchParams: new URLSearchParams("q=probe"),
+      }),
+    );
+    expect(pageCalls).toBe(1);
+    expectNoSearchParamsObservation();
 
-      const route = createSyntheticRoute({
-        page: createSyntheticPageModule(CachedPage),
-        loading: { default: () => null },
-        layouts: [],
-        routeSegments: ["cached"],
-        pattern: "/cached",
-      });
-      await expect(buildAndRenderElement(route, "page:/cached", "render")).resolves.toContain(
-        "probed:same",
-      );
-      expect(pageCalls).toBe(1);
-      expectNoSearchParamsObservation();
-    },
-  );
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(CachedPage),
+      loading: { default: () => null },
+      layouts: [],
+      routeSegments: ["cached"],
+      pattern: "/cached",
+    });
+    await expect(buildAndRenderElement(route, "page:/cached", "render")).resolves.toContain(
+      "probed:same",
+    );
+    expect(pageCalls).toBe(1);
+    expectNoSearchParamsObservation();
+  });
 
   it("does NOT call markDynamicUsage just because the request query has content", () => {
     function NoSearchPage(): React.ReactNode {
