@@ -8,6 +8,8 @@ const handlers = new Map<string, () => Promise<Response>>([
   ["text-file", () => fetch(new URL("../../../server-assets/text-file.txt", import.meta.url))],
   ["image-file", () => fetch(new URL("../../../server-assets/image.png", import.meta.url))],
   ["from-node-module", () => fetch(new URL("react/package.json", import.meta.url))],
+  ["js-file", () => fetch(new URL("../../../server-assets/payload.js", import.meta.url))],
+  ["ts-file", () => fetch(new URL("../../../server-assets/payload.ts", import.meta.url))],
 ]);
 
 export async function GET(request: Request): Promise<Response> {

@@ -16,6 +16,10 @@ const handlers = new Map<string, () => Promise<Response>>([
   ["image-file", () => fetch(new URL("../../server-assets/image.png", import.meta.url))],
   // Not a sibling file, so it resolves as a module request (webpack parity).
   ["from-node-module", () => fetch(new URL("react/package.json", import.meta.url))],
+  // Script files fetched as bytes are assets too, whatever the extension;
+  // only code-loading contexts such as `new Worker(url)` keep a runtime URL.
+  ["js-file", () => fetch(new URL("../../server-assets/payload.js", import.meta.url))],
+  ["ts-file", () => fetch(new URL("../../server-assets/payload.ts", import.meta.url))],
 ]);
 
 export default async function handler(req: NextRequestLike): Promise<Response> {

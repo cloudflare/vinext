@@ -32,8 +32,12 @@
  *     until something actually fetches the asset.
  *
  * Only project modules are rewritten (not node_modules) and only when the
- * literal resolves to an existing non-script file, so worker scripts,
- * runtime-computed URLs and remote URLs keep their current behaviour.
+ * literal resolves to an existing file, so runtime-computed URLs and remote
+ * URLs keep their current behaviour. Like webpack, the file's extension does
+ * not matter (`fetch(new URL("./payload.js", import.meta.url))` loads the
+ * source text); the surrounding expression does: a URL that loads code —
+ * `new Worker(url)`, `new SharedWorker(url)` or `import(url)` — stays a
+ * runtime URL.
  * App Router client code is left alone, so browser assets never bloat server
  * or Worker bundles: `"use client"` modules in the RSC environment, the `ssr`
  * environment when there is no Pages Router (it only renders client
@@ -47,7 +51,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
-import { parseAst, type Plugin, type ResolvedConfig } from "vite";
+import { parseAst, type ESTree, type Plugin, type ResolvedConfig } from "vite";
 import { resolveRuntimeEntryModule } from "../entries/runtime-entry-module.js";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
@@ -60,6 +64,7 @@ import {
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   staticStringValue,
+  unwrapExpression,
   walkAst,
 } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
@@ -81,10 +86,46 @@ const BINDING_PREFIX = "__vinext_server_url_asset";
 
 type ModuleResolver = (specifier: string, importer: string) => Promise<string | null>;
 
+const WORKER_CONSTRUCTOR_NAMES = new Set(["Worker", "SharedWorker"]);
+
+function isWorkerConstructor(callee: ESTree.Node): boolean {
+  const target = unwrapExpression(callee);
+  if (target?.type === "Identifier") return WORKER_CONSTRUCTOR_NAMES.has(target.name);
+  // `new worker_threads.Worker(...)`, `new globalThis.SharedWorker(...)`.
+  return (
+    target?.type === "MemberExpression" &&
+    !target.computed &&
+    target.property.type === "Identifier" &&
+    WORKER_CONSTRUCTOR_NAMES.has(target.property.name)
+  );
+}
+
+/**
+ * The `new URL(...)` expression a code-loading operand is built from: the URL
+ * itself, `url.href` or `url.toString()`.
+ */
+function codeLoadingUrlExpression(operand: ESTree.Node | null | undefined): ESTree.Node | null {
+  const value = unwrapExpression(operand);
+  if (
+    value?.type === "MemberExpression" &&
+    !value.computed &&
+    isIdentifierNamed(value.property, "href")
+  ) {
+    return unwrapExpression(value.object);
+  }
+  if (
+    value?.type === "CallExpression" &&
+    value.arguments.length === 0 &&
+    value.callee.type === "MemberExpression" &&
+    !value.callee.computed &&
+    isIdentifierNamed(value.callee.property, "toString")
+  ) {
+    return unwrapExpression(value.callee.object);
+  }
+  return value;
+}
+
 async function isServerUrlAssetFile(filePath: string): Promise<boolean> {
-  // Script targets are code, not assets: `new Worker(new URL("./w.js", ...))`
-  // and friends must keep resolving to a runnable module.
-  if (scriptParserLanguage(filePath) !== null) return false;
   // `?`/`#` would be read back as a Vite query/hash on the generated ids.
   if (/[?#]/.test(filePath)) return false;
   try {
@@ -313,8 +354,21 @@ export function createServerUrlAssetsPlugin(
         if (this.environment.name === "rsc" && hasDirective(ast, "use client")) return null;
 
         const references: Array<{ start: number; end: number; specifier: string }> = [];
+        // URLs that load code rather than read bytes: worker scripts and
+        // dynamic imports must keep resolving to a runnable module, as with
+        // webpack (worker dependencies are not asset URLs) and Vite (whose
+        // worker plugin claims the same `new Worker(new URL(...))` shape).
+        const codeLoadingUrls = new Set<ESTree.Node>();
         walkAst(ast, (node) => {
+          if (node.type === "NewExpression" && isWorkerConstructor(node.callee)) {
+            const url = codeLoadingUrlExpression(node.arguments[0]);
+            if (url) codeLoadingUrls.add(url);
+          } else if (node.type === "ImportExpression") {
+            const url = codeLoadingUrlExpression(node.source);
+            if (url) codeLoadingUrls.add(url);
+          }
           if (node.type !== "NewExpression" || !isIdentifierNamed(node.callee, "URL")) return;
+          if (codeLoadingUrls.has(node)) return false;
           const [input, base] = node.arguments;
           if (node.arguments.length !== 2 || !input || !base || !isImportMetaUrlNode(base)) return;
           const specifier = staticStringValue(input);

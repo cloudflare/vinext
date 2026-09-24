@@ -51,6 +51,18 @@ async function expectServerUrlAssets(origin: string): Promise<void> {
   expect(nodeModuleRes.status).toBe(200);
   expect(await nodeModuleRes.json()).toMatchObject({ name: "react" });
 
+  // Script files fetched as bytes return their source text.
+  for (const [handler, file] of [
+    ["js-file", "payload.js"],
+    ["ts-file", "payload.ts"],
+  ]) {
+    const scriptRes = await fetch(`${origin}/api/edge-blob-assets?handler=${handler}`);
+    expect(scriptRes.status).toBe(200);
+    expect(await scriptRes.text()).toBe(
+      fs.readFileSync(path.join(FIXTURE_DIR, "server-assets", file), "utf8"),
+    );
+  }
+
   const readRes = await fetch(`${origin}/api/server-asset-read`);
   expect(readRes.status).toBe(200);
   expect(await readRes.json()).toEqual({ content: "Hello, from text-file.txt!\n" });

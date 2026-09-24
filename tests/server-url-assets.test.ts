@@ -52,6 +52,8 @@ let importer: string;
 let textFile: string;
 let imageFile: string;
 let parenFile: string;
+let workerFile: string;
+let tsPayloadFile: string;
 let packagedJson: string;
 const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x80, 0x0a, 0x0d]);
 
@@ -74,7 +76,10 @@ beforeAll(async () => {
   await fsp.writeFile(imageFile, imageBytes);
   await fsp.writeFile(parenFile, "parenthesised");
   await fsp.writeFile(packagedJson, '{ "i am": "a node dependency" }');
-  await fsp.writeFile(path.join(root, "pages/api/worker.js"), "export {};");
+  workerFile = path.join(root, "pages/api/worker.js");
+  tsPayloadFile = path.join(root, "src/payload.ts");
+  await fsp.writeFile(workerFile, "export {};");
+  await fsp.writeFile(tsPayloadFile, 'export const payload: string = "ts";\n');
 });
 
 afterAll(async () => {
@@ -286,8 +291,8 @@ describe("vinext:server-url-assets transform", () => {
     const source = [
       // Missing file: stays a runtime URL, like Vite's client handling.
       `const missing = new URL("./missing.txt", import.meta.url);`,
-      // Script modules are code (workers), not assets.
-      `const worker = new URL("./worker.js", import.meta.url);`,
+      // Worker scripts load code, not bytes.
+      `const worker = new Worker(new URL("./worker.js", import.meta.url));`,
       // Runtime-computed specifiers cannot be resolved at build time.
       "const dynamic = new URL(`../../src/${name}.txt`, import.meta.url);",
       // Absolute URLs and paths keep URL semantics.
@@ -301,6 +306,51 @@ describe("vinext:server-url-assets transform", () => {
     ].join("\n");
 
     expect(await transform(source)).toBeNull();
+  });
+
+  it("leaves URLs that load code as runtime URLs", async () => {
+    const sources = [
+      `new Worker(new URL("./worker.js", import.meta.url));`,
+      `new Worker(new URL("./worker.js", import.meta.url), { type: "module" });`,
+      `new SharedWorker(new URL("./worker.js", import.meta.url));`,
+      `new worker_threads.Worker(new URL("./worker.js", import.meta.url));`,
+      `new Worker(new URL("./worker.js", import.meta.url).href);`,
+      `new Worker((new URL("./worker.js", import.meta.url)).toString());`,
+      `await import(new URL("./worker.js", import.meta.url));`,
+      `await import(new URL("./worker.js", import.meta.url).href);`,
+      // Whatever the extension: the dynamic import decides, not the file.
+      `await import(new URL("../../src/text-file.txt", import.meta.url).href);`,
+    ];
+    for (const source of sources) {
+      expect(await transform(source), source).toBeNull();
+    }
+
+    // Only the code-loading operand is left alone.
+    const mixed = await transform(
+      [
+        `new Worker(new URL("./worker.js", import.meta.url));`,
+        `export const bytes = () => fetch(new URL("./worker.js", import.meta.url));`,
+      ].join("\n"),
+    );
+    expect(mixed).toContain(`new Worker(new URL("./worker.js", import.meta.url))`);
+    expect(mixed).toContain("fetch(new URL(__vinext_server_url_asset0))");
+    expect(mixed).toContain(registrationImport("__vinext_server_url_asset0", workerFile));
+  });
+
+  // Next.js applies its edge asset loader to every `new URL(<file>,
+  // import.meta.url)` dependency whatever the extension:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack-config.ts
+  it("rewrites script files that are read as bytes", async () => {
+    const code = await transform(
+      [
+        `export const js = () => fetch(new URL("./worker.js", import.meta.url));`,
+        `export const ts = () => fetch(new URL("../../src/payload.ts", import.meta.url));`,
+      ].join("\n"),
+    );
+
+    expect(code).toContain(registrationImport("__vinext_server_url_asset0", workerFile));
+    expect(code).toContain(registrationImport("__vinext_server_url_asset1", tsPayloadFile));
+    expect(code).not.toContain("import.meta.url");
   });
 
   it("skips modules without a parseable absolute id", async () => {
@@ -383,12 +433,10 @@ describe("resolveServerUrlAssetFile", () => {
     expect(resolveModule).toHaveBeenCalledWith("my-pkg/hello/world.json", importer);
   });
 
-  it("rejects module resolutions that are not asset files", async () => {
+  it("accepts module resolutions to any file, but not directories", async () => {
     await expect(
-      resolveServerUrlAssetFile("my-pkg", importer, async () =>
-        path.join(root, "pages/api/worker.js"),
-      ),
-    ).resolves.toBeNull();
+      resolveServerUrlAssetFile("my-pkg", importer, async () => workerFile),
+    ).resolves.toBe(workerFile);
     await expect(
       resolveServerUrlAssetFile("my-pkg", importer, async () => path.join(root, "src")),
     ).resolves.toBeNull();

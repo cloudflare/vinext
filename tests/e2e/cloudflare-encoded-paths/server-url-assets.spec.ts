@@ -30,5 +30,17 @@ for (const route of ["/api/edge-blob-assets", "/api/app-edge-blob-assets"]) {
       expect(response.status()).toBe(200);
       expect(await response.json()).toMatchObject({ name: "react" });
     });
+
+    // Script files fetched as bytes are assets too, whatever the extension.
+    for (const [handler, file] of [
+      ["js-file", "payload.js"],
+      ["ts-file", "payload.ts"],
+    ]) {
+      test(`allows to fetch ${file} as bytes`, async ({ request }) => {
+        const response = await request.get(`${route}?handler=${handler}`);
+        expect(response.status()).toBe(200);
+        expect(await response.text()).toBe(fs.readFileSync(path.join(ASSETS_DIR, file), "utf8"));
+      });
+    }
   });
 }
