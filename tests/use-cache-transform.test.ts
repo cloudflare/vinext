@@ -765,9 +765,18 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).toContain("$$VinextReactServer.registerServerReference");
     expect(result!.code).toContain("registerCachedFunction");
     expect(result!.code).toContain('"use cache";');
-    expect(manager.serverReferences.metaMap.get(moduleId)!.exportNames).toEqual([
-      expect.stringMatching(SECURE_CACHE_EXPORT_RE),
-    ]);
+    const claim = manager.serverReferences.metaMap.get(moduleId)!;
+    expect(claim.exportNames).toEqual([expect.stringMatching(SECURE_CACHE_EXPORT_RE)]);
+
+    // The runtime recognizes cache functions, including bound ones, by this
+    // server reference id (`registerServerReference` sets `$$id`).
+    const { isUseCacheFunctionReference } =
+      await import("../packages/vinext/src/shims/internal/app-page-props-cache-key.js");
+    const reference = Object.assign(async () => null, {
+      $$typeof: Symbol.for("react.server.reference"),
+      $$id: `${claim.referenceKey}#${claim.exportNames[0]}`,
+    });
+    expect(isUseCacheFunctionReference(reference)).toBe(true);
   });
 
   // Like Next.js (use-cache-wrapper.ts `isPageSegmentFunction`), page

@@ -8077,6 +8077,163 @@ describe('"use cache" runtime', () => {
     expect(uncachedPropKeys).toEqual([["params", "searchParams"]]);
   });
 
+  // Mirrors react-server-dom-webpack's `registerServerReference` and its
+  // server-reference `bind` (vendored by @vitejs/plugin-rsc), which cannot load
+  // outside the react-server condition: the bound function gets `$$typeof`,
+  // `$$id` and `$$bound`, but none of the original function's other properties.
+  function registerTestServerReference<T extends (...args: never[]) => unknown>(
+    reference: T,
+    id: string,
+    exportName: string,
+  ): T {
+    const tag = Symbol.for("react.server.reference");
+    function bind(this: T & { $$id: string; $$bound: unknown[] | null }, ...args: unknown[]) {
+      const bound = Function.prototype.bind.apply(this, args as [unknown, ...unknown[]]);
+      const boundArgs = args.slice(1);
+      return Object.defineProperties(bound, {
+        $$typeof: { value: tag },
+        $$id: { value: this.$$id },
+        $$bound: { value: this.$$bound ? this.$$bound.concat(boundArgs) : boundArgs },
+        bind: { value: bind, configurable: true },
+      });
+    }
+    return Object.defineProperties(reference, {
+      $$typeof: { value: tag },
+      $$id: { value: `${id}#${exportName}`, configurable: true },
+      $$bound: { value: null, configurable: true },
+      bind: { value: bind, configurable: true },
+    });
+  }
+  const TEST_CACHE_EXPORT_NAME = `$$vinext_cache_${"a".repeat(64)}`;
+
+  // Next.js: `isUseCacheFunction` reads the server reference id, so it holds
+  // for a bound cache function; React's bind does not copy vinext's symbol.
+  it("recognizes plain and bound cache server references but not server actions", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { isUseCacheFunctionReference, withUseCachePageMarker } =
+      await import("../packages/vinext/src/shims/internal/app-page-props-cache-key.js");
+
+    const cached = registerTestServerReference(
+      registerCachedFunction(async (_props: unknown) => null, "/app/cached.tsx:default"),
+      "/app/cached.tsx",
+      TEST_CACHE_EXPORT_NAME,
+    );
+    const boundCached = cached.bind(null);
+    const action = registerTestServerReference(async () => null, "/app/actions.ts", "submit");
+
+    expect(Reflect.get(boundCached, Symbol.for("vinext.useCacheFunction"))).toBeUndefined();
+    expect(isUseCacheFunctionReference(cached)).toBe(true);
+    expect(isUseCacheFunctionReference(boundCached)).toBe(true);
+    expect(isUseCacheFunctionReference(boundCached.bind(null))).toBe(true);
+    expect(isUseCacheFunctionReference(action)).toBe(false);
+    expect(isUseCacheFunctionReference(action.bind(null))).toBe(false);
+    expect(isUseCacheFunctionReference(async () => null)).toBe(false);
+    expect(isUseCacheFunctionReference({ $$id: `/app/cached.tsx#${TEST_CACHE_EXPORT_NAME}` })).toBe(
+      false,
+    );
+    expect(withUseCachePageMarker(boundCached, { params: {} })).toEqual({
+      params: {},
+      $$isPage: true,
+    });
+    expect(withUseCachePageMarker(action, { params: {} })).toEqual({ params: {} });
+  });
+
+  it("gives bound cache functions page semantics from `$$isPage`, after any bound arguments", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const { withUseCachePageMarker } =
+      await import("../packages/vinext/src/shims/internal/app-page-props-cache-key.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    type PageProps = {
+      params: Promise<{ slug: string }>;
+      searchParams: Promise<Record<string, unknown>>;
+    };
+    const observeSearchParams = vi.fn();
+    const pageProps = (q: string): PageProps => ({
+      params: makeThenableParams({ slug: "same" }),
+      searchParams: makeThenableParams({ q }, { observeParamAccess: observeSearchParams }),
+    });
+
+    let pageCalls = 0;
+    const CachedPage = registerTestServerReference(
+      registerCachedFunction(async (props: PageProps) => {
+        pageCalls++;
+        expect(Object.keys(props)).toEqual(["params", "searchParams"]);
+        return (await props.params).slug;
+      }, "/app/bound/cached-page.tsx:default"),
+      "/app/bound/cached-page.tsx",
+      TEST_CACHE_EXPORT_NAME,
+    );
+    const BoundPage = CachedPage.bind(null);
+    await expect(BoundPage(withUseCachePageMarker(BoundPage, pageProps("first")))).resolves.toBe(
+      "same",
+    );
+    await expect(BoundPage(withUseCachePageMarker(BoundPage, pageProps("second")))).resolves.toBe(
+      "same",
+    );
+    expect(pageCalls).toBe(1);
+
+    // Values bound by user code arrive before the page props.
+    let withLabelCalls = 0;
+    const encodeInvocationArgs = vi.fn(async (_args: unknown[]) => "encrypted");
+    const CachedWithLabel = registerTestServerReference(
+      registerCachedFunction(
+        async (label: string, props: PageProps) => {
+          withLabelCalls++;
+          expect(Object.keys(props)).toEqual(["params", "searchParams"]);
+          return `${label}:${(await props.params).slug}`;
+        },
+        "/app/bound/cached-label.tsx:default",
+        "",
+        { encodeInvocationArgs, serverReferenceId: "fixture#cached-label" },
+      ),
+      "/app/bound/cached-label.tsx",
+      TEST_CACHE_EXPORT_NAME,
+    );
+    const LabelledPage = CachedWithLabel.bind(null, "label") as unknown as (
+      props: PageProps,
+    ) => Promise<string>;
+    await expect(
+      LabelledPage(withUseCachePageMarker(LabelledPage, pageProps("first"))),
+    ).resolves.toBe("label:same");
+    await expect(
+      LabelledPage(withUseCachePageMarker(LabelledPage, pageProps("second"))),
+    ).resolves.toBe("label:same");
+    expect(withLabelCalls).toBe(1);
+    const [[replayLabel, replayProps]] = encodeInvocationArgs.mock.calls[0] as [
+      [unknown, Record<string, unknown>],
+    ];
+    expect(replayLabel).toBe("label");
+    expect(Object.keys(replayProps)).toEqual(["params", "$$isPage"]);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+  });
+
+  it("does not read the page marker through thenable arguments", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const observeParamAccess = vi.fn();
+    const cached = registerCachedFunction(
+      async (params: Promise<{ slug: string }>) => (await params).slug,
+      "/app/cached-params.tsx:default",
+    );
+
+    await expect(
+      cached(makeThenableParams({ slug: "same" }, { observeParamAccess })),
+    ).resolves.toBe("same");
+    const observedKeys = observeParamAccess.mock.calls.flatMap(([keys]) => keys as string[]);
+    expect(observedKeys).not.toContain("$$isPage");
+  });
+
   it('keeps searchParams for `$$isPage` invocations of a "use cache: private" function', async () => {
     const { registerCachedFunction, clearPrivateCache } =
       await import("../packages/vinext/src/shims/cache-runtime.js");

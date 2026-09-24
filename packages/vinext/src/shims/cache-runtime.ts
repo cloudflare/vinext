@@ -59,6 +59,7 @@ import {
   APP_PAGE_USE_CACHE_MARKER,
   hasUseCachePageMarker,
   isMarkedAppPagePropsObject,
+  isUseCacheFunctionReference,
   markAppPagePropsForUseCache,
 } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
@@ -663,20 +664,26 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const keySeed = getUseCacheKeySeed();
       const captures = options.decryptCaptures ? await options.decryptCaptures(args[0]) : undefined;
       const hasCaptureEnvelope = captures !== undefined;
-      // Page props follow the capture envelope when there is one. The index is
-      // the same in `args`/`admittedArgs` (envelope) and `executionArgs`
-      // (captures).
-      const pagePropsArgIndex = hasCaptureEnvelope ? 1 : 0;
       // Like Next.js (use-cache-wrapper.ts, `isPageSegmentFunction`), page
       // semantics come only from the invocation: the page component, page
       // probe and page metadata/viewport call sites mark a cache function's
       // props with `$$isPage`, and Response Store replay args keep it. Where
       // the function is defined does not matter, and a direct user call is an
       // ordinary cache call. Read and remove the marker here.
-      const invocationPageProps = args[pagePropsArgIndex];
-      const isPageInvocation = hasUseCachePageMarker(invocationPageProps);
+      //
+      // The call site passes the props as its first argument, but arguments
+      // bound ahead of it arrive first: a capture envelope, or values bound by
+      // user code with `.bind(null, ...)`. So locate the marked props instead
+      // of assuming an index. Positions are the same in `args`/`admittedArgs`
+      // (envelope) and `executionArgs` (captures).
+      const pagePropsArgIndex = args.findIndex(hasUseCachePageMarker);
+      const isPageInvocation = pagePropsArgIndex !== -1;
       const invocationArgs = isPageInvocation
-        ? replaceArgument(args, pagePropsArgIndex, withoutUseCachePageMarker(invocationPageProps))
+        ? replaceArgument(
+            args,
+            pagePropsArgIndex,
+            withoutUseCachePageMarker(args[pagePropsArgIndex] as Record<string, unknown>),
+          )
         : args;
       const admittedArgs =
         options.argumentCount === undefined
@@ -979,7 +986,7 @@ const USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL = Symbol.for("vinext.useCacheAcce
 export function isUseCacheFunction(
   value: unknown,
 ): value is (...args: unknown[]) => Promise<unknown> {
-  return typeof value === "function" && Reflect.get(value, USE_CACHE_FUNCTION_SYMBOL) === true;
+  return isUseCacheFunctionReference(value);
 }
 
 function throwPrivateUseCacheInsidePublicUseCacheError(): never {
