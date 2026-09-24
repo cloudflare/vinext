@@ -1362,8 +1362,9 @@ describe("prerenderApp — default mode (app-basic)", () => {
   // A "use cache" page, and its "use cache" generateMetadata/generateViewport,
   // receive `{ params, searchParams }`. Next.js leaves searchParams out of a
   // public page cache's key and serialized arguments, so reading them must not
-  // turn the build-time render dynamic.
-  it.each(["inline", "file"])(
+  // turn the build-time render dynamic. That holds whether the cache functions
+  // are defined in the page file or re-exported from another module.
+  it.each(["inline", "file", "reexport"])(
     'prerenders %s "use cache" pages that receive page props',
     (directive) => {
       const r = findRoute(results, `/use-cache-page-props/${directive}/prerendered`);

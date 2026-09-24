@@ -7905,7 +7905,8 @@ describe('"use cache" runtime', () => {
 
     expect(encodeInvocationArgs).toHaveBeenCalledTimes(1);
     const [[replayProps]] = encodeInvocationArgs.mock.calls[0] as [[Record<string, unknown>]];
-    expect(Object.keys(replayProps)).toEqual(["params"]);
+    // Replay keeps the `$$isPage` marker so it regains page semantics.
+    expect(Object.keys(replayProps)).toEqual(["params", "$$isPage"]);
     expect(observeSearchParams).not.toHaveBeenCalled();
   });
 
@@ -7933,6 +7934,176 @@ describe('"use cache" runtime', () => {
     await expect(cached({ params: makeThenableParams({ slug: "same" }) })).rejects.toThrow(
       /`searchParams` cannot be called inside "use cache"/,
     );
+  });
+
+  // Next.js passes `$$isPage` to a "use cache" function invoked as a page
+  // component or page metadata resolver (create-component-tree.tsx,
+  // resolve-metadata.ts), so page semantics also hold for a cache function
+  // defined in, or re-exported from, a module other than the page file.
+  it("treats `$$isPage` invocations of a public cache as page segment functions", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const encodeInvocationArgs = vi.fn(async (args: unknown[]) => {
+      // Encoding walks every argument property, like encodeReply does.
+      JSON.stringify(args, (_key, value) =>
+        value && typeof value === "object" ? { ...value } : value,
+      );
+      return "encrypted";
+    });
+    type PageProps = {
+      params: Promise<{ slug: string }>;
+      searchParams?: Promise<Record<string, unknown>>;
+      $$isPage?: true;
+    };
+    let callCount = 0;
+    let receivedPropKeys: string[] = [];
+    // No `appPageSegmentFunction`: defined outside the page file.
+    const cached = registerCachedFunction(
+      async (props: PageProps) => {
+        callCount++;
+        receivedPropKeys = Object.keys(props);
+        return { slug: (await props.params).slug };
+      },
+      "/fixture/app/cached/imported-page.tsx:default",
+      "",
+      { encodeInvocationArgs, serverReferenceId: "fixture#imported-page" },
+    );
+
+    const observeSearchParams = vi.fn();
+    const pageProps = (q: string): PageProps => ({
+      params: makeThenableParams({ slug: "same" }),
+      searchParams: makeThenableParams({ q }, { observeParamAccess: observeSearchParams }),
+      $$isPage: true,
+    });
+    await expect(cached(pageProps("first"))).resolves.toEqual({ slug: "same" });
+    await expect(cached(pageProps("second"))).resolves.toEqual({ slug: "same" });
+    expect(callCount).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+    expect(receivedPropKeys).toEqual(["params", "searchParams"]);
+    const [[replayProps]] = encodeInvocationArgs.mock.calls[0] as [[Record<string, unknown>]];
+    expect(replayProps).toMatchObject({ $$isPage: true });
+    expect(Object.keys(replayProps)).toEqual(["params", "$$isPage"]);
+
+    // A Response Store replay of those args (no searchParams) regains page
+    // semantics from the marker and gets erroring searchParams.
+    const readsSearchParams = registerCachedFunction(
+      async (props: PageProps) => ({ q: (await props.searchParams!).q }),
+      "/fixture/app/cached/imported-replay.tsx:default",
+      "",
+      {},
+    );
+    await expect(
+      readsSearchParams({ params: makeThenableParams({ slug: "same" }), $$isPage: true }),
+    ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
+  });
+
+  // Ported from Next.js: resolve-metadata.ts `createSegmentProps` marks a
+  // "use cache" page generateMetadata/generateViewport with `$$isPage`.
+  it("marks page metadata resolvers that are cache functions with `$$isPage`", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { resolveModuleMetadata, resolveModuleViewport } =
+      await import("../packages/vinext/src/shims/metadata.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const receivedPropKeys: string[][] = [];
+    let metadataCalls = 0;
+    // Imported from another module, so no `appPageSegmentFunction` flag.
+    const generateMetadata = registerCachedFunction(
+      async (props: { params: Promise<{ slug: string }> }) => {
+        metadataCalls++;
+        receivedPropKeys.push(Object.keys(props));
+        return { title: (await props.params).slug };
+      },
+      "/fixture/app/cached/imported-metadata.tsx:generateMetadata",
+      "",
+      { argumentCount: 1 },
+    );
+    const generateViewport = registerCachedFunction(
+      async (props: { params: Promise<{ slug: string }> }) => {
+        receivedPropKeys.push(Object.keys(props));
+        await props.params;
+        return { themeColor: "#123456" };
+      },
+      "/fixture/app/cached/imported-metadata.tsx:generateViewport",
+      "",
+      { argumentCount: 1 },
+    );
+    const uncachedPropKeys: string[][] = [];
+    const uncachedModule = {
+      generateMetadata: async (props: Record<string, unknown>) => {
+        uncachedPropKeys.push(Object.keys(props));
+        return {};
+      },
+    };
+    const observeSearchParams = vi.fn();
+    const observer = { observeParamAccess: observeSearchParams };
+
+    const cachedModule = { generateMetadata, generateViewport };
+    const params = { slug: "same" };
+    await expect(
+      resolveModuleMetadata(cachedModule, params, { q: "first" }, undefined, observer),
+    ).resolves.toEqual({ title: "same" });
+    await expect(
+      resolveModuleMetadata(cachedModule, params, { q: "second" }, undefined, observer),
+    ).resolves.toEqual({ title: "same" });
+    await resolveModuleViewport(cachedModule, params, { q: "first" }, undefined, observer);
+    expect(metadataCalls).toBe(1);
+    expect(observeSearchParams).not.toHaveBeenCalled();
+    expect(receivedPropKeys).toEqual([
+      ["params", "searchParams"],
+      ["params", "searchParams"],
+    ]);
+
+    // Layout resolvers get no searchParams and no page marker.
+    receivedPropKeys.length = 0;
+    await resolveModuleMetadata(cachedModule, { slug: "layout" });
+    expect(receivedPropKeys).toEqual([["params"]]);
+
+    // Non-cache resolvers never see the marker.
+    await resolveModuleMetadata(uncachedModule, params, { q: "first" });
+    expect(uncachedPropKeys).toEqual([["params", "searchParams"]]);
+  });
+
+  it('keeps searchParams for `$$isPage` invocations of a "use cache: private" function', async () => {
+    const { registerCachedFunction, clearPrivateCache } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    clearPrivateCache();
+
+    let callCount = 0;
+    let receivedPropKeys: string[] = [];
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams: Promise<Record<string, string>>;
+      }) => {
+        callCount++;
+        receivedPropKeys = Object.keys(props);
+        return { q: (await props.searchParams).q };
+      },
+      "/fixture/app/cached/imported-private-page.tsx:default",
+      "private",
+    );
+    const pageProps = (q: string) => ({
+      params: makeThenableParams({ slug: "same" }),
+      searchParams: makeThenableParams({ q }),
+      $$isPage: true,
+    });
+
+    await expect(cached(pageProps("first"))).resolves.toEqual({ q: "first" });
+    await expect(cached(pageProps("second"))).resolves.toEqual({ q: "second" });
+    expect(callCount).toBe(2);
+    await expect(cached(pageProps("first"))).resolves.toEqual({ q: "first" });
+    expect(callCount).toBe(2);
+    expect(receivedPropKeys).toEqual(["params", "searchParams"]);
   });
 
   // An inline cache function that closes over values is bound to a capture
@@ -7998,7 +8169,7 @@ describe('"use cache" runtime', () => {
       [unknown, Record<string, unknown>],
     ];
     expect(replayEnvelope).toBe(envelope);
-    expect(Object.keys(replayProps)).toEqual(["params"]);
+    expect(Object.keys(replayProps)).toEqual(["params", "$$isPage"]);
 
     const readsSearchParams = registerCachedFunction(
       async (_captures: unknown[], props: PageProps) => ({ q: (await props.searchParams!).q }),
