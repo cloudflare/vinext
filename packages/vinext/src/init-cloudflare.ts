@@ -241,6 +241,12 @@ export function setupCloudflarePlatform(
       `   ${context.packageManager ?? "npm"} run deploy:response-store`,
     );
   }
+  if (cloudflare.prerender && cloudflare.cdnCache !== "static-assets") {
+    nextSteps.push(
+      "Pre-rendered routes are built, but Cloudflare deploys do not serve them.",
+      "   Use the Static Assets cache to serve them, or CDN pre-warming to fill another cache.",
+    );
+  }
   if (needsKvNamespaceId) {
     nextSteps.push(
       "Cloudflare setup is incomplete until you finish KV configuration:",
