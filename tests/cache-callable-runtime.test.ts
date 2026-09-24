@@ -35,6 +35,14 @@ const flight = vi.hoisted(() => {
       if (Array.isArray(value)) {
         return [(await Promise.all(value.map(decode))).map(([item]) => item)];
       }
+      if (value instanceof Map) {
+        const [entries] = await decode([...value]);
+        return [new Map(entries as Array<[unknown, unknown]>)];
+      }
+      if (value instanceof Set) {
+        const [items] = await decode([...value]);
+        return [new Set(items as unknown[])];
+      }
       if (Object.getPrototypeOf(value) !== Object.prototype) return [value];
       const entries = await Promise.all(
         Object.entries(value).map(async ([key, field]) => [key, (await decode(field))[0]] as const),
@@ -187,14 +195,71 @@ describe("cache-callable-runtime", () => {
     const node: Record<string, unknown> = { params: makeThenableParams({ slug: "a" }), other };
     node.self = node;
 
-    const { args, thenableObjectPaths } = encodeCacheArguments([node, other]);
+    const { args, encodedValuePaths } = encodeCacheArguments([node, other, new Map([["a", 1]])]);
     const encodedNode = args[0] as Record<string, unknown>;
 
     expect(encodedNode).not.toBe(node);
     expect(encodedNode.self).toBe(encodedNode);
     expect(encodedNode.other).toBe(other);
     expect(args[1]).toBe(other);
-    expect(thenableObjectPaths).toEqual([[0, "params"]]);
+    expect(args[2]).toBeInstanceOf(Map);
+    expect(encodedValuePaths).toEqual([[0, "params"]]);
+  });
+
+  it("restores params inside Maps and Sets", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const params = makeThenableParams({ slug: "a" });
+    const map = new Map<unknown, unknown>([
+      ["params", params],
+      [params, "keyed"],
+    ]);
+    const args = [map, new Set([params]), params];
+
+    const decoded = decodeCacheArguments(await flight.roundTrip(encodeCacheArguments(args))) as [
+      Map<unknown, unknown>,
+      Set<unknown>,
+      Promise<unknown> & { slug: string },
+    ];
+
+    const restored = decoded[2];
+    expect(restored.slug).toBe("a");
+    expect(await restored).toEqual({ slug: "a" });
+    expect(decoded[0]).toBeInstanceOf(Map);
+    expect([...decoded[0]]).toEqual([
+      ["params", restored],
+      [restored, "keyed"],
+    ]);
+    expect(decoded[0].get("params")).toBe(restored);
+    expect(decoded[0].get(restored)).toBe("keyed");
+    expect(decoded[1]).toBeInstanceOf(Set);
+    expect(decoded[1].has(restored)).toBe(true);
+    expect(decoded[1].size).toBe(1);
+  });
+
+  it("restores cycles through Maps and Sets", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const params = Object.assign(Promise.resolve({ slug: "a" }), { slug: "a" });
+    const map = new Map<string, unknown>([["params", params]]);
+    map.set("self", map);
+    const set = new Set<unknown>([map]);
+    set.add(set);
+
+    // The Flight mock does not model cycles, so decode the encoded value directly.
+    const decoded = decodeCacheArguments(encodeCacheArguments([map, set])) as [
+      Map<string, unknown>,
+      Set<unknown>,
+    ];
+
+    expect(decoded[0]).not.toBe(map);
+    expect(decoded[0].get("self")).toBe(decoded[0]);
+    expect(decoded[0].get("params")).toMatchObject({ slug: "a" });
+    const members = [...decoded[1]];
+    expect(members).toHaveLength(2);
+    expect(members[0]).toBe(decoded[0]);
+    expect(members[1]).toBe(decoded[1]);
   });
 
   it("rejects payloads without recorded argument shapes", async () => {
@@ -202,11 +267,17 @@ describe("cache-callable-runtime", () => {
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");
 
     expect(() => decodeCacheArguments(["legacy"])).toThrow("Invalid cache function arguments");
+    expect(() => decodeCacheArguments({ args: [{}], encodedValuePaths: [[0, "missing"]] })).toThrow(
+      "Invalid cache function arguments",
+    );
+    expect(() => decodeCacheArguments({ args: [{ slug: "a" }], encodedValuePaths: [[0]] })).toThrow(
+      "Invalid cache function arguments",
+    );
     expect(() =>
-      decodeCacheArguments({ args: [{}], thenableObjectPaths: [[0, "missing"]] }),
-    ).toThrow("Invalid cache function arguments");
-    expect(() =>
-      decodeCacheArguments({ args: [{ slug: "a" }], thenableObjectPaths: [[0]] }),
+      decodeCacheArguments({
+        args: [{ kind: "map", entries: [["a"]] }],
+        encodedValuePaths: [[0]],
+      }),
     ).toThrow("Invalid cache function arguments");
   });
 });

@@ -22,23 +22,24 @@ type ValuePath = Array<string | number>;
  * Flight serializes a promise as its resolved value and drops its own fields.
  * Next.js params are promises that also expose their resolved fields, and the
  * cache key is built from those fields, so the payload records where such
- * promises were and decoding restores the same shape.
+ * promises were and decoding restores the same shape. Maps and Sets that lead
+ * to params are recorded the same way so their members can be restored.
  */
 type EncodedCacheArguments = {
   args: unknown[];
-  thenableObjectPaths: ValuePath[];
+  encodedValuePaths: ValuePath[];
 };
 
 /**
- * A promise-augmented object split for Flight. The own fields build the cache
- * key; the promise carries the resolved value, which can differ: the params
- * proxy hides params named like promise or React fields (`value`, `status`)
- * from its own keys but still resolves to them.
+ * A value split for Flight. For a promise-augmented object, the own fields
+ * build the cache key and the promise carries the resolved value, which can
+ * differ: the params proxy hides params named like promise or React fields
+ * (`value`, `status`) from its own keys but still resolves to them.
  */
-type EncodedThenableObject = {
-  fields: Record<string, unknown>;
-  promise: PromiseLike<unknown>;
-};
+type EncodedValue =
+  | { kind: "thenable"; fields: Record<string, unknown>; promise: PromiseLike<unknown> }
+  | { kind: "map"; entries: Array<[unknown, unknown]> }
+  | { kind: "set"; values: unknown[] };
 
 export function encryptCacheCaptures(captures: unknown[]): CacheCaptureEnvelope {
   return {
@@ -75,27 +76,41 @@ function isThenableObject(value: object): value is PromiseLike<unknown> {
   return !Array.isArray(value) && isThenable(value) && Object.keys(value).length > 0;
 }
 
+/** Values whose members Flight serializes, so they can lead to params. */
+function isContainer(value: object): boolean {
+  return (
+    isThenableObject(value) ||
+    Array.isArray(value) ||
+    value instanceof Map ||
+    value instanceof Set ||
+    isPlainRecord(value)
+  );
+}
+
+function containerMembers(value: object): unknown[] {
+  if (value instanceof Map) return [...value].flat();
+  if (value instanceof Set) return [...value];
+  return Object.keys(value).map((key) => Reflect.get(value, key));
+}
+
 /**
- * Find the arrays and plain records that lead to a promise-augmented object.
- * Everything else is passed to Flight as-is, so Flight keeps its shared
- * references, including ones between a params object's fields and its
- * resolved value.
+ * Find the containers that lead to a promise-augmented object. Everything
+ * else is passed to Flight as-is, so Flight keeps its shared references,
+ * including ones between a params object's fields and its resolved value.
  */
 function findValuesToEncode(args: unknown[]): Set<object> {
   const referrers = new Map<object, object[]>();
   const pending: object[] = [];
   const visit = (value: unknown, referrer: object | undefined): void => {
-    if (typeof value !== "object" || value === null) return;
-    const isThenableValue = isThenableObject(value);
-    if (!isThenableValue && !Array.isArray(value) && !isPlainRecord(value)) return;
+    if (typeof value !== "object" || value === null || !isContainer(value)) return;
     const known = referrers.get(value);
     if (known) {
       if (referrer) known.push(referrer);
       return;
     }
     referrers.set(value, referrer ? [referrer] : []);
-    if (isThenableValue) pending.push(value);
-    for (const key of Object.keys(value)) visit(Reflect.get(value, key), value);
+    if (isThenableObject(value)) pending.push(value);
+    for (const member of containerMembers(value)) visit(member, value);
   };
   visit(args, undefined);
 
@@ -108,53 +123,68 @@ function findValuesToEncode(args: unknown[]): Set<object> {
   return toEncode;
 }
 
-/** Split promise-augmented objects into fields and promise, recording each location. */
+/**
+ * Split promise-augmented objects into fields and promise, and the Maps and
+ * Sets that contain them into their members, recording each location.
+ */
 export function encodeCacheArguments(args: unknown[]): EncodedCacheArguments {
   const toEncode = findValuesToEncode(args);
-  const thenableObjectPaths: ValuePath[] = [];
+  const encodedValuePaths: ValuePath[] = [];
   const path: ValuePath = [];
   // Flight preserves shared references and cycles, so each source object maps
-  // to one encoded value, created before its children are encoded.
+  // to one encoded value, created before its members are encoded.
   const encoded = new Map<object, unknown>();
-  const encodeAt = (segment: string | number, value: unknown): unknown => {
-    path.push(segment);
+  const encodeAt = (value: unknown, ...segments: ValuePath): unknown => {
+    path.push(...segments);
     try {
       return encode(value);
     } finally {
-      path.pop();
+      path.length -= segments.length;
     }
   };
   const encode = (value: unknown): unknown => {
     if (typeof value !== "object" || value === null || !toEncode.has(value)) return value;
     const isThenableValue = isThenableObject(value);
-    if (encoded.has(value)) {
-      // Each location of a shared promise-augmented object is restored.
-      if (isThenableValue) thenableObjectPaths.push([...path]);
-      return encoded.get(value);
+    // Each location of a shared encoded value is restored.
+    if (isThenableValue || value instanceof Map || value instanceof Set) {
+      encodedValuePaths.push([...path]);
     }
+    if (encoded.has(value)) return encoded.get(value);
     if (Array.isArray(value)) {
       const items: unknown[] = [];
       encoded.set(value, items);
-      for (let index = 0; index < value.length; index++)
-        items[index] = encodeAt(index, value[index]);
+      for (let index = 0; index < value.length; index++) {
+        items[index] = encodeAt(value[index], index);
+      }
       return items;
+    }
+    if (value instanceof Map) {
+      const entries: Array<[unknown, unknown]> = [];
+      encoded.set(value, { kind: "map", entries } satisfies EncodedValue);
+      for (const [key, item] of value) {
+        const index = entries.length;
+        entries.push([encodeAt(key, "entries", index, 0), encodeAt(item, "entries", index, 1)]);
+      }
+      return encoded.get(value);
+    }
+    if (value instanceof Set) {
+      const values: unknown[] = [];
+      encoded.set(value, { kind: "set", values } satisfies EncodedValue);
+      for (const item of value) values.push(encodeAt(item, "values", values.length));
+      return encoded.get(value);
     }
     const fields: Record<string, unknown> = {};
     const result = isThenableValue
-      ? ({ fields, promise: value } satisfies EncodedThenableObject)
+      ? ({ kind: "thenable", fields, promise: value } satisfies EncodedValue)
       : fields;
     encoded.set(value, result);
-    if (isThenableValue) path.push("fields");
-    for (const key of Object.keys(value)) fields[key] = encodeAt(key, Reflect.get(value, key));
-    if (isThenableValue) {
-      path.pop();
-      // Recorded after nested locations so decoding restores inner objects
-      // before an enclosing promise copies their references.
-      thenableObjectPaths.push([...path]);
+    const prefix: ValuePath = isThenableValue ? ["fields"] : [];
+    for (const key of Object.keys(value)) {
+      fields[key] = encodeAt(Reflect.get(value, key), ...prefix, key);
     }
     return result;
   };
-  return { args: encode(args) as unknown[], thenableObjectPaths };
+  return { args: encode(args) as unknown[], encodedValuePaths };
 }
 
 /** Restore the argument shapes that `encodeCacheArguments` captured before Flight encoding. */
@@ -164,13 +194,26 @@ export function decodeCacheArguments(value: unknown): unknown[] {
     value === null ||
     !("args" in value) ||
     !Array.isArray(value.args) ||
-    !("thenableObjectPaths" in value) ||
-    !Array.isArray(value.thenableObjectPaths)
+    !("encodedValuePaths" in value) ||
+    !Array.isArray(value.encodedValuePaths)
   ) {
     throw new Error("Invalid cache function arguments");
   }
   const args = adoptFlightThenables(value.args) as unknown[];
-  for (const path of value.thenableObjectPaths) restoreThenableObject(args, path);
+  // Paths run through encoded values, so every location is found before any
+  // is replaced.
+  const locations = value.encodedValuePaths.map((path: unknown) => locateEncodedValue(args, path));
+  // Every location of a shared encoded value restores the same value.
+  const restored = new Map<EncodedValue, object>();
+  for (const { encoded } of locations) {
+    if (!restored.has(encoded)) restored.set(encoded, createRestoredValue(encoded));
+  }
+  for (const { parent, key, encoded } of locations) {
+    Reflect.set(parent, key, restored.get(encoded));
+  }
+  // Members are copied once every location is replaced, so members that are
+  // encoded values themselves, including cycles, are already restored.
+  for (const [encoded, target] of restored) fillRestoredValue(encoded, target);
   return args;
 }
 
@@ -178,7 +221,10 @@ function isPathSegment(value: unknown): value is string | number {
   return typeof value === "string" || typeof value === "number";
 }
 
-function restoreThenableObject(args: unknown[], path: unknown): void {
+function locateEncodedValue(
+  args: unknown[],
+  path: unknown,
+): { parent: object; key: string | number; encoded: EncodedValue } {
   if (!Array.isArray(path) || path.length === 0 || !path.every(isPathSegment)) {
     throw new Error("Invalid cache function arguments");
   }
@@ -189,23 +235,56 @@ function restoreThenableObject(args: unknown[], path: unknown): void {
   const key = path[path.length - 1];
   const encoded: unknown =
     typeof parent === "object" && parent !== null ? Reflect.get(parent, key) : null;
-  if (typeof parent !== "object" || parent === null || !isEncodedThenableObject(encoded)) {
+  if (typeof parent !== "object" || parent === null || !isEncodedValue(encoded)) {
     throw new Error("Invalid cache function arguments");
   }
-  // The promise was adopted by `adoptFlightThenables`, so it is owned here.
-  // Every location of a shared object restores the same promise.
-  Reflect.set(parent, key, Object.assign(encoded.promise, encoded.fields));
+  return { parent, key, encoded };
 }
 
-function isEncodedThenableObject(value: unknown): value is EncodedThenableObject {
+function isEncodedValue(value: unknown): value is EncodedValue {
   if (typeof value !== "object" || value === null || !isPlainRecord(value)) return false;
-  const { fields, promise } = value;
-  return (
-    typeof fields === "object" &&
-    fields !== null &&
-    isPlainRecord(fields) &&
-    promise instanceof Promise
-  );
+  switch (value.kind) {
+    case "thenable": {
+      const { fields, promise } = value;
+      return (
+        typeof fields === "object" &&
+        fields !== null &&
+        isPlainRecord(fields) &&
+        promise instanceof Promise
+      );
+    }
+    case "map":
+      return (
+        Array.isArray(value.entries) &&
+        value.entries.every((entry: unknown) => Array.isArray(entry) && entry.length === 2)
+      );
+    case "set":
+      return Array.isArray(value.values);
+    default:
+      return false;
+  }
+}
+
+function createRestoredValue(encoded: EncodedValue): object {
+  switch (encoded.kind) {
+    case "thenable":
+      // The promise was adopted by `adoptFlightThenables`, so it is owned here.
+      return encoded.promise;
+    case "map":
+      return new Map();
+    case "set":
+      return new Set();
+  }
+}
+
+function fillRestoredValue(encoded: EncodedValue, target: object): void {
+  if (encoded.kind === "thenable") {
+    Object.assign(target, encoded.fields);
+  } else if (encoded.kind === "map" && target instanceof Map) {
+    for (const [key, item] of encoded.entries) target.set(key, item);
+  } else if (encoded.kind === "set" && target instanceof Set) {
+    for (const item of encoded.values) target.add(item);
+  }
 }
 
 /**
@@ -227,9 +306,25 @@ function adoptFlightThenables(value: unknown, adopted = new WeakMap<object, unkn
     adopted.set(value, promise);
     return promise;
   }
+  // Decoded Flight values are owned by this call, so update them in place.
+  if (value instanceof Map) {
+    adopted.set(value, value);
+    const entries = [...value];
+    value.clear();
+    for (const [key, item] of entries) {
+      value.set(adoptFlightThenables(key, adopted), adoptFlightThenables(item, adopted));
+    }
+    return value;
+  }
+  if (value instanceof Set) {
+    adopted.set(value, value);
+    const items = [...value];
+    value.clear();
+    for (const item of items) value.add(adoptFlightThenables(item, adopted));
+    return value;
+  }
   if (!Array.isArray(value) && !isPlainRecord(value)) return value;
   adopted.set(value, value);
-  // Decoded Flight values are owned by this call, so update them in place.
   for (const key of Object.keys(value)) {
     Reflect.set(value, key, adoptFlightThenables(Reflect.get(value, key), adopted));
   }
