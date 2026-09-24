@@ -803,6 +803,20 @@ describe("plugin-rsc inline use-cache references", () => {
       `const Page = async (props) => { "use cache"; return null; };\nexport { Page as default };`,
     ],
     ["export default arrow", `export default async (props) => { "use cache"; return null; };`],
+    // Next.js checks the default export's value at runtime, so a cache
+    // function reached through a local alias is still the page component.
+    [
+      "aliased export default",
+      `async function Page(props) { "use cache"; return null; }\nconst Exported = Page;\nexport default Exported;`,
+    ],
+    [
+      "aliased export specifier",
+      `const Page = async (props) => { "use cache"; return null; };\nlet Alias = Page;\nexport { Alias as default };`,
+    ],
+    [
+      "alias chain",
+      `async function Page(props) { "use cache"; return null; }\nvar First = Page;\nconst Second = First;\nexport default Second;`,
+    ],
   ])("marks inline App Page default exports (%s)", async (_label, code) => {
     const plugins = await getPlugins();
     await configureVinext(plugins);
@@ -897,6 +911,55 @@ describe("plugin-rsc inline use-cache references", () => {
       $$hoist_1_viewport: true,
       $$hoist_2_load: false,
     });
+  });
+
+  it("marks inline App Page metadata exports reached through local aliases", async () => {
+    const plugins = await getPlugins();
+    await configureVinext(plugins);
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const pageId = path.join(APP_FIXTURE_DIR, "app", "aliased-metadata", "page.tsx");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      [
+        `async function meta(props) { "use cache"; return {}; }`,
+        `export const generateMetadata = meta;`,
+        `const viewport = async (props) => { "use cache"; return {}; };`,
+        `const viewportAlias = viewport;`,
+        `export { viewportAlias as generateViewport };`,
+        `export default async function Page() { return null; }`,
+      ].join("\n"),
+      pageId,
+    );
+
+    expect(getPageSegmentFlagsByCacheName(result!.code)).toEqual({
+      $$hoist_0_meta: true,
+      $$hoist_1_viewport: true,
+    });
+  });
+
+  it("does not loop on cyclic top-level aliases of the App Page default export", async () => {
+    const plugins = await getPlugins();
+    await configureVinext(plugins);
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const pageId = path.join(APP_FIXTURE_DIR, "app", "cyclic-alias", "page.tsx");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      [
+        `async function load(props) { "use cache"; return props; }`,
+        `const First = Second;`,
+        `const Second = First;`,
+        `export default First;`,
+      ].join("\n"),
+      pageId,
+    );
+
+    expect(getPageSegmentFlagsByCacheName(result!.code)).toEqual({ $$hoist_0_load: false });
   });
 
   it("does not mark inline metadata caches in App layouts", async () => {

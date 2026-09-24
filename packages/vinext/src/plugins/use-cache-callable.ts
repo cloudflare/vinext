@@ -135,70 +135,86 @@ function isFunctionNode(node: unknown): boolean {
 const APP_PAGE_SEGMENT_EXPORT_NAMES = new Set(["default", "generateMetadata", "generateViewport"]);
 
 /**
+ * Follow a top-level binding through identifier aliases (`const Exported =
+ * Page`, including chains) to the function node it holds. Stops on a cycle or
+ * on any value that is neither a function nor an identifier.
+ */
+function resolveTopLevelFunction(
+  bindings: ReadonlyMap<string, unknown>,
+  name: string,
+): object | undefined {
+  const seen = new Set<string>();
+  let current = name;
+  while (!seen.has(current)) {
+    seen.add(current);
+    const value = bindings.get(current);
+    if (isFunctionNode(value)) return value as object;
+    const alias = value as { type?: unknown; name?: unknown } | null | undefined;
+    if (alias?.type !== "Identifier" || typeof alias.name !== "string") return undefined;
+    current = alias.name;
+  }
+  return undefined;
+}
+
+/**
  * Find the top-level functions a page module exports as page segment
  * functions: a direct `export default function` / `export async function
  * generateMetadata`, or a top-level function referenced by `export default
- * Page` / `export { Page as default }`. Returns the AST nodes themselves so
+ * Page` / `export { Page as default }` / `export const generateMetadata =
+ * meta`, following identifier aliases. Returns the AST nodes themselves so
  * callers can match a hoisted directive's `valueNode` by identity.
  */
 function findAppPageSegmentFunctions(ast: Program): Set<object> {
   const functions = new Set<object>();
-  const localNames = new Set<string>();
-  const addFunctionDeclarator = (
-    declarator: { id: { type: string; name?: string }; init?: unknown },
-    names: ReadonlySet<string>,
-  ) => {
-    if (
-      declarator.id.type === "Identifier" &&
-      declarator.id.name !== undefined &&
-      names.has(declarator.id.name) &&
-      isFunctionNode(declarator.init)
-    ) {
-      functions.add(declarator.init as object);
-    }
-  };
+  // Top-level binding name -> its function declaration or variable initializer.
+  const bindings = new Map<string, unknown>();
+  const exportedLocalNames: string[] = [];
 
   for (const statement of ast.body) {
     if (statement.type === "ExportDefaultDeclaration") {
-      if (isFunctionNode(statement.declaration)) functions.add(statement.declaration);
-      else if (statement.declaration.type === "Identifier") {
-        localNames.add(statement.declaration.name);
+      const declaration = statement.declaration;
+      if (isFunctionNode(declaration)) {
+        functions.add(declaration);
+        if (declaration.type === "FunctionDeclaration" && declaration.id) {
+          bindings.set(declaration.id.name, declaration);
+        }
+      } else if (declaration.type === "Identifier") {
+        exportedLocalNames.push(declaration.name);
       }
       continue;
     }
-    if (statement.type !== "ExportNamedDeclaration" || statement.source) continue;
-    const declaration = statement.declaration;
-    if (declaration?.type === "FunctionDeclaration") {
-      if (declaration.id && APP_PAGE_SEGMENT_EXPORT_NAMES.has(declaration.id.name)) {
-        functions.add(declaration);
+    const isLocalExport = statement.type === "ExportNamedDeclaration" && !statement.source;
+    const declaration =
+      statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
+    if (declaration?.type === "FunctionDeclaration" && declaration.id) {
+      bindings.set(declaration.id.name, declaration);
+      if (isLocalExport && APP_PAGE_SEGMENT_EXPORT_NAMES.has(declaration.id.name)) {
+        exportedLocalNames.push(declaration.id.name);
       }
     } else if (declaration?.type === "VariableDeclaration") {
       for (const declarator of declaration.declarations) {
-        addFunctionDeclarator(declarator, APP_PAGE_SEGMENT_EXPORT_NAMES);
+        if (declarator.id.type !== "Identifier") continue;
+        bindings.set(declarator.id.name, declarator.init);
+        if (isLocalExport && APP_PAGE_SEGMENT_EXPORT_NAMES.has(declarator.id.name)) {
+          exportedLocalNames.push(declarator.id.name);
+        }
       }
     }
+    if (statement.type !== "ExportNamedDeclaration" || !isLocalExport) continue;
     for (const specifier of statement.specifiers) {
       const exported =
         specifier.exported.type === "Identifier"
           ? specifier.exported.name
           : String(specifier.exported.value);
       if (APP_PAGE_SEGMENT_EXPORT_NAMES.has(exported) && specifier.local.type === "Identifier") {
-        localNames.add(specifier.local.name);
+        exportedLocalNames.push(specifier.local.name);
       }
     }
   }
-  if (localNames.size === 0) return functions;
 
-  for (const statement of ast.body) {
-    const declaration =
-      statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
-    if (declaration?.type === "FunctionDeclaration") {
-      if (declaration.id && localNames.has(declaration.id.name)) functions.add(declaration);
-    } else if (declaration?.type === "VariableDeclaration") {
-      for (const declarator of declaration.declarations) {
-        addFunctionDeclarator(declarator, localNames);
-      }
-    }
+  for (const name of exportedLocalNames) {
+    const fn = resolveTopLevelFunction(bindings, name);
+    if (fn) functions.add(fn);
   }
   return functions;
 }
