@@ -1,12 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { copyMissingOgWasm } from "../packages/vinext/src/plugins/og-assets.js";
-import { resolveHarfbuzzWasmPath } from "../packages/vinext/src/plugins/og-harfbuzz.js";
 import type { Plugin } from "vite-plus";
 import fsp from "node:fs/promises";
 import fs from "node:fs";
 import os from "node:os";
-import { createRequire } from "node:module";
 import path from "node:path";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -24,8 +22,6 @@ function createOgAssetsPlugin(): Plugin {
 
 // A `this` context that mimics the rsc environment so the hooks run.
 const rscCtx = { environment: { name: "rsc" } };
-const require = createRequire(path.join(import.meta.dirname, "../packages/vinext/package.json"));
-const harfbuzzWasm = fs.readFileSync(resolveHarfbuzzWasmPath(require.resolve("@vercel/og")));
 
 /** Build a fake output bundle (chunk + optional emitted wasm assets). */
 function makeBundle(opts: {
@@ -72,19 +68,17 @@ describe("vinext:og-assets plugin", () => {
   });
 
   describe("dedup: emitted asset present", () => {
-    it("does not mistake a HarfBuzz callback bridge for hb.wasm", () => {
+    it("does not mistake a HarfBuzz callback adapter for hb.wasm", () => {
       const plugin = createOgAssetsPlugin();
       const generateBundle = unwrapHook(plugin.generateBundle);
       const bundle = makeBundle({ chunkCode: 'new URL("./hb.wasm", import.meta.url)' });
-      bundle["_next/static/hb-bridge-i.wasm"] = {
+      bundle["_next/static/harfbuzz-callback-vi-ABC.wasm"] = {
         type: "asset",
-        fileName: "_next/static/hb-bridge-i.wasm",
-        source: Buffer.from([0, 1, 2]),
+        fileName: "_next/static/harfbuzz-callback-vi-ABC.wasm",
       };
       bundle["_next/static/hb-ABC.wasm"] = {
         type: "asset",
         fileName: "_next/static/hb-ABC.wasm",
-        source: harfbuzzWasm,
       };
 
       generateBundle.call(rscCtx, {}, bundle);
@@ -92,28 +86,6 @@ describe("vinext:og-assets plugin", () => {
       expect(bundle["_next/static/index.edge-AAA.js"].code).toContain(
         'new URL("./hb-ABC.wasm", import.meta.url)',
       );
-    });
-
-    it("copies the real HarfBuzz binary when an unrelated hb-prefixed asset is emitted", async () => {
-      const plugin = createOgAssetsPlugin();
-      const generateBundle = unwrapHook(plugin.generateBundle);
-      const writeBundle = unwrapHook(plugin.writeBundle);
-      const bundle = makeBundle({ chunkCode: 'new URL("./hb.wasm", import.meta.url)' });
-      bundle["_next/static/hb-font-ABC.wasm"] = {
-        type: "asset",
-        fileName: "_next/static/hb-font-ABC.wasm",
-        source: Buffer.from([0, 1, 2]),
-      };
-      const outDir = path.join(tmpDir, "unrelated-hb");
-      await fsp.mkdir(outDir, { recursive: true });
-
-      generateBundle.call(rscCtx, {}, bundle);
-      await writeBundle.call(rscCtx, { dir: outDir }, bundle);
-
-      expect(bundle["_next/static/index.edge-AAA.js"].code).toContain(
-        'new URL("../../hb.wasm", import.meta.url)',
-      );
-      expect(fs.readFileSync(path.join(outDir, "hb.wasm"))).toEqual(harfbuzzWasm);
     });
 
     it("rewrites the Node fallback new URL(...) to the emitted resvg/yoga asset", () => {

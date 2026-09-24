@@ -55,10 +55,6 @@ export default {
       ],
     },
     "packages/vinext": {
-      ignoreDependencies: [
-        // Resolve HarfBuzz through @vercel/og's own satori dependency so its WASM matches.
-        "satori",
-      ],
       entry: [
         ...entriesFromPackageJson("packages/vinext/package.json"),
         // Build-time entries referenced by path constant (Vite reads them

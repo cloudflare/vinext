@@ -91,7 +91,7 @@ catalogs:
       specifier: ^1.0.2
       version: 1.0.2
     '@vercel/og':
-      specifier: ^1.0.3
+      specifier: 1.0.3
       version: 1.0.3
     '@vercel/otel':
       specifier: 2.1.3

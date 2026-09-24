@@ -218,9 +218,8 @@ const OG_WASM_ASSETS = ["resvg.wasm", "yoga.wasm", "hb.wasm"] as const;
  * @returns the emitted asset's `fileName` (relative to outDir), or null.
  */
 function findEmittedWasmAsset(
-  bundle: Record<string, { type: string; fileName: string; source?: string | Uint8Array }>,
+  bundle: Record<string, { type: string; fileName: string }>,
   baseName: string,
-  expectedSource?: Buffer,
 ): string | null {
   const stem = baseName.replace(/\.wasm$/, "");
   // Matches `resvg.wasm`, Vite's default `resvg-<hash>.wasm`, or the
@@ -228,15 +227,7 @@ function findEmittedWasmAsset(
   const re = new RegExp(`^${stem}(?:[-.][\\w-]+)?\\.wasm$`);
   for (const output of Object.values(bundle)) {
     if (output.type !== "asset") continue;
-    const filename = path.basename(output.fileName);
-    if (
-      expectedSource &&
-      (typeof output.source === "string" ||
-        !output.source ||
-        !Buffer.from(output.source).equals(expectedSource))
-    )
-      continue;
-    if (re.test(filename)) return output.fileName;
+    if (re.test(path.basename(output.fileName))) return output.fileName;
   }
   return null;
 }
@@ -304,12 +295,10 @@ export function createOgAssetsPlugin(): Plugin {
   // generateBundle; writeBundle must NOT copy a second root copy for these.
   //
   // Cross-hook dependency: this is written in generateBundle and read in
-  // writeBundle. Rollup runs generateBundle before writeBundle within a single
-  // env build, and both hooks early-return outside RSC/SSR, so the
-  // ordering holds today. If a future refactor reorders or parallelizes env
-  // builds, this shared state could go stale (writeBundle would copy a
-  // redundant root file) — keep the produce/consume pair in the same env.
-  let dedupedBases = new Set<string>();
+  // writeBundle, which Rollup runs in that order within a single env build.
+  // Both the RSC and SSR builds use it, so it is keyed by environment: a build
+  // never reads another environment's result, however env builds are ordered.
+  const dedupedBasesByEnvironment = new Map<string, Set<string>>();
 
   return {
     name: "vinext:og-assets",
@@ -322,7 +311,8 @@ export function createOgAssetsPlugin(): Plugin {
         const envName = this.environment?.name;
         if (envName !== "rsc" && envName !== "ssr") return;
 
-        dedupedBases = new Set<string>();
+        const dedupedBases = new Set<string>();
+        dedupedBasesByEnvironment.set(envName, dedupedBases);
 
         const chunks = Object.values(bundle).filter(
           (o): o is typeof o & { type: "chunk"; code: string } => o.type === "chunk",
@@ -333,15 +323,7 @@ export function createOgAssetsPlugin(): Plugin {
           const referenced = chunks.some((c) => c.code.includes(base));
           if (!referenced) continue;
 
-          const emitted = findEmittedWasmAsset(
-            bundle as never,
-            base,
-            base === "hb.wasm"
-              ? fs.readFileSync(
-                  resolveHarfbuzzWasmPath(createRequire(import.meta.url).resolve("@vercel/og")),
-                )
-              : undefined,
-          );
+          const emitted = findEmittedWasmAsset(bundle as never, base);
 
           for (const chunk of chunks) {
             const re = fallbackUrlRegex(base);
@@ -405,8 +387,10 @@ export function createOgAssetsPlugin(): Plugin {
         const chunkCode = Object.values(bundle)
           .map((output) => (output.type === "chunk" ? output.code : ""))
           .join("\n");
+        const dedupedBases = dedupedBasesByEnvironment.get(envName);
+        dedupedBasesByEnvironment.delete(envName);
         const referencedAssets = OG_WASM_ASSETS.filter(
-          (asset) => chunkCode.includes(asset) && !dedupedBases.has(asset),
+          (asset) => chunkCode.includes(asset) && !dedupedBases?.has(asset),
         );
         if (referencedAssets.length === 0) return;
 
