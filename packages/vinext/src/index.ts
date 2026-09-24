@@ -182,7 +182,11 @@ import {
 } from "./utils/react-compiler-support.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
-import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
+import {
+  ASSET_PREFIX_URL_DIR,
+  resolveAssetsDir,
+  resolveAssetUrlPrefix,
+} from "./utils/asset-prefix.js";
 import {
   assertNoPublicDirAssetConflict,
   assertNoPublicNextRequestConflict,
@@ -2521,6 +2525,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         // Expose basePath to client-side code
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
+        // The literal prefix of server stylesheet hrefs when `renderBuiltUrl`
+        // rewrites asset URLs (below), so the App Router stylesheet loader can
+        // spell client-chunk stylesheets the same way and React dedupes them.
+        defines["process.env.__VINEXT_ASSET_URL_PREFIX"] = JSON.stringify(
+          nextConfig.assetPrefix || nextConfig.deploymentId
+            ? resolveAssetUrlPrefix(nextConfig.assetPrefix)
+            : "",
+        );
         // Let shared client shims compile out Pages-only behavior in pure App
         // Router builds while retaining it for Pages and hybrid applications.
         defines["process.env.__VINEXT_HAS_PAGES_ROUTER"] = JSON.stringify(String(hasPagesDir));

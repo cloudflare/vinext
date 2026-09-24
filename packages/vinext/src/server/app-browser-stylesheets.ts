@@ -22,14 +22,36 @@ let stylesheets: readonly ClientStylesheet[] = [];
 const requestedStylesheets = new Map<string, Promise<void>>();
 const listeners = new Set<() => void>();
 
+// The literal URL prefix server stylesheet hrefs start with when `assetPrefix`
+// is configured (see `resolveAssetUrlPrefix`), or "" when they are `base` +
+// file. Inlined at build time.
+const ASSET_URL_PREFIX = process.env.__VINEXT_ASSET_URL_PREFIX ?? "";
+
 /**
- * Normalize a preload URL to the href string React's server-rendered
- * stylesheet resources use. Same-origin assets are root-relative (plugin-rsc
- * emits `base + file`), while cross-origin asset prefixes stay absolute.
+ * Convert the absolute URL Vite's preload helper resolves back to the literal
+ * href the server rendered for the same stylesheet. React keys stylesheet
+ * resources by that literal string, so any other spelling of the same URL is
+ * inserted a second time.
+ *
+ * With an `assetPrefix`, plugin-rsc renders `assetUrlPrefix + file`, which may
+ * be absolute, protocol-relative or root-relative. Otherwise it renders
+ * `base + file`: root-relative for same-origin assets. `pageUrl` is the page's
+ * own URL (not `document.baseURI`, which a `<base>` element can point at
+ * another origin).
  */
-export function toDocumentStylesheetHref(url: string, documentUrl: string): string {
-  const resolved = new URL(url, documentUrl);
-  if (resolved.origin !== new URL(documentUrl).origin) return resolved.href;
+export function toDocumentStylesheetHref(
+  url: string,
+  pageUrl: string,
+  assetUrlPrefix = "",
+): string {
+  const resolved = new URL(url, pageUrl);
+  if (assetUrlPrefix) {
+    const prefix = new URL(assetUrlPrefix, pageUrl).href;
+    if (resolved.href.startsWith(prefix)) {
+      return assetUrlPrefix + resolved.href.slice(prefix.length);
+    }
+  }
+  if (resolved.origin !== new URL(pageUrl).origin) return resolved.href;
   return resolved.pathname + resolved.search + resolved.hash;
 }
 
@@ -55,7 +77,7 @@ function fetchStylesheet(url: string, href: string, nonce: string | undefined): 
 }
 
 function loadAppStylesheet(url: string, nonce?: string): Promise<void> {
-  const href = toDocumentStylesheetHref(url, document.baseURI);
+  const href = toDocumentStylesheetHref(url, location.href, ASSET_URL_PREFIX);
   const requested = requestedStylesheets.get(href);
   if (requested) return requested;
   const stylesheetNonce = nonce || undefined;
