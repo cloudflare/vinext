@@ -13,28 +13,37 @@ const flight = vi.hoisted(() => {
   }
 
   // Flight serializes a promise as its resolved value and drops its own fields.
-  // Results are boxed because an async function adopts a returned thenable,
-  // which would replace the chunk with its resolved value.
-  async function decode(value: unknown): Promise<[unknown]> {
-    if (typeof value !== "object" || value === null) return [value];
-    if (isThenable(value)) {
-      const [resolved] = await decode(await value);
-      return [createChunk(resolved)];
-    }
-    if (Array.isArray(value)) {
-      return [(await Promise.all(value.map(decode))).map(([item]) => item)];
-    }
-    if (Object.getPrototypeOf(value) !== Object.prototype) return [value];
-    const entries = await Promise.all(
-      Object.entries(value).map(async ([key, field]) => [key, (await decode(field))[0]] as const),
-    );
-    return [Object.fromEntries(entries)];
-  }
-
-  // Callers pass a plain payload object, so the unboxed result is never a thenable.
+  // Repeated references decode to one shared value; cycles are not modeled.
   async function roundTrip(value: unknown): Promise<unknown> {
-    const [decoded] = await decode(value);
-    return decoded;
+    const decoded = new Map<object, Promise<[unknown]>>();
+    // Results are boxed because an async function adopts a returned thenable,
+    // which would replace the chunk with its resolved value.
+    const decode = (value: unknown): Promise<[unknown]> => {
+      if (typeof value !== "object" || value === null) return Promise.resolve([value]);
+      let result = decoded.get(value);
+      if (!result) {
+        result = decodeObject(value);
+        decoded.set(value, result);
+      }
+      return result;
+    };
+    const decodeObject = async (value: object): Promise<[unknown]> => {
+      if (isThenable(value)) {
+        const [resolved] = await decode(await value);
+        return [createChunk(resolved)];
+      }
+      if (Array.isArray(value)) {
+        return [(await Promise.all(value.map(decode))).map(([item]) => item)];
+      }
+      if (Object.getPrototypeOf(value) !== Object.prototype) return [value];
+      const entries = await Promise.all(
+        Object.entries(value).map(async ([key, field]) => [key, (await decode(field))[0]] as const),
+      );
+      return [Object.fromEntries(entries)];
+    };
+    // Callers pass a plain payload object, so the unboxed result is never a thenable.
+    const [result] = await decode(value);
+    return result;
   }
 
   const payloads = new Map<string, unknown>();
@@ -134,6 +143,58 @@ describe("cache-callable-runtime", () => {
     expect(Object.keys(decoded[1])).toEqual([]);
     expect(await decoded[1]).toEqual({ plain: true });
     expect(decoded[2]).toBe("value");
+  });
+
+  it("keeps shared references to params, their values and promises", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const segments = ["a", "b"];
+    const params = makeThenableParams({ slug: segments, nested: makeThenableParams({ id: "c" }) });
+    const shared = { params };
+    const pending = Promise.resolve("pending");
+    const args = [shared, shared, params, pending, pending];
+
+    type RestoredParams = Promise<{ slug: string[]; nested: unknown }> & {
+      slug: string[];
+      nested: Promise<unknown>;
+    };
+    const decoded = decodeCacheArguments(await flight.roundTrip(encodeCacheArguments(args))) as [
+      { params: RestoredParams },
+      { params: RestoredParams },
+      RestoredParams,
+      Promise<unknown>,
+      Promise<unknown>,
+    ];
+
+    expect(decoded[1]).toBe(decoded[0]);
+    expect(decoded[2]).toBe(decoded[0].params);
+    expect(decoded[4]).toBe(decoded[3]);
+
+    const restored = decoded[2];
+    const awaited = await restored;
+    expect(restored.slug).toEqual(segments);
+    expect(awaited.slug).toBe(restored.slug);
+    expect(awaited.nested).toBe(restored.nested);
+    expect(Object.keys(restored.nested)).toEqual(["id"]);
+  });
+
+  it("encodes cycles once and leaves values without params as-is", async () => {
+    const { encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const other = { list: [1, 2] };
+    const node: Record<string, unknown> = { params: makeThenableParams({ slug: "a" }), other };
+    node.self = node;
+
+    const { args, thenableObjectPaths } = encodeCacheArguments([node, other]);
+    const encodedNode = args[0] as Record<string, unknown>;
+
+    expect(encodedNode).not.toBe(node);
+    expect(encodedNode.self).toBe(encodedNode);
+    expect(encodedNode.other).toBe(other);
+    expect(args[1]).toBe(other);
+    expect(thenableObjectPaths).toEqual([[0, "params"]]);
   });
 
   it("rejects payloads without recorded argument shapes", async () => {
