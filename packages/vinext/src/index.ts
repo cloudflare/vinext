@@ -450,6 +450,12 @@ function resolveShimModulePath(shimsDir: string, moduleName: string): string {
   return path.join(shimsDir, `${moduleName}.js`);
 }
 
+// @vercel/og 1.x only runs after vinext:og-harfbuzz patches its bundled
+// HarfBuzz glue, so Node server environments must transform it even when the
+// user externalizes every dependency with `ssr.external: true`. A `noExternal`
+// entry takes precedence over `external: true` in Vite.
+const PATCHED_SERVER_PACKAGES = ["@vercel/og"];
+
 function isVercelOgImport(id: string): boolean {
   return id === "@vercel/og" || id === "@vercel/og.js";
 }
@@ -3202,7 +3208,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(hasCloudflarePlugin || hasNitroPlugin
             ? {}
             : config.ssr?.external === true
-              ? { ssr: { external: true as const } }
+              ? { ssr: { external: true as const, noExternal: [...PATCHED_SERVER_PACKAGES] } }
               : {
                   ssr: {
                     external: [
@@ -3548,9 +3554,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
                       // Packages in `external` above take precedence per Vite rules.
-                      // When user sets `ssr.external: true`, skip noExternal since
-                      // everything is already externalized.
-                      ...(userSsrExternal === true ? {} : { noExternal: true as const }),
+                      // When user sets `ssr.external: true`, only packages vinext
+                      // must patch stay in the transform pipeline.
+                      noExternal:
+                        userSsrExternal === true ? [...PATCHED_SERVER_PACKAGES] : (true as const),
                     },
                   }),
               optimizeDeps: {
@@ -3597,9 +3604,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
-                      // When user sets `ssr.external: true`, skip noExternal since
-                      // everything is already externalized.
-                      ...(userSsrExternal === true ? {} : { noExternal: true as const }),
+                      // When user sets `ssr.external: true`, only packages vinext
+                      // must patch stay in the transform pipeline.
+                      noExternal:
+                        userSsrExternal === true ? [...PATCHED_SERVER_PACKAGES] : (true as const),
                     },
                   }),
               optimizeDeps: {
