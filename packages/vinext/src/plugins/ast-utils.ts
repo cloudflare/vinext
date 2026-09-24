@@ -4,6 +4,22 @@ export type ScriptParserLanguage = "js" | "jsx" | "ts" | "tsx";
 
 const SCRIPT_MODULE_EXTENSION_RE = /^\.(?:[cm]?[jt]s|[jt]sx)$/i;
 export const SCRIPT_MODULE_ID_RE = /\.(?:[cm]?[jt]s|[jt]sx)(?:[?#].*)?$/i;
+
+// This block-comment expression cannot span an earlier closing delimiter. Keep
+// it deterministic: this regex runs in native hook filters and the JS fast
+// guard, so nested repetition around a lazy `.*?` would permit exponential
+// backtracking on repeated comments followed by a near-match.
+const BLOCK_COMMENT_PATTERN = String.raw`\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/`;
+const JAVASCRIPT_TRIVIA_PATTERN = String.raw`(?:\s|${BLOCK_COMMENT_PATTERN}|\/\/[^\r\n  ]*)*`;
+const UNICODE_IDENTIFIER_ESCAPE_PATTERN = String.raw`\\u(?:[\dA-Fa-f]{4}|\{[\dA-Fa-f]+\})`;
+/**
+ * Source text that may be an `import.meta.url` (or `import.meta?.url`) read,
+ * tolerating whitespace, comments and unicode-escaped `url` between the tokens.
+ * Over-inclusive by design: a cheap native-filter/fast-guard pre-pass before an
+ * exact AST check. Compile with the `u` flag.
+ */
+export const IMPORT_META_URL_CANDIDATE_PATTERN = String.raw`\bimport${JAVASCRIPT_TRIVIA_PATTERN}\.${JAVASCRIPT_TRIVIA_PATTERN}meta${JAVASCRIPT_TRIVIA_PATTERN}\??\.${JAVASCRIPT_TRIVIA_PATTERN}(?:u|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:r|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:l|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})`;
+export const IMPORT_META_URL_CANDIDATE_RE = new RegExp(IMPORT_META_URL_CANDIDATE_PATTERN, "u");
 /**
  * Cheap pre-parse gate for plugins that only transform *dynamic* `import(...)`.
  *

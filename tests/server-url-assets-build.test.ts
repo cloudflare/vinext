@@ -18,6 +18,7 @@ import { afterAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 
 const ROUTE_ASSET = "vinext-route-handler-server-asset";
+const TRIVIA_ROUTE_ASSET = "vinext-trivia-route-handler-server-asset";
 const CLIENT_COMPONENT_ASSET = "vinext-use-client-component-asset";
 const CLIENT_HELPER_ASSET = "vinext-client-only-helper-asset";
 const PAGES_API_ASSET = "vinext-pages-api-server-asset";
@@ -101,6 +102,26 @@ export function GET() {
 }
 `,
     "server-assets/route.txt": ROUTE_ASSET,
+    // Comments, newlines and `)` between the tokens must not hide the
+    // reference from the transform's native code filter. Earlier transforms
+    // reprint `.ts`/`.js` modules without these comments, but an `.mjs` module
+    // reaches the filter with its line comment (and its `)`) intact.
+    "app/api/trivia-asset/route.js": `import { triviaAssetUrl } from "./trivia-asset.mjs";
+
+export function GET() {
+  return fetch(triviaAssetUrl());
+}
+`,
+    "app/api/trivia-asset/trivia-asset.mjs": `export function triviaAssetUrl() {
+  return new URL(
+    // bundled with the Worker :)
+    "../../../server-assets/trivia.txt" /* ) */,
+    import /* comment */ .meta
+      .url,
+  );
+}
+`,
+    "server-assets/trivia.txt": TRIVIA_ROUTE_ASSET,
     ...(options.withPagesRouter
       ? {
           "pages/api/pages-asset.ts": `export const config = { runtime: "edge" };
@@ -142,6 +163,7 @@ describe("vinext:server-url-assets environment scoping", () => {
 
     // Route handlers run in `rsc` and keep their inlined asset.
     expect(output.rscCode).toContain(inlinedBytes(ROUTE_ASSET));
+    expect(output.rscCode).toContain(inlinedBytes(TRIVIA_ROUTE_ASSET));
     // Nothing from client code is inlined into any server output.
     expect(output.allServerCode).not.toContain(inlinedBytes(CLIENT_COMPONENT_ASSET));
     expect(output.allServerCode).not.toContain(inlinedBytes(CLIENT_HELPER_ASSET));

@@ -50,6 +50,7 @@ import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 import {
   findDirectivePrologueEnd,
   hasDirective,
+  IMPORT_META_URL_CANDIDATE_RE,
   isIdentifierNamed,
   isImportMetaUrlNode,
   SCRIPT_MODULE_ID_RE,
@@ -68,14 +69,6 @@ const SERVER_URL_ASSET_ID_SUFFIX = ".js";
 // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
 const SERVER_URL_ASSET_ID_RE = /^\0vinext-server-url-asset(?:-bytes)?:.+\.js$/;
 
-// Native pre-filter: a `new URL(` call whose argument list mentions
-// import.meta.url before the first `)` outside a string literal. String
-// literals are skipped whole, so file names such as "./Inter (Bold).ttf" still
-// match; every alternative starts with a different character, so matching does
-// not backtrack between them. Deliberately over-inclusive; the AST pass below
-// is exact.
-const NEW_URL_IMPORT_META_URL_RE =
-  /\bnew\s+URL\s*\((?:[^)"'`]|"(?:[^"\\\n]|\\[\s\S])*"|'(?:[^'\\\n]|\\[\s\S])*'|`(?:[^`\\]|\\[\s\S])*`)*?\bimport\.meta\.url\b/;
 const URL_SCHEME_RE = /^[a-z][a-z\d+.-]*:/i;
 const BINDING_PREFIX = "__vinext_server_url_asset";
 
@@ -218,7 +211,12 @@ export function createServerUrlAssetsPlugin(
           include: SCRIPT_MODULE_ID_RE,
           exclude: [VIRTUAL_MODULE_ID_RE, NODE_MODULES_PATH_RE],
         },
-        code: NEW_URL_IMPORT_META_URL_RE,
+        // Native pre-filter. Every rewritable reference has an
+        // `import.meta.url` base, so reuse the import-meta-url candidate
+        // scanner: it tolerates comments, whitespace and escapes between the
+        // tokens (and so any `)` inside them). Deliberately over-inclusive —
+        // it matches any `import.meta.url` read; the AST pass below is exact.
+        code: IMPORT_META_URL_CANDIDATE_RE,
       },
       async handler(code, id) {
         const importer = toSlash(stripViteModuleQuery(id));

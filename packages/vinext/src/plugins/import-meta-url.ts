@@ -31,6 +31,8 @@ import {
   collectBindingNames,
   findDirectivePrologueEnd,
   forEachAstChild,
+  IMPORT_META_URL_CANDIDATE_PATTERN,
+  IMPORT_META_URL_CANDIDATE_RE,
   isIdentifierNamed,
   isImportMetaUrlNode,
   SCRIPT_MODULE_ID_RE,
@@ -81,15 +83,6 @@ export type EmittedModuleFileNameResolver = (
 const MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES = 512;
 const MAX_TRANSFORM_CACHE_ENTRIES = 2_048;
 
-// This block-comment expression cannot span an earlier closing delimiter. Keep
-// it deterministic: this regex runs in native hook filters and the JS fast
-// guard, so nested repetition around a lazy `.*?` would permit exponential
-// backtracking on repeated comments followed by a near-match.
-const BLOCK_COMMENT_PATTERN = String.raw`\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/`;
-const JAVASCRIPT_TRIVIA_PATTERN = String.raw`(?:\s|${BLOCK_COMMENT_PATTERN}|\/\/[^\r\n\u2028\u2029]*)*`;
-const UNICODE_IDENTIFIER_ESCAPE_PATTERN = String.raw`\\u(?:[\dA-Fa-f]{4}|\{[\dA-Fa-f]+\})`;
-const IMPORT_META_URL_CANDIDATE_PATTERN = String.raw`\bimport${JAVASCRIPT_TRIVIA_PATTERN}\.${JAVASCRIPT_TRIVIA_PATTERN}meta${JAVASCRIPT_TRIVIA_PATTERN}\??\.${JAVASCRIPT_TRIVIA_PATTERN}(?:u|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:r|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:l|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})`;
-const IMPORT_META_URL_CANDIDATE_RE = new RegExp(IMPORT_META_URL_CANDIDATE_PATTERN, "u");
 const SOURCE_IDENTITY_FILTER_RE = new RegExp(
   `${IMPORT_META_URL_CANDIDATE_PATTERN}|__filename|__dirname`,
   "u",

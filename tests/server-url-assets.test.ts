@@ -50,6 +50,7 @@ let root: string;
 let importer: string;
 let textFile: string;
 let imageFile: string;
+let parenFile: string;
 let packagedJson: string;
 const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x80, 0x0a, 0x0d]);
 
@@ -65,10 +66,12 @@ beforeAll(async () => {
   importer = path.join(root, "pages/api/edge.js");
   textFile = path.join(root, "src/text-file.txt");
   imageFile = path.join(root, "src/vercel.png");
+  parenFile = path.join(root, "src/text (1).txt");
   packagedJson = path.join(root, "node_modules/my-pkg/hello/world.json");
   await fsp.writeFile(importer, "");
   await fsp.writeFile(textFile, "Hello, from text-file.txt!\n");
   await fsp.writeFile(imageFile, imageBytes);
+  await fsp.writeFile(parenFile, "parenthesised");
   await fsp.writeFile(packagedJson, '{ "i am": "a node dependency" }');
   await fsp.writeFile(path.join(root, "pages/api/worker.js"), "export {};");
 });
@@ -91,6 +94,31 @@ async function transform(
   return result?.code ?? null;
 }
 
+function transformCodeFilter(): RegExp {
+  return (findPlugin().transform as { filter: { code: RegExp } }).filter.code;
+}
+
+// Valid `new URL(<file>, import.meta.url)` references whose source text puts
+// comments, newlines, `)` or escapes between the tokens. The transform's native code
+// filter must not reject them, or they stay unregistered and fail on Workers.
+const TRIVIA_REFERENCE_SOURCES = [
+  `export const url = new URL("../../src/text-file.txt", import /* comment */.meta.url);`,
+  `export const url = new URL("../../src/text-file.txt", import. /* a */ meta /* b */ . /* c */ url);`,
+  `export const url = new URL("../../src/text-file.txt" /* ) */, import.meta.url);`,
+  `export const url = new URL(/* see (notes) */ "../../src/text-file.txt", import.meta.url);`,
+  [
+    "export const url = new URL(",
+    "  // falls back to the bundled copy :)",
+    `  "../../src/text-file.txt",`,
+    "  import // trailing line comment",
+    "    .meta",
+    "    .url,",
+    ");",
+  ].join("\n"),
+  // Unicode-escaped property names are still `url` to the parser.
+  String.raw`export const url = new URL("../../src/text-file.txt", import.meta.\u0075rl);`,
+];
+
 function registrationImport(binding: string, assetPath: string): string {
   return `import ${binding} from ${JSON.stringify(`${REGISTRATION_PREFIX}${toSlash(assetPath)}.js`)};`;
 }
@@ -107,21 +135,37 @@ describe("vinext:server-url-assets transform", () => {
     expect(applies({ name: "nitro", config: { consumer: "server" } })).toBe(false);
   });
 
-  it("pre-filters modules on new URL(..., import.meta.url) calls", () => {
-    const plugin = findPlugin();
-    const filter = (plugin.transform as { filter: { code: RegExp } }).filter.code;
+  it("pre-filters modules on any import.meta.url read, tolerating JavaScript trivia", () => {
+    const filter = transformCodeFilter();
 
+    for (const source of TRIVIA_REFERENCE_SOURCES) {
+      expect(filter.test(source), source).toBe(true);
+    }
     expect(filter.test(`fetch(new URL("./text-file.txt", import.meta.url));`)).toBe(true);
     expect(filter.test(`new URL(\n  "./text-file.txt",\n  import.meta.url,\n);`)).toBe(true);
-    // `)` inside the specifier must not end the argument list.
-    expect(filter.test(`fetch(new URL("./Inter (Bold).ttf", import.meta.url));`)).toBe(true);
-    expect(filter.test(`fetch(new URL('./image (1).png', import.meta.url));`)).toBe(true);
-    expect(filter.test("fetch(new URL(`./data (v2).json`, import.meta.url));")).toBe(true);
-    expect(filter.test(`fetch(new URL("./a\\").txt", import.meta.url));`)).toBe(true);
 
-    // import.meta.url outside the new URL(...) argument list.
-    expect(filter.test(`new URL(request.url); console.log(import.meta.url);`)).toBe(false);
-    expect(filter.test(`new URL("./a (1).txt"); console.log(import.meta.url);`)).toBe(false);
+    // No import.meta.url read, so no module can hold a rewritable reference.
+    expect(filter.test(`new URL("./text-file.txt", base);`)).toBe(false);
+    expect(filter.test(`new URL(request.url); const meta = { url: "" };`)).toBe(false);
+  });
+
+  it("rewrites references hidden by comments, newlines and parentheses once pre-filtered", async () => {
+    const filter = transformCodeFilter();
+
+    for (const source of TRIVIA_REFERENCE_SOURCES) {
+      // Mirrors Vite: the handler only runs when the native filter matches.
+      const code = filter.test(source) ? await transform(source) : null;
+      expect(code, source).toContain(registrationImport("__vinext_server_url_asset0", textFile));
+      expect(code, source).toContain("new URL(__vinext_server_url_asset0)");
+      expect(code, source).not.toContain("import.meta");
+    }
+
+    // `)` inside the specifier does not hide the reference either.
+    const parenSource = `fetch(new URL("../../src/text (1).txt", import.meta.url));`;
+    expect(filter.test(parenSource)).toBe(true);
+    expect(await transform(parenSource)).toContain(
+      registrationImport("__vinext_server_url_asset0", parenFile),
+    );
   });
 
   it("skips the ssr environment only for App Router builds without pages/", () => {
