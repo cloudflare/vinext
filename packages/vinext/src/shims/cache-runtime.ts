@@ -1399,19 +1399,16 @@ function unwrapThenableObjects(value: unknown, options: UnwrapThenableObjectsOpt
     return value.map((item) => unwrapThenableObjects(item, childOptions));
   }
 
-  // Detect thenable (Promise-like) with own enumerable properties —
-  // this is the Object.assign(Promise.resolve(obj), obj) pattern.
+  if (isThenableObject(value)) {
+    const plain: Record<string, unknown> = {};
+    for (const key of Object.keys(value)) {
+      // oxlint-disable-next-line typescript/no-explicit-any
+      plain[key] = unwrapThenableObjects((value as any)[key], childOptions);
+    }
+    return plain;
+  }
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   if (typeof (value as any).then === "function") {
-    const keys = Object.keys(value);
-    if (keys.length > 0) {
-      const plain: Record<string, unknown> = {};
-      for (const key of keys) {
-        // oxlint-disable-next-line typescript/no-explicit-any
-        plain[key] = unwrapThenableObjects((value as any)[key], childOptions);
-      }
-      return plain;
-    }
     // Pure Promise with no own properties — leave as-is
     return value;
   }
@@ -1430,6 +1427,20 @@ function unwrapThenableObjects(value: unknown, options: UnwrapThenableObjectsOpt
     result[key] = unwrapThenableObjects((value as any)[key], childOptions);
   }
   return result;
+}
+
+/**
+ * A thenable (not an array) with own enumerable properties — the
+ * `Object.assign(Promise.resolve(obj), obj)` pattern Next.js params use. The
+ * cache key is built from its fields instead of the promise.
+ */
+export function isThenableObject(value: object): value is PromiseLike<unknown> {
+  return (
+    !Array.isArray(value) &&
+    "then" in value &&
+    typeof value.then === "function" &&
+    Object.keys(value).length > 0
+  );
 }
 
 function isPagePropsObject(value: unknown): value is Record<string, unknown> {

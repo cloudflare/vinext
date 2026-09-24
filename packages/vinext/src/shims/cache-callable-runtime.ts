@@ -3,6 +3,7 @@ import {
   encryptActionBoundArgs,
 } from "@vitejs/plugin-rsc/utils/encryption-runtime";
 import {
+  isThenableObject,
   isUseCacheFunction,
   registerCachedFunction as registerCachedFunctionBase,
   type RegisterCachedFunctionOptions,
@@ -67,12 +68,6 @@ function isThenable(value: object): value is PromiseLike<unknown> {
 function isPlainRecord(value: object): value is Record<string, unknown> {
   const prototype = Object.getPrototypeOf(value);
   return (prototype === Object.prototype || prototype === null) && !("$$typeof" in value);
-}
-
-// Must match what `unwrapThenableObjects` in cache-runtime.ts unwraps when it
-// builds the cache key.
-function isThenableObject(value: object): value is PromiseLike<unknown> {
-  return !Array.isArray(value) && isThenable(value) && Object.keys(value).length > 0;
 }
 
 type AccessorReads = WeakMap<object, Map<string, unknown>>;
