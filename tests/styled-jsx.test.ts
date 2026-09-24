@@ -174,6 +174,71 @@ describe("styled-jsx compatibility plugin", () => {
     expect(await usesStyledJsx(noNext)).toBe(false);
   });
 
+  // A dependency that ships styled-jsx precompiled is never compiled here and
+  // is not the project's source; if it is only loaded lazily, nothing else
+  // tells dev to register styled-jsx before the first render.
+  it("detects dependencies that ship styled-jsx from the project's manifests", async () => {
+    const createApp = (
+      dependencies: Record<string, string>,
+      installed: Record<string, object> = {},
+    ) => {
+      const root = createProject({ "pages/index.jsx": "export default () => <p>plain</p>;" });
+      writeSource(root, "package.json", JSON.stringify({ name: "app", dependencies }));
+      // Next itself always depends on styled-jsx.
+      writeSource(
+        root,
+        "node_modules/.pnpm/next@16/node_modules/next/package.json",
+        JSON.stringify({ name: "next", dependencies: { "styled-jsx": "5.1.6" } }),
+      );
+      for (const [name, manifest] of Object.entries(installed)) {
+        writeSource(
+          root,
+          `node_modules/${name}/package.json`,
+          JSON.stringify({ name, ...manifest }),
+        );
+      }
+      return root;
+    };
+    const usesStyledJsx = (root: string) => createStyledJsxPlugin(root).api!.projectUsesStyledJsx();
+
+    expect(await usesStyledJsx(createApp({ next: "16" }))).toBe(false);
+    expect(
+      await usesStyledJsx(
+        createApp(
+          { next: "16", "ui-kit": "1", "dev-only": "1" },
+          {
+            "ui-kit": { dependencies: { react: "19" } },
+            // Only the package's own development needs it.
+            "dev-only": { devDependencies: { "styled-jsx": "5" } },
+          },
+        ),
+      ),
+    ).toBe(false);
+    for (const field of ["dependencies", "peerDependencies", "optionalDependencies"]) {
+      expect(
+        await usesStyledJsx(
+          createApp(
+            { next: "16", "ui-kit": "1" },
+            { "ui-kit": { [field]: { "styled-jsx": "5" } } },
+          ),
+        ),
+      ).toBe(true);
+    }
+    // The app installing styled-jsx itself.
+    expect(await usesStyledJsx(createApp({ next: "16", "styled-jsx": "5" }))).toBe(true);
+
+    // Without a resolvable styled-jsx the registration could not load.
+    const noNext = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
+    temporaryDirectories.push(noNext);
+    writeSource(noNext, "package.json", JSON.stringify({ dependencies: { "ui-kit": "1" } }));
+    writeSource(
+      noNext,
+      "node_modules/ui-kit/package.json",
+      JSON.stringify({ name: "ui-kit", peerDependencies: { "styled-jsx": "5" } }),
+    );
+    expect(await usesStyledJsx(noNext)).toBe(false);
+  });
+
   // The scan runs once. styled-jsx added later in the session to a module
   // that is only loaded lazily is not compiled before the render that needs
   // it, so added/changed source files must still turn the answer positive —
@@ -270,6 +335,31 @@ describe("styled-jsx compatibility plugin", () => {
     writeSource(linked, "src/Styled.jsx", "export default () => <style jsx>{css}</style>;");
     watchChange(path.join(fs.realpathSync(linked), "src/Styled.jsx"), "update");
     expect(await plugin.api!.projectUsesStyledJsx()).toBe(true);
+  });
+
+  it("checks the manifests again when the project's package.json changes", async () => {
+    const root = createProject({ "pages/index.jsx": "export default () => <p>plain</p>;" });
+    writeSource(root, "package.json", JSON.stringify({ name: "app", dependencies: {} }));
+    const { plugin, invalidateModule, send, watchChange, loadDevModule } = startDevPlugin(root);
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(false);
+    expect(await loadDevModule()).toBe("export {};\n");
+
+    // A dependency shipping styled-jsx precompiled is installed.
+    writeSource(
+      root,
+      "node_modules/ui-kit/package.json",
+      JSON.stringify({ name: "ui-kit", peerDependencies: { "styled-jsx": "5" } }),
+    );
+    writeSource(
+      root,
+      "package.json",
+      JSON.stringify({ name: "app", dependencies: { "ui-kit": "1" } }),
+    );
+    watchChange(path.join(root, "package.json"), "update");
+
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(true);
+    await vi.waitFor(() => expect(invalidateModule).toHaveBeenCalledTimes(1));
+    expect(send).toHaveBeenCalledWith({ type: "full-reload" });
   });
 
   // The usage regex also matches comments and strings, and vinext does not
@@ -533,9 +623,13 @@ describe("styled-jsx compatibility plugin", () => {
     expect(resolveIn(ssr, "/app/pages/index.jsx", "import-statement")).toBe(
       "\0vinext-styled-jsx-style",
     );
-    // Not in the browser or RSC, not for the wrapper's own import (or the
-    // registration's), and not for `require()` callers, which may use the
-    // export directly rather than through `.default`.
+    // `require()` callers (CommonJS dependencies) get a CommonJS wrapper, so
+    // `module.exports` stays the component whether or not they unwrap it.
+    expect(resolveIn(ssr, "/app/node_modules/cjs/index.js", "require-call")).toBe(
+      "\0vinext-styled-jsx-style-cjs",
+    );
+    // Not in the browser or RSC, and not for the wrappers' own requests (or
+    // the registration's).
     expect(resolveIn({ name: "client", mode: "build", config: { consumer: "client" } })).toBe(
       rawStyle,
     );
@@ -543,12 +637,17 @@ describe("styled-jsx compatibility plugin", () => {
       rawStyle,
     );
     expect(resolveIn(ssr, "\0vinext-styled-jsx-style")).toBe(rawStyle);
+    expect(resolveIn(ssr, "\0vinext-styled-jsx-style-cjs", "require-call")).toBe(rawStyle);
     expect(resolveIn(ssr, "\0virtual:vinext-styled-jsx-ssr-registry")).toBe(rawStyle);
-    expect(resolveIn(ssr, "/app/node_modules/cjs/index.js", "require-call")).toBe(rawStyle);
 
-    const wrapper = await (plugin.load as LoadHook).handler("\0vinext-styled-jsx-style");
+    const load = plugin.load as LoadHook;
+    const wrapper = await load.handler("\0vinext-styled-jsx-style");
     expect(wrapper).toContain(SSR_REGISTRY_IMPORT);
     expect(wrapper).toContain('export { default } from "styled-jsx/style";');
+    expect(await load.handler("\0vinext-styled-jsx-style-cjs")).toBe(
+      'require("virtual:vinext-styled-jsx-ssr-registry");\n' +
+        'module.exports = require("styled-jsx/style");\n',
+    );
   });
 
   it("serves the SSR registry module that hands styled-jsx to vinext", async () => {

@@ -63,6 +63,48 @@ function canNodeImport(file: string): boolean {
   }
 }
 
+const STYLED_JSX_DEPENDENCY_FIELDS = ["dependencies", "peerDependencies", "optionalDependencies"];
+
+/**
+ * Whether the package containing `file` declares styled-jsx: it ships
+ * styled-jsx precompiled. Such packages stay bundled so their
+ * `styled-jsx/style` request resolves to the copy vinext registers for Pages
+ * SSR — Next.js likewise forces every `styled-jsx` request to its own copy
+ * (`defaultOverrides` in its require hook) — rather than one Node would load
+ * beside them, whose rules the render could not collect.
+ */
+function packageDeclaresStyledJsx(file: string, cache: Map<string, boolean>): boolean {
+  let directory = path.dirname(file);
+  while (true) {
+    const candidate = path.join(directory, "package.json");
+    const cached = cache.get(candidate);
+    if (cached !== undefined) return cached;
+    if (fs.existsSync(candidate)) {
+      let manifest: Record<string, unknown> | null = null;
+      try {
+        manifest = JSON.parse(fs.readFileSync(candidate, "utf8")) as Record<string, unknown>;
+      } catch {}
+      // Nested manifests (e.g. `dist/esm/package.json` setting `type`) carry
+      // no name or dependencies; keep looking for the package's own.
+      if (manifest && typeof manifest.name === "string") {
+        const declares = STYLED_JSX_DEPENDENCY_FIELDS.some((field) => {
+          const dependencies = manifest[field];
+          return (
+            typeof dependencies === "object" &&
+            dependencies !== null &&
+            "styled-jsx" in dependencies
+          );
+        });
+        cache.set(candidate, declares);
+        return declares;
+      }
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory || path.basename(directory) === "node_modules") return false;
+    directory = parent;
+  }
+}
+
 function matchesAlias(id: string, aliases: Readonly<Record<string, string>>): boolean {
   return Object.keys(aliases).some((alias) => id === alias || id.startsWith(`${alias}/`));
 }
@@ -124,6 +166,8 @@ function moduleDependencySpecifiers(code: string, id: string): string[] {
  */
 export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOptions): Plugin {
   const pagesOwnedModulesByEnvironment = new Map<string, Set<string>>();
+  /** package.json path → whether it declares styled-jsx, for this build. */
+  const styledJsxPackages = new Map<string, boolean>();
   const pagesOwnedModulesFor = (environmentName: string): Set<string> => {
     let modules = pagesOwnedModulesByEnvironment.get(environmentName);
     if (!modules) {
@@ -263,6 +307,7 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
           return null;
         }
         if (!canNodeImport(resolvedFile)) return null;
+        if (packageDeclaresStyledJsx(resolvedFile, styledJsxPackages)) return null;
 
         // A nested dependency must stay bundled when resolving the same request
         // from the app root selects another installed version. External output

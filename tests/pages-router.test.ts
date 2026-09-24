@@ -8878,7 +8878,11 @@ describe("Pages Router styled-jsx from dependencies and linked packages", () => 
   });
 
   /** `<base>/app`: the lazy fixture without its styled-jsx component and page. */
-  async function createApp(base: string, page: string): Promise<string> {
+  async function createApp(
+    base: string,
+    page: string,
+    options: { nodeModules?: string } = {},
+  ): Promise<string> {
     const app = path.join(base, "app");
     await fsp.cp(lazyFixtureDir, app, {
       recursive: true,
@@ -8887,7 +8891,11 @@ describe("Pages Router styled-jsx from dependencies and linked packages", () => 
         !src.includes(`${path.sep}components`) &&
         !src.endsWith(`${path.sep}pages${path.sep}index.jsx`),
     });
-    await fsp.symlink(workspaceNodeModules, path.join(app, "node_modules"), "dir");
+    await fsp.symlink(
+      options.nodeModules ?? workspaceNodeModules,
+      path.join(app, "node_modules"),
+      "dir",
+    );
     await fsp.writeFile(path.join(app, "pages", "index.jsx"), page);
     return app;
   }
@@ -8898,60 +8906,84 @@ describe("Pages Router styled-jsx from dependencies and linked packages", () => 
     return base;
   }
 
-  // A dependency that ships styled-jsx precompiled: its `styled-jsx/style`
-  // import is not compiled by vinext, and nothing in the app uses styled-jsx.
-  it("renders rules from a precompiled styled-jsx dependency in dev and prod", async () => {
-    const base = await createBase("vinext-styled-jsx-precompiled-");
-    const app = await createApp(
-      base,
-      `import PrecompiledStyled from "../vendor/node_modules/precompiled-styled/index.js";
+  type PrecompiledPackage = { name: string; format: "esm" | "cjs"; color: string };
 
-export default function Page() {
-  return (
-    <main>
-      <PrecompiledStyled />
-    </main>
-  );
-}
-`,
-    );
-    const packageDir = path.join(app, "vendor", "node_modules", "precompiled-styled");
-    await fsp.mkdir(packageDir, { recursive: true });
-    await fsp.writeFile(
-      path.join(packageDir, "package.json"),
-      JSON.stringify({ name: "precompiled-styled", type: "module", main: "index.js" }),
-    );
-    // What styled-jsx's compiler emits for `<style jsx>{\`p { color: teal; }\`}</style>`.
-    await fsp.writeFile(
-      path.join(packageDir, "index.js"),
-      `import _JSXStyle from "styled-jsx/style";
+  /**
+   * What styled-jsx's compiler emits for `<style jsx>{`p { color }`}</style>`,
+   * shipped precompiled: an ES module importing `styled-jsx/style`, or
+   * CommonJS requiring it (with Babel's interop).
+   */
+  function precompiledSource({ name, format, color }: PrecompiledPackage): string {
+    const hash = `${name}-${color}`;
+    const children = (style: string, jsx: string) =>
+      `[${jsx}(${style}, { id: "${hash}", children: "p.jsx-${hash}{color:${color}}" }), ${jsx}("p", { id: "${name}", className: "jsx-${hash}", children: "${name}" })]`;
+    if (format === "esm") {
+      return `import _JSXStyle from "styled-jsx/style";
 import { jsx, jsxs } from "react/jsx-runtime";
-
-export default function PrecompiledStyled() {
-  return jsxs("div", {
-    className: "jsx-4d5ea9a1",
-    children: [
-      jsx(_JSXStyle, { id: "4d5ea9a1", children: "p.jsx-4d5ea9a1{color:teal}" }),
-      jsx("p", { id: "precompiled-styled", className: "jsx-4d5ea9a1", children: "precompiled" }),
-    ],
-  });
+export default function Precompiled() {
+  return jsxs("div", { className: "jsx-${hash}", children: ${children("_JSXStyle", "jsx")} });
 }
-`,
-    );
-    const expectPrecompiledRule = (html: string) => {
-      expect(html).toContain('<p id="precompiled-styled" class="jsx-4d5ea9a1">precompiled</p>');
-      expect(getStyledJsxStyles(html).get("__jsx-4d5ea9a1")).toBe("p.jsx-4d5ea9a1{color:teal}");
-    };
-
-    const dev = await startFixtureServer(app);
-    try {
-      const res = await fetch(`${dev.baseUrl}/`);
-      expect(res.status).toBe(200);
-      expectPrecompiledRule(await res.text());
-    } finally {
-      await dev.server.close();
+`;
     }
+    return `"use strict";
+var _style = _interopRequireDefault(require("styled-jsx/style"));
+var _jsxRuntime = require("react/jsx-runtime");
+function _interopRequireDefault(e) { return e && e.__esModule ? e : { default: e }; }
+module.exports = function Precompiled() {
+  return (0, _jsxRuntime.jsxs)("div", { className: "jsx-${hash}", children: ${children("_style.default", "(0, _jsxRuntime.jsx)")} });
+};
+`;
+  }
 
+  function expectPrecompiledRule(html: string, { name, color }: PrecompiledPackage): void {
+    const hash = `${name}-${color}`;
+    expect(html).toContain(`<p id="${name}" class="jsx-${hash}">${name}</p>`);
+    expect(getStyledJsxStyles(html).get(`__jsx-${hash}`)).toBe(`p.jsx-${hash}{color:${color}}`);
+  }
+
+  /**
+   * An app with the workspace's packages plus `packages` installed in its own
+   * `node_modules`, each declaring its styled-jsx dependency as published
+   * packages do, and listed in the app's package.json.
+   */
+  async function createInstalledApp(
+    prefix: string,
+    page: string,
+    packages: PrecompiledPackage[],
+  ): Promise<string> {
+    const base = await createBase(prefix);
+    const nodeModules = path.join(base, "node_modules");
+    await fsp.mkdir(nodeModules);
+    for (const entry of await fsp.readdir(workspaceNodeModules)) {
+      await fsp.symlink(path.join(workspaceNodeModules, entry), path.join(nodeModules, entry));
+    }
+    for (const pkg of packages) {
+      const packageDir = path.join(nodeModules, pkg.name);
+      await fsp.mkdir(packageDir);
+      await fsp.writeFile(
+        path.join(packageDir, "package.json"),
+        JSON.stringify({
+          name: pkg.name,
+          ...(pkg.format === "esm" ? { type: "module" } : {}),
+          main: "index.js",
+          peerDependencies: { react: "*", "styled-jsx": "*" },
+        }),
+      );
+      await fsp.writeFile(path.join(packageDir, "index.js"), precompiledSource(pkg));
+    }
+    const app = await createApp(base, page, { nodeModules });
+    await fsp.writeFile(
+      path.join(app, "package.json"),
+      JSON.stringify({
+        name: "app",
+        private: true,
+        dependencies: Object.fromEntries(packages.map((pkg) => [pkg.name, "*"])),
+      }),
+    );
+    return app;
+  }
+
+  async function fetchFirstProdResponse(app: string): Promise<string> {
     const outDir = path.join(app, "dist");
     await buildPagesFixtureToOutDir(app, outDir);
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
@@ -8962,10 +8994,116 @@ export default function PrecompiledStyled() {
       const { port } = prodServer.address() as { port: number };
       const res = await fetch(`http://127.0.0.1:${port}/`);
       expect(res.status).toBe(200);
-      expectPrecompiledRule(await res.text());
+      return await res.text();
     } finally {
       await new Promise<void>((resolve) => prodServer.close(() => resolve()));
     }
+  }
+
+  async function fetchFirstDevResponse(app: string): Promise<string> {
+    const dev = await startFixtureServer(app);
+    try {
+      const res = await fetch(`${dev.baseUrl}/`);
+      expect(res.status).toBe(200);
+      return await res.text();
+    } finally {
+      await dev.server.close();
+    }
+  }
+
+  const lazyPage = (specifier: string) => `import dynamic from "next/dynamic";
+
+const Precompiled = dynamic(() => import(${JSON.stringify(specifier)}));
+
+export default function Page() {
+  return (
+    <main>
+      <Precompiled />
+    </main>
+  );
+}
+`;
+
+  // A dependency that ships styled-jsx precompiled: its `styled-jsx/style`
+  // import is not compiled by vinext, and nothing in the app uses styled-jsx.
+  it("renders rules from a precompiled styled-jsx dependency in dev and prod", async () => {
+    const pkg: PrecompiledPackage = { name: "precompiled-vendored", format: "esm", color: "teal" };
+    const base = await createBase("vinext-styled-jsx-precompiled-");
+    const app = await createApp(
+      base,
+      `import Precompiled from "../vendor/node_modules/precompiled-vendored/index.js";
+
+export default function Page() {
+  return (
+    <main>
+      <Precompiled />
+    </main>
+  );
+}
+`,
+    );
+    const packageDir = path.join(app, "vendor", "node_modules", pkg.name);
+    await fsp.mkdir(packageDir, { recursive: true });
+    await fsp.writeFile(
+      path.join(packageDir, "package.json"),
+      JSON.stringify({ name: pkg.name, type: "module", main: "index.js" }),
+    );
+    await fsp.writeFile(path.join(packageDir, "index.js"), precompiledSource(pkg));
+
+    expectPrecompiledRule(await fetchFirstDevResponse(app), pkg);
+    expectPrecompiledRule(await fetchFirstProdResponse(app), pkg);
+  }, 120_000);
+
+  // Installed and reached only through next/dynamic: dev must register
+  // styled-jsx before the first render from the app's dependency manifests,
+  // and the build from the lazily reached module graph.
+  it("renders rules from a lazily loaded precompiled ES module dependency on the first request", async () => {
+    const pkg: PrecompiledPackage = { name: "precompiled-esm", format: "esm", color: "navy" };
+    const app = await createInstalledApp("vinext-styled-jsx-installed-esm-", lazyPage(pkg.name), [
+      pkg,
+    ]);
+
+    expectPrecompiledRule(await fetchFirstDevResponse(app), pkg);
+    expectPrecompiledRule(await fetchFirstProdResponse(app), pkg);
+  }, 120_000);
+
+  // CommonJS dependencies `require("styled-jsx/style")`. (Pages dev cannot
+  // load CommonJS dependencies at all yet, so this covers production.)
+  it("renders rules from a lazily loaded precompiled CommonJS dependency on the first request", async () => {
+    const pkg: PrecompiledPackage = { name: "precompiled-cjs", format: "cjs", color: "maroon" };
+    const app = await createInstalledApp("vinext-styled-jsx-installed-cjs-", lazyPage(pkg.name), [
+      pkg,
+    ]);
+
+    expectPrecompiledRule(await fetchFirstProdResponse(app), pkg);
+  }, 120_000);
+
+  // Statically imported: the Node build would otherwise leave the ES module
+  // package external, loading a styled-jsx copy the render cannot collect
+  // from, and the CommonJS package's `require()` must keep its export shape.
+  it("renders rules from statically imported precompiled ES module and CommonJS dependencies in prod", async () => {
+    const esm: PrecompiledPackage = { name: "precompiled-esm", format: "esm", color: "olive" };
+    const cjs: PrecompiledPackage = { name: "precompiled-cjs", format: "cjs", color: "purple" };
+    const app = await createInstalledApp(
+      "vinext-styled-jsx-installed-static-",
+      `import PrecompiledEsm from "precompiled-esm";
+import PrecompiledCjs from "precompiled-cjs";
+
+export default function Page() {
+  return (
+    <main>
+      <PrecompiledEsm />
+      <PrecompiledCjs />
+    </main>
+  );
+}
+`,
+      [esm, cjs],
+    );
+
+    const html = await fetchFirstProdResponse(app);
+    expectPrecompiledRule(html, esm);
+    expectPrecompiledRule(html, cjs);
   }, 120_000);
 
   // A workspace package linked into the app's dependencies (outside the app

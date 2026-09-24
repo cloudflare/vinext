@@ -41,12 +41,17 @@ const RESOLVED_STYLED_JSX_SSR_REGISTRY_ID = "\0" + STYLED_JSX_SSR_REGISTRY_ID;
  * What server environments load for `styled-jsx/style` — the `JSXStyle`
  * component every compiled `<style jsx>` renders, whether this plugin compiled
  * it or a dependency ships it precompiled — so any module using styled-jsx
- * registers it. Requires via `require()` are left alone: their callers may use
- * the export directly rather than through `.default`.
+ * registers it. `import`s get an ES module; `require()` calls (CommonJS
+ * dependencies, in builds) get a CommonJS module with the same `module.exports`
+ * as `styled-jsx/style`, whether its caller unwraps `.default` or not.
  */
 const RESOLVED_STYLED_JSX_STYLE_ID = "\0vinext-styled-jsx-style";
 const STYLED_JSX_STYLE_CODE = `import ${JSON.stringify(STYLED_JSX_SSR_REGISTRY_ID)};
 export { default } from "styled-jsx/style";
+`;
+const RESOLVED_STYLED_JSX_STYLE_CJS_ID = "\0vinext-styled-jsx-style-cjs";
+const STYLED_JSX_STYLE_CJS_CODE = `require(${JSON.stringify(STYLED_JSX_SSR_REGISTRY_ID)});
+module.exports = require("styled-jsx/style");
 `;
 /**
  * Dev only: imported by the generated Pages entries (Cloudflare and hybrid
@@ -74,7 +79,7 @@ const STYLED_JSX_REGISTRY_SHIM = "vinext/shims/styled-jsx-registry";
 /** Prefix for dev-only ESM facades over natively required styled-jsx files. */
 const STYLED_JSX_NODE_MODULE_PREFIX = "\0vinext-styled-jsx-node:";
 const STYLED_JSX_LOAD_RE =
-  /^\0(?:virtual:vinext-styled-jsx-(?:ssr-registry|dev-registration)$|vinext-styled-jsx-(?:style$|node:))/;
+  /^\0(?:virtual:vinext-styled-jsx-(?:ssr-registry|dev-registration)$|vinext-styled-jsx-(?:style(?:-cjs)?$|node:))/;
 const JS_IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/;
 const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
@@ -91,13 +96,17 @@ function isExcludedFromSourceScan(entry: string): boolean {
   return name === "node_modules" || name === "dist" || name.startsWith(".");
 }
 
-/**
- * Whether the source scan of `roots` covers `file` (an absolute path). File
- * watchers can report real paths for a root reached through a symlink, so
- * each root's real path counts too.
- */
+/** Whether the source scan of `roots` covers `file` (an absolute path). */
 function isScannedSourceFile(roots: readonly string[], file: string): boolean {
-  if (!SOURCE_SCAN_FILE_RE.test(file)) return false;
+  return SOURCE_SCAN_FILE_RE.test(file) && isInsideSourceRoots(roots, file);
+}
+
+/**
+ * Whether `file` lies under one of `roots`, outside the directories the scan
+ * skips. File watchers can report real paths for a root reached through a
+ * symlink, so each root's real path counts too.
+ */
+function isInsideSourceRoots(roots: readonly string[], file: string): boolean {
   return roots.some((root) => {
     let realRoot = root;
     try {
@@ -111,6 +120,84 @@ function isScannedSourceFile(roots: readonly string[], file: string): boolean {
   });
 }
 
+/** `dir` and its ancestors up to `stopDir` (inclusive), where Node looks for `node_modules`. */
+function directoriesUpTo(dir: string, stopDir: string): string[] {
+  const directories: string[] = [];
+  for (let current = dir; ; current = path.dirname(current)) {
+    directories.push(current);
+    const relative = path.relative(stopDir, current);
+    if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) break;
+    if (path.dirname(current) === current) break;
+  }
+  return directories;
+}
+
+const MANIFEST_DEPENDENCY_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+] as const;
+/** Fields a package that ships styled-jsx precompiled declares it in. */
+const STYLED_JSX_DEPENDENCY_FIELDS = ["dependencies", "peerDependencies", "optionalDependencies"];
+
+async function readDependencyNames(
+  manifestFile: string,
+  fields: readonly string[],
+): Promise<string[] | null> {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(await readFile(manifestFile, "utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof manifest !== "object" || manifest === null) return null;
+  return fields.flatMap((field) => {
+    const dependencies = (manifest as Record<string, unknown>)[field];
+    return typeof dependencies === "object" && dependencies !== null
+      ? Object.keys(dependencies)
+      : [];
+  });
+}
+
+/**
+ * Whether the project (or a linked workspace package) installs styled-jsx, or
+ * a direct dependency that declares it — one that ships `<style jsx>`
+ * precompiled. Its `import`/`require()` of `styled-jsx/style` registers the
+ * runtime only once it loads, possibly lazily and after the first render began,
+ * and no source scan sees it. `next` always depends on styled-jsx and does not
+ * count. Reads each manifest once.
+ */
+async function dependenciesUseStyledJsx(
+  roots: readonly string[],
+  workspaceRoot: string,
+): Promise<boolean> {
+  for (const root of roots) {
+    const names = await readDependencyNames(
+      path.join(root, "package.json"),
+      MANIFEST_DEPENDENCY_FIELDS,
+    );
+    if (!names) continue;
+    if (names.includes("styled-jsx")) return true;
+    const declared = await Promise.all(
+      names
+        .filter((name) => name !== "next")
+        .map(async (name) => {
+          for (const dir of directoriesUpTo(root, workspaceRoot)) {
+            const installed = await readDependencyNames(
+              path.join(dir, "node_modules", name, "package.json"),
+              STYLED_JSX_DEPENDENCY_FIELDS,
+            );
+            if (installed) return installed.includes("styled-jsx");
+          }
+          return false;
+        }),
+    );
+    if (declared.some(Boolean)) return true;
+  }
+  return false;
+}
+
 /**
  * Source directories of packages linked into the project's dependencies —
  * workspace packages, which Vite compiles (and this plugin transforms) as
@@ -120,13 +207,9 @@ function isScannedSourceFile(roots: readonly string[], file: string): boolean {
  * entries whose real path is outside every `node_modules` count.
  */
 async function findLinkedSourceRoots(root: string, workspaceRoot: string): Promise<string[]> {
-  const nodeModulesDirs: string[] = [];
-  for (let dir = root; ; dir = path.dirname(dir)) {
-    nodeModulesDirs.push(path.join(dir, "node_modules"));
-    const relative = path.relative(workspaceRoot, dir);
-    if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) break;
-    if (path.dirname(dir) === dir) break;
-  }
+  const nodeModulesDirs = directoriesUpTo(root, workspaceRoot).map((dir) =>
+    path.join(dir, "node_modules"),
+  );
   const linkedRoots = new Set<string>();
   const addIfLinked = async (entryPath: string) => {
     try {
@@ -196,11 +279,13 @@ async function scanSourcesForStyledJsx(roots: readonly string[]): Promise<boolea
 export type StyledJsxPluginApi = {
   /**
    * Whether the project uses styled-jsx: a module compiled by this plugin
-   * used it, a one-time scan of the project's sources finds it, or a source
-   * file added or changed since then does. Dev loads
-   * `STYLED_JSX_SSR_REGISTRY_ID` up front when this is true, so lazily loaded
-   * modules' rules are collected on the first render too. Builds do not need
-   * it: they see the whole module graph (see `renderChunk`).
+   * used it; the project installs styled-jsx or a dependency shipping it
+   * precompiled (`dependenciesUseStyledJsx`); a one-time scan of the project's
+   * (and linked packages') sources finds it; or a source file added or
+   * changed since then does. Dev loads `STYLED_JSX_SSR_REGISTRY_ID` up front
+   * when this is true, so lazily loaded modules' rules are collected on the
+   * first render too. Builds do not need it: they see the whole module graph
+   * (see `renderChunk`).
    */
   projectUsesStyledJsx(): Promise<boolean>;
 };
@@ -481,12 +566,17 @@ export function createStyledJsxPlugin(
       realRoot = toSlash(await realpath(root));
     } catch {}
     const isOutside = (from: string, to: string) => path.relative(from, to).startsWith("../");
+    const workspaceRoot = searchForWorkspaceRoot(root);
     // Skip links to the project itself, into it, or to a directory holding it.
-    const linkedRoots = (await findLinkedSourceRoots(root, searchForWorkspaceRoot(root))).filter(
+    const linkedRoots = (await findLinkedSourceRoots(root, workspaceRoot)).filter(
       (linked) => isOutside(realRoot, linked) && isOutside(linked, realRoot),
     );
-    if (root === projectRoot) sourceRoots = [root, ...linkedRoots];
-    return scanSourcesForStyledJsx([root, ...linkedRoots]);
+    const roots = [root, ...linkedRoots];
+    if (root === projectRoot) sourceRoots = roots;
+    return (
+      (await dependenciesUseStyledJsx(roots, workspaceRoot)) ||
+      (await scanSourcesForStyledJsx(roots))
+    );
   }
 
   async function projectUsesStyledJsx(): Promise<boolean> {
@@ -543,6 +633,21 @@ export function createStyledJsxPlugin(
      */
     watchChange(id, change) {
       if (!development || change.event === "delete") return;
+      if (
+        !compiledStyledJsx &&
+        !changedSourceUsesStyledJsx &&
+        sourceScan &&
+        path.basename(id) === "package.json" &&
+        isInsideSourceRoots(sourceRoots, id)
+      ) {
+        // A dependency may have been added: check the manifests (and
+        // sources) again, then reload generated entries if that changed.
+        sourceScan = undefined;
+        void projectUsesStyledJsx().then((uses) => {
+          if (uses) refreshDevRegistration();
+        });
+        return;
+      }
       if (!compiledStyledJsx && !changedSourceUsesStyledJsx) {
         if (!isScannedSourceFile(sourceRoots, id) || !canLoadStyledJsxRuntime()) return;
         let source: string;
@@ -575,16 +680,18 @@ export function createStyledJsxPlugin(
           return RESOLVED_STYLED_JSX_DEV_REGISTRATION_ID;
         }
         const environment = this?.environment;
-        // Rolldown reports how a module is requested; Vite dev does not.
-        const kind = (resolveOptions as { kind?: string } | undefined)?.kind;
         if (
           source === "styled-jsx/style" &&
           importer !== RESOLVED_STYLED_JSX_STYLE_ID &&
+          importer !== RESOLVED_STYLED_JSX_STYLE_CJS_ID &&
           importer !== RESOLVED_STYLED_JSX_SSR_REGISTRY_ID &&
-          kind !== "require-call" &&
           shouldRegisterSsrRuntime(environment)
         ) {
-          return RESOLVED_STYLED_JSX_STYLE_ID;
+          // Rolldown reports how a module is requested; Vite dev does not.
+          const kind = (resolveOptions as { kind?: string } | undefined)?.kind;
+          return kind === "require-call"
+            ? RESOLVED_STYLED_JSX_STYLE_CJS_ID
+            : RESOLVED_STYLED_JSX_STYLE_ID;
         }
         const resolved = resolveStyledJsx(source);
         if (!resolved) return null;
@@ -601,6 +708,7 @@ export function createStyledJsxPlugin(
       filter: { id: STYLED_JSX_LOAD_RE },
       async handler(id) {
         if (id === RESOLVED_STYLED_JSX_STYLE_ID) return STYLED_JSX_STYLE_CODE;
+        if (id === RESOLVED_STYLED_JSX_STYLE_CJS_ID) return STYLED_JSX_STYLE_CJS_CODE;
         if (id === RESOLVED_STYLED_JSX_DEV_REGISTRATION_ID) {
           if (await projectUsesStyledJsx()) {
             return `import ${JSON.stringify(STYLED_JSX_SSR_REGISTRY_ID)};\n`;
