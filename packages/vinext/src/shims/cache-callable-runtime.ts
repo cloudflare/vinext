@@ -54,18 +54,11 @@ async function decryptCacheCaptures(value: unknown): Promise<unknown[] | undefin
 }
 
 async function encryptCaptures(captures: unknown[]): Promise<string> {
-  let encoded: EncodedCacheArguments;
-  try {
-    encoded = await encodeCacheArguments(captures);
-  } catch (error) {
-    if (!(error instanceof UnreplayableCacheArgumentsError)) throw error;
-    // Unlike invocation args, captures must always be encoded: the function
-    // cannot run without them. They are decoded on every call, the original
-    // one included, so they key the same way on a replay even without
-    // recorded promise fields; only synchronous reads of those fields are lost.
-    encoded = { args: captures, thenableObjects: [] };
-  }
-  return encryptActionBoundArgs(encoded);
+  // Unlike invocation args, captures must always be encoded: the function
+  // cannot run without them. They are decoded on every call, the original one
+  // included, so they key the same way on a replay even when a getter's value
+  // is not scanned; only promise fields behind a getter are lost.
+  return encryptActionBoundArgs(await encodeCacheArguments(captures, "skip"));
 }
 
 async function encryptCacheArguments(args: unknown[]): Promise<string> {
@@ -97,45 +90,55 @@ class UnreplayableCacheArgumentsError extends Error {
 }
 
 /**
+ * What to do when a read would run a getter: `reject` throws
+ * `UnreplayableCacheArgumentsError`, `skip` leaves the getter unread.
+ */
+type GetterHandling = "reject" | "skip";
+
+/**
  * The own entries of `value` that Flight serializes: every index below an
  * array's `length`, including holes and non-enumerable indices, as
  * `JSON.stringify` reads them, and the enumerable own keys of anything else.
- * Throws when a read would run a getter, own or inherited through an array
- * hole.
+ * A getter, own or inherited through an array hole, is never run.
  */
-function ownEntries(value: object): [string, unknown][] {
+function ownEntries(value: object, getters: GetterHandling): [string, unknown][] {
   const keys = Array.isArray(value)
     ? Array.from({ length: value.length }, (_, index) => String(index))
     : Object.keys(value);
-  return keys.map((key) => {
-    if (readsAccessor(value, key)) throw new UnreplayableCacheArgumentsError();
-    return [key, Reflect.get(value, key)];
-  });
+  const entries: [string, unknown][] = [];
+  for (const key of keys) {
+    if (readsGetter(value, key)) {
+      if (getters === "reject") throw new UnreplayableCacheArgumentsError();
+      continue;
+    }
+    entries.push([key, Reflect.get(value, key)]);
+  }
+  return entries;
 }
 
 /**
  * Whether reading `key` from `value` runs a getter. An array hole reads
  * through the prototype chain, which can hold an indexed data property or
- * accessor.
+ * accessor. A setter-only accessor reads as `undefined` without running code.
  */
-function readsAccessor(value: object, key: string): boolean {
+function readsGetter(value: object, key: string): boolean {
   for (
     let target: object | null = value;
     target !== null;
     target = Reflect.getPrototypeOf(target)
   ) {
     const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
-    if (descriptor) return !("value" in descriptor);
+    if (descriptor) return typeof descriptor.get === "function";
   }
   return false;
 }
 
 /** Members of the values Flight serializes recursively, which can hold params. */
-function flightMembers(value: object): unknown[] {
+function flightMembers(value: object, getters: GetterHandling): unknown[] {
   if (value instanceof Map) return [...value].flat();
   if (value instanceof Set) return [...value];
   if (isThenableObject(value) || Array.isArray(value) || isPlainRecord(value)) {
-    return ownEntries(value).map(([, member]) => member);
+    return ownEntries(value, getters).map(([, member]) => member);
   }
   return [];
 }
@@ -144,9 +147,14 @@ function flightMembers(value: object): unknown[] {
  * Collect the own fields of every promise-augmented object in the arguments,
  * including ones inside resolved promise values. The arguments are passed to
  * Flight as they are, so Flight keeps their shared references and cycles.
- * Throws `UnreplayableCacheArgumentsError` when the arguments hold a getter.
+ * With `getters: "reject"`, throws `UnreplayableCacheArgumentsError` when the
+ * arguments hold a getter; with `"skip"`, promise fields behind a getter are
+ * not recorded.
  */
-export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCacheArguments> {
+export async function encodeCacheArguments(
+  args: unknown[],
+  getters: GetterHandling = "reject",
+): Promise<EncodedCacheArguments> {
   // Flight serializes a promise as its resolved value, which can hold more
   // params. Await each promise once (Flight awaits them too, and emits
   // rejections as errors), then walk the whole graph again, since the
@@ -163,9 +171,10 @@ export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCach
       const value = pending.pop();
       if (typeof value !== "object" || value === null || visited.has(value)) continue;
       visited.add(value);
-      const children = flightMembers(value);
+      const children = flightMembers(value, getters);
       if (isThenableObject(value)) {
-        thenableObjects.push({ fields: Object.fromEntries(ownEntries(value)), promise: value });
+        const fields = Object.fromEntries(ownEntries(value, getters));
+        thenableObjects.push({ fields, promise: value });
       }
       if (isThenable(value)) {
         const result = settled.get(value);

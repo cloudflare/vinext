@@ -454,16 +454,22 @@ describe("cache-callable-runtime", () => {
     expect(set.mock.calls[0]?.[2]).not.toHaveProperty("cacheFunctionInvocation");
   });
 
-  it("still encodes captures that hold getters", async () => {
+  it("keeps params fields in captures next to a getter", async () => {
     const { encryptCacheCaptures, registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
     const { MemoryCacheHandler, setCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
     setCacheHandler(new MemoryCacheHandler());
 
+    let reads = 0;
+    type Captures = [{ slug: string }, Promise<unknown> & { slug: string }];
     const cached = registerCachedFunction(
       // The capture envelope is replaced by the decrypted captures.
-      async (captures: unknown) => (captures as [{ slug: string }])[0].slug,
+      async (captures: unknown) => {
+        const [options, params] = captures as Captures;
+        return { option: options.slug, param: params.slug, awaited: await params };
+      },
       "test:getter-captures",
       "",
       { serverReferenceId: "test#getter-captures" },
@@ -473,13 +479,32 @@ describe("cache-callable-runtime", () => {
       encryptCacheCaptures([
         {
           get slug() {
+            reads++;
             return "captured";
           },
         },
+        makeThenableParams({ slug: "param" }),
       ]),
     );
 
-    expect(result).toBe("captured");
+    expect(result).toEqual({ option: "captured", param: "param", awaited: { slug: "param" } });
+    // Flight reads the getter once to serialize it; the scan does not.
+    expect(reads).toBe(1);
+  });
+
+  it("replays arguments with setter-only properties", async () => {
+    const { encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const params = makeThenableParams({ slug: "a" });
+    const record = Object.defineProperty({ params }, "sink", { enumerable: true, set() {} });
+    const sparse: unknown[] = [params];
+    sparse.length = 2;
+    Object.setPrototypeOf(sparse, Object.create(Array.prototype, { 1: { set() {} } }));
+
+    const encoded = await encodeCacheArguments([record, sparse]);
+
+    expect(encoded.thenableObjects).toEqual([{ fields: { slug: "a" }, promise: params }]);
   });
 
   it("rejects payloads without recorded promise fields", async () => {
