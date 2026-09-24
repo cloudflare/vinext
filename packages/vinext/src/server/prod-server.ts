@@ -82,6 +82,7 @@ import {
   readTrustedPrerenderRouteParamsFromHeaders,
   serializePrerenderRouteParamsHeader,
 } from "./prerender-route-params.js";
+import { registerPrerenderWorkerdStubs } from "./prerender-workerd-stubs.js";
 import { seedMemoryCacheFromPrerender as seedMemoryCacheFromPrerenderFallback } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
 import {
@@ -289,6 +290,10 @@ export type ProdServerOptions = {
    * Narrow startup context for callers that need a more precise log line.
    * Omitted for normal `vinext start` so the existing production-server output
    * remains stable.
+   *
+   * `"prerender"` also stub-resolves `cloudflare:*` imports for this process:
+   * the prerun renders the built Worker bundle under Node, where those
+   * specifiers are otherwise unresolvable. See `prerender-workerd-stubs.ts`.
    */
   purpose?: "prerender";
   /** Suppress the startup log for internal child-process servers. */
@@ -1300,6 +1305,16 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     purpose,
     silent = false,
   } = options;
+
+  // The prerender harness renders the deployed bundle under Node. A Cloudflare
+  // Worker bundle keeps `cloudflare:*` imports external (only workerd resolves
+  // them), so the entry import below would otherwise fail with
+  // ERR_UNSUPPORTED_ESM_URL_SCHEME before a single route renders. Stub them for
+  // prerender-purpose servers only — a serving server keeps the real modules.
+  // Refs cloudflare/vinext#3319
+  if (purpose === "prerender") {
+    registerPrerenderWorkerdStubs();
+  }
 
   const compress = !noCompression;
   // Always resolve outDir to absolute to ensure dynamic import() works
