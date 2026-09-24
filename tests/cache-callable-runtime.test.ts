@@ -445,6 +445,35 @@ describe("cache-callable-runtime", () => {
     expect(restoredSparse.slice(1)).toEqual([undefined, undefined]);
   });
 
+  it("reads an inherited accessor at an array hole once", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    let reads = 0;
+    const prototype = Object.create(Array.prototype, {
+      1: {
+        get() {
+          reads++;
+          return makeThenableParams({ slug: String(reads) });
+        },
+      },
+    });
+    const sparse: unknown[] = ["first"];
+    sparse.length = 2;
+    Object.setPrototypeOf(sparse, prototype);
+
+    type Params = Promise<unknown> & { slug: string };
+    const [restored] = decodeCacheArguments(
+      flight.roundTrip(await encodeCacheArguments([sparse])),
+    ) as [[string, Params]];
+
+    expect(reads).toBe(1);
+    expect(restored).toHaveLength(2);
+    expect(restored[0]).toBe("first");
+    expect(restored[1].slug).toBe("1");
+    expect(await restored[1]).toEqual({ slug: "1" });
+  });
+
   it("rejects payloads without recorded promise fields", async () => {
     const { decodeCacheArguments } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");
