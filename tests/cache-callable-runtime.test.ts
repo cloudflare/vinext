@@ -328,6 +328,31 @@ describe("cache-callable-runtime", () => {
     expect(await restoredLater).toBe(restored);
   });
 
+  it("reads getters once so promise-returning accessors do not rescan forever", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const params = makeThenableParams({ slug: "a" });
+    let reads = 0;
+    const record = {
+      get wrapped() {
+        reads++;
+        return Promise.resolve({ params });
+      },
+    };
+
+    const encoded = await encodeCacheArguments([record]);
+    expect(reads).toBe(1);
+    expect(encoded.thenableObjects).toEqual([{ fields: { slug: "a" }, promise: params }]);
+
+    const [restored] = decodeCacheArguments(flight.roundTrip(encoded)) as [
+      { wrapped: Promise<{ params: Promise<unknown> & { slug: string } }> },
+    ];
+    const { params: restoredParams } = await restored.wrapped;
+    expect(restoredParams.slug).toBe("a");
+    expect(await restoredParams).toEqual({ slug: "a" });
+  });
+
   it("rejects payloads without recorded promise fields", async () => {
     const { decodeCacheArguments } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");

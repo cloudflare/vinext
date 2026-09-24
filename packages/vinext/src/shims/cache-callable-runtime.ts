@@ -75,12 +75,32 @@ function isThenableObject(value: object): value is PromiseLike<unknown> {
   return !Array.isArray(value) && isThenable(value) && Object.keys(value).length > 0;
 }
 
+type AccessorReads = WeakMap<object, Map<string, unknown>>;
+
+/**
+ * Enumerable own entries of `value`. A getter can return a new value, such as
+ * a new promise, on every read, so each accessor is read once per encode.
+ */
+function ownEntries(value: object, accessorReads: AccessorReads): [string, unknown][] {
+  return Object.keys(value).map((key) => {
+    const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
+    if (descriptor === undefined || "value" in descriptor) return [key, Reflect.get(value, key)];
+    let reads = accessorReads.get(value);
+    if (!reads) {
+      reads = new Map();
+      accessorReads.set(value, reads);
+    }
+    if (!reads.has(key)) reads.set(key, Reflect.get(value, key));
+    return [key, reads.get(key)];
+  });
+}
+
 /** Members of the values Flight serializes recursively, which can hold params. */
-function flightMembers(value: object): unknown[] {
+function flightMembers(value: object, accessorReads: AccessorReads): unknown[] {
   if (value instanceof Map) return [...value].flat();
   if (value instanceof Set) return [...value];
   if (isThenableObject(value) || Array.isArray(value) || isPlainRecord(value)) {
-    return Object.keys(value).map((key) => Reflect.get(value, key));
+    return ownEntries(value, accessorReads).map(([, member]) => member);
   }
   return [];
 }
@@ -96,8 +116,10 @@ export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCach
   // rejections as errors), then walk the whole graph again, since the
   // arguments can change while a promise is pending. The walk that finds no
   // new promises runs right before Flight encoding, so it records the fields
-  // Flight sees.
+  // Flight sees. Accessors are read once, so they cannot add a new promise on
+  // every walk.
   const settled = new Map<PromiseLike<unknown>, PromiseSettledResult<unknown>>();
+  const accessorReads: AccessorReads = new WeakMap();
   for (;;) {
     const thenableObjects: EncodedThenableObject[] = [];
     const unsettled: PromiseLike<unknown>[] = [];
@@ -108,9 +130,7 @@ export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCach
       if (typeof value !== "object" || value === null || visited.has(value)) continue;
       visited.add(value);
       if (isThenableObject(value)) {
-        const fields = Object.fromEntries(
-          Object.keys(value).map((key) => [key, Reflect.get(value, key)]),
-        );
+        const fields = Object.fromEntries(ownEntries(value, accessorReads));
         thenableObjects.push({ fields, promise: value });
       }
       if (isThenable(value)) {
@@ -118,7 +138,7 @@ export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCach
         if (!result) unsettled.push(value);
         else if (result.status === "fulfilled") pending.push(result.value);
       }
-      pending.push(...flightMembers(value));
+      pending.push(...flightMembers(value, accessorReads));
     }
     if (unsettled.length === 0) return { args, thenableObjects };
     const results = await Promise.allSettled(unsettled);
