@@ -21,6 +21,10 @@ type ResolveIdHook = {
   ): string | null;
 };
 
+type LoadHook = {
+  handler(this: unknown, id: string): Promise<string>;
+};
+
 type StyledJsxModule = StyledJsxRuntime & {
   style: React.ComponentType<{ id: string; children?: string }>;
 };
@@ -353,14 +357,14 @@ describe("styled-jsx compatibility plugin", () => {
     expect(cssOnlyResult.code).not.toContain(SSR_REGISTRY_IMPORT);
   });
 
-  it("serves the SSR registry module that hands styled-jsx to vinext", () => {
+  it("serves the SSR registry module that hands styled-jsx to vinext", async () => {
     const plugin = createStyledJsxPlugin(process.cwd());
     const resolveId = plugin.resolveId as ResolveIdHook;
-    const load = plugin.load as { handler(id: string): string };
+    const load = plugin.load as LoadHook;
 
     const resolved = resolveId.handler("virtual:vinext-styled-jsx-ssr-registry");
     expect(resolved).toBe("\0virtual:vinext-styled-jsx-ssr-registry");
-    const code = load.handler(resolved!);
+    const code = await load.handler(resolved!);
     expect(code).toContain('from "styled-jsx"');
     expect(code).toContain('from "vinext/shims/styled-jsx-registry"');
     expect(code).toContain("registerStyledJsxRuntime(");
@@ -417,19 +421,156 @@ describe("styled-jsx compatibility plugin", () => {
     expect(registerMissingImport).not.toHaveBeenCalled();
   });
 
-  it("exposes natively required styled-jsx through an ESM facade", () => {
+  it("exposes natively required styled-jsx through an ESM facade", async () => {
     const plugin = createStyledJsxPlugin(process.cwd());
     const resolveId = plugin.resolveId as ResolveIdHook;
-    const load = plugin.load as { handler(id: string): string };
+    const load = plugin.load as LoadHook;
     const file = resolveId.handler("styled-jsx")!;
 
-    const code = load.handler(`\0vinext-styled-jsx-node:${file}`);
+    const code = await load.handler(`\0vinext-styled-jsx-node:${file}`);
 
     const fileLiteral = JSON.stringify(file);
     expect(code).toContain(`createRequire(${fileLiteral})(${fileLiteral})`);
     expect(code).toContain("export default mod;");
     expect(code).toContain("export const StyleRegistry = mod.StyleRegistry;");
     expect(code).toContain("export const createStyleRegistry = mod.createStyleRegistry;");
+  });
+
+  // Next.js collects styled-jsx rules on every Pages render, including the
+  // first one of a server instance, even when styled-jsx is only used by a
+  // lazily loaded module. Server builds therefore load the registration up
+  // front from every chunk that renders Pages without reaching it statically.
+  describe("eager registration in server builds", () => {
+    const REGISTRATION_ID = "\0virtual:vinext-styled-jsx-ssr-registry";
+    const SHIM_ID = "/vinext/shims/styled-jsx-registry.js";
+
+    type Chunk = {
+      fileName: string;
+      imports: string[];
+      moduleIds: string[];
+      isEntry?: boolean;
+      isDynamicEntry?: boolean;
+    };
+    type RenderChunkHook = (
+      this: unknown,
+      code: string,
+      chunk: Chunk & { isEntry: boolean; isDynamicEntry: boolean },
+      outputOptions: { format: string },
+      meta: { chunks: Record<string, Chunk> },
+    ) => { code: string } | null;
+
+    function chunk(fileName: string, options: Omit<Chunk, "fileName">): Chunk {
+      return { fileName, ...options };
+    }
+
+    // entry → shared (shim); the only styled-jsx module is behind a dynamic
+    // import. The request stage never renders Pages.
+    const lazyGraph = [
+      chunk("entry.js", { isEntry: true, imports: ["assets/shared.js"], moduleIds: ["/entry"] }),
+      chunk("assets/shared.js", { imports: [], moduleIds: [SHIM_ID] }),
+      chunk("assets/lazy.js", {
+        isDynamicEntry: true,
+        imports: ["assets/registration-impl.js"],
+        moduleIds: ["/components/LazyStyled.jsx"],
+      }),
+      chunk("assets/registration.js", {
+        isEntry: true,
+        imports: ["assets/registration-impl.js"],
+        moduleIds: [],
+      }),
+      chunk("assets/registration-impl.js", {
+        imports: ["assets/shared.js"],
+        moduleIds: [REGISTRATION_ID],
+      }),
+      chunk("assets/stage/response.js", {
+        isDynamicEntry: true,
+        imports: ["assets/shared.js"],
+        moduleIds: ["/response-stage"],
+      }),
+      chunk("request.js", { isEntry: true, imports: [], moduleIds: ["/request-stage"] }),
+    ];
+
+    async function createServerBuild(options: { mode?: string; consumer?: string } = {}) {
+      const plugin = createStyledJsxPlugin(process.cwd());
+      const environment = {
+        mode: options.mode ?? "build",
+        name: "ssr",
+        config: { consumer: options.consumer ?? "server" },
+      };
+      const emitFile = vi.fn(() => "registration-ref");
+      const context = {
+        environment,
+        emitFile,
+        getFileName: () => "assets/registration.js",
+        resolve: async (source: string) =>
+          source === "vinext/shims/styled-jsx-registry" ? { id: SHIM_ID, external: false } : null,
+      };
+      const code = await (plugin.load as LoadHook).handler.call(context, REGISTRATION_ID);
+      expect(code).toContain("registerStyledJsxRuntime(");
+      const renderChunk = (graph: Chunk[], fileName: string, format = "es") => {
+        const chunks = Object.fromEntries(graph.map((entry) => [entry.fileName, entry]));
+        const target = chunks[fileName]!;
+        return (plugin.renderChunk as RenderChunkHook).call(
+          context,
+          "export {};",
+          { isEntry: false, isDynamicEntry: false, ...target },
+          { format },
+          { chunks },
+        );
+      };
+      return { emitFile, renderChunk };
+    }
+
+    it("emits the registration as its own chunk only in server builds", async () => {
+      const build = await createServerBuild();
+      expect(build.emitFile).toHaveBeenCalledWith({
+        type: "chunk",
+        id: "virtual:vinext-styled-jsx-ssr-registry",
+        name: "styled-jsx-registry",
+      });
+      expect((await createServerBuild({ mode: "dev" })).emitFile).not.toHaveBeenCalled();
+      expect((await createServerBuild({ consumer: "client" })).emitFile).not.toHaveBeenCalled();
+    });
+
+    it("imports the registration from chunks that render Pages but reach it only lazily", async () => {
+      const { renderChunk } = await createServerBuild();
+
+      expect(renderChunk(lazyGraph, "entry.js")?.code).toBe(
+        'export {};\nimport "./assets/registration.js";\n',
+      );
+      // A dynamically imported render root (a multi-stage response stage).
+      expect(renderChunk(lazyGraph, "assets/stage/response.js")?.code).toBe(
+        'export {};\nimport "../registration.js";\n',
+      );
+      // Chunks that already load it, and ones that never render Pages.
+      expect(renderChunk(lazyGraph, "assets/lazy.js")).toBeNull();
+      expect(renderChunk(lazyGraph, "assets/registration.js")).toBeNull();
+      expect(renderChunk(lazyGraph, "request.js")).toBeNull();
+      expect(renderChunk(lazyGraph, "assets/shared.js")).toBeNull();
+      expect(renderChunk(lazyGraph, "entry.js", "cjs")).toBeNull();
+
+      // styled-jsx used by a module the entry loads statically: nothing to add.
+      const staticGraph = lazyGraph.map((entry) =>
+        entry.fileName === "entry.js"
+          ? { ...entry, imports: [...entry.imports, "assets/registration-impl.js"] }
+          : entry,
+      );
+      expect(renderChunk(staticGraph, "entry.js")).toBeNull();
+    });
+
+    it("leaves builds that never loaded the registration untouched", () => {
+      const plugin = createStyledJsxPlugin(process.cwd());
+      const chunks = Object.fromEntries(lazyGraph.map((entry) => [entry.fileName, entry]));
+      expect(
+        (plugin.renderChunk as RenderChunkHook).call(
+          { environment: { mode: "build", name: "ssr", config: { consumer: "server" } } },
+          "export {};",
+          { isDynamicEntry: false, ...lazyGraph[0]!, isEntry: true },
+          { format: "es" },
+          { chunks },
+        ),
+      ).toBeNull();
+    });
   });
 });
 

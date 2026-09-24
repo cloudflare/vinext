@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import path from "pathslash";
 import { pathToFileURL } from "node:url";
+import MagicString from "magic-string";
 import {
   isRunnableDevEnvironment,
   parseAst,
@@ -42,6 +43,7 @@ registerStyledJsxRuntime({
   createStyleRegistry: runtime.createStyleRegistry,
 });
 `;
+const STYLED_JSX_REGISTRY_SHIM = "vinext/shims/styled-jsx-registry";
 /** Prefix for dev-only ESM facades over natively required styled-jsx files. */
 const STYLED_JSX_NODE_MODULE_PREFIX = "\0vinext-styled-jsx-node:";
 const STYLED_JSX_LOAD_RE = /^\0(?:virtual:vinext-styled-jsx-ssr-registry$|vinext-styled-jsx-node:)/;
@@ -151,6 +153,52 @@ function createNativeModuleFacade(file: string): string {
   ].join("\n");
 }
 
+/**
+ * A server build's registration module, emitted as its own chunk so entries
+ * can load it eagerly (see `renderChunk` below).
+ */
+type EagerRegistration = {
+  chunkReferenceId: string;
+  /** Resolved id of `vinext/shims/styled-jsx-registry` in this build. */
+  registryShimId: string;
+};
+
+type RenderedChunkGraph = Record<
+  string,
+  { readonly imports: readonly string[]; readonly moduleIds: readonly string[] }
+>;
+
+/** File names of the chunks `fileName` loads statically, itself included. */
+function collectStaticChunkClosure(fileName: string, chunks: RenderedChunkGraph): Set<string> {
+  const closure = new Set([fileName]);
+  for (const current of closure) {
+    for (const imported of chunks[current]?.imports ?? []) closure.add(imported);
+  }
+  return closure;
+}
+
+/**
+ * Whether a chunk the runtime loads on its own (an entry, or a dynamic import
+ * such as a multi-stage Worker's response stage) statically loads the Pages
+ * styled-jsx registry — so it renders Pages — without statically loading the
+ * registration module: styled-jsx is then only used by lazily imported
+ * modules (`next/dynamic`, `React.lazy`), which would register it only after
+ * the first render began.
+ */
+function chunkNeedsEagerStyledJsxRegistration(
+  fileName: string,
+  chunks: RenderedChunkGraph,
+  registryShimId: string,
+): boolean {
+  let loadsRegistryShim = false;
+  for (const loaded of collectStaticChunkClosure(fileName, chunks)) {
+    const moduleIds = chunks[loaded]?.moduleIds ?? [];
+    if (moduleIds.includes(RESOLVED_STYLED_JSX_SSR_REGISTRY_ID)) return false;
+    if (moduleIds.includes(registryShimId)) loadsRegistryShim = true;
+  }
+  return loadsRegistryShim;
+}
+
 function createProjectRequire(projectRoot: string) {
   return createRequire(path.join(projectRoot, "package.json"));
 }
@@ -181,6 +229,7 @@ export function createStyledJsxPlugin(
   let nextRequire: NodeJS.Require | null | undefined;
   let compilerPromise: Promise<NextSwcModule> | null = null;
   const importModule = options.importModule ?? ((url: string) => import(url));
+  const eagerRegistrations = new WeakMap<Environment, EagerRegistration>();
 
   function getNextRequire(): NodeJS.Require | null {
     nextRequire ??= resolveNextRequire(projectRoot);
@@ -227,6 +276,11 @@ export function createStyledJsxPlugin(
         compilerPromise = null;
       }
     },
+    buildStart() {
+      // A watch-mode rebuild reuses the environment; re-emit only if the
+      // registration module is still loaded.
+      if (this.environment) eagerRegistrations.delete(this.environment);
+    },
     resolveId: {
       filter: { id: STYLED_JSX_RESOLVE_ID_RE },
       handler(source, _importer, resolveOptions) {
@@ -245,10 +299,66 @@ export function createStyledJsxPlugin(
     },
     load: {
       filter: { id: STYLED_JSX_LOAD_RE },
-      handler(id) {
-        if (id === RESOLVED_STYLED_JSX_SSR_REGISTRY_ID) return STYLED_JSX_SSR_REGISTRY_CODE;
-        return createNativeModuleFacade(id.slice(STYLED_JSX_NODE_MODULE_PREFIX.length));
+      async handler(id) {
+        if (id !== RESOLVED_STYLED_JSX_SSR_REGISTRY_ID) {
+          return createNativeModuleFacade(id.slice(STYLED_JSX_NODE_MODULE_PREFIX.length));
+        }
+        // Loaded only once a module this plugin compiled uses styled-jsx, so
+        // apps without styled-jsx never reach this. In a server build, emit
+        // the registration as its own chunk: when every styled-jsx module is
+        // loaded lazily, `renderChunk` makes Pages entries import it up front.
+        const environment = this?.environment;
+        if (environment?.mode === "build" && environment.config.consumer === "server") {
+          const registryShim = await this.resolve(STYLED_JSX_REGISTRY_SHIM, id);
+          if (registryShim && !registryShim.external) {
+            eagerRegistrations.set(environment, {
+              // Emitted entries go through resolveId, which maps the public id.
+              chunkReferenceId: this.emitFile({
+                type: "chunk",
+                id: STYLED_JSX_SSR_REGISTRY_ID,
+                name: "styled-jsx-registry",
+              }),
+              registryShimId: registryShim.id,
+            });
+          }
+        }
+        return STYLED_JSX_SSR_REGISTRY_CODE;
       },
+    },
+    /**
+     * Next.js wraps every Pages render in styled-jsx's registry, so styles
+     * from modules loaded lazily (`next/dynamic`, `React.lazy`) are collected
+     * on the first render too. vinext only wraps renders once styled-jsx has
+     * registered, which a lazily loaded module would do too late: after the
+     * first render of each server instance (a Workers isolate, a prerender, a
+     * first ISR render) began. Entry and dynamically imported chunks that
+     * render Pages but reach styled-jsx only lazily therefore import the
+     * registration chunk statically.
+     *
+     * Appended rather than prepended so existing source-map lines are kept;
+     * ES imports are hoisted, so it still runs before the chunk's body. Dev
+     * keeps registering lazily: it has no bundle graph to inspect up front.
+     */
+    renderChunk(code, chunk, outputOptions, meta) {
+      if ((!chunk.isEntry && !chunk.isDynamicEntry) || outputOptions.format !== "es") return null;
+      const environment = this.environment;
+      const eager = environment ? eagerRegistrations.get(environment) : undefined;
+      if (
+        !eager ||
+        !chunkNeedsEagerStyledJsxRegistration(chunk.fileName, meta.chunks, eager.registryShimId)
+      ) {
+        return null;
+      }
+      const registrationFileName = this.getFileName(eager.chunkReferenceId);
+      // Never import a chunk the registration itself depends on (a cycle).
+      if (collectStaticChunkClosure(registrationFileName, meta.chunks).has(chunk.fileName)) {
+        return null;
+      }
+      let specifier = path.relative(path.dirname(chunk.fileName), registrationFileName);
+      if (!specifier.startsWith(".")) specifier = `./${specifier}`;
+      const output = new MagicString(code);
+      output.append(`\nimport ${JSON.stringify(specifier)};\n`);
+      return { code: output.toString(), map: output.generateMap({ hires: "boundary" }) };
     },
     transform: {
       filter: {
