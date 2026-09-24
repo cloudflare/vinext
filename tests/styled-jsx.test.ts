@@ -77,6 +77,19 @@ function createPnpmStyleFixture(): { root: string; styledJsxRoot: string } {
   return { root, styledJsxRoot };
 }
 
+function writeSource(root: string, file: string, source: string): void {
+  fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+  fs.writeFileSync(path.join(root, file), source);
+}
+
+/** A project with Next's styled-jsx installed and the given source files. */
+function createProject(sources: Record<string, string>): string {
+  const { root, styledJsxRoot } = createPnpmStyleFixture();
+  fs.writeFileSync(path.join(styledJsxRoot, "index.js"), "module.exports = {};");
+  for (const [file, source] of Object.entries(sources)) writeSource(root, file, source);
+  return root;
+}
+
 describe("styled-jsx compatibility plugin", () => {
   it("detects supported styled-jsx syntax variants", async () => {
     const plugin = createStyledJsxPlugin(process.cwd());
@@ -121,16 +134,6 @@ describe("styled-jsx compatibility plugin", () => {
   // lazily has not been seen before the first render. Dev servers ask whether
   // the project uses styled-jsx to load the registration up front.
   it("detects styled-jsx usage in project sources for dev", async () => {
-    const writeSource = (root: string, file: string, source: string) => {
-      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
-      fs.writeFileSync(path.join(root, file), source);
-    };
-    const createProject = (sources: Record<string, string>) => {
-      const { root, styledJsxRoot } = createPnpmStyleFixture();
-      fs.writeFileSync(path.join(styledJsxRoot, "index.js"), "module.exports = {};");
-      for (const [file, source] of Object.entries(sources)) writeSource(root, file, source);
-      return root;
-    };
     const usesStyledJsx = (root: string) => createStyledJsxPlugin(root).api!.projectUsesStyledJsx();
     const plainSources = {
       "pages/index.jsx": 'export default () => <style data-language="jsx">{css}</style>;',
@@ -178,6 +181,64 @@ describe("styled-jsx compatibility plugin", () => {
     temporaryDirectories.push(noNext);
     writeSource(noNext, "pages/index.jsx", "export default () => <style jsx>{css}</style>;");
     expect(await usesStyledJsx(noNext)).toBe(false);
+  });
+
+  // The scan runs once. styled-jsx added later in the session to a module
+  // that is only loaded lazily is not compiled before the render that needs
+  // it, so added/changed source files must still turn the answer positive —
+  // and generated dev entries, which import the dev registration module once,
+  // must reload it.
+  it("notices styled-jsx added after a negative dev scan", async () => {
+    const root = createProject({
+      "pages/index.jsx": "export default () => <p>plain</p>;",
+    });
+    const plugin = createStyledJsxPlugin(root);
+    (plugin.configResolved as (config: object) => void)({ command: "serve", root });
+    const invalidateModule = vi.fn();
+    const send = vi.fn();
+    const devModule = { id: "\0virtual:vinext-styled-jsx-dev-registration" };
+    const environment = {
+      moduleGraph: {
+        getModuleById: (id: string) => (id === devModule.id ? devModule : undefined),
+        invalidateModule,
+      },
+      hot: { send },
+    };
+    (plugin.configureServer as (server: object) => void)({
+      environments: { ssr: environment },
+    });
+    const watchChange = (file: string, event = "create") =>
+      (plugin.watchChange as (id: string, change: { event: string }) => void)(file, { event });
+    const load = plugin.load as LoadHook;
+    const resolved = (plugin.resolveId as ResolveIdHook).handler(
+      "virtual:vinext-styled-jsx-dev-registration",
+    );
+
+    expect(resolved).toBe(devModule.id);
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(false);
+    expect(await load.handler(devModule.id)).toBe("export {};\n");
+
+    // Files the scan skips, and changes without styled-jsx, change nothing.
+    writeSource(root, "node_modules/lib/index.jsx", "export default () => <style jsx>{c}</style>;");
+    watchChange(path.join(root, "node_modules/lib/index.jsx"));
+    writeSource(root, "pages/other.jsx", "export default () => <p>other</p>;");
+    watchChange(path.join(root, "pages/other.jsx"));
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(false);
+    expect(invalidateModule).not.toHaveBeenCalled();
+
+    // A lazily loaded component with styled-jsx is added.
+    writeSource(root, "components/Lazy.jsx", "export default () => <style jsx>{css}</style>;");
+    watchChange(path.join(root, "components/Lazy.jsx"));
+
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(true);
+    expect(invalidateModule).toHaveBeenCalledWith(devModule);
+    expect(send).toHaveBeenCalledWith({ type: "full-reload" });
+    expect(await load.handler(devModule.id)).toBe(
+      'import "virtual:vinext-styled-jsx-ssr-registry";\n',
+    );
+    // Reloaded once: later changes leave the (now populated) module alone.
+    watchChange(path.join(root, "components/Lazy.jsx"), "update");
+    expect(invalidateModule).toHaveBeenCalledTimes(1);
   });
 
   it("leaves ordinary style tags untouched when Next is not installed", async () => {
@@ -553,35 +614,64 @@ describe("styled-jsx compatibility plugin", () => {
       chunk("request.js", { isEntry: true, imports: [], moduleIds: ["/request-stage"] }),
     ];
 
-    async function createServerBuild(options: { mode?: string; consumer?: string } = {}) {
-      const plugin = createStyledJsxPlugin(process.cwd());
-      const environment = {
-        mode: options.mode ?? "build",
-        name: "ssr",
-        config: { consumer: options.consumer ?? "server" },
-      };
-      const emitFile = vi.fn(() => "registration-ref");
-      const context = {
+    type BuildContext = ReturnType<typeof createBuildContext>;
+
+    function createBuildContext(
+      environment: object,
+      registrationImporters: string[] = ["/components/LazyStyled.jsx"],
+    ) {
+      let emitted = 0;
+      const emitFile = vi.fn(() => `registration-ref-${++emitted}`);
+      return {
         environment,
         emitFile,
-        getFileName: () => "assets/registration.js",
+        // Emitted references belong to one build.
+        getFileName: (referenceId: string) => {
+          if (referenceId !== `registration-ref-${emitted}`) {
+            throw new Error(`Unknown reference ${referenceId}`);
+          }
+          return "assets/registration.js";
+        },
+        getModuleInfo: (id: string) =>
+          id === REGISTRATION_ID
+            ? { importers: registrationImporters, dynamicImporters: [] as string[] }
+            : null,
         resolve: async (source: string) =>
           source === "vinext/shims/styled-jsx-registry" ? { id: SHIM_ID, external: false } : null,
       };
+    }
+
+    function renderChunkWith(
+      plugin: ReturnType<typeof createStyledJsxPlugin>,
+      context: BuildContext,
+      graph: Chunk[],
+      fileName: string,
+      format = "es",
+    ) {
+      const chunks = Object.fromEntries(graph.map((entry) => [entry.fileName, entry]));
+      const target = chunks[fileName]!;
+      return (plugin.renderChunk as RenderChunkHook).call(
+        context,
+        "export {};",
+        { isEntry: false, isDynamicEntry: false, ...target },
+        { format },
+        { chunks },
+      );
+    }
+
+    async function createServerBuild(options: { mode?: string; consumer?: string } = {}) {
+      const plugin = createStyledJsxPlugin(process.cwd());
+      const context = createBuildContext({
+        mode: options.mode ?? "build",
+        name: "ssr",
+        config: { consumer: options.consumer ?? "server" },
+      });
+      (plugin.buildStart as (this: unknown) => void).call(context);
       const code = await (plugin.load as LoadHook).handler.call(context, REGISTRATION_ID);
       expect(code).toContain("registerStyledJsxRuntime(");
-      const renderChunk = (graph: Chunk[], fileName: string, format = "es") => {
-        const chunks = Object.fromEntries(graph.map((entry) => [entry.fileName, entry]));
-        const target = chunks[fileName]!;
-        return (plugin.renderChunk as RenderChunkHook).call(
-          context,
-          "export {};",
-          { isEntry: false, isDynamicEntry: false, ...target },
-          { format },
-          { chunks },
-        );
-      };
-      return { emitFile, renderChunk };
+      const renderChunk = (graph: Chunk[], fileName: string, format = "es") =>
+        renderChunkWith(plugin, context, graph, fileName, format);
+      return { emitFile: context.emitFile, renderChunk };
     }
 
     it("emits the registration as its own chunk only in server builds", async () => {
@@ -619,6 +709,38 @@ describe("styled-jsx compatibility plugin", () => {
           : entry,
       );
       expect(renderChunk(staticGraph, "entry.js")).toBeNull();
+    });
+
+    // A watch rebuild can restore unchanged modules — the registration among
+    // them — from the module cache without rerunning `load`.
+    it("keeps entries importing the registration across cached watch rebuilds", async () => {
+      const plugin = createStyledJsxPlugin(process.cwd());
+      const environment = { mode: "build", name: "ssr", config: { consumer: "server" } };
+      const buildStart = plugin.buildStart as (this: unknown) => void;
+      const expected = 'export {};\nimport "./assets/registration.js";\n';
+
+      const first = createBuildContext(environment);
+      buildStart.call(first);
+      await (plugin.load as LoadHook).handler.call(first, REGISTRATION_ID);
+      expect(renderChunkWith(plugin, first, lazyGraph, "entry.js")?.code).toBe(expected);
+
+      // Second build: an unrelated module changed; `load` is not called again.
+      const second = createBuildContext(environment);
+      buildStart.call(second);
+      expect(second.emitFile).toHaveBeenCalledTimes(1);
+      expect(renderChunkWith(plugin, second, lazyGraph, "entry.js")?.code).toBe(expected);
+
+      // A rebuild that reruns `load` does not emit the chunk twice.
+      const third = createBuildContext(environment);
+      buildStart.call(third);
+      await (plugin.load as LoadHook).handler.call(third, REGISTRATION_ID);
+      expect(third.emitFile).toHaveBeenCalledTimes(1);
+
+      // A rebuild after the last styled-jsx module was removed: the chunk is
+      // emitted up front, but nothing imports the registration any more.
+      const fourth = createBuildContext(environment, []);
+      buildStart.call(fourth);
+      expect(renderChunkWith(plugin, fourth, lazyGraph, "entry.js")).toBeNull();
     });
 
     it("leaves builds that never loaded the registration untouched", () => {

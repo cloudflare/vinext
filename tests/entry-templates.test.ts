@@ -2072,7 +2072,7 @@ describe("Pages Router entry template", () => {
   it("imports the dev styled-jsx registration only when asked", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-styled-jsx-entry-"));
     const pagesDir = path.join(tmpDir, "pages");
-    const registrationImport = 'import "virtual:vinext-styled-jsx-ssr-registry";';
+    const registrationImport = 'import "virtual:vinext-styled-jsx-dev-registration";';
 
     try {
       fs.mkdirSync(pagesDir, { recursive: true });
@@ -2090,10 +2090,10 @@ describe("Pages Router entry template", () => {
         null,
         null,
         undefined,
-        "virtual:vinext-styled-jsx-ssr-registry",
+        "virtual:vinext-styled-jsx-dev-registration",
       );
       const serverEntry = await generateServerEntry(pagesDir, nextConfig, matcher, null, null, [], {
-        styledJsxRegistration: "virtual:vinext-styled-jsx-ssr-registry",
+        styledJsxRegistration: "virtual:vinext-styled-jsx-dev-registration",
       });
       const plainEntry = await generateServerEntry(pagesDir, nextConfig, matcher, null, null);
 

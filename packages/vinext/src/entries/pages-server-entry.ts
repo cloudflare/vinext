@@ -52,8 +52,9 @@ type GeneratePagesServerEntryOptions = {
   nodeOpenTelemetryLoader?: boolean;
   prerenderSecret?: string;
   /**
-   * Dev only: the styled-jsx registration module, imported up front so the
-   * first render collects rules from lazily loaded modules too.
+   * Dev only: the module that loads the styled-jsx registration when the
+   * project uses styled-jsx, imported up front so the first render collects
+   * rules from lazily loaded modules too.
    */
   styledJsxRegistration?: string | undefined;
 };

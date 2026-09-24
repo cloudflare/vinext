@@ -1,6 +1,7 @@
+import { readFileSync, realpathSync } from "node:fs";
 import { glob, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import { pathToFileURL } from "node:url";
 import MagicString from "magic-string";
 import {
@@ -9,6 +10,7 @@ import {
   type DevEnvironment,
   type Environment,
   type Plugin,
+  type ViteDevServer,
 } from "vite";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
 import { SCRIPT_MODULE_ID_RE, walkAst } from "./ast-utils.js";
@@ -34,7 +36,15 @@ type StyledJsxPluginOptions = {
  */
 export const STYLED_JSX_SSR_REGISTRY_ID = "virtual:vinext-styled-jsx-ssr-registry";
 const RESOLVED_STYLED_JSX_SSR_REGISTRY_ID = "\0" + STYLED_JSX_SSR_REGISTRY_ID;
-const STYLED_JSX_RESOLVE_ID_RE = /^(?:styled-jsx(?:\/.*)?|virtual:vinext-styled-jsx-ssr-registry)$/;
+/**
+ * Dev only: imported by the generated Pages entries (Cloudflare and hybrid
+ * dev). Imports `STYLED_JSX_SSR_REGISTRY_ID` when the project uses styled-jsx
+ * and is empty otherwise; reloaded if the project starts using it.
+ */
+export const STYLED_JSX_DEV_REGISTRATION_ID = "virtual:vinext-styled-jsx-dev-registration";
+const RESOLVED_STYLED_JSX_DEV_REGISTRATION_ID = "\0" + STYLED_JSX_DEV_REGISTRATION_ID;
+const STYLED_JSX_RESOLVE_ID_RE =
+  /^(?:styled-jsx(?:\/.*)?|virtual:vinext-styled-jsx-(?:ssr-registry|dev-registration))$/;
 const STYLED_JSX_STYLE_IMPORT_RE = /["']styled-jsx\/style["']/;
 // `styled-jsx/style` is what compiled modules import. Loading it with the
 // registry lets a dev dependency optimizer discover both at once, instead of
@@ -52,7 +62,8 @@ registerStyledJsxRuntime({
 const STYLED_JSX_REGISTRY_SHIM = "vinext/shims/styled-jsx-registry";
 /** Prefix for dev-only ESM facades over natively required styled-jsx files. */
 const STYLED_JSX_NODE_MODULE_PREFIX = "\0vinext-styled-jsx-node:";
-const STYLED_JSX_LOAD_RE = /^\0(?:virtual:vinext-styled-jsx-ssr-registry$|vinext-styled-jsx-node:)/;
+const STYLED_JSX_LOAD_RE =
+  /^\0(?:virtual:vinext-styled-jsx-(?:ssr-registry|dev-registration)$|vinext-styled-jsx-node:)/;
 const JS_IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/;
 const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
@@ -67,10 +78,30 @@ const STYLED_JSX_USAGE_RE = /<style\b[^>]*\sjsx(?=[\s=/>])|["']styled-jsx\/css["
 const SOURCE_SCAN_GLOB = "**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}";
 const SOURCE_SCAN_BATCH_SIZE = 64;
 
+const SOURCE_SCAN_FILE_RE = /\.(?:jsx?|tsx?|[cm][jt]s)$/;
+
 /** Skip dependencies, dot directories (VCS, caches) and vinext's build output. */
 function isExcludedFromSourceScan(entry: string): boolean {
   const name = entry.slice(Math.max(entry.lastIndexOf("/"), entry.lastIndexOf("\\")) + 1);
   return name === "node_modules" || name === "dist" || name.startsWith(".");
+}
+
+/**
+ * Whether the source scan of `root` covers `file` (an absolute path). File
+ * watchers can report real paths for a root reached through a symlink, so
+ * the root's real path counts too.
+ */
+function isScannedSourceFile(root: string, file: string): boolean {
+  if (!SOURCE_SCAN_FILE_RE.test(file)) return false;
+  let realRoot = root;
+  try {
+    realRoot = toSlash(realpathSync.native(root));
+  } catch {}
+  return [root, realRoot].some((candidate) => {
+    const relative = path.relative(candidate, file);
+    if (relative.startsWith("../") || path.isAbsolute(relative)) return false;
+    return !relative.split("/").some(isExcludedFromSourceScan);
+  });
 }
 
 /**
@@ -112,7 +143,8 @@ async function scanSourcesForStyledJsx(root: string): Promise<boolean> {
 export type StyledJsxPluginApi = {
   /**
    * Whether the project uses styled-jsx: a module compiled by this plugin
-   * used it, or a one-time scan of the project's sources finds it. Dev loads
+   * used it, a one-time scan of the project's sources finds it, or a source
+   * file added or changed since then does. Dev loads
    * `STYLED_JSX_SSR_REGISTRY_ID` up front when this is true, so lazily loaded
    * modules' rules are collected on the first render too. Builds do not need
    * it: they see the whole module graph (see `renderChunk`).
@@ -296,7 +328,32 @@ export function createStyledJsxPlugin(
   let nextRequire: NodeJS.Require | null | undefined;
   let compilerPromise: Promise<NextSwcModule> | null = null;
   const importModule = options.importModule ?? ((url: string) => import(url));
+  /** Per build: the emitted registration chunk `renderChunk` imports. */
   const eagerRegistrations = new WeakMap<Environment, EagerRegistration>();
+  /**
+   * Across builds of an environment: the registry shim id, once a build has
+   * loaded the registration. A watch rebuild can restore that module from its
+   * module cache without rerunning `load`, so `buildStart` re-emits from here.
+   */
+  const registryShimIds = new WeakMap<Environment, string>();
+
+  function emitEagerRegistration(
+    context: { emitFile(file: { type: "chunk"; id: string; name: string }): string },
+    environment: Environment,
+    registryShimId: string,
+  ): void {
+    registryShimIds.set(environment, registryShimId);
+    if (eagerRegistrations.has(environment)) return;
+    eagerRegistrations.set(environment, {
+      // Emitted entries go through resolveId, which maps the public id.
+      chunkReferenceId: context.emitFile({
+        type: "chunk",
+        id: STYLED_JSX_SSR_REGISTRY_ID,
+        name: "styled-jsx-registry",
+      }),
+      registryShimId,
+    });
+  }
 
   function getNextRequire(): NodeJS.Require | null {
     nextRequire ??= resolveNextRequire(projectRoot);
@@ -332,23 +389,51 @@ export function createStyledJsxPlugin(
     }
   }
 
+  // Dev usage detection (see `StyledJsxPluginApi.projectUsesStyledJsx`).
   let compiledStyledJsx = false;
   let sourceScan: Promise<boolean> | undefined;
+  /** A source file added or changed after the scan uses styled-jsx. */
+  let changedSourceUsesStyledJsx = false;
+  /** `STYLED_JSX_DEV_REGISTRATION_ID` was served without the registration. */
+  let devRegistrationServedWithout = false;
+  let devServer: ViteDevServer | undefined;
+
+  async function projectUsesStyledJsx(): Promise<boolean> {
+    if (compiledStyledJsx || changedSourceUsesStyledJsx) return true;
+    // Without styled-jsx the registration cannot load (a scan false positive
+    // such as a commented-out `<style jsx>` must not break dev).
+    sourceScan ??= resolveStyledJsx("styled-jsx")
+      ? scanSourcesForStyledJsx(projectRoot)
+      : Promise.resolve(false);
+    return (await sourceScan) || compiledStyledJsx || changedSourceUsesStyledJsx;
+  }
+
+  /**
+   * Generated dev entries import `STYLED_JSX_DEV_REGISTRATION_ID`, which their
+   * module runners cache. Once the project starts using styled-jsx, reload it
+   * (and so the entries importing it) wherever it was served empty. Hand
+   * styled-jsx to a discovering dependency optimizer now, too: discovering it
+   * during the next render would re-optimize (and swap React copies) mid-way.
+   */
+  function refreshDevRegistration(): void {
+    if (!devRegistrationServedWithout || !devServer) return;
+    devRegistrationServedWithout = false;
+    for (const environment of Object.values(devServer.environments)) {
+      const module = environment.moduleGraph.getModuleById(RESOLVED_STYLED_JSX_DEV_REGISTRATION_ID);
+      if (!module) continue;
+      for (const source of ["styled-jsx", "styled-jsx/style"]) {
+        const resolved = resolveStyledJsx(source);
+        if (resolved) registerOptimizedDependency(environment, source, resolved, false);
+      }
+      environment.moduleGraph.invalidateModule(module);
+      environment.hot.send({ type: "full-reload" });
+    }
+  }
 
   return {
     name: "vinext:styled-jsx",
     enforce: "pre",
-    api: {
-      async projectUsesStyledJsx() {
-        if (compiledStyledJsx) return true;
-        // Without styled-jsx the registration cannot load (a scan false
-        // positive such as a commented-out `<style jsx>` must not break dev).
-        sourceScan ??= resolveStyledJsx("styled-jsx")
-          ? scanSourcesForStyledJsx(projectRoot)
-          : Promise.resolve(false);
-        return (await sourceScan) || compiledStyledJsx;
-      },
-    },
+    api: { projectUsesStyledJsx },
     configResolved(config) {
       development = config.command === "serve";
       if (config.root !== projectRoot) {
@@ -358,15 +443,49 @@ export function createStyledJsxPlugin(
         sourceScan = undefined;
       }
     },
+    configureServer(server) {
+      devServer = server;
+    },
+    /**
+     * The source scan runs once, so a negative result would otherwise hide
+     * styled-jsx added later in the session to a module that is only loaded
+     * lazily (and so is not compiled before the render that needs it). Check
+     * each added or changed source file instead of rescanning. Synchronous so
+     * the answer is in place before the next request is handled.
+     */
+    watchChange(id, change) {
+      if (!development || change.event === "delete") return;
+      if (!compiledStyledJsx && !changedSourceUsesStyledJsx) {
+        if (!isScannedSourceFile(projectRoot, id)) return;
+        let source: string;
+        try {
+          source = readFileSync(id, "utf8");
+        } catch {
+          return;
+        }
+        if (!STYLED_JSX_USAGE_RE.test(source)) return;
+        changedSourceUsesStyledJsx = true;
+      }
+      refreshDevRegistration();
+    },
     buildStart() {
-      // A watch-mode rebuild reuses the environment; re-emit only if the
-      // registration module is still loaded.
-      if (this.environment) eagerRegistrations.delete(this.environment);
+      const environment = this.environment;
+      if (!environment) return;
+      // Emitted files belong to one build. A watch rebuild of an environment
+      // that loaded the registration before emits it again up front, since a
+      // cached registration module does not rerun `load`; `renderChunk` skips
+      // it if this build no longer uses styled-jsx.
+      eagerRegistrations.delete(environment);
+      const registryShimId = registryShimIds.get(environment);
+      if (registryShimId) emitEagerRegistration(this, environment, registryShimId);
     },
     resolveId: {
       filter: { id: STYLED_JSX_RESOLVE_ID_RE },
       handler(source, _importer, resolveOptions) {
         if (source === STYLED_JSX_SSR_REGISTRY_ID) return RESOLVED_STYLED_JSX_SSR_REGISTRY_ID;
+        if (source === STYLED_JSX_DEV_REGISTRATION_ID) {
+          return RESOLVED_STYLED_JSX_DEV_REGISTRATION_ID;
+        }
         const resolved = resolveStyledJsx(source);
         if (!resolved) return null;
         const environment = this?.environment;
@@ -382,6 +501,13 @@ export function createStyledJsxPlugin(
     load: {
       filter: { id: STYLED_JSX_LOAD_RE },
       async handler(id) {
+        if (id === RESOLVED_STYLED_JSX_DEV_REGISTRATION_ID) {
+          if (await projectUsesStyledJsx()) {
+            return `import ${JSON.stringify(STYLED_JSX_SSR_REGISTRY_ID)};\n`;
+          }
+          devRegistrationServedWithout = true;
+          return "export {};\n";
+        }
         if (id !== RESOLVED_STYLED_JSX_SSR_REGISTRY_ID) {
           return createNativeModuleFacade(id.slice(STYLED_JSX_NODE_MODULE_PREFIX.length));
         }
@@ -393,15 +519,7 @@ export function createStyledJsxPlugin(
         if (environment?.mode === "build" && environment.config.consumer === "server") {
           const registryShim = await this.resolve(STYLED_JSX_REGISTRY_SHIM, id);
           if (registryShim && !registryShim.external) {
-            eagerRegistrations.set(environment, {
-              // Emitted entries go through resolveId, which maps the public id.
-              chunkReferenceId: this.emitFile({
-                type: "chunk",
-                id: STYLED_JSX_SSR_REGISTRY_ID,
-                name: "styled-jsx-registry",
-              }),
-              registryShimId: registryShim.id,
-            });
+            emitEagerRegistration(this, environment, registryShim.id);
           }
         }
         return STYLED_JSX_SSR_REGISTRY_CODE;
@@ -431,6 +549,9 @@ export function createStyledJsxPlugin(
       ) {
         return null;
       }
+      // Re-emitted by `buildStart` but no longer imported by any module.
+      const registration = this.getModuleInfo(RESOLVED_STYLED_JSX_SSR_REGISTRY_ID);
+      if (!registration?.importers.length && !registration?.dynamicImporters.length) return null;
       const registrationFileName = this.getFileName(eager.chunkReferenceId);
       // Never import a chunk the registration itself depends on (a cycle).
       if (collectStaticChunkClosure(registrationFileName, meta.chunks).has(chunk.fileName)) {

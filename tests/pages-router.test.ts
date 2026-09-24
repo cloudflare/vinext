@@ -230,6 +230,15 @@ function expectLateStyledJsxSsr(html: string): void {
 
 // Ported from Next.js: test/e2e/styled-jsx-dynamic/index.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/styled-jsx-dynamic/index.test.ts
+/** `components/LazyStyled.jsx` (pages-styled-jsx-lazy) rendered with its SSR rule. */
+function expectLazyStyledRule(html: string): void {
+  const tag = html.match(/<p\b[^>]*\bid="lazy-styled"[^>]*>/)?.[0] ?? "";
+  const className = getHtmlAttr(tag, "class");
+  expect(className).toMatch(/^jsx-[\w-]+$/);
+  expect(getStyledJsxStyles(html).get(`__${className}`)).toBe(`p.${className}{color:orange}`);
+  expect(html.match(/color:orange/g)).toHaveLength(1);
+}
+
 function expectDynamicStyledJsxSsr(html: string): void {
   // Interpolated styles get numeric runtime class names from styled-jsx's
   // computeId, and every rule (including the one derived from
@@ -8734,13 +8743,127 @@ describe("Pages Router styled-jsx in lazily loaded modules", () => {
   it.each(["dev", "prod"] as const)("renders the rules on the first %s request", async (mode) => {
     const res = await fetch(`${mode === "dev" ? devUrl : prodUrl}/`);
     expect(res.status).toBe(200);
-    const html = await res.text();
-    const tag = html.match(/<p\b[^>]*\bid="lazy-styled"[^>]*>/)?.[0] ?? "";
-    const className = getHtmlAttr(tag, "class");
-    expect(className).toMatch(/^jsx-[\w-]+$/);
-    expect(getStyledJsxStyles(html).get(`__${className}`)).toBe(`p.${className}{color:orange}`);
-    expect(html.match(/color:orange/g)).toHaveLength(1);
+    expectLazyStyledRule(await res.text());
   });
+
+  // Dev decides up front whether the project uses styled-jsx. A lazily loaded
+  // styled-jsx component added after that decision was negative must still
+  // have its rules on its page's first request.
+  it("renders the rules on the first dev request after styled-jsx is added", async () => {
+    // Real path: the file watcher reports real paths, and page routes are only
+    // refreshed for files under the (configured) pages directory.
+    const root = await createIsolatedFixture(
+      lazyFixtureDir,
+      "vinext-pages-styled-jsx-added-",
+      (src) =>
+        !src.includes(`${path.sep}components`) &&
+        !src.endsWith(`${path.sep}pages${path.sep}index.jsx`),
+    ).then((fixtureRoot) => fs.realpathSync(fixtureRoot));
+    await fsp.writeFile(
+      path.join(root, "pages", "plain.jsx"),
+      "export default function Plain() { return <p>plain</p>; }\n",
+    );
+    const { server, baseUrl } = await startFixtureServer(root);
+    try {
+      const plugin = server.config.plugins.find(
+        (candidate) => candidate.name === "vinext:styled-jsx",
+      ) as { api: { projectUsesStyledJsx(): Promise<boolean> } } | undefined;
+      expect(plugin).toBeDefined();
+      expect((await fetch(`${baseUrl}/plain`)).status).toBe(200);
+      expect(await plugin!.api.projectUsesStyledJsx()).toBe(false);
+
+      await fsp.mkdir(path.join(root, "components"));
+      await fsp.copyFile(
+        path.join(lazyFixtureDir, "components", "LazyStyled.jsx"),
+        path.join(root, "components", "LazyStyled.jsx"),
+      );
+      await fsp.copyFile(
+        path.join(lazyFixtureDir, "pages", "index.jsx"),
+        path.join(root, "pages", "late.jsx"),
+      );
+      // Wait for the file watcher to report the new files.
+      await vi.waitFor(async () => expect(await plugin!.api.projectUsesStyledJsx()).toBe(true), {
+        timeout: 10_000,
+        interval: 50,
+      });
+      let res: Response | undefined;
+      await vi.waitFor(
+        async () => {
+          res = await fetch(`${baseUrl}/late`);
+          expect(res.status).toBe(200);
+        },
+        { timeout: 10_000, interval: 100 },
+      );
+      expectLazyStyledRule(await res!.text());
+    } finally {
+      await server.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  // A watch rebuild restores unchanged modules (the registration among them)
+  // from the module cache without rerunning their `load` hook. The rebuilt
+  // entry must still load the registration up front.
+  it("keeps the registration eager across watch rebuilds", async () => {
+    const root = await createIsolatedFixture(lazyFixtureDir, "vinext-pages-styled-jsx-watch-");
+    const plainPage = path.join(root, "pages", "plain.jsx");
+    const writePlainPage = (text: string) =>
+      fsp.writeFile(plainPage, `export default function Plain() { return <p>${text}</p>; }\n`);
+    await writePlainPage("first build");
+    const outDir = path.join(root, "dist");
+    const entryFile = path.join(outDir, "entry.js");
+    const builds: Array<{ code: string; error?: unknown }> = [];
+    const watcher = (await build({
+      root,
+      configFile: false,
+      plugins: [vinext({ disableAppRouter: true })],
+      logLevel: "silent",
+      build: {
+        outDir,
+        ssr: "virtual:vinext-server-entry",
+        watch: {},
+        rolldownOptions: {
+          // Reuses unchanged modules (skipping their `load`) across rebuilds.
+          experimental: { incrementalBuild: true },
+          output: { entryFileNames: "entry.js" },
+        },
+      },
+    })) as unknown as {
+      on(event: "event", listener: (event: { code: string; error?: unknown }) => void): void;
+      close(): Promise<void>;
+    };
+    watcher.on("event", (event) => {
+      if (event.code === "END") builds.push({ code: event.code });
+      if (event.code === "ERROR") builds.push({ code: event.code, error: event.error });
+    });
+    const registrationImport = /import\s*"(\.\/[^"]*styled-jsx-registry[^"]*)"/;
+    const readEntry = async (builtCount: number, marker: string) => {
+      await vi.waitFor(
+        () => {
+          expect(builds.find((result) => result.code === "ERROR")?.error).toBeUndefined();
+          expect(builds.length).toBeGreaterThanOrEqual(builtCount);
+        },
+        { timeout: 30_000, interval: 50 },
+      );
+      const code = await fsp.readFile(entryFile, "utf8");
+      expect(code).toContain(marker);
+      return code;
+    };
+    try {
+      const first = await readEntry(1, "first build");
+      expect(first).toMatch(registrationImport);
+
+      // Change a module unrelated to styled-jsx and wait for the rebuild.
+      await writePlainPage("second build");
+      const second = await readEntry(2, "second build");
+      const specifier = second.match(registrationImport)?.[1];
+      expect(specifier).toBeDefined();
+      expect(fs.existsSync(path.join(outDir, specifier!))).toBe(true);
+    } finally {
+      await watcher.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe("Production Pages Router SSR streaming", () => {

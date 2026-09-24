@@ -196,7 +196,11 @@ import {
   createInstrumentationClientTransformPlugin,
   createInstrumentationServerTransformPlugin,
 } from "./plugins/instrumentation-client.js";
-import { createStyledJsxPlugin, STYLED_JSX_SSR_REGISTRY_ID } from "./plugins/styled-jsx.js";
+import {
+  createStyledJsxPlugin,
+  STYLED_JSX_DEV_REGISTRATION_ID,
+  STYLED_JSX_SSR_REGISTRY_ID,
+} from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
@@ -1660,9 +1664,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   const styledJsxPlugin = createStyledJsxPlugin(options.appDir ?? process.cwd());
   /**
-   * Dev only: the styled-jsx registration module to load before the first
-   * Pages render, so rules from lazily loaded modules are collected on that
-   * render too. Builds register it from their module graph instead.
+   * Dev only: the styled-jsx registration module the Pages dev handler loads
+   * before each render (decided per request), so rules from lazily loaded
+   * modules are collected on the first render too. Builds register it from
+   * their module graph instead.
    */
   async function resolveDevStyledJsxRegistration(): Promise<string | undefined> {
     if (!isServeCommand) return undefined;
@@ -1670,6 +1675,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       ? STYLED_JSX_SSR_REGISTRY_ID
       : undefined;
   }
+  /**
+   * Dev only: what generated Pages entries import for the same purpose. The
+   * plugin reloads it if the project starts using styled-jsx mid-session.
+   */
+  const devStyledJsxRegistrationImport = (): string | undefined =>
+    isServeCommand ? STYLED_JSX_DEV_REGISTRATION_ID : undefined;
 
   /**
    * Generate the virtual SSR server entry module.
@@ -1691,7 +1702,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
         prerenderSecret,
         // Hybrid App+Pages dev renders Pages through this entry.
-        styledJsxRegistration: await resolveDevStyledJsxRegistration(),
+        styledJsxRegistration: devStyledJsxRegistrationImport(),
       },
     );
   }
@@ -1712,7 +1723,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     );
   }
 
-  async function generatePagesResponseEntry(): Promise<string> {
+  function generatePagesResponseEntry(): Promise<string> {
     return _generatePagesResponseEntry(
       pagesDir,
       nextConfig,
@@ -1721,7 +1732,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       instrumentationPath,
       prerenderSecret,
       // Cloudflare dev renders Pages through this entry.
-      await resolveDevStyledJsxRegistration(),
+      devStyledJsxRegistrationImport(),
     );
   }
 
