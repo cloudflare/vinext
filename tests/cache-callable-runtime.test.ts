@@ -328,29 +328,50 @@ describe("cache-callable-runtime", () => {
     expect(await restoredLater).toBe(restored);
   });
 
-  it("reads getters once so promise-returning accessors do not rescan forever", async () => {
+  it("scans and serializes one read of each getter", async () => {
     const { decodeCacheArguments, encodeCacheArguments } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");
     const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
-    const params = makeThenableParams({ slug: "a" });
     let reads = 0;
-    const record = {
+    const record: Record<string, unknown> = {
       get wrapped() {
         reads++;
-        return Promise.resolve({ params });
+        return Promise.resolve({ params: makeThenableParams({ slug: String(reads) }) });
       },
     };
-
-    const encoded = await encodeCacheArguments([record]);
-    expect(reads).toBe(1);
-    expect(encoded.thenableObjects).toEqual([{ fields: { slug: "a" }, promise: params }]);
-
-    const [restored] = decodeCacheArguments(flight.roundTrip(encoded)) as [
-      { wrapped: Promise<{ params: Promise<unknown> & { slug: string } }> },
+    record.self = record;
+    const shared = { record };
+    const args = [
+      shared,
+      shared,
+      Promise.resolve(record),
+      new Map([["record", record]]),
+      makeThenableParams({ record }),
     ];
-    const { params: restoredParams } = await restored.wrapped;
-    expect(restoredParams.slug).toBe("a");
-    expect(await restoredParams).toEqual({ slug: "a" });
+
+    type Wrapped = { params: Promise<unknown> & { slug: string } };
+    type Restored = { wrapped: Promise<Wrapped>; self: unknown };
+    const [restoredShared, restoredAlias, restoredPromise, restoredMap, restoredOuter] =
+      decodeCacheArguments(flight.roundTrip(await encodeCacheArguments(args))) as [
+        { record: Restored },
+        unknown,
+        Promise<Restored>,
+        Map<string, Restored>,
+        Promise<{ record: Restored }> & { record: Restored },
+      ];
+
+    expect(reads).toBe(1);
+    expect(Object.getOwnPropertyDescriptor(record, "wrapped")).toHaveProperty("get");
+    const restored = restoredShared.record;
+    const { params } = await restored.wrapped;
+    expect(params.slug).toBe("1");
+    expect(await params).toEqual({ slug: "1" });
+    expect(restored.self).toBe(restored);
+    expect(restoredAlias).toBe(restoredShared);
+    expect(await restoredPromise).toBe(restored);
+    expect(restoredMap.get("record")).toBe(restored);
+    expect(restoredOuter.record).toBe(restored);
+    expect((await restoredOuter).record).toBe(restored);
   });
 
   it("rejects payloads without recorded promise fields", async () => {

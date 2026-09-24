@@ -107,8 +107,9 @@ function flightMembers(value: object, accessorReads: AccessorReads): unknown[] {
 
 /**
  * Collect the own fields of every promise-augmented object in the arguments,
- * including ones inside resolved promise values. The arguments themselves are
- * passed to Flight unchanged, so Flight keeps their shared references and cycles.
+ * including ones inside resolved promise values. The arguments are passed to
+ * Flight as they are, apart from copies of the values that lead to a getter,
+ * so Flight keeps their shared references and cycles.
  */
 export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCacheArguments> {
   // Flight serializes a promise as its resolved value, which can hold more
@@ -123,12 +124,14 @@ export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCach
   for (;;) {
     const thenableObjects: EncodedThenableObject[] = [];
     const unsettled: PromiseLike<unknown>[] = [];
+    const parents = new Map<object, object[]>();
     const visited = new Set<object>();
     const pending: unknown[] = [args];
     while (pending.length > 0) {
       const value = pending.pop();
       if (typeof value !== "object" || value === null || visited.has(value)) continue;
       visited.add(value);
+      const children = flightMembers(value, accessorReads);
       if (isThenableObject(value)) {
         const fields = Object.fromEntries(ownEntries(value, accessorReads));
         thenableObjects.push({ fields, promise: value });
@@ -136,14 +139,103 @@ export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCach
       if (isThenable(value)) {
         const result = settled.get(value);
         if (!result) unsettled.push(value);
-        else if (result.status === "fulfilled") pending.push(result.value);
+        else if (result.status === "fulfilled") children.push(result.value);
       }
-      pending.push(...flightMembers(value, accessorReads));
+      for (const child of children) {
+        if (typeof child !== "object" || child === null) continue;
+        const childParents = parents.get(child);
+        if (childParents) childParents.push(value);
+        else parents.set(child, [value]);
+        pending.push(child);
+      }
     }
-    if (unsettled.length === 0) return { args, thenableObjects };
+    if (unsettled.length === 0) {
+      return snapshotAccessors({ args, thenableObjects }, visited, parents, settled, accessorReads);
+    }
     const results = await Promise.allSettled(unsettled);
     unsettled.forEach((thenable, index) => settled.set(thenable, results[index]));
   }
+}
+
+/**
+ * Flight reads getters again while serializing, and a getter can return a
+ * different value on every read. Copy the values Flight serializes that lead
+ * to a getter, using the reads the walk recorded, so Flight serializes the
+ * graph whose promise fields were recorded.
+ */
+function snapshotAccessors(
+  encoded: EncodedCacheArguments,
+  visited: Set<object>,
+  parents: Map<object, object[]>,
+  settled: Map<PromiseLike<unknown>, PromiseSettledResult<unknown>>,
+  accessorReads: AccessorReads,
+): EncodedCacheArguments {
+  // Flight does not serialize a promise's own fields, so their getters need
+  // no copies.
+  const pending = [...visited].filter(
+    (value) => accessorReads.has(value) && (Array.isArray(value) || isPlainRecord(value)),
+  );
+  if (pending.length === 0) return encoded;
+  const copied = new Set<unknown>();
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (value === undefined || copied.has(value)) continue;
+    copied.add(value);
+    pending.push(...(parents.get(value) ?? []));
+  }
+
+  const copies = new Map<unknown, unknown>();
+  const copy = (value: unknown): unknown => {
+    if (typeof value !== "object" || value === null || !copied.has(value)) return value;
+    if (copies.has(value)) return copies.get(value);
+    if (value instanceof Map) {
+      const map = new Map();
+      copies.set(value, map);
+      for (const [key, item] of value) map.set(copy(key), copy(item));
+      return map;
+    }
+    if (value instanceof Set) {
+      const set = new Set();
+      copies.set(value, set);
+      for (const item of value) set.add(copy(item));
+      return set;
+    }
+    if (isThenable(value)) {
+      // A promise that leads to a getter only through its own fields keeps
+      // its identity; one whose resolved value does is replaced.
+      const result = settled.get(value);
+      if (result?.status !== "fulfilled" || !copied.has(result.value)) {
+        copies.set(value, value);
+        return value;
+      }
+      let resolve: (resolved: unknown) => void = () => {};
+      const promise = new Promise((settle) => {
+        resolve = settle;
+      });
+      copies.set(value, promise);
+      resolve(copy(result.value));
+      return promise;
+    }
+    const record: object = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
+    copies.set(value, record);
+    for (const [key, item] of ownEntries(value, accessorReads)) {
+      Object.defineProperty(record, key, {
+        configurable: true,
+        enumerable: true,
+        value: copy(item),
+        writable: true,
+      });
+    }
+    return record;
+  };
+
+  return {
+    args: copy(encoded.args) as unknown[],
+    thenableObjects: encoded.thenableObjects.map(({ fields, promise }) => ({
+      fields: Object.fromEntries(Object.entries(fields).map(([key, item]) => [key, copy(item)])),
+      promise: copy(promise) as PromiseLike<unknown>,
+    })),
+  };
 }
 
 /** Restore the promise fields that `encodeCacheArguments` captured before Flight encoding. */
