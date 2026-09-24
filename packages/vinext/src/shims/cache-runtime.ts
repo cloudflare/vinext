@@ -602,11 +602,16 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
   options: RegisterCachedFunctionOptions = {},
 ): (...args: TArgs) => Promise<TResult> {
   const cacheVariant = variant ?? "";
-  const omitAppPageSearchParamsFromFirstArg = options.appPageSegmentFunction === true;
+  // Next.js omits page searchParams only from public caches. A private cache
+  // may read them, so they stay in its cache key (use-cache-wrapper.ts restores
+  // `outerSearchParams` when `isPrivate`).
+  const omitAppPageSearchParams = cacheVariant !== "private";
+  const omitAppPageSearchParamsFromFirstArg =
+    omitAppPageSearchParams && options.appPageSegmentFunction === true;
   // Rendered page props carry searchParams that throw inside a public cache
   // scope. When they are absent, as on a Response Store replay of the encoded
   // args, access must still fail like Next's erroring searchParams.
-  const fillAppPageSearchParams = omitAppPageSearchParamsFromFirstArg && cacheVariant !== "private";
+  const fillAppPageSearchParams = omitAppPageSearchParamsFromFirstArg;
   // A replayable entry stores this reference ID for Response Store
   // regeneration. Keep entries produced with an older build's opaque alias
   // unreachable if a stable deployment/build ID is reused.
@@ -690,7 +695,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       try {
         const processedArgs =
           executionArgs.length > 0
-            ? unwrapThenableObjectArray(executionArgs, { omitAppPageSearchParamsFromFirstArg })
+            ? unwrapThenableObjectArray(executionArgs, {
+                omitAppPageSearchParamsFromFirstArg,
+                omitMarkedAppPageSearchParams: omitAppPageSearchParams,
+              })
             : [];
         if (rsc && executionArgs.length > 0) {
           // Temporary references let encodeReply handle non-serializable values
@@ -1348,22 +1356,29 @@ async function runCachedFunctionWithContext<
  */
 type UnwrapThenableObjectsOptions = {
   omitAppPageSearchParamsAtRoot?: boolean;
+  /**
+   * Omit searchParams from props marked by `markAppPagePropsForUseCache` at
+   * any depth. False for private caches, which key by search params.
+   */
+  omitMarkedAppPageSearchParams: boolean;
 };
 
 type UnwrapThenableObjectArrayOptions = {
   omitAppPageSearchParamsFromFirstArg: boolean;
+  omitMarkedAppPageSearchParams: boolean;
 };
 
-function unwrapThenableObjects(
-  value: unknown,
-  options: UnwrapThenableObjectsOptions = {},
-): unknown {
+function unwrapThenableObjects(value: unknown, options: UnwrapThenableObjectsOptions): unknown {
   if (value === null || value === undefined || typeof value !== "object") {
     return value;
   }
 
+  const childOptions: UnwrapThenableObjectsOptions = {
+    omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
+  };
+
   if (Array.isArray(value)) {
-    return value.map((item) => unwrapThenableObjects(item));
+    return value.map((item) => unwrapThenableObjects(item, childOptions));
   }
 
   // Detect thenable (Promise-like) with own enumerable properties —
@@ -1375,7 +1390,7 @@ function unwrapThenableObjects(
       const plain: Record<string, unknown> = {};
       for (const key of keys) {
         // oxlint-disable-next-line typescript/no-explicit-any
-        plain[key] = unwrapThenableObjects((value as any)[key]);
+        plain[key] = unwrapThenableObjects((value as any)[key], childOptions);
       }
       return plain;
     }
@@ -1388,12 +1403,13 @@ function unwrapThenableObjects(
   for (const key of Object.keys(value)) {
     if (
       key === "searchParams" &&
-      (options.omitAppPageSearchParamsAtRoot || isMarkedAppPagePropsObject(value))
+      (options.omitAppPageSearchParamsAtRoot ||
+        (options.omitMarkedAppPageSearchParams && isMarkedAppPagePropsObject(value)))
     ) {
       continue;
     }
     // oxlint-disable-next-line @typescript-eslint/no-explicit-any
-    result[key] = unwrapThenableObjects((value as any)[key]);
+    result[key] = unwrapThenableObjects((value as any)[key], childOptions);
   }
   return result;
 }
@@ -1442,6 +1458,7 @@ function unwrapThenableObjectArray(
   return values.map((value, index) =>
     unwrapThenableObjects(value, {
       omitAppPageSearchParamsAtRoot: index === 0 && options.omitAppPageSearchParamsFromFirstArg,
+      omitMarkedAppPageSearchParams: options.omitMarkedAppPageSearchParams,
     }),
   );
 }

@@ -7771,6 +7771,50 @@ describe('"use cache" runtime', () => {
     expect(observeSearchParams).not.toHaveBeenCalled();
   });
 
+  // Next.js: use-cache-wrapper.ts keeps `searchParams` in a private page
+  // cache's serialized args and cache key (`if (isPrivate)`), since private
+  // caches may read them.
+  it.each([
+    ["transform metadata", true],
+    ["marked page props", false],
+  ])(
+    'keeps searchParams in "use cache: private" page keys (%s)',
+    async (_label, viaTransformMetadata) => {
+      const { registerCachedFunction, markAppPagePropsForUseCache, clearPrivateCache } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { makeThenableParams } =
+        await import("../packages/vinext/src/shims/thenable-params.js");
+      clearPrivateCache();
+
+      let callCount = 0;
+      const cached = registerCachedFunction(
+        async (props: {
+          params: Promise<{ slug: string }>;
+          searchParams: Promise<Record<string, string>>;
+        }) => {
+          callCount++;
+          return { q: (await props.searchParams).q };
+        },
+        `/fixture/app/private-${String(viaTransformMetadata)}/page.tsx:default`,
+        "private",
+        viaTransformMetadata ? { appPageSegmentFunction: true } : {},
+      );
+      const pageProps = (q: string) => {
+        const props = {
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeThenableParams({ q }),
+        };
+        return viaTransformMetadata ? props : markAppPagePropsForUseCache(props);
+      };
+
+      await expect(cached(pageProps("first"))).resolves.toEqual({ q: "first" });
+      await expect(cached(pageProps("second"))).resolves.toEqual({ q: "second" });
+      expect(callCount).toBe(2);
+      await expect(cached(pageProps("first"))).resolves.toEqual({ q: "first" });
+      expect(callCount).toBe(2);
+    },
+  );
+
   it("omits page default export searchParams from use cache keys via transform metadata", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
