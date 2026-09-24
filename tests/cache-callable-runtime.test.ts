@@ -374,6 +374,38 @@ describe("cache-callable-runtime", () => {
     expect((await restoredOuter).record).toBe(restored);
   });
 
+  it("copies values that point back at a getter's ancestors", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    let reads = 0;
+    const getterRecord = {
+      get params() {
+        reads++;
+        return makeThenableParams({ slug: String(reads) });
+      },
+    };
+    const sibling: Record<string, unknown> = {};
+    const root = { getterRecord, sibling, siblings: new Set([sibling]) };
+    sibling.parent = root;
+    sibling.later = Promise.resolve([root]);
+
+    type Root = {
+      getterRecord: { params: Promise<unknown> & { slug: string } };
+      sibling: { parent: unknown; later: Promise<unknown[]> };
+      siblings: Set<unknown>;
+    };
+    const [restored] = decodeCacheArguments(
+      flight.roundTrip(await encodeCacheArguments([root])),
+    ) as [Root];
+
+    expect(reads).toBe(1);
+    expect(restored.getterRecord.params.slug).toBe("1");
+    expect(restored.sibling.parent).toBe(restored);
+    expect((await restored.sibling.later)[0]).toBe(restored);
+    expect(restored.siblings.has(restored.sibling)).toBe(true);
+  });
+
   it("rejects payloads without recorded promise fields", async () => {
     const { decodeCacheArguments } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");

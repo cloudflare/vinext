@@ -141,6 +141,8 @@ export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCach
         if (!result) unsettled.push(value);
         else if (result.status === "fulfilled") children.push(result.value);
       }
+      // Record edges to visited values too: a back-reference makes its owner
+      // an ancestor of whatever it points at, which `snapshotAccessors` needs.
       for (const child of children) {
         if (typeof child !== "object" || child === null) continue;
         const childParents = parents.get(child);
