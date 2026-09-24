@@ -127,3 +127,29 @@ test("a dynamic-segment route without generateStaticParams is never cached", asy
   }
   expect(renderIds[1]).not.toBe(renderIds[0]);
 });
+
+test("a static page with no revalidate source is served from the configured cache", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(60_000);
+
+  // Next.js defaults a static page to `revalidate = false`. The deploy may have
+  // warmed it already, so wait for two consecutive responses from one render.
+  const renderIds: string[] = [];
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`${baseURL}/static-default`);
+        expect(response.ok(), JSON.stringify({ backend, headers: response.headers() })).toBe(true);
+        const renderId = /static-default-render-id[^>]*>([^<]+)</.exec(await response.text())?.[1];
+        expect(renderId).toBeTruthy();
+        renderIds.push(renderId!);
+        return renderIds.length > 1 && renderIds.at(-1) === renderIds.at(-2);
+      },
+      { intervals: [1_000], timeout: 45_000 },
+    )
+    .toBe(true);
+});

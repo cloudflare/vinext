@@ -29,6 +29,8 @@ vinext({ cache: responseStoreAdapter({ shards: 4 }) });
 - `/use-cache-expired` verifies that hard-expired data blocks on loopback regeneration.
 - `/api/now` exercises cached App Route responses.
 - `/pages-prewarm` exercises Pages Router ISR.
+- `/static-default` verifies that a static page with no revalidate source is stored until it's
+  revalidated, as in Next.js.
 - `/force-dynamic` verifies that explicit build-time dynamic config bypasses response-cache lookup.
 - `/dynamic-segment/[slug]` verifies that a dynamic-segment route without `generateStaticParams`
   bypasses response-cache lookup, as in Next.js.
