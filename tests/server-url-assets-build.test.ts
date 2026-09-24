@@ -9,6 +9,8 @@
  *     components and is skipped entirely.
  *   - Any server environment: `"use client"` modules are skipped (hybrid
  *     App + Pages builds keep `ssr`, which also runs the Pages Router).
+ *   - Hybrid `ssr`: modules reachable only through `"use client"` boundaries
+ *     are skipped too, while modules the Pages Router also imports are kept.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -22,6 +24,7 @@ const TRIVIA_ROUTE_ASSET = "vinext-trivia-route-handler-server-asset";
 const CLIENT_COMPONENT_ASSET = "vinext-use-client-component-asset";
 const CLIENT_HELPER_ASSET = "vinext-client-only-helper-asset";
 const PAGES_API_ASSET = "vinext-pages-api-server-asset";
+const SHARED_HELPER_ASSET = "vinext-shared-helper-server-asset";
 
 const tempRoots: string[] = [];
 
@@ -82,17 +85,25 @@ export default function Page() {
     // A "use client" component: skipped in every server environment.
     "app/client-asset.tsx": `"use client";
 import { helperAssetHref } from "./client-helper";
+import { sharedAssetUrl } from "../lib/shared-helper";
 
 const componentAssetHref = new URL("./client-component.txt", import.meta.url).href;
 
 export function ClientAsset() {
-  return <p>{componentAssetHref} {helperAssetHref}</p>;
+  return <p>{componentAssetHref} {helperAssetHref} {sharedAssetUrl().pathname}</p>;
 }
 `,
     // No directive, only reachable from the client component, so on the
     // server it only exists in the `ssr` environment.
     "app/client-helper.ts": `export const helperAssetHref = new URL("./client-helper.txt", import.meta.url).href;
 `,
+    // Imported by the client component and, in hybrid builds, by a Pages
+    // API route, where the reference must still be served on the server.
+    "lib/shared-helper.ts": `export function sharedAssetUrl() {
+  return new URL("./shared-helper.txt", import.meta.url);
+}
+`,
+    "lib/shared-helper.txt": SHARED_HELPER_ASSET,
     "app/client-component.txt": CLIENT_COMPONENT_ASSET,
     "app/client-helper.txt": CLIENT_HELPER_ASSET,
     "app/api/route-asset/route.ts": `export const runtime = "edge";
@@ -124,9 +135,12 @@ export function GET() {
     "server-assets/trivia.txt": TRIVIA_ROUTE_ASSET,
     ...(options.withPagesRouter
       ? {
-          "pages/api/pages-asset.ts": `export const config = { runtime: "edge" };
+          "pages/api/pages-asset.ts": `import { sharedAssetUrl } from "../../lib/shared-helper";
 
-export default function handler() {
+export const config = { runtime: "edge" };
+
+export default function handler(request: Request) {
+  if (new URL(request.url).searchParams.has("shared")) return fetch(sharedAssetUrl());
   return fetch(new URL("../../server-assets/pages.txt", import.meta.url));
 }
 `,
@@ -167,6 +181,7 @@ describe("vinext:server-url-assets environment scoping", () => {
     // Nothing from client code is inlined into any server output.
     expect(output.allServerCode).not.toContain(inlinedBytes(CLIENT_COMPONENT_ASSET));
     expect(output.allServerCode).not.toContain(inlinedBytes(CLIENT_HELPER_ASSET));
+    expect(output.allServerCode).not.toContain(inlinedBytes(SHARED_HELPER_ASSET));
     expect(output.ssrCode).not.toContain(inlinedBytes(ROUTE_ASSET));
     // The client build still emits the browser assets.
     expect(output.clientFiles).toContain(CLIENT_COMPONENT_ASSET);
@@ -180,6 +195,12 @@ describe("vinext:server-url-assets environment scoping", () => {
     // Hybrid builds run Pages Router routes (including edge API routes) in `ssr`.
     expect(output.ssrCode).toContain(inlinedBytes(PAGES_API_ASSET));
     expect(output.allServerCode).not.toContain(inlinedBytes(CLIENT_COMPONENT_ASSET));
+    // A client component's own imports are client code as well, even though
+    // they do not repeat the directive.
+    expect(output.allServerCode).not.toContain(inlinedBytes(CLIENT_HELPER_ASSET));
+    // A helper the Pages Router also imports is still served on the server.
+    expect(output.ssrCode).toContain(inlinedBytes(SHARED_HELPER_ASSET));
     expect(output.clientFiles).toContain(CLIENT_COMPONENT_ASSET);
+    expect(output.clientFiles).toContain(CLIENT_HELPER_ASSET);
   }, 120_000);
 });

@@ -34,16 +34,19 @@
  * Only project modules are rewritten (not node_modules) and only when the
  * literal resolves to an existing non-script file, so worker scripts,
  * runtime-computed URLs and remote URLs keep their current behaviour.
- * Client code is left alone: `"use client"` modules, and the App Router `ssr`
+ * Client code is left alone: `"use client"` modules, the App Router `ssr`
  * environment when there is no Pages Router (it only renders client
- * components), so browser assets never bloat server or Worker bundles.
+ * components) and, in hybrid App + Pages builds, `ssr` modules reachable only
+ * through client references, so browser assets never bloat server or Worker
+ * bundles.
  */
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
-import { parseAst, type Plugin } from "vite";
+import type { RscPluginManager } from "@vitejs/plugin-rsc";
+import { parseAst, type Plugin, type ResolvedConfig } from "vite";
 import { resolveRuntimeEntryModule } from "../entries/runtime-entry-module.js";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
@@ -145,13 +148,59 @@ function serverUrlAssetBytesModuleCode(runtimeModule: string, bytes: Buffer): st
   ].join("\n");
 }
 
+type ModuleGraphInfo = {
+  isEntry: boolean;
+  importedIds: readonly string[];
+  dynamicallyImportedIds: readonly string[];
+};
+
+/**
+ * Modules of a (scanned) SSR graph that are reachable only through App Router
+ * client references: everything not reachable from an entry without entering
+ * a `"use client"` boundary, boundaries included. Modules that the Pages Router
+ * or other server code also reach stay out of the set.
+ */
+export function collectClientReferenceOnlyModules(options: {
+  moduleIds: Iterable<string>;
+  getModuleInfo: (id: string) => ModuleGraphInfo | null;
+  isClientReference: (id: string) => boolean;
+}): Set<string> {
+  const moduleIds = [...options.moduleIds];
+  const pending = moduleIds.filter((id) => options.getModuleInfo(id)?.isEntry === true);
+  const serverReachable = new Set<string>();
+  for (let id = pending.pop(); id !== undefined; id = pending.pop()) {
+    if (serverReachable.has(id) || options.isClientReference(id)) continue;
+    serverReachable.add(id);
+    const info = options.getModuleInfo(id);
+    if (info) pending.push(...info.importedIds, ...info.dynamicallyImportedIds);
+  }
+  return new Set(moduleIds.filter((id) => !serverReachable.has(id)));
+}
+
 export function createServerUrlAssetsPlugin(
   options: {
     /** App Router with no `pages/` directory; read once environments are created. */
     isAppRouterOnly?: () => boolean;
+    /** plugin-rsc's manager when the App Router is enabled. */
+    getRscManager?: (config: ResolvedConfig) => Promise<RscPluginManager | undefined>;
   } = {},
 ): Plugin {
   const runtimeModule = resolveRuntimeEntryModule("server-url-assets");
+  let rscManager: RscPluginManager | undefined;
+  // Hybrid App + Pages builds keep the `ssr` environment for the Pages Router,
+  // but it also renders App Router client components, whose `new URL` assets
+  // belong to the browser build. The `"use client"` check below only sees the
+  // boundary module itself, so plugin-rsc's SSR scan build (which runs before
+  // the real SSR build) supplies the modules reachable only through client
+  // references. Modules missing from the scan are rewritten, the safe default.
+  //
+  // Dev has no scan and its module graph only knows the importers seen so far,
+  // so a helper first reached from a client component could never be rewritten
+  // for a Pages route that imports it later. Dev therefore rewrites every
+  // server-environment module; for relative specifiers the SSR href matches
+  // the `file:` URL that dev already produced, and the bytes stay in lazily
+  // loaded dev modules.
+  let clientReferenceOnlySsrModules: ReadonlySet<string> | undefined;
 
   return {
     name: "vinext:server-url-assets",
@@ -170,6 +219,25 @@ export function createServerUrlAssetsPlugin(
       // `new URL` files would only grow the SSR (and Worker) bundle. Route
       // handlers, middleware and server components run in `rsc`.
       return !(environment.name === "ssr" && options.isAppRouterOnly?.() === true);
+    },
+
+    async buildStart() {
+      if (this.environment.mode !== "build" || options.getRscManager === undefined) return;
+      rscManager ??= await options.getRscManager(this.environment.getTopLevelConfig());
+      // plugin-rsc scans RSC first, then SSR; a new RSC scan starts a new app build.
+      if (rscManager?.isScanBuild && this.environment.name === "rsc") {
+        clientReferenceOnlySsrModules = undefined;
+      }
+    },
+
+    buildEnd(error) {
+      if (error || this.environment.name !== "ssr" || !rscManager?.isScanBuild) return;
+      const clientReferences = rscManager.clientReferenceMetaMap;
+      clientReferenceOnlySsrModules = collectClientReferenceOnlyModules({
+        moduleIds: this.getModuleIds(),
+        getModuleInfo: (id) => this.getModuleInfo(id),
+        isClientReference: (id) => Object.hasOwn(clientReferences, id),
+      });
     },
 
     resolveId: {
@@ -219,6 +287,9 @@ export function createServerUrlAssetsPlugin(
         code: IMPORT_META_URL_CANDIDATE_RE,
       },
       async handler(code, id) {
+        // plugin-rsc strips scan-build modules down to their imports.
+        if (rscManager?.isScanBuild) return null;
+        if (clientReferenceOnlySsrModules?.has(id) && this.environment.name === "ssr") return null;
         const importer = toSlash(stripViteModuleQuery(id));
         if (!path.isAbsolute(importer)) return null;
 

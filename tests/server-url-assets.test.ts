@@ -18,6 +18,7 @@ import type { Plugin } from "vite-plus";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
+  collectClientReferenceOnlyModules,
   createServerUrlAssetsPlugin,
   resolveServerUrlAssetFile,
 } from "../packages/vinext/src/plugins/server-url-assets.js";
@@ -297,6 +298,48 @@ describe("vinext:server-url-assets transform", () => {
       "virtual-module.js",
     );
     expect(result).toBeNull();
+  });
+});
+
+describe("collectClientReferenceOnlyModules", () => {
+  it("keeps modules the server reaches and collects the client reference closure", () => {
+    // A hybrid App + Pages `ssr` graph: the Pages Router and the App Router
+    // client references share one environment.
+    const graph: Record<string, { imports?: string[]; dynamic?: string[]; entry?: boolean }> = {
+      "ssr-entry": { entry: true, imports: ["pages-entry", "client-references"] },
+      "pages-entry": { dynamic: ["pages/api/edge.ts"] },
+      "pages/api/edge.ts": { imports: ["lib/shared.ts"] },
+      "client-references": { dynamic: ["app/button.tsx", "app/panel.tsx"] },
+      // Client references, and a cycle back into one of them.
+      "app/button.tsx": { imports: ["app/button-helper.ts", "lib/shared.ts"] },
+      "app/panel.tsx": { imports: ["app/panel-helper.ts"] },
+      "app/button-helper.ts": { imports: ["app/button.tsx"] },
+      "app/panel-helper.ts": {},
+      "lib/shared.ts": {},
+    };
+    const clientReferences = new Set(["app/button.tsx", "app/panel.tsx"]);
+
+    const clientOnly = collectClientReferenceOnlyModules({
+      moduleIds: Object.keys(graph),
+      getModuleInfo: (id) => {
+        const node = graph[id];
+        return node
+          ? {
+              isEntry: node.entry === true,
+              importedIds: node.imports ?? [],
+              dynamicallyImportedIds: node.dynamic ?? [],
+            }
+          : null;
+      },
+      isClientReference: (id) => clientReferences.has(id),
+    });
+
+    expect([...clientOnly].sort()).toEqual([
+      "app/button-helper.ts",
+      "app/button.tsx",
+      "app/panel-helper.ts",
+      "app/panel.tsx",
+    ]);
   });
 });
 
