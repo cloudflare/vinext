@@ -510,6 +510,26 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(freshPageRenders, stalePageRenders + 1);
   });
 
+  test("regenerates a use-cache value keyed by promise params under its original key", async () => {
+    const pathname = "/use-cache-params/replayed";
+    const first = htmlValue((await cacheStatus(pathname)).body, "use-cache-params-value");
+    assert.match(first, /^replayed:/);
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    // The stale read schedules a replay from the encrypted invocation. The
+    // replay decodes `params` as a Flight promise; it must still compute the
+    // key the original render wrote, or the regenerated value is discarded.
+    const stale = htmlValue((await cacheStatus(pathname)).body, "use-cache-params-value");
+    assert.equal(stale, first);
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const fresh = htmlValue((await cacheStatus(pathname)).body, "use-cache-params-value");
+    assert.notEqual(fresh, first);
+    assert.match(fresh, /^replayed:/);
+  });
+
   test("keeps the active response when background regeneration becomes non-cacheable", async () => {
     const pathname = `/api/revalidation-policy?key=${crypto.randomUUID()}`;
     const seeded = await request(pathname, { headers: { "x-cacheability-seed": "1" } });
