@@ -126,7 +126,7 @@ describe("cache-callable-runtime", () => {
     const first = { params, date };
     const args = [first, Promise.resolve({ plain: true }), "value"];
 
-    const decoded = decodeCacheArguments(flight.roundTrip(encodeCacheArguments(args))) as [
+    const decoded = decodeCacheArguments(flight.roundTrip(await encodeCacheArguments(args))) as [
       { params: Promise<unknown> & Record<string, unknown>; date: Date },
       Promise<unknown>,
       string,
@@ -164,7 +164,7 @@ describe("cache-callable-runtime", () => {
       slug: string[];
       nested: Promise<unknown>;
     };
-    const decoded = decodeCacheArguments(flight.roundTrip(encodeCacheArguments(args))) as [
+    const decoded = decodeCacheArguments(flight.roundTrip(await encodeCacheArguments(args))) as [
       { params: RestoredParams },
       { params: RestoredParams },
       RestoredParams,
@@ -193,7 +193,7 @@ describe("cache-callable-runtime", () => {
     node.self = node;
     const args = [node, new Set([params, Promise.resolve("plain")])];
 
-    const encoded = encodeCacheArguments(args);
+    const encoded = await encodeCacheArguments(args);
 
     expect(encoded.args).toBe(args);
     expect(encoded.thenableObjects).toEqual([{ fields: { slug: "a" }, promise: params }]);
@@ -211,7 +211,7 @@ describe("cache-callable-runtime", () => {
     ]);
     const args = [map, new Set([params]), params];
 
-    const decoded = decodeCacheArguments(flight.roundTrip(encodeCacheArguments(args))) as [
+    const decoded = decodeCacheArguments(flight.roundTrip(await encodeCacheArguments(args))) as [
       Map<unknown, unknown>,
       Set<unknown>,
       Promise<unknown> & { slug: string },
@@ -242,7 +242,7 @@ describe("cache-callable-runtime", () => {
     set.add(set);
     const args = [map, set];
 
-    const decoded = decodeCacheArguments(flight.roundTrip(encodeCacheArguments(args))) as [
+    const decoded = decodeCacheArguments(flight.roundTrip(await encodeCacheArguments(args))) as [
       Map<string, unknown>,
       Set<unknown>,
     ];
@@ -268,7 +268,7 @@ describe("cache-callable-runtime", () => {
     const args = [outer];
 
     type Collections = { children: Map<string, unknown>; siblings: Set<unknown> };
-    const [restored] = decodeCacheArguments(flight.roundTrip(encodeCacheArguments(args))) as [
+    const [restored] = decodeCacheArguments(flight.roundTrip(await encodeCacheArguments(args))) as [
       Promise<Collections> & Collections,
     ];
     const awaited = await restored;
@@ -279,6 +279,30 @@ describe("cache-callable-runtime", () => {
     const restoredNested = restored.children.get("nested") as Promise<unknown> & { id: string };
     expect(restoredNested.id).toBe("b");
     expect(restored.siblings.has(restoredNested)).toBe(true);
+  });
+
+  it("restores params inside resolved promise values", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const params = makeThenableParams({ slug: "a" });
+    const rejected = Promise.reject(new Error("rejected"));
+    const args = [Promise.resolve({ nested: params, deeper: Promise.resolve([params]) }), rejected];
+
+    const encoded = await encodeCacheArguments(args);
+    expect(encoded.thenableObjects).toEqual([{ fields: { slug: "a" }, promise: params }]);
+
+    type Wrapped = { nested: Promise<unknown> & { slug: string }; deeper: Promise<unknown[]> };
+    const [wrapper, restoredRejected] = decodeCacheArguments(flight.roundTrip(encoded)) as [
+      Promise<Wrapped>,
+      Promise<unknown>,
+    ];
+    const { nested, deeper } = await wrapper;
+
+    expect(nested.slug).toBe("a");
+    expect(await nested).toEqual({ slug: "a" });
+    expect((await deeper)[0]).toBe(nested);
+    await expect(restoredRejected).rejects.toThrow("rejected");
   });
 
   it("rejects payloads without recorded promise fields", async () => {

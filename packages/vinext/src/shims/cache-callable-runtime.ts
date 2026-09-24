@@ -52,8 +52,8 @@ async function decryptCacheCaptures(value: unknown): Promise<unknown[] | undefin
   return decryptCacheArguments(value.encrypted);
 }
 
-function encryptCacheArguments(args: unknown[]): Promise<string> {
-  return encryptActionBoundArgs(encodeCacheArguments(args));
+async function encryptCacheArguments(args: unknown[]): Promise<string> {
+  return encryptActionBoundArgs(await encodeCacheArguments(args));
 }
 
 async function decryptCacheArguments(encrypted: string | PromiseLike<string>): Promise<unknown[]> {
@@ -86,25 +86,33 @@ function flightMembers(value: object): unknown[] {
 }
 
 /**
- * Collect the own fields of every promise-augmented object in the arguments.
- * The arguments themselves are passed to Flight unchanged, so Flight keeps
- * their shared references and cycles.
+ * Collect the own fields of every promise-augmented object in the arguments,
+ * including ones inside resolved promise values. The arguments themselves are
+ * passed to Flight unchanged, so Flight keeps their shared references and cycles.
  */
-export function encodeCacheArguments(args: unknown[]): EncodedCacheArguments {
+export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCacheArguments> {
   const thenableObjects: EncodedThenableObject[] = [];
   const visited = new Set<object>();
-  const pending: unknown[] = [args];
+  let pending: unknown[] = [args];
   while (pending.length > 0) {
-    const value = pending.pop();
-    if (typeof value !== "object" || value === null || visited.has(value)) continue;
-    visited.add(value);
-    if (isThenableObject(value)) {
-      const fields = Object.fromEntries(
-        Object.keys(value).map((key) => [key, Reflect.get(value, key)]),
-      );
-      thenableObjects.push({ fields, promise: value });
+    const thenables: PromiseLike<unknown>[] = [];
+    while (pending.length > 0) {
+      const value = pending.pop();
+      if (typeof value !== "object" || value === null || visited.has(value)) continue;
+      visited.add(value);
+      if (isThenableObject(value)) {
+        const fields = Object.fromEntries(
+          Object.keys(value).map((key) => [key, Reflect.get(value, key)]),
+        );
+        thenableObjects.push({ fields, promise: value });
+      }
+      if (isThenable(value)) thenables.push(value);
+      pending.push(...flightMembers(value));
     }
-    pending.push(...flightMembers(value));
+    // Flight serializes a promise as its resolved value, which can hold more
+    // params. Flight awaits these promises too, and emits rejections as errors.
+    const settled = await Promise.allSettled(thenables);
+    pending = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
   }
   return { args, thenableObjects };
 }
