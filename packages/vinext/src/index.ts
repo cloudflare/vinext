@@ -207,6 +207,7 @@ import { validateMiddlewareModuleExports } from "./plugins/middleware-export-val
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { createServerUrlAssetsPlugin } from "./plugins/server-url-assets.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -7208,6 +7209,17 @@ export const loadServerActionClient = ${
     createOgInlineFetchAssetsPlugin(),
     // Dedupe/copy @vercel/og binary WASM assets in the RSC output — see src/plugins/og-assets.ts
     createOgAssetsPlugin(),
+    // Register server-side `new URL("./asset", import.meta.url)` files so `fetch()`
+    // can load them on Node and Workers — see src/plugins/server-url-assets.ts.
+    // Runs after the `pre` OG inliner, which keeps inlining the exact
+    // `fetch(...).then((r) => r.arrayBuffer())` / `readFileSync(...)` shapes.
+    createServerUrlAssetsPlugin({
+      isAppRouterOnly: () => hasAppDir && !hasPagesDir,
+      async getRscManager(config) {
+        const rscPluginModule = await rscPluginModulePromise;
+        return rscPluginModule?.getPluginApi(config)?.manager;
+      },
+    }),
     // Collect SSR/RSC bundle externals and write dist/server/vinext-externals.json.
     // Used by emitStandaloneOutput to determine which packages to copy into
     // standalone/node_modules/ — uses the bundler's own import graph instead of

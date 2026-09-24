@@ -29,8 +29,12 @@ import { canonicalizeFilePath, isPathInsideOrEqual, stripViteModuleQuery } from 
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "../utils/virtual-module.js";
 import {
   collectBindingNames,
+  findDirectivePrologueEnd,
   forEachAstChild,
+  IMPORT_META_URL_CANDIDATE_PATTERN,
+  IMPORT_META_URL_CANDIDATE_RE,
   isIdentifierNamed,
+  isImportMetaUrlNode,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
 } from "./ast-utils.js";
@@ -79,15 +83,6 @@ export type EmittedModuleFileNameResolver = (
 const MAX_DEPENDENCY_FORMAT_CACHE_ENTRIES = 512;
 const MAX_TRANSFORM_CACHE_ENTRIES = 2_048;
 
-// This block-comment expression cannot span an earlier closing delimiter. Keep
-// it deterministic: this regex runs in native hook filters and the JS fast
-// guard, so nested repetition around a lazy `.*?` would permit exponential
-// backtracking on repeated comments followed by a near-match.
-const BLOCK_COMMENT_PATTERN = String.raw`\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/`;
-const JAVASCRIPT_TRIVIA_PATTERN = String.raw`(?:\s|${BLOCK_COMMENT_PATTERN}|\/\/[^\r\n\u2028\u2029]*)*`;
-const UNICODE_IDENTIFIER_ESCAPE_PATTERN = String.raw`\\u(?:[\dA-Fa-f]{4}|\{[\dA-Fa-f]+\})`;
-const IMPORT_META_URL_CANDIDATE_PATTERN = String.raw`\bimport${JAVASCRIPT_TRIVIA_PATTERN}\.${JAVASCRIPT_TRIVIA_PATTERN}meta${JAVASCRIPT_TRIVIA_PATTERN}\??\.${JAVASCRIPT_TRIVIA_PATTERN}(?:u|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:r|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:l|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})`;
-const IMPORT_META_URL_CANDIDATE_RE = new RegExp(IMPORT_META_URL_CANDIDATE_PATTERN, "u");
 const SOURCE_IDENTITY_FILTER_RE = new RegExp(
   `${IMPORT_META_URL_CANDIDATE_PATTERN}|__filename|__dirname`,
   "u",
@@ -965,22 +960,6 @@ function analyzeServerCjsGlobals(ast: ESTree.Program): ServerCjsAnalysis {
   return { reads, moduleBindings };
 }
 
-function isImportMetaNode(value: ESTree.Node): boolean {
-  return (
-    value.type === "MetaProperty" &&
-    isIdentifierNamed(value.meta, "import") &&
-    isIdentifierNamed(value.property, "meta")
-  );
-}
-
-function isImportMetaUrlNode(value: ESTree.Node): value is ESTree.MemberExpression {
-  return (
-    value.type === "MemberExpression" &&
-    isImportMetaNode(value.object) &&
-    isIdentifierNamed(value.property, "url")
-  );
-}
-
 // Accepts both import.meta.url (MemberExpression) and import.meta?.url
 // (ChainExpression wrapping a MemberExpression) so that the new URL() skip
 // correctly handles optional-chained base arguments.
@@ -1021,24 +1000,4 @@ function isChainExpressionWrappingImportMetaUrl(
 // `new window.URL(...)`. Matches Vite's own asset-detection scope.
 function isNewUrlExpression(value: ESTree.Node): value is ESTree.NewExpression {
   return value.type === "NewExpression" && isIdentifierNamed(value.callee, "URL");
-}
-
-function findDirectivePrologueEnd(ast: ESTree.Program): number {
-  // A shebang (`#!...`) lives outside ast.body but must stay the first bytes of
-  // the file, so the injection floor starts after it. Inserting at offset 0
-  // would move the shebang off line 1 and produce invalid output.
-  let end = ast.hashbang?.end ?? 0;
-
-  for (const statement of ast.body) {
-    if (
-      statement.type !== "ExpressionStatement" ||
-      statement.expression.type !== "Literal" ||
-      typeof statement.expression.value !== "string"
-    ) {
-      break;
-    }
-    end = statement.end;
-  }
-
-  return end;
 }

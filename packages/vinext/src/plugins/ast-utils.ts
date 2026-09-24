@@ -4,6 +4,22 @@ export type ScriptParserLanguage = "js" | "jsx" | "ts" | "tsx";
 
 const SCRIPT_MODULE_EXTENSION_RE = /^\.(?:[cm]?[jt]s|[jt]sx)$/i;
 export const SCRIPT_MODULE_ID_RE = /\.(?:[cm]?[jt]s|[jt]sx)(?:[?#].*)?$/i;
+
+// This block-comment expression cannot span an earlier closing delimiter. Keep
+// it deterministic: this regex runs in native hook filters and the JS fast
+// guard, so nested repetition around a lazy `.*?` would permit exponential
+// backtracking on repeated comments followed by a near-match.
+const BLOCK_COMMENT_PATTERN = String.raw`\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/`;
+const JAVASCRIPT_TRIVIA_PATTERN = String.raw`(?:\s|${BLOCK_COMMENT_PATTERN}|\/\/[^\r\n  ]*)*`;
+const UNICODE_IDENTIFIER_ESCAPE_PATTERN = String.raw`\\u(?:[\dA-Fa-f]{4}|\{[\dA-Fa-f]+\})`;
+/**
+ * Source text that may be an `import.meta.url` (or `import.meta?.url`) read,
+ * tolerating whitespace, comments and unicode-escaped `url` between the tokens.
+ * Over-inclusive by design: a cheap native-filter/fast-guard pre-pass before an
+ * exact AST check. Compile with the `u` flag.
+ */
+export const IMPORT_META_URL_CANDIDATE_PATTERN = String.raw`\bimport${JAVASCRIPT_TRIVIA_PATTERN}\.${JAVASCRIPT_TRIVIA_PATTERN}meta${JAVASCRIPT_TRIVIA_PATTERN}\??\.${JAVASCRIPT_TRIVIA_PATTERN}(?:u|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:r|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})(?:l|${UNICODE_IDENTIFIER_ESCAPE_PATTERN})`;
+export const IMPORT_META_URL_CANDIDATE_RE = new RegExp(IMPORT_META_URL_CANDIDATE_PATTERN, "u");
 /**
  * Cheap pre-parse gate for plugins that only transform *dynamic* `import(...)`.
  *
@@ -57,6 +73,63 @@ const SKIP_CHILD_KEYS = new Set(["type", "parent", "loc", "start", "end"]);
 
 export function isIdentifierNamed(value: ESTree.Node | null | undefined, name: string): boolean {
   return value?.type === "Identifier" && value.name === name;
+}
+
+function isImportMetaNode(value: ESTree.Node): boolean {
+  return (
+    value.type === "MetaProperty" &&
+    isIdentifierNamed(value.meta, "import") &&
+    isIdentifierNamed(value.property, "meta")
+  );
+}
+
+/** Matches the plain `import.meta.url` member expression (not `import.meta?.url`). */
+export function isImportMetaUrlNode(value: ESTree.Node): value is ESTree.MemberExpression {
+  return (
+    value.type === "MemberExpression" &&
+    isImportMetaNode(value.object) &&
+    isIdentifierNamed(value.property, "url")
+  );
+}
+
+/** Whether the module's directive prologue contains `directive` (e.g. `"use client"`). */
+export function hasDirective(ast: ESTree.Program, directive: string): boolean {
+  for (const statement of ast.body) {
+    if (
+      statement.type !== "ExpressionStatement" ||
+      !("directive" in statement) ||
+      typeof statement.directive !== "string"
+    ) {
+      return false;
+    }
+    if (statement.directive === directive) return true;
+  }
+  return false;
+}
+
+/**
+ * Offset just past a module's hashbang and directive prologue (`"use client"`,
+ * `"use server"`, ...). Code injected here keeps the shebang on line 1 and the
+ * directives first, so later directive detection still sees them.
+ */
+export function findDirectivePrologueEnd(ast: ESTree.Program): number {
+  // A shebang (`#!...`) lives outside ast.body but must stay the first bytes of
+  // the file, so the injection floor starts after it. Inserting at offset 0
+  // would move the shebang off line 1 and produce invalid output.
+  let end = ast.hashbang?.end ?? 0;
+
+  for (const statement of ast.body) {
+    if (
+      statement.type !== "ExpressionStatement" ||
+      statement.expression.type !== "Literal" ||
+      typeof statement.expression.value !== "string"
+    ) {
+      break;
+    }
+    end = statement.end;
+  }
+
+  return end;
 }
 
 export function getAstName(node: ESTree.Node | null | undefined): string | null {

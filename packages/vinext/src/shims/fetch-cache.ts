@@ -25,6 +25,7 @@ import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from ".
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { traceAppFetch } from "../server/app-fetch-tracing.js";
 import type { FrameworkSpan } from "../server/framework-tracer.js";
+import { fetchServerUrlAsset } from "../server/server-url-assets.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
@@ -1436,6 +1437,13 @@ function createPatchedFetch(): typeof globalThis.fetch {
   };
 
   return ((input: string | URL | Request, init?: RequestInit) => {
+    // `new URL("./asset", import.meta.url)` references in server code resolve
+    // to build-registered assets that the platform fetch cannot load (see
+    // server/server-url-assets.ts). Next.js's edge sandbox answers them in
+    // `fetchInlineAsset`, beneath its patched fetch; answering first here skips
+    // pointless cache and dedupe work for bytes that already ship in the bundle.
+    const serverUrlAssetResponse = fetchServerUrlAsset(input);
+    if (serverUrlAssetResponse !== undefined) return serverUrlAssetResponse;
     if ((init?.next as InternalNextFetchOptions | undefined)?.internal === true) {
       return originalFetch(input, init);
     }

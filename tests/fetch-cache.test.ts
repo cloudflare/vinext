@@ -64,6 +64,8 @@ const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
 const { registerFrameworkTracingIntegration } =
   await import("../packages/vinext/src/server/tracer.js");
+const { registerServerUrlAsset } =
+  await import("../packages/vinext/src/server/server-url-assets.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
@@ -141,6 +143,39 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(1); // Cached
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Server `new URL(<file>, import.meta.url)` references are served from the
+  // bundle, like Next.js's edge `fetchInlineAsset`, and vinext answers them
+  // before any network, cache or dedupe work:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/sandbox/fetch-inline-assets.ts
+  it("serves registered server URL assets without the network or the cache", async () => {
+    const stateKey = Symbol.for("vinext.serverUrlAssets");
+    const globals = globalThis as unknown as Record<PropertyKey, unknown>;
+    const patchedFetch = globalThis.fetch;
+    const href = "file:///app/server-assets/text-file.txt";
+    const setSpy = vi.spyOn(getCacheHandler(), "set");
+    try {
+      registerServerUrlAsset(href, async () => ({
+        default: new TextEncoder().encode("Hello, from text-file.txt!"),
+      }));
+      // The fetch patch replaces globalThis.fetch after route modules have
+      // registered their assets, dropping the registration-time wrapper.
+      globalThis.fetch = patchedFetch;
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const res = await fetch(new URL(href), { cache: "force-cache" });
+        expect(await res.text()).toBe("Hello, from text-file.txt!");
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(setSpy).not.toHaveBeenCalled();
+
+      await fetch("https://api.example.com/after-asset");
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      delete globals[stateKey];
+      globalThis.fetch = patchedFetch;
+    }
   });
 
   // Next.js stores CachedFetchData.body as base64:
