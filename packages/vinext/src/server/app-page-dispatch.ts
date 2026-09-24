@@ -696,16 +696,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // Next.js defaults every static or SSG route to `revalidate = false`, so a
   // render that uses no dynamic API is stored until it is revalidated. This
   // includes a generateStaticParams route whose generator returns no concrete
-  // paths, on the first on-demand render of an unknown path.
+  // paths, on the first on-demand render of an unknown path. Dev has no ISR.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
   // Any segment's generator still sets this default, which the fetch shim and
   // cacheComponents fallback shells read.
+  const hasStaticRevalidateDefault =
+    options.isProduction && options.pprRuntime === undefined && isNextStaticEligible;
   const currentRevalidateSeconds =
     options.revalidateSeconds ??
-    ((options.pprRuntime === undefined && isNextStaticEligible) ||
-    options.hasAnyGenerateStaticParams
-      ? Infinity
-      : null);
+    (hasStaticRevalidateDefault || options.hasAnyGenerateStaticParams ? Infinity : null);
   if (isRouteCacheabilityProbe() && (isForceDynamic || currentRevalidateSeconds === 0)) {
     markRouteCacheabilityPatternDynamic(
       isForceDynamic ? 'dynamic = "force-dynamic"' : "revalidate = 0",
