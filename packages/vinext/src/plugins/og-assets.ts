@@ -218,8 +218,9 @@ const OG_WASM_ASSETS = ["resvg.wasm", "yoga.wasm", "hb.wasm"] as const;
  * @returns the emitted asset's `fileName` (relative to outDir), or null.
  */
 function findEmittedWasmAsset(
-  bundle: Record<string, { type: string; fileName: string }>,
+  bundle: Record<string, { type: string; fileName: string; source?: string | Uint8Array }>,
   baseName: string,
+  expectedSource?: Uint8Array,
 ): string | null {
   const stem = baseName.replace(/\.wasm$/, "");
   // Matches `resvg.wasm`, Vite's default `resvg-<hash>.wasm`, or the
@@ -227,9 +228,15 @@ function findEmittedWasmAsset(
   const re = new RegExp(`^${stem}(?:[-.][\\w-]+)?\\.wasm$`);
   for (const output of Object.values(bundle)) {
     if (output.type !== "asset") continue;
-    if (re.test(path.basename(output.fileName))) return output.fileName;
+    if (!re.test(path.basename(output.fileName))) continue;
+    if (expectedSource && !isSameBytes(output.source, expectedSource)) continue;
+    return output.fileName;
   }
   return null;
+}
+
+function isSameBytes(source: string | Uint8Array | undefined, expected: Uint8Array): boolean {
+  return source instanceof Uint8Array && Buffer.from(source).equals(expected);
 }
 
 /**
@@ -323,7 +330,18 @@ export function createOgAssetsPlugin(): Plugin {
           const referenced = chunks.some((c) => c.code.includes(base));
           if (!referenced) continue;
 
-          const emitted = findEmittedWasmAsset(bundle as never, base);
+          // `hb` is a short, generic stem, and Vite hashes may contain `-`, so
+          // the name alone cannot tell hb-<hash>.wasm from an app's
+          // hb-font-<hash>.wasm. Accept only the real HarfBuzz binary.
+          const emitted = findEmittedWasmAsset(
+            bundle as never,
+            base,
+            base === "hb.wasm"
+              ? fs.readFileSync(
+                  resolveHarfbuzzWasmPath(createRequire(import.meta.url).resolve("@vercel/og")),
+                )
+              : undefined,
+          );
 
           for (const chunk of chunks) {
             const re = fallbackUrlRegex(base);
