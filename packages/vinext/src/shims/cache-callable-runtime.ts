@@ -108,12 +108,26 @@ function ownEntries(value: object): [string, unknown][] {
     ? Array.from({ length: value.length }, (_, index) => String(index))
     : Object.keys(value);
   return keys.map((key) => {
-    const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
-    if (descriptor ? !("value" in descriptor) : key in value) {
-      throw new UnreplayableCacheArgumentsError();
-    }
+    if (readsAccessor(value, key)) throw new UnreplayableCacheArgumentsError();
     return [key, Reflect.get(value, key)];
   });
+}
+
+/**
+ * Whether reading `key` from `value` runs a getter. An array hole reads
+ * through the prototype chain, which can hold an indexed data property or
+ * accessor.
+ */
+function readsAccessor(value: object, key: string): boolean {
+  for (
+    let target: object | null = value;
+    target !== null;
+    target = Reflect.getPrototypeOf(target)
+  ) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+    if (descriptor) return !("value" in descriptor);
+  }
+  return false;
 }
 
 /** Members of the values Flight serializes recursively, which can hold params. */

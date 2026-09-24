@@ -382,6 +382,24 @@ describe("cache-callable-runtime", () => {
     expect(restoredSparse.slice(1)).toEqual([undefined, undefined]);
   });
 
+  it("scans an inherited data property at an array hole", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const params = makeThenableParams({ slug: "inherited" });
+    const sparse: unknown[] = ["first"];
+    sparse.length = 2;
+    Object.setPrototypeOf(sparse, Object.create(Array.prototype, { 1: { value: params } }));
+
+    const encoded = await encodeCacheArguments([sparse]);
+    expect(encoded.thenableObjects).toEqual([{ fields: { slug: "inherited" }, promise: params }]);
+
+    type Params = Promise<unknown> & { slug: string };
+    const [restored] = decodeCacheArguments(flight.roundTrip(encoded)) as [[string, Params]];
+    expect(restored[1].slug).toBe("inherited");
+    expect(await restored[1]).toEqual({ slug: "inherited" });
+  });
+
   it("refuses to encode arguments that hold getters, without running them", async () => {
     const { encodeCacheArguments } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");
