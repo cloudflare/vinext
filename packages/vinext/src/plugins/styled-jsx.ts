@@ -389,6 +389,16 @@ export function createStyledJsxPlugin(
     }
   }
 
+  /**
+   * Whether the styled-jsx runtime the registration imports can be loaded.
+   * Source matches — the startup scan's and those of files changed since —
+   * only count when it can: their regex also matches comments and strings,
+   * and vinext does not require Next.js (or styled-jsx) to be installed.
+   */
+  function canLoadStyledJsxRuntime(): boolean {
+    return resolveStyledJsx("styled-jsx") !== null;
+  }
+
   // Dev usage detection (see `StyledJsxPluginApi.projectUsesStyledJsx`).
   let compiledStyledJsx = false;
   let sourceScan: Promise<boolean> | undefined;
@@ -400,9 +410,7 @@ export function createStyledJsxPlugin(
 
   async function projectUsesStyledJsx(): Promise<boolean> {
     if (compiledStyledJsx || changedSourceUsesStyledJsx) return true;
-    // Without styled-jsx the registration cannot load (a scan false positive
-    // such as a commented-out `<style jsx>` must not break dev).
-    sourceScan ??= resolveStyledJsx("styled-jsx")
+    sourceScan ??= canLoadStyledJsxRuntime()
       ? scanSourcesForStyledJsx(projectRoot)
       : Promise.resolve(false);
     return (await sourceScan) || compiledStyledJsx || changedSourceUsesStyledJsx;
@@ -456,7 +464,7 @@ export function createStyledJsxPlugin(
     watchChange(id, change) {
       if (!development || change.event === "delete") return;
       if (!compiledStyledJsx && !changedSourceUsesStyledJsx) {
-        if (!isScannedSourceFile(projectRoot, id)) return;
+        if (!isScannedSourceFile(projectRoot, id) || !canLoadStyledJsxRuntime()) return;
         let source: string;
         try {
           source = readFileSync(id, "utf8");

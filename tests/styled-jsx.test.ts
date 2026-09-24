@@ -188,35 +188,43 @@ describe("styled-jsx compatibility plugin", () => {
   // it, so added/changed source files must still turn the answer positive —
   // and generated dev entries, which import the dev registration module once,
   // must reload it.
-  it("notices styled-jsx added after a negative dev scan", async () => {
-    const root = createProject({
-      "pages/index.jsx": "export default () => <p>plain</p>;",
-    });
+  /** The styled-jsx plugin in a dev server whose `ssr` environment loaded the dev registration. */
+  function startDevPlugin(root: string) {
     const plugin = createStyledJsxPlugin(root);
     (plugin.configResolved as (config: object) => void)({ command: "serve", root });
     const invalidateModule = vi.fn();
     const send = vi.fn();
     const devModule = { id: "\0virtual:vinext-styled-jsx-dev-registration" };
-    const environment = {
-      moduleGraph: {
-        getModuleById: (id: string) => (id === devModule.id ? devModule : undefined),
-        invalidateModule,
-      },
-      hot: { send },
-    };
     (plugin.configureServer as (server: object) => void)({
-      environments: { ssr: environment },
+      environments: {
+        ssr: {
+          moduleGraph: {
+            getModuleById: (id: string) => (id === devModule.id ? devModule : undefined),
+            invalidateModule,
+          },
+          hot: { send },
+        },
+      },
     });
     const watchChange = (file: string, event = "create") =>
       (plugin.watchChange as (id: string, change: { event: string }) => void)(file, { event });
-    const load = plugin.load as LoadHook;
+    const loadDevModule = () => (plugin.load as LoadHook).handler(devModule.id);
+    return { plugin, devModule, invalidateModule, send, watchChange, loadDevModule };
+  }
+
+  it("notices styled-jsx added after a negative dev scan", async () => {
+    const root = createProject({
+      "pages/index.jsx": "export default () => <p>plain</p>;",
+    });
+    const { plugin, devModule, invalidateModule, send, watchChange, loadDevModule } =
+      startDevPlugin(root);
     const resolved = (plugin.resolveId as ResolveIdHook).handler(
       "virtual:vinext-styled-jsx-dev-registration",
     );
 
     expect(resolved).toBe(devModule.id);
     expect(await plugin.api!.projectUsesStyledJsx()).toBe(false);
-    expect(await load.handler(devModule.id)).toBe("export {};\n");
+    expect(await loadDevModule()).toBe("export {};\n");
 
     // Files the scan skips, and changes without styled-jsx, change nothing.
     writeSource(root, "node_modules/lib/index.jsx", "export default () => <style jsx>{c}</style>;");
@@ -233,12 +241,38 @@ describe("styled-jsx compatibility plugin", () => {
     expect(await plugin.api!.projectUsesStyledJsx()).toBe(true);
     expect(invalidateModule).toHaveBeenCalledWith(devModule);
     expect(send).toHaveBeenCalledWith({ type: "full-reload" });
-    expect(await load.handler(devModule.id)).toBe(
-      'import "virtual:vinext-styled-jsx-ssr-registry";\n',
-    );
+    expect(await loadDevModule()).toBe('import "virtual:vinext-styled-jsx-ssr-registry";\n');
     // Reloaded once: later changes leave the (now populated) module alone.
     watchChange(path.join(root, "components/Lazy.jsx"), "update");
     expect(invalidateModule).toHaveBeenCalledTimes(1);
+  });
+
+  // The usage regex also matches comments and strings, and vinext does not
+  // require Next.js (or styled-jsx) to be installed. Loading the registration
+  // there would fail, so a changed file only counts when styled-jsx resolves —
+  // the same condition the startup scan applies.
+  it("ignores styled-jsx-like source changes when styled-jsx is not installed", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
+    temporaryDirectories.push(root);
+    writeSource(root, "package.json", '{"type":"module"}');
+    writeSource(root, "pages/index.jsx", "export default () => <p>plain</p>;");
+    const { plugin, invalidateModule, send, watchChange, loadDevModule } = startDevPlugin(root);
+
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(false);
+    expect(await loadDevModule()).toBe("export {};\n");
+
+    writeSource(
+      root,
+      "pages/notes.jsx",
+      "// TODO: try <style jsx> here\nexport default () => <p>notes</p>;",
+    );
+    watchChange(path.join(root, "pages/notes.jsx"));
+    watchChange(path.join(root, "pages/notes.jsx"), "update");
+
+    expect(await plugin.api!.projectUsesStyledJsx()).toBe(false);
+    expect(await loadDevModule()).toBe("export {};\n");
+    expect(invalidateModule).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("leaves ordinary style tags untouched when Next is not installed", async () => {
