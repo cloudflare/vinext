@@ -8944,12 +8944,16 @@ module.exports = function Precompiled() {
   /**
    * An app with the workspace's packages plus `packages` installed in its own
    * `node_modules`, each declaring its styled-jsx dependency as published
-   * packages do, and listed in the app's package.json.
+   * packages do, and listed in the app's package.json. Each of `wrappers` is
+   * an ES module package that re-exports another installed package (a
+   * dependency edge) without declaring styled-jsx itself; when given, only
+   * the wrappers are listed in the app's package.json.
    */
   async function createInstalledApp(
     prefix: string,
     page: string,
     packages: PrecompiledPackage[],
+    wrappers: Array<{ name: string; wraps: string }> = [],
   ): Promise<string> {
     const base = await createBase(prefix);
     const nodeModules = path.join(base, "node_modules");
@@ -8971,13 +8975,31 @@ module.exports = function Precompiled() {
       );
       await fsp.writeFile(path.join(packageDir, "index.js"), precompiledSource(pkg));
     }
+    for (const wrapper of wrappers) {
+      const packageDir = path.join(nodeModules, wrapper.name);
+      await fsp.mkdir(packageDir);
+      await fsp.writeFile(
+        path.join(packageDir, "package.json"),
+        JSON.stringify({
+          name: wrapper.name,
+          type: "module",
+          main: "index.js",
+          dependencies: { [wrapper.wraps]: "*" },
+        }),
+      );
+      await fsp.writeFile(
+        path.join(packageDir, "index.js"),
+        `export { default } from ${JSON.stringify(wrapper.wraps)};\n`,
+      );
+    }
+    const listed = wrappers.length > 0 ? wrappers : packages;
     const app = await createApp(base, page, { nodeModules });
     await fsp.writeFile(
       path.join(app, "package.json"),
       JSON.stringify({
         name: "app",
         private: true,
-        dependencies: Object.fromEntries(packages.map((pkg) => [pkg.name, "*"])),
+        dependencies: Object.fromEntries(listed.map((pkg) => [pkg.name, "*"])),
       }),
     );
     return app;
@@ -9062,6 +9084,23 @@ export default function Page() {
     const app = await createInstalledApp("vinext-styled-jsx-installed-esm-", lazyPage(pkg.name), [
       pkg,
     ]);
+
+    expectPrecompiledRule(await fetchFirstDevResponse(app), pkg);
+    expectPrecompiledRule(await fetchFirstProdResponse(app), pkg);
+  }, 120_000);
+
+  // The app depends on a package that does not declare styled-jsx but depends
+  // on one that ships it precompiled. Dev must still register styled-jsx up
+  // front, and the Node build must not leave the parent external (it would
+  // load its dependency natively, beyond the registration).
+  it("renders rules from a precompiled dependency behind another package on the first request", async () => {
+    const pkg: PrecompiledPackage = { name: "precompiled-inner", format: "esm", color: "teal" };
+    const app = await createInstalledApp(
+      "vinext-styled-jsx-installed-transitive-",
+      lazyPage("ui-kit"),
+      [pkg],
+      [{ name: "ui-kit", wraps: pkg.name }],
+    );
 
     expectPrecompiledRule(await fetchFirstDevResponse(app), pkg);
     expectPrecompiledRule(await fetchFirstProdResponse(app), pkg);

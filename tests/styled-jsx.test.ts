@@ -224,6 +224,19 @@ describe("styled-jsx compatibility plugin", () => {
         ),
       ).toBe(true);
     }
+    // Behind another package: the app depends on ui-kit, which depends on a
+    // package shipping styled-jsx precompiled.
+    expect(
+      await usesStyledJsx(
+        createApp(
+          { next: "16", "ui-kit": "1" },
+          {
+            "ui-kit": { dependencies: { "precompiled-inner": "1" } },
+            "precompiled-inner": { peerDependencies: { "styled-jsx": "5" } },
+          },
+        ),
+      ),
+    ).toBe(true);
     // The app installing styled-jsx itself.
     expect(await usesStyledJsx(createApp({ next: "16", "styled-jsx": "5" }))).toBe(true);
 

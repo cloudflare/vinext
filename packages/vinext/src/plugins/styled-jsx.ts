@@ -14,6 +14,7 @@ import {
   type ViteDevServer,
 } from "vite";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
+import { createStyledJsxDependencyGraph } from "../utils/styled-jsx-dependencies.js";
 import { SCRIPT_MODULE_ID_RE, walkAst } from "./ast-utils.js";
 
 type NextSwcModule = {
@@ -132,19 +133,15 @@ function directoriesUpTo(dir: string, stopDir: string): string[] {
   return directories;
 }
 
-const MANIFEST_DEPENDENCY_FIELDS = [
+/** A project's own manifest: everything it installs, development tools included. */
+const PROJECT_DEPENDENCY_FIELDS = [
   "dependencies",
   "devDependencies",
   "optionalDependencies",
   "peerDependencies",
-] as const;
-/** Fields a package that ships styled-jsx precompiled declares it in. */
-const STYLED_JSX_DEPENDENCY_FIELDS = ["dependencies", "peerDependencies", "optionalDependencies"];
+];
 
-async function readDependencyNames(
-  manifestFile: string,
-  fields: readonly string[],
-): Promise<string[] | null> {
+async function readProjectDependencyNames(manifestFile: string): Promise<string[] | null> {
   let manifest: unknown;
   try {
     manifest = JSON.parse(await readFile(manifestFile, "utf8"));
@@ -152,7 +149,7 @@ async function readDependencyNames(
     return null;
   }
   if (typeof manifest !== "object" || manifest === null) return null;
-  return fields.flatMap((field) => {
+  return PROJECT_DEPENDENCY_FIELDS.flatMap((field) => {
     const dependencies = (manifest as Record<string, unknown>)[field];
     return typeof dependencies === "object" && dependencies !== null
       ? Object.keys(dependencies)
@@ -162,38 +159,18 @@ async function readDependencyNames(
 
 /**
  * Whether the project (or a linked workspace package) installs styled-jsx, or
- * a direct dependency that declares it — one that ships `<style jsx>`
- * precompiled. Its `import`/`require()` of `styled-jsx/style` registers the
- * runtime only once it loads, possibly lazily and after the first render began,
- * and no source scan sees it. `next` always depends on styled-jsx and does not
- * count. Reads each manifest once.
+ * a dependency that reaches a package declaring it — one that ships
+ * `<style jsx>` precompiled, possibly behind other packages. Its
+ * `import`/`require()` of `styled-jsx/style` registers the runtime only once
+ * it loads, possibly lazily and after the first render began, and no source
+ * scan sees it. `next` always depends on styled-jsx and does not count. Each
+ * installed manifest is read once per scan (see `createStyledJsxDependencyGraph`).
  */
-async function dependenciesUseStyledJsx(
-  roots: readonly string[],
-  workspaceRoot: string,
-): Promise<boolean> {
+async function dependenciesUseStyledJsx(roots: readonly string[]): Promise<boolean> {
+  const graph = createStyledJsxDependencyGraph();
   for (const root of roots) {
-    const names = await readDependencyNames(
-      path.join(root, "package.json"),
-      MANIFEST_DEPENDENCY_FIELDS,
-    );
-    if (!names) continue;
-    if (names.includes("styled-jsx")) return true;
-    const declared = await Promise.all(
-      names
-        .filter((name) => name !== "next")
-        .map(async (name) => {
-          for (const dir of directoriesUpTo(root, workspaceRoot)) {
-            const installed = await readDependencyNames(
-              path.join(dir, "node_modules", name, "package.json"),
-              STYLED_JSX_DEPENDENCY_FIELDS,
-            );
-            if (installed) return installed.includes("styled-jsx");
-          }
-          return false;
-        }),
-    );
-    if (declared.some(Boolean)) return true;
+    const names = await readProjectDependencyNames(path.join(root, "package.json"));
+    if (names?.some((name) => graph.dependencyReachesStyledJsx(root, name))) return true;
   }
   return false;
 }
@@ -573,10 +550,7 @@ export function createStyledJsxPlugin(
     );
     const roots = [root, ...linkedRoots];
     if (root === projectRoot) sourceRoots = roots;
-    return (
-      (await dependenciesUseStyledJsx(roots, workspaceRoot)) ||
-      (await scanSourcesForStyledJsx(roots))
-    );
+    return (await dependenciesUseStyledJsx(roots)) || (await scanSourcesForStyledJsx(roots));
   }
 
   async function projectUsesStyledJsx(): Promise<boolean> {
