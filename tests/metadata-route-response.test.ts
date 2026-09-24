@@ -12,6 +12,11 @@ import {
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
+import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src/server/cacheability-request.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
 
 type MetadataRuntimeRoute = MetadataFileRoute & {
   fileDataBase64?: string;
@@ -1100,5 +1105,191 @@ describe("handleMetadataRouteRequest", () => {
     ).rejects.toThrow(
       "Dynamic metadata opengraph-image route /opengraph-image must return a Response.",
     );
+  });
+});
+
+describe("metadata route cacheability registration", () => {
+  async function handleWithAdmission(
+    cleanPathname: string,
+    metadataRoutes: MetadataRuntimeRoute[],
+    options: Partial<Parameters<typeof handleMetadataRouteRequest>[0]> = {},
+  ): Promise<{ response: Response | null; state: RouteCacheabilityState }> {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request(`https://example.com${cleanPathname}`),
+      null,
+      "build-a",
+      true,
+    );
+    const response = await runWithRequestContext(
+      createRequestContext({ executionContext: context }),
+      () =>
+        handleMetadataRouteRequest({
+          cleanPathname,
+          makeThenableParams,
+          metadataRoutes,
+          ...options,
+        }),
+    );
+    return {
+      response,
+      state: Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState,
+    };
+  }
+
+  function dynamicImageRoute(response: () => Response): MetadataRuntimeRoute {
+    return {
+      type: "opengraph-image",
+      isDynamic: true,
+      filePath: "/tmp/app/event/[city]/[eventId]/opengraph-image.tsx",
+      routePrefix: "/event/[city]/[eventId]",
+      routeSegments: ["event", "[city]", "[eventId]"],
+      servedUrl: "/event/[city]/[eventId]/opengraph-image",
+      patternParts: ["event", ":city", ":eventId", "opengraph-image"],
+      contentType: "image/png",
+      module: { default: response },
+    };
+  }
+
+  it("registers the route pattern rather than the concrete path", async () => {
+    const { state } = await handleWithAdmission("/event/london/42/opengraph-image", [
+      dynamicImageRoute(() => new Response("png")),
+    ]);
+
+    expect(state.route).toEqual({
+      kind: "app-route",
+      pattern: "/event/:city/:eventId/opengraph-image",
+    });
+  });
+
+  it("registers generated sitemaps under their base route", async () => {
+    const { state } = await handleWithAdmission("/products/sitemap/0.xml", [
+      {
+        type: "sitemap",
+        isDynamic: true,
+        filePath: "/tmp/app/products/sitemap.ts",
+        routePrefix: "/products",
+        routeSegments: ["products"],
+        servedUrl: "/products/sitemap.xml",
+        contentType: "application/xml",
+        module: {
+          generateSitemaps: () => [{ id: 0 }],
+          default: async () => [],
+        },
+      },
+    ]);
+
+    expect(state.route).toEqual({ kind: "app-route", pattern: "/products/sitemap.xml" });
+  });
+
+  it("does not register a request that matches no metadata route", async () => {
+    const { response, state } = await handleWithAdmission("/event/london/42/twitter-image", [
+      dynamicImageRoute(() => new Response("png")),
+    ]);
+
+    expect(response).toBeNull();
+    expect(state.route).toBeUndefined();
+  });
+
+  it("records a public policy set by the route's own Response as explicit", async () => {
+    const { response, state } = await handleWithAdmission("/event/london/42/opengraph-image", [
+      dynamicImageRoute(
+        () => new Response("png", { headers: { "Cache-Control": "public, max-age=31536000" } }),
+      ),
+    ]);
+
+    expect(response?.headers.get("cache-control")).toBe("public, max-age=31536000");
+    expect(state.explicitResponseCachePolicy).toBe(true);
+  });
+
+  it.each([
+    ["the framework default", {}],
+    ["no-store", { "Cache-Control": "no-store" }],
+    ["private", { "Cache-Control": "private, max-age=60" }],
+  ])("does not record %s as an explicit policy", async (_label, headers) => {
+    const { state } = await handleWithAdmission("/event/london/42/opengraph-image", [
+      dynamicImageRoute(() => new Response("png", { headers })),
+    ]);
+
+    expect(state.route?.kind).toBe("app-route");
+    expect(state.explicitResponseCachePolicy).toBeUndefined();
+  });
+
+  it("does not record serialized or static metadata as an explicit policy", async () => {
+    const robots = await handleWithAdmission("/robots.txt", [
+      {
+        type: "robots",
+        isDynamic: true,
+        filePath: "/tmp/app/robots.ts",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/robots.txt",
+        contentType: "text/plain",
+        module: { default: () => ({ rules: { userAgent: "*", allow: "/" } }) },
+      },
+    ]);
+    const favicon = await handleWithAdmission("/favicon.ico", [
+      {
+        type: "favicon",
+        isDynamic: false,
+        filePath: "/tmp/app/favicon.ico",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/favicon.ico",
+        contentType: "image/x-icon",
+        fileDataBase64: btoa("icon"),
+      },
+    ]);
+
+    expect(robots.state.route).toEqual({ kind: "app-route", pattern: "/robots.txt" });
+    expect(robots.state.explicitResponseCachePolicy).toBeUndefined();
+    expect(favicon.state.route).toEqual({ kind: "app-route", pattern: "/favicon.ico" });
+    expect(favicon.state.explicitResponseCachePolicy).toBeUndefined();
+  });
+
+  it("does not record a replayed use-cache entry as an explicit policy", async () => {
+    const { response, state } = await handleWithAdmission(
+      "/robots.txt",
+      [
+        {
+          type: "robots",
+          isDynamic: true,
+          filePath: "/tmp/app/robots.ts",
+          routePrefix: "",
+          routeSegments: [],
+          servedUrl: "/robots.txt",
+          contentType: "text/plain",
+          module: {
+            default: markUseCache(async () => {
+              throw new Error("cached metadata must not execute at runtime");
+            }),
+          },
+        },
+      ],
+      {
+        isrRouteKey: (pathname) => pathname,
+        async isrGet() {
+          return {
+            isStale: false,
+            value: {
+              lastModified: 1,
+              value: {
+                kind: "APP_ROUTE",
+                body: new TextEncoder().encode("User-Agent: *\n").buffer,
+                headers: {
+                  "content-type": "text/plain",
+                  "x-vinext-metadata-route-cache": "1",
+                },
+                status: 200,
+              },
+            },
+          };
+        },
+      },
+    );
+
+    expect(await response?.text()).toBe("User-Agent: *\n");
+    expect(state.route).toEqual({ kind: "app-route", pattern: "/robots.txt" });
+    expect(state.explicitResponseCachePolicy).toBeUndefined();
   });
 });

@@ -36,6 +36,11 @@ import {
   setCurrentFetchSoftTags,
 } from "vinext/shims/fetch-cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import {
+  beginRouteCacheability,
+  markRouteCacheabilityExplicitResponsePolicy,
+} from "vinext/shims/cacheability-classification";
+import { hasCdnResponsePolicy, hasExplicitNonCacheableResponsePolicy } from "./cache-control.js";
 import type { CachedRouteValue } from "vinext/shims/cache-handler";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
@@ -166,6 +171,12 @@ function metadataRouteCacheHeader(route: MetadataRuntimeRoute): string {
 }
 
 function withMetadataRouteCacheHeader(response: Response, route: MetadataRuntimeRoute): Response {
+  if (
+    hasCdnResponsePolicy(response.headers) &&
+    !hasExplicitNonCacheableResponsePolicy(response.headers)
+  ) {
+    markRouteCacheabilityExplicitResponsePolicy();
+  }
   const headers = new Headers(response.headers);
   if (!headers.has("Cache-Control")) {
     headers.set("Cache-Control", metadataRouteCacheHeader(route));
@@ -175,6 +186,13 @@ function withMetadataRouteCacheHeader(response: Response, route: MetadataRuntime
     status: response.status,
     statusText: response.statusText,
   });
+}
+
+function beginMetadataRouteCacheability(route: MetadataRuntimeRoute): void {
+  beginRouteCacheability(
+    "app-route",
+    route.patternParts ? `/${route.patternParts.join("/")}` : route.servedUrl,
+  );
 }
 
 function getMetadataRouteFunctions(route: MetadataRuntimeRoute): MetadataRouteFunctions {
@@ -788,6 +806,7 @@ export async function handleMetadataRouteRequest(
     if (route.type === "sitemap" && route.isDynamic) {
       if (functions.generateSitemaps) {
         if (isGeneratedSitemapPath(route, options.cleanPathname)) {
+          beginMetadataRouteCacheability(route);
           const render = async (): Promise<RenderedMetadataRoute | null> => {
             setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
             const response = await handleGeneratedSitemap(route, options.cleanPathname, functions);
@@ -817,6 +836,7 @@ export async function handleMetadataRouteRequest(
     if (!match) {
       continue;
     }
+    beginMetadataRouteCacheability(route);
 
     const rawParams = route.patternParts
       ? metadataRouteRawParams(route, match, options.routePathname ?? options.cleanPathname)
