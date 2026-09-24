@@ -278,12 +278,13 @@ export function resolveAppPageSegmentConfig(
   let hasOnlyNoStore = false;
   let hasParentDefaultNoStore = false;
 
+  const primaryRuntime = resolveAppPageStaticGenerationRuntime(
+    segments.map((segment) => segment?.runtime),
+  );
+  if (primaryRuntime !== undefined) config.runtime = primaryRuntime;
+
   for (const segment of segments) {
     if (!segment) continue;
-
-    if (isRouteSegmentRuntime(segment.runtime)) {
-      config.runtime = segment.runtime;
-    }
 
     if (isRouteSegmentFetchCache(segment.fetchCache)) {
       const fetchCache = segment.fetchCache;
@@ -416,4 +417,202 @@ export function resolveAppRouteHandlerFetchCacheMode(
 
 export function isEdgeRuntime(runtime: string | undefined): boolean {
   return isEdgeApiRuntime(runtime);
+}
+
+/**
+ * Resolve the `runtime` Next.js uses to decide whether a page can be statically
+ * generated: the page's own value wins, then the nearest layout's. Parallel
+ * slots do not take part. `values` lists the root layout first and the page
+ * last, the order `getStaticInfoIncludingLayouts` reduces them in.
+ * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/get-static-info-including-layouts.ts
+ */
+export function resolveAppPageStaticGenerationRuntime(
+  values: readonly unknown[],
+): EffectiveAppPageSegmentConfig["runtime"] {
+  let runtime: EffectiveAppPageSegmentConfig["runtime"];
+  for (const value of values) {
+    if (isRouteSegmentRuntime(value)) runtime = value;
+  }
+  return runtime;
+}
+
+/**
+ * One segment of an App page's loader tree, as Next.js's build visits it when
+ * it classifies the route.
+ */
+export type AppPageStaticParamsWalkSegment = {
+  /** Depth in the loader tree. The root layout's segment is 0. */
+  depth: number;
+  /** Whether the segment is a dynamic URL segment (`[slug]`, `[...slug]`). */
+  dynamic: boolean;
+  /** Whether the segment's layout (or page) exports `generateStaticParams`. */
+  generateStaticParams: boolean;
+  /**
+   * The segment name and the file that supplies its module. Next.js visits
+   * each distinct pair once, so a slot's layout-less `[slug]` folder that
+   * repeats the main tree's does not count twice.
+   */
+  identity: readonly [name: string, file: unknown];
+};
+
+/**
+ * Whether `generateStaticParams` is exported at or below the route's last
+ * dynamic segment: by that segment's layout, a deeper layout, or the page.
+ * Next.js classifies such a route as SSG (static generation with an on-demand
+ * fallback). A dynamic-segment route without it is dynamic (ƒ) and is never
+ * full-page cached.
+ *
+ * Port of Next.js's `lastDynamicSegmentHadGenerateStaticParams` walk: segments
+ * are visited breadth-first, a dynamic segment without `generateStaticParams`
+ * clears the flag, and any segment with it sets the flag.
+ * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/static-paths/app.ts#L926-L935
+ * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/segment-config/app/app-segments.ts#L72-L126
+ */
+export function lastDynamicSegmentHasGenerateStaticParams(
+  segments: readonly AppPageStaticParamsWalkSegment[],
+): boolean {
+  const visited: AppPageStaticParamsWalkSegment["identity"][] = [];
+  // Stable sort: segments at the same depth keep their input order, where the
+  // main tree comes before parallel slots as in Next.js's loader tree.
+  const ordered = segments
+    .map((segment, index) => ({ index, segment }))
+    .sort((a, b) => a.segment.depth - b.segment.depth || a.index - b.index);
+  let hasGenerateStaticParams = false;
+
+  for (const { segment } of ordered) {
+    const [name, file] = segment.identity;
+    if (visited.some(([seenName, seenFile]) => seenName === name && seenFile === file)) continue;
+    visited.push(segment.identity);
+
+    if (segment.dynamic && !segment.generateStaticParams) {
+      hasGenerateStaticParams = false;
+    } else if (segment.generateStaticParams) {
+      hasGenerateStaticParams = true;
+    }
+  }
+
+  return hasGenerateStaticParams;
+}
+
+const PAGE_SEGMENT_NAME = "__PAGE__";
+
+function hasGenerateStaticParamsExport(
+  segment: AppRouteSegmentConfigModule | null | undefined,
+): boolean {
+  return typeof segment?.generateStaticParams === "function";
+}
+
+/**
+ * Collect the loader-tree segments of an App page route from its layout, page
+ * and parallel-slot modules, for `lastDynamicSegmentHasGenerateStaticParams`.
+ */
+export function collectAppPageStaticParamsWalkSegments(
+  options: Pick<
+    ResolveAppPageSegmentConfigOptions,
+    "layoutTreePositions" | "layouts" | "page" | "parallelBranches" | "routeSegments"
+  >,
+): AppPageStaticParamsWalkSegment[] {
+  const routeSegments = options.routeSegments ?? [];
+  const layoutsByDepth = new Map<number, AppRouteSegmentConfigModule>();
+  options.layouts?.forEach((layout, index) => {
+    if (layout) layoutsByDepth.set(options.layoutTreePositions?.[index] ?? 0, layout);
+  });
+
+  const segments: AppPageStaticParamsWalkSegment[] = [];
+  // A folder's segment takes its module from the folder's layout. The page is
+  // a child segment of the deepest folder.
+  for (let depth = 0; depth <= routeSegments.length; depth++) {
+    const name = depth === 0 ? "" : routeSegments[depth - 1];
+    const layout = layoutsByDepth.get(depth);
+    segments.push({
+      depth,
+      dynamic: depth > 0 && isDynamicSegment(name),
+      generateStaticParams: hasGenerateStaticParamsExport(layout),
+      identity: [name, layout],
+    });
+  }
+  segments.push({
+    depth: routeSegments.length + 1,
+    dynamic: false,
+    generateStaticParams: hasGenerateStaticParamsExport(options.page),
+    identity: [PAGE_SEGMENT_NAME, options.page ?? undefined],
+  });
+
+  for (const branch of options.parallelBranches ?? []) {
+    if (!branch) continue;
+    const branchSegments = branch.routeSegments ?? [];
+    // The slot folder is a child of the main-tree folder at this depth.
+    const slotDepth = routeSegments.length - branchSegments.length + 1;
+    const configLayoutsByDepth = new Map<number, AppRouteSegmentConfigModule>();
+    branch.configLayouts?.forEach((layout, index) => {
+      if (layout) {
+        configLayoutsByDepth.set(
+          slotDepth + (branch.configLayoutTreePositions?.[index] ?? 0),
+          layout,
+        );
+      }
+    });
+
+    segments.push({
+      depth: slotDepth,
+      dynamic: false,
+      generateStaticParams: hasGenerateStaticParamsExport(branch.layout),
+      identity: [`@slot:${slotDepth}`, branch.layout ?? undefined],
+    });
+    branchSegments.forEach((name, index) => {
+      const depth = slotDepth + index + 1;
+      const layout = configLayoutsByDepth.get(depth);
+      segments.push({
+        depth,
+        dynamic: isDynamicSegment(name),
+        generateStaticParams: hasGenerateStaticParamsExport(layout),
+        identity: [name, layout],
+      });
+    });
+    segments.push({
+      depth: slotDepth + branchSegments.length + 1,
+      dynamic: false,
+      generateStaticParams: hasGenerateStaticParamsExport(branch.page),
+      identity: [PAGE_SEGMENT_NAME, branch.page ?? undefined],
+    });
+  }
+
+  return segments;
+}
+
+/**
+ * Whether an App page route exports `generateStaticParams` at or below its last
+ * dynamic segment, read from its layout, page and parallel-slot modules.
+ */
+export function hasAppPageGenerateStaticParamsAtLastDynamicSegment(
+  options: Parameters<typeof collectAppPageStaticParamsWalkSegments>[0],
+): boolean {
+  return lastDynamicSegmentHasGenerateStaticParams(collectAppPageStaticParamsWalkSegments(options));
+}
+
+/**
+ * Whether Next.js would classify an App page route as static or SSG from its
+ * config alone. Only such routes are full-page cache candidates; every other
+ * route renders per request with real values and is never ISR-cached.
+ *
+ * - `runtime = "edge"` disables static generation, whatever else the route
+ *   sets.
+ * - `dynamic = "force-dynamic"` and `revalidate = 0` are dynamic.
+ * - `dynamic = "force-static"` and `dynamic = "error"` are static.
+ * - Otherwise a route is static when it has no dynamic segments, or when
+ *   `generateStaticParams` sits at or below its last dynamic segment.
+ *
+ * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts#L2333-L2408
+ */
+export function isAppPageStaticEligible(options: {
+  dynamicConfig?: string;
+  hasGenerateStaticParams: boolean;
+  isDynamicRoute: boolean;
+  isStaticGenerationEdgeRuntime: boolean;
+  revalidateSeconds: number | null;
+}): boolean {
+  if (options.isStaticGenerationEdgeRuntime) return false;
+  if (options.dynamicConfig === "force-dynamic" || options.revalidateSeconds === 0) return false;
+  if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") return true;
+  return !options.isDynamicRoute || options.hasGenerateStaticParams;
 }

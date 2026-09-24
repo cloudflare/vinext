@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  hasAppPageGenerateStaticParamsAtLastDynamicSegment,
+  isAppPageStaticEligible,
   isEdgeRuntime,
+  lastDynamicSegmentHasGenerateStaticParams,
   resolveAppPageDynamicConfig,
   resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig,
+  resolveAppPageStaticGenerationRuntime,
   resolveAppRouteHandlerFetchCacheMode,
 } from "../packages/vinext/src/server/app-segment-config.js";
 
@@ -527,5 +531,196 @@ describe("isEdgeRuntime", () => {
     expect(isEdgeRuntime("experimental-edge")).toBe(true);
     expect(isEdgeRuntime("nodejs")).toBe(false);
     expect(isEdgeRuntime(undefined)).toBe(false);
+  });
+});
+
+describe("resolveAppPageStaticGenerationRuntime", () => {
+  // Next.js reads runtime from the page and its parent layouts, the page
+  // winning, then the nearest layout.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/get-static-info-including-layouts.ts
+  it("lets the page win, then the nearest layout", () => {
+    expect(resolveAppPageStaticGenerationRuntime(["nodejs", "edge", undefined])).toBe("edge");
+    expect(resolveAppPageStaticGenerationRuntime(["edge", undefined, "nodejs"])).toBe("nodejs");
+    expect(resolveAppPageStaticGenerationRuntime(["edge", "bogus"])).toBe("edge");
+    expect(resolveAppPageStaticGenerationRuntime([undefined, undefined])).toBeUndefined();
+  });
+});
+
+describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
+  const generateStaticParams = () => [];
+
+  it("counts generateStaticParams on the page below the last dynamic segment", () => {
+    // app/[slug]/page.tsx
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        routeSegments: ["[slug]"],
+      }),
+    ).toBe(true);
+    // app/[locale]/about/page.tsx
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        routeSegments: ["[locale]", "about"],
+      }),
+    ).toBe(true);
+  });
+
+  it("counts the last dynamic segment's layout and deeper layouts", () => {
+    // app/[slug]/layout.tsx exports it, app/[slug]/details/page.tsx does not.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}, { generateStaticParams }],
+        layoutTreePositions: [0, 1],
+        page: {},
+        routeSegments: ["[slug]", "details"],
+      }),
+    ).toBe(true);
+    // app/[slug]/(group)/layout.tsx
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}, { generateStaticParams }],
+        layoutTreePositions: [0, 2],
+        page: {},
+        routeSegments: ["[slug]", "(group)"],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not count generateStaticParams above the last dynamic segment", () => {
+    // app/[a]/layout.tsx exports it; app/[a]/[b]/page.tsx does not (Next.js: ƒ).
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}, { generateStaticParams }],
+        layoutTreePositions: [0, 1],
+        page: {},
+        routeSegments: ["[a]", "[b]"],
+      }),
+    ).toBe(false);
+    // The root layout's generateStaticParams sits above every dynamic segment.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{ generateStaticParams }],
+        layoutTreePositions: [0],
+        page: {},
+        routeSegments: ["[slug]"],
+      }),
+    ).toBe(false);
+  });
+
+  it("does not use a sibling page's generateStaticParams", () => {
+    // app/[slug]/page.tsx exports it, but /[slug]/details has its own page.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        routeSegments: ["[slug]", "details"],
+      }),
+    ).toBe(false);
+  });
+
+  it("counts parallel slot pages, and visits a layout-less slot folder that repeats the main tree once", () => {
+    // app/[id]/page.tsx has no generateStaticParams, app/@modal/[id]/page.tsx does.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [{ page: { generateStaticParams }, routeSegments: ["[id]"] }],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(true);
+    // app/[id]/page.tsx exports it. The slot's layout-less [id] folder is the
+    // same segment to Next.js, so it does not clear the flag again.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        parallelBranches: [{ page: {}, routeSegments: ["[id]"] }],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(true);
+    // A slot [id] folder with its own layout is a separate segment.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        parallelBranches: [
+          {
+            configLayouts: [{}],
+            configLayoutTreePositions: [1],
+            page: {},
+            routeSegments: ["[id]"],
+          },
+        ],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(false);
+  });
+
+  it("walks segments breadth-first", () => {
+    expect(
+      lastDynamicSegmentHasGenerateStaticParams([
+        { depth: 2, dynamic: false, generateStaticParams: true, identity: ["__PAGE__", "page"] },
+        { depth: 1, dynamic: true, generateStaticParams: false, identity: ["[slug]", undefined] },
+      ]),
+    ).toBe(true);
+    expect(lastDynamicSegmentHasGenerateStaticParams([])).toBe(false);
+  });
+});
+
+describe("isAppPageStaticEligible", () => {
+  const base = {
+    hasGenerateStaticParams: false,
+    isDynamicRoute: false,
+    isStaticGenerationEdgeRuntime: false,
+    revalidateSeconds: null,
+  };
+
+  it("treats routes without dynamic segments as static", () => {
+    expect(isAppPageStaticEligible(base)).toBe(true);
+    expect(isAppPageStaticEligible({ ...base, revalidateSeconds: 60 })).toBe(true);
+  });
+
+  it("treats dynamic-segment routes as SSG only with generateStaticParams at the last dynamic segment", () => {
+    expect(isAppPageStaticEligible({ ...base, isDynamicRoute: true })).toBe(false);
+    // revalidate never makes a dynamic route static in Next.js.
+    expect(isAppPageStaticEligible({ ...base, isDynamicRoute: true, revalidateSeconds: 60 })).toBe(
+      false,
+    );
+    expect(
+      isAppPageStaticEligible({ ...base, hasGenerateStaticParams: true, isDynamicRoute: true }),
+    ).toBe(true);
+  });
+
+  it("treats force-static and dynamic = error as static", () => {
+    expect(
+      isAppPageStaticEligible({ ...base, dynamicConfig: "force-static", isDynamicRoute: true }),
+    ).toBe(true);
+    expect(isAppPageStaticEligible({ ...base, dynamicConfig: "error", isDynamicRoute: true })).toBe(
+      true,
+    );
+  });
+
+  it("excludes force-dynamic, revalidate = 0 and the edge runtime", () => {
+    expect(isAppPageStaticEligible({ ...base, dynamicConfig: "force-dynamic" })).toBe(false);
+    expect(isAppPageStaticEligible({ ...base, revalidateSeconds: 0 })).toBe(false);
+    for (const config of [
+      {},
+      { revalidateSeconds: 60 },
+      { hasGenerateStaticParams: true, isDynamicRoute: true },
+      { dynamicConfig: "force-static" },
+    ]) {
+      expect(
+        isAppPageStaticEligible({ ...base, ...config, isStaticGenerationEdgeRuntime: true }),
+      ).toBe(false);
+    }
   });
 });

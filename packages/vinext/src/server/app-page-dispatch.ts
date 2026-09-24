@@ -52,6 +52,7 @@ import {
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
+import { isAppPageStaticEligible } from "./app-segment-config.js";
 import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import {
   buildAppPageElement,
@@ -340,6 +341,10 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   getFontStyles: () => string[];
   getNavigationContext: () => NavigationContext | null;
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
+  /**
+   * Whether `generateStaticParams` is exported at or below the route's last
+   * dynamic segment (`hasAppPageGenerateStaticParamsAtLastDynamicSegment`).
+   */
   hasGenerateStaticParams: boolean;
   hasCustomGlobalError?: boolean;
   hasPageDefaultExport: boolean;
@@ -348,6 +353,11 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   htmlLimitedBots?: string;
   interceptionContext: string | null;
   isEdgeRuntime?: boolean;
+  /**
+   * Whether the page or its nearest layout sets `runtime = "edge"`, which
+   * disables static generation. Parallel slots do not count.
+   */
+  isStaticGenerationEdgeRuntime?: boolean;
   isProgressiveActionRender?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
@@ -667,6 +677,19 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
+  // Only routes Next.js classifies as static or SSG from their config are
+  // full-page cache candidates. Every other route renders per request and is
+  // never stored, whatever its revalidate or cacheLife. cacheComponents builds
+  // (PPR fallback shells) follow a different model and keep their own rules.
+  const isStaticEligible =
+    options.pprRuntime !== undefined ||
+    isAppPageStaticEligible({
+      dynamicConfig,
+      hasGenerateStaticParams: options.hasGenerateStaticParams,
+      isDynamicRoute: route.isDynamic,
+      isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
+      revalidateSeconds: options.revalidateSeconds,
+    });
   if (isRouteCacheabilityProbe() && (isForceDynamic || currentRevalidateSeconds === 0)) {
     markRouteCacheabilityPatternDynamic(
       isForceDynamic ? 'dynamic = "force-dynamic"' : "revalidate = 0",
@@ -707,12 +730,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   }
 
   const methodResponse = resolveAppPageMethodResponse({
-    dynamicConfig,
-    hasGenerateStaticParams: options.hasGenerateStaticParams,
-    isDynamicRoute: route.isDynamic,
+    isStaticEligible,
     middlewareHeaders: options.middlewareContext.headers,
     request: options.request,
-    revalidateSeconds: currentRevalidateSeconds,
   });
   if (methodResponse) {
     options.clearRequestContext();
@@ -746,6 +766,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (
     !isRouteCacheabilityProbe() &&
     options.bypassInterceptionContextCache !== true &&
+    isStaticEligible &&
     shouldReadAppPageCache({
       isDraftMode,
       isForceDynamic,
@@ -1202,6 +1223,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isForceDynamic,
     isForceStatic,
     isEdgeRuntime: options.isEdgeRuntime === true,
+    isStaticEligible,
     isPrerender,
     isSpeculativePrerender,
     isProduction: options.isProduction,

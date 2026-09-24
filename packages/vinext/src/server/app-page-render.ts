@@ -155,6 +155,11 @@ type RenderAppPageLifecycleOptionsBase = {
   isEdgeRuntime?: boolean;
   isForceDynamic: boolean;
   isForceStatic: boolean;
+  /**
+   * Whether Next.js would classify the route as static or SSG from its config
+   * (`isAppPageStaticEligible`). Other routes are never full-page cached.
+   */
+  isStaticEligible: boolean;
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
   isSpeculativePrerender?: boolean;
@@ -316,8 +321,13 @@ function applyRequestCacheLife(options: {
 function resolveAppPageCacheWriteRevalidateSeconds(options: {
   isDynamicError: boolean;
   isForceStatic: boolean;
+  isStaticEligible: boolean;
   revalidateSeconds: number | null;
 }): number | null {
+  if (!options.isStaticEligible) {
+    return null;
+  }
+
   if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
     return Infinity;
   }
@@ -875,8 +885,12 @@ async function renderAppPageLifecycleImpl(
     !options.isDraftMode &&
     !options.isForceDynamic &&
     !shouldBypassRscCache;
+  // Only cache candidates capture the RSC payload. A dynamic route's payload is
+  // never stored, even when a cacheLife resolves during its render.
   const shouldCaptureRscForCacheMetadata =
-    (options.isProduction || options.isPrerender === true) && mayResolveCacheLifeAfterHeaders;
+    (options.isProduction || options.isPrerender === true) &&
+    mayResolveCacheLifeAfterHeaders &&
+    options.isStaticEligible;
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -933,6 +947,7 @@ async function renderAppPageLifecycleImpl(
           isForceDynamic: options.isForceDynamic,
           isForceStatic: options.isForceStatic,
           isProduction: options.isProduction,
+          isStaticEligible: options.isStaticEligible,
           expireSeconds,
           revalidateSeconds,
         });
@@ -1071,9 +1086,11 @@ async function renderAppPageLifecycleImpl(
       renderMode: options.renderMode,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
       expireSeconds,
+      isStaticEligible: options.isStaticEligible,
       revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
         isDynamicError: options.isDynamicError,
         isForceStatic: options.isForceStatic,
+        isStaticEligible: options.isStaticEligible,
         revalidateSeconds,
       }),
       waitUntil(promise) {
@@ -1306,6 +1323,7 @@ async function renderAppPageLifecycleImpl(
     isForceDynamic: options.isForceDynamic,
     isForceStatic: options.isForceStatic,
     isProduction: options.isProduction,
+    isStaticEligible: options.isStaticEligible,
     expireSeconds,
     revalidateSeconds,
   });
@@ -1411,9 +1429,11 @@ async function renderAppPageLifecycleImpl(
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,
+      isStaticEligible: options.isStaticEligible,
       revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
         isDynamicError: options.isDynamicError,
         isForceStatic: options.isForceStatic,
+        isStaticEligible: options.isStaticEligible,
         revalidateSeconds,
       }),
       linkHeader: linkHeader ?? null,
@@ -1446,9 +1466,11 @@ async function renderAppPageLifecycleImpl(
       return readRequestCacheLifeForCachePolicy(options);
     },
     expireSeconds,
+    isStaticEligible: options.isStaticEligible,
     revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
       isDynamicError: options.isDynamicError,
       isForceStatic: options.isForceStatic,
+      isStaticEligible: options.isStaticEligible,
       revalidateSeconds,
     }),
   });

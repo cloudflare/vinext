@@ -44,6 +44,10 @@ import {
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
 import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
+import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
@@ -292,6 +296,8 @@ type CreateDispatchOptionsOverrides = {
   ensureRouteLoaded?: DispatchOptions["ensureRouteLoaded"];
   generateStaticParams?: DispatchOptions["generateStaticParams"];
   hasCustomGlobalError?: DispatchOptions["hasCustomGlobalError"];
+  hasGenerateStaticParams?: DispatchOptions["hasGenerateStaticParams"];
+  isStaticGenerationEdgeRuntime?: DispatchOptions["isStaticGenerationEdgeRuntime"];
   formState?: DispatchOptions["formState"];
   getSourceRoute?: DispatchOptions["getSourceRoute"];
   getNavigationContext?: DispatchOptions["getNavigationContext"];
@@ -374,7 +380,8 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
         params: { slug: "hello" },
       })),
     getSourceRoute: overrides.getSourceRoute ?? (() => undefined),
-    hasGenerateStaticParams: typeof overrides.generateStaticParams === "function",
+    hasGenerateStaticParams:
+      overrides.hasGenerateStaticParams ?? typeof overrides.generateStaticParams === "function",
     hasCustomGlobalError: overrides.hasCustomGlobalError,
     hasPageDefaultExport: true,
     hasPageModule: true,
@@ -384,6 +391,7 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     actionFailed: overrides.actionFailed,
     interceptionContext: overrides.interceptionContext ?? null,
     isProgressiveActionRender: overrides.isProgressiveActionRender,
+    isStaticGenerationEdgeRuntime: overrides.isStaticGenerationEdgeRuntime,
     isProduction: overrides.isProduction ?? false,
     isRscRequest: overrides.isRscRequest ?? false,
     isrGet,
@@ -3598,5 +3606,158 @@ describe("app page dispatch", () => {
     expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+  });
+
+  describe("static eligibility (Next.js route classification)", () => {
+    const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+    function createDynamicSegmentRoute(): TestRoute {
+      return createRoute({ isDynamic: true, params: ["slug"] });
+    }
+
+    async function dispatchAndDrain(options: DispatchOptions) {
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const response = await runWithExecutionContext(
+        {
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        },
+        () => dispatchAppPage(options),
+      );
+      const body = await response.text();
+      await Promise.all(waitUntilPromises.splice(0));
+      return { body, response };
+    }
+
+    // Next.js classifies a dynamic-segment route without generateStaticParams
+    // as dynamic (ƒ): it renders per request and is never full-page cached,
+    // even with a revalidate export.
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts#L2358-L2408
+    for (const isRscRequest of [false, true]) {
+      it(`never caches a dynamic-segment route without generateStaticParams (${isRscRequest ? "RSC" : "HTML"})`, async () => {
+        const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const { options } = createDispatchOptions({
+          isProduction: true,
+          isRscRequest,
+          isrGet,
+          isrSet,
+          revalidateSeconds: 60,
+          route: createDynamicSegmentRoute(),
+        });
+
+        const { response } = await dispatchAndDrain(options);
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+        expect(response.headers.get("x-vinext-cache")).toBeNull();
+        expect(isrGet).not.toHaveBeenCalled();
+        expect(isrSet).not.toHaveBeenCalled();
+      });
+    }
+
+    it("caches a dynamic-segment route whose generateStaticParams sits at its last dynamic segment", async () => {
+      const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const { options } = createDispatchOptions({
+        hasGenerateStaticParams: true,
+        isProduction: true,
+        isrGet,
+        isrSet,
+        revalidateSeconds: 60,
+        route: createDynamicSegmentRoute(),
+      });
+
+      const { response } = await dispatchAndDrain(options);
+
+      expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(isrGet).toHaveBeenCalledWith("html:/posts/hello");
+      expect(isrSet.mock.calls.map(([key]) => key)).toContain("html:/posts/hello");
+      expect(isrSet.mock.calls[0]![2].cacheControl.revalidate).toBe(60);
+    });
+
+    for (const dynamicConfig of ["force-static", "error"]) {
+      it(`caches a dynamic-segment route with dynamic = "${dynamicConfig}"`, async () => {
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const { options } = createDispatchOptions({
+          dynamicConfig,
+          isProduction: true,
+          isrSet,
+          route: createDynamicSegmentRoute(),
+        });
+
+        await dispatchAndDrain(options);
+
+        expect(isrSet.mock.calls.map(([key]) => key)).toContain("html:/posts/hello");
+      });
+    }
+
+    // Next.js disables static generation for edge-runtime pages whatever their
+    // segments or config.
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts#L2333-L2340
+    for (const [name, overrides] of [
+      ["without dynamic segments", {}],
+      ["with revalidate = 60", { revalidateSeconds: 60 }],
+      [
+        "with generateStaticParams",
+        { hasGenerateStaticParams: true, route: createDynamicSegmentRoute() },
+      ],
+      ["with force-static", { dynamicConfig: "force-static" }],
+    ] satisfies [string, CreateDispatchOptionsOverrides][]) {
+      it(`never caches an edge-runtime page ${name}`, async () => {
+        const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const { options } = createDispatchOptions({
+          isProduction: true,
+          isStaticGenerationEdgeRuntime: true,
+          isrGet,
+          isrSet,
+          ...overrides,
+        });
+
+        const { response } = await dispatchAndDrain(options);
+
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+        expect(isrGet).not.toHaveBeenCalled();
+        expect(isrSet).not.toHaveBeenCalled();
+      });
+    }
+
+    it("renders non-GET requests to a dynamic-segment route without generateStaticParams", async () => {
+      const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        request: new Request("https://example.test/posts/hello", { method: "POST" }),
+        route: createDynamicSegmentRoute(),
+      });
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(200);
+      expect(buildPageElement).toHaveBeenCalled();
+    });
+
+    it("reports a dynamic-segment route without generateStaticParams as uncacheable to adapter admission", async () => {
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      const { options } = createDispatchOptions({
+        isProduction: true,
+        revalidateSeconds: 60,
+        route: createDynamicSegmentRoute(),
+      });
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      await response.text();
+
+      await expect(state.completion).resolves.toEqual({
+        cacheable: false,
+        reason: "route is not statically generated",
+      });
+    });
   });
 });

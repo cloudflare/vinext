@@ -1,5 +1,6 @@
 import {
   buildRevalidateCacheControl,
+  NEVER_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
   STATIC_CACHE_CONTROL,
 } from "./cache-control.js";
@@ -54,6 +55,11 @@ type ResolveAppPageResponsePolicyBaseOptions = {
   isForceDynamic: boolean;
   isForceStatic: boolean;
   isProduction: boolean;
+  /**
+   * `false` for routes Next.js classifies as dynamic (ƒ). Their responses are
+   * never cached, whatever their revalidate. Defaults to eligible.
+   */
+  isStaticEligible?: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
 };
@@ -155,6 +161,10 @@ export function resolveAppPageRscResponsePolicy(
     return { cacheControl: NO_STORE_CACHE_CONTROL };
   }
 
+  if (options.isStaticEligible === false) {
+    return { cacheControl: NEVER_CACHE_CONTROL };
+  }
+
   if (options.isForceDynamic || options.dynamicUsedDuringBuild) {
     return { cacheControl: NO_STORE_CACHE_CONTROL };
   }
@@ -197,6 +207,13 @@ export function resolveAppPageHtmlResponsePolicy(
   if (options.isDraftMode) {
     return {
       cacheControl: NO_STORE_CACHE_CONTROL,
+      shouldWriteToCache: false,
+    };
+  }
+
+  if (options.isStaticEligible === false) {
+    return {
+      cacheControl: NEVER_CACHE_CONTROL,
       shouldWriteToCache: false,
     };
   }

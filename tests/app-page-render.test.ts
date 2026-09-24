@@ -186,6 +186,7 @@ function createCommonOptions() {
       isDraftMode: false,
       isForceDynamic: false,
       isForceStatic: false,
+      isStaticEligible: true,
       isProgressiveActionRender: false,
       isProduction: false,
       isRscRequest: false,
@@ -1849,6 +1850,54 @@ describe("app page render lifecycle", () => {
   });
 });
 
+describe("routes that are not statically generated", () => {
+  // Next.js classifies a dynamic-segment route without generateStaticParams as
+  // dynamic (ƒ). A page-level "use cache" + cacheLife still reuses its data
+  // cache entry, but the page is sent `private, no-store` and never stored.
+  for (const isRscRequest of [false, true]) {
+    it(`never stores a cacheLife-only render (${isRscRequest ? "RSC" : "HTML"})`, async () => {
+      const common = createCommonOptions();
+
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        getRequestCacheLife() {
+          return { revalidate: 60 };
+        },
+        isProduction: true,
+        isRscRequest,
+        isStaticEligible: false,
+        revalidateSeconds: null,
+      });
+
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
+      await response.arrayBuffer();
+      await Promise.all(common.waitUntilPromises);
+      expect(common.isrSet).not.toHaveBeenCalled();
+    });
+  }
+
+  it("never stores a render with a revalidate export", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      isStaticEligible: false,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+});
+
 describe("layoutFlags injection into RSC payload", () => {
   function createRscOptions(overrides: {
     cleanPathname?: string;
@@ -1883,6 +1932,7 @@ describe("layoutFlags injection into RSC payload", () => {
       isDraftMode: false,
       isForceDynamic: false,
       isForceStatic: false,
+      isStaticEligible: true,
       isProduction: true,
       isRscRequest: true,
       isrHtmlKey: (p: string) => `html:${p}`,

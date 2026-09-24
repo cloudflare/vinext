@@ -166,6 +166,31 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  test("never stores a dynamic-segment route without generateStaticParams", async () => {
+    const first = await request("/dynamic-segment/a");
+    const firstBody = await first.text();
+    const second = await request("/dynamic-segment/a");
+    const secondBody = await second.text();
+    const rsc = await request("/dynamic-segment/a.rsc?_rsc=", {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    await rsc.text();
+
+    for (const response of [first, second, rsc]) {
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+      assert.equal(
+        response.headers.get("cache-control"),
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    }
+    assert.notEqual(
+      htmlValue(firstBody, "dynamic-segment-render-id"),
+      htmlValue(secondBody, "dynamic-segment-render-id"),
+    );
+    assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), /dynamic-segment/);
+  });
+
   test("runs cold fills, hits, and SWR loopback in one Worker", async () => {
     const inline = new Miniflare({
       unsafeEphemeralDurableObjects: true,

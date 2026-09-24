@@ -53,6 +53,11 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   expireSeconds?: number;
+  /**
+   * `false` for routes Next.js classifies as dynamic (ƒ), which are never
+   * cacheable even when a cacheLife resolves during the render.
+   */
+  isStaticEligible?: boolean;
   revalidateSeconds: number | null;
 };
 
@@ -78,6 +83,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   omitPendingDynamicCacheState?: boolean;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
+  isStaticEligible?: boolean;
   revalidateSeconds: number | null;
   linkHeader: string | null;
   waitUntil?: (promise: Promise<void>) => void;
@@ -103,6 +109,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   renderMode?: AppRscRenderMode;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
+  isStaticEligible?: boolean;
   revalidateSeconds: number | null;
   waitUntil?: (promise: Promise<void>) => void;
 };
@@ -215,6 +222,8 @@ function finalizeEvaluatedAppPageResponse(
         dynamicUsage: true,
         reason: "dynamic API used during render",
       };
+    } else if (options.isStaticEligible === false) {
+      outcome = { cacheable: false, reason: "route is not statically generated" };
     } else if (
       response.headers.has("set-cookie") ||
       hasExplicitNonCacheableResponsePolicy(response.headers)

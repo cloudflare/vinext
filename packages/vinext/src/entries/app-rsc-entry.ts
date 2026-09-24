@@ -835,9 +835,11 @@ import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
 } from ${JSON.stringify(appPageRequestPath)};
 import {
+  hasAppPageGenerateStaticParamsAtLastDynamicSegment as __hasAppPageGenerateStaticParamsAtLastDynamicSegment,
   isEdgeRuntime as __isEdgeRuntime,
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
+  resolveAppPageStaticGenerationRuntime as __resolveAppPageStaticGenerationRuntime,
 } from ${JSON.stringify(appSegmentConfigPath)};
 import { makeThenableParams } from ${JSON.stringify(thenableParamsShimPath)};
 import {
@@ -1269,17 +1271,18 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     renderMode,
   }) {
     const PageComponent = route.page?.default;
+    const __segmentConfigBranches = Object.values(route.slots ?? {}).map((slot) => ({
+      layout: slot.layout,
+      configLayouts: slot.configLayouts,
+      configLayoutTreePositions: slot.configLayoutTreePositions,
+      page: slot.page ?? slot.default,
+      routeSegments: slot.routeSegments,
+    }));
     const __segmentConfig = __resolveAppPageSegmentConfig({
       layouts: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
       page: route.page,
-      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
-        layout: slot.layout,
-        configLayouts: slot.configLayouts,
-        configLayoutTreePositions: slot.configLayoutTreePositions,
-        page: slot.page ?? slot.default,
-        routeSegments: slot.routeSegments,
-      })),
+      parallelBranches: __segmentConfigBranches,
       parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
       routeSegments: route.routeSegments,
     });
@@ -1336,6 +1339,12 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
       fetchCache: __segmentConfig.fetchCache ?? null,
       isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
+      isStaticGenerationEdgeRuntime: __isEdgeRuntime(
+        __resolveAppPageStaticGenerationRuntime([
+          ...route.layouts.map((layout) => layout?.runtime),
+          route.page?.runtime,
+        ]),
+      ),
       findIntercept(pathname) {
         return findIntercept(
           pathname === cleanPathname ? interceptionPathname : pathname,
@@ -1352,7 +1361,13 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         return routes[sourceRouteIndex];
       },
       hasCustomGlobalError: ${globalErrorVar ? `Boolean(${globalErrorVar}?.default)` : "false"},
-      hasGenerateStaticParams: __generateStaticParams.length > 0,
+      hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: route.layouts,
+        layoutTreePositions: route.layoutTreePositions,
+        page: route.page,
+        parallelBranches: __segmentConfigBranches,
+        routeSegments: route.routeSegments,
+      }),
       hasPageDefaultExport: !!PageComponent,
       hasPageModule: !!route.page,
       handlerStart,

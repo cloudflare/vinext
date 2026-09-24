@@ -30,6 +30,8 @@ vinext({ cache: responseStoreAdapter({ shards: 4 }) });
 - `/api/now` exercises cached App Route responses.
 - `/pages-prewarm` exercises Pages Router ISR.
 - `/force-dynamic` verifies that explicit build-time dynamic config bypasses response-cache lookup.
+- `/dynamic-segment/[slug]` verifies that a dynamic-segment route without `generateStaticParams`
+  bypasses response-cache lookup, as in Next.js.
 - `/dynamic` and `/vary` verify that unsafe completed responses bypass shared storage.
 
 Canonical App Router RSC requests use the same response-stage transport:
