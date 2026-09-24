@@ -177,13 +177,24 @@ export function resolveAppPageRscResponsePolicy(
     return { cacheControl: NO_STORE_CACHE_CONTROL };
   }
 
+  // Only force-static and dynamic = "error" renders can't turn dynamic while
+  // streaming, so only they keep their static headers unconditionally.
   if (
-    ((options.isForceStatic || options.isDynamicError) && !options.revalidateSeconds) ||
-    options.revalidateSeconds === Infinity
+    (options.isForceStatic || options.isDynamicError) &&
+    (options.revalidateSeconds === null || options.revalidateSeconds === Infinity)
   ) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
       cacheState: "STATIC",
+    };
+  }
+
+  if (options.revalidateSeconds === Infinity) {
+    return {
+      cacheControl: STATIC_CACHE_CONTROL,
+      // Like a finite revalidate, a production MISS lets the finalizer apply
+      // pending-dynamic headers in case the render reaches a dynamic API late.
+      cacheState: options.isProduction ? "MISS" : "STATIC",
     };
   }
 
@@ -250,7 +261,10 @@ export function resolveAppPageHtmlResponsePolicy(
     };
   }
 
-  if ((options.isForceStatic || options.isDynamicError) && options.revalidateSeconds === null) {
+  if (
+    (options.isForceStatic || options.isDynamicError) &&
+    (options.revalidateSeconds === null || options.revalidateSeconds === Infinity)
+  ) {
     return {
       cacheControl: STATIC_CACHE_CONTROL,
       cacheState: options.isProduction ? "MISS" : "STATIC",

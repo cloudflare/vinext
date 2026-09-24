@@ -916,9 +916,11 @@ async function renderAppPageLifecycleImpl(
   const shouldWaitForAllReady =
     options.isPrerender === true && options.isSpeculativePrerender !== true;
   const shouldReadRequestCacheLifeForPrerender = options.isPrerender === true;
+  // A cache candidate's cacheLife can still lower its lifetime after headers,
+  // including under the default `revalidate = false`.
   const mayResolveCacheLifeAfterHeaders =
     options.isProgressiveActionRender !== true &&
-    (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
+    (revalidateSeconds === null || revalidateSeconds > 0) &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
     !shouldBypassRscCache;

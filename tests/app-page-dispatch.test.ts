@@ -3913,5 +3913,46 @@ describe("app page dispatch", () => {
         reason: "route is not statically generated",
       });
     });
+
+    // Next.js defaults every static or SSG route to `revalidate = false`, so a
+    // static page with no revalidate source is served until it's revalidated.
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts
+    for (const isRscRequest of [false, true]) {
+      it(`stores a static route with no revalidate source indefinitely (${isRscRequest ? "RSC" : "HTML"})`, async () => {
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const { options } = createDispatchOptions({
+          isProduction: true,
+          isRscRequest,
+          isrSet,
+          route: createRoute({ pattern: "/about", routeSegments: ["about"] }),
+          cleanPathname: "/about",
+        });
+
+        const { response } = await dispatchAndDrain(options);
+
+        expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+        const key = isRscRequest ? "rsc:/about" : "html:/about";
+        const write = isrSet.mock.calls.find(([writtenKey]) => writtenKey === key);
+        expect(write?.[2].cacheControl.revalidate).toBe(Infinity);
+      });
+    }
+
+    it("reports a static route with no revalidate source as cacheable to adapter admission", async () => {
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      const { options } = createDispatchOptions({ isProduction: true });
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      await response.text();
+
+      await expect(state.completion).resolves.toMatchObject({
+        cacheable: true,
+        cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      });
+    });
   });
 });

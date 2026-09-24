@@ -90,7 +90,7 @@ describe("app page response helpers", () => {
       }),
     ).toEqual({
       cacheControl: "s-maxage=31536000, stale-while-revalidate",
-      cacheState: "STATIC",
+      cacheState: "MISS",
     });
 
     expect(
@@ -105,6 +105,39 @@ describe("app page response helpers", () => {
         revalidateSeconds: null,
       }),
     ).toEqual({});
+  });
+
+  it("keeps STATIC only for RSC renders that can't turn dynamic while streaming", () => {
+    const base = {
+      dynamicUsedDuringBuild: false,
+      isDraftMode: false,
+      isForceDynamic: false,
+      isProduction: true,
+    };
+    for (const config of [
+      { isDynamicError: false, isForceStatic: true },
+      { isDynamicError: true, isForceStatic: false },
+    ]) {
+      for (const revalidateSeconds of [null, Infinity]) {
+        expect(resolveAppPageRscResponsePolicy({ ...base, ...config, revalidateSeconds })).toEqual({
+          cacheControl: "s-maxage=31536000, stale-while-revalidate",
+          cacheState: "STATIC",
+        });
+      }
+    }
+
+    expect(
+      resolveAppPageRscResponsePolicy({
+        ...base,
+        isDynamicError: false,
+        isForceStatic: false,
+        isProduction: false,
+        revalidateSeconds: Infinity,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=31536000, stale-while-revalidate",
+      cacheState: "STATIC",
+    });
   });
 
   it("resolves RSC response policy as no-store when dynamic usage is detected during build", () => {

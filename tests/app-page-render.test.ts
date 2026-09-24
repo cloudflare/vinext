@@ -1998,6 +1998,122 @@ describe("routes that are not statically generated", () => {
   });
 });
 
+describe("static routes under the default revalidate = false", () => {
+  // Next.js defaults every static or SSG route to `revalidate = false` and
+  // stores both the HTML and RSC payload from one render. A cacheLife that
+  // resolves while streaming still lowers the stored lifetime.
+  const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
+
+  it("stores HTML and RSC indefinitely when no cacheLife resolves", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      revalidateSeconds: Infinity,
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl])).toEqual([
+      ["html:/posts/post", { revalidate: Infinity }],
+      ["rsc:/posts/post", { revalidate: Infinity }],
+    ]);
+  });
+
+  it("lowers the stored lifetime to a cacheLife resolved after headers", async () => {
+    const common = createCommonOptions();
+    let requestCacheLife: { revalidate: number; expire: number } | null = null;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        return requestCacheLife;
+      },
+      isProduction: true,
+      renderToReadableStream() {
+        let sent = false;
+        return new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent) {
+              // Resolves below a Suspense boundary, after headers were sent.
+              requestCacheLife = { revalidate: 60, expire: 600 };
+              controller.close();
+              return;
+            }
+            sent = true;
+            controller.enqueue(new TextEncoder().encode("flight"));
+          },
+        });
+      },
+      revalidateSeconds: Infinity,
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl])).toEqual([
+      ["html:/posts/post", { revalidate: 60, expire: 600 }],
+      ["rsc:/posts/post", { revalidate: 60, expire: 600 }],
+    ]);
+  });
+
+  it("stores an RSC-only miss with the cacheLife lifetime", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getRequestCacheLife() {
+        return { revalidate: 60 };
+      },
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: Infinity,
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    await response.arrayBuffer();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl])).toEqual([
+      ["rsc:/posts/post", { revalidate: 60 }],
+    ]);
+  });
+
+  it("does not send static headers on an RSC miss that can still turn dynamic", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: Infinity,
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(response.headers.get("cache-control")).not.toBe(STATIC_CACHE_CONTROL);
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    await response.arrayBuffer();
+    await Promise.all(common.waitUntilPromises);
+  });
+
+  it("keeps STATIC RSC headers for force-static routes", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isForceStatic: true,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: Infinity,
+    });
+
+    expect(response.headers.get("cache-control")).toBe(STATIC_CACHE_CONTROL);
+    expect(response.headers.get("x-vinext-cache")).toBe("STATIC");
+    await response.arrayBuffer();
+  });
+});
+
 describe("layoutFlags injection into RSC payload", () => {
   function createRscOptions(overrides: {
     cleanPathname?: string;
