@@ -91,11 +91,18 @@ function flightMembers(value: object): unknown[] {
  * passed to Flight unchanged, so Flight keeps their shared references and cycles.
  */
 export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCacheArguments> {
-  const thenableObjects: EncodedThenableObject[] = [];
-  const visited = new Set<object>();
-  let pending: unknown[] = [args];
-  while (pending.length > 0) {
-    const thenables: PromiseLike<unknown>[] = [];
+  // Flight serializes a promise as its resolved value, which can hold more
+  // params. Await each promise once (Flight awaits them too, and emits
+  // rejections as errors), then walk the whole graph again, since the
+  // arguments can change while a promise is pending. The walk that finds no
+  // new promises runs right before Flight encoding, so it records the fields
+  // Flight sees.
+  const settled = new Map<PromiseLike<unknown>, PromiseSettledResult<unknown>>();
+  for (;;) {
+    const thenableObjects: EncodedThenableObject[] = [];
+    const unsettled: PromiseLike<unknown>[] = [];
+    const visited = new Set<object>();
+    const pending: unknown[] = [args];
     while (pending.length > 0) {
       const value = pending.pop();
       if (typeof value !== "object" || value === null || visited.has(value)) continue;
@@ -106,15 +113,17 @@ export async function encodeCacheArguments(args: unknown[]): Promise<EncodedCach
         );
         thenableObjects.push({ fields, promise: value });
       }
-      if (isThenable(value)) thenables.push(value);
+      if (isThenable(value)) {
+        const result = settled.get(value);
+        if (!result) unsettled.push(value);
+        else if (result.status === "fulfilled") pending.push(result.value);
+      }
       pending.push(...flightMembers(value));
     }
-    // Flight serializes a promise as its resolved value, which can hold more
-    // params. Flight awaits these promises too, and emits rejections as errors.
-    const settled = await Promise.allSettled(thenables);
-    pending = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+    if (unsettled.length === 0) return { args, thenableObjects };
+    const results = await Promise.allSettled(unsettled);
+    unsettled.forEach((thenable, index) => settled.set(thenable, results[index]));
   }
-  return { args, thenableObjects };
 }
 
 /** Restore the promise fields that `encodeCacheArguments` captured before Flight encoding. */

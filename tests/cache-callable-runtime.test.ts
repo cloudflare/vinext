@@ -305,6 +305,29 @@ describe("cache-callable-runtime", () => {
     await expect(restoredRejected).rejects.toThrow("rejected");
   });
 
+  it("records params added to the arguments while a promise is pending", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const shared: Record<string, unknown> = {};
+    const later = Promise.resolve().then(() => {
+      shared.params = makeThenableParams({ slug: "a" });
+      return shared;
+    });
+    const args = [shared, later];
+
+    const encoded = await encodeCacheArguments(args);
+    expect(encoded.thenableObjects).toEqual([{ fields: { slug: "a" }, promise: shared.params }]);
+
+    const [restored, restoredLater] = decodeCacheArguments(flight.roundTrip(encoded)) as [
+      { params: Promise<unknown> & { slug: string } },
+      Promise<unknown>,
+    ];
+    expect(restored.params.slug).toBe("a");
+    expect(await restored.params).toEqual({ slug: "a" });
+    expect(await restoredLater).toBe(restored);
+  });
+
   it("rejects payloads without recorded promise fields", async () => {
     const { decodeCacheArguments } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");
