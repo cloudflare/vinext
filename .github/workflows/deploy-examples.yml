@@ -191,6 +191,12 @@ jobs:
             cache_backend: kv
             prewarm_e2e: true
             warm_cdn_cache: true
+          - name: static-assets-cache
+            project: static-assets-cache
+            worker_name: static-assets-cache
+            working_directory: examples/static-assets-cache
+            wrangler_config: dist/server/wrangler.json
+            vinext_build: true
           - name: static-export
             project: static-export
             working_directory: examples/static-export
@@ -247,12 +253,13 @@ jobs:
         run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc
 
       - name: Build example
-        if: matrix.example.static_export != true
+        if: matrix.example.static_export != true && matrix.example.vinext_build != true
         run: vp build
         working-directory: ${{ matrix.example.working_directory }}
 
-      - name: Build static export
-        if: matrix.example.static_export == true
+      # `vinext build` also runs the prerender phase that plain `vp build` skips.
+      - name: Build example with vinext
+        if: matrix.example.static_export == true || matrix.example.vinext_build == true
         run: vp exec vinext build
         working-directory: ${{ matrix.example.working_directory }}
 
@@ -462,6 +469,12 @@ jobs:
           tests/e2e/cloudflare-workers/web-worker.spec.ts
           tests/e2e/cloudflare-workers/optimistic-search-navigation.spec.ts
 
+      - name: Test deployed Static Assets cache
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-static-assets
+          VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-cache.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-cache.vinext.workers.dev' }}
+        run: vp exec playwright test tests/e2e/cloudflare-static-assets
+
   cleanup-response-store:
     name: Clean up Workers Response Store services
     if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
@@ -493,11 +506,18 @@ jobs:
 
       - name: Delete named preview Workers
         if: github.event.action == 'closed'
+        # PRs opened before a named preview existed have nothing to delete.
+        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          WORKER_NAME: pr-${{ github.event.pull_request.number }}-kv
-        run: vp exec wrangler delete "$WORKER_NAME" --force
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          status=0
+          for worker in kv static-assets-cache; do
+            vp exec wrangler delete "pr-${PR_NUMBER}-${worker}" --force || status=1
+          done
+          exit "$status"
 
   comment:
     name: Comment Preview URLs
@@ -525,6 +545,7 @@ jobs:
               { name: 'response-store-demo', project: 'response-store-demo' },
               { name: 'workers-cache', project: 'workers-cache' },
               { name: 'kv', project: 'kv' },
+              { name: 'static-assets-cache', project: 'static-assets-cache' },
               { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];

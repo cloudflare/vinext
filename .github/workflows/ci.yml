@@ -557,8 +557,8 @@ jobs:
             label: static-export
             shardIndex: 1
             shardTotal: 1
-          - project: cloudflare-static-assets-prerender
-            label: cloudflare-static-assets-prerender
+          - project: cloudflare-static-assets
+            label: cloudflare-static-assets
             shardIndex: 1
             shardTotal: 1
           - project: cloudflare-static-export

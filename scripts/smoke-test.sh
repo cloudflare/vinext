@@ -45,6 +45,7 @@ CHECKS=(
   "response-store-demo          /       vinext cache adapters"
   "workers-cache                /       vinext cache adapters"
   "kv                           /       vinext cache adapters"
+  "static-assets-cache          /       vinext Static Assets cache"
   "static-export                /       Static by design"
   "static-export                /catalog/pocket-observatory/  Pocket Observatory"
   "static-export                /products/atlas/              Atlas Field Kit"

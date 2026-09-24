@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "static-assets-cache",
+  "compatibility_date": "2026-04-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "vinext/server/fetch-handler",
+  "preview_urls": true,
+  "account_id": "d48e2eb599d9aa075d5e682deaecc518",
+  "assets": {
+    "directory": "dist/client",
+    "not_found_handling": "none",
+    "binding": "ASSETS",
+    // The packaged cache entries are read through the ASSETS binding. Route
+    // their public URLs to the Worker so they are never served directly.
+    "run_worker_first": ["/_vinext/static-cache/*"],
+  },
+  "observability": {
+    "enabled": true,
+  },
+}
