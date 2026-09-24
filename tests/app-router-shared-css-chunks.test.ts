@@ -630,8 +630,10 @@ export default function Lazy() {
       expect(serverHref).toBe(`${assetUrlPrefix}css/${path.basename(sharedCss[0])}`);
       // The loader's prefix is inlined into the client bundle (the minifier
       // may pick any quote style).
-      const inlinedPrefix = new RegExp(`["'\`]${assetUrlPrefix.replaceAll(".", "\\.")}["'\`]`);
-      expect(chunkSources.some((code) => inlinedPrefix.test(code))).toBe(true);
+      const quotedPrefixes = ['"', "'", "`"].map((quote) => `${quote}${assetUrlPrefix}${quote}`);
+      expect(
+        chunkSources.some((code) => quotedPrefixes.some((quoted) => code.includes(quoted))),
+      ).toBe(true);
       // Vite's helper hands the loader an absolute URL; on a page served from
       // the prefix's own origin it must map back to the server's literal href.
       const clientDep = chunkSources
