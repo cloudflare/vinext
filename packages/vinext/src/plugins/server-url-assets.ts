@@ -53,7 +53,6 @@ import path, { toSlash } from "pathslash";
 import type { RscPluginManager } from "@vitejs/plugin-rsc";
 import { parseAst, type ESTree, type Plugin, type ResolvedConfig } from "vite";
 import { resolveRuntimeEntryModule } from "../entries/runtime-entry-module.js";
-import { safeJsonStringify } from "../server/html.js";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 import {
@@ -194,22 +193,37 @@ export async function resolveServerUrlAssetFile(
   return resolved !== null && (await isServerUrlAssetFile(resolved)) ? resolved : null;
 }
 
+/**
+ * A JS string literal for `value`, safe to splice into generated module code:
+ * `JSON.stringify` plus `\uXXXX` escapes for `<`, `>`, `/` and U+2028/U+2029.
+ * The escaping always runs (no fast path) and the pattern stays inline, so
+ * static analysis recognises this as a code-injection sanitizer.
+ */
+export function jsStringLiteral(value: string): string {
+  return JSON.stringify(value).replace(
+    /[<>/\u2028\u2029]/g,
+    (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
 function serverUrlAssetModuleId(prefix: string, assetPath: string): string {
   return `${prefix}${assetPath}${SERVER_URL_ASSET_ID_SUFFIX}`;
 }
 
 function serverUrlAssetModuleCode(runtimeModule: string, assetPath: string): string {
   return [
-    `import { registerServerUrlAsset } from ${safeJsonStringify(runtimeModule)};`,
-    `export default registerServerUrlAsset(${safeJsonStringify(pathToFileURL(assetPath).href)}, () => import(${safeJsonStringify(serverUrlAssetModuleId(SERVER_URL_ASSET_BYTES_PREFIX, assetPath))}));`,
+    `import { registerServerUrlAsset } from ${jsStringLiteral(runtimeModule)};`,
+    `export default registerServerUrlAsset(${jsStringLiteral(pathToFileURL(assetPath).href)}, () => import(${jsStringLiteral(serverUrlAssetModuleId(SERVER_URL_ASSET_BYTES_PREFIX, assetPath))}));`,
     "",
   ].join("\n");
 }
 
 function serverUrlAssetBytesModuleCode(runtimeModule: string, bytes: Buffer): string {
   return [
-    `import { decodeServerUrlAsset } from ${safeJsonStringify(runtimeModule)};`,
-    `export default decodeServerUrlAsset(${safeJsonStringify(bytes.toString("base64"))});`,
+    `import { decodeServerUrlAsset } from ${jsStringLiteral(runtimeModule)};`,
+    // The base64 alphabet (A-Z a-z 0-9 + / =) needs no escaping inside a
+    // string literal; escaping its `/` would only grow every inlined asset.
+    `export default decodeServerUrlAsset("${bytes.toString("base64")}");`,
     "",
   ].join("\n");
 }
@@ -441,7 +455,7 @@ export function createServerUrlAssetsPlugin(
         const imports = Array.from(
           bindings,
           ([assetPath, binding]) =>
-            `import ${binding} from ${safeJsonStringify(serverUrlAssetModuleId(SERVER_URL_ASSET_PREFIX, assetPath))};`,
+            `import ${binding} from ${jsStringLiteral(serverUrlAssetModuleId(SERVER_URL_ASSET_PREFIX, assetPath))};`,
         ).join("\n");
         const insertAt = findDirectivePrologueEnd(ast);
         output.appendLeft(insertAt, insertAt === 0 ? `${imports}\n` : `\n${imports}\n`);

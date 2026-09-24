@@ -20,6 +20,7 @@ import vinext from "../packages/vinext/src/index.js";
 import {
   collectClientReferenceOnlyModules,
   createServerUrlAssetsPlugin,
+  jsStringLiteral,
   resolveServerUrlAssetFile,
 } from "../packages/vinext/src/plugins/server-url-assets.js";
 import {
@@ -27,7 +28,6 @@ import {
   fetchServerUrlAsset,
   registerServerUrlAsset,
 } from "../packages/vinext/src/server/server-url-assets.js";
-import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 
 type Hook = (...args: unknown[]) => unknown;
 
@@ -128,7 +128,7 @@ const TRIVIA_REFERENCE_SOURCES = [
 ];
 
 function registrationImport(binding: string, assetPath: string): string {
-  return `import ${binding} from ${safeJsonStringify(`${REGISTRATION_PREFIX}${toSlash(assetPath)}.js`)};`;
+  return `import ${binding} from ${jsStringLiteral(`${REGISTRATION_PREFIX}${toSlash(assetPath)}.js`)};`;
 }
 
 describe("vinext:server-url-assets transform", () => {
@@ -378,6 +378,17 @@ describe("vinext:server-url-assets transform", () => {
   });
 });
 
+describe("jsStringLiteral", () => {
+  it("escapes characters that could break out of generated code, keeping the value", () => {
+    const value = "file:///app/</script>\u2028\u2029\0\"'`.txt";
+    const literal = jsStringLiteral(value);
+
+    expect(literal).not.toMatch(/[<>/\u2028\u2029]/);
+    expect(literal).toContain(String.raw`\u003c\u002fscript\u003e\u2028\u2029`);
+    expect(JSON.parse(literal)).toBe(value);
+  });
+});
+
 describe("collectClientReferenceOnlyModules", () => {
   it("keeps modules the Pages Router reaches and collects the client-reference-only closure", () => {
     // A hybrid App + Pages `ssr` graph: the Pages Router and plugin-rsc's
@@ -490,7 +501,7 @@ describe("vinext:server-url-assets generated modules", () => {
     const code = await result;
 
     expect(code).toContain(
-      `registerServerUrlAsset(${safeJsonStringify(pathToFileURL(textFile).href)}, () => import(${safeJsonStringify(`${BYTES_PREFIX}${assetPath}.js`)}))`,
+      `registerServerUrlAsset(${jsStringLiteral(pathToFileURL(textFile).href)}, () => import(${jsStringLiteral(`${BYTES_PREFIX}${assetPath}.js`)}))`,
     );
     expect(code).toMatch(
       /import \{ registerServerUrlAsset \} from ".*server-url-assets\.(?:ts|js)";/,
