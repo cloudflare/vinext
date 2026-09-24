@@ -72,6 +72,12 @@ import {
   type RenderPageEnhancers,
   runDocumentRenderPage,
 } from "./pages-document-initial-props.js";
+import {
+  appendLateStyledJsxStyles,
+  insertStyledJsxBeforePagesRoot,
+  renderStyledJsxStylesHTML,
+} from "./pages-styled-jsx.js";
+import type { PagesStyledJsxCollector } from "vinext/shims/styled-jsx-registry";
 import { callDocumentGetInitialProps } from "./document-initial-head.js";
 import {
   hasPagesGetInitialProps,
@@ -104,6 +110,20 @@ async function renderToStringAsync(element: React.ReactElement): Promise<string>
   const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
+}
+
+/**
+ * Create the per-render styled-jsx collector from the SSR module graph. The
+ * registry state lives in the runner's module instance (styled-jsx-compiled
+ * page modules register into it), not in this Node-side module graph.
+ */
+async function createDevStyledJsxCollector(
+  runner: ModuleImporter,
+): Promise<PagesStyledJsxCollector | null> {
+  const styledJsxRegistry = await importModule(runner, "vinext/shims/styled-jsx-registry");
+  return typeof styledJsxRegistry.createPagesStyledJsxCollector === "function"
+    ? (styledJsxRegistry.createPagesStyledJsxCollector() as PagesStyledJsxCollector | null)
+    : null;
 }
 
 function applyDevPagesPreviewHeaders(
@@ -313,6 +333,8 @@ async function streamPageToResponseImpl(
      */
     setDocumentInitialHead?: (head: React.ReactNode[]) => void;
     crossOrigin?: string;
+    /** Per-render styled-jsx collector (see `createDevStyledJsxCollector`). */
+    styledJsx?: PagesStyledJsxCollector | null;
     /** Buffer the body before writing headers so error-page fallback remains safe. */
     bufferBodyBeforeHeaders?: boolean;
     /** Keep a response Content-Type set before rendering a notFound page. */
@@ -336,6 +358,7 @@ async function streamPageToResponseImpl(
     documentContext,
     setDocumentInitialHead,
     crossOrigin,
+    styledJsx,
     bufferBodyBeforeHeaders = false,
     preserveExistingContentType = false,
     onDocumentBody,
@@ -355,6 +378,7 @@ async function streamPageToResponseImpl(
       renderToReadableStream,
       renderStylesToString: renderToStringAsync,
       scriptNonce,
+      styledJsx,
       context: documentContext,
     });
     if (res.headersSent || res.writableEnded) return { documentRenderPage, responseSent: true };
@@ -371,7 +395,7 @@ async function streamPageToResponseImpl(
     } else {
       // Start the body render before collecting its head state, then let the
       // tracing adapter keep the span alive without delaying the response.
-      bodyStream = await renderToReadableStream(element);
+      bodyStream = await renderToReadableStream(styledJsx ? styledJsx.wrap(element) : element);
     }
 
     if (documentRenderPage.status === "skipped") {
@@ -407,6 +431,12 @@ async function streamPageToResponseImpl(
     if (tailHeadHTML) tailHeadHTML += "\n  ";
     tailHeadHTML += documentRenderPage.stylesHTML;
   }
+  // Matches the prod renderer: styled-jsx rules registered by the shell are
+  // emitted right before the React root (see `pages-styled-jsx.ts`).
+  const styledJsxHTML =
+    documentRenderPage.status === "skipped"
+      ? await renderStyledJsxStylesHTML(styledJsx, scriptNonce, renderToStringAsync)
+      : documentRenderPage.styledJsxHTML;
 
   // Build the document shell with a placeholder for the body
   let shellTemplate: string;
@@ -519,9 +549,22 @@ async function streamPageToResponseImpl(
     );
   }
   const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
-  const prefix = transformedShell.slice(0, markerIdx);
+  // Inserted after Vite's HTML transform, which would otherwise route every
+  // inline <style> through the CSS pipeline as an html-proxy module.
+  const prefix = insertStyledJsxBeforePagesRoot(
+    transformedShell.slice(0, markerIdx),
+    styledJsxHTML,
+  );
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
-  const bufferedBody = bufferBodyBeforeHeaders ? await new Response(bodyStream).text() : null;
+  // Matches the prod renderer: styled-jsx rules registered after the shell
+  // rendered (Suspense content) follow the React root once the body is done.
+  const resolveSuffix = (): Promise<string> =>
+    documentRenderPage.status === "skipped"
+      ? appendLateStyledJsxStyles(suffix, styledJsx, scriptNonce, renderToStringAsync)
+      : Promise.resolve(suffix);
+  const bufferedBodyAndSuffix = bufferBodyBeforeHeaders
+    ? (await new Response(bodyStream).text()) + (await resolveSuffix())
+    : null;
 
   // Send headers and start streaming.
   // Set array-valued headers (e.g. Set-Cookie from gSSP) via setHeader()
@@ -545,8 +588,8 @@ async function streamPageToResponseImpl(
   // Write the document prefix (head, opening body)
   res.write(prefix);
 
-  if (bufferedBody !== null) {
-    res.end(bufferedBody + suffix);
+  if (bufferedBodyAndSuffix !== null) {
+    res.end(bufferedBodyAndSuffix);
     return;
   }
 
@@ -563,7 +606,7 @@ async function streamPageToResponseImpl(
   }
 
   // Write the document suffix (closing tags, scripts)
-  res.end(suffix);
+  res.end(await resolveSuffix());
 }
 
 async function streamPageToResponse(
@@ -637,6 +680,11 @@ export function createSSRHandler(
   crossOrigin?: string,
   /** Resolved Pages Router build ID shared with the dev data-route parser. */
   buildId = process.env.__VINEXT_BUILD_ID ?? "development",
+  /**
+   * Resolves the styled-jsx registration module when the project uses
+   * styled-jsx (see `StyledJsxPluginApi.projectUsesStyledJsx`).
+   */
+  resolveStyledJsxRegistration?: () => Promise<string | undefined>,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -660,6 +708,24 @@ export function createSSRHandler(
   // request (common in tests). Errors still propagate when the first
   // request handler awaits _alsRegistration.
   _alsRegistration.catch(() => {});
+
+  /**
+   * styled-jsx registers with vinext when a module compiled with it
+   * evaluates, and dev evaluates modules on demand: a component loaded lazily
+   * (`next/dynamic`, `React.lazy`) would register only once the first render
+   * that needs it had already started without a registry. Load the
+   * registration before rendering whenever the project uses styled-jsx.
+   * `runner.import()` caches, so this is a lookup after the first request.
+   */
+  const registerStyledJsx = async (): Promise<void> => {
+    const registration = await resolveStyledJsxRegistration?.();
+    if (!registration) return;
+    try {
+      await runner.import(registration);
+    } catch {
+      // A module that uses styled-jsx surfaces the same error when it loads.
+    }
+  };
 
   return async (
     req: IncomingMessage,
@@ -762,7 +828,7 @@ export function createSSRHandler(
       res.on("finish", closeRequest);
       res.on("close", closeRequest);
       await runWithRequestContext(requestContext, async () => {
-        await _alsRegistration;
+        await Promise.all([_alsRegistration, registerStyledJsx()]);
         await renderErrorPage(
           server,
           runner,
@@ -811,7 +877,7 @@ export function createSSRHandler(
     return runWithRequestContext(requestContext, async () => {
       ensureFetchPatch();
       try {
-        await _alsRegistration;
+        await Promise.all([_alsRegistration, registerStyledJsx()]);
 
         // Resolve the Pages Router shim now; the SSR navigation context is
         // published below (after the page/_app modules load) in a single call
@@ -1708,6 +1774,7 @@ export function createSSRHandler(
               ? headShim.setDocumentInitialHead
               : undefined,
           crossOrigin,
+          styledJsx: await createDevStyledJsxCollector(runner),
           bufferBodyBeforeHeaders: true,
         });
         _renderEnd = now();
@@ -1969,6 +2036,7 @@ async function renderErrorPage(
       };
 
       const element = createErrorElement(AppComponent, ErrorComponent);
+      const styledJsx = await createDevStyledJsxCollector(runner);
       const headShim = await importModule(runner, "next/head");
       if (typeof headShim.resetSSRHead === "function") headShim.resetSSRHead();
       const responseHeaders = typeof res.getHeaders === "function" ? res.getHeaders() : undefined;
@@ -2053,10 +2121,18 @@ async function renderErrorPage(
               ? headShim.setDocumentInitialHead
               : undefined,
           crossOrigin: context.crossOrigin,
+          styledJsx,
           preserveExistingContentType: statusCode === 404,
         });
       } else {
-        const bodyHtml = await tracePagesDocument(errorPage, () => renderToStringAsync(element));
+        const bodyHtml = await tracePagesDocument(errorPage, () =>
+          renderToStringAsync(styledJsx ? styledJsx.wrap(element) : element),
+        );
+        const styledJsxHTML = await renderStyledJsxStylesHTML(
+          styledJsx,
+          scriptNonce,
+          renderToStringAsync,
+        );
         const traceMetaHTML = getClientTraceMetadataHTML(context.clientTraceMetadata);
         const protectedAssetMarker = `data-vinext-document-asset-props-protected-${randomUUID()}`;
         const protectAssetTags = (assetHtml: string): string =>
@@ -2100,7 +2176,7 @@ async function renderErrorPage(
             ? undefined
             : { "Content-Type": "text/html; charset=utf-8" },
         );
-        res.end(transformedHtml);
+        res.end(insertStyledJsxBeforePagesRoot(transformedHtml, styledJsxHTML));
       }
       return;
     } catch (error) {

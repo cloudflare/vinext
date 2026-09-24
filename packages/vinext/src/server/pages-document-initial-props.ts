@@ -39,12 +39,14 @@
  */
 import React, { type ComponentType, type ReactNode } from "react";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import type { PagesStyledJsxCollector } from "vinext/shims/styled-jsx-registry";
 // Static import so the identity comparison below is established once at
 // module evaluation. A previous version used `await import(...)` per request
 // and was flagged by reviewers as unnecessary work — and worse, it left a
 // per-request `await` on the fast path where the user had no override.
 import BaseDocument from "vinext/shims/document";
 import { readStreamAsText } from "../utils/text-stream.js";
+import { renderStyledJsxStylesHTML } from "./pages-styled-jsx.js";
 
 const BASE_GET_INITIAL_PROPS = (
   BaseDocument as unknown as {
@@ -112,6 +114,12 @@ type DocumentRenderPageInput = {
   /** Per-request CSP nonce applied to the enhanced page tree, if any. */
   scriptNonce?: string | undefined;
   initialStylesheetHrefs?: ReadonlySet<string> | undefined;
+  /**
+   * Per-render styled-jsx collector. `renderPage` wraps the enhanced tree in
+   * its registry and `ctx.defaultGetInitialProps()` returns the collected
+   * styles, mirroring Next.js's `jsxStyleRegistry` in `render.tsx`.
+   */
+  styledJsx?: PagesStyledJsxCollector | null | undefined;
   /** Extra `DocumentContext` fields (pathname/query/asPath). */
   context?: Record<string, unknown> | undefined;
 };
@@ -134,7 +142,8 @@ type DocumentRenderPageInput = {
  *                  normal `loadUserDocumentInitialProps` fast path, which may
  *                  invoke `getInitialProps` itself.
  *   - `rendered` — `renderPage` produced the body. `bodyHtml` is the rendered
- *                  page string, `stylesHTML` the rendered `styles`, `docProps`
+ *                  page string, `stylesHTML` the rendered `styles`,
+ *                  `styledJsxHTML` the leftover styled-jsx rules, `docProps`
  *                  the remaining props to spread onto `<Document>`, and `head`
  *                  the head nodes returned by `getInitialProps` (forward them to
  *                  `setDocumentInitialHead()` — do NOT call
@@ -146,6 +155,8 @@ type RunDocumentRenderPageResult =
       status: "rendered";
       bodyHtml: string;
       stylesHTML: string;
+      /** Leftover styled-jsx rules, for the caller to emit before the React root. */
+      styledJsxHTML: string;
       docProps: Record<string, unknown>;
       head: ReactNode[];
     };
@@ -194,7 +205,9 @@ export async function runDocumentRenderPage(
     // Nonce responsibility lives here so prod and dev produce identical
     // output — callers' `enhancePageElement` must not apply it themselves.
     const wrapped = withScriptNonce(
-      enhancedElement as React.ReactElement,
+      input.styledJsx
+        ? input.styledJsx.wrap(enhancedElement)
+        : (enhancedElement as React.ReactElement),
       input.scriptNonce,
       input.initialStylesheetHrefs,
     );
@@ -209,7 +222,10 @@ export async function runDocumentRenderPage(
     // forward to `ctx.renderPage` (the styled-components / emotion pattern)
     // also work through the defaultGetInitialProps helper below.
     renderPage,
-    defaultGetInitialProps: async (ctx: { renderPage: typeof renderPage }) => {
+    defaultGetInitialProps: async (
+      ctx: { renderPage: typeof renderPage },
+      options: { nonce?: string } = {},
+    ) => {
       // Mirrors Next.js's `ctx.defaultGetInitialProps`: wrap App in an
       // identity enhancer so renderPage is still invoked even when a user
       // doesn't pass any enhancers themselves.
@@ -217,7 +233,11 @@ export async function runDocumentRenderPage(
         // oxlint-disable-next-line @typescript-eslint/no-explicit-any
         enhanceApp: (App) => (props: any) => React.createElement(App, props),
       });
-      return { html: result.html, head: result.head ?? [], styles: undefined };
+      // Next.js returns (then flushes) the styled-jsx registry's styles here,
+      // which is how `Document.getInitialProps(ctx)` callers such as the
+      // styled-components pattern keep `<style jsx>` rules in the head.
+      const styles = input.styledJsx?.flushStyles(options.nonce || input.scriptNonce);
+      return { html: result.html, head: result.head ?? [], styles };
     },
     ...input.context,
   });
@@ -247,6 +267,22 @@ export async function runDocumentRenderPage(
       React.createElement(React.Fragment, null, docInitialProps.styles),
     );
   }
+  // styled-jsx rules still in the registry (the user's `getInitialProps` called
+  // `ctx.renderPage()` without `ctx.defaultGetInitialProps()`). Next.js emits
+  // this leftover `styledJsxInsertedHTML` immediately before the React root
+  // (`contentHTML` in render.tsx), so callers place it there too.
+  const styledJsxHTML = await renderStyledJsxStylesHTML(
+    input.styledJsx,
+    input.scriptNonce,
+    input.renderStylesToString,
+  );
 
-  return { status: "rendered", bodyHtml: docInitialProps.html, stylesHTML, docProps, head };
+  return {
+    status: "rendered",
+    bodyHtml: docInitialProps.html,
+    stylesHTML,
+    styledJsxHTML,
+    docProps,
+    head,
+  };
 }
