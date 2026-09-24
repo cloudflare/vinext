@@ -406,6 +406,45 @@ describe("cache-callable-runtime", () => {
     expect(restored.siblings.has(restored.sibling)).toBe(true);
   });
 
+  it("scans every array index Flight serializes", async () => {
+    const { decodeCacheArguments, encodeCacheArguments } =
+      await import("../packages/vinext/src/shims/cache-callable-runtime.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    let hiddenReads = 0;
+    const hidden: unknown[] = [];
+    Object.defineProperty(hidden, 0, {
+      enumerable: false,
+      get() {
+        hiddenReads++;
+        return makeThenableParams({ slug: `hidden-${hiddenReads}` });
+      },
+    });
+    let sparseReads = 0;
+    const sparse: unknown[] = [];
+    sparse.length = 3;
+    Object.defineProperty(sparse, 0, {
+      enumerable: true,
+      get() {
+        sparseReads++;
+        return makeThenableParams({ slug: `sparse-${sparseReads}` });
+      },
+    });
+
+    type Params = Promise<unknown> & { slug: string };
+    const [restoredHidden, restoredSparse] = decodeCacheArguments(
+      flight.roundTrip(await encodeCacheArguments([hidden, sparse])),
+    ) as [Params[], Params[]];
+
+    expect(hiddenReads).toBe(1);
+    expect(sparseReads).toBe(1);
+    expect(restoredHidden).toHaveLength(1);
+    expect(restoredHidden[0].slug).toBe("hidden-1");
+    expect(await restoredHidden[0]).toEqual({ slug: "hidden-1" });
+    expect(restoredSparse).toHaveLength(3);
+    expect(restoredSparse[0].slug).toBe("sparse-1");
+    expect(restoredSparse.slice(1)).toEqual([undefined, undefined]);
+  });
+
   it("rejects payloads without recorded promise fields", async () => {
     const { decodeCacheArguments } =
       await import("../packages/vinext/src/shims/cache-callable-runtime.js");

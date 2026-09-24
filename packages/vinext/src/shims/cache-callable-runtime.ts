@@ -78,11 +78,17 @@ function isThenableObject(value: object): value is PromiseLike<unknown> {
 type AccessorReads = WeakMap<object, Map<string, unknown>>;
 
 /**
- * Enumerable own entries of `value`. A getter can return a new value, such as
- * a new promise, on every read, so each accessor is read once per encode.
+ * The own entries of `value` that Flight serializes: every index below an
+ * array's `length`, including holes and non-enumerable indices, as
+ * `JSON.stringify` reads them, and the enumerable own keys of anything else.
+ * A getter can return a new value, such as a new promise, on every read, so
+ * each accessor is read once per encode.
  */
 function ownEntries(value: object, accessorReads: AccessorReads): [string, unknown][] {
-  return Object.keys(value).map((key) => {
+  const keys = Array.isArray(value)
+    ? Array.from({ length: value.length }, (_, index) => String(index))
+    : Object.keys(value);
+  return keys.map((key) => {
     const descriptor = Reflect.getOwnPropertyDescriptor(value, key);
     if (descriptor === undefined || "value" in descriptor) return [key, Reflect.get(value, key)];
     let reads = accessorReads.get(value);
