@@ -51,6 +51,11 @@ type GeneratePagesServerEntryOptions = {
   includeMiddlewareRuntime?: boolean;
   nodeOpenTelemetryLoader?: boolean;
   prerenderSecret?: string;
+  /**
+   * Dev only: the styled-jsx registration module, imported up front so the
+   * first render collects rules from lazily loaded modules too.
+   */
+  styledJsxRegistration?: string | undefined;
 };
 
 /**
@@ -241,6 +246,7 @@ export function generatePagesResponseEntry(
   middlewarePath: string | null,
   instrumentationPath: string | null,
   prerenderSecret?: string,
+  styledJsxRegistration?: string,
 ): Promise<string> {
   return generateServerEntry(
     pagesDir,
@@ -252,6 +258,7 @@ export function generatePagesResponseEntry(
     {
       includeMiddlewareRuntime: false,
       prerenderSecret,
+      styledJsxRegistration,
     },
   );
 }
@@ -511,6 +518,7 @@ import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundRespons
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
 import { getRuntimePagesDataKind as __getRuntimePagesDataKind } from ${JSON.stringify(_pagesRouteDataKindPath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_isrCachePath)};
+${options.styledJsxRegistration ? `import ${JSON.stringify(options.styledJsxRegistration)};` : ""}
 ${openTelemetryLoaderCode}
 ${instrumentationImportCode}
 

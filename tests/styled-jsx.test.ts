@@ -117,6 +117,69 @@ describe("styled-jsx compatibility plugin", () => {
     );
   });
 
+  // Dev compiles modules on demand, so a styled-jsx module that is only loaded
+  // lazily has not been seen before the first render. Dev servers ask whether
+  // the project uses styled-jsx to load the registration up front.
+  it("detects styled-jsx usage in project sources for dev", async () => {
+    const writeSource = (root: string, file: string, source: string) => {
+      fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+      fs.writeFileSync(path.join(root, file), source);
+    };
+    const createProject = (sources: Record<string, string>) => {
+      const { root, styledJsxRoot } = createPnpmStyleFixture();
+      fs.writeFileSync(path.join(styledJsxRoot, "index.js"), "module.exports = {};");
+      for (const [file, source] of Object.entries(sources)) writeSource(root, file, source);
+      return root;
+    };
+    const usesStyledJsx = (root: string) => createStyledJsxPlugin(root).api!.projectUsesStyledJsx();
+    const plainSources = {
+      "pages/index.jsx": 'export default () => <style data-language="jsx">{css}</style>;',
+      // Dependencies, dot directories and build output are not the project's.
+      "node_modules/lib/index.jsx": "export default () => <style jsx>{css}</style>;",
+      ".cache/stale.jsx": "export default () => <style jsx>{css}</style>;",
+      "dist/server/entry.js": 'import css from "styled-jsx/css";',
+    };
+
+    expect(await usesStyledJsx(createProject(plainSources))).toBe(false);
+    expect(
+      await usesStyledJsx(
+        createProject({
+          ...plainSources,
+          "components/Lazy.jsx": "export default () => <style global jsx>{css}</style>;",
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      await usesStyledJsx(
+        createProject({
+          "lib/styles.ts": 'import css from "styled-jsx/css";\nexport default css``;',
+        }),
+      ),
+    ).toBe(true);
+
+    // A module compiled with styled-jsx during the session counts too.
+    const compiledRoot = createProject(plainSources);
+    writeSource(compiledRoot, "node_modules/next/dist/build/swc/index.js", "module.exports = {};");
+    const compiled = createStyledJsxPlugin(compiledRoot, {
+      importModule: async () => ({
+        loadBindings: async () => undefined,
+        transform: async () => ({ code: 'import _JSXStyle from "styled-jsx/style";' }),
+      }),
+    });
+    expect(await compiled.api!.projectUsesStyledJsx()).toBe(false);
+    await (compiled.transform as { handler(source: string, id: string): Promise<unknown> }).handler(
+      "export default <style jsx>{`p{color:red}`}</style>",
+      "/app/added.jsx",
+    );
+    expect(await compiled.api!.projectUsesStyledJsx()).toBe(true);
+
+    // Without a resolvable styled-jsx the registration could not load.
+    const noNext = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
+    temporaryDirectories.push(noNext);
+    writeSource(noNext, "pages/index.jsx", "export default () => <style jsx>{css}</style>;");
+    expect(await usesStyledJsx(noNext)).toBe(false);
+  });
+
   it("leaves ordinary style tags untouched when Next is not installed", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-next-"));
     temporaryDirectories.push(root);
@@ -742,37 +805,41 @@ describe("styled-jsx Pages SSR registry", () => {
   });
 
   // Regeneration splices a fresh body into the cached document. Interpolated
-  // rules get a new id whenever the data changes, so the cached rules around
-  // the React root must be swapped for the regenerated render's.
-  it("refreshes styled-jsx rules when ISR regeneration re-renders the body", async () => {
-    const { registry, pagesPageData } = await loadRegisteredRuntime();
-    registry.registerStyledJsxRuntime(styledJsx);
-    const renderIsrPassToStringAsync = (element: React.ReactNode) =>
-      renderToString(React.createElement(React.Fragment, null, element));
-    const staleShell = '<style id="__jsx-old">p.jsx-old{color:red}</style>';
-    const staleLate = '<style id="__jsx-late">p.jsx-late{color:red}</style>';
-    const headRule = '<style id="__jsx-head">p.jsx-head{color:green}</style>';
-
-    const html = await pagesPageData.renderPagesIsrHtml({
+  // rules get a new id whenever the data changes, and rules the new render no
+  // longer registers must stop applying, so every cached page rule is swapped
+  // for the regenerated render's.
+  function regenerateIsrHtml(
+    pagesPageData: typeof import("../packages/vinext/src/server/pages-page-data.js"),
+    cachedHtml: string,
+    page: React.ReactElement,
+  ) {
+    return pagesPageData.renderPagesIsrHtml({
       buildId: "build-123",
-      cachedHtml:
-        `<!DOCTYPE html><html><head>${headRule}</head><body>` +
-        `<style id="user-style">.user{}</style>${staleShell}<div id="__next"><p class="jsx-old">stale</p></div>` +
-        `${staleLate}\n  <script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>`,
-      createPageElement: () =>
-        React.createElement(
-          React.Fragment,
-          null,
-          styledElement("p.jsx-new{color:blue}", "new"),
-          styledElement("p.jsx-head{color:green}", "head"),
-        ),
+      cachedHtml,
+      createPageElement: () => page,
       i18n: { locale: "en", locales: ["en"], defaultLocale: "en", domainLocales: [] },
       pageProps: {},
       params: {},
-      renderIsrPassToStringAsync,
+      renderIsrPassToStringAsync: (element: React.ReactNode) =>
+        renderToString(React.createElement(React.Fragment, null, element)),
       routePattern: "/isr",
       safeJsonStringify: JSON.stringify,
     });
+  }
+
+  it("refreshes styled-jsx rules when ISR regeneration re-renders the body", async () => {
+    const { registry, pagesPageData } = await loadRegisteredRuntime();
+    registry.registerStyledJsxRuntime(styledJsx);
+    const staleShell = '<style id="__jsx-old">p.jsx-old{color:red}</style>';
+    const staleLate = '<style id="__jsx-late">p.jsx-late{color:red}</style>';
+
+    const html = await regenerateIsrHtml(
+      pagesPageData,
+      `<!DOCTYPE html><html><head><title>t</title></head><body>` +
+        `<style id="user-style">.user{}</style>${staleShell}<div id="__next"><p class="jsx-old">stale</p></div>` +
+        `${staleLate}\n  <script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>`,
+      styledElement("p.jsx-new{color:blue}", "new"),
+    );
 
     expect(html).toContain(
       '<style id="user-style">.user{}</style>' +
@@ -782,8 +849,37 @@ describe("styled-jsx Pages SSR registry", () => {
     expect(html).toContain('</div></div>\n  <script id="__NEXT_DATA__"');
     expect(html).not.toContain("jsx-old");
     expect(html).not.toContain("jsx-late");
-    // A rule `_document` put in the cached head is not repeated.
-    expect(html.match(/id="__jsx-head"/g)).toHaveLength(1);
+  });
+
+  // A custom `_document` using `Document.getInitialProps(ctx)` puts the page's
+  // rules in <head> (via `ctx.defaultGetInitialProps()`), next to styles it
+  // owns. Regeneration does not re-render `_document`, so it must tell those
+  // apart: a page rule the new render dropped goes, document styles stay.
+  it("removes head-flushed page rules that ISR regeneration no longer renders", async () => {
+    const { registry, pagesPageData } = await loadRegisteredRuntime();
+    registry.registerStyledJsxRuntime(styledJsx);
+    const documentStyles =
+      '<style data-styled="">.sc{}</style><style data-manual-document-style="">.manual{}</style>';
+    const staleGlobal = '<style id="__jsx-global">body{background:red}</style>';
+    const pageRule = '<style id="__jsx-page">p.jsx-page{color:green}</style>';
+
+    const html = await regenerateIsrHtml(
+      pagesPageData,
+      `<!DOCTYPE html><html><head><meta name="document-child" content="1"/>` +
+        `${staleGlobal}${pageRule}${documentStyles}</head><body>` +
+        `<div id="__next"><div><p class="jsx-page">styled</p></div></div>` +
+        `\n  <script id="__NEXT_DATA__" type="application/json">{"old":1}</script></body></html>`,
+      // The regenerated render no longer includes the `<style jsx global>`.
+      styledElement("p.jsx-page{color:green}", "page"),
+    );
+
+    expect(html).not.toContain("background:red");
+    // The page's remaining rule stays in <head>, once, where it was rendered.
+    expect(html).toContain(
+      `<meta name="document-child" content="1"/>${pageRule}${documentStyles}</head>`,
+    );
+    expect(html.match(/id="__jsx-page"/g)).toHaveLength(1);
+    expect(html).toContain('<body><div id="__next"><div><p class="jsx-page">styled</p>');
   });
 
   // The response and the ISR cache write read separate branches of the body

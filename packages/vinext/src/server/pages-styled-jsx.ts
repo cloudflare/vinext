@@ -93,61 +93,48 @@ export async function appendLateStyledJsxStyles(
   return shellSuffix.slice(0, bodyClose) + stylesHTML + shellSuffix.slice(bodyClose);
 }
 
-const STYLED_JSX_STYLE_OPEN = '<style id="__jsx-';
-const STYLE_CLOSE = "</style>";
-
 /**
- * Remove the run of styled-jsx `<style id="__jsx-…">` elements `html` ends
- * with: the shell rules `insertStyledJsxBeforePagesRoot` placed right before
- * the React root of a cached document.
+ * A `<style id="__jsx-…">` element: the only markup styled-jsx's registry
+ * produces (`registry.styles()`). A page render's rules carry these ids
+ * wherever they end up — around the React root, or in `<head>` when a custom
+ * `_document` returned them from `ctx.defaultGetInitialProps()` /
+ * `Document.getInitialProps(ctx)` — while styles `_document` owns itself
+ * (other CSS-in-JS libraries, inline `<style>` tags) never do. `_document`'s
+ * own render is outside the registry, so its `<style jsx>` renders nothing.
  */
-export function stripTrailingStyledJsxStyles(html: string): string {
-  let end = html.length;
-  while (html.endsWith(STYLE_CLOSE, end)) {
-    const closeStart = end - STYLE_CLOSE.length;
-    const start = html.lastIndexOf(STYLED_JSX_STYLE_OPEN, closeStart);
-    // Only strip a single, complete styled-jsx element ending right here.
-    if (start === -1 || html.indexOf(STYLE_CLOSE, start) !== closeStart) break;
-    end = start;
-  }
-  return html.slice(0, end);
-}
+const STYLED_JSX_STYLE_ELEMENT_RE = /<style id="__jsx-[^"]*"[^>]*>[\s\S]*?<\/style>/g;
 
 /**
- * Remove the run of styled-jsx `<style id="__jsx-…">` elements `html` starts
- * with: the late rules `appendLateStyledJsxStyles` placed right after the
- * React root of a cached document closed.
- */
-export function stripLeadingStyledJsxStyles(html: string): string {
-  let start = 0;
-  while (html.startsWith(STYLED_JSX_STYLE_OPEN, start)) {
-    const close = html.indexOf(STYLE_CLOSE, start);
-    if (close === -1) break;
-    start = close + STYLE_CLOSE.length;
-  }
-  return html.slice(start);
-}
-
-/**
- * Render the rules registered while ISR regeneration re-rendered a page body.
+ * Swap a cached document's styled-jsx rules for the ones ISR regeneration
+ * collected (`stylesHTML`).
  *
  * Next.js regenerates the whole document, so its styles always match the
  * body. vinext's regeneration splices a fresh body into the cached document,
- * whose rules were collected from the previous render — interpolated
- * (`${props.color}`) rules get a new id whenever the data changes, so the
- * caller swaps the cached rules around the React root for these. `_document`
- * is not re-rendered, so rules a custom `getInitialProps()` put in the cached
- * `<head>` stay there and are not repeated.
+ * whose rules came from the previous render: interpolated (`${props.color}`)
+ * rules get a new id whenever the data changes, and a rule the new render no
+ * longer registers (a `<style jsx global>` behind a condition) must stop
+ * applying. Every page rule outside the React root is therefore removed —
+ * `beforeRoot` is the document up to `<div id="__next">`, `afterRoot` what
+ * follows the root up to `__NEXT_DATA__` (late Suspense rules) — and the
+ * regenerated rules go where the page's rules were rendered: at the first
+ * rule in `<head>` (custom `_document` path, `headEnd` is `</head>`'s index
+ * in `beforeRoot`) or else right before the React root.
  */
-export async function renderRegeneratedStyledJsxStylesHTML(
-  styledJsx: PagesStyledJsxCollector,
-  cachedHeadHTML: string,
-  renderStylesToString: RenderStylesToString,
-): Promise<string> {
-  const styles = styledJsx.flushStyles().filter((style) => {
-    const id = style.props.id;
-    return id === undefined || !cachedHeadHTML.includes(`id="${id}"`);
+export function replaceStyledJsxStyles(
+  beforeRoot: string,
+  headEnd: number,
+  afterRoot: string,
+  stylesHTML: string,
+): { beforeRoot: string; afterRoot: string } {
+  let firstRule = -1;
+  const withoutRules = beforeRoot.replace(STYLED_JSX_STYLE_ELEMENT_RE, (rule, offset: number) => {
+    if (firstRule === -1) firstRule = offset;
+    return "";
   });
-  if (styles.length === 0) return "";
-  return renderStylesToString(React.createElement(React.Fragment, null, styles));
+  // Head rules precede body ones, so the first rule tells where they went.
+  const insertAt = firstRule !== -1 && firstRule < headEnd ? firstRule : withoutRules.length;
+  return {
+    beforeRoot: withoutRules.slice(0, insertAt) + stylesHTML + withoutRules.slice(insertAt),
+    afterRoot: afterRoot.replace(STYLED_JSX_STYLE_ELEMENT_RE, ""),
+  };
 }

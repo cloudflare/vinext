@@ -8697,16 +8697,22 @@ describe("Pages Router styled-jsx SSR", () => {
 // Next.js wraps every Pages render in styled-jsx's registry, so rules from a
 // module loaded through next/dynamic are collected on the very first render
 // (packages/next/src/server/render.tsx, `jsxStyleRegistry`). In this fixture
-// no module the server entry loads up front uses styled-jsx, so the build
-// must still register it before the first render of a server instance.
+// no module the server entry loads up front uses styled-jsx, so vinext must
+// still register it before the first render of a server instance.
 describe("Pages Router styled-jsx in lazily loaded modules", () => {
   const lazyFixtureDir = path.resolve(import.meta.dirname, "fixtures/pages-styled-jsx-lazy");
   let fixtureRoot: string;
+  let devServer: ViteDevServer;
+  let devUrl: string;
   let prodServer: import("node:http").Server;
   let prodUrl: string;
 
   beforeAll(async () => {
     fixtureRoot = await createIsolatedFixture(lazyFixtureDir, "vinext-pages-styled-jsx-lazy-");
+    const dev = await startFixtureServer(fixtureRoot);
+    devServer = dev.server;
+    devUrl = dev.baseUrl;
+
     const outDir = path.join(fixtureRoot, "dist");
     await buildPagesFixtureToOutDir(fixtureRoot, outDir);
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
@@ -8718,14 +8724,15 @@ describe("Pages Router styled-jsx in lazily loaded modules", () => {
   }, 120000);
 
   afterAll(async () => {
+    await devServer?.close();
     if (prodServer) await new Promise<void>((resolve) => prodServer.close(() => resolve()));
     if (fixtureRoot) fs.rmSync(fixtureRoot, { recursive: true, force: true });
   });
 
-  it("renders the rules on the first production request", async () => {
-    // Must be the first request this server handles: later ones pass even
-    // without eager registration, once the lazy chunk has loaded.
-    const res = await fetch(`${prodUrl}/`);
+  // Must be each server's first request: later ones pass even without eager
+  // registration, once the lazily loaded module has registered styled-jsx.
+  it.each(["dev", "prod"] as const)("renders the rules on the first %s request", async (mode) => {
+    const res = await fetch(`${mode === "dev" ? devUrl : prodUrl}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
     const tag = html.match(/<p\b[^>]*\bid="lazy-styled"[^>]*>/)?.[0] ?? "";

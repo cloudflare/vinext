@@ -680,6 +680,11 @@ export function createSSRHandler(
   crossOrigin?: string,
   /** Resolved Pages Router build ID shared with the dev data-route parser. */
   buildId = process.env.__VINEXT_BUILD_ID ?? "development",
+  /**
+   * Resolves the styled-jsx registration module when the project uses
+   * styled-jsx (see `StyledJsxPluginApi.projectUsesStyledJsx`).
+   */
+  resolveStyledJsxRegistration?: () => Promise<string | undefined>,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -703,6 +708,24 @@ export function createSSRHandler(
   // request (common in tests). Errors still propagate when the first
   // request handler awaits _alsRegistration.
   _alsRegistration.catch(() => {});
+
+  /**
+   * styled-jsx registers with vinext when a module compiled with it
+   * evaluates, and dev evaluates modules on demand: a component loaded lazily
+   * (`next/dynamic`, `React.lazy`) would register only once the first render
+   * that needs it had already started without a registry. Load the
+   * registration before rendering whenever the project uses styled-jsx.
+   * `runner.import()` caches, so this is a lookup after the first request.
+   */
+  const registerStyledJsx = async (): Promise<void> => {
+    const registration = await resolveStyledJsxRegistration?.();
+    if (!registration) return;
+    try {
+      await runner.import(registration);
+    } catch {
+      // A module that uses styled-jsx surfaces the same error when it loads.
+    }
+  };
 
   return async (
     req: IncomingMessage,
@@ -805,7 +828,7 @@ export function createSSRHandler(
       res.on("finish", closeRequest);
       res.on("close", closeRequest);
       await runWithRequestContext(requestContext, async () => {
-        await _alsRegistration;
+        await Promise.all([_alsRegistration, registerStyledJsx()]);
         await renderErrorPage(
           server,
           runner,
@@ -854,7 +877,7 @@ export function createSSRHandler(
     return runWithRequestContext(requestContext, async () => {
       ensureFetchPatch();
       try {
-        await _alsRegistration;
+        await Promise.all([_alsRegistration, registerStyledJsx()]);
 
         // Resolve the Pages Router shim now; the SSR navigation context is
         // published below (after the page/_app modules load) in a single call

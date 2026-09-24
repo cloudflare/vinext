@@ -45,11 +45,7 @@ import { isDangerousScheme } from "vinext/shims/url-safety";
 import { createPagesStyledJsxCollector } from "vinext/shims/styled-jsx-registry";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import { tracePagesData, tracePagesDocument } from "./pages-execution-tracing.js";
-import {
-  renderRegeneratedStyledJsxStylesHTML,
-  stripLeadingStyledJsxStyles,
-  stripTrailingStyledJsxStyles,
-} from "./pages-styled-jsx.js";
+import { renderStyledJsxStylesHTML, replaceStyledJsxStyles } from "./pages-styled-jsx.js";
 
 export type PagesRedirectResult = {
   destination: string;
@@ -1135,8 +1131,8 @@ function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
 /**
  * Splice a regenerated body (and `__NEXT_DATA__`) into a cached document.
  * `styledJsxHTML` holds the regenerated render's styled-jsx rules, or is
- * `null` when styled-jsx is not in use; when set, it replaces the rules the
- * cached render emitted around the React root (see `pages-styled-jsx.ts`).
+ * `null` when styled-jsx is not in use; when set, it replaces every rule the
+ * cached render emitted (see `replaceStyledJsxStyles`).
  */
 function rewritePagesCachedHtml(
   cachedHtml: string,
@@ -1161,11 +1157,12 @@ function rewritePagesCachedHtml(
     const tail = cachedHtml.slice(nextDataEnd);
     let beforeRoot = cachedHtml.slice(0, bodyStart);
     if (styledJsxHTML !== null) {
-      // The cached render's shell rules sit right before the root and its
-      // late (Suspense) rules right after the root closes. Regeneration
-      // collects every rule up front, so all of them go before the root.
-      beforeRoot = stripTrailingStyledJsxStyles(beforeRoot) + styledJsxHTML;
-      gap = stripLeadingStyledJsxStyles(gap);
+      ({ beforeRoot, afterRoot: gap } = replaceStyledJsxStyles(
+        beforeRoot,
+        findCachedHeadEnd(beforeRoot),
+        gap,
+        styledJsxHTML,
+      ));
     }
 
     return beforeRoot + bodyMarker + freshBody + "</div>" + gap + nextDataScript + tail;
@@ -1214,10 +1211,8 @@ export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Pr
 
   const cachedHtml = refreshCachedHeadTags(options.cachedHtml, freshHead);
   const styledJsxHTML = styledJsx
-    ? await renderRegeneratedStyledJsxStylesHTML(
-        styledJsx,
-        cachedHtml.slice(0, Math.max(findCachedHeadEnd(cachedHtml), 0)),
-        (element) => options.renderIsrPassToStringAsync(element),
+    ? await renderStyledJsxStylesHTML(styledJsx, undefined, (element) =>
+        options.renderIsrPassToStringAsync(element),
       )
     : null;
 

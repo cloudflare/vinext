@@ -1,3 +1,4 @@
+import { glob, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "pathslash";
 import { pathToFileURL } from "node:url";
@@ -31,11 +32,16 @@ type StyledJsxPluginOptions = {
  * `render.tsx` does. Only modules this plugin compiles import it, which keeps
  * styled-jsx out of server bundles for apps that never use it.
  */
-const STYLED_JSX_SSR_REGISTRY_ID = "virtual:vinext-styled-jsx-ssr-registry";
+export const STYLED_JSX_SSR_REGISTRY_ID = "virtual:vinext-styled-jsx-ssr-registry";
 const RESOLVED_STYLED_JSX_SSR_REGISTRY_ID = "\0" + STYLED_JSX_SSR_REGISTRY_ID;
 const STYLED_JSX_RESOLVE_ID_RE = /^(?:styled-jsx(?:\/.*)?|virtual:vinext-styled-jsx-ssr-registry)$/;
 const STYLED_JSX_STYLE_IMPORT_RE = /["']styled-jsx\/style["']/;
+// `styled-jsx/style` is what compiled modules import. Loading it with the
+// registry lets a dev dependency optimizer discover both at once, instead of
+// re-optimizing (and swapping React copies) mid-render when a lazily loaded
+// module first imports it after the registration was loaded up front.
 const STYLED_JSX_SSR_REGISTRY_CODE = `import * as styledJsx from "styled-jsx";
+import "styled-jsx/style";
 import { registerStyledJsxRuntime } from "vinext/shims/styled-jsx-registry";
 const runtime = typeof styledJsx.StyleRegistry === "function" ? styledJsx : styledJsx.default;
 registerStyledJsxRuntime({
@@ -52,6 +58,67 @@ const STYLED_JSX_SOURCE_RE =
   /(?:<style\b|from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
 const STYLED_JSX_CSS_RE =
   /(?:from\s+["']styled-jsx\/css["']|require\s*\(\s*["']styled-jsx\/css["']\s*\))/;
+/**
+ * Dev source scan: a `<style … jsx>` element or a `styled-jsx/css` import.
+ * Stricter than `STYLED_JSX_SOURCE_RE` (which also matches plain `<style>`),
+ * since there is no AST check behind it.
+ */
+const STYLED_JSX_USAGE_RE = /<style\b[^>]*\sjsx(?=[\s=/>])|["']styled-jsx\/css["']/;
+const SOURCE_SCAN_GLOB = "**/*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}";
+const SOURCE_SCAN_BATCH_SIZE = 64;
+
+/** Skip dependencies, dot directories (VCS, caches) and vinext's build output. */
+function isExcludedFromSourceScan(entry: string): boolean {
+  const name = entry.slice(Math.max(entry.lastIndexOf("/"), entry.lastIndexOf("\\")) + 1);
+  return name === "node_modules" || name === "dist" || name.startsWith(".");
+}
+
+/**
+ * Whether any source file under `root` uses styled-jsx. Dev compiles modules
+ * on demand, so without this a module that is only loaded lazily would not
+ * have been compiled (and registered styled-jsx) before the first render that
+ * needs it. Reads each file once and stops at the first match.
+ */
+async function scanSourcesForStyledJsx(root: string): Promise<boolean> {
+  const containsStyledJsx = async (files: string[]) =>
+    (
+      await Promise.all(
+        files.map((file) =>
+          readFile(path.join(root, file), "utf8").then(
+            (source) => STYLED_JSX_USAGE_RE.test(source),
+            () => false,
+          ),
+        ),
+      )
+    ).some(Boolean);
+  let batch: string[] = [];
+  try {
+    for await (const file of glob(SOURCE_SCAN_GLOB, {
+      cwd: root,
+      exclude: isExcludedFromSourceScan,
+    })) {
+      batch.push(file);
+      if (batch.length < SOURCE_SCAN_BATCH_SIZE) continue;
+      if (await containsStyledJsx(batch)) return true;
+      batch = [];
+    }
+    return await containsStyledJsx(batch);
+  } catch {
+    return false;
+  }
+}
+
+/** Exposed to vinext's dev servers through `plugin.api`. */
+export type StyledJsxPluginApi = {
+  /**
+   * Whether the project uses styled-jsx: a module compiled by this plugin
+   * used it, or a one-time scan of the project's sources finds it. Dev loads
+   * `STYLED_JSX_SSR_REGISTRY_ID` up front when this is true, so lazily loaded
+   * modules' rules are collected on the first render too. Builds do not need
+   * it: they see the whole module graph (see `renderChunk`).
+   */
+  projectUsesStyledJsx(): Promise<boolean>;
+};
 
 function hasStyledJsxTag(source: string, id: string): boolean {
   const cleanId = stripViteModuleQuery(id);
@@ -223,7 +290,7 @@ function parserOptions(id: string): Record<string, unknown> {
 export function createStyledJsxPlugin(
   initialProjectRoot: string,
   options: StyledJsxPluginOptions = {},
-): Plugin {
+): Plugin<StyledJsxPluginApi> {
   let projectRoot = initialProjectRoot;
   let development = false;
   let nextRequire: NodeJS.Require | null | undefined;
@@ -265,15 +332,30 @@ export function createStyledJsxPlugin(
     }
   }
 
+  let compiledStyledJsx = false;
+  let sourceScan: Promise<boolean> | undefined;
+
   return {
     name: "vinext:styled-jsx",
     enforce: "pre",
+    api: {
+      async projectUsesStyledJsx() {
+        if (compiledStyledJsx) return true;
+        // Without styled-jsx the registration cannot load (a scan false
+        // positive such as a commented-out `<style jsx>` must not break dev).
+        sourceScan ??= resolveStyledJsx("styled-jsx")
+          ? scanSourcesForStyledJsx(projectRoot)
+          : Promise.resolve(false);
+        return (await sourceScan) || compiledStyledJsx;
+      },
+    },
     configResolved(config) {
       development = config.command === "serve";
       if (config.root !== projectRoot) {
         projectRoot = config.root;
         nextRequire = undefined;
         compilerPromise = null;
+        sourceScan = undefined;
       }
     },
     buildStart() {
@@ -401,6 +483,7 @@ export function createStyledJsxPlugin(
             },
           },
         });
+        compiledStyledJsx = true;
         // Appended (not prepended) so the compiler's source map stays aligned;
         // ES imports are hoisted, so registration still runs before any render.
         const code =

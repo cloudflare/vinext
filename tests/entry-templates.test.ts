@@ -2066,6 +2066,45 @@ describe("Pages Router entry template", () => {
     }
   });
 
+  // Dev loads the styled-jsx registration up front (when the project uses
+  // styled-jsx) so lazily loaded modules' rules are collected on the first
+  // render; the Pages Worker renders through the response-stage entry.
+  it("imports the dev styled-jsx registration only when asked", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-styled-jsx-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    const registrationImport = 'import "virtual:vinext-styled-jsx-ssr-registry";';
+
+    try {
+      fs.mkdirSync(pagesDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      const nextConfig = await resolveNextConfig({});
+      const matcher = createValidFileMatcher();
+
+      const responseEntry = await generatePagesResponseEntry(
+        pagesDir,
+        nextConfig,
+        matcher,
+        null,
+        null,
+        undefined,
+        "virtual:vinext-styled-jsx-ssr-registry",
+      );
+      const serverEntry = await generateServerEntry(pagesDir, nextConfig, matcher, null, null, [], {
+        styledJsxRegistration: "virtual:vinext-styled-jsx-ssr-registry",
+      });
+      const plainEntry = await generateServerEntry(pagesDir, nextConfig, matcher, null, null);
+
+      expect(responseEntry).toContain(registrationImport);
+      expect(serverEntry).toContain(registrationImport);
+      expect(plainEntry).not.toContain(registrationImport);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   // Ported from Next.js: test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/instrumentation-order/instrumentation-order.test.ts
   it("registers Node instrumentation before Pages Router user modules", async () => {

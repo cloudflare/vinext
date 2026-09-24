@@ -196,7 +196,7 @@ import {
   createInstrumentationClientTransformPlugin,
   createInstrumentationServerTransformPlugin,
 } from "./plugins/instrumentation-client.js";
-import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
+import { createStyledJsxPlugin, STYLED_JSX_SSR_REGISTRY_ID } from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
   INSTRUMENTATION_CLIENT_EMPTY_MODULE,
@@ -1658,6 +1658,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
 
+  const styledJsxPlugin = createStyledJsxPlugin(options.appDir ?? process.cwd());
+  /**
+   * Dev only: the styled-jsx registration module to load before the first
+   * Pages render, so rules from lazily loaded modules are collected on that
+   * render too. Builds register it from their module graph instead.
+   */
+  async function resolveDevStyledJsxRegistration(): Promise<string | undefined> {
+    if (!isServeCommand) return undefined;
+    return (await styledJsxPlugin.api?.projectUsesStyledJsx())
+      ? STYLED_JSX_SSR_REGISTRY_ID
+      : undefined;
+  }
+
   /**
    * Generate the virtual SSR server entry module.
    * This is the entry point for `vite build --ssr`.
@@ -1674,7 +1687,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       publicFiles,
-      { nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader, prerenderSecret },
+      {
+        nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
+        prerenderSecret,
+        // Hybrid App+Pages dev renders Pages through this entry.
+        styledJsxRegistration: await resolveDevStyledJsxRegistration(),
+      },
     );
   }
 
@@ -1694,7 +1712,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     );
   }
 
-  function generatePagesResponseEntry(): Promise<string> {
+  async function generatePagesResponseEntry(): Promise<string> {
     return _generatePagesResponseEntry(
       pagesDir,
       nextConfig,
@@ -1702,6 +1720,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       middlewarePath,
       instrumentationPath,
       prerenderSecret,
+      // Cloudflare dev renders Pages through this entry.
+      await resolveDevStyledJsxRegistration(),
     );
   }
 
@@ -2088,7 +2108,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
-    createStyledJsxPlugin(earlyBaseDir),
+    styledJsxPlugin,
     // Compile MDX to JSX before @vitejs/plugin-react handles the generated
     // component and injects Fast Refresh registration in dev.
     mdxProxyPlugin,
@@ -6538,6 +6558,7 @@ export const loadServerActionClient = ${
                       nextConfig?.expireTime,
                       nextConfig?.crossOrigin,
                       devBuildId,
+                      resolveDevStyledJsxRegistration,
                     ),
                   };
                 }
