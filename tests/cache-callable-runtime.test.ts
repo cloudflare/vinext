@@ -2,37 +2,43 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { VinextCacheFunctionInvocation } from "../packages/vinext/src/server/multi-stage.js";
 
 const flight = vi.hoisted(() => {
-  // Mirrors React Flight's client decoding of a promise: an object whose own
+  // Mirrors React Flight's client decoding of a promise: a thenable whose own
   // enumerable fields are React's internal chunk state.
-  class FlightChunk {
-    status = "fulfilled";
-    reason = null;
-    value: unknown;
-    constructor(value: unknown) {
-      this.value = value;
-    }
-    then(resolve?: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) {
-      return Promise.resolve(this.value).then(resolve, reject);
-    }
+  function createChunk(value: unknown): Promise<unknown> {
+    return Object.assign(Promise.resolve(value), { status: "fulfilled", value, reason: null });
+  }
+
+  function isThenable(value: object): value is PromiseLike<unknown> {
+    return "then" in value && typeof value.then === "function";
   }
 
   // Flight serializes a promise as its resolved value and drops its own fields.
-  async function roundTrip(value: unknown): Promise<unknown> {
-    if (typeof value !== "object" || value === null) return value;
-    if ("then" in value && typeof value.then === "function") {
-      return new FlightChunk(await roundTrip(await value));
+  // Results are boxed because an async function adopts a returned thenable,
+  // which would replace the chunk with its resolved value.
+  async function decode(value: unknown): Promise<[unknown]> {
+    if (typeof value !== "object" || value === null) return [value];
+    if (isThenable(value)) {
+      const [resolved] = await decode(await value);
+      return [createChunk(resolved)];
     }
-    if (Array.isArray(value)) return Promise.all(value.map(roundTrip));
-    if (Object.getPrototypeOf(value) !== Object.prototype) return value;
-    return Object.fromEntries(
-      await Promise.all(
-        Object.entries(value).map(async ([key, field]) => [key, await roundTrip(field)]),
-      ),
+    if (Array.isArray(value)) {
+      return [(await Promise.all(value.map(decode))).map(([item]) => item)];
+    }
+    if (Object.getPrototypeOf(value) !== Object.prototype) return [value];
+    const entries = await Promise.all(
+      Object.entries(value).map(async ([key, field]) => [key, (await decode(field))[0]] as const),
     );
+    return [Object.fromEntries(entries)];
+  }
+
+  // Callers pass a plain payload object, so the unboxed result is never a thenable.
+  async function roundTrip(value: unknown): Promise<unknown> {
+    const [decoded] = await decode(value);
+    return decoded;
   }
 
   const payloads = new Map<string, unknown>();
-  return { FlightChunk, payloads, roundTrip };
+  return { payloads, roundTrip };
 });
 
 vi.mock("@vitejs/plugin-rsc/utils/encryption-runtime", () => ({
