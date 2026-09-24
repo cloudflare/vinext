@@ -36,8 +36,8 @@
  * URLs keep their current behaviour. Like webpack, the file's extension does
  * not matter (`fetch(new URL("./payload.js", import.meta.url))` loads the
  * source text); the surrounding expression does: a URL built anywhere inside
- * the operand of a code load — `new Worker(...)`, `new SharedWorker(...)` or
- * `import(...)` — stays a runtime URL.
+ * the operand of a code load — `new Worker(...)`, `new SharedWorker(...)`
+ * (also as `Reflect.construct`) or `import(...)` — stays a runtime URL.
  * App Router client code is left alone, so browser assets never bloat server
  * or Worker bundles: `"use client"` modules in the RSC environment, the `ssr`
  * environment when there is no Pages Router (it only renders client
@@ -88,16 +88,45 @@ type ModuleResolver = (specifier: string, importer: string) => Promise<string | 
 
 const WORKER_CONSTRUCTOR_NAMES = new Set(["Worker", "SharedWorker"]);
 
-function isWorkerConstructor(callee: ESTree.Node): boolean {
-  const target = unwrapExpression(callee);
+/** The property of a static member access: `a.b`, `a["b"]` or ``a[`b`]``. */
+function staticMemberName(member: ESTree.MemberExpression): string | null {
+  if (member.computed) return staticStringValue(unwrapExpression(member.property));
+  return member.property.type === "Identifier" ? member.property.name : null;
+}
+
+/**
+ * `Worker` / `SharedWorker`, bare or as a static member (`worker_threads.Worker`,
+ * `globalThis["SharedWorker"]`), through parentheses, casts and `!`.
+ */
+function isWorkerConstructor(value: ESTree.Node | null | undefined): boolean {
+  const target = unwrapExpression(value);
   if (target?.type === "Identifier") return WORKER_CONSTRUCTOR_NAMES.has(target.name);
-  // `new worker_threads.Worker(...)`, `new globalThis.SharedWorker(...)`.
-  return (
-    target?.type === "MemberExpression" &&
-    !target.computed &&
-    target.property.type === "Identifier" &&
-    WORKER_CONSTRUCTOR_NAMES.has(target.property.name)
-  );
+  if (target?.type !== "MemberExpression") return false;
+  const name = staticMemberName(target);
+  return name !== null && WORKER_CONSTRUCTOR_NAMES.has(name);
+}
+
+/**
+ * The script operand of a worker construction — `new Worker(url, ...)` or
+ * `Reflect.construct(Worker, [url, ...])` — or `undefined` for other nodes.
+ */
+function workerScriptOperand(node: ESTree.Node): ESTree.Node | null | undefined {
+  if (node.type === "NewExpression") {
+    return isWorkerConstructor(node.callee) ? node.arguments[0] : undefined;
+  }
+  if (node.type !== "CallExpression") return undefined;
+  const callee = unwrapExpression(node.callee);
+  if (
+    callee?.type !== "MemberExpression" ||
+    !isIdentifierNamed(unwrapExpression(callee.object), "Reflect") ||
+    staticMemberName(callee) !== "construct"
+  ) {
+    return undefined;
+  }
+  const [constructor, argumentList] = node.arguments;
+  if (!isWorkerConstructor(constructor)) return undefined;
+  const list = unwrapExpression(argumentList);
+  return list?.type === "ArrayExpression" ? list.elements[0] : undefined;
 }
 
 /**
@@ -352,10 +381,10 @@ export function createServerUrlAssetsPlugin(
         const codeLoadingUrls = new Set<ESTree.Node>();
         walkAst(ast, (node) => {
           // Pre-order: the code load is visited before the URLs inside it.
-          if (node.type === "NewExpression" && isWorkerConstructor(node.callee)) {
-            collectCodeLoadingUrls(node.arguments[0], codeLoadingUrls);
-          } else if (node.type === "ImportExpression") {
+          if (node.type === "ImportExpression") {
             collectCodeLoadingUrls(node.source, codeLoadingUrls);
+          } else {
+            collectCodeLoadingUrls(workerScriptOperand(node), codeLoadingUrls);
           }
           if (node.type !== "NewExpression" || !isIdentifierNamed(node.callee, "URL")) return;
           if (codeLoadingUrls.has(node)) return false;

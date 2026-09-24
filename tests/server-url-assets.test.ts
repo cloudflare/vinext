@@ -309,48 +309,45 @@ describe("vinext:server-url-assets transform", () => {
   });
 
   it("leaves URLs that load code as runtime URLs", async () => {
-    const sources = [
+    const codeLoads = [
       `new Worker(new URL("./worker.js", import.meta.url));`,
       `new Worker(new URL("./worker.js", import.meta.url), { type: "module" });`,
       `new SharedWorker(new URL("./worker.js", import.meta.url));`,
+      // Any static spelling of the constructor.
       `new worker_threads.Worker(new URL("./worker.js", import.meta.url));`,
+      `new worker_threads["Worker"](new URL("./worker.js", import.meta.url));`,
+      `new globalThis["Worker"](new URL("./worker.js", import.meta.url));`,
+      "new globalThis[`SharedWorker`](new URL(`./worker.js`, import.meta.url));",
+      `new (Worker)(new URL("./worker.js", import.meta.url));`,
+      `new (globalThis.Worker)(new URL("./worker.js", import.meta.url));`,
+      `Reflect.construct(Worker, [new URL("./worker.js", import.meta.url), { type: "module" }]);`,
+      `Reflect["construct"](globalThis["SharedWorker"], [new URL("./worker.js", import.meta.url)]);`,
+      // Any expression built from the URL is still the code-loading operand.
       `new Worker(new URL("./worker.js", import.meta.url).href);`,
       `new Worker((new URL("./worker.js", import.meta.url)).toString());`,
-      `await import(new URL("./worker.js", import.meta.url));`,
-      `await import(new URL("./worker.js", import.meta.url).href);`,
-      // Any expression built from the URL is still the code-loading operand.
-      `await import(new URL("./worker.js", import.meta.url)["href"]);`,
-      "await import(new URL(`./worker.js`, import.meta.url)[`href`]);",
       `new Worker(new URL("./worker.js", import.meta.url)["href"]);`,
       `new Worker(String(new URL("./worker.js", import.meta.url)));`,
+      `await import(new URL("./worker.js", import.meta.url));`,
+      `await import(new URL("./worker.js", import.meta.url).href);`,
+      `await import(new URL("./worker.js", import.meta.url)["href"]);`,
+      "await import(new URL(`./worker.js`, import.meta.url)[`href`]);",
       'await import(`${new URL("./worker.js", import.meta.url)}`);',
       `await import(dev ? new URL("./worker.js", import.meta.url) : new URL("../../src/payload.ts", import.meta.url));`,
       // Whatever the extension: the dynamic import decides, not the file.
       `await import(new URL("../../src/text-file.txt", import.meta.url).href);`,
     ];
-    for (const source of sources) {
-      expect(await transform(source), source).toBeNull();
+    // A sibling fetch of the same file is still read as bytes, which also
+    // proves each module parsed and was transformed.
+    const bytesFetch = `export const bytes = () => fetch(new URL("./worker.js", import.meta.url));`;
+    for (const codeLoad of codeLoads) {
+      const code = await transform(`${codeLoad}\n${bytesFetch}`);
+      expect(code, codeLoad).toContain(codeLoad);
+      expect(code, codeLoad).toContain("fetch(new URL(__vinext_server_url_asset0))");
+      expect(code, codeLoad).toContain(
+        registrationImport("__vinext_server_url_asset0", workerFile),
+      );
+      expect(code, codeLoad).not.toContain("__vinext_server_url_asset1");
     }
-
-    // Only the code-loading operands are left alone: a sibling fetch of the
-    // same file in the same module is still read as bytes.
-    const codeLoads = [
-      `new Worker(new URL("./worker.js", import.meta.url));`,
-      `new Worker(new URL("./worker.js", import.meta.url)["href"]);`,
-      `import(new URL("./worker.js", import.meta.url)["href"]);`,
-      'import(`${new URL("./worker.js", import.meta.url)}`);',
-      `import(dev ? new URL("./worker.js", import.meta.url) : "./fallback.js");`,
-    ];
-    const mixed = await transform(
-      [
-        ...codeLoads,
-        `export const bytes = () => fetch(new URL("./worker.js", import.meta.url));`,
-      ].join("\n"),
-    );
-    for (const codeLoad of codeLoads) expect(mixed, codeLoad).toContain(codeLoad);
-    expect(mixed).toContain("fetch(new URL(__vinext_server_url_asset0))");
-    expect(mixed).toContain(registrationImport("__vinext_server_url_asset0", workerFile));
-    expect(mixed).not.toContain("__vinext_server_url_asset1");
   });
 
   // Next.js applies its edge asset loader to every `new URL(<file>,
