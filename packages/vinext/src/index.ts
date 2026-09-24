@@ -1546,10 +1546,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const isMultiStageServerEnvironment = (environment: {
     config: { build: { ssr?: unknown }; consumer?: string };
     name: string;
-  }): boolean => {
-    if (environment.name === "client") return Boolean(environment.config.build.ssr);
-    return isServerEnvironment(environment) && (!hasAppDir || environment.name !== "ssr");
-  };
+  }): boolean =>
+    // A `client` environment can inherit a top-level `build.ssr` inside
+    // createBuilder().buildApp(), but it still bundles for the browser beside
+    // the real `ssr` environment. Legacy `vite build --ssr` names its sole
+    // environment `ssr`, so only server consumers ever own stage entries.
+    isServerEnvironment(environment) && (!hasAppDir || environment.name !== "ssr");
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
@@ -4758,7 +4760,7 @@ export const loadServerActionClient = ${
       // Vite resolves build.ssr=true for every server environment. The App
       // Router's named `ssr` environment is still only its HTML renderer; it
       // must never receive deployable request/response stage entries.
-      // Standalone `vite build --ssr` uses the sole `client` environment.
+      // Standalone `vite build --ssr` names its sole environment `ssr`.
       // Pages and adapter-owned server environments retain their own names.
       buildStart() {
         const entries = selectedMultiStageOutput?.entries;
