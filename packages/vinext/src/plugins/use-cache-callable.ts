@@ -8,7 +8,7 @@ import type {
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
 import { parseAstAsync, type Plugin } from "vite";
-import { isPathInside, NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
+import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
@@ -17,14 +17,11 @@ type Program = Awaited<ReturnType<typeof parseAstAsync>>;
 type Options = {
   projectRoot: string;
   cacheRuntime: string;
-  getAppDir: () => string | undefined;
-  matchesPageExtension: (fileName: string) => boolean;
   allowMissingRsc?: boolean;
 };
 
 type CacheWrapperOptions = {
   acceptsSecondArgument: boolean;
-  appPageDefaultExport?: boolean;
   argumentCount?: number;
   serverReferenceId?: string;
 };
@@ -105,23 +102,6 @@ function acceptsSecondArgument(
   );
 }
 
-function isAppPageDefaultExport(
-  options: Options,
-  id: string,
-  name: string,
-  isModuleDirective: boolean,
-): boolean {
-  const appDir = options.getAppDir();
-  if (!isModuleDirective || name !== "default" || !appDir) return false;
-  const modulePath = stripViteModuleQuery(id);
-  const moduleFileName = path.basename(modulePath);
-  return (
-    isPathInside(appDir, modulePath) &&
-    path.parse(moduleFileName).name === "page" &&
-    options.matchesPageExtension(moduleFileName)
-  );
-}
-
 function shouldTransformModuleExport(name: string, id: string, meta: ModuleExportMeta): boolean {
   if (
     meta.isFunction === false &&
@@ -192,18 +172,11 @@ function getFunctionDirectiveExportNames(
 }
 
 function getCacheWrapperOptions(
-  options: Options,
-  id: string,
-  name: string,
-  isModuleDirective: boolean,
   meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
 ): CacheWrapperOptions {
   const argumentCount = getArgumentCount(meta);
   return {
     acceptsSecondArgument: acceptsSecondArgument(meta),
-    ...(isAppPageDefaultExport(options, id, name, isModuleDirective)
-      ? { appPageDefaultExport: true }
-      : {}),
     ...(argumentCount === undefined ? {} : { argumentCount }),
   };
 }
@@ -336,19 +309,21 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           return magicStringTransformResult(result.output, { hires: "boundary", source: id });
         }
 
+        // Page semantics (omitting searchParams) are not decided here: like
+        // Next.js, the page and page metadata call sites pass `$$isPage` to a
+        // cache function, wherever it is defined (see cache-runtime.ts).
         const secureExports = new Set<string>();
         const wrap = (
           value: string,
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-          isModuleDirective: boolean,
         ) => {
           const variant = directiveMatch[1] ?? "";
           const secureName = secureExportName(name);
           secureExports.add(secureName);
           const wrapperOptions = {
-            ...getCacheWrapperOptions(options, id, name, isModuleDirective, meta),
+            ...getCacheWrapperOptions(meta),
             serverReferenceId: `${reference.referenceKey}#${secureName}`,
           };
           return `$$cacheRuntime.registerCachedFunction(${value}, ${JSON.stringify(`${id}:${name}`)}, ${JSON.stringify(variant)}, ${JSON.stringify(wrapperOptions)})`;
@@ -359,9 +334,8 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
           name: string,
           directiveMatch: RegExpMatchArray,
           meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
-          isModuleDirective: boolean,
         ) => {
-          const cached = wrap(value, name, directiveMatch, meta, isModuleDirective);
+          const cached = wrap(value, name, directiveMatch, meta);
           const secureName = secureExportName(name);
           needsReactServer = true;
           return `(${secureName} = $$VinextReactServer.registerServerReference(${cached}, ${JSON.stringify(reference.referenceKey)}, ${JSON.stringify(secureName)}))`;
@@ -380,7 +354,7 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
                 return true;
               },
               runtime: (value, name, meta) =>
-                runtime(value, name, matchUseCacheDirective(moduleDirective), meta, true),
+                runtime(value, name, matchUseCacheDirective(moduleDirective), meta),
             })
           : transforms.transformHoistInlineDirective(code, ast, {
               directive: USE_CACHE_DIRECTIVE_CANDIDATE,
@@ -388,7 +362,7 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
               hoistRuntime: true,
               noExport: true,
               runtime: (value, name, meta) =>
-                runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta, false),
+                runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta),
               encode: (value) => `$$cacheRuntime.encryptCacheCaptures(${value})`,
               decode: (value) => value,
             });

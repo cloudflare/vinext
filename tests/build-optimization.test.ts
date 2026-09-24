@@ -4296,12 +4296,14 @@ describe("createMultiStageChunkFileNames", () => {
           fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
         ).resolves.toContain("export default");
         const outputFiles = await fsp.readdir(outputDir, { recursive: true });
-        const responseStageFile = outputFiles.find((file) =>
+        // The browser `client` environment inherits top-level `build.ssr` in
+        // buildApp(); only the `ssr` environment may emit the stage entry.
+        const responseStageFiles = outputFiles.filter((file) =>
           /^vinext-response-stage-.+\.js$/.test(path.basename(file)),
         );
-        expect(responseStageFile).toBeDefined();
+        expect(responseStageFiles).toHaveLength(1);
         const responseStage = (await import(
-          `${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`
+          `${pathToFileURL(path.join(outputDir, responseStageFiles[0]!)).href}?output=${index}`
         )) as { load(): Promise<unknown> };
         await expect(responseStage.load()).resolves.toBeDefined();
       }

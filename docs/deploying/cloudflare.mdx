@@ -56,6 +56,8 @@ Add your Cloudflare account ID to `wrangler.jsonc`, or set `CLOUDFLARE_ACCOUNT_I
 
 The deploy command validates the initialized setup, builds all Vite environments, and deploys the Worker. Use `--preview` for the preview environment.
 
+To prefill configured caches before promoting a new Worker version, see [Cache warming](/docs/guides/caching#cache-warming).
+
 ## Use Workers bindings
 
 Import `env` from `cloudflare:workers` in Server Components, Route Handlers, and Server Actions. Configure each binding in Wrangler as usual.

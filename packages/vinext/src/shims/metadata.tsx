@@ -12,6 +12,7 @@ import type {
 } from "@vinext/types/next/upstream/dist/lib/metadata/types/metadata-interface";
 import { makeThenableParams, type ThenableParamsObserver } from "./thenable-params.js";
 import { isAbsoluteOrProtocolRelativeUrl } from "./url-utils.js";
+import { withUseCachePageMarker } from "./internal/app-page-props-cache-key.js";
 
 const USE_CACHE_FUNCTION_SYMBOL = Symbol.for("vinext.useCacheFunction");
 const USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL = Symbol.for("vinext.useCacheAcceptsSecondArgument");
@@ -36,13 +37,16 @@ export async function resolveModuleViewport(
 ): Promise<Viewport | null> {
   if (typeof mod.generateViewport === "function") {
     const asyncParams = makeThenableParams(params);
+    // Only page segments receive searchParams; like Next.js
+    // (resolve-metadata.ts `createSegmentProps`), a "use cache" page resolver
+    // also gets the `$$isPage` marker.
     const props =
       searchParams === undefined
         ? { params: asyncParams }
-        : {
+        : withUseCachePageMarker(mod.generateViewport, {
             params: asyncParams,
             searchParams: makeThenableParams(searchParams, searchParamsObserver),
-          };
+          });
     return await mod.generateViewport(props, parent);
   }
   if (mod.viewport && typeof mod.viewport === "object") {
@@ -595,13 +599,16 @@ export async function resolveModuleMetadata(
     // Next.js 16 passes params/searchParams as Promises (async pattern).
     // makeThenableParams() normalises null-prototype + preserves sync access.
     const asyncParams = makeThenableParams(params);
+    // Only page segments receive searchParams; like Next.js
+    // (resolve-metadata.ts `createSegmentProps`), a "use cache" page resolver
+    // also gets the `$$isPage` marker.
     const props =
       searchParams === undefined
         ? { params: asyncParams }
-        : {
+        : withUseCachePageMarker(generateMetadata, {
             params: asyncParams,
             searchParams: makeThenableParams(searchParams, searchParamsObserver),
-          };
+          });
     // Next.js always passes `parent` to regular resolvers. Cached resolvers are
     // different: an unused parent must stay out of the cache key because it can
     // contain non-serializable values such as a URL metadataBase. The use-cache

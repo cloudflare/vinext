@@ -1,5 +1,8 @@
 import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
-import { markAppPagePropsForUseCache } from "vinext/shims/internal/app-page-props-cache-key";
+import {
+  markAppPagePropsForUseCache,
+  withUseCachePageMarker,
+} from "vinext/shims/internal/app-page-props-cache-key";
 import { isNextRouterError } from "vinext/shims/navigation-server";
 import { collectAppPageSearchParams } from "./app-page-head.js";
 import {
@@ -259,10 +262,14 @@ export function probeAppPage(options: {
   const asyncSearchParams = makeObservedAppPageSearchParamsThenable(pageSearchParams, {
     observeReactPromiseStatus: true,
   });
-  const pageProps = markAppPagePropsForUseCache({
-    params: asyncRouteParams,
-    searchParams: asyncSearchParams,
-  });
+  // Match the render path: a "use cache" page component also receives the
+  // `$$isPage` marker, so probe and render derive the same cache key.
+  const pageProps = markAppPagePropsForUseCache(
+    withUseCachePageMarker(pageComponent, {
+      params: asyncRouteParams,
+      searchParams: asyncSearchParams,
+    }),
+  );
   const result = (pageComponent as (props: Record<string, unknown>) => unknown)(pageProps);
   if (isPromiseLike(result)) {
     return result.then(async (resolved) => {

@@ -4358,33 +4358,33 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@oxlint-tsgolint/darwin-arm64@7.0.2001':
-    resolution: {integrity: sha512-CUJEdbSZ54+Xy9OXqOhWLTKZKV0BBiV7C2i/ygyVmXtkUNXx5YCzN8DpSSshTAKktoL7S+tnQ/ftFG/i7X896w==}
+  '@oxlint-tsgolint/darwin-arm64@7.0.2003':
+    resolution: {integrity: sha512-TgV33rXr6ueXBwvc+0nssUkTBSXHJxv77I8p4RCjDjCnvexHtmoPiudVRDfj3S3puMDdeQdHW6jdUgUPy3nr/w==}
     cpu: [arm64]
     os: [darwin]
 
-  '@oxlint-tsgolint/darwin-x64@7.0.2001':
-    resolution: {integrity: sha512-pXfBb5BqONCcgrXQNUZWXgiYmRSWJzd97S8i41VVOh6ut0tyo+cJ5FKFpczDHxiVNfj/3e7c9B4MtztNdpIVCw==}
+  '@oxlint-tsgolint/darwin-x64@7.0.2003':
+    resolution: {integrity: sha512-hY3FMAjIaPDdK3FNxyRXRfHPOFeoBn6dmnLyKZgQ2IbTTD1adXhl6PfCIqHhCPvurigv7nf7mYuWZZ19MmJzmg==}
     cpu: [x64]
     os: [darwin]
 
-  '@oxlint-tsgolint/linux-arm64@7.0.2001':
-    resolution: {integrity: sha512-roP7zujb/QDPzDwEKsFFpzNHHy91/Y7oX9vQXk78ekyZtcQj1QXDIMH33gjDdHBfRl4K9pZ36xhRgrP4Zr+R8A==}
+  '@oxlint-tsgolint/linux-arm64@7.0.2003':
+    resolution: {integrity: sha512-eAET4JpyfBbg8SO0K74o4R55tEjVC292pIyxGOw2XGf8x/HrPNyxwQ478jMYOM54FIVOHc8sJ6VRHxluy6lucw==}
     cpu: [arm64]
     os: [linux]
 
-  '@oxlint-tsgolint/linux-x64@7.0.2001':
-    resolution: {integrity: sha512-UDezNqdECVmngu2TPnjaS1YoAmcTaBoI5lV9vk3VahBxoi+I5r9k3iJTT7qZoYWOXTD/7T7bNcwRgrocR6BscQ==}
+  '@oxlint-tsgolint/linux-x64@7.0.2003':
+    resolution: {integrity: sha512-GXdyO/XyqDJ3s/llR/oOktLsYNjZtWSQBy0JMc+/0gsNPvTcseKPhn9c6KcFyWmnr6H4vljYALbujonqSzzEGw==}
     cpu: [x64]
     os: [linux]
 
-  '@oxlint-tsgolint/win32-arm64@7.0.2001':
-    resolution: {integrity: sha512-uJZhqB6pdXLuN+AD1F5082byyQti/NPmJA77GtcFlmT2HzRelqbNls3SaIqxpjdFgvSBF9g0yOKGBkGFg7kX8Q==}
+  '@oxlint-tsgolint/win32-arm64@7.0.2003':
+    resolution: {integrity: sha512-TWauXnPfet0VgpmrstoAK58eJ4gbuwPUuUTQmYQAzE/RG1CpnxXtrKUJULf6lyerPE4KN3gM+DflIA1hOH+38Q==}
     cpu: [arm64]
     os: [win32]
 
-  '@oxlint-tsgolint/win32-x64@7.0.2001':
-    resolution: {integrity: sha512-FkDRm8hx9OwzGQqyWG1tO5QrTLRApff9DzSgpz9QZau37BR8d1VYKOxMLGf6shPZntJFoTwIIJYT68VndYDCog==}
+  '@oxlint-tsgolint/win32-x64@7.0.2003':
+    resolution: {integrity: sha512-DoRmfe7j8VqNlukp8liRVW45GQDhzRccNenjD/pdzelgtffW47pCMd1xbJLkPaPbKnTwID3onn3VZlL7JbebEA==}
     cpu: [x64]
     os: [win32]
 
@@ -9329,8 +9329,8 @@ packages:
       vite-plus:
         optional: true
 
-  oxlint-tsgolint@7.0.2001:
-    resolution: {integrity: sha512-KjK/XLcXr1DSyonKhsuFqJRiuKqcyG9j3LJ8nkOsrLzGvodBPqzHOKauy10asLMDI0sUpvb+1sxlzff3udZvfg==}
+  oxlint-tsgolint@7.0.2003:
+    resolution: {integrity: sha512-VnK4zlqgmgq/7ZcjzCk/WpN8kKFsYGcB85Io9qT3wL4K8Un3RKmJkp793crNETieMusPMKOA4a+Mw2wbteI6TQ==}
     hasBin: true
 
   oxlint@1.82.0:
@@ -12475,22 +12475,22 @@ snapshots:
   '@oxfmt/binding-win32-x64-msvc@0.67.0':
     optional: true
 
-  '@oxlint-tsgolint/darwin-arm64@7.0.2001':
+  '@oxlint-tsgolint/darwin-arm64@7.0.2003':
     optional: true
 
-  '@oxlint-tsgolint/darwin-x64@7.0.2001':
+  '@oxlint-tsgolint/darwin-x64@7.0.2003':
     optional: true
 
-  '@oxlint-tsgolint/linux-arm64@7.0.2001':
+  '@oxlint-tsgolint/linux-arm64@7.0.2003':
     optional: true
 
-  '@oxlint-tsgolint/linux-x64@7.0.2001':
+  '@oxlint-tsgolint/linux-x64@7.0.2003':
     optional: true
 
-  '@oxlint-tsgolint/win32-arm64@7.0.2001':
+  '@oxlint-tsgolint/win32-arm64@7.0.2003':
     optional: true
 
-  '@oxlint-tsgolint/win32-x64@7.0.2001':
+  '@oxlint-tsgolint/win32-x64@7.0.2003':
     optional: true
 
   '@oxlint/binding-android-arm-eabi@1.82.0':
@@ -17608,16 +17608,16 @@ snapshots:
       '@oxfmt/binding-win32-x64-msvc': 0.67.0
       vite-plus: 0.3.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
 
-  oxlint-tsgolint@7.0.2001:
+  oxlint-tsgolint@7.0.2003:
     optionalDependencies:
-      '@oxlint-tsgolint/darwin-arm64': 7.0.2001
-      '@oxlint-tsgolint/darwin-x64': 7.0.2001
-      '@oxlint-tsgolint/linux-arm64': 7.0.2001
-      '@oxlint-tsgolint/linux-x64': 7.0.2001
-      '@oxlint-tsgolint/win32-arm64': 7.0.2001
-      '@oxlint-tsgolint/win32-x64': 7.0.2001
+      '@oxlint-tsgolint/darwin-arm64': 7.0.2003
+      '@oxlint-tsgolint/darwin-x64': 7.0.2003
+      '@oxlint-tsgolint/linux-arm64': 7.0.2003
+      '@oxlint-tsgolint/linux-x64': 7.0.2003
+      '@oxlint-tsgolint/win32-arm64': 7.0.2003
+      '@oxlint-tsgolint/win32-x64': 7.0.2003
 
-  oxlint@1.82.0(oxlint-tsgolint@7.0.2001)(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@20.19.43)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@20.19.43)(typescript@5.9.3))(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)):
+  oxlint@1.82.0(oxlint-tsgolint@7.0.2003)(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@20.19.43)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@20.19.43)(typescript@5.9.3))(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)):
     optionalDependencies:
       '@oxlint/binding-android-arm-eabi': 1.82.0
       '@oxlint/binding-android-arm64': 1.82.0
@@ -17638,10 +17638,10 @@ snapshots:
       '@oxlint/binding-win32-arm64-msvc': 1.82.0
       '@oxlint/binding-win32-ia32-msvc': 1.82.0
       '@oxlint/binding-win32-x64-msvc': 1.82.0
-      oxlint-tsgolint: 7.0.2001
+      oxlint-tsgolint: 7.0.2003
       vite-plus: 0.3.2(@opentelemetry/api@1.9.1)(@types/node@20.19.43)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@20.19.43)(typescript@5.9.3))(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)
 
-  oxlint@1.82.0(oxlint-tsgolint@7.0.2001)(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)):
+  oxlint@1.82.0(oxlint-tsgolint@7.0.2003)(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)):
     optionalDependencies:
       '@oxlint/binding-android-arm-eabi': 1.82.0
       '@oxlint/binding-android-arm64': 1.82.0
@@ -17662,7 +17662,7 @@ snapshots:
       '@oxlint/binding-win32-arm64-msvc': 1.82.0
       '@oxlint/binding-win32-ia32-msvc': 1.82.0
       '@oxlint/binding-win32-x64-msvc': 1.82.0
-      oxlint-tsgolint: 7.0.2001
+      oxlint-tsgolint: 7.0.2003
       vite-plus: 0.3.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
 
   p-filter@2.1.0:
@@ -18992,8 +18992,8 @@ snapshots:
       '@vitest/spy': 4.1.11
       '@vitest/utils': 4.1.11
       oxfmt: 0.67.0(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@20.19.43)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@20.19.43)(typescript@5.9.3))(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))
-      oxlint: 1.82.0(oxlint-tsgolint@7.0.2001)(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@20.19.43)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@20.19.43)(typescript@5.9.3))(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))
-      oxlint-tsgolint: 7.0.2001
+      oxlint: 1.82.0(oxlint-tsgolint@7.0.2003)(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@20.19.43)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@20.19.43)(typescript@5.9.3))(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))
+      oxlint-tsgolint: 7.0.2003
       vite: '@voidzero-dev/vite-plus-core@0.3.2(@types/node@20.19.43)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0)'
       vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@20.19.43)(@vitest/browser-preview@4.1.11)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(@voidzero-dev/vite-plus-core@0.3.2(@types/node@20.19.43)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@5.9.3)(yaml@2.9.0))(msw@2.14.6(@types/node@20.19.43)(typescript@5.9.3))
     optionalDependencies:
@@ -19049,8 +19049,8 @@ snapshots:
       '@vitest/spy': 4.1.11
       '@vitest/utils': 4.1.11
       oxfmt: 0.67.0(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))
-      oxlint: 1.82.0(oxlint-tsgolint@7.0.2001)(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))
-      oxlint-tsgolint: 7.0.2001
+      oxlint: 1.82.0(oxlint-tsgolint@7.0.2003)(vite-plus@0.3.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))
+      oxlint-tsgolint: 7.0.2003
       vite: '@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
       vitest: 4.1.11(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/browser-preview@4.1.11)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))
     optionalDependencies:
