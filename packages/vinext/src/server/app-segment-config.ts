@@ -602,6 +602,12 @@ export function hasAppPageGenerateStaticParamsAtLastDynamicSegment(
  * - Otherwise a route is static when it has no dynamic segments, or when
  *   `generateStaticParams` sits at or below its last dynamic segment.
  *
+ * Next.js also treats a route as SSG when an ancestor's `generateStaticParams`
+ * returns every pathname param (`hadAllParamsGenerated`). That depends on the
+ * generator's output, which vinext doesn't compute per request, so such a
+ * route is treated as dynamic here. Adding `generateStaticParams` to the last
+ * dynamic segment (even returning `[]`) opts it in, on both.
+ *
  * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts#L2333-L2408
  */
 export function isAppPageStaticEligible(options: {
