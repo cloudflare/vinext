@@ -15,6 +15,7 @@ import {
 } from "../packages/vinext/src/shims/cache.js";
 import {
   buildSearchParamsReadRenderObservation,
+  malformedPrerenderObservations,
   queryInvariantPrerenderObservations,
 } from "./render-observation-test-helpers.js";
 
@@ -176,7 +177,7 @@ describe("buildPrerenderKVPairs", () => {
     }
   });
 
-  it("skips App pages whose render read searchParams or carries no observation", () => {
+  it("skips App pages whose observations lack the proof, are malformed or are missing", () => {
     writePrerenderFixture(
       {
         buildId: "build-unproven",
@@ -199,10 +200,23 @@ describe("buildPrerenderKVPairs", () => {
             router: "app",
             renderObservations: undefined,
           },
+          ...malformedPrerenderObservations().map(({ observations }, index) => ({
+            route: `/bogus-${index}`,
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: observations,
+          })),
           { route: "/about", status: "rendered", revalidate: 60, router: "app" },
         ],
       },
       {
+        ...Object.fromEntries(
+          malformedPrerenderObservations().map((_, index) => [
+            `bogus-${index}.html`,
+            "<html>bogus</html>",
+          ]),
+        ),
         "search.html": "<html>Search</html>",
         "search.rsc": "flight",
         "legacy.html": "<html>Legacy</html>",

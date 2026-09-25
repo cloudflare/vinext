@@ -9,7 +9,12 @@
  * HTML is written or read in any other way. Only prerender servers
  * (`VINEXT_PRERENDER=1`) append it.
  */
-import type { RenderObservation } from "./cache-proof.js";
+import {
+  ALL_RENDER_REQUEST_API_KINDS,
+  type RenderObservation,
+  type RenderObservationCompleteness,
+  type RenderRequestApiStatus,
+} from "./cache-proof.js";
 
 /** The observations of a prerendered App page's render, one per stored artifact. */
 export type PrerenderRenderObservations = {
@@ -77,18 +82,30 @@ export function isPrerenderRenderObservations(
   return isRenderObservationShape(html) && isRenderObservationShape(rsc);
 }
 
+const RENDER_OBSERVATION_COMPLETENESS: ReadonlySet<unknown> =
+  new Set<RenderObservationCompleteness>(["complete", "partial", "unknown"]);
+const RENDER_REQUEST_API_KINDS: ReadonlySet<unknown> = new Set(ALL_RENDER_REQUEST_API_KINDS);
+const RENDER_REQUEST_API_STATUSES: ReadonlySet<unknown> = new Set<RenderRequestApiStatus>([
+  "notObserved",
+  "observed",
+  "unknown",
+]);
+
+/**
+ * Whether `value` holds every field the searchParams proof reads, with values
+ * it accepts, so reading a malformed observation yields no proof instead of
+ * throwing.
+ */
 function isRenderObservationShape(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const observation = value as { completeness?: unknown; requestApis?: unknown };
   return (
-    typeof observation.completeness === "string" &&
+    RENDER_OBSERVATION_COMPLETENESS.has(observation.completeness) &&
     Array.isArray(observation.requestApis) &&
-    observation.requestApis.every(
-      (requestApi: unknown) =>
-        typeof requestApi === "object" &&
-        requestApi !== null &&
-        typeof (requestApi as { kind?: unknown }).kind === "string" &&
-        typeof (requestApi as { status?: unknown }).status === "string",
-    )
+    observation.requestApis.every((requestApi: unknown) => {
+      if (typeof requestApi !== "object" || requestApi === null) return false;
+      const { kind, status } = requestApi as { kind?: unknown; status?: unknown };
+      return RENDER_REQUEST_API_KINDS.has(kind) && RENDER_REQUEST_API_STATUSES.has(status);
+    })
   );
 }

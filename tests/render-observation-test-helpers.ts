@@ -75,3 +75,42 @@ export function queryInvariantPrerenderObservations(): {
     }),
   };
 }
+
+/**
+ * Prerender observations with a field value the searchParams proof doesn't
+ * accept, one per field it reads. Each must give no seed, without throwing.
+ */
+export function malformedPrerenderObservations(): { label: string; observations: unknown }[] {
+  const corrupt = (change: (observation: Record<string, unknown>) => void): unknown => {
+    const observations = queryInvariantPrerenderObservations();
+    const html: Record<string, unknown> = { ...observations.html };
+    const rsc: Record<string, unknown> = { ...observations.rsc };
+    change(html);
+    change(rsc);
+    return { html, rsc };
+  };
+  return [
+    {
+      label: "bogus request API kind",
+      observations: corrupt((observation) => {
+        observation.requestApis = [{ kind: "bogus", status: "notObserved" }];
+      }),
+    },
+    {
+      label: "bogus request API status",
+      observations: corrupt((observation) => {
+        // Two entries for one kind make the proof rank the statuses.
+        observation.requestApis = [
+          { kind: "searchParams", status: "notObserved" },
+          { kind: "searchParams", status: "bogus" },
+        ];
+      }),
+    },
+    {
+      label: "bogus completeness",
+      observations: corrupt((observation) => {
+        observation.completeness = "bogus";
+      }),
+    },
+  ];
+}

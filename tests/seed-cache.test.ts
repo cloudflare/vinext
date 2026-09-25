@@ -24,6 +24,7 @@ import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed
 import { readAppPageCacheResponse } from "../packages/vinext/src/server/app-page-cache.js";
 import {
   buildSearchParamsReadRenderObservation,
+  malformedPrerenderObservations,
   queryInvariantPrerenderObservations,
 } from "./render-observation-test-helpers.js";
 
@@ -251,11 +252,24 @@ describe("seedMemoryCacheFromPrerender", () => {
             router: "app",
             renderObservations: { html: { completeness: "complete" } },
           },
+          ...malformedPrerenderObservations().map(({ observations }, index) => ({
+            route: `/bogus-${index}`,
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: observations,
+          })),
         ],
       },
       {
         "null.html": "<html>null</html>",
         "partial.html": "<html>partial</html>",
+        ...Object.fromEntries(
+          malformedPrerenderObservations().map((_, index) => [
+            `bogus-${index}.html`,
+            "<html>bogus</html>",
+          ]),
+        ),
       },
     );
 

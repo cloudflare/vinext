@@ -3,7 +3,10 @@ import {
   appendPrerenderRenderObservations,
   extractPrerenderRenderObservations,
 } from "../packages/vinext/src/server/prerender-render-observations.js";
-import { queryInvariantPrerenderObservations } from "./render-observation-test-helpers.js";
+import {
+  malformedPrerenderObservations,
+  queryInvariantPrerenderObservations,
+} from "./render-observation-test-helpers.js";
 
 const HTML = "<!DOCTYPE html><html><body><p>page</p></body></html>";
 const MARKER_PREFIX = "<!--vinext-prerender-render-observations:";
@@ -74,6 +77,16 @@ describe("prerender render observations channel", () => {
     ];
     for (const payload of malformed) {
       expect(extractPrerenderRenderObservations(withMarker(HTML, payload))).toEqual({
+        html: HTML,
+        renderObservations: null,
+      });
+    }
+  });
+
+  it("rejects field values the searchParams proof doesn't accept", () => {
+    for (const { label, observations } of malformedPrerenderObservations()) {
+      const payload = encodeURIComponent(JSON.stringify(observations));
+      expect(extractPrerenderRenderObservations(withMarker(HTML, payload)), label).toEqual({
         html: HTML,
         renderObservations: null,
       });
