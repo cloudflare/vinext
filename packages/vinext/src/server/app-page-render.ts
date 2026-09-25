@@ -57,6 +57,7 @@ import {
   buildRenderRequestApiObservations,
   createStaticLayoutArtifactReuseDecision,
   DEFAULT_CACHE_VARIANT_BUDGET,
+  type CacheProofOutputScope,
   type StaticLayoutCacheProofOutputScope,
 } from "./cache-proof.js";
 import type {
@@ -82,10 +83,12 @@ import {
   createAppPageHtmlOutputScope,
   createAppPageRenderObservation,
   createAppPageRscOutputScope,
-  createEmptyAppPageRenderObservationState,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
-import type { PrerenderRenderObservations } from "./prerender-manifest.js";
+import {
+  appendPrerenderRenderObservations,
+  type PrerenderRenderObservations,
+} from "./prerender-render-observations.js";
 import type {
   AppLayoutParamAccessTracker,
   StaticLayoutObservationSkipRejection,
@@ -1451,6 +1454,20 @@ async function renderAppPageLifecycleImpl(
   const draftCookie = options.getDraftModeCookieHeader();
   let dynamicUsedBeforeContextCleanup = dynamicUsedDuringRender;
 
+  // The prerender returns before the cache finalizer, so it appends this
+  // render's observations to its HTML body for the seeds. They're built only
+  // once SSR and the RSC capture have finished: a speculative prerender sends
+  // its shell before Suspense content renders, and a late searchParams read
+  // must still reach the observation. Without a way to read the state, no
+  // observation is sent, and the page isn't seeded.
+  const prerenderRenderObservations =
+    options.isPrerender === true && !htmlRender.shellErrorRecovered
+      ? observeFinishedPrerenderRender(options, htmlRender, htmlOutputScope, rscOutputScope)
+      : null;
+  if (prerenderRenderObservations) {
+    htmlStream = appendPrerenderRenderObservations(htmlStream, prerenderRenderObservations);
+  }
+
   // Defer clearRequestContext() until the HTML stream is fully consumed by the
   // HTTP layer. The RSC/SSR pipeline is lazy — Server Components execute while
   // the response body is being pulled, not when the stream handle is returned.
@@ -1484,32 +1501,6 @@ async function renderAppPageLifecycleImpl(
     renderEnd,
     responseKind: "html",
   });
-
-  // The prerender returns before the cache finalizer, so its response carries
-  // this render's observations for the seeds, read at the same point as its
-  // Cache-Control. Peek, not consume: the done script still reads the state
-  // while the HTML streams.
-  let prerenderRenderObservations: PrerenderRenderObservations | undefined;
-  if (options.isPrerender === true) {
-    const observationState =
-      options.peekRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
-    const cacheTags = options.getPageTags();
-    const observePrerender = (output: typeof htmlOutputScope) =>
-      createAppPageRenderObservation({
-        boundaryOutcome: { kind: "success" },
-        cacheability: "public",
-        cacheTags,
-        cleanPathname: options.cleanPathname,
-        completeness: "complete",
-        output,
-        params: options.navigationParams,
-        state: observationState,
-      });
-    prerenderRenderObservations = {
-      html: observePrerender(htmlOutputScope),
-      rsc: observePrerender(rscOutputScope),
-    };
-  }
 
   if (htmlRender.shellErrorRecovered) {
     const response = buildAppPageHtmlResponse(safeHtmlStream, {
@@ -1548,7 +1539,6 @@ async function renderAppPageLifecycleImpl(
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
-      renderObservations: prerenderRenderObservations,
       requestCacheLife: requestCacheLifeForPrerender,
       timing: htmlResponseTiming,
     });
@@ -1627,7 +1617,6 @@ async function renderAppPageLifecycleImpl(
     isEdgeRuntime: options.isEdgeRuntime,
     middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,
-    renderObservations: prerenderRenderObservations,
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
   });
@@ -1652,6 +1641,46 @@ async function renderAppPageLifecycleImpl(
       revalidateSeconds,
     }),
   });
+}
+
+/**
+ * The HTML and RSC observations of a prerender's render, built once SSR has
+ * rendered everything (`renderComplete`) and the RSC capture has drained.
+ * Registered here so the continuation runs in the render's request context.
+ * Resolves `null` when the state can't be read or the render failed.
+ */
+function observeFinishedPrerenderRender(
+  options: RenderAppPageLifecycleOptions,
+  htmlRender: { capturedRscData: Promise<ArrayBuffer> | null; renderComplete: Promise<void> },
+  htmlOutputScope: CacheProofOutputScope,
+  rscOutputScope: CacheProofOutputScope,
+): Promise<PrerenderRenderObservations | null> {
+  const peekRenderObservationState = options.peekRenderObservationState;
+  if (!peekRenderObservationState) return Promise.resolve(null);
+  return Promise.all([htmlRender.renderComplete, htmlRender.capturedRscData]).then(
+    () => {
+      try {
+        // Peek, not consume: nothing here owns the state.
+        const state = peekRenderObservationState();
+        const cacheTags = options.getPageTags();
+        const observe = (output: CacheProofOutputScope) =>
+          createAppPageRenderObservation({
+            boundaryOutcome: { kind: "success" },
+            cacheability: "public",
+            cacheTags,
+            cleanPathname: options.cleanPathname,
+            completeness: "complete",
+            output,
+            params: options.navigationParams,
+            state,
+          });
+        return { html: observe(htmlOutputScope), rsc: observe(rscOutputScope) };
+      } catch {
+        return null;
+      }
+    },
+    () => null,
+  );
 }
 
 async function settleCapturedRscRenderForCacheMetadata(

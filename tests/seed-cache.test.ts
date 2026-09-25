@@ -230,6 +230,38 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(await getCacheHandler().get(appIsrCacheKey("/about", "rsc", buildId))).toBeNull();
   });
 
+  it("does not seed a page whose manifest observations are malformed", async () => {
+    const buildId = "seed-malformed-observation-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/null",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: { html: null, rsc: null },
+          },
+          {
+            route: "/partial",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: { html: { completeness: "complete" } },
+          },
+        ],
+      },
+      {
+        "null.html": "<html>null</html>",
+        "partial.html": "<html>partial</html>",
+      },
+    );
+
+    await expect(seedMemoryCacheFromPrerender(serverDir)).resolves.toBe(0);
+  });
+
   it("serves query-bearing requests from a seeded entry", async () => {
     const buildId = "seed-query-hit-test";
     setupPrerenderFixture(

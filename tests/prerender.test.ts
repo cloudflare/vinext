@@ -26,10 +26,11 @@ import {
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
+import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
 import {
-  VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
-  VINEXT_PRERENDER_SPECULATIVE_HEADER,
-} from "../packages/vinext/src/server/headers.js";
+  appendPrerenderRenderObservations,
+  type PrerenderRenderObservations,
+} from "../packages/vinext/src/server/prerender-render-observations.js";
 import { queryInvariantPrerenderObservations } from "./render-observation-test-helpers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
@@ -92,6 +93,17 @@ function runtimeRscDoneScript(): string {
 
 function runtimeRscDoneScriptWithCacheMetadata(): string {
   return `<script>Object.assign(${RSC_RUNTIME_BOOTSTRAP_EXPRESSION},{"initialCacheKind":"static"});${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true</script>`;
+}
+
+/** An HTML body as a prerender server sends it, with the render's observations. */
+function withPrerenderRenderObservations(
+  html: string,
+  renderObservations: PrerenderRenderObservations,
+): Promise<string> {
+  const stream = new Response(html).body!;
+  return new Response(
+    appendPrerenderRenderObservations(stream, Promise.resolve(renderObservations)),
+  ).text();
 }
 
 function legacyRscChunkScript(chunk: string | [3, string]): string {
@@ -576,64 +588,78 @@ describe("prerenderApp — RSC extraction", () => {
     }
   });
 
-  it("records the render's observations in the manifest for the seeds", async () => {
-    const root = tmpDir("vinext-prerender-render-observation-");
-    const outDir = path.join(root, "out");
-    const appDir = path.join(root, "app");
-    fs.mkdirSync(appDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(appDir, "page.tsx"),
-      "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
-    );
-
+  it("records the render's observations in the manifest and strips them from the HTML", async () => {
     const renderObservations = queryInvariantPrerenderObservations();
-    const server = createServer((req, res) => {
-      if (req.url === "/__vinext_nonexistent_for_404__") {
-        res.statusCode = 404;
-        res.end("<html><body>not found</body></html>");
-        return;
+    const document =
+      "<html><body>" +
+      runtimeRscChunkScript('0:["$","div",null,{"children":"page"}]\n') +
+      runtimeRscDoneScript() +
+      "</body></html>";
+
+    for (const rscFetchedSeparately of [false, true]) {
+      const root = tmpDir("vinext-prerender-render-observation-");
+      const outDir = path.join(root, "out");
+      const appDir = path.join(root, "app");
+      fs.mkdirSync(appDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(appDir, "page.tsx"),
+        "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
+      );
+      // Without embedded chunks the prerender renders the RSC payload
+      // separately, and this HTML render's observations don't describe it.
+      const html = rscFetchedSeparately ? "<html><body>custom</body></html>" : document;
+      const body = await withPrerenderRenderObservations(html, renderObservations);
+      const server = createServer((req, res) => {
+        if (req.url === "/__vinext_nonexistent_for_404__") {
+          res.statusCode = 404;
+          res.end("<html><body>not found</body></html>");
+          return;
+        }
+        if (req.headers.rsc === "1") {
+          res.setHeader("content-type", "text/x-component");
+          res.end('0:["$","div",null,{"children":"separate"}]\n');
+          return;
+        }
+        res.setHeader("content-type", "text/html");
+        res.end(body);
+      });
+
+      const port = await listen(server);
+      try {
+        const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+        const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        const routes = await appRouter(appDir);
+        const config = await resolveNextConfig({});
+
+        const prerenderResult = await prerenderApp({
+          mode: "default",
+          rscBundlePath: path.join(root, "dist", "server", "index.js"),
+          routes,
+          outDir,
+          config,
+          _prodServer: { server, port },
+        });
+
+        // The written artifact is byte-identical to the body without the marker.
+        expect(fs.readFileSync(path.join(outDir, "index.html"), "utf-8")).toBe(html);
+        const rendered = findRoute(prerenderResult.routes, "/");
+        expect(rendered?.status).toBe("rendered");
+        const index = JSON.parse(
+          fs.readFileSync(path.join(outDir, "vinext-prerender.json"), "utf8"),
+        );
+        const manifestRoute = index.routes.find((route: { route: string }) => route.route === "/");
+        if (rscFetchedSeparately) {
+          expect(rendered).not.toHaveProperty("renderObservations");
+          expect(manifestRoute).not.toHaveProperty("renderObservations");
+        } else {
+          expect(rendered).toMatchObject({ renderObservations });
+          expect(manifestRoute).toMatchObject({ renderObservations });
+        }
+      } finally {
+        await closeServer(server);
+        fs.rmSync(root, { recursive: true, force: true });
       }
-      res.setHeader("content-type", "text/html");
-      res.setHeader(
-        VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
-        encodeURIComponent(JSON.stringify(renderObservations)),
-      );
-      res.end(
-        "<html><body>" +
-          runtimeRscChunkScript('0:["$","div",null,{"children":"page"}]\n') +
-          runtimeRscDoneScript() +
-          "</body></html>",
-      );
-    });
-
-    const port = await listen(server);
-    try {
-      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
-      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
-      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
-      const routes = await appRouter(appDir);
-      const config = await resolveNextConfig({});
-
-      const prerenderResult = await prerenderApp({
-        mode: "default",
-        rscBundlePath: path.join(root, "dist", "server", "index.js"),
-        routes,
-        outDir,
-        config,
-        _prodServer: { server, port },
-      });
-
-      expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
-        status: "rendered",
-        renderObservations,
-      });
-      const index = JSON.parse(fs.readFileSync(path.join(outDir, "vinext-prerender.json"), "utf8"));
-      expect(index.routes.find((route: { route: string }) => route.route === "/")).toMatchObject({
-        renderObservations,
-      });
-    } finally {
-      await closeServer(server);
-      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -1765,6 +1791,112 @@ describe("prerenderApp — default mode (app-basic)", () => {
 });
 
 // ─── Hybrid: runPrerender with app/ + pages/ ──────────────────────────────────
+
+describe("prerenderApp — speculative render observations", () => {
+  let root: string;
+  let serverDir: string;
+  let results: PrerenderRouteResult[];
+
+  beforeAll(async () => {
+    root = tmpDir("vinext-prerender-late-search-params-");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(path.join(appDir, "late"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "layout.tsx"),
+      "export default function RootLayout({ children }: { children: React.ReactNode }) {\n" +
+        "  return <html><body>{children}</body></html>;\n}\n",
+    );
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export default function Page() { return <p>home</p>; }\n",
+    );
+    fs.writeFileSync(
+      path.join(appDir, "late", "loading.tsx"),
+      "export default function Loading() { return <p>loading</p>; }\n",
+    );
+    // No route config, so the prerender is speculative and returns after the
+    // shell. The page suspends first and reads searchParams afterwards.
+    fs.writeFileSync(
+      path.join(appDir, "late", "page.tsx"),
+      [
+        '"use client";',
+        'import { use } from "react";',
+        "let ready: Promise<void> | undefined;",
+        "export default function Page({",
+        "  searchParams,",
+        "}: {",
+        "  searchParams: Promise<Record<string, string | string[] | undefined>>;",
+        "}) {",
+        "  use((ready ??= new Promise((resolve) => setTimeout(resolve, 200))));",
+        "  const { q } = use(searchParams);",
+        '  return <p>{typeof q === "string" ? q : "(none)"}</p>;',
+        "}",
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(path.join(root, "package.json"), '{ "type": "module" }\n');
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "node_modules"),
+    );
+
+    const rscBundlePath = await buildAppFixture(root);
+    serverDir = tmpDir("vinext-prerender-late-search-params-server-");
+
+    const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+    const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const previousNextPhase = process.env.NEXT_PHASE;
+    process.env.NEXT_PHASE = "phase-production-server";
+    try {
+      const prerenderResult = await prerenderApp({
+        mode: "default",
+        rscBundlePath,
+        routes: await appRouter(appDir),
+        outDir: path.join(serverDir, "prerendered-routes"),
+        manifestDir: serverDir,
+        config: await resolveNextConfig({ buildId: "late-search-params" }),
+      });
+      results = prerenderResult.routes;
+    } finally {
+      if (previousNextPhase === undefined) delete process.env.NEXT_PHASE;
+      else process.env.NEXT_PHASE = previousNextPhase;
+    }
+  }, 120_000);
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(serverDir, { recursive: true, force: true });
+  });
+
+  it("gives a page that reads searchParams after the shell no proof and no seed", async () => {
+    const { hasQueryInvariantRenderProof } =
+      await import("../packages/vinext/src/server/cache-proof.js");
+    const { seedMemoryCacheFromPrerender } =
+      await import("../packages/vinext/src/server/seed-cache.js");
+
+    const late = findRoute(results, "/late");
+    expect(late?.status).toBe("rendered");
+    if (late?.status === "rendered") {
+      expect(hasQueryInvariantRenderProof(late.renderObservations?.html)).toBe(false);
+      expect(hasQueryInvariantRenderProof(late.renderObservations?.rsc)).toBe(false);
+    }
+    const home = findRoute(results, "/");
+    if (home?.status === "rendered") {
+      expect(hasQueryInvariantRenderProof(home.renderObservations?.html)).toBe(true);
+    }
+
+    const seededKeys: string[] = [];
+    await seedMemoryCacheFromPrerender(serverDir, {
+      buildAppPageHtmlKey: (pathname) => `${pathname}:html`,
+      buildAppPageRscKey: (pathname) => `${pathname}:rsc`,
+      async writeAppPageEntry(key): Promise<void> {
+        seededKeys.push(key);
+      },
+    });
+    expect(seededKeys).toEqual(["/:html", "/:rsc"]);
+  });
+});
 
 describe("runPrerender — hybrid app+pages (app-basic)", () => {
   let manifestDir: string;

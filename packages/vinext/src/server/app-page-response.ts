@@ -22,11 +22,7 @@ import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
-import {
-  applyPrerenderCacheLifeHeader,
-  applyPrerenderRenderObservationHeader,
-} from "./prerender-cache-life-header.js";
-import type { PrerenderRenderObservations } from "./prerender-manifest.js";
+import { applyPrerenderCacheLifeHeader } from "./prerender-cache-life-header.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 
 export type AppPageMiddlewareContext = {
@@ -105,8 +101,6 @@ type BuildAppPageHtmlResponseOptions = {
   isEdgeRuntime?: boolean;
   middlewareContext: AppPageMiddlewareContext;
   policy: AppPageResponsePolicy;
-  /** The prerender's HTML and RSC render observations, for its seeds. */
-  renderObservations?: PrerenderRenderObservations;
   requestCacheLife?: AppPagePrerenderCacheLife | null;
   timing?: AppPageResponseTiming;
 };
@@ -413,7 +407,6 @@ export function buildAppPageHtmlResponse(
   }
   applyPrerenderCacheLifeHeader(headers, options.requestCacheLife);
   applyPrerenderCacheTagsHeader(headers, options.cacheTags);
-  applyPrerenderRenderObservationHeader(headers, options.renderObservations);
 
   applyTimingHeader(headers, options.timing);
 

@@ -53,12 +53,12 @@ import {
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
-  VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { hasQueryInvariantRenderProof } from "../packages/vinext/src/server/cache-proof.js";
-import type { PrerenderRenderObservations } from "../packages/vinext/src/server/prerender-manifest.js";
+import { getQueryInvariantSeedObservations } from "../packages/vinext/src/server/prerender-manifest.js";
+import { extractPrerenderRenderObservations } from "../packages/vinext/src/server/prerender-render-observations.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import type { IsrWritePolicy } from "../packages/vinext/src/server/isr-cache.js";
@@ -2050,7 +2050,7 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("carries the prerender's HTML and RSC render observations for its seeds", async () => {
+  it("appends the prerender's HTML and RSC render observations to its body", async () => {
     const common = createCommonOptions();
     let requestApis: ("headers" | "searchParams")[] = [];
     const consumeRenderObservationState = vi.fn(() => ({ dynamicFetches: [], requestApis }));
@@ -2075,8 +2075,6 @@ describe("app page render lifecycle", () => {
                 controller.close();
                 return;
               }
-              // Recorded while the render runs, so the response must be built
-              // from the settled render's state.
               requestApis = readInRender ? [readInRender] : [];
               controller.enqueue(new TextEncoder().encode("flight-data"));
               sent = true;
@@ -2085,43 +2083,123 @@ describe("app page render lifecycle", () => {
         },
         revalidateSeconds: 60,
       });
-    const readObservations = (response: Response): PrerenderRenderObservations => {
-      const header = response.headers.get(VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER);
-      expect(header).not.toBeNull();
-      return JSON.parse(decodeURIComponent(header!));
-    };
 
-    const response = await renderPrerender("headers");
-    const observations = readObservations(response);
-    expect(observations.html.output.kind).toBe("app-html");
-    expect(observations.rsc.output.kind).toBe("app-rsc");
-    for (const observation of [observations.html, observations.rsc]) {
-      expect(observation.completeness).toBe("complete");
-      expect(observation.cacheTags).toEqual(["_N_T_/posts/post", "test-update-tag"]);
-      expect(observation.requestApis).toContainEqual({ kind: "headers", status: "observed" });
+    const { html, renderObservations } = extractPrerenderRenderObservations(
+      await (await renderPrerender("headers")).text(),
+    );
+    expect(html).toBe("<html>page</html>");
+    expect(renderObservations?.html.output.kind).toBe("app-html");
+    expect(renderObservations?.rsc.output.kind).toBe("app-rsc");
+    for (const observation of [renderObservations?.html, renderObservations?.rsc]) {
+      expect(observation?.completeness).toBe("complete");
+      expect(observation?.cacheTags).toEqual(["_N_T_/posts/post", "test-update-tag"]);
+      expect(observation?.requestApis).toContainEqual({ kind: "headers", status: "observed" });
       expect(hasQueryInvariantRenderProof(observation)).toBe(true);
     }
-    await expect(response.text()).resolves.toBe("<html>page</html>");
 
-    const searchParamsObservations = readObservations(await renderPrerender("searchParams"));
-    expect(hasQueryInvariantRenderProof(searchParamsObservations.html)).toBe(false);
-    expect(hasQueryInvariantRenderProof(searchParamsObservations.rsc)).toBe(false);
+    const searchParamsRead = extractPrerenderRenderObservations(
+      await (await renderPrerender("searchParams")).text(),
+    ).renderObservations;
+    expect(searchParamsRead).not.toBeNull();
+    expect(hasQueryInvariantRenderProof(searchParamsRead?.html)).toBe(false);
+    expect(hasQueryInvariantRenderProof(searchParamsRead?.rsc)).toBe(false);
     // Peeked, not consumed: the done script still reads the state while the
     // HTML streams.
     expect(consumeRenderObservationState).not.toHaveBeenCalled();
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
-  it("does not send prerender render observations outside prerendering", async () => {
+  it("observes a speculative prerender only once SSR has finished rendering", async () => {
+    // A speculative prerender returns after the SSR shell. A client page that
+    // reads searchParams inside Suspense does so after that, and the read must
+    // still reach the observation, or query requests would hit the seed.
+    const common = createCommonOptions();
+    let requestApis: ("searchParams" | "headers")[] = [];
+    let pageTags = ["_N_T_/posts/post"];
+    const renderComplete = createDeferred<void>();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      getPageTags() {
+        return pageTags;
+      },
+      isPrerender: true,
+      isProduction: true,
+      isSpeculativePrerender: true,
+      loadSsrHandler: vi.fn(async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: { sideStream?: ReadableStream<Uint8Array> },
+        ) {
+          if (options?.sideStream) {
+            void options.sideStream.getReader().cancel();
+          }
+          return {
+            htmlStream: createStream(["<html>shell</html>"]),
+            metadataReady: Promise.resolve(),
+            renderComplete: renderComplete.promise,
+            capturedRscData: Promise.resolve(new ArrayBuffer(0)),
+            shellErrorRecovered: false,
+          };
+        },
+      })),
+      peekRenderObservationState() {
+        return { dynamicFetches: [], requestApis };
+      },
+      revalidateSeconds: null,
+    });
+
+    const body = response.text();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The Suspense content renders after the shell was returned.
+    requestApis = ["searchParams"];
+    pageTags = ["_N_T_/posts/post", "late-tag"];
+    renderComplete.resolve();
+
+    const { html, renderObservations } = extractPrerenderRenderObservations(await body);
+    expect(html).toBe("<html>shell</html>");
+    expect(renderObservations).not.toBeNull();
+    expect(hasQueryInvariantRenderProof(renderObservations?.html)).toBe(false);
+    expect(hasQueryInvariantRenderProof(renderObservations?.rsc)).toBe(false);
+    expect(renderObservations?.html.cacheTags).toEqual(["_N_T_/posts/post", "late-tag"]);
+    expect(
+      getQueryInvariantSeedObservations({
+        route: "/posts/post",
+        status: "rendered",
+        router: "app",
+        ...(renderObservations ? { renderObservations } : {}),
+      }),
+    ).toBeNull();
+  });
+
+  it("sends no prerender observations when the render state can't be read", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isPrerender: true,
+      isProduction: true,
+      peekRenderObservationState: undefined,
+      revalidateSeconds: 60,
+    });
+
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("does not append prerender render observations outside prerendering", async () => {
     const common = createCommonOptions();
 
     const response = await renderAppPageLifecycle({
       ...common.options,
       isProduction: true,
+      peekRenderObservationState() {
+        return { dynamicFetches: [], requestApis: [] };
+      },
       revalidateSeconds: 60,
     });
 
-    expect(response.headers.get(VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER)).toBeNull();
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 

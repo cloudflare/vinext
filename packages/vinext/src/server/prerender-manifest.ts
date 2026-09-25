@@ -1,11 +1,11 @@
 import fs from "node:fs";
-import { hasQueryInvariantRenderProof, type RenderObservation } from "./cache-proof.js";
+import { hasQueryInvariantRenderProof } from "./cache-proof.js";
+import {
+  isPrerenderRenderObservations,
+  type PrerenderRenderObservations,
+} from "./prerender-render-observations.js";
 
-/** The observations of a prerendered App page's render, one per stored artifact. */
-export type PrerenderRenderObservations = {
-  html: RenderObservation;
-  rsc: RenderObservation;
-};
+export type { PrerenderRenderObservations };
 
 export type PrerenderManifestRoute = {
   route: string;
@@ -76,7 +76,7 @@ export function getQueryInvariantSeedObservations(
 ): PrerenderRenderObservations | null {
   const observations = route.renderObservations;
   if (
-    !observations ||
+    !isPrerenderRenderObservations(observations) ||
     !hasQueryInvariantRenderProof(observations.html) ||
     !hasQueryInvariantRenderProof(observations.rsc)
   ) {

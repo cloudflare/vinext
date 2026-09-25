@@ -23,10 +23,11 @@ import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
+import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import {
-  buildPregeneratedConcretePathTable,
+  extractPrerenderRenderObservations,
   type PrerenderRenderObservations,
-} from "../server/prerender-manifest.js";
+} from "../server/prerender-render-observations.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
@@ -47,7 +48,6 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
-  VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -1663,7 +1663,11 @@ export async function prerenderApp({
               };
             }
 
-            const html = await response.text();
+            // The render's observations trail the body; strip them before the
+            // HTML is used in any other way.
+            const { html, renderObservations } = extractPrerenderRenderObservations(
+              await response.text(),
+            );
             // Prefer the response side channel so single-process and pooled
             // prerender record the same cache-life metadata; still consume the
             // process-local value to drain/fallback when no header exists.
@@ -1673,7 +1677,7 @@ export async function prerenderApp({
               linkHeader,
               html,
               ok: true,
-              renderObservations: readPrerenderRenderObservationHeader(response.headers),
+              renderObservations,
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
               tags: cacheTags,
@@ -1725,7 +1729,12 @@ export async function prerenderApp({
         // short-circuits the App Router pipeline with a custom 200 HTML
         // response that never went through createRscEmbedTransform.
         let rscData = extractRscPayloadFromPrerenderedHtml(html);
+        // The observations describe the render this HTML and its embedded RSC
+        // payload came from.
+        let renderObservations = htmlRender.renderObservations;
         if (rscData === null) {
+          // A separately rendered RSC payload has no observation of its own.
+          renderObservations = null;
           const rscHeaders = new Headers({ Accept: "text/x-component", RSC: "1" });
           if (prerenderRouteParamsHeader !== null) {
             rscHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
@@ -1789,6 +1798,15 @@ export async function prerenderApp({
         // Seed the same unclamped claim the runtime write path persists.
         const renderedStale = resolveClientStaleTimeSeconds(htmlRender.requestCacheLife);
 
+        // Error-boundary renders and middleware responses carry none, so a
+        // warning would fire on healthy builds; keep it behind the cache debug
+        // flag.
+        if (!renderObservations && process.env.NEXT_PRIVATE_DEBUG_CACHE) {
+          console.debug(
+            `[vinext] prerender: ${urlPath} has no render observations, so it won't be seeded`,
+          );
+        }
+
         return {
           route: routePattern,
           status: "rendered",
@@ -1800,9 +1818,7 @@ export async function prerenderApp({
           ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
           ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
-          ...(htmlRender.renderObservations
-            ? { renderObservations: htmlRender.renderObservations }
-            : {}),
+          ...(renderObservations ? { renderObservations } : {}),
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
@@ -1876,7 +1892,7 @@ export async function prerenderApp({
         () => rscHandler(notFoundRequest),
       );
       if (notFoundRes.status === 404) {
-        const html404 = await notFoundRes.text();
+        const { html: html404 } = extractPrerenderRenderObservations(await notFoundRes.text());
         results.push({
           route: "/404",
           status: "rendered",
@@ -1976,31 +1992,6 @@ function readPrerenderCacheTagsHeader(headers: Headers): string[] {
   const value = headers.get(NEXT_CACHE_TAGS_HEADER);
   if (!value) return [];
   return [...new Set(value.split(",").filter(Boolean))];
-}
-
-function readPrerenderRenderObservationHeader(
-  headers: Headers,
-): PrerenderRenderObservations | null {
-  const value = headers.get(VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER);
-  if (!value) return null;
-
-  try {
-    const parsed = JSON.parse(decodeURIComponent(value)) as {
-      html?: unknown;
-      rsc?: unknown;
-    };
-    return isRenderObservationShape(parsed.html) && isRenderObservationShape(parsed.rsc)
-      ? (parsed as PrerenderRenderObservations)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function isRenderObservationShape(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const observation = value as { completeness?: unknown; requestApis?: unknown };
-  return typeof observation.completeness === "string" && Array.isArray(observation.requestApis);
 }
 
 function resolveRenderedExpireSeconds(options: {
