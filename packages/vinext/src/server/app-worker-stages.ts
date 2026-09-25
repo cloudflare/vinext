@@ -1,4 +1,4 @@
-import { keepOnlyRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
+import { keepOnlyValidatedRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type {
   VinextResponseStageCacheability,
@@ -120,15 +120,16 @@ export function prepareSharedAppPageDispatch(
 
 /**
  * Build the query-free cache identity of a shared App page dispatch. The user
- * query leaves both the URL and `resolvedUrl`; the `.rsc` suffix, `_rsc`, and
- * the render mode stay because they select the representation.
+ * query leaves both the URL and `resolvedUrl`; the `.rsc` suffix, an RSC
+ * request's validated `_rsc`, and the render mode stay because they select the
+ * representation.
  */
 export function createSharedAppPageCacheIdentity(
   request: Request,
   props: AppMatchedWorkerResponseStageProps,
 ): NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]> {
   const url = new URL(request.url);
-  keepOnlyRscCacheBustingSearchParam(url);
+  keepOnlyValidatedRscCacheBustingSearchParam(url, props.isRscRequest);
   const searchIndex = props.resolvedUrl.indexOf("?");
   return {
     props: {

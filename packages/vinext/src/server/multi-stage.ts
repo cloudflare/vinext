@@ -44,8 +44,8 @@ export type VinextResponseStageDispatchOptions = {
    * Everything else in the contract above still applies.
    *
    * The identity drops the user query from the URL and `resolvedUrl`, keeping
-   * framework representation selectors: the `.rsc` suffix, the `_rsc`
-   * parameter, and the render mode. That is safe only because completed-response
+   * framework representation selectors: the `.rsc` suffix, the render mode,
+   * and, for RSC requests only, the one validated `_rsc` value. That is safe only because completed-response
    * admission refuses a cacheable App page response unless its render proved
    * it never read `searchParams`. The dispatched request still carries the real
    * query for the render itself. Core omits the identity when a `next.config`

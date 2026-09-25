@@ -15,6 +15,7 @@ import {
   isRscCompatibilityIdCompatible,
   resolveInvalidRscCacheBustingRequest,
   setRscCacheBustingSearchParam,
+  keepOnlyValidatedRscCacheBustingSearchParam,
   stripRscCacheBustingSearchParam,
   VINEXT_RSC_BUILD_ID_HEADER,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -650,5 +651,19 @@ describe("App Router RSC cache-busting", () => {
 
   it("treats missing response compatibility IDs as compatible only when the client has none", () => {
     expect(isRscCompatibilityIdCompatible("compat-a", null)).toBe(true);
+  });
+});
+
+describe("keepOnlyValidatedRscCacheBustingSearchParam", () => {
+  it.each([
+    ["?tab=1&_rsc=abc&_rsc=ignored&%5Frsc=encoded", true, "?_rsc=abc"],
+    ["?%5Frsc=abc&tab=1", true, "?_rsc=abc"],
+    ["?tab=1&_rsc=", true, "?_rsc"],
+    ["?tab=1", true, ""],
+    ["?tab=1&_rsc=abc", false, ""],
+  ])("reduces %s (RSC: %s) to %j", (search, isRscRequest, expected) => {
+    const url = new URL(`https://example.test/page${search}`);
+    keepOnlyValidatedRscCacheBustingSearchParam(url, isRscRequest);
+    expect(url.search).toBe(expected);
   });
 });

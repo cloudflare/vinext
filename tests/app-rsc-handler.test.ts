@@ -639,6 +639,69 @@ describe("createAppRscHandler", () => {
       }
     });
 
+    it("drops _rsc from HTML identities, where it selects no representation", async () => {
+      useQueryFreeIdentityAdapter();
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({ configHeaders: [] });
+
+      await handler(
+        new Request(`https://example.test/docs/about?_rsc=${crypto.randomUUID()}&tab=latest`),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      expect(props).toMatchObject({ isRscRequest: false, kind: "app-page" });
+      expect(new URL(request.url).searchParams.has("_rsc")).toBe(true);
+      expect(options.cacheIdentity?.request.url).toBe("https://example.test/docs/about");
+    });
+
+    it("keeps only the validated _rsc value in contextual RSC identities", async () => {
+      useQueryFreeIdentityAdapter();
+      const route = createPageRoute();
+      const matchRoute = (pathname: string) =>
+        pathname === "/about" ? { params: {}, route } : null;
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("rsc"),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles: [{ source: "/source", destination: "/about" }],
+          fallback: [],
+        },
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+      const headers = createRscRequestHeaders({ nextUrl: "/source" });
+      const rscUrl = await createRscRequestUrl("/docs/source?tab=latest", headers);
+      const hash = new URL(rscUrl, "https://example.test").searchParams.get("_rsc");
+      expect(hash).toBeTruthy();
+
+      await handler(
+        new Request(new URL(`${rscUrl}&_rsc=ignored&%5Frsc=encoded`, "https://example.test"), {
+          headers,
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      // Rewritten RSC requests stay contextual, so the raw URL reaches dispatch.
+      expect(props).toMatchObject({ isRscRequest: true, matchKind: "resolved" });
+      expect(new URL(request.url).searchParams.getAll("_rsc")).toEqual([
+        hash,
+        "ignored",
+        "encoded",
+      ]);
+      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe(`/docs/source?_rsc=${hash}`);
+    });
+
     it("keeps _rsc, the .rsc suffix and the render mode in shared RSC identities", async () => {
       useQueryFreeIdentityAdapter();
       const route = createPageRoute({ canUseCanonicalLoadingShell: true });
