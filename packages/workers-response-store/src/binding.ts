@@ -546,7 +546,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           error: error instanceof Error ? error.message : String(error),
         }),
       );
-      throw error;
+      return false;
     }
   }
 
