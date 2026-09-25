@@ -1306,7 +1306,13 @@ test("a re-store whose R2 rewrite fails leaves the source revision readable", as
   assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
   assert.equal(served.headers.get("X-Workers-Response-Store-Revision"), "1");
   assert.equal(await served.text(), "stale-body");
-  // The metadata still matches the R2 revision, so the stale read claims a retry.
+  // The metadata still matches the R2 revision, so once the retry window ends
+  // a stale read claims a retry.
+  await new Promise((resolve) => setTimeout(resolve, entry.freshUntil - Date.now() + 100));
+  assert.equal(await regenerationCount(), 1);
+  const retrying = await read("/restore-write-lost");
+  assert.equal(retrying.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await retrying.arrayBuffer();
   for (let attempt = 0; attempt < 100 && (await regenerationCount()) < 2; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -2292,7 +2298,7 @@ test("an expired revalidation claim cannot publish after its replacement", async
     entry.activeRevision,
     entry.cacheKey,
     "runtime-cache/poc-v2/claim-replacement",
-    100,
+    entry.freshUntil,
     1,
   );
   const second = await stub.claimRevalidation(
@@ -2300,7 +2306,7 @@ test("an expired revalidation claim cannot publish after its replacement", async
     entry.activeRevision,
     entry.cacheKey,
     "runtime-cache/poc-v2/claim-replacement",
-    102,
+    entry.freshUntil + 2,
     100,
   );
   assert.ok(first);
@@ -2339,7 +2345,7 @@ test("a revalidation claim cannot replace a newer active revision", async () => 
     entry.activeRevision,
     entry.cacheKey,
     "runtime-cache/poc-v2/claim-active-revision",
-    100,
+    entry.freshUntil,
     100,
   );
   assert.ok(claim);
@@ -2461,6 +2467,78 @@ test("only the first re-store of a source state publishes", async () => {
   assert.equal(restored.freshUntil, 5_000);
   assert.equal(restored.swrUntil, 8_000);
   assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("a re-stored entry cannot be claimed before its R2 rewrite lands", async () => {
+  await put("/restore-claim", "seed", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+  });
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+  const prefix = "runtime-cache/poc-v2/restore-claim";
+  const restore = await stub.reserveWrite(entry.keyHash, entry.cacheKey, prefix, Date.now());
+  const retryUntil = entry.freshUntil + 5_000;
+  assert.equal(
+    (
+      await stub.publish(
+        entry.keyHash,
+        restore.revision,
+        {
+          statusText: entry.statusText,
+          responseHeaders: entry.responseHeaders,
+          revalidator: entry.revalidator,
+          cacheTags: [],
+          fenceTags: [],
+          objectKey: restore.objectKey,
+          freshUntil: retryUntil,
+          swrUntil: retryUntil + 60_000,
+        },
+        undefined,
+        restore.objectKey,
+        entry,
+      )
+    ).published,
+    true,
+  );
+
+  // R2 still holds the stale source, so a reader claims the unchanged
+  // revision. The metadata's retry window refuses it until it ends.
+  const claim = (now: number) =>
+    stub.claimRevalidation(entry.keyHash, entry.activeRevision, entry.cacheKey, prefix, now, 100);
+  assert.equal(await claim(entry.freshUntil + 1), null);
+  assert.equal(await claim(retryUntil - 1), null);
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+  assert.ok(await claim(retryUntil));
+});
+
+test("a stale read during a held background re-store write does not regenerate", async () => {
+  await restartWithHeldSecondR2Write("before");
+  await put("/restore-held-claim", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+    revalidator: { fail: true },
+  });
+
+  // The first stale read's regeneration fails, and its re-store publishes
+  // while the R2 rewrite is held.
+  const first = await read("/restore-held-claim");
+  assert.equal(first.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await first.arrayBuffer();
+  let restored = false;
+  for (let attempt = 0; attempt < 100 && !restored; attempt++) {
+    const [entry] = await metadata();
+    restored = entry.freshUntil > Date.now() && (await metadataRowCount("pending_objects")) === 0;
+    if (!restored) await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(restored, "the re-store was not published");
+
+  const second = await read("/restore-held-claim");
+  assert.equal(second.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await second.text(), "stale-body");
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(await regenerationCount(), 1);
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
 });
 
 test("concurrent failed foreground regenerations leave R2 and the metadata in step", async () => {

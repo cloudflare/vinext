@@ -704,6 +704,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       if (entry?.tombstoned || entry?.active_revision !== activeRevision) {
         return null;
       }
+      // The caller read this revision stale from R2, so a fresh entry here has
+      // been re-stored after a failed regeneration and its R2 rewrite has not
+      // landed yet. Its retry window has not ended, so nothing is claimed.
+      if (entry.fresh_until !== null && entry.fresh_until > now) return null;
 
       const storedEntry = storedEntryFromRow(entry);
       if (!storedEntry?.revalidator) return null;
