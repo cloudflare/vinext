@@ -17,6 +17,7 @@ import {
   buildSearchParamsReadRenderObservation,
   malformedPrerenderObservations,
   queryInvariantPrerenderObservations,
+  unstorablePrerenderObservations,
 } from "./render-observation-test-helpers.js";
 
 let serverDir: string;
@@ -177,7 +178,7 @@ describe("buildPrerenderKVPairs", () => {
     }
   });
 
-  it("skips App pages whose observations lack the proof, are malformed or are missing", () => {
+  it("skips App pages whose observations lack the proof, are malformed, unstorable or missing", () => {
     writePrerenderFixture(
       {
         buildId: "build-unproven",
@@ -207,6 +208,13 @@ describe("buildPrerenderKVPairs", () => {
             router: "app",
             renderObservations: observations,
           })),
+          ...unstorablePrerenderObservations().map(({ observations }, index) => ({
+            route: `/unstorable-${index}`,
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: observations,
+          })),
           { route: "/about", status: "rendered", revalidate: 60, router: "app" },
         ],
       },
@@ -215,6 +223,12 @@ describe("buildPrerenderKVPairs", () => {
           malformedPrerenderObservations().map((_, index) => [
             `bogus-${index}.html`,
             "<html>bogus</html>",
+          ]),
+        ),
+        ...Object.fromEntries(
+          unstorablePrerenderObservations().map((_, index) => [
+            `unstorable-${index}.html`,
+            "<html>unstorable</html>",
           ]),
         ),
         "search.html": "<html>Search</html>",

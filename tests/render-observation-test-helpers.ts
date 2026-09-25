@@ -254,3 +254,46 @@ export function malformedPrerenderObservations(): { label: string; observations:
     },
   ];
 }
+
+/**
+ * Valid, query-invariant prerender observations of renders core's
+ * request-time writer would never store: a failed render, a render that isn't
+ * public, or a mounted-slot RSC variant. Each must give no seed.
+ */
+export function unstorablePrerenderObservations(): { label: string; observations: unknown }[] {
+  const { html, rsc } = queryInvariantPrerenderObservations();
+  const rebuild = (
+    change: Partial<Parameters<typeof buildRenderObservation>[0]>,
+    rscOutput: CacheProofOutputScope = rsc.output,
+  ) => {
+    const observe = (observation: RenderObservation, output: CacheProofOutputScope) =>
+      buildRenderObservation({ ...observation, ...change, output });
+    return { html: observe(html, html.output), rsc: observe(rsc, rscOutput) };
+  };
+  return [
+    ...(["private", "uncacheable", "unknown"] as const).map((cacheability) => ({
+      label: `a ${cacheability} render`,
+      observations: rebuild({ cacheability }),
+    })),
+    ...(
+      [
+        { kind: "notFound" },
+        { kind: "error" },
+        { kind: "redirect", location: "/", status: 307 },
+      ] as const
+    ).map((boundaryOutcome) => ({
+      label: `a ${boundaryOutcome.kind} render`,
+      observations: rebuild({ boundaryOutcome }),
+    })),
+    {
+      label: "a mounted-slot RSC variant",
+      observations: rebuild(
+        {},
+        {
+          ...(rsc.output as Extract<CacheProofOutputScope, { kind: "app-rsc" }>),
+          mountedSlotsFingerprint: "slots:0",
+        },
+      ),
+    },
+  ];
+}

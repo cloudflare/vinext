@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { hasQueryInvariantRenderProof } from "./cache-proof.js";
+import { hasQueryInvariantRenderProof, type RenderObservation } from "./cache-proof.js";
 import {
   isPrerenderRenderObservations,
   type PrerenderRenderObservations,
@@ -67,9 +67,17 @@ export function getRenderedMetadataRoutes(
 
 /**
  * The observations a rendered App page's seeds are stored with, or `null` when
- * the seeds must not be written. Every query shares a page's entries, so a
- * seed is stored only when its render is proven to leave the query unread,
- * like core's request-time writes. A route without observations has no proof.
+ * the seeds must not be written. Seeds stand in for core's request-time writes
+ * (`finalizeAppPage*CacheResponse`), so they're only stored with an
+ * observation those would store: a successful, public render of the page's
+ * shared entries, not a mounted-slot RSC variant, proven to leave the query
+ * unread, since every query shares them. A route without observations has no
+ * proof.
+ *
+ * Those writes also skip a render that used a dynamic API, which the
+ * observation doesn't record (a `force-static` `headers()` read, say, isn't
+ * dynamic), so it can't be checked here: the prerender skips a route whose
+ * response it sees turn dynamic.
  */
 export function getQueryInvariantSeedObservations(
   route: PrerenderManifestRoute,
@@ -77,12 +85,21 @@ export function getQueryInvariantSeedObservations(
   const observations = route.renderObservations;
   if (
     !isPrerenderRenderObservations(observations) ||
-    !hasQueryInvariantRenderProof(observations.html) ||
-    !hasQueryInvariantRenderProof(observations.rsc)
+    !isStorableSeedObservation(observations.html) ||
+    !isStorableSeedObservation(observations.rsc)
   ) {
     return null;
   }
   return observations;
+}
+
+function isStorableSeedObservation(observation: RenderObservation): boolean {
+  return (
+    hasQueryInvariantRenderProof(observation) &&
+    observation.boundaryOutcome.kind === "success" &&
+    observation.cacheability === "public" &&
+    (observation.output.kind !== "app-rsc" || observation.output.mountedSlotsFingerprint === null)
+  );
 }
 
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {

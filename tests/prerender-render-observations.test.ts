@@ -13,9 +13,11 @@ import {
   isPrerenderRenderObservations,
   type PrerenderRenderObservations,
 } from "../packages/vinext/src/server/prerender-render-observations.js";
+import { getQueryInvariantSeedObservations } from "../packages/vinext/src/server/prerender-manifest.js";
 import {
   malformedPrerenderObservations,
   queryInvariantPrerenderObservations,
+  unstorablePrerenderObservations,
 } from "./render-observation-test-helpers.js";
 
 const HTML = "<!DOCTYPE html><html><body><p>page</p></body></html>";
@@ -188,6 +190,25 @@ describe("prerender render observations channel", () => {
         html: body,
         renderObservations: null,
       });
+    }
+  });
+
+  it("seeds only observations core's request-time writer would store", () => {
+    const route = { route: "/cached", status: "rendered", router: "app" };
+    const renderObservations = queryInvariantPrerenderObservations();
+    expect(getQueryInvariantSeedObservations({ ...route, renderObservations })).toBe(
+      renderObservations,
+    );
+    for (const { label, observations } of unstorablePrerenderObservations()) {
+      // Valid observations, proven to leave the query unread, but never stored.
+      expect(isPrerenderRenderObservations(observations), label).toBe(true);
+      expect(
+        getQueryInvariantSeedObservations({
+          ...route,
+          renderObservations: observations as PrerenderRenderObservations,
+        }),
+        label,
+      ).toBeNull();
     }
   });
 });

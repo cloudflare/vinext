@@ -26,6 +26,7 @@ import {
   buildSearchParamsReadRenderObservation,
   malformedPrerenderObservations,
   queryInvariantPrerenderObservations,
+  unstorablePrerenderObservations,
 } from "./render-observation-test-helpers.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -231,7 +232,7 @@ describe("seedMemoryCacheFromPrerender", () => {
     expect(await getCacheHandler().get(appIsrCacheKey("/about", "rsc", buildId))).toBeNull();
   });
 
-  it("does not seed a page whose manifest observations are malformed", async () => {
+  it("does not seed a page whose manifest observations are malformed or unstorable", async () => {
     const buildId = "seed-malformed-observation-test";
     setupPrerenderFixture(
       serverDir,
@@ -259,6 +260,13 @@ describe("seedMemoryCacheFromPrerender", () => {
             router: "app",
             renderObservations: observations,
           })),
+          ...unstorablePrerenderObservations().map(({ observations }, index) => ({
+            route: `/unstorable-${index}`,
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: observations,
+          })),
         ],
       },
       {
@@ -268,6 +276,12 @@ describe("seedMemoryCacheFromPrerender", () => {
           malformedPrerenderObservations().map((_, index) => [
             `bogus-${index}.html`,
             "<html>bogus</html>",
+          ]),
+        ),
+        ...Object.fromEntries(
+          unstorablePrerenderObservations().map((_, index) => [
+            `unstorable-${index}.html`,
+            "<html>unstorable</html>",
           ]),
         ),
       },
