@@ -948,6 +948,27 @@ describe("app page render lifecycle", () => {
     });
     expect(linked.headers.get("cache-control")).toBe(neverCache);
     expect(hasFrameworkLinkHeaders(linked.headers)).toBe(true);
+
+    // A response that already carries middleware's Cache-Control keeps it, as
+    // the normal response builders let middleware's policy win.
+    const middlewareCacheControl = "public, max-age=60";
+    const withMiddlewarePolicy = await renderAppPageLifecycle({
+      ...optionsWithoutElement,
+      isStaticEligible: false,
+      middlewareContext: {
+        headers: new Headers({ "cache-control": middlewareCacheControl }),
+        status: null,
+      },
+      async prepareElement() {
+        return {
+          response: new Response("not found", {
+            status: 404,
+            headers: { "cache-control": middlewareCacheControl },
+          }),
+        };
+      },
+    });
+    expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {

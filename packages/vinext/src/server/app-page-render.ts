@@ -62,6 +62,7 @@ import type {
 } from "./client-reuse-manifest.js";
 import {
   applyCdnResponseHeaders,
+  isCdnResponsePolicyHeader,
   NEVER_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
 } from "./cache-control.js";
@@ -327,9 +328,18 @@ function applyRequestCacheLife(options: {
  */
 function applyIneligibleRouteCachePolicy(
   response: Response,
-  options: Pick<RenderAppPageLifecycleOptions, "isDraftMode" | "isStaticEligible">,
+  options: Pick<
+    RenderAppPageLifecycleOptions,
+    "isDraftMode" | "isStaticEligible" | "middlewareContext"
+  >,
 ): Response {
   if (options.isStaticEligible || options.isDraftMode) return response;
+  // Middleware's own cache policy wins, as in the normal response builders.
+  // Only keep what this response already carries from it.
+  const middlewarePolicy = [...(options.middlewareContext.headers ?? [])].filter(
+    ([name, value]) => isCdnResponsePolicyHeader(name) && response.headers.get(name) === value,
+  );
+  if (middlewarePolicy.some(([name]) => name === "cache-control")) return response;
   // Some early responses have immutable headers, so stamp a copy.
   const stamped = preserveFullyBufferedBodyMetadata(
     response,
@@ -337,6 +347,7 @@ function applyIneligibleRouteCachePolicy(
   );
   copyLinkHeaderProvenance(response.headers, stamped.headers);
   applyCdnResponseHeaders(stamped.headers, { cacheControl: NEVER_CACHE_CONTROL });
+  for (const [name, value] of middlewarePolicy) stamped.headers.set(name, value);
   return stamped;
 }
 
