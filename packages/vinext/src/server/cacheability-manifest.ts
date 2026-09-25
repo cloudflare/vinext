@@ -42,7 +42,7 @@ export type CacheabilityManifestRoute = {
   staticRepresentation?: CacheabilityRepresentation;
   /** Exact dynamic paths observed in a mixed or pattern-dynamic route. */
   runtimePaths?: string[];
-  /** Exact paths statically certified by the representation that was probed. */
+  /** Exact paths statically certified per representation. A path may appear in several lists. */
   staticPaths?: Partial<Record<CacheabilityRepresentation, string[]>>;
 };
 
@@ -186,12 +186,15 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
     ...(staticPaths ? { staticPaths } : {}),
   };
 
-  const observedPaths = new Set<string>();
-  for (const tokens of [runtimePaths, ...Object.values(staticPaths ?? {})]) {
+  // A certified App page path is listed under each representation that shares
+  // its render (HTML and its RSC versions). Each list is sorted and unique, and
+  // a runtime-checked path is never also certified static.
+  const runtimePathSet = new Set(
+    (runtimePaths ?? []).map((token) => expandPathToken(pathPrefix, token)!),
+  );
+  for (const tokens of Object.values(staticPaths ?? {})) {
     for (const token of tokens ?? []) {
-      const pathname = expandPathToken(pathPrefix, token)!;
-      if (observedPaths.has(pathname)) return null;
-      observedPaths.add(pathname);
+      if (runtimePathSet.has(expandPathToken(pathPrefix, token)!)) return null;
     }
   }
   return key === cacheabilityManifestRouteKey(parsed.kind, parsed.pattern) ? parsed : null;

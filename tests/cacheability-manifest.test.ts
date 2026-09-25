@@ -163,6 +163,40 @@ describe("cacheability manifest", () => {
     ).toBeNull();
   });
 
+  it("certifies one path under each representation of its static render", () => {
+    const promotedRoute: CacheabilityManifestRoute = {
+      ...route,
+      pathPrefix: "/products/",
+      runtimePaths: ["dynamic"],
+      state: "runtime-check",
+      staticPaths: { html: ["static"], "rsc-full": ["static"], "rsc-loading-shell": ["static"] },
+    };
+    const manifest = parseCacheabilityManifest(
+      JSON.stringify({ buildId: "build-a", routes: { [key]: promotedRoute }, version: 1 }),
+      "build-a",
+    );
+    expect(manifest).not.toBeNull();
+    const parsed = findCacheabilityManifestRoute(manifest!, route.kind, route.pattern)!;
+    for (const representation of ["html", "rsc-full", "rsc-loading-shell"] as const) {
+      expect(cacheabilityManifestRouteState(parsed, "/products/static", representation)).toBe(
+        "static-candidate",
+      );
+    }
+
+    // A path is still listed once per list, and never both runtime-checked and static.
+    for (const malformedRoute of [
+      { ...promotedRoute, staticPaths: { html: ["static"], "rsc-full": ["dynamic"] } },
+      { ...promotedRoute, staticPaths: { html: ["static"], "rsc-full": ["static", "static"] } },
+    ]) {
+      expect(
+        parseCacheabilityManifest(
+          JSON.stringify({ buildId: "build-a", routes: { [key]: malformedRoute }, version: 1 }),
+          "build-a",
+        ),
+      ).toBeNull();
+    }
+  });
+
   it("maps Pages data and HTML requests to one concrete route pathname", () => {
     expect(cacheabilityRoutePathname("/docs/products/one?currency=gbp", "html")).toBe(
       "/docs/products/one",
