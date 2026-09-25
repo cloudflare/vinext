@@ -743,7 +743,20 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     options.clearRequestContext();
     return applyIneligibleRouteCachePolicy(
       new Response("Page has no default export", { status: 500 }),
-      { isDraftMode, isStaticEligible, middlewareContext: options.middlewareContext },
+      {
+        isDraftMode,
+        isDynamicError,
+        isForceDynamic,
+        isForceStatic,
+        isProduction: options.isProduction,
+        isProgressiveActionRender: options.isProgressiveActionRender === true,
+        isRscRequest: options.isRscRequest,
+        isStaticEligible,
+        middlewareContext: options.middlewareContext,
+        peekDynamicUsage,
+        revalidateSeconds: currentRevalidateSeconds,
+        scriptNonce: options.scriptNonce,
+      },
     );
   }
 
