@@ -2250,6 +2250,72 @@ describe("app page render lifecycle", () => {
     expect(hasQueryInvariantRenderProof(renderObservations?.rsc)).toBe(false);
   });
 
+  it("observes a prerender only once its HTML stream has been consumed", async () => {
+    // SSR has rendered everything and the RSC capture has drained before the
+    // HTML is pulled, but consuming it still runs `useServerInsertedHTML`
+    // callbacks, which can read searchParams. That read must still reach the
+    // observation, or query requests would hit the seed.
+    const common = createCommonOptions();
+    let requestApis: ("searchParams" | "headers")[] = [];
+    const encoder = new TextEncoder();
+    const bodyRead = createDeferred<void>();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isPrerender: true,
+      prerenderObservationNonce: PRERENDER_OBSERVATION_NONCE,
+      isProduction: true,
+      loadSsrHandler: vi.fn(async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: { sideStream?: ReadableStream<Uint8Array> },
+        ) {
+          if (options?.sideStream) {
+            void options.sideStream.getReader().cancel();
+          }
+          return {
+            htmlStream: new ReadableStream<Uint8Array>({
+              start(controller) {
+                controller.enqueue(encoder.encode("<html>page"));
+              },
+              async pull(controller) {
+                // The rest of the HTML is only rendered as the body is read,
+                // and its inserted HTML reads searchParams.
+                await bodyRead.promise;
+                requestApis = ["searchParams"];
+                controller.enqueue(encoder.encode("</html>"));
+                controller.close();
+              },
+            }),
+            metadataReady: Promise.resolve(),
+            renderComplete: Promise.resolve(),
+            capturedRscData: Promise.resolve(new ArrayBuffer(0)),
+            shellErrorRecovered: false,
+          };
+        },
+      })),
+      peekRenderObservationState() {
+        return { dynamicFetches: [], requestApis };
+      },
+      revalidateSeconds: 60,
+    });
+    // The body is read only after SSR and the RSC capture have settled.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const body = response.text();
+    bodyRead.resolve();
+
+    const { html, renderObservations } = extractPrerenderRenderObservations(
+      await body,
+      PRERENDER_OBSERVATION_NONCE,
+    );
+    expect(html).toBe("<html>page</html>");
+    expect(renderObservations).not.toBeNull();
+    expect(hasQueryInvariantRenderProof(renderObservations?.html)).toBe(false);
+    expect(hasQueryInvariantRenderProof(renderObservations?.rsc)).toBe(false);
+  });
+
   it("sends no prerender observations when the render state can't be read", async () => {
     const common = createCommonOptions();
 

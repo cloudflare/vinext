@@ -56,17 +56,30 @@ export function createPrerenderObservationNonce(): string {
 
 /**
  * Append the observations, framed with the request's nonce, to the end of a
- * prerender's HTML stream once the upstream has closed and `observations` has
- * settled. `null` appends nothing.
+ * prerender's HTML stream once the upstream has closed and the observations
+ * have settled. `null` appends nothing.
+ *
+ * `observe` gets a promise that resolves once the upstream HTML has closed:
+ * HTML consumption can still run render code (`useServerInsertedHTML`
+ * callbacks, say), so the observations must wait for it. `observe` is called
+ * now, not from `flush`, so its continuations run in the caller's request
+ * context rather than the stream consumer's.
  */
 export function appendPrerenderRenderObservations(
   stream: ReadableStream<Uint8Array>,
   nonce: string,
-  observations: Promise<PrerenderRenderObservations | null>,
+  observe: (upstreamClosed: Promise<void>) => Promise<PrerenderRenderObservations | null>,
 ): ReadableStream<Uint8Array> {
+  let closeUpstream!: () => void;
+  const observations = observe(
+    new Promise<void>((resolve) => {
+      closeUpstream = resolve;
+    }),
+  );
   return stream.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>({
       async flush(controller) {
+        closeUpstream();
         const settled = await observations;
         if (!settled) return;
         controller.enqueue(

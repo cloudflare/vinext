@@ -1462,11 +1462,12 @@ async function renderAppPageLifecycleImpl(
 
   // The prerender returns before the cache finalizer, so it appends this
   // render's observations to its HTML body for the seeds. They're built only
-  // once SSR and the RSC capture have finished: a speculative prerender sends
-  // its shell before Suspense content renders, and a late searchParams read
-  // must still reach the observation. Without a way to read the state, or
-  // without the prerender's nonce to frame them, no observation is sent, and
-  // the page isn't seeded.
+  // once SSR, the RSC capture, and the HTML stream have finished: a
+  // speculative prerender sends its shell before Suspense content renders,
+  // consuming the HTML still runs `useServerInsertedHTML` callbacks, and a
+  // late searchParams read must still reach the observation. Without a way
+  // to read the state, or without the prerender's nonce to frame them, no
+  // observation is sent, and the page isn't seeded.
   const prerenderObservationNonce =
     options.isPrerender === true &&
     !htmlRender.shellErrorRecovered &&
@@ -1477,7 +1478,14 @@ async function renderAppPageLifecycleImpl(
     htmlStream = appendPrerenderRenderObservations(
       htmlStream,
       prerenderObservationNonce,
-      observeFinishedPrerenderRender(options, htmlRender, htmlOutputScope, rscOutputScope),
+      (htmlClosed) =>
+        observeFinishedPrerenderRender(
+          options,
+          htmlRender,
+          htmlClosed,
+          htmlOutputScope,
+          rscOutputScope,
+        ),
     );
   }
 
@@ -1658,19 +1666,23 @@ async function renderAppPageLifecycleImpl(
 
 /**
  * The HTML and RSC observations of a prerender's render, built once SSR has
- * rendered everything (`renderComplete`) and the RSC capture has drained.
- * Registered here so the continuation runs in the render's request context.
- * Resolves `null` when the state can't be read or the render failed.
+ * rendered everything (`renderComplete`), the RSC capture has drained, and
+ * the HTML stream has closed (`htmlClosed`): consuming the HTML still runs
+ * `useServerInsertedHTML` callbacks, which can read searchParams after
+ * `renderComplete`. Registered here so the continuation runs in the render's
+ * request context. Resolves `null` when the state can't be read or the render
+ * failed.
  */
 function observeFinishedPrerenderRender(
   options: RenderAppPageLifecycleOptions,
   htmlRender: { capturedRscData: Promise<ArrayBuffer> | null; renderComplete: Promise<void> },
+  htmlClosed: Promise<void>,
   htmlOutputScope: CacheProofOutputScope,
   rscOutputScope: CacheProofOutputScope,
 ): Promise<PrerenderRenderObservations | null> {
   const peekRenderObservationState = options.peekRenderObservationState;
   if (!peekRenderObservationState) return Promise.resolve(null);
-  return Promise.all([htmlRender.renderComplete, htmlRender.capturedRscData]).then(
+  return Promise.all([htmlRender.renderComplete, htmlRender.capturedRscData, htmlClosed]).then(
     () => {
       try {
         // Peek, not consume: nothing here owns the state.

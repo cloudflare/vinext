@@ -109,7 +109,7 @@ function withPrerenderRenderObservations(
 ): Promise<string> {
   const stream = new Response(html).body!;
   return new Response(
-    appendPrerenderRenderObservations(stream, nonce, Promise.resolve(renderObservations)),
+    appendPrerenderRenderObservations(stream, nonce, () => Promise.resolve(renderObservations)),
   ).text();
 }
 

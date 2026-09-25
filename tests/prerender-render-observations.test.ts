@@ -11,6 +11,7 @@ import {
   createPrerenderObservationNonce,
   extractPrerenderRenderObservations,
   isPrerenderRenderObservations,
+  type PrerenderRenderObservations,
 } from "../packages/vinext/src/server/prerender-render-observations.js";
 import {
   malformedPrerenderObservations,
@@ -27,11 +28,11 @@ function withMarker(html: string, nonce: string, payload: string): string {
 
 async function appendTo(
   html: string,
-  observations: Parameters<typeof appendPrerenderRenderObservations>[2],
+  observations: Promise<PrerenderRenderObservations | null>,
   nonce = NONCE,
 ): Promise<string> {
   return new Response(
-    appendPrerenderRenderObservations(new Response(html).body!, nonce, observations),
+    appendPrerenderRenderObservations(new Response(html).body!, nonce, () => observations),
   ).text();
 }
 
