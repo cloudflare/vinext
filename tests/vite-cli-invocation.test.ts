@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
+import path from "node:path";
 import {
   claimViteCliBuildInvocation,
   getViteCliInvocation,
+  isViteCliConfigFile,
   isViteCliInvocation,
 } from "../packages/vinext/src/utils/vite-cli-invocation.js";
 
@@ -67,6 +69,7 @@ describe("isViteCliInvocation", () => {
       command: "build",
       mode: "staging",
       root: expect.stringMatching(/\/app$/),
+      rootArg: "app",
     });
   });
 
@@ -84,6 +87,7 @@ describe("isViteCliInvocation", () => {
       command: "build",
       mode: "staging",
       root: expect.stringMatching(/\/app$/),
+      rootArg: "app",
     });
     expect(
       getViteCliInvocation([
@@ -97,6 +101,7 @@ describe("isViteCliInvocation", () => {
       command: "build",
       mode: "staging",
       root: expect.stringMatching(/\/app$/),
+      rootArg: "app",
     });
   });
 
@@ -107,7 +112,21 @@ describe("isViteCliInvocation", () => {
       command: "dev",
       mode: "development",
       root: expect.stringMatching(/\/app$/),
+      rootArg: "app",
     });
+  });
+
+  it("keeps the next positional argument after a negated option", () => {
+    expect(
+      getViteCliInvocation([
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        "build",
+        "--no-watch",
+        "false",
+        "project",
+      ]),
+    ).toMatchObject({ command: "build", root: path.resolve("false"), rootArg: "false" });
   });
 
   it.each(["build", "dev"] as const)("resolves %s mode after the project root", (command) => {
@@ -120,7 +139,7 @@ describe("isViteCliInvocation", () => {
         "--mode",
         "staging",
       ]),
-    ).toEqual({ command, mode: "staging", root: expect.stringMatching(/\/app$/) });
+    ).toEqual({ command, mode: "staging", root: expect.stringMatching(/\/app$/), rootArg: "app" });
   });
 
   it("does not treat Vite preview as a dev invocation", () => {
@@ -137,6 +156,7 @@ describe("isViteCliInvocation", () => {
       command: "dev",
       mode: "development",
       root: expect.stringMatching(/\/build$/),
+      rootArg: "build",
     });
   });
 
@@ -155,6 +175,48 @@ describe("isViteCliInvocation", () => {
       command: "dev",
       mode: "staging",
       root: expect.stringMatching(/\/--mode$/),
+      rootArg: "--mode",
     });
+  });
+
+  it("identifies the CLI config rather than a nested server's config", () => {
+    const originalArgv = process.argv;
+    try {
+      process.argv = ["node", "/project/node_modules/vite/bin/vite.js", "dev"];
+      expect(isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"))).toBe(true);
+      expect(isViteCliConfigFile(path.join(process.cwd(), "nested/vite.config.ts"))).toBe(false);
+      expect(isViteCliConfigFile(path.join(process.cwd(), "alternate.config.ts"))).toBe(false);
+      expect(
+        isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"), {
+          root: process.cwd(),
+          configFile: "vite.config.ts",
+        }),
+      ).toBe(false);
+      expect(isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"), {})).toBe(true);
+
+      process.argv.push("--config", "config/vite.config.ts");
+      expect(isViteCliConfigFile(path.join(process.cwd(), "config/vite.config.ts"))).toBe(true);
+      expect(isViteCliConfigFile(path.join(process.cwd(), "vite.config.ts"))).toBe(false);
+    } finally {
+      process.argv = originalArgv;
+    }
+  });
+
+  it("matches each command's repeated config precedence", () => {
+    for (const [command, expected] of [
+      ["dev", "second.config.ts"],
+      ["build", "first.config.ts"],
+    ] as const) {
+      const invocation = getViteCliInvocation([
+        "node",
+        "/project/node_modules/vite/bin/vite.js",
+        command,
+        "--config",
+        "first.config.ts",
+        "--config",
+        "second.config.ts",
+      ]);
+      expect(invocation?.configFile).toBe(path.resolve(expected));
+    }
   });
 });

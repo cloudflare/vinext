@@ -384,7 +384,13 @@ describe("generateRouteTypes", () => {
 
         const pnpm = "pnpm";
         runCommand(pnpm, ["pack", "--pack-destination", packDir], path.resolve("packages/types"));
-        runCommand(pnpm, ["pack", "--pack-destination", packDir], path.resolve("packages/vinext"));
+        // CI builds vinext before unit tests. Do not rerun prepack here: it deletes
+        // the shared dist directory while other test workers import from it.
+        runCommand(
+          pnpm,
+          ["--config.ignore-scripts=true", "pack", "--pack-destination", packDir],
+          path.resolve("packages/vinext"),
+        );
 
         const tarballs = await readdir(packDir);
         const typesTarball = tarballs.find((name) => name.startsWith("vinext-types-"));

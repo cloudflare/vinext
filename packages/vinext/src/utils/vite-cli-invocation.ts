@@ -1,4 +1,6 @@
 import path, { toSlash } from "pathslash";
+import type { InlineConfig } from "vite";
+import { findViteConfigPath } from "./project.js";
 
 type ViteCliCommand = "dev" | "build";
 
@@ -6,6 +8,8 @@ export type ViteCliInvocation = {
   command: ViteCliCommand;
   mode: string;
   root: string;
+  rootArg?: string;
+  configFile?: string;
 };
 
 let buildInvocationClaimed = false;
@@ -76,8 +80,8 @@ function optionConsumesNext(arg: string, next: string | undefined): boolean {
   const option = clusteredShortOption(arg) ?? optionName(arg);
   if (REQUIRED_VALUE_OPTIONS.has(option)) return true;
   if (OPTIONAL_VALUE_OPTIONS.has(option)) return next !== undefined && !next.startsWith("-");
-  const booleanOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
-  return BOOLEAN_OPTIONS.has(booleanOption) && /^(?:true|false)$/.test(next ?? "");
+  // CAC does not consume a separate value following --no-*.
+  return BOOLEAN_OPTIONS.has(option) && /^(?:true|false)$/.test(next ?? "");
 }
 
 function commandArguments(argv: string[]): { command: ViteCliCommand; args: string[] } | undefined {
@@ -119,6 +123,7 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
   if (!invocation) return undefined;
   let mode: string | undefined;
   let root: string | undefined;
+  let configFile: string | undefined;
   for (let index = 0; index < invocation.args.length; index += 1) {
     const arg = invocation.args[index];
     if (arg === "--") {
@@ -126,6 +131,16 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
       break;
     }
     const option = clusteredShortOption(arg) ?? optionName(arg);
+    if (option === "--config" || option === "-c") {
+      const value = optionHasInlineValue(arg)
+        ? arg.slice(arg.indexOf("=") + 1)
+        : invocation.args[++index];
+      // Vite dev keeps the last repeated --config, while Vite build keeps
+      // the first. Match the installed CLI when identifying its config.
+      if (invocation.command === "dev") configFile = value;
+      else configFile ??= value;
+      continue;
+    }
     if (option === "--mode" || option === "-m") {
       mode = optionHasInlineValue(arg) ? arg.slice(arg.indexOf("=") + 1) : invocation.args[++index];
       continue;
@@ -141,7 +156,32 @@ export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvo
     command: invocation.command,
     mode: mode || (invocation.command === "build" ? "production" : "development"),
     root: path.resolve(toSlash(process.cwd()), root ?? "."),
+    ...(root ? { rootArg: root } : {}),
+    ...(configFile ? { configFile: path.resolve(toSlash(process.cwd()), configFile) } : {}),
   };
+}
+
+/** Match the Vite config loaded by the outer CLI, not one loaded by a nested server. */
+export function isViteCliConfigFile(
+  configFile: string,
+  inlineConfig?: Pick<InlineConfig, "root" | "configFile">,
+): boolean {
+  const invocation = getViteCliInvocation();
+  if (!invocation || !path.isAbsolute(configFile)) return false;
+  if (inlineConfig) {
+    if (inlineConfig.root !== invocation.rootArg) return false;
+    if (invocation.configFile) {
+      if (
+        typeof inlineConfig.configFile !== "string" ||
+        path.resolve(toSlash(process.cwd()), inlineConfig.configFile) !== invocation.configFile
+      )
+        return false;
+    } else if (inlineConfig.configFile !== undefined) {
+      return false;
+    }
+  }
+  const expected = invocation.configFile ?? findViteConfigPath(invocation.root);
+  return expected !== undefined && path.resolve(configFile) === expected;
 }
 
 /** Distinguish real Vite/Vite+ CLI commands from programmatic API callers. */
