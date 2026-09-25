@@ -18,6 +18,14 @@ describe("makeThenableParams", () => {
     expect(resolved).toEqual({ then: "foo" });
   });
 
+  it("reads a param named constructor synchronously, like Next.js", async () => {
+    // Next.js doesn't reserve `constructor` (reflect-utils.ts wellKnownProperties).
+    const params = makeThenableParams({ constructor: "c" });
+
+    expect(Reflect.get(params, "constructor")).toBe("c");
+    expect(Reflect.get(await params, "constructor")).toBe("c");
+  });
+
   it("allows sync access to non-well-known params", () => {
     // eslint-disable-next-line unicorn/no-thenable
     const params = makeThenableParams({ slug: "post", then: "foo" });

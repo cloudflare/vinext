@@ -19,11 +19,7 @@ const WELL_KNOWN_PROPERTIES = [
   "valueOf",
   "toLocaleString",
 
-  // Promise prototype. `await` and `then` read `constructor` to find the
-  // promise's species, so a query key of that name would break a real
-  // promise that carries the keys as own properties (the browser's client
-  // page searchParams).
-  "constructor",
+  // Promise prototype
   "then",
   "catch",
   "finally",
@@ -59,4 +55,12 @@ const wellKnownProperties = new Set<PropertyKey>(WELL_KNOWN_PROPERTIES);
 
 export function isWellKnownProperty(prop: PropertyKey): boolean {
   return wellKnownProperties.has(prop);
+}
+
+/**
+ * Methods that ask about the thenable's own properties. They must run on the
+ * proxy, not the underlying promise, so they see the param keys.
+ */
+export function isOwnPropertyCheck(prop: PropertyKey): boolean {
+  return prop === "hasOwnProperty" || prop === "propertyIsEnumerable";
 }

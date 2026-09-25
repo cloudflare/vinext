@@ -232,7 +232,7 @@ describe("createClientPageSearchParams", () => {
     });
 
     // React's bookkeeping and the reserved names aren't query keys.
-    expect(Object.keys(browser)).toEqual(["q", "tag"]);
+    expect(Object.keys(browser)).toEqual(["q", "constructor", "tag"]);
     expect(Object.keys(browser)).toEqual(Object.keys(ssr));
     // What `{ ...searchParams }` copies.
     expect(Object.entries(browser)).toEqual(Object.entries(ssr));
@@ -270,13 +270,20 @@ describe("createClientPageSearchParams", () => {
     expect(Object.getOwnPropertyDescriptor(record, "__proto__")?.value).toBe("x");
   });
 
-  it("stays awaitable with a query key named constructor", async () => {
-    const searchParams = createClientPageSearchParams(new URLSearchParams("constructor=c&q=one"));
+  it("reads a query key named constructor like the SSR thenable, and stays awaitable", async () => {
+    const query = "constructor=c&q=one";
+    const browser = createClientPageSearchParams(new URLSearchParams(query));
+    const ssr = makeClientPageSsrSearchParamsThenable(new URLSearchParams(query), {
+      isPprFallbackShell: true,
+    });
 
-    expect(searchParams.constructor).toBe(Promise);
-    const record = await searchParams;
-    expect(Reflect.get(record, "constructor")).toBe("c");
-    expect(Reflect.get(record, "q")).toBe("one");
+    for (const searchParams of [browser, ssr]) {
+      expect(Reflect.get(searchParams, "constructor")).toBe("c");
+      const record = await searchParams;
+      expect(Reflect.get(record, "constructor")).toBe("c");
+      expect(Reflect.get(record, "q")).toBe("one");
+      await expect(searchParams.finally(() => {})).resolves.toBe(record);
+    }
   });
 });
 

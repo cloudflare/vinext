@@ -26,7 +26,10 @@
  */
 import { createElement, use, useMemo, type ComponentType } from "react";
 import { searchParamsToRecord } from "../utils/query.js";
-import { isWellKnownProperty } from "./internal/thenable-well-known-properties.js";
+import {
+  isOwnPropertyCheck,
+  isWellKnownProperty,
+} from "./internal/thenable-well-known-properties.js";
 import { getNavigationContext } from "./navigation-server.js";
 import { getClientNavigationRenderContext } from "./navigation.js";
 import { RenderedSearchContext } from "./slot.js";
@@ -58,8 +61,10 @@ function defineHiddenProperty(target: object, key: string, value: unknown): void
  * also readable synchronously, except names Promise and React rely on.
  *
  * It matches the SSR thenable (`makeThenableParams`) wherever a page could
- * tell them apart during hydration: it resolves to a plain object, and
- * enumerating it lists only the readable query keys.
+ * tell them apart during hydration, so it is a proxy in the same way: the
+ * query keys are virtual, and the promise's methods run on the promise
+ * itself. As real own properties, a `constructor` key would replace the
+ * promise's species, and `await` would throw.
  */
 export function createClientPageSearchParams(
   searchParams: URLSearchParams | null | undefined,
@@ -71,16 +76,27 @@ export function createClientPageSearchParams(
   // suspending. Hidden from enumeration, as the SSR thenable hides them.
   defineHiddenProperty(promise, "status", "fulfilled");
   defineHiddenProperty(promise, "value", record);
-  for (const key of Object.keys(record)) {
-    if (isWellKnownProperty(key)) continue;
-    Reflect.defineProperty(promise, key, {
-      configurable: true,
-      enumerable: true,
-      value: record[key],
-      writable: true,
-    });
-  }
-  return promise;
+  const isQueryKey = (prop: PropertyKey): prop is string =>
+    typeof prop === "string" && !isWellKnownProperty(prop) && Object.hasOwn(record, prop);
+  return new Proxy(promise, {
+    get(target, prop, receiver) {
+      if (isQueryKey(prop)) return record[prop];
+      const value: unknown = Reflect.get(target, prop);
+      if (typeof value !== "function") return value;
+      return value.bind(isOwnPropertyCheck(prop) ? receiver : target);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      return isQueryKey(prop)
+        ? { configurable: true, enumerable: true, value: record[prop], writable: true }
+        : Reflect.getOwnPropertyDescriptor(target, prop);
+    },
+    has(target, prop) {
+      return isQueryKey(prop) || Reflect.has(target, prop);
+    },
+    ownKeys() {
+      return Object.keys(record).filter((key) => !isWellKnownProperty(key));
+    },
+  });
 }
 
 // Keyed by the page's server-sent props object: Flight builds a new one for

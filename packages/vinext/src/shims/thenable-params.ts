@@ -3,6 +3,7 @@ import {
   getPprFallbackShellState,
 } from "./ppr-fallback-shell.js";
 import {
+  isOwnPropertyCheck,
   isWellKnownProperty,
   type WellKnownProperty,
 } from "./internal/thenable-well-known-properties.js";
@@ -41,10 +42,6 @@ function observeReadableParamKeys<T extends Record<string, unknown>>(
 ): void {
   const keys = Object.keys(plain).filter((key) => !isWellKnownProperty(key));
   observeParamKeys(observer, keys);
-}
-
-function isOwnPropertyCheck(prop: PropertyKey): boolean {
-  return prop === "hasOwnProperty" || prop === "propertyIsEnumerable";
 }
 
 function isPromiseContinuation(prop: PropertyKey): boolean {
