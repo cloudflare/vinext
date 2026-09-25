@@ -25,9 +25,24 @@ type EffectiveAppPageSegmentConfig = {
 type ParallelAppPageSegmentConfigBranch = {
   configLayouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[] | null;
   configLayoutTreePositions?: readonly number[] | null;
+  /** Whether the slot renders its `default` module instead of a matched page. */
+  isDefault?: boolean;
   layout?: AppRouteSegmentConfigModule | null;
+  /** The slot's name, which orders sibling slots in the loader tree. */
+  name?: string;
+  /** The main-tree position of the folder that owns the slot. */
+  ownerTreePosition?: number | null;
   page?: AppRouteSegmentConfigModule | null;
   routeSegments?: readonly string[] | null;
+};
+
+/**
+ * The route's implicit `children` slot. A route that only a nested slot page
+ * materializes renders the owner's `default` (or nothing) as its children.
+ */
+type AppPageChildrenSlot = {
+  ownerTreePath: string;
+  state: "active" | "default" | "unmatched";
 };
 
 type ResolveAppPageSegmentConfigOptions = {
@@ -278,12 +293,13 @@ export function resolveAppPageSegmentConfig(
   let hasOnlyNoStore = false;
   let hasParentDefaultNoStore = false;
 
+  const primaryRuntime = resolveAppPageStaticGenerationRuntime(
+    segments.map((segment) => segment?.runtime),
+  );
+  if (primaryRuntime !== undefined) config.runtime = primaryRuntime;
+
   for (const segment of segments) {
     if (!segment) continue;
-
-    if (isRouteSegmentRuntime(segment.runtime)) {
-      config.runtime = segment.runtime;
-    }
 
     if (isRouteSegmentFetchCache(segment.fetchCache)) {
       const fetchCache = segment.fetchCache;
@@ -416,4 +432,360 @@ export function resolveAppRouteHandlerFetchCacheMode(
 
 export function isEdgeRuntime(runtime: string | undefined): boolean {
   return isEdgeApiRuntime(runtime);
+}
+
+/**
+ * Resolve a `runtime` from a chain of segment values, outermost first: the
+ * last valid value wins, as a child's value wins over its parent's.
+ * `collectAppPageStaticGenerationRuntimes` supplies the value Next.js uses to
+ * decide whether a page can be statically generated.
+ */
+export function resolveAppPageStaticGenerationRuntime(
+  values: readonly unknown[],
+): EffectiveAppPageSegmentConfig["runtime"] {
+  let runtime: EffectiveAppPageSegmentConfig["runtime"];
+  for (const value of values) {
+    if (isRouteSegmentRuntime(value)) runtime = value;
+  }
+  return runtime;
+}
+
+/**
+ * Where the children slot renders its `default` instead of a page: the
+ * main-tree position of the folder that owns it. `null` when children renders
+ * a page.
+ */
+function resolveChildrenDefaultTreePosition(
+  childrenSlot: AppPageChildrenSlot | null | undefined,
+): number | null {
+  if (!childrenSlot || childrenSlot.state === "active") return null;
+  return treePathDepth(childrenSlot.ownerTreePath);
+}
+
+function treePathDepth(treePath: string): number {
+  return treePath.split("/").filter(Boolean).length;
+}
+
+/**
+ * The `runtime` Next.js's default build (Turbopack) derives for an App page,
+ * for `resolveAppPageStaticGenerationRuntime`. It reads the whole loader tree:
+ * at each node the values of every parallel branch (children, matched slots
+ * and slots that render `default`) merge, and a conflict fails the build; the
+ * node's own layout, page or default module then fills in only an unset value.
+ * So an edge slot page next to a Node children page makes the route edge.
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/segment_config.rs#L1323-L1357
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/next_app/app_page_entry.rs#L40-L41
+ */
+export function collectAppPageStaticGenerationRuntimes(
+  options: Parameters<typeof collectAppPageStaticParamsWalkSegments>[0],
+): unknown[] {
+  const segments = collectAppPageStaticParamsWalkSegments(options);
+  const isAt = (segment: AppPageStaticParamsWalkSegment, treePath: readonly number[]) =>
+    segment.treePath.length === treePath.length &&
+    treePath.every((index, depth) => segment.treePath[depth] === index);
+  const resolveAt = (treePath: readonly number[]): EffectiveAppPageSegmentConfig["runtime"] => {
+    let runtime: EffectiveAppPageSegmentConfig["runtime"];
+    for (const segment of segments) {
+      if (
+        segment.treePath.length === treePath.length + 1 &&
+        treePath.every((index, depth) => segment.treePath[depth] === index)
+      ) {
+        runtime = mergeParallelRuntime(runtime, resolveAt(segment.treePath));
+      }
+    }
+    if (runtime !== undefined) return runtime;
+    const own = segments.find((segment) => isAt(segment, treePath));
+    const segmentModule = own?.identity[1] as AppRouteSegmentConfigModule | null | undefined;
+    return resolveAppPageStaticGenerationRuntime([segmentModule?.runtime]);
+  };
+  return [resolveAt([])];
+}
+
+/**
+ * Merge a parallel branch's runtime into its siblings'. Next.js fails the
+ * build when two siblings set different values; the edge one is kept here,
+ * since it keeps the route out of static generation either way.
+ */
+function mergeParallelRuntime(
+  current: EffectiveAppPageSegmentConfig["runtime"],
+  sibling: EffectiveAppPageSegmentConfig["runtime"],
+): EffectiveAppPageSegmentConfig["runtime"] {
+  if (current === undefined) return sibling;
+  if (sibling === undefined || current === sibling) return current;
+  return isEdgeRuntime(current) ? current : sibling;
+}
+
+/**
+ * One segment of an App page's loader tree, as Next.js's build visits it when
+ * it classifies the route.
+ */
+export type AppPageStaticParamsWalkSegment = {
+  /** Whether the segment is a dynamic URL segment (`[slug]`, `[...slug]`). */
+  dynamic: boolean;
+  /** Whether the segment's layout (or page) exports `generateStaticParams`. */
+  generateStaticParams: boolean;
+  /**
+   * The segment name and the file that supplies its module. Next.js visits
+   * each distinct pair once, so a slot's layout-less `[slug]` folder that
+   * repeats the main tree's does not count twice.
+   */
+  identity: readonly [name: string, file: unknown];
+  /**
+   * The segment's position in the loader tree: its index among its parent's
+   * children at each level, from the root. The root layout's segment is `[]`.
+   */
+  treePath: readonly number[];
+};
+
+function compareTreePaths(a: readonly number[], b: readonly number[]): number {
+  if (a.length !== b.length) return a.length - b.length;
+  for (let index = 0; index < a.length; index++) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+}
+
+/**
+ * Whether `generateStaticParams` is exported at or below the route's last
+ * dynamic segment: by that segment's layout, a deeper layout, or the page.
+ * Next.js classifies such a route as SSG (static generation with an on-demand
+ * fallback). A dynamic-segment route without it is dynamic (ƒ) and is never
+ * full-page cached.
+ *
+ * Port of Next.js's `lastDynamicSegmentHadGenerateStaticParams` walk: segments
+ * are visited breadth-first, a dynamic segment without `generateStaticParams`
+ * clears the flag, and any segment with it sets the flag.
+ * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/static-paths/app.ts#L926-L935
+ * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/segment-config/app/app-segments.ts#L72-L126
+ */
+export function lastDynamicSegmentHasGenerateStaticParams(
+  segments: readonly AppPageStaticParamsWalkSegment[],
+): boolean {
+  const visited: AppPageStaticParamsWalkSegment["identity"][] = [];
+  const ordered = [...segments].sort((a, b) => compareTreePaths(a.treePath, b.treePath));
+  let hasGenerateStaticParams = false;
+
+  for (const segment of ordered) {
+    const [name, file] = segment.identity;
+    if (visited.some(([seenName, seenFile]) => seenName === name && seenFile === file)) continue;
+    visited.push(segment.identity);
+
+    if (segment.dynamic && !segment.generateStaticParams) {
+      hasGenerateStaticParams = false;
+    } else if (segment.generateStaticParams) {
+      hasGenerateStaticParams = true;
+    }
+  }
+
+  return hasGenerateStaticParams;
+}
+
+const PAGE_SEGMENT_NAME = "__PAGE__";
+
+function hasGenerateStaticParamsExport(
+  segment: AppRouteSegmentConfigModule | null | undefined,
+): boolean {
+  return typeof segment?.generateStaticParams === "function";
+}
+
+const DEFAULT_SEGMENT_NAME = "__DEFAULT__";
+
+/**
+ * Turbopack reads a folder's subfolders from a `BTreeMap<RcStr, _>`, whose
+ * keys compare as Rust `str`s: by UTF-8 bytes. That is Unicode code point
+ * order, which JavaScript's `<` (UTF-16 code units) doesn't match above the
+ * Basic Multilingual Plane.
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L188-L192
+ * https://github.com/vercel/next.js/blob/v16.2.7/turbopack/crates/turbo-rcstr/src/lib.rs#L350-L354
+ */
+function compareFolderNames(a: string, b: string): number {
+  const left = Array.from(a, (char) => char.codePointAt(0) ?? 0);
+  const right = Array.from(b, (char) => char.codePointAt(0) ?? 0);
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return left.length - right.length;
+}
+
+/**
+ * Collect the loader-tree segments of an App page route from its layout, page
+ * and parallel-slot modules, for `lastDynamicSegmentHasGenerateStaticParams`.
+ *
+ * Children follow the loader tree Next.js's default build (Turbopack) makes:
+ * `children` first, then every slot in folder-name order, whether it matched
+ * a page or renders `default`. A default slot is a single `__DEFAULT__`
+ * segment without the slot's layout.
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1489-L1511
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1515-L1548
+ */
+export function collectAppPageStaticParamsWalkSegments(
+  options: Pick<
+    ResolveAppPageSegmentConfigOptions,
+    "layoutTreePositions" | "layouts" | "page" | "parallelBranches" | "routeSegments"
+  > & { childrenSlot?: AppPageChildrenSlot | null },
+): AppPageStaticParamsWalkSegment[] {
+  // When children renders the owner's `default`, the route's deeper URL
+  // segments come from a slot, and the main tree ends at the owner with a
+  // `__DEFAULT__` segment in the children position.
+  const childrenDefaultPosition = resolveChildrenDefaultTreePosition(options.childrenSlot);
+  const routeSegments =
+    childrenDefaultPosition === null
+      ? (options.routeSegments ?? [])
+      : (options.routeSegments ?? []).slice(0, childrenDefaultPosition);
+  const layoutsByPosition = new Map<number, AppRouteSegmentConfigModule>();
+  options.layouts?.forEach((layout, index) => {
+    if (layout) layoutsByPosition.set(options.layoutTreePositions?.[index] ?? 0, layout);
+  });
+
+  const branchesByOwner = new Map<number, ParallelAppPageSegmentConfigBranch[]>();
+  for (const branch of options.parallelBranches ?? []) {
+    if (!branch) continue;
+    const owner = Math.min(
+      branch.ownerTreePosition ??
+        routeSegments.length - (branch.isDefault ? 0 : (branch.routeSegments ?? []).length),
+      routeSegments.length,
+    );
+    branchesByOwner.set(owner, [...(branchesByOwner.get(owner) ?? []), branch]);
+  }
+
+  const segments: AppPageStaticParamsWalkSegment[] = [];
+  let treePath: number[] = [];
+  // A folder's segment takes its module from the folder's layout. The page is
+  // a child segment of the deepest folder.
+  for (let position = 0; position <= routeSegments.length + 1; position++) {
+    if (position <= routeSegments.length) {
+      const name = position === 0 ? "" : routeSegments[position - 1];
+      const layout = layoutsByPosition.get(position);
+      segments.push({
+        dynamic: position > 0 && isDynamicSegment(name),
+        generateStaticParams: hasGenerateStaticParamsExport(layout),
+        identity: [name, layout],
+        treePath,
+      });
+    } else {
+      segments.push({
+        dynamic: false,
+        generateStaticParams: hasGenerateStaticParamsExport(options.page),
+        identity: [PAGE_SEGMENT_NAME, options.page ?? undefined],
+        treePath,
+      });
+      break;
+    }
+
+    // `children` takes index 0; the slots follow it.
+    const slots = [...(branchesByOwner.get(position) ?? [])].sort((a, b) =>
+      compareFolderNames(a.name ?? "", b.name ?? ""),
+    );
+    slots.forEach((branch, index) => {
+      const slotPath = [...treePath, index + 1];
+      if (branch.isDefault) {
+        segments.push({
+          dynamic: false,
+          generateStaticParams: hasGenerateStaticParamsExport(branch.page),
+          identity: [DEFAULT_SEGMENT_NAME, branch.page ?? undefined],
+          treePath: slotPath,
+        });
+      } else {
+        segments.push(...collectActiveSlotSegments(branch, slotPath));
+      }
+    });
+    if (position === childrenDefaultPosition) {
+      segments.push({
+        dynamic: false,
+        generateStaticParams: hasGenerateStaticParamsExport(options.page),
+        identity: [DEFAULT_SEGMENT_NAME, options.page ?? undefined],
+        treePath: [...treePath, 0],
+      });
+      break;
+    }
+    treePath = [...treePath, 0];
+  }
+
+  return segments;
+}
+
+function collectActiveSlotSegments(
+  branch: ParallelAppPageSegmentConfigBranch,
+  slotPath: readonly number[],
+): AppPageStaticParamsWalkSegment[] {
+  const branchSegments = branch.routeSegments ?? [];
+  const configLayoutsByPosition = new Map<number, AppRouteSegmentConfigModule>();
+  branch.configLayouts?.forEach((layout, index) => {
+    if (layout) configLayoutsByPosition.set(branch.configLayoutTreePositions?.[index] ?? 0, layout);
+  });
+
+  const segments: AppPageStaticParamsWalkSegment[] = [
+    {
+      dynamic: false,
+      generateStaticParams: hasGenerateStaticParamsExport(branch.layout),
+      identity: [`@${branch.name ?? ""}`, branch.layout ?? undefined],
+      treePath: slotPath,
+    },
+  ];
+  // Each folder inside the slot has one child: the next folder, then the page.
+  // A slot's root page inside a route group has no segments, but the group's
+  // layout still has a tree position.
+  const depth = Math.max(branchSegments.length, ...(branch.configLayoutTreePositions ?? []));
+  let treePath = [...slotPath];
+  for (let index = 0; index < depth; index++) {
+    treePath = [...treePath, 0];
+    const name = branchSegments[index];
+    const layout = configLayoutsByPosition.get(index + 1);
+    segments.push({
+      dynamic: name !== undefined && isDynamicSegment(name),
+      generateStaticParams: hasGenerateStaticParamsExport(layout),
+      identity: [name ?? "", layout],
+      treePath,
+    });
+  }
+  segments.push({
+    dynamic: false,
+    generateStaticParams: hasGenerateStaticParamsExport(branch.page),
+    identity: [PAGE_SEGMENT_NAME, branch.page ?? undefined],
+    treePath: [...treePath, 0],
+  });
+  return segments;
+}
+
+/**
+ * Whether an App page route exports `generateStaticParams` at or below its last
+ * dynamic segment, read from its layout, page and parallel-slot modules.
+ */
+export function hasAppPageGenerateStaticParamsAtLastDynamicSegment(
+  options: Parameters<typeof collectAppPageStaticParamsWalkSegments>[0],
+): boolean {
+  return lastDynamicSegmentHasGenerateStaticParams(collectAppPageStaticParamsWalkSegments(options));
+}
+
+/**
+ * Whether Next.js would classify an App page route as static or SSG from its
+ * config alone. Only such routes are full-page cache candidates; every other
+ * route renders per request with real values and is never ISR-cached.
+ *
+ * - `runtime = "edge"` disables static generation, whatever else the route
+ *   sets.
+ * - `dynamic = "force-dynamic"` and `revalidate = 0` are dynamic.
+ * - `dynamic = "force-static"` and `dynamic = "error"` are static.
+ * - Otherwise a route is static when it has no dynamic segments, or when
+ *   `generateStaticParams` sits at or below its last dynamic segment.
+ *
+ * Next.js also treats a route as SSG when an ancestor's `generateStaticParams`
+ * returns every pathname param (`hadAllParamsGenerated`). That depends on the
+ * generator's output, which vinext doesn't compute per request, so such a
+ * route is treated as dynamic here. Adding `generateStaticParams` to the last
+ * dynamic segment (even returning `[]`) opts it in, on both.
+ *
+ * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/index.ts#L2333-L2408
+ */
+export function isAppPageStaticEligible(options: {
+  dynamicConfig?: string;
+  hasGenerateStaticParams: boolean;
+  isDynamicRoute: boolean;
+  isStaticGenerationEdgeRuntime: boolean;
+  revalidateSeconds: number | null;
+}): boolean {
+  if (options.isStaticGenerationEdgeRuntime) return false;
+  if (options.dynamicConfig === "force-dynamic" || options.revalidateSeconds === 0) return false;
+  if (options.dynamicConfig === "force-static" || options.dynamicConfig === "error") return true;
+  return !options.isDynamicRoute || options.hasGenerateStaticParams;
 }

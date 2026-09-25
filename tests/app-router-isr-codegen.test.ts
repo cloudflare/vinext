@@ -32,6 +32,57 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('process.env.NODE_ENV === "production"');
   });
 
+  it("classifies static generation from the route's own segments and slots", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The generateStaticParams walk reads the main tree and every slot branch,
+    // including each slot's owner position and whether it (or children)
+    // renders its default.
+    expect(code)
+      .toContain(`hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+      childrenSlot: route.childrenSlot,
+      layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      page: route.page,
+      parallelBranches: segmentConfigBranches,
+      routeSegments: route.routeSegments,
+    }),`);
+    expect(code).toContain("isDefault: !slot.page,");
+    expect(code).toContain("ownerTreePosition: slot.ownerTreePosition,");
+    // Any segment's generator still sets the route's revalidate default.
+    expect(code).toContain("hasAnyGenerateStaticParams: __generateStaticParams.length > 0,");
+    // The runtime merges across the whole loader tree, slots included.
+    expect(code).toContain(`isStaticGenerationEdgeRuntime: __isEdgeRuntime(
+      __resolveAppPageStaticGenerationRuntime(
+        __collectAppPageStaticGenerationRuntimes({
+          childrenSlot: route.childrenSlot,
+          layouts: route.layouts,
+          layoutTreePositions: route.layoutTreePositions,
+          page: route.page,
+          parallelBranches: segmentConfigBranches,
+          routeSegments: route.routeSegments,
+        }),
+      ),
+    ),`);
+    // The matched route and any other route dispatch renders, such as an
+    // intercept's source, are classified from the same inputs.
+    expect(code).toContain(
+      "const __staticGeneration = __resolveRouteStaticGeneration(route, __segmentConfigBranches);",
+    );
+    expect(code).toContain("hasGenerateStaticParams: __staticGeneration.hasGenerateStaticParams,");
+    expect(code).toContain(
+      "isStaticGenerationEdgeRuntime: __staticGeneration.isStaticGenerationEdgeRuntime,",
+    );
+    expect(code).toContain(`resolveRouteStaticEligible(targetRoute) {
+        return __resolveRouteStaticEligible(targetRoute);
+      },`);
+    expect(code).toContain(`  return __isAppPageStaticEligible({
+    ...__resolveRouteStaticGeneration(route, segmentConfigBranches),
+    dynamicConfig: segmentConfig.dynamicConfig,
+    isDynamicRoute: route.isDynamic,
+    revalidateSeconds: segmentConfig.revalidateSeconds,
+  });`);
+  });
+
   it("generated handler delegates request and ctx handling to createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("createAppRscHandler");

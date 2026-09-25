@@ -44,6 +44,10 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
 import {
+  hasFrameworkLinkHeaders,
+  markFrameworkLinkHeaders,
+} from "../packages/vinext/src/server/app-response-header-provenance.js";
+import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
@@ -186,6 +190,7 @@ function createCommonOptions() {
       isDraftMode: false,
       isForceDynamic: false,
       isForceStatic: false,
+      isStaticEligible: true,
       isProgressiveActionRender: false,
       isProduction: false,
       isRscRequest: false,
@@ -889,6 +894,83 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("boundary:ssr-decoder");
   });
 
+  it("sends the never-cache header on early responses of a route that can't be static", async () => {
+    const common = createCommonOptions();
+    const neverCache = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+    const recovered = await renderAppPageLifecycle({
+      ...common.options,
+      isStaticEligible: false,
+      async loadSsrHandler() {
+        return {
+          async handleSsr() {
+            throw new Error("ssr-decoder");
+          },
+        };
+      },
+    });
+    expect(recovered.headers.get("cache-control")).toBe(neverCache);
+    await expect(recovered.text()).resolves.toBe("boundary:ssr-decoder");
+
+    const special = await renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: true,
+      isStaticEligible: false,
+      probePage() {
+        throw { digest: "NEXT_NOT_FOUND" };
+      },
+    });
+    expect(special.status).toBe(404);
+    expect(special.headers.get("cache-control")).toBe(neverCache);
+
+    const { element: _element, ...optionsWithoutElement } = common.options;
+    const prepared = await renderAppPageLifecycle({
+      ...optionsWithoutElement,
+      isStaticEligible: false,
+      async prepareElement() {
+        return { response: Response.redirect("https://example.test/elsewhere", 307) };
+      },
+    });
+    expect(prepared.status).toBe(307);
+    expect(prepared.headers.get("location")).toBe("https://example.test/elsewhere");
+    expect(prepared.headers.get("cache-control")).toBe(neverCache);
+
+    // The stamped copy keeps renderer Link provenance for the config-header finalizer.
+    const linked = await renderAppPageLifecycle({
+      ...optionsWithoutElement,
+      isStaticEligible: false,
+      async prepareElement() {
+        const linkHeader = "</framework.css>; rel=preload; as=style";
+        const response = new Response("linked", { headers: { link: linkHeader } });
+        markFrameworkLinkHeaders(response.headers, linkHeader);
+        return { response };
+      },
+    });
+    expect(linked.headers.get("cache-control")).toBe(neverCache);
+    expect(hasFrameworkLinkHeaders(linked.headers)).toBe(true);
+
+    // A response that already carries middleware's Cache-Control keeps it, as
+    // the normal response builders let middleware's policy win.
+    const middlewareCacheControl = "public, max-age=60";
+    const withMiddlewarePolicy = await renderAppPageLifecycle({
+      ...optionsWithoutElement,
+      isStaticEligible: false,
+      middlewareContext: {
+        headers: new Headers({ "cache-control": middlewareCacheControl }),
+        status: null,
+      },
+      async prepareElement() {
+        return {
+          response: new Response("not found", {
+            status: 404,
+            headers: { "cache-control": middlewareCacheControl },
+          }),
+        };
+      },
+    });
+    expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+  });
+
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {
     const common = createCommonOptions();
 
@@ -1576,6 +1658,25 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("flight-data");
   });
 
+  it("keeps client reuse metadata for routes that can't be static", async () => {
+    // Being ineligible for the server's full-page cache doesn't make a render
+    // dynamic for the client router: an explicit full prefetch of a
+    // client-only page stays reusable, as in Next.js.
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: vi.fn(() => false),
+      dynamicStaleTimeSeconds: 0,
+      isProduction: true,
+      isRscRequest: true,
+      isStaticEligible: false,
+      revalidateSeconds: 60,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
   it("omits the dynamic stale time header on static production default-config RSC responses", async () => {
     const common = createCommonOptions();
     const response = await renderAppPageLifecycle({
@@ -1849,6 +1950,54 @@ describe("app page render lifecycle", () => {
   });
 });
 
+describe("routes that are not statically generated", () => {
+  // Next.js classifies a dynamic-segment route without generateStaticParams as
+  // dynamic (ƒ). A page-level "use cache" + cacheLife still reuses its data
+  // cache entry, but the page is sent `private, no-store` and never stored.
+  for (const isRscRequest of [false, true]) {
+    it(`never stores a cacheLife-only render (${isRscRequest ? "RSC" : "HTML"})`, async () => {
+      const common = createCommonOptions();
+
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        getRequestCacheLife() {
+          return { revalidate: 60 };
+        },
+        isProduction: true,
+        isRscRequest,
+        isStaticEligible: false,
+        revalidateSeconds: null,
+      });
+
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
+      await response.arrayBuffer();
+      await Promise.all(common.waitUntilPromises);
+      expect(common.isrSet).not.toHaveBeenCalled();
+    });
+  }
+
+  it("never stores a render with a revalidate export", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      isStaticEligible: false,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+});
+
 describe("layoutFlags injection into RSC payload", () => {
   function createRscOptions(overrides: {
     cleanPathname?: string;
@@ -1883,6 +2032,7 @@ describe("layoutFlags injection into RSC payload", () => {
       isDraftMode: false,
       isForceDynamic: false,
       isForceStatic: false,
+      isStaticEligible: true,
       isProduction: true,
       isRscRequest: true,
       isrHtmlKey: (p: string) => `html:${p}`,

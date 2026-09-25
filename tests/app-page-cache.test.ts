@@ -1149,6 +1149,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(rscData),
         cleanPathname: "/fresh",
         consumeDynamicUsage() {
@@ -1228,6 +1229,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        isStaticEligible: true,
         bypassInterceptionContextCache: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/about",
@@ -1255,6 +1257,7 @@ describe("app page cache helpers", () => {
     markFrameworkLinkHeaders(rendered.headers, rendered.headers.get("link"));
 
     const response = finalizeAppPageHtmlCacheResponse(rendered, {
+      isStaticEligible: true,
       bypassInterceptionContextCache: true,
       capturedRscDataPromise: null,
       cleanPathname: "/about",
@@ -1302,6 +1305,7 @@ describe("app page cache helpers", () => {
     const response = finalizeAppPageHtmlCacheResponse(
       new Response(`<head>${authored}${injected}</head><main>page</main>`),
       {
+        isStaticEligible: true,
         capturedRscDataPromise: null,
         cleanPathname: "/traced",
         clientTraceMetadataMarker: marker,
@@ -1331,6 +1335,7 @@ describe("app page cache helpers", () => {
     const debugCalls: Array<[string, string]> = [];
     const isrSet = vi.fn();
     const options = {
+      isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/dynamic-html",
       consumeDynamicUsage() {
@@ -1402,6 +1407,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        isStaticEligible: true,
         capturedDynamicUsageBeforeContextCleanup() {
           return true;
         },
@@ -1455,6 +1461,7 @@ describe("app page cache helpers", () => {
     }> = [];
 
     const didSchedule = scheduleAppPageRscCacheWrite({
+      isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/fresh-rsc",
       consumeDynamicUsage() {
@@ -1511,6 +1518,7 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
+      isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/fresh-rsc",
       consumeDynamicUsage() {
@@ -1551,6 +1559,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/fresh-rsc",
         consumeDynamicUsage() {
@@ -1593,6 +1602,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        isStaticEligible: true,
         capturedRscDataPromise: null,
         cleanPathname: "/dynamic-rsc",
         consumeDynamicUsage() {
@@ -1633,6 +1643,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/fresh-rsc",
         consumeDynamicUsage() {
@@ -1680,6 +1691,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/fresh-rsc",
         consumeDynamicUsage() {
@@ -1720,6 +1732,7 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
+      isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/dynamic-rsc",
       consumeDynamicUsage() {
@@ -1759,6 +1772,7 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
+      isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/invalid-cache-life",
       consumeDynamicUsage() {

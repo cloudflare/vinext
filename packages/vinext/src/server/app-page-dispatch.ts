@@ -52,6 +52,7 @@ import {
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
+import { isAppPageStaticEligible } from "./app-segment-config.js";
 import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import {
   buildAppPageElement,
@@ -60,7 +61,7 @@ import {
   validateAppPageDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
-import { renderAppPageLifecycle } from "./app-page-render.js";
+import { applyIneligibleRouteCachePolicy, renderAppPageLifecycle } from "./app-page-render.js";
 import {
   consumeAppPageRenderObservationState,
   discardAppPageRenderState,
@@ -69,6 +70,7 @@ import {
   mergeMiddlewareResponseHeaders,
   type AppPageMiddlewareContext,
 } from "./app-page-response.js";
+import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
@@ -340,7 +342,13 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   getFontStyles: () => string[];
   getNavigationContext: () => NavigationContext | null;
   getSourceRoute: (sourceRouteIndex: number) => TRoute | undefined;
+  /**
+   * Whether `generateStaticParams` is exported at or below the route's last
+   * dynamic segment (`hasAppPageGenerateStaticParamsAtLastDynamicSegment`).
+   */
   hasGenerateStaticParams: boolean;
+  /** Whether any segment of the route exports `generateStaticParams`. */
+  hasAnyGenerateStaticParams: boolean;
   hasCustomGlobalError?: boolean;
   hasPageDefaultExport: boolean;
   hasPageModule: boolean;
@@ -348,6 +356,11 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   htmlLimitedBots?: string;
   interceptionContext: string | null;
   isEdgeRuntime?: boolean;
+  /**
+   * Whether the page or its nearest layout sets `runtime = "edge"`, which
+   * disables static generation. Parallel slots do not count.
+   */
+  isStaticGenerationEdgeRuntime?: boolean;
   isProgressiveActionRender?: boolean;
   isProduction: boolean;
   isRscRequest: boolean;
@@ -415,6 +428,13 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
   resolveRouteRevalidateSeconds?: (route: TRoute) => number | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
+  /**
+   * `isAppPageStaticEligible` for another route, from that route's own segment
+   * config, `generateStaticParams`, dynamism and runtime. A direct intercepted
+   * RSC response renders its source route, so it takes the source's
+   * cacheability.
+   */
+  resolveRouteStaticEligible: (route: TRoute) => boolean;
   rootForbiddenModule?: AppPageModule | null;
   rootNotFoundModule?: AppPageModule | null;
   rootUnauthorizedModule?: AppPageModule | null;
@@ -659,14 +679,29 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // the generator returns no concrete paths. Its default `revalidate = false`
   // then applies to the first on-demand render of an unknown path.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+  // Any segment's generator still sets this default, which the fetch shim and
+  // cacheComponents fallback shells read. Only the full-page cache eligibility
+  // below needs the generator at or below the last dynamic segment.
   const currentRevalidateSeconds =
-    options.revalidateSeconds ?? (options.hasGenerateStaticParams ? Infinity : null);
+    options.revalidateSeconds ?? (options.hasAnyGenerateStaticParams ? Infinity : null);
   const interceptionId = options.isRscRequest
     ? options.request.headers.get(VINEXT_INTERCEPTION_ID_HEADER)
     : null;
   const isForceStatic = dynamicConfig === "force-static";
   const isDynamicError = dynamicConfig === "error";
   const isForceDynamic = dynamicConfig === "force-dynamic";
+  // Only routes Next.js classifies as static or SSG from their config are
+  // full-page cache candidates. Every other route renders per request and is
+  // never stored, whatever its revalidate or cacheLife. cacheComponents builds
+  // (PPR fallback shells) follow a different model and keep their own rules.
+  const isNextStaticEligible = isAppPageStaticEligible({
+    dynamicConfig,
+    hasGenerateStaticParams: options.hasGenerateStaticParams,
+    isDynamicRoute: route.isDynamic,
+    isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
+    revalidateSeconds: options.revalidateSeconds,
+  });
+  const isStaticEligible = options.pprRuntime !== undefined || isNextStaticEligible;
   if (isRouteCacheabilityProbe() && (isForceDynamic || currentRevalidateSeconds === 0)) {
     markRouteCacheabilityPatternDynamic(
       isForceDynamic ? 'dynamic = "force-dynamic"' : "revalidate = 0",
@@ -703,16 +738,18 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   if (options.hasPageModule && !options.hasPageDefaultExport) {
     options.clearRequestContext();
-    return new Response("Page has no default export", { status: 500 });
+    return applyIneligibleRouteCachePolicy(
+      new Response("Page has no default export", { status: 500 }),
+      { isDraftMode, isStaticEligible, middlewareContext: options.middlewareContext },
+    );
   }
 
+  // The cacheComponents exemption only covers caching. Methods follow the
+  // route's own Next.js classification.
   const methodResponse = resolveAppPageMethodResponse({
-    dynamicConfig,
-    hasGenerateStaticParams: options.hasGenerateStaticParams,
-    isDynamicRoute: route.isDynamic,
+    isStaticEligible: isNextStaticEligible,
     middlewareHeaders: options.middlewareContext.headers,
     request: options.request,
-    revalidateSeconds: currentRevalidateSeconds,
   });
   if (methodResponse) {
     options.clearRequestContext();
@@ -746,6 +783,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (
     !isRouteCacheabilityProbe() &&
     options.bypassInterceptionContextCache !== true &&
+    isStaticEligible &&
     shouldReadAppPageCache({
       isDraftMode,
       isForceDynamic,
@@ -947,11 +985,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         { matchedParams: options.params },
         options.middlewareContext,
       );
+      const cachePolicy = {
+        isDraftMode,
+        isStaticEligible,
+        middlewareContext: options.middlewareContext,
+      };
       if (renderedNotFound) {
-        return renderedNotFound;
+        return applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy);
       }
       options.clearRequestContext();
-      return dynamicParamsResponse;
+      return applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy);
     }
   }
 
@@ -1052,6 +1095,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
+      // This response renders the source route, so it takes the source's
+      // cacheability, not the matched target's. A source that can't be static
+      // is never cacheable, like its own render. Middleware's policy still
+      // wins, merged after, as in the RSC builder.
+      const isSourceStaticEligible =
+        options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
+      if (!isSourceStaticEligible) interceptHeaders.set("Cache-Control", NEVER_CACHE_CONTROL);
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       applyRscCompatibilityIdHeader(interceptHeaders);
       applyRscDeploymentIdHeader(interceptHeaders);
@@ -1202,6 +1252,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isForceDynamic,
     isForceStatic,
     isEdgeRuntime: options.isEdgeRuntime === true,
+    isStaticEligible,
     isPrerender,
     isSpeculativePrerender,
     isProduction: options.isProduction,

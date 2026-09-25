@@ -101,3 +101,29 @@ test("deployment pre-warming and force-dynamic bypass work with the configured c
   expect(nextRenderId).toBeTruthy();
   expect(nextRenderId).not.toBe(renderId);
 });
+
+test("a dynamic-segment route without generateStaticParams is never cached", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  // Next.js renders this route per request even though it sets `revalidate`.
+  const url = `${baseURL}/dynamic-segment/${randomUUID()}`;
+  const renderIds: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await request.get(url);
+    const headers = response.headers();
+    expect(response.ok(), JSON.stringify({ backend, headers })).toBe(true);
+    // Workers Cache admission rewrites a denied response to its own no-store
+    // policy, so only the no-store directive is common to every backend.
+    expect(headers["cache-control"]).toContain("no-store");
+    expect(headers["x-vinext-cache"]).not.toBe("HIT");
+    expect(headers["cf-cache-status"]).not.toBe("HIT");
+    const renderId = /dynamic-segment-render-id[^>]*>([^<]+)</.exec(await response.text())?.[1];
+    expect(renderId).toBeTruthy();
+    renderIds.push(renderId!);
+  }
+  expect(renderIds[1]).not.toBe(renderIds[0]);
+});

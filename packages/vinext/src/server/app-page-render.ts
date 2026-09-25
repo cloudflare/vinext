@@ -62,6 +62,7 @@ import type {
 } from "./client-reuse-manifest.js";
 import {
   applyCdnResponseHeaders,
+  isCdnResponsePolicyHeader,
   NEVER_CACHE_CONTROL,
   NO_STORE_CACHE_CONTROL,
 } from "./cache-control.js";
@@ -90,6 +91,8 @@ import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js"
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
 import { traceResponseStartWithCompletion } from "./response-start-tracing.js";
+import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
+import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
 import { recordRouteCacheabilityClientTraceMetadataMarker } from "vinext/shims/cacheability-classification";
 
 type AppPageBoundaryOnError = (
@@ -155,6 +158,11 @@ type RenderAppPageLifecycleOptionsBase = {
   isEdgeRuntime?: boolean;
   isForceDynamic: boolean;
   isForceStatic: boolean;
+  /**
+   * Whether Next.js would classify the route as static or SSG from its config
+   * (`isAppPageStaticEligible`). Other routes are never full-page cached.
+   */
+  isStaticEligible: boolean;
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
   isSpeculativePrerender?: boolean;
@@ -313,11 +321,46 @@ function applyRequestCacheLife(options: {
   return { expireSeconds, revalidateSeconds };
 }
 
+/**
+ * A route Next.js can't make static is never cacheable. Responses that leave
+ * the render before its response policy, such as error boundaries and special
+ * errors, get the same never-cache header as the normal render.
+ */
+export function applyIneligibleRouteCachePolicy(
+  response: Response,
+  options: Pick<
+    RenderAppPageLifecycleOptions,
+    "isDraftMode" | "isStaticEligible" | "middlewareContext"
+  >,
+): Response {
+  if (options.isStaticEligible || options.isDraftMode) return response;
+  // Middleware's own cache policy wins, as in the normal response builders.
+  // Only keep what this response already carries from it.
+  const middlewarePolicy = [...(options.middlewareContext.headers ?? [])].filter(
+    ([name, value]) => isCdnResponsePolicyHeader(name) && response.headers.get(name) === value,
+  );
+  if (middlewarePolicy.some(([name]) => name === "cache-control")) return response;
+  // Some early responses have immutable headers, so stamp a copy.
+  const stamped = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, response as ResponseInit),
+  );
+  copyLinkHeaderProvenance(response.headers, stamped.headers);
+  applyCdnResponseHeaders(stamped.headers, { cacheControl: NEVER_CACHE_CONTROL });
+  for (const [name, value] of middlewarePolicy) stamped.headers.set(name, value);
+  return stamped;
+}
+
 function resolveAppPageCacheWriteRevalidateSeconds(options: {
   isDynamicError: boolean;
   isForceStatic: boolean;
+  isStaticEligible: boolean;
   revalidateSeconds: number | null;
 }): number | null {
+  if (!options.isStaticEligible) {
+    return null;
+  }
+
   if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
     return Infinity;
   }
@@ -661,7 +704,9 @@ export async function renderAppPageLifecycle(
 ): Promise<Response> {
   if (options.isRscRequest) {
     const prepared = await prepareAppPageElement(options);
-    return prepared instanceof Response ? prepared : renderAppPageLifecycleImpl(prepared);
+    return prepared instanceof Response
+      ? applyIneligibleRouteCachePolicy(prepared, options)
+      : renderAppPageLifecycleImpl(prepared);
   }
 
   const operation = options.traceOperation ?? (options.isPrerender ? "prerender" : "render");
@@ -676,7 +721,9 @@ export async function renderAppPageLifecycle(
     try {
       const prepared = await prepareAppPageElement(options);
       if (prepared instanceof Response) {
-        const traced = traceResponseStartWithCompletion(prepared);
+        const traced = traceResponseStartWithCompletion(
+          applyIneligibleRouteCachePolicy(prepared, options),
+        );
         resolveResponse(traced.response);
         await traced.started;
         return;
@@ -762,7 +809,7 @@ async function renderAppPageLifecycleImpl(
     classification: options.classification,
   });
   if (preRenderResult.response) {
-    return preRenderResult.response;
+    return applyIneligibleRouteCachePolicy(preRenderResult.response, options);
   }
 
   const layoutFlags = preRenderResult.layoutFlags;
@@ -875,8 +922,12 @@ async function renderAppPageLifecycleImpl(
     !options.isDraftMode &&
     !options.isForceDynamic &&
     !shouldBypassRscCache;
+  // Only cache candidates capture the RSC payload. A dynamic route's payload is
+  // never stored, even when a cacheLife resolves during its render.
   const shouldCaptureRscForCacheMetadata =
-    (options.isProduction || options.isPrerender === true) && mayResolveCacheLifeAfterHeaders;
+    (options.isProduction || options.isPrerender === true) &&
+    mayResolveCacheLifeAfterHeaders &&
+    options.isStaticEligible;
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -933,6 +984,7 @@ async function renderAppPageLifecycleImpl(
           isForceDynamic: options.isForceDynamic,
           isForceStatic: options.isForceStatic,
           isProduction: options.isProduction,
+          isStaticEligible: options.isStaticEligible,
           expireSeconds,
           revalidateSeconds,
         });
@@ -1071,9 +1123,11 @@ async function renderAppPageLifecycleImpl(
       renderMode: options.renderMode,
       preserveClientResponseHeaders: rscResponsePolicy.cacheState !== "MISS",
       expireSeconds,
+      isStaticEligible: options.isStaticEligible,
       revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
         isDynamicError: options.isDynamicError,
         isForceStatic: options.isForceStatic,
+        isStaticEligible: options.isStaticEligible,
         revalidateSeconds,
       }),
       waitUntil(promise) {
@@ -1209,7 +1263,7 @@ async function renderAppPageLifecycleImpl(
   });
   options.onRenderComplete?.(htmlRender.renderComplete);
   if (htmlRender.response) {
-    return htmlRender.response;
+    return applyIneligibleRouteCachePolicy(htmlRender.response, options);
   }
   let htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
@@ -1245,7 +1299,10 @@ async function renderAppPageLifecycleImpl(
       const specialError = resolveAppPageSpecialError(captured);
       if (specialError) {
         void htmlStream.cancel().catch(() => {});
-        return options.renderPageSpecialError(specialError);
+        return applyIneligibleRouteCachePolicy(
+          await options.renderPageSpecialError(specialError),
+          options,
+        );
       }
     }
   }
@@ -1306,6 +1363,7 @@ async function renderAppPageLifecycleImpl(
     isForceDynamic: options.isForceDynamic,
     isForceStatic: options.isForceStatic,
     isProduction: options.isProduction,
+    isStaticEligible: options.isStaticEligible,
     expireSeconds,
     revalidateSeconds,
   });
@@ -1411,9 +1469,11 @@ async function renderAppPageLifecycleImpl(
       omitPendingDynamicCacheState: options.omitPendingDynamicCacheState,
       preserveClientResponseHeaders: !htmlResponsePolicy.shouldWriteToCache,
       expireSeconds,
+      isStaticEligible: options.isStaticEligible,
       revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
         isDynamicError: options.isDynamicError,
         isForceStatic: options.isForceStatic,
+        isStaticEligible: options.isStaticEligible,
         revalidateSeconds,
       }),
       linkHeader: linkHeader ?? null,
@@ -1446,9 +1506,11 @@ async function renderAppPageLifecycleImpl(
       return readRequestCacheLifeForCachePolicy(options);
     },
     expireSeconds,
+    isStaticEligible: options.isStaticEligible,
     revalidateSeconds: resolveAppPageCacheWriteRevalidateSeconds({
       isDynamicError: options.isDynamicError,
       isForceStatic: options.isForceStatic,
+      isStaticEligible: options.isStaticEligible,
       revalidateSeconds,
     }),
   });

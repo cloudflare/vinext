@@ -29,6 +29,7 @@ describe("app page response helpers", () => {
   it("resolves RSC response policy for static and ISR responses", () => {
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: false,
         isDraftMode: false,
         isDynamicError: false,
@@ -44,6 +45,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: false,
         expireSeconds: 300,
         isDraftMode: false,
@@ -62,6 +64,7 @@ describe("app page response helpers", () => {
   it("resolves RSC response policy for force-dynamic, infinity, and default cases", () => {
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: false,
         isDraftMode: false,
         isDynamicError: false,
@@ -76,6 +79,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: false,
         isDraftMode: false,
         isDynamicError: false,
@@ -91,6 +95,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: false,
         isDraftMode: false,
         isDynamicError: false,
@@ -105,6 +110,7 @@ describe("app page response helpers", () => {
   it("resolves RSC response policy as no-store when dynamic usage is detected during build", () => {
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: true,
         isDraftMode: false,
         isDynamicError: false,
@@ -121,6 +127,7 @@ describe("app page response helpers", () => {
   it("resolves draft mode response policies as uncacheable", () => {
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: false,
         isDraftMode: true,
         isDynamicError: false,
@@ -135,6 +142,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: true,
@@ -153,6 +161,7 @@ describe("app page response helpers", () => {
   it("resolves HTML response policy precedence", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: true,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -169,6 +178,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -186,6 +196,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -203,6 +214,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -222,6 +234,7 @@ describe("app page response helpers", () => {
   it("resolves HTML response policy when cache writes stay enabled", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -241,6 +254,7 @@ describe("app page response helpers", () => {
   it("writes force-static HTML responses to cache in production", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -258,6 +272,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -277,6 +292,7 @@ describe("app page response helpers", () => {
   it("treats progressive action HTML responses as no-store", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         isProgressiveActionRender: true,
         hasScriptNonce: false,
@@ -296,6 +312,7 @@ describe("app page response helpers", () => {
   it("treats revalidate = 0 as no-store in RSC response policy", () => {
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: false,
         isDraftMode: false,
         isDynamicError: false,
@@ -311,6 +328,7 @@ describe("app page response helpers", () => {
     // revalidate = 0 takes priority over isForceStatic
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: false,
         isDraftMode: false,
         isDynamicError: false,
@@ -327,6 +345,7 @@ describe("app page response helpers", () => {
   it("treats revalidate = 0 as no-store in HTML response policy", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -344,6 +363,7 @@ describe("app page response helpers", () => {
     // revalidate = 0 takes priority over isForceStatic
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -362,6 +382,7 @@ describe("app page response helpers", () => {
   it("treats force-static with explicit revalidate as ISR in both policy helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringBuild: false,
         isDraftMode: false,
         isDynamicError: false,
@@ -377,6 +398,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: false,
         isDraftMode: false,
@@ -396,6 +418,7 @@ describe("app page response helpers", () => {
   it("treats HTML responses with a script nonce as no-store", () => {
     expect(
       resolveAppPageHtmlResponsePolicy({
+        isStaticEligible: true,
         dynamicUsedDuringRender: false,
         hasScriptNonce: true,
         isDraftMode: false,
