@@ -747,12 +747,15 @@ export async function handleSsr(
 
           didInjectHeadHTML = true;
           // A stored document must not carry the request's query, so the
-          // browser reads it from its own URL instead.
+          // browser reads it from its own URL instead. A gate that has
+          // already opened means the render won't be stored, so it keeps the
+          // effective query (which a rewrite may have changed).
+          const hidesQuery = searchParamsGate !== null && searchParamsGate.gate.decision !== "real";
           const isSearchParamsFromBrowser =
-            searchParamsGate !== null ||
+            hidesQuery ||
             (options?.isStaticGeneration === true ? options.isForceStatic !== true : undefined);
           return buildHeadInjectionHtml(
-            searchParamsGate
+            hidesQuery
               ? { ...ssrNavigationContext, searchParams: new URLSearchParams() }
               : ssrNavigationContext,
             bootstrapModuleUrl,

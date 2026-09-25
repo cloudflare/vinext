@@ -23,6 +23,12 @@ import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
 import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
 import {
+  headersContextFromRequest,
+  markDynamicUsage,
+  runWithHeadersContext,
+  runWithIsolatedDynamicUsage,
+} from "../packages/vinext/src/shims/headers.js";
+import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
   type ClientReuseManifestSkipDisposition,
@@ -43,7 +49,6 @@ import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
-import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
 import {
   hasFrameworkLinkHeaders,
   markFrameworkLinkHeaders,
@@ -1063,6 +1068,10 @@ describe("app page render lifecycle", () => {
         clearRequestContext,
         isCacheCandidate: true,
         isProduction: true,
+        middlewareContext: {
+          headers: new Headers({ "set-cookie": "mw=1; Path=/", "x-middleware": "kept" }),
+          status: null,
+        },
         async loadSsrHandler() {
           return {
             async handleSsr(_rscStream, _navContext, _fontData, options) {
@@ -1076,6 +1085,11 @@ describe("app page render lifecycle", () => {
 
       expect(ssrOptions).toEqual([{ isCacheCandidate: true }]);
       expect(response.status).toBe(500);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(response.headers.get("set-cookie")).toBe("mw=1; Path=/");
+      expect(response.headers.get("x-middleware")).toBe("kept");
       await expect(response.text()).resolves.toBe("Internal Server Error");
       expect(common.renderErrorBoundaryResponse).not.toHaveBeenCalled();
       expect(common.isrSet).not.toHaveBeenCalled();
@@ -1105,6 +1119,36 @@ describe("app page render lifecycle", () => {
 
     expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(bailout, "ssr");
     expect(response.status).toBe(200);
+  });
+
+  it("never stores a candidate render that latched dynamic outside its own scope", async () => {
+    // A dynamic API in an isolated scope (the layout probe) or in SSR opens the
+    // useSearchParams() gate with the real query, but never reaches the
+    // render's own dynamic flag.
+    const common = createCommonOptions();
+    await runWithHeadersContext(
+      headersContextFromRequest(new Request("https://example.test/posts/post?q=secret")),
+      async () => {
+        await runWithIsolatedDynamicUsage(() => {
+          markDynamicUsage();
+        });
+
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          consumeDynamicUsage: vi.fn(() => false),
+          isCacheCandidate: true,
+          isProduction: true,
+          revalidateSeconds: 30,
+        });
+
+        expect(response.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+        await response.text();
+        await Promise.all(common.waitUntilPromises);
+        expect(common.isrSet).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {

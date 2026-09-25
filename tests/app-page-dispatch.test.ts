@@ -56,6 +56,7 @@ import {
   consumeRenderRequestApiUsage,
   draftMode,
   getHeadersContext,
+  headersContextFromRequest,
   markDynamicUsage,
   markRenderRequestApiUsage,
   setHeadersContext,
@@ -711,6 +712,10 @@ describe("app page dispatch", () => {
   afterEach(() => {
     consumeDynamicUsage();
     consumeRenderRequestApiUsage();
+    // Tests that run outside a request share the fallback state, whose dynamic
+    // latch is otherwise only reset by a new headers context.
+    setHeadersContext(headersContextFromRequest(new Request("https://example.test/")));
+    setHeadersContext(null);
     vi.unstubAllEnvs();
   });
 

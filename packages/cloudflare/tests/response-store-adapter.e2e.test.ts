@@ -258,6 +258,10 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
     }
     assert.equal(htmlValue(firstBody, "search-value"), query);
+    // The render is dynamic before the head is written, so the payload keeps
+    // the server's query instead of deferring to the browser URL.
+    assert.doesNotMatch(firstBody, /searchParamsFromBrowser:true/);
+    assert.match(firstBody, new RegExp(`"searchParams":\\[\\["q","${query}"\\]\\]`));
     assert.notEqual(
       htmlValue(secondBody, "search-dynamic-render-id"),
       htmlValue(firstBody, "search-dynamic-render-id"),

@@ -8,6 +8,7 @@ import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.j
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
+import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { isBailoutToCSRError } from "vinext/shims/navigation-errors";
 import {
   finalizeAppPageCacheabilityEvaluationResponse,
@@ -87,7 +88,7 @@ import type {
   StaticLayoutObservationSkipRejection,
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
-import { peekDynamicUsage } from "vinext/shims/headers";
+import { isRenderDynamicLatched, peekDynamicUsage } from "vinext/shims/headers";
 import {
   bindRequestContext,
   preserveFullyBufferedBodyMetadata,
@@ -820,11 +821,20 @@ async function renderAppPageLifecycleImpl(
   // cannot hide it from the other.
   let dynamicUsageObserved = false;
   let dynamicUsageFinalized = false;
+  const isCacheCandidateHtmlRender =
+    options.isCacheCandidate === true && options.isPrerender !== true && !options.isRscRequest;
   // Some readers, such as the streamed completion marker, run in the response
   // stream's pull context rather than this render's request scope.
-  const consumeDynamicUsage = bindRequestContext(options.consumeDynamicUsage);
+  const readDynamicUsage = bindRequestContext(
+    (): boolean =>
+      options.consumeDynamicUsage() ||
+      // A candidate's SSR useSearchParams() gate opens with the real query
+      // once the render latches dynamic. The latch also sees usage in child
+      // scopes (the layout probe, SSR) that never reach this render's flag.
+      (isCacheCandidateHtmlRender && isRenderDynamicLatched()),
+  );
   const consumeRenderDynamicUsage = (): boolean => {
-    if (!dynamicUsageObserved) dynamicUsageObserved = consumeDynamicUsage();
+    if (!dynamicUsageObserved) dynamicUsageObserved = readDynamicUsage();
     return dynamicUsageObserved;
   };
   const finalizeRenderDynamicUsage = (): boolean => {
@@ -1211,8 +1221,6 @@ async function renderAppPageLifecycleImpl(
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
 
-  const isCacheCandidateHtmlRender =
-    options.isCacheCandidate === true && options.isPrerender !== true;
   const htmlRender = await renderAppPageHtmlStreamWithRecovery({
     onShellRendered() {
       if (!options.isProduction) {
@@ -1228,7 +1236,12 @@ async function renderAppPageLifecycleImpl(
           `${error.reason} should be wrapped in a suspense boundary at page "${options.routePattern}". Read more: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout`,
         );
         options.clearRequestContext();
-        return Promise.resolve(internalServerErrorResponse());
+        const headers = new Headers();
+        mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+        headers.set("Cache-Control", NEVER_CACHE_CONTROL);
+        const response = internalServerErrorResponse(undefined, { headers });
+        applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
+        return Promise.resolve(response);
       }
       const capturedRscError = rscErrorTracker.getCapturedError();
       return options.renderErrorBoundaryResponse(
