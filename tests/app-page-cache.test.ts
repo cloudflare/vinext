@@ -339,6 +339,52 @@ describe("app page cache helpers", () => {
     expect(withoutParams?.headers.get(VINEXT_PARAMS_HEADER)).toBeNull();
   });
 
+  it.each(["HIT", "STALE"] as const)(
+    "surfaces a params resolution failure on a cached RSC %s instead of a cache read error",
+    async (cacheState) => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const recordCacheOutcome = vi.fn();
+        const loadFailure = new Error("route module failed to load");
+
+        await expect(
+          readAppPageCacheResponse({
+            cleanPathname: "/posts/intercepted",
+            clearRequestContext() {},
+            isRscRequest: true,
+            async isrGet() {
+              return buildISRCacheEntry(
+                buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer),
+                cacheState === "STALE",
+                { revalidate: 60 },
+              );
+            },
+            isrHtmlKey(pathname) {
+              return "html:" + pathname;
+            },
+            isrRscKey(pathname) {
+              return "rsc:" + pathname;
+            },
+            async isrSet() {},
+            recordCacheOutcome,
+            async resolveParams() {
+              throw loadFailure;
+            },
+            revalidateSeconds: 60,
+            async renderFreshPageForCache() {
+              throw new Error("regeneration is not awaited here");
+            },
+            scheduleBackgroundRegeneration() {},
+          }),
+        ).rejects.toBe(loadFailure);
+        expect(recordCacheOutcome).not.toHaveBeenCalled();
+        expect(consoleError).not.toHaveBeenCalled();
+      } finally {
+        consoleError.mockRestore();
+      }
+    },
+  );
+
   it("keeps middleware's params and path headers from a MISS on the cached RSC HIT", async () => {
     const middlewareHeaders = new Headers({
       [VINEXT_PARAMS_HEADER]: encodeURIComponent(JSON.stringify({ slug: "middleware" })),

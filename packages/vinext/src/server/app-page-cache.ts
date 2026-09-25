@@ -436,8 +436,18 @@ export async function readAppPageCacheResponse(
       )
     : options.isrHtmlKey(options.cleanPathname);
   const artifact = options.isRscRequest ? "rsc" : "html";
-  const resolveCachedResponseParams = async (cachedValue: CachedAppPageValue) =>
-    options.isRscRequest && cachedValue.rscData ? await options.resolveParams?.() : undefined;
+  // Resolving params can load route modules, so its failure is the request's,
+  // not a cache read error to turn into a MISS; it is rethrown past the catch.
+  let paramsFailure: { error: unknown } | undefined;
+  const resolveCachedResponseParams = async (cachedValue: CachedAppPageValue) => {
+    if (!options.isRscRequest || !cachedValue.rscData) return undefined;
+    try {
+      return await options.resolveParams?.();
+    } catch (error) {
+      paramsFailure = { error };
+      throw error;
+    }
+  };
 
   try {
     const cached = await options.isrGet(isrKey);
@@ -709,6 +719,7 @@ export async function readAppPageCacheResponse(
       options.isrDebug?.("MISS (no cache entry)", options.cleanPathname);
     }
   } catch (isrReadError) {
+    if (paramsFailure) throw paramsFailure.error;
     recordAppPageCacheOutcome(options.recordCacheOutcome, {
       artifact,
       cacheKey: isrKey,
