@@ -2022,6 +2022,69 @@ describe("static routes under the default revalidate = false", () => {
     ]);
   });
 
+  // Next.js pairs expireTime only with a finite revalidate, so the default
+  // keeps no expire of its own unless a cacheLife sets one.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/index.ts#L3035-L3058
+  it("does not store the route expireTime with the indefinite lifetime", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      expireSeconds: 31_536_000,
+      isProduction: true,
+      revalidateSeconds: Infinity,
+    });
+
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl])).toEqual([
+      ["html:/posts/post", { revalidate: Infinity }],
+      ["rsc:/posts/post", { revalidate: Infinity }],
+    ]);
+  });
+
+  it("keeps a cacheLife expire with the indefinite lifetime", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      expireSeconds: 31_536_000,
+      getRequestCacheLife() {
+        return { expire: 600 };
+      },
+      isProduction: true,
+      revalidateSeconds: Infinity,
+    });
+
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl])).toEqual([
+      ["html:/posts/post", { revalidate: Infinity, expire: 600 }],
+      ["rsc:/posts/post", { revalidate: Infinity, expire: 600 }],
+    ]);
+  });
+
+  it("pairs the route expireTime with a cacheLife that makes the lifetime finite", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      expireSeconds: 31_536_000,
+      getRequestCacheLife() {
+        return { revalidate: 60 };
+      },
+      isProduction: true,
+      revalidateSeconds: Infinity,
+    });
+
+    await response.text();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl])).toEqual([
+      ["html:/posts/post", { revalidate: 60, expire: 31_536_000 }],
+      ["rsc:/posts/post", { revalidate: 60, expire: 31_536_000 }],
+    ]);
+  });
+
   it("lowers the stored lifetime to a cacheLife resolved after headers", async () => {
     const common = createCommonOptions();
     let requestCacheLife: { revalidate: number; expire: number } | null = null;

@@ -116,6 +116,19 @@ export function isrCacheControl(
 }
 
 /**
+ * The route-level `expireTime` only bounds a finite revalidate. Like Next.js,
+ * a `revalidate = false` entry keeps no expire of its own and stays until it
+ * is invalidated; only a cacheLife expire can bound it.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/index.ts#L3035-L3058
+ */
+export function resolveRouteExpireSeconds(
+  revalidateSeconds: number | false | null,
+  expireSeconds: number | undefined,
+): number | undefined {
+  return revalidateSeconds === false || revalidateSeconds === Infinity ? undefined : expireSeconds;
+}
+
+/**
  * Write policy for one ISR entry: the cache metadata the producing render
  * resolved, plus the tags that can invalidate it. Routers differ only in which
  * `cacheControl` dimensions they populate — App pages carry the client-router
