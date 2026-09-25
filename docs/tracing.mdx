@@ -31,6 +31,17 @@ The OpenTelemetry packages and exporter belong to the application. They are not 
 
 Vinext completes `register()` before traced production user modules evaluate. In ordinary Node builds, when the application directly installs a resolvable, non-transpiled `@opentelemetry/instrumentation`, vinext also registers its ESM loader before those modules evaluate. Other instrumentation loaders remain application-owned.
 
+Every `@opentelemetry/*` package listed in the application's `package.json` is kept external to the server bundle, in addition to the packages Next.js externalizes by default. Bundling them would give the SDK's hooks and the application different copies of the API and its registered providers. Where that is not what you want, for example a deployment that bundles the server into one file and ships no `node_modules`, list the package in `transpilePackages` in `next.config` and vinext bundles it instead:
+
+```js
+// next.config.js
+export default {
+  transpilePackages: ["@opentelemetry/api"],
+};
+```
+
+A package listed in `transpilePackages` is removed from the automatic externals, and the automatic `@opentelemetry/instrumentation` loader registration described above is skipped for it.
+
 ## Framework spans
 
 Every framework span includes these stable Next.js attributes:
