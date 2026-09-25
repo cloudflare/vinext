@@ -27,9 +27,9 @@ test("build packages prerendered HTML, RSC, and metadata into Static Assets", ({
     fs.readFileSync(path.join(staticCacheDir, "index.json"), "utf8"),
   ) as Record<string, { kind: string }>;
   const kinds = Object.values(index).map((entry) => entry.kind);
-  // `/`, `/about`, and the prerendered not-found page.
-  expect(kinds.filter((kind) => kind === "html")).toHaveLength(3);
-  expect(kinds.filter((kind) => kind === "rsc")).toHaveLength(2);
+  // `/`, `/about`, both generateStaticParams posts, and the prerendered not-found page.
+  expect(kinds.filter((kind) => kind === "html")).toHaveLength(5);
+  expect(kinds.filter((kind) => kind === "rsc")).toHaveLength(4);
   expect(kinds.filter((kind) => kind === "route")).toHaveLength(1);
   for (const [id, entry] of Object.entries(index)) {
     expect(fs.existsSync(path.join(staticCacheDir, `${id}.${entry.kind}`))).toBe(true);
@@ -40,6 +40,8 @@ test("prerendered HTML is a Static Assets cache hit", async ({ request }) => {
   for (const [pathname, heading] of [
     ["/", "vinext Static Assets cache"],
     ["/about", "Prebuilt about page"],
+    ["/posts/first", "Post: first"],
+    ["/posts/second", "Post: second"],
   ]) {
     const response = await request.get(pathname, { maxRedirects: 0 });
     expectCacheHit(response);
@@ -54,6 +56,8 @@ test("prerendered RSC payloads are Static Assets cache hits", async ({ request }
   for (const [pathname, heading] of [
     ["/", "vinext Static Assets cache"],
     ["/about", "Prebuilt about page"],
+    ["/posts/first", "Post: first"],
+    ["/posts/second", "Post: second"],
   ]) {
     const response = await request.get(`${pathname}?_rsc`, {
       headers: { RSC: "1" },

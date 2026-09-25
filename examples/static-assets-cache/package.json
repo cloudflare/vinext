@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vp dev",
     "build": "vp build",
-    "preview": "vp build && wrangler dev --config dist/server/wrangler.json"
+    "start": "wrangler dev --config dist/server/wrangler.json",
+    "deploy": "vinext-cloudflare deploy --config dist/server/wrangler.json"
   },
   "dependencies": {
     "@vitejs/plugin-react": "catalog:",
