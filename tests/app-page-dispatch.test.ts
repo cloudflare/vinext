@@ -1424,7 +1424,9 @@ describe("app page dispatch", () => {
       );
       const completed = extractRscCompletionMetadata(await response.arrayBuffer());
       await Promise.all(waitUntilPromises.splice(0));
-      expect(response.headers.get("x-vinext-cache")).not.toBe("HIT");
+      // A query-bearing RSC render may still read searchParams after its
+      // headers are built, so it sends no provisional cache state.
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
       expect(response.headers.get("x-vinext-rsc-completion-metadata")).toBe("1");
       expect(completed.metadata).toEqual({
         dynamicStaleTimeSeconds: 0,
