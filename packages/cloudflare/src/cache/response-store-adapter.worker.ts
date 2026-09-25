@@ -228,7 +228,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
           await response.body?.cancel().catch(() => {});
           throw new Error("Vinext response-stage regeneration was not cacheable");
         }
-        return withoutRequestScopedHeaders(response);
+        return withoutRequestScopedHeaders(response, invocation.props);
       }
       if (
         input.id === CACHE_FUNCTION_REVALIDATOR_ID &&
@@ -303,11 +303,20 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
 }
 
 /**
- * The request stage recomposes the routed params and path on every response,
- * HITs included, so a stored entry shared across queries must not carry the
- * values of the request that filled it.
+ * The request stage recomposes the routed params and path on every App page
+ * RSC response, HITs included, so such an entry shared across queries must not
+ * carry the values of the request that filled it. Every other response kind
+ * (route handlers, metadata routes, HTML, Pages) keeps its headers as rendered.
  */
-function withoutRequestScopedHeaders(response: Response): Response {
+function withoutRequestScopedHeaders(response: Response, responseStageProps: unknown): Response {
+  if (
+    responseStageProps === null ||
+    typeof responseStageProps !== "object" ||
+    Reflect.get(responseStageProps, "kind") !== "app-page" ||
+    Reflect.get(responseStageProps, "isRscRequest") !== true
+  ) {
+    return response;
+  }
   const headers = new Headers(response.headers);
   headers.delete(VINEXT_PARAMS_HEADER);
   headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
@@ -480,7 +489,7 @@ const handler = {
                 await admitted.body?.cancel().catch(() => {});
                 return;
               }
-              await responseStore.put(key, withoutRequestScopedHeaders(admitted), {
+              await responseStore.put(key, withoutRequestScopedHeaders(admitted, props), {
                 coalesce: true,
                 revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
               });
@@ -506,7 +515,7 @@ const handler = {
       }
 
       const [foreground, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
-      const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered));
+      const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
       await responseStore.put(key, cacheResponse, {
         coalesce: true,
         revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
