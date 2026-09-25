@@ -571,10 +571,16 @@ export async function readAppPageCacheResponse(
           const previousTags = cachedValue.renderObservation?.cacheTags;
           if (previousCacheControl && previousTags) {
             try {
-              await options.isrSet(isrKey, cachedValue, {
-                cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
-                tags: [...previousTags],
-              });
+              // Another regeneration can write this key too (an HTML one also
+              // writes the RSC key), so don't replace a newer entry. A missing
+              // one is restored, as Next.js restores unconditionally.
+              const current = await options.isrGet(isrKey);
+              if (!current || current.value.lastModified === cached.value.lastModified) {
+                await options.isrSet(isrKey, cachedValue, {
+                  cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
+                  tags: [...previousTags],
+                });
+              }
             } catch (storeError) {
               // Report the regeneration's own failure, not the store's.
               console.error(

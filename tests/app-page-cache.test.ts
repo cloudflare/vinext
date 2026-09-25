@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   type AppPageCacheOutcomeMetric,
   buildAppPageCacheTags,
@@ -2021,7 +2021,14 @@ describe("app page cache helpers", () => {
 });
 
 describe("app page regeneration failures", () => {
+  // A failed regeneration re-reads its key before keeping the previous entry,
+  // so each read must return the same entry.
+  beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+  });
+
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     setCacheHandler(new MemoryCacheHandler());
   });
@@ -2142,6 +2149,55 @@ describe("app page regeneration failures", () => {
         { cacheControl: { revalidate: 30 }, tags: ["_N_T_/stale", "posts"] },
       ],
     ]);
+  });
+
+  it("doesn't keep the previous entry over a newer one another regeneration wrote", async () => {
+    const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
+    const newerValue = buildCachedAppPageValue("<h1>newer</h1>", undefined, 200, staleObservation);
+    const scheduled: Array<() => Promise<void>> = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+    let reads = 0;
+
+    await readStale({
+      async isrGet() {
+        reads++;
+        // The second read is the failure handler's, after an HTML
+        // regeneration has written a newer entry under this key.
+        return reads === 1
+          ? buildISRCacheEntry(cachedValue, true, { revalidate: 60 })
+          : { isStale: false, value: { lastModified: Date.now() + 1, value: newerValue } };
+      },
+      isrSet,
+      async renderFreshPageForCache() {
+        throw new Error("regeneration failed");
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("keeps the previous entry when the key has gone missing", async () => {
+    const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
+    const scheduled: Array<() => Promise<void>> = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+    let reads = 0;
+
+    await readStale({
+      async isrGet() {
+        reads++;
+        return reads === 1 ? buildISRCacheEntry(cachedValue, true, { revalidate: 60 }) : null;
+      },
+      isrSet,
+      async renderFreshPageForCache() {
+        throw new Error("regeneration failed");
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+    expect(isrSet).toHaveBeenCalledWith("html:/stale", cachedValue, expect.anything());
   });
 
   it("re-stores the previous entry only after a slower sibling write settles", async () => {

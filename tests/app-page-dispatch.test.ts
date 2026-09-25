@@ -3290,6 +3290,8 @@ describe("app page dispatch", () => {
         undefined,
         buildQueryInvariantRenderObservation(),
       );
+      const staleEntry = buildISRCacheEntry(staleValue, true);
+      staleEntry.value.cacheControl = { revalidate: 60 };
       const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
         (_route, params, _opts, searchParams, layoutParamAccess, buildOptions) =>
           buildPageElements({
@@ -3318,11 +3320,7 @@ describe("app page dispatch", () => {
         buildPageElement,
         cleanPathname: "/regen-proof",
         isProduction: true,
-        isrGet: vi.fn(async () => {
-          const entry = buildISRCacheEntry(staleValue, true);
-          entry.value.cacheControl = { revalidate: 60 };
-          return entry;
-        }),
+        isrGet: vi.fn(async () => staleEntry),
         isrSet: vi.fn(async (_key, value) => {
           written.push(value);
         }),
