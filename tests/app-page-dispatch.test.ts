@@ -2379,12 +2379,17 @@ describe("app page dispatch", () => {
         },
       },
     });
-    const currentRoute = createRoute({ params: ["id"], pattern: "/photos/[id]" });
+    const currentRoute = createRoute({
+      isDynamic: true,
+      params: ["id"],
+      pattern: "/photos/[id]",
+    });
     const middlewareHeaders = new Headers({ "x-from-middleware": "yes" });
     const setNavigationContext = vi.fn();
     let capturedInterceptOpts: Parameters<DispatchOptions["buildPageElement"]>[2];
     const { options } = createDispatchOptions({
       cleanPathname: "/photos/123",
+      isProduction: true,
       async buildPageElement(route, params, opts) {
         capturedInterceptOpts = opts;
         return `${route.pattern}:${JSON.stringify(params)}:${opts?.interceptSlotKey ?? "direct"}`;
@@ -2427,6 +2432,10 @@ describe("app page dispatch", () => {
     expect(response.status).toBe(202);
     expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-from-middleware")).toBe("yes");
+    // The dynamic route has no generateStaticParams, so it can't be static.
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
     expect(capturedInterceptOpts).toMatchObject({
       interceptGraphId: "graph-interception:/feed->/photos/:id",

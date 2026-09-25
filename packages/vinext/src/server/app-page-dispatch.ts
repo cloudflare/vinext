@@ -70,6 +70,7 @@ import {
   mergeMiddlewareResponseHeaders,
   type AppPageMiddlewareContext,
 } from "./app-page-response.js";
+import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
@@ -1079,6 +1080,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
+      // A route that can't be static is never cacheable, like its own render.
+      // Middleware's policy still wins, merged after, as in the RSC builder.
+      if (!isStaticEligible) interceptHeaders.set("Cache-Control", NEVER_CACHE_CONTROL);
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       applyRscCompatibilityIdHeader(interceptHeaders);
       applyRscDeploymentIdHeader(interceptHeaders);
