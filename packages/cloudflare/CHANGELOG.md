@@ -1,5 +1,15 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.11
+
+### Bug Fixes
+
+- **Cache:** replay "use cache" params under the original cache key (#3430)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.10
 
 ### Features
