@@ -3,6 +3,7 @@ import React from "react";
 import { renderAppPageCacheArtifacts } from "../packages/vinext/src/server/app-page-cache-render.js";
 import { hasQueryInvariantRenderProof } from "../packages/vinext/src/server/cache-proof.js";
 import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
+import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type {
   FrameworkTracingBackendSpan,
@@ -196,5 +197,30 @@ describe("renderAppPageCacheArtifacts", () => {
 
     expect(hasQueryInvariantRenderProof(result.htmlRenderObservation)).toBe(true);
     expect(hasQueryInvariantRenderProof(result.rscRenderObservation)).toBe(true);
+    expect(result.usedDynamicApi).toBe(false);
+  });
+
+  it("reports a regeneration that used a dynamic API", async () => {
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: false,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          markDynamicUsage();
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      renderToReadableStream: () => createStream(["flight-data"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(result.usedDynamicApi).toBe(true);
   });
 });

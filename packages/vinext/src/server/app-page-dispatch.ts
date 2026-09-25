@@ -965,6 +965,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               rscRenderObservation: rendered.rscRenderObservation!,
               tags: rendered.tags,
               cacheControl: rendered.cacheControl,
+              usedDynamicApi: rendered.usedDynamicApi,
             };
           },
         );

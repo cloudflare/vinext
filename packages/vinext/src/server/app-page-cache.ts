@@ -69,6 +69,7 @@ type AppPageCacheRenderResult = {
   rscData: ArrayBuffer;
   rscRenderObservation: RenderObservation;
   tags: string[];
+  usedDynamicApi: boolean;
 };
 
 type BuildAppPageCachedResponseOptions = {
@@ -232,6 +233,28 @@ function resolveRegeneratedAppPageCacheControl(options: {
     // background regen does not quietly drop it and widen client reuse.
     staleSeconds: resolveClientStaleTimeSeconds(options.renderCacheControl),
   });
+}
+
+/**
+ * When a regeneration fails, Next.js re-stores the previous entry with a short
+ * revalidate so it isn't retried on every request
+ * (`server/response-cache/index.ts`). `revalidate = false`, which vinext holds
+ * as Infinity, retries after 3 s like Next.js's `revalidate || 3`.
+ */
+function resolveRegenerationFailureCacheControl(
+  previous: CacheControlMetadata,
+): CacheControlMetadata {
+  const previousRevalidate =
+    typeof previous.revalidate === "number" && Number.isFinite(previous.revalidate)
+      ? previous.revalidate
+      : 0;
+  const revalidate = Math.min(Math.max(previousRevalidate || 3, 3), 30);
+  return {
+    revalidate,
+    ...(previous.expire === undefined ? {} : { expire: Math.max(revalidate + 3, previous.expire) }),
+    // The client reuse bound belongs to the stored payload, which is unchanged.
+    ...(previous.stale === undefined ? {} : { stale: previous.stale }),
+  };
 }
 
 export function buildAppPageCachedResponse(
@@ -459,8 +482,31 @@ export async function readAppPageCacheResponse(
       // The regeneration key is derived from exactly the same inputs as `isrKey`
       // above (the RSC variant when `isRscRequest`, the HTML key otherwise), so
       // reuse it instead of recomputing the hash.
+      const previousCacheControl = cached.value.cacheControl;
       options.scheduleBackgroundRegeneration(isrKey, async () => {
-        const revalidatedPage = await options.renderFreshPageForCache();
+        let revalidatedPage: AppPageCacheRenderResult;
+        try {
+          revalidatedPage = await options.renderFreshPageForCache();
+          if (revalidatedPage.usedDynamicApi) {
+            throw new Error(
+              `Page changed from static to dynamic at runtime ${options.cleanPathname}` +
+                "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
+            );
+          }
+        } catch (error) {
+          // Keep the previous entry under this key only: an RSC-triggered
+          // regeneration must not write its payload under the HTML key.
+          if (previousCacheControl) {
+            await options.isrSet(isrKey, cachedValue, {
+              cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
+              tags: [
+                ...(cachedValue.renderObservation?.cacheTags ??
+                  buildAppPageCacheTags(options.cleanPathname, [])),
+              ],
+            });
+          }
+          throw error;
+        }
         const cacheControl = resolveRegeneratedAppPageCacheControl({
           expireSeconds: options.expireSeconds,
           renderCacheControl: revalidatedPage.cacheControl,

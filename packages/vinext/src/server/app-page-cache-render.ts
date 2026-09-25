@@ -68,6 +68,8 @@ export type RenderAppPageCacheArtifactsResult = {
   rscData?: ArrayBuffer;
   rscRenderObservation?: ReturnType<typeof createAppPageRenderObservation>;
   tags: string[];
+  /** The render used a dynamic API, so its output must not be stored. */
+  usedDynamicApi: boolean;
 };
 
 /**
@@ -162,7 +164,7 @@ async function renderAppPageCacheArtifactsImpl(
   );
   const observationState = consumeAppPageRenderObservationState();
   consumeInvalidDynamicUsageError();
-  consumeDynamicUsage();
+  const usedDynamicApi = consumeDynamicUsage();
 
   const htmlRenderObservation = createAppPageRenderObservation({
     boundaryOutcome: { kind: "success" },
@@ -185,6 +187,7 @@ async function renderAppPageCacheArtifactsImpl(
     htmlRenderObservation,
     ...(linkHeader ? { linkHeader } : {}),
     tags,
+    usedDynamicApi,
     cacheControl:
       typeof cacheLife?.revalidate === "number"
         ? // `stale` must survive regeneration: this producer feeds
