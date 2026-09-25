@@ -5,7 +5,14 @@ import path from "node:path";
 import { Buffer } from "node:buffer";
 import { buildPrerenderKVPairs } from "../packages/cloudflare/src/prerender-kv-populate.js";
 import { createKvKeySpace } from "../packages/cloudflare/src/cache/kv-key.js";
-import { appIsrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
+import { appIsrCacheKey, isrGet } from "../packages/vinext/src/server/isr-cache.js";
+import { KVCacheHandler } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
+import { readAppPageCacheResponse } from "../packages/vinext/src/server/app-page-cache.js";
+import {
+  getCacheHandler,
+  MemoryCacheHandler,
+  setCacheHandler,
+} from "../packages/vinext/src/shims/cache.js";
 import {
   buildSearchParamsReadRenderObservation,
   queryInvariantPrerenderObservations,
@@ -112,6 +119,61 @@ describe("buildPrerenderKVPairs", () => {
       rscData: Buffer.from("flight").toString("base64"),
       renderObservation: renderObservations.rsc,
     });
+  });
+
+  it("serves a query-bearing request from an uploaded entry through the KV adapter", async () => {
+    writePrerenderFixture(
+      {
+        buildId: "build-kv-hit",
+        routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+      },
+      { "about.html": "<html>About</html>", "about.rsc": "flight" },
+    );
+    const store = new Map(
+      buildPrerenderKVPairs(serverDir).pairs.map((pair) => [pair.key, pair.value]),
+    );
+    const kv = {
+      async get(key: string | string[]) {
+        return Array.isArray(key)
+          ? new Map(key.map((k) => [k, store.get(k) ?? null]))
+          : (store.get(key) ?? null);
+      },
+      async put() {},
+      async delete() {},
+      async list() {
+        return { keys: [], list_complete: true };
+      },
+    };
+    const previousHandler = getCacheHandler();
+    setCacheHandler(
+      new KVCacheHandler(kv as unknown as ConstructorParameters<typeof KVCacheHandler>[0]),
+    );
+    try {
+      const response = await readAppPageCacheResponse({
+        cleanPathname: "/about",
+        clearRequestContext() {},
+        hasRequestSearchParams: true,
+        isRscRequest: false,
+        isrGet,
+        isrHtmlKey: (pathname) => appIsrCacheKey(pathname, "html", "build-kv-hit"),
+        isrRscKey: (pathname) => appIsrCacheKey(pathname, "rsc", "build-kv-hit"),
+        async isrSet() {
+          throw new Error("a HIT must not write");
+        },
+        revalidateSeconds: 60,
+        async renderFreshPageForCache() {
+          throw new Error("a HIT must not render");
+        },
+        scheduleBackgroundRegeneration() {
+          throw new Error("a fresh entry must not regenerate");
+        },
+      });
+
+      expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+      await expect(response?.text()).resolves.toBe("<html>About</html>");
+    } finally {
+      setCacheHandler(previousHandler ?? new MemoryCacheHandler());
+    }
   });
 
   it("skips App pages whose render read searchParams or carries no observation", () => {
