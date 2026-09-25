@@ -19,7 +19,12 @@ function parseSeconds(value: string | undefined): number | undefined {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
-export function deriveCachePolicy(headers: Headers, now = Date.now()): CachePolicy {
+type CacheLifetime = {
+  maxAge: number;
+  staleWhileRevalidate: number;
+};
+
+function parseCacheLifetime(headers: Headers): CacheLifetime {
   const cacheControl =
     headers.get("Cloudflare-CDN-Cache-Control") ??
     headers.get("CDN-Cache-Control") ??
@@ -45,14 +50,19 @@ export function deriveCachePolicy(headers: Headers, now = Date.now()): CachePoli
     cacheStorageForbidden || directives.has("no-cache")
       ? 0
       : (parseSeconds(directives.get("s-maxage")) ?? parseSeconds(directives.get("max-age")) ?? 0);
-  const initialAge = parseSeconds(headers.get("Age") ?? undefined) ?? 0;
-  const remainingFreshSeconds = Math.max(0, maxAge - initialAge);
-  const freshUntil = now + remainingFreshSeconds * 1000;
-
   const staleWhileRevalidate =
     cacheStorageForbidden || staleServingForbidden
       ? 0
       : (parseSeconds(directives.get("stale-while-revalidate")) ?? 0);
+
+  return { maxAge, staleWhileRevalidate };
+}
+
+export function deriveCachePolicy(headers: Headers, now = Date.now()): CachePolicy {
+  const { maxAge, staleWhileRevalidate } = parseCacheLifetime(headers);
+  const initialAge = parseSeconds(headers.get("Age") ?? undefined) ?? 0;
+  const remainingFreshSeconds = Math.max(0, maxAge - initialAge);
+  const freshUntil = now + remainingFreshSeconds * 1000;
 
   return {
     createdAt: now,

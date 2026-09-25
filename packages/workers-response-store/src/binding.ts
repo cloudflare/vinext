@@ -902,9 +902,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
     const write = reservation ?? (await this.reserveWrite(metadata, cacheKey, cacheTags));
-    const { keyHash, objectKey: reservationObjectKey, revision } = write;
+    const { keyHash } = write;
 
-    let publication: PublicationResult;
+    let candidate: CandidateMetadata;
     let body: ArrayBuffer;
     let policy: ReturnType<typeof deriveCachePolicy>;
     try {
@@ -919,7 +919,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           lower !== "content-length"
         );
       });
-      const candidate: CandidateMetadata = {
+      candidate = {
         fenceTags: [...new Set([...write.fenceTags, ...cacheTags])],
         objectKey: this.r2ObjectKey(keyHash),
         statusText: response.statusText,
@@ -934,12 +934,41 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       // required by R2's single-part put API. Materialise only in the cache
       // Worker; bodies are never stored in the metadata Durable Object.
       body = response.body ? await response.arrayBuffer() : new ArrayBuffer(0);
+    } catch (error) {
+      await this.releaseFailedWrite(metadata, write);
+      throw error;
+    }
+
+    return this.publishRevision(
+      metadata,
+      write,
+      candidate,
+      body,
+      response.status,
+      policy.createdAt,
+      policy.initialAge,
+      expectedR2Etag !== undefined ? expectedR2Etag : write.r2ObjectAbsent ? null : undefined,
+    );
+  }
+
+  private async publishRevision(
+    metadata: CacheMetadataStub,
+    write: WriteReservation,
+    candidate: CandidateMetadata,
+    body: ArrayBuffer,
+    status: number,
+    createdAt: number,
+    initialAge: number,
+    expectedR2Etag: string | null | undefined,
+  ): Promise<StoreResult> {
+    let publication: PublicationResult;
+    try {
       publication = await metadata.publish(
-        keyHash,
-        revision,
+        write.keyHash,
+        write.revision,
         candidate,
         write.claimId,
-        reservationObjectKey,
+        write.objectKey,
       );
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
@@ -960,10 +989,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         stored = await this.writeR2Response(
           publication.entry,
           body,
-          response.status,
-          policy.createdAt,
-          policy.initialAge,
-          expectedR2Etag !== undefined ? expectedR2Etag : write.r2ObjectAbsent ? null : undefined,
+          status,
+          createdAt,
+          initialAge,
+          expectedR2Etag,
         );
       } catch (error) {
         const reconciliation = await metadata
@@ -1012,10 +1041,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         ? {
             response: this.createStoredResponse(
               entry,
-              NULL_BODY_STATUSES.has(response.status) ? null : body,
-              response.status,
-              policy.createdAt,
-              policy.initialAge,
+              NULL_BODY_STATUSES.has(status) ? null : body,
+              status,
+              createdAt,
+              initialAge,
             ),
           }
         : {}),
