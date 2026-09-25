@@ -8,6 +8,7 @@ import {
   applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
+  isCdnResponsePolicyHeader,
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
   readCdnResponseCacheControl,
@@ -267,8 +268,7 @@ export function applyResponseStageCachePolicy(
   policyHeaders: ReadonlyArray<readonly [string, string]> | null | undefined,
 ): Response {
   if (!policyHeaders?.length) return response;
-  const state = readState(ctx);
-  if (state) state.explicitConfigCachePolicy = true;
+  recordConfigCachePolicy(readState(ctx), policyHeaders);
 
   try {
     applyResponseStagePolicyHeaders(response.headers, policyHeaders);
@@ -290,8 +290,19 @@ export function recordResponseStageCachePolicy(
   policyHeaders: ReadonlyArray<readonly [string, string]> | null | undefined,
 ): void {
   if (!policyHeaders?.length) return;
-  const state = readState(ctx);
-  if (state) state.explicitConfigCachePolicy = true;
+  recordConfigCachePolicy(readState(ctx), policyHeaders);
+}
+
+function recordConfigCachePolicy(
+  state: RouteCacheabilityState | null,
+  policyHeaders: ReadonlyArray<readonly [string, string]>,
+): void {
+  if (!state) return;
+  state.explicitConfigCachePolicy = true;
+  // A Vary-only policy leaves the renderer's cache policy in place.
+  if (policyHeaders.some(([name]) => isCdnResponsePolicyHeader(name))) {
+    state.configCdnCachePolicy = true;
+  }
 }
 
 function probeResponse(
@@ -892,12 +903,13 @@ async function finalizeWorkerCacheabilityAdmission(
   // Every query can share a rendered App page's response, so the renderer's
   // policy is admitted only with proof the render left searchParams unread. A
   // later next.config policy replaces the renderer's and is cached per URL, as
-  // in Next.js. Config that leaves the renderer's policy in place (a Vary-only
-  // rule) replaces nothing.
+  // in Next.js, even when it matches the renderer's value. Config that leaves
+  // the renderer's policy in place (a Vary-only rule) replaces nothing.
   const replacesRendererPolicy =
     outcome !== rendererOutcome &&
-    readCdnResponseCacheControl(response.headers) !==
-      readCdnResponseCacheControl(state.frameworkResponseCachePolicy);
+    (state.configCdnCachePolicy === true ||
+      readCdnResponseCacheControl(response.headers) !==
+        readCdnResponseCacheControl(state.frameworkResponseCachePolicy));
   if (
     state.route.kind === "app-page" &&
     !replacesRendererPolicy &&

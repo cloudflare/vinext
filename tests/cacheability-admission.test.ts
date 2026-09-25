@@ -1129,6 +1129,32 @@ describe("single-request cacheability admission", () => {
     },
   );
 
+  it("admits a config cache policy matching the renderer's without a searchParams proof", async () => {
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      null,
+      "build-a",
+      true,
+      "verbatim",
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    const cacheControl = "s-maxage=60";
+    state.outcome = { cacheable: true, cacheControl };
+    state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": cacheControl });
+    const rendered = applyResponseStageCachePolicy(
+      new Response("static", { headers: { "Cache-Control": cacheControl } }),
+      context,
+      [["Cache-Control", cacheControl]],
+    );
+
+    const response = await finalizeWorkerCacheabilityResponse(rendered, context);
+
+    expect(response.headers.get("Cache-Control")).toBe(cacheControl);
+    await expect(response.text()).resolves.toBe("static");
+  });
+
   it("checks every sibling render against the route-pattern classification", async () => {
     const route: CacheabilityManifestRoute = {
       kind: "app-page",

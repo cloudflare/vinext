@@ -35,6 +35,8 @@ export type RouteCacheabilityState = {
   completedResponseBody?: boolean;
   /** Whether admission must translate a completed response through the active adapter. */
   applyCompletedResponsePolicy?: boolean;
+  /** Whether a next.config policy set a core- or adapter-owned cache policy header, not just Vary. */
+  configCdnCachePolicy?: boolean;
   explicitConfigCachePolicy?: boolean;
   explicitResponseCachePolicy?: boolean;
   finalResponseVetoReason?: string;
