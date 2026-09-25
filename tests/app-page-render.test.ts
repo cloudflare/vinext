@@ -2110,15 +2110,16 @@ describe("app page render lifecycle", () => {
   });
 
   it("observes a speculative prerender only once SSR has finished rendering", async () => {
-    // A speculative prerender returns after the SSR shell. A client page that
-    // reads searchParams inside Suspense does so after that, and the read must
-    // still reach the observation, or query requests would hit the seed.
+    // SSR hands back its shell before Suspense content renders. A client page
+    // that reads searchParams inside Suspense does so after that, and the read
+    // must still reach the observation, or query requests would hit the seed.
     const common = createCommonOptions();
     let requestApis: ("searchParams" | "headers")[] = [];
     let pageTags = ["_N_T_/posts/post"];
     const renderComplete = createDeferred<void>();
+    const shellReturned = createDeferred<void>();
 
-    const response = await renderAppPageLifecycle({
+    const responsePromise = renderAppPageLifecycle({
       ...common.options,
       getPageTags() {
         return pageTags;
@@ -2136,6 +2137,7 @@ describe("app page render lifecycle", () => {
           if (options?.sideStream) {
             void options.sideStream.getReader().cancel();
           }
+          shellReturned.resolve();
           return {
             htmlStream: createStream(["<html>shell</html>"]),
             metadataReady: Promise.resolve(),
@@ -2151,14 +2153,16 @@ describe("app page render lifecycle", () => {
       revalidateSeconds: null,
     });
 
-    const body = response.text();
+    // The lifecycle waits for the render to finish. The Suspense content
+    // renders after the shell was handed back, then SSR finishes.
+    await shellReturned.promise;
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // The Suspense content renders after the shell was returned.
     requestApis = ["searchParams"];
     pageTags = ["_N_T_/posts/post", "late-tag"];
     renderComplete.resolve();
 
-    const { html, renderObservations } = extractPrerenderRenderObservations(await body);
+    const response = await responsePromise;
+    const { html, renderObservations } = extractPrerenderRenderObservations(await response.text());
     expect(html).toBe("<html>shell</html>");
     expect(renderObservations).not.toBeNull();
     expect(hasQueryInvariantRenderProof(renderObservations?.html)).toBe(false);
@@ -2172,6 +2176,65 @@ describe("app page render lifecycle", () => {
         ...(renderObservations ? { renderObservations } : {}),
       }),
     ).toBeNull();
+  });
+
+  it("builds prerender observations from the finished render when the lifecycle returns early", async () => {
+    // A speculative prerender that turns dynamic stops waiting for SSR. Its
+    // observations must still come from the finished render, not from the
+    // point the lifecycle returned.
+    const common = createCommonOptions();
+    let requestApis: ("searchParams" | "headers")[] = [];
+    let dynamicUsed = false;
+    const renderComplete = createDeferred<void>();
+    const shellReturned = createDeferred<void>();
+
+    const responsePromise = renderAppPageLifecycle({
+      ...common.options,
+      isPrerender: true,
+      isProduction: true,
+      isSpeculativePrerender: true,
+      loadSsrHandler: vi.fn(async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: { sideStream?: ReadableStream<Uint8Array> },
+        ) {
+          if (options?.sideStream) {
+            void options.sideStream.getReader().cancel();
+          }
+          shellReturned.resolve();
+          return {
+            htmlStream: createStream(["<html>shell</html>"]),
+            metadataReady: Promise.resolve(),
+            renderComplete: renderComplete.promise,
+            capturedRscData: Promise.resolve(new ArrayBuffer(0)),
+            shellErrorRecovered: false,
+          };
+        },
+      })),
+      peekDynamicUsage() {
+        return dynamicUsed;
+      },
+      peekRenderObservationState() {
+        return { dynamicFetches: [], requestApis };
+      },
+      revalidateSeconds: null,
+    });
+
+    await shellReturned.promise;
+    dynamicUsed = true;
+    const response = await responsePromise;
+    const body = response.text();
+    // The rest of the page renders after the lifecycle returned.
+    requestApis = ["searchParams"];
+    renderComplete.resolve();
+
+    const { html, renderObservations } = extractPrerenderRenderObservations(await body);
+    expect(html).toBe("<html>shell</html>");
+    expect(renderObservations).not.toBeNull();
+    expect(hasQueryInvariantRenderProof(renderObservations?.html)).toBe(false);
+    expect(hasQueryInvariantRenderProof(renderObservations?.rsc)).toBe(false);
   });
 
   it("sends no prerender observations when the render state can't be read", async () => {
