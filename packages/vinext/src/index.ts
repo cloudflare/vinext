@@ -253,8 +253,6 @@ import {
 import {
   PAGES_CLIENT_ASSETS_MODULE,
   buildPagesClientAssetsModule,
-  setPagesClientAssetsBuildMetadata,
-  takePagesClientAssetsBuildMetadata,
   writePagesClientAssetsModuleIfMissing,
 } from "./build/pages-client-assets-module.js";
 import { readPrerenderSecret, readServerRuntimeOutputDirs } from "./build/server-manifest.js";
@@ -2428,7 +2426,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
-        root = path.resolve(toSlash(config.root ?? process.cwd()));
+        root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
         const devCliLifecycleEnabled =
           env.command === "serve" &&
           env.isPreview !== true &&
@@ -7843,19 +7841,9 @@ export const loadServerActionClient = ${
               dynamicPreloads: runtimeMetadata.dynamicPreloads ?? undefined,
               crossOrigin: nextConfig.crossOrigin ?? "",
             });
-            const buildSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
-            if (hasAppDir && hasPagesDir && buildSession) {
-              setPagesClientAssetsBuildMetadata(buildSession, pagesClientAssetsModule);
-            }
           }
 
-          if (pagesClientAssetsModule === null) {
-            if (pagesClientAssetsOutputDirs.size === 0) return;
-            const buildSession = process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
-            if (buildSession) {
-              pagesClientAssetsModule = takePagesClientAssetsBuildMetadata(buildSession);
-            }
-          }
+          if (pagesClientAssetsModule === null && pagesClientAssetsOutputDirs.size === 0) return;
           if (pagesClientAssetsModule === null) {
             const emptyModule = buildPagesClientAssetsModule({});
             for (const outputDir of pagesClientAssetsOutputDirs) {

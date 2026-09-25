@@ -1,4 +1,3 @@
-import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -21,10 +20,7 @@ import type { ResolvedNextConfig } from "../config/next-config.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { resolveVinextPackageRoot } from "../utils/vinext-root.js";
 import { cleanBuildOutput } from "./clean-output.js";
-import {
-  PAGES_CLIENT_ASSETS_MODULE,
-  clearPagesClientAssetsBuildMetadata,
-} from "./pages-client-assets-module.js";
+import { PAGES_CLIENT_ASSETS_MODULE } from "./pages-client-assets-module.js";
 import { runWithPreviewBuildCredentials } from "./preview-credentials.js";
 
 type ProjectViteApi = Pick<
@@ -58,11 +54,6 @@ export const VINEXT_BUILD_LIFECYCLE_CONFIG = "__vinextBuildLifecycle";
 
 export type BuildLifecycleInvocation = {
   onComplete?: () => void;
-};
-
-type BuildLifecycleState = {
-  pagesClientAssetsBuildSession?: string;
-  restoreBuild?: () => void;
 };
 
 async function loadProjectViteApi(root: string): Promise<ProjectViteApi> {
@@ -251,13 +242,6 @@ export function prepareBuildOutput(
   });
 }
 
-function prepareBuild(context: BuildLifecycleContext): BuildLifecycleState {
-  if (!context.hasAppDir || !context.hasPagesDir) return {};
-  const pagesClientAssetsBuildSession = randomBytes(16).toString("hex");
-  process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION = pagesClientAssetsBuildSession;
-  return { pagesClientAssetsBuildSession };
-}
-
 async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContext): Promise<void> {
   if (context.hasAppDir && context.hasPagesDir && !context.skipHybridPagesBundle) {
     await withEnvironment(
@@ -336,30 +320,6 @@ async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContex
     prerenderResult: prerenderResult ?? undefined,
   });
   console.log("\n  Build complete.\n");
-}
-
-function disposeBuild(state: BuildLifecycleState): void {
-  state.restoreBuild?.();
-  state.restoreBuild = undefined;
-  const session = state.pagesClientAssetsBuildSession;
-  if (!session) return;
-  clearPagesClientAssetsBuildMetadata(session);
-  if (process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION === session) {
-    delete process.env.__VINEXT_PAGES_CLIENT_ASSETS_BUILD_SESSION;
-  }
-}
-
-export async function runBuildLifecycle(
-  builder: ViteBuilder,
-  context: BuildLifecycleContext,
-): Promise<void> {
-  const state = prepareBuild(context);
-  try {
-    await builder.buildApp();
-    await finalizeBuild(builder, context);
-  } finally {
-    disposeBuild(state);
-  }
 }
 
 export function createBuildLifecyclePlugins(options: {

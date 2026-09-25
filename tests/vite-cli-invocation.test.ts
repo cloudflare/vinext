@@ -1,11 +1,104 @@
-import { describe, expect, it } from "vite-plus/test";
 import path from "node:path";
+import { toSlash } from "pathslash";
+import { describe, expect, it } from "vite-plus/test";
 import {
   claimViteCliBuildInvocation,
+  findViteRoot,
   getViteCliInvocation,
   isViteCliConfigFile,
   isViteCliInvocation,
 } from "../packages/vinext/src/utils/vite-cli-invocation.js";
+
+describe("findViteRoot", () => {
+  it("does not guess a project root after an unknown valued option", () => {
+    expect(findViteRoot("build", ["--bogus", "other", "project"])).toEqual({
+      root: undefined,
+      shouldPreflight: false,
+    });
+  });
+
+  it.each([
+    { args: ["--mode"] },
+    { args: ["--mode="] },
+    { args: ["--mode", "--config", "vite.config.ts"] },
+  ])("leaves malformed required options to Vite ($args)", ({ args }) => {
+    expect(findViteRoot("build", args)).toEqual({
+      root: undefined,
+      shouldPreflight: false,
+    });
+  });
+
+  it("parses valid short option clusters without hiding help", () => {
+    expect(findViteRoot("build", ["-dm", "staging", "project"])).toEqual({
+      root: "project",
+      shouldPreflight: true,
+    });
+    expect(findViteRoot("build", ["-hd", "project"])).toEqual({
+      root: undefined,
+      shouldPreflight: false,
+    });
+  });
+
+  it("keeps the config preflight for version flags on explicit commands", () => {
+    expect(findViteRoot("build", ["--version"])).toEqual({
+      root: undefined,
+      shouldPreflight: true,
+    });
+    expect(findViteRoot("dev", ["-v"])).toEqual({
+      root: undefined,
+      shouldPreflight: true,
+    });
+  });
+
+  it("leaves required options before the end of a cluster to Vite", () => {
+    expect(findViteRoot("build", ["-ml", "silent"])).toEqual({
+      root: undefined,
+      shouldPreflight: false,
+    });
+  });
+
+  it("honors explicit global boolean values", () => {
+    expect(findViteRoot("build", ["--help", "false", "project"])).toEqual({
+      root: "project",
+      shouldPreflight: true,
+    });
+    expect(findViteRoot("build", ["--help=true", "project"])).toEqual({
+      root: "project",
+      shouldPreflight: false,
+    });
+  });
+
+  it.each(["--no-minify", "--no-sourcemap", "--no-manifest", "--no-base"])(
+    "recognizes negated build option %s",
+    (option) => {
+      expect(findViteRoot("build", [option])).toEqual({
+        root: undefined,
+        shouldPreflight: true,
+      });
+    },
+  );
+
+  it.each(["--no-config", "--no-mode", "--no-target", "--no-configLoader"])(
+    "defers malformed required-option negation %s to Vite",
+    (option) => {
+      expect(findViteRoot("build", [option])).toEqual({
+        root: undefined,
+        shouldPreflight: false,
+      });
+    },
+  );
+
+  it("leaves valued negations and extra positional roots to Vite", () => {
+    expect(findViteRoot("build", ["--no-minify=false"])).toEqual({
+      root: undefined,
+      shouldPreflight: false,
+    });
+    expect(findViteRoot("build", ["first", "second"])).toEqual({
+      root: "first",
+      shouldPreflight: false,
+    });
+  });
+});
 
 describe("isViteCliInvocation", () => {
   it.each([
@@ -148,15 +241,14 @@ describe("isViteCliInvocation", () => {
     ).toBeUndefined();
   });
 
-  it("keeps arguments after the option delimiter on the default dev command", () => {
+  it("does not use post-delimiter arguments as the default dev root", () => {
     const argv = ["node", "/project/node_modules/vite/bin/vite.js", "--", "build"];
 
     expect(isViteCliInvocation("build", argv)).toBe(false);
     expect(getViteCliInvocation(argv)).toEqual({
       command: "dev",
       mode: "development",
-      root: expect.stringMatching(/\/build$/),
-      rootArg: "build",
+      root: toSlash(process.cwd()),
     });
   });
 
@@ -174,8 +266,7 @@ describe("isViteCliInvocation", () => {
     ).toEqual({
       command: "dev",
       mode: "staging",
-      root: expect.stringMatching(/\/--mode$/),
-      rootArg: "--mode",
+      root: toSlash(process.cwd()),
     });
   });
 
