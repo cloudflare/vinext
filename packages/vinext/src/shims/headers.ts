@@ -19,6 +19,7 @@ import { getOrCreateAls } from "./internal/als-registry.js";
 import { serializeSetCookie, validateCookieName } from "./internal/cookie-serialize.js";
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
+  ensureRenderDynamicLatch,
   isInsideUnifiedScope,
   getRequestContext,
   runWithUnifiedStateMutation,
@@ -50,9 +51,25 @@ type HeadersContextFromRequestOptions = {
 
 export type HeadersAccessPhase = "render" | "action" | "route-handler";
 
+/**
+ * Whether the current render has used a dynamic API. Unlike
+ * `dynamicUsageDetected`, nothing clears it, and one object is shared by every
+ * child scope of the request, so usage inside isolated scopes (such as the
+ * layout probe) stays visible to later readers.
+ */
+export type RenderDynamicLatch = {
+  dynamic: boolean;
+  listeners: Set<() => void>;
+};
+
+export function createRenderDynamicLatch(): RenderDynamicLatch {
+  return { dynamic: false, listeners: new Set() };
+}
+
 export type VinextHeadersShimState = {
   headersContext: HeadersContext | null;
   dynamicUsageDetected: boolean;
+  renderDynamicLatch: RenderDynamicLatch;
   renderRequestApiUsage: Set<RenderRequestApiKind>;
   connectionProbe: ConnectionProbeState | null;
   /** Error recorded by throwIfInsideCacheScope for dev diagnostics, persists even if caught by user code. */
@@ -93,6 +110,7 @@ const _als = getOrCreateAls<VinextHeadersShimState>("vinext.nextHeadersShim.als"
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   headersContext: null,
   dynamicUsageDetected: false,
+  renderDynamicLatch: createRenderDynamicLatch(),
   renderRequestApiUsage: new Set<RenderRequestApiKind>(),
   connectionProbe: null,
   invalidDynamicUsageError: null,
@@ -204,9 +222,52 @@ export function markDynamicUsage(): void {
     return;
   }
   state.dynamicUsageDetected = true;
+  // A probe scope cloned before an HMR update may not share its parent's
+  // latch, so latch each propagation target too. Set every flag before any
+  // listener runs.
+  const latches = [ensureRenderDynamicLatch(state)];
   forEachConnectionProbeTarget(state, (target) => {
     target.dynamicUsageDetected = true;
+    latches.push(ensureRenderDynamicLatch(target));
   });
+  for (const latch of latches) {
+    latchRenderDynamic(latch);
+  }
+}
+
+function latchRenderDynamic(latch: RenderDynamicLatch): void {
+  if (latch.dynamic) return;
+  latch.dynamic = true;
+  const listeners = [...latch.listeners];
+  latch.listeners.clear();
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch (error) {
+      // Listeners are never notified again, so one failing must not skip the
+      // rest, and its error isn't the dynamic API caller's to handle.
+      console.error(error);
+    }
+  }
+}
+
+/** Whether the current render has used a dynamic API at any point so far. */
+export function isRenderDynamicLatched(): boolean {
+  return ensureRenderDynamicLatch(_getState()).dynamic;
+}
+
+/**
+ * Call `listener` once when the current render first uses a dynamic API.
+ * Returns an unsubscribe function. The listener never runs if the render is
+ * already latched; check `isRenderDynamicLatched()` first.
+ */
+export function onRenderDynamicLatched(listener: () => void): () => void {
+  const latch = ensureRenderDynamicLatch(_getState());
+  if (latch.dynamic) return () => {};
+  latch.listeners.add(listener);
+  return () => {
+    latch.listeners.delete(listener);
+  };
 }
 
 function forEachConnectionProbeTarget(
@@ -260,8 +321,11 @@ export async function runWithIsolatedDynamicUsage<T>(
     );
   }
 
+  const parentState = _getState();
   const childState: VinextHeadersShimState = {
-    ..._getState(),
+    ...parentState,
+    // Share the parent's latch, creating it first on a stale fallback state.
+    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
     dynamicUsageDetected: false,
   };
   return await _als.run(childState, () => runInChildState(childState));
@@ -353,6 +417,8 @@ export async function runWithConnectionProbe<T>(
 
   const childState: VinextHeadersShimState = {
     ...parentState,
+    // Share the parent's latch, creating it first on a stale fallback state.
+    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
     connectionProbe: probe,
   };
   return await _als.run(childState, () => runInChildState(childState));
@@ -612,6 +678,7 @@ export function setHeadersContext(ctx: HeadersContext | null): void {
   if (ctx !== null) {
     state.headersContext = ctx;
     state.dynamicUsageDetected = false;
+    state.renderDynamicLatch = createRenderDynamicLatch();
     state.renderRequestApiUsage = new Set();
     state.pendingSetCookies = [];
     state.draftModeCookieHeader = null;
@@ -645,6 +712,7 @@ export function runWithHeadersContext<T>(
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.headersContext = ctx;
       uCtx.dynamicUsageDetected = false;
+      uCtx.renderDynamicLatch = createRenderDynamicLatch();
       uCtx.renderRequestApiUsage = new Set();
       uCtx.connectionProbe = null;
       uCtx.pendingSetCookies = [];
@@ -656,6 +724,7 @@ export function runWithHeadersContext<T>(
   const state: VinextHeadersShimState = {
     headersContext: ctx,
     dynamicUsageDetected: false,
+    renderDynamicLatch: createRenderDynamicLatch(),
     renderRequestApiUsage: new Set(),
     connectionProbe: null,
     invalidDynamicUsageError: null,
