@@ -20,6 +20,10 @@
  *   with the query they were rendered with (`RenderedSearchContext`), so a
  *   kept page that first renders under a later navigation (still streaming,
  *   or refreshed from its own URL) reads its own response's query.
+ * - Browser, with Cache Components: the query `useSearchParams()` returns, as
+ *   Next.js reads it from `SearchParamsContext` in that mode. That is the
+ *   public URL's query rather than a rewritten one, and a kept page follows
+ *   the URL.
  *
  * `emptySearchParams` pages (`dynamic = "force-static"`, static export) always
  * get an empty, untracked query, as the server renders them.
@@ -33,7 +37,7 @@ import {
   isWellKnownProperty,
 } from "./internal/thenable-well-known-properties.js";
 import { getNavigationContext } from "./navigation-server.js";
-import { getClientNavigationRenderContext } from "./navigation.js";
+import { getClientNavigationRenderContext, useSearchParams } from "./navigation.js";
 import { RenderedSearchContext } from "./slot.js";
 
 type ClientPageSearchParams = Record<string, string | string[]>;
@@ -47,6 +51,10 @@ export type ClientPageRootProps = {
 };
 
 const isServer = typeof window === "undefined";
+
+function isCacheComponentsEnabled(): boolean {
+  return String(process.env.__NEXT_CACHE_COMPONENTS) === "true";
+}
 
 /**
  * Build an untracked `searchParams` promise, like Next.js 15's browser
@@ -123,11 +131,25 @@ function useBrowserSearchParams(
   return searchParams;
 }
 
-/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- isServer is fixed per environment. */
+/**
+ * Cache Components hands a client page the query `useSearchParams()` returns,
+ * not the one its payload rendered, so a rewritten query stays internal.
+ */
+function useCanonicalSearchParams(emptySearchParams: boolean): Promise<ClientPageSearchParams> {
+  const urlSearchParams = useSearchParams();
+  return useMemo(
+    () => createClientPageSearchParams(emptySearchParams ? null : urlSearchParams),
+    [emptySearchParams, urlSearchParams],
+  );
+}
+
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- isServer and Cache Components are fixed per build. */
 export function ClientPageRoot({ Component, pageProps, emptySearchParams }: ClientPageRootProps) {
   let searchParams: Promise<ClientPageSearchParams>;
   if (!isServer) {
-    searchParams = useBrowserSearchParams(pageProps, emptySearchParams === true);
+    searchParams = isCacheComponentsEnabled()
+      ? useCanonicalSearchParams(emptySearchParams === true)
+      : useBrowserSearchParams(pageProps, emptySearchParams === true);
   } else if (emptySearchParams === true) {
     // Nothing to read, so nothing to track.
     searchParams = createClientPageSearchParams(null);

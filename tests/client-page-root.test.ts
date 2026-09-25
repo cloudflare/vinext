@@ -619,6 +619,53 @@ describe("ClientPageRoot in the browser", () => {
     });
   });
 
+  it("reads the public URL's query with Cache Components, not a rewritten one", async () => {
+    // Next.js builds the prop from SearchParamsContext in this mode, the query
+    // useSearchParams() reads. A rewrite from /feed/:tab to /feed?tab=:tab
+    // stays internal.
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    try {
+      await withBrowserModules(async (modules) => {
+        const snapshot = modules.navigation.createClientNavigationRenderSnapshot(
+          "http://localhost/feed/bar",
+          {},
+          "/feed?tab=bar",
+        );
+        modules.navigation.activateNavigationSnapshot();
+
+        expect(snapshot.renderedSearch).toBe("?tab=bar");
+        expect(await renderInBrowser(modules, snapshot, { params: {} })).toContain("query:{}");
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("follows the URL with Cache Components when a navigation keeps the page", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    try {
+      await withBrowserModules(async (modules) => {
+        const feedProps = { params: {} };
+        const feed = modules.navigation.createClientNavigationRenderSnapshot(
+          "http://localhost/feed?tab=hot",
+          {},
+          "/feed?tab=hot",
+        );
+        const photo = modules.navigation.createClientNavigationRenderSnapshot(
+          "http://localhost/photo/1?tab=new",
+          { id: "1" },
+          "/photo/1?tab=new",
+        );
+        modules.navigation.activateNavigationSnapshot();
+
+        expect(await renderInBrowser(modules, feed, feedProps)).toContain("tab&quot;:&quot;hot");
+        expect(await renderInBrowser(modules, photo, feedProps)).toContain("tab&quot;:&quot;new");
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("keeps a force-static page's query empty during a navigation", async () => {
     // SSR renders force-static pages with an empty query, and so does Next.js
     // in the browser, whatever the destination URL.
