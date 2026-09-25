@@ -56,6 +56,7 @@ import {
   consumeRenderRequestApiUsage,
   draftMode,
   getHeadersContext,
+  headers,
   headersContextFromRequest,
   markDynamicUsage,
   markRenderRequestApiUsage,
@@ -2657,6 +2658,76 @@ describe("app page dispatch", () => {
     expect(options.isrSet).not.toHaveBeenCalled();
   });
 
+  it("fails regenerating a stale intercepted entry whose source route turned revalidate = 0", async () => {
+    // app/feed/page.tsx now sets dynamic = "force-dynamic" (revalidate 0),
+    // while the matched /photos/[id] route keeps revalidate = 60.
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    let scheduledRender: unknown = null;
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream: () => createStream(["fresh-flight"]),
+      resolveRouteRevalidateSeconds: (route) => (route === sourceRoute ? 0 : null),
+      revalidateSeconds: 60,
+      route: currentRoute,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+
+    await expect(scheduledRender()).rejects.toThrow(
+      "Page changed from static to dynamic at runtime /photos/123",
+    );
+    expect(options.isrSet).not.toHaveBeenCalled();
+  });
+
   it("bypasses shared caches for an unverified interception context", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(
@@ -3256,7 +3327,7 @@ describe("app page dispatch", () => {
   });
 
   it.each(["page", "metadata"] as const)(
-    "does not store a stale regeneration that reads searchParams in %s",
+    "keeps the previous entry when a stale regeneration reads searchParams in %s",
     async (reader) => {
       async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
         if (reader !== "page") return React.createElement("main", null, "static body");
@@ -3283,6 +3354,14 @@ describe("app page dispatch", () => {
       const route = createRoute({ pattern: "/regen-proof", routeSegments: ["regen-proof"] });
       let scheduledRender: unknown = null;
       const written: CachedAppPageValue[] = [];
+      const staleValue = buildCachedAppPageValue(
+        "<html>stale</html>",
+        undefined,
+        undefined,
+        buildQueryInvariantRenderObservation(),
+      );
+      const staleEntry = buildISRCacheEntry(staleValue, true);
+      staleEntry.value.cacheControl = { revalidate: 60 };
       const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
         (_route, params, _opts, searchParams, layoutParamAccess, buildOptions) =>
           buildPageElements({
@@ -3311,17 +3390,7 @@ describe("app page dispatch", () => {
         buildPageElement,
         cleanPathname: "/regen-proof",
         isProduction: true,
-        isrGet: vi.fn(async () =>
-          buildISRCacheEntry(
-            buildCachedAppPageValue(
-              "<html>stale</html>",
-              undefined,
-              undefined,
-              buildQueryInvariantRenderObservation(),
-            ),
-            true,
-          ),
-        ),
+        isrGet: vi.fn(async () => staleEntry),
         isrSet: vi.fn(async (_key, value) => {
           written.push(value);
         }),
@@ -3351,13 +3420,171 @@ describe("app page dispatch", () => {
         throw new Error("expected stale response to schedule regeneration");
       }
 
-      await scheduledRender();
-
-      // The regeneration records the searchParams read, so neither entry is
-      // proven query-invariant and core skips both writes.
-      expect(written).toEqual([]);
+      // Reading searchParams makes the regeneration dynamic, so it fails and
+      // core re-stores only the previous entry.
+      await expect(scheduledRender()).rejects.toThrow(
+        "Page changed from static to dynamic at runtime /regen-proof",
+      );
+      expect(written).toEqual([staleValue]);
     },
   );
+
+  it("doesn't fail a PPR regeneration that reads headers()", async () => {
+    async function Page(): Promise<React.ReactNode> {
+      const requestHeaders = await headers();
+      return React.createElement("main", null, requestHeaders.get("x-test") ?? "none");
+    }
+    const route = createRoute({ pattern: "/regen-ppr", routeSegments: ["regen-ppr"] });
+    let scheduledRender: unknown = null;
+    const staleValue = buildCachedAppPageValue(
+      "<html>stale</html>",
+      undefined,
+      undefined,
+      buildQueryInvariantRenderObservation(),
+    );
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
+      (_route, params, _opts, searchParams, layoutParamAccess) =>
+        buildPageElements({
+          layoutParamAccess,
+          metadataRoutes: [],
+          params,
+          pageRequest: {
+            isRscRequest: false,
+            mountedSlotsHeader: null,
+            opts: undefined,
+            request: new Request("https://example.test/regen-ppr"),
+            searchParams,
+          },
+          route: {
+            layouts: [],
+            page: { default: Page },
+            pattern: "/regen-ppr",
+            routeSegments: ["regen-ppr"],
+          },
+          routePath: "/regen-ppr",
+        }).then(toDispatchElementRecord),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/regen-ppr",
+      isProduction: true,
+      isrGet: vi.fn(async () => {
+        const entry = buildISRCacheEntry(staleValue, true);
+        entry.value.cacheControl = { revalidate: 60 };
+        return entry;
+      }),
+      loadSsrHandler: async () => ({
+        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+        },
+      }),
+      pprRuntime: appPagePprRuntime,
+      renderToReadableStream: renderPagePayloadToStream,
+      revalidateSeconds: 60,
+      route,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale response to schedule regeneration");
+    }
+    await expect(scheduledRender()).resolves.toBeUndefined();
+  });
+
+  it("stores a force-static regeneration that reads headers() and searchParams", async () => {
+    async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
+      const requestHeaders = await headers();
+      const query = isPromiseLike(props.searchParams) ? await props.searchParams : {};
+      return React.createElement(
+        "main",
+        null,
+        `${requestHeaders.get("x-test") ?? "none"}:${isQueryRecord(query) ? String(query.q ?? "empty") : "invalid"}`,
+      );
+    }
+    const route = createRoute({ pattern: "/regen-static", routeSegments: ["regen-static"] });
+    let scheduledRender: unknown = null;
+    const writtenKeys: string[] = [];
+    const { options } = createDispatchOptions({
+      buildPageElement: (_route, params, _opts, searchParams, layoutParamAccess, buildOptions) =>
+        buildPageElements({
+          layoutParamAccess,
+          metadataRoutes: [],
+          params,
+          pageRequest: {
+            isRscRequest: false,
+            mountedSlotsHeader: null,
+            opts: undefined,
+            request: new Request("https://example.test/regen-static"),
+            searchParams,
+            observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess,
+            observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess,
+          },
+          route: {
+            layouts: [],
+            page: { default: Page },
+            pattern: "/regen-static",
+            routeSegments: ["regen-static"],
+          },
+          routePath: "/regen-static",
+        }).then(toDispatchElementRecord),
+      cleanPathname: "/regen-static",
+      dynamicConfig: "force-static",
+      isProduction: true,
+      isrGet: vi.fn(async () => {
+        const entry = buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "<html>stale</html>",
+            undefined,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        );
+        entry.value.cacheControl = { revalidate: 60 };
+        return entry;
+      }),
+      isrSet: vi.fn(async (key) => {
+        writtenKeys.push(key);
+      }),
+      loadSsrHandler: async () => ({
+        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+        },
+      }),
+      renderToReadableStream: renderPagePayloadToStream,
+      revalidateSeconds: 60,
+      route,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale response to schedule regeneration");
+    }
+
+    // force-static makes those reads static, so they are no dynamic signal.
+    await scheduledRender();
+    expect(writtenKeys.sort()).toEqual(["html:/regen-static", "rsc:/regen-static"]);
+  });
 
   it("does not report a stale RSC failure again after Flight recreates the error", async () => {
     const route = createRoute({ pattern: "/posts/[slug]", routeSegments: ["posts", "[slug]"] });

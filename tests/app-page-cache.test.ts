@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   type AppPageCacheOutcomeMetric,
   buildAppPageCacheTags,
@@ -9,13 +9,22 @@ import {
   readAppPageFallbackShellCacheResponse,
   scheduleAppPageRscCacheWrite,
 } from "../packages/vinext/src/server/app-page-cache.js";
-import type { AppPageCacheSetter, ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
+import {
+  isrGet,
+  isrSet,
+  type AppPageCacheSetter,
+  type ISRCacheEntry,
+} from "../packages/vinext/src/server/isr-cache.js";
 import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import type { RenderObservation } from "../packages/vinext/src/server/cache-proof.js";
-import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
+import {
+  MemoryCacheHandler,
+  setCacheHandler,
+  type CachedAppPageValue,
+} from "../packages/vinext/src/shims/cache.js";
 import type { CacheControlMetadata } from "../packages/vinext/src/shims/cache-handler.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
@@ -64,7 +73,7 @@ afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 function buildISRCacheEntry(
   value: CachedAppPageValue,
   isStale = false,
-  cacheControl?: { revalidate: number; expire?: number; stale?: number },
+  cacheControl?: CacheControlMetadata,
 ): ISRCacheEntry {
   return {
     isStale,
@@ -330,6 +339,7 @@ describe("app page cache helpers", () => {
       revalidateSeconds: 60,
       renderFreshPageForCache: vi.fn(async () => ({
         ...queryInvariantRegenObservations(),
+        usedDynamicApi: false,
         html: "<h1>fresh</h1>",
         rscData: new ArrayBuffer(0),
         tags: [],
@@ -546,6 +556,7 @@ describe("app page cache helpers", () => {
         didRenderFresh = true;
         return {
           ...queryInvariantRegenObservations(),
+          usedDynamicApi: false,
           html: "<h1>fresh</h1>",
           rscData: new ArrayBuffer(0),
           tags: [],
@@ -784,6 +795,7 @@ describe("app page cache helpers", () => {
         return {
           cacheControl: { revalidate: 10, expire: 20 },
           ...queryInvariantRegenObservations(),
+          usedDynamicApi: false,
           html: "<h1>fresh</h1>",
           linkHeader: "</fresh.css>; rel=preload; as=style",
           rscData,
@@ -845,6 +857,7 @@ describe("app page cache helpers", () => {
         async renderFreshPageForCache() {
           return {
             ...queryInvariantRegenObservations(),
+            usedDynamicApi: false,
             [`${unproven}RenderObservation`]: buildSearchParamsReadRenderObservation(),
             html: "<h1>fresh</h1>",
             rscData: new ArrayBuffer(0),
@@ -896,6 +909,7 @@ describe("app page cache helpers", () => {
         return {
           cacheControl: { revalidate: 9 },
           ...queryInvariantRegenObservations(),
+          usedDynamicApi: false,
           html: "<h1>fresh</h1>",
           rscData,
           tags: ["/config-and-fetch-revalidate", "_N_T_/config-and-fetch-revalidate"],
@@ -955,6 +969,7 @@ describe("app page cache helpers", () => {
           return {
             cacheControl: renderCacheControl,
             ...queryInvariantRegenObservations(),
+            usedDynamicApi: false,
             html: "<h1>fresh</h1>",
             rscData: new TextEncoder().encode("fresh-flight").buffer,
             tags: ["/static", "_N_T_/static"],
@@ -1102,6 +1117,7 @@ describe("app page cache helpers", () => {
       async renderFreshPageForCache() {
         return {
           ...queryInvariantRegenObservations(),
+          usedDynamicApi: false,
           html: "<h1>fresh</h1>",
           rscData: new TextEncoder().encode("fresh-flight").buffer,
           tags: ["/stale-html-miss", "_N_T_/stale-html-miss"],
@@ -2002,5 +2018,500 @@ describe("app page cache helpers", () => {
     expect(debugCalls).toEqual([
       ["RSC cache write skipped (no cache policy)", "rsc:/invalid-cache-life"],
     ]);
+  });
+});
+
+describe("app page regeneration failures", () => {
+  // A failed regeneration re-reads its key before keeping the previous entry,
+  // so each read must return the same entry.
+  beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  const staleObservation: RenderObservation = {
+    ...buildQueryInvariantRenderObservation(),
+    cacheTags: ["_N_T_/stale", "posts"],
+  };
+
+  function readStale(options: {
+    isRoutePPREnabled?: boolean;
+    isRscRequest?: boolean;
+    isrGet: (key: string) => Promise<ISRCacheEntry | null>;
+    isrSet: AppPageCacheSetter;
+    renderFreshPageForCache: () => Promise<ReturnType<typeof freshPage>>;
+    revalidateSeconds?: number;
+    scheduled: Array<() => Promise<void>>;
+  }) {
+    return readAppPageCacheResponse({
+      cleanPathname: "/stale",
+      clearRequestContext() {},
+      isRoutePPREnabled: options.isRoutePPREnabled,
+      isRscRequest: options.isRscRequest ?? false,
+      isrGet: options.isrGet,
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      isrSet: options.isrSet,
+      revalidateSeconds: options.revalidateSeconds ?? 60,
+      renderFreshPageForCache: options.renderFreshPageForCache,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        options.scheduled.push(renderFn);
+      },
+    });
+  }
+
+  function freshPage(overrides: { cacheControl?: CacheControlMetadata; usedDynamicApi: boolean }) {
+    return {
+      ...queryInvariantRegenObservations(),
+      html: "<h1>fresh</h1>",
+      rscData: new TextEncoder().encode("fresh-flight").buffer,
+      tags: ["_N_T_/stale"],
+      ...overrides,
+    };
+  }
+
+  it.each([
+    { failure: "throws", isRscRequest: false },
+    { failure: "throws", isRscRequest: true },
+    { failure: "turns dynamic", isRscRequest: false },
+    { failure: "turns dynamic", isRscRequest: true },
+  ] as const)(
+    "serves stale and re-stores only its own key when a regeneration $failure (RSC request: $isRscRequest)",
+    async ({ failure, isRscRequest }) => {
+      const cachedValue = buildCachedAppPageValue(
+        isRscRequest ? "" : "<h1>stale</h1>",
+        isRscRequest ? new TextEncoder().encode("stale-flight").buffer : undefined,
+        200,
+        staleObservation,
+      );
+      const scheduled: Array<() => Promise<void>> = [];
+      const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+
+      const response = await readStale({
+        isRscRequest,
+        async isrGet() {
+          return buildISRCacheEntry(cachedValue, true, { revalidate: 60, expire: 300, stale: 30 });
+        },
+        isrSet,
+        async renderFreshPageForCache() {
+          if (failure === "throws") throw new Error("regeneration failed");
+          return freshPage({ usedDynamicApi: true });
+        },
+        scheduled,
+      });
+
+      expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+      await expect(scheduled[0]()).rejects.toThrow(
+        failure === "throws"
+          ? "regeneration failed"
+          : "Page changed from static to dynamic at runtime /stale",
+      );
+      expect(isrSet).toHaveBeenCalledOnce();
+      const [key, data, policy] = isrSet.mock.calls[0];
+      expect(key).toBe(isRscRequest ? "rsc:/stale" : "html:/stale");
+      expect(data).toBe(cachedValue);
+      expect(policy).toEqual({
+        cacheControl: { revalidate: 30, expire: 300, stale: 30 },
+        tags: ["_N_T_/stale", "posts"],
+      });
+    },
+  );
+
+  // Next.js fails a non-PPR regeneration whose render's revalidate is 0,
+  // whether a dynamic API or its fetches or cacheLife set it
+  // (`build/templates/app-page.ts`). A route without a revalidate reads the
+  // cache with a seed of 0.
+  describe("a regeneration whose effective revalidate is 0 without a dynamic API", () => {
+    type Case = {
+      cacheControl?: CacheControlMetadata;
+      label: string;
+      revalidateSeconds: number;
+    };
+    const cases: Case[] = [
+      { cacheControl: { revalidate: 0 }, label: "a zero cacheLife", revalidateSeconds: 60 },
+      { label: "a route without a revalidate or cacheLife", revalidateSeconds: 0 },
+    ];
+
+    async function regenerate(
+      page: Case,
+      isRoutePPREnabled?: boolean,
+    ): Promise<{
+      isrSet: ReturnType<typeof vi.fn<AppPageCacheSetter>>;
+      regeneration: Promise<void>;
+    }> {
+      const cachedValue = buildCachedAppPageValue(
+        "<h1>stale</h1>",
+        undefined,
+        200,
+        staleObservation,
+      );
+      const previous = buildISRCacheEntry(cachedValue, true, { revalidate: 60 });
+      const scheduled: Array<() => Promise<void>> = [];
+      const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+      await readStale({
+        isRoutePPREnabled,
+        async isrGet() {
+          return previous;
+        },
+        isrSet,
+        async renderFreshPageForCache() {
+          return freshPage({ cacheControl: page.cacheControl, usedDynamicApi: false });
+        },
+        revalidateSeconds: page.revalidateSeconds,
+        scheduled,
+      });
+      return { isrSet, regeneration: scheduled[0]() };
+    }
+
+    it.each(cases)("fails at $label and keeps the previous entry", async (page) => {
+      const { isrSet, regeneration } = await regenerate(page);
+
+      await expect(regeneration).rejects.toThrow(
+        "Page changed from static to dynamic at runtime /stale",
+      );
+      expect(isrSet).toHaveBeenCalledOnce();
+      expect(isrSet).toHaveBeenCalledWith("html:/stale", expect.anything(), {
+        cacheControl: { revalidate: 30 },
+        tags: ["_N_T_/stale", "posts"],
+      });
+      expect(isrSet.mock.calls[0][1]).toMatchObject({ html: "<h1>stale</h1>" });
+    });
+
+    it.each(cases)("stores at $label with PPR", async (page) => {
+      const { isrSet, regeneration } = await regenerate(page, true);
+
+      await expect(regeneration).resolves.toBeUndefined();
+      expect(isrSet.mock.calls.map(([key, data, policy]) => [key, data.html, policy])).toEqual([
+        ["rsc:/stale", "", { cacheControl: { revalidate: 0 }, tags: ["_N_T_/stale"] }],
+        [
+          "html:/stale",
+          "<h1>fresh</h1>",
+          { cacheControl: { revalidate: 0 }, tags: ["_N_T_/stale"] },
+        ],
+      ]);
+    });
+
+    it("stores a route without a revalidate at its cacheLife", async () => {
+      const { isrSet, regeneration } = await regenerate({
+        cacheControl: { revalidate: 300 },
+        label: "a cacheLife-only route",
+        revalidateSeconds: 0,
+      });
+
+      await expect(regeneration).resolves.toBeUndefined();
+      expect(isrSet).toHaveBeenCalledWith("html:/stale", expect.anything(), {
+        cacheControl: { revalidate: 300 },
+        tags: ["_N_T_/stale"],
+      });
+    });
+  });
+
+  it("doesn't keep the previous entry over a newer one another regeneration wrote", async () => {
+    const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
+    const newerValue = buildCachedAppPageValue("<h1>newer</h1>", undefined, 200, staleObservation);
+    const scheduled: Array<() => Promise<void>> = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+    let reads = 0;
+
+    await readStale({
+      async isrGet() {
+        reads++;
+        // The second read is the failure handler's, after an HTML
+        // regeneration has written a newer entry under this key.
+        return reads === 1
+          ? buildISRCacheEntry(cachedValue, true, { revalidate: 60 })
+          : { isStale: false, value: { lastModified: Date.now() + 1, value: newerValue } };
+      },
+      isrSet,
+      async renderFreshPageForCache() {
+        throw new Error("regeneration failed");
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("keeps the previous entry when the key has gone missing", async () => {
+    const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
+    const scheduled: Array<() => Promise<void>> = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+    let reads = 0;
+
+    await readStale({
+      async isrGet() {
+        reads++;
+        return reads === 1 ? buildISRCacheEntry(cachedValue, true, { revalidate: 60 }) : null;
+      },
+      isrSet,
+      async renderFreshPageForCache() {
+        throw new Error("regeneration failed");
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+    expect(isrSet).toHaveBeenCalledWith("html:/stale", cachedValue, expect.anything());
+  });
+
+  // Next.js's set only warns when its cache handler fails: no backoff
+  // re-store, and the regeneration doesn't fail.
+  describe("when storing the regenerated page fails", () => {
+    const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
+    const previousRscValue = buildCachedAppPageValue(
+      "",
+      new TextEncoder().encode("stale-flight").buffer,
+      200,
+      staleObservation,
+    );
+
+    function failingStore(failingKey: string) {
+      const previousHtml = buildISRCacheEntry(cachedValue, true, { revalidate: 60, expire: 300 });
+      const previousRsc = buildISRCacheEntry(previousRscValue, true, {
+        revalidate: 60,
+        expire: 300,
+      });
+      const store = new Map<string, ISRCacheEntry>([
+        ["html:/stale", previousHtml],
+        ["rsc:/stale", previousRsc],
+      ]);
+      const isrSet = vi.fn<AppPageCacheSetter>(async (key, data, policy) => {
+        if (key === failingKey) throw new Error("store failed");
+        store.set(key, {
+          isStale: false,
+          value: { cacheControl: policy.cacheControl, lastModified: Date.now(), value: data },
+        });
+      });
+      return { isrSet, previousHtml, previousRsc, store };
+    }
+
+    async function regenerate(
+      store: Map<string, ISRCacheEntry>,
+      isrSet: AppPageCacheSetter,
+    ): Promise<void> {
+      const scheduled: Array<() => Promise<void>> = [];
+      await readStale({
+        async isrGet(key) {
+          return store.get(key) ?? null;
+        },
+        isrSet,
+        async renderFreshPageForCache() {
+          return freshPage({ usedDynamicApi: false });
+        },
+        scheduled,
+      });
+      await expect(scheduled[0]()).resolves.toBeUndefined();
+    }
+
+    it("warns and doesn't write the HTML key when the RSC write fails", async () => {
+      const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { isrSet, previousHtml, previousRsc, store } = failingStore("rsc:/stale");
+
+      await regenerate(store, isrSet);
+
+      expect(consoleWarn).toHaveBeenCalledWith(
+        "[vinext] Failed to update prerender cache for rsc:/stale:",
+        expect.objectContaining({ message: "store failed" }),
+      );
+      // The RSC key is written first, and nothing follows its failed write.
+      expect(isrSet.mock.calls.map(([key]) => key)).toEqual(["rsc:/stale"]);
+      expect(store.get("html:/stale")).toBe(previousHtml);
+      expect(store.get("rsc:/stale")).toBe(previousRsc);
+    });
+
+    // The fresh RSC beside the stale HTML is the state an RSC-triggered
+    // regeneration leaves anyway; the stale HTML regenerates on its next request.
+    it("warns and keeps the fresh RSC when the HTML write fails", async () => {
+      const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { isrSet, previousHtml, store } = failingStore("html:/stale");
+
+      await regenerate(store, isrSet);
+
+      expect(consoleWarn).toHaveBeenCalledWith(
+        "[vinext] Failed to update prerender cache for html:/stale:",
+        expect.objectContaining({ message: "store failed" }),
+      );
+      expect(isrSet.mock.calls.map(([key]) => key)).toEqual(["rsc:/stale", "html:/stale"]);
+      const storedRsc = store.get("rsc:/stale")?.value.value;
+      expect(
+        storedRsc?.kind === "APP_PAGE" && storedRsc.rscData
+          ? new TextDecoder().decode(storedRsc.rscData)
+          : undefined,
+      ).toBe("fresh-flight");
+      expect(store.get("html:/stale")).toBe(previousHtml);
+    });
+  });
+
+  it.each([
+    { previous: { revalidate: 1 }, restored: { revalidate: 3 } },
+    { previous: { revalidate: 10, expire: 12 }, restored: { revalidate: 10, expire: 13 } },
+    { previous: { revalidate: 600, expire: 3600 }, restored: { revalidate: 30, expire: 3600 } },
+    { previous: { revalidate: Infinity }, restored: { revalidate: 3 } },
+    { previous: { revalidate: false }, restored: { revalidate: 3 } },
+  ] satisfies Array<{ previous: CacheControlMetadata; restored: CacheControlMetadata }>)(
+    "clamps a failed regeneration's re-stored policy from $previous.revalidate s",
+    async ({ previous, restored }) => {
+      const scheduled: Array<() => Promise<void>> = [];
+      const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+
+      await readStale({
+        async isrGet() {
+          return buildISRCacheEntry(
+            buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation),
+            true,
+            previous,
+          );
+        },
+        isrSet,
+        async renderFreshPageForCache() {
+          throw new Error("regeneration failed");
+        },
+        scheduled,
+      });
+
+      await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+      expect(isrSet.mock.calls[0][2]).toEqual({
+        cacheControl: restored,
+        tags: ["_N_T_/stale", "posts"],
+      });
+    },
+  );
+
+  it.each([
+    {
+      entry: "no stored policy",
+      build: () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation),
+          true,
+        ),
+    },
+    {
+      // Its tags can't be recovered, so re-storing it would drop them.
+      entry: "no render observation",
+      build: () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true, { revalidate: 60 }),
+    },
+  ])("leaves an entry with $entry alone when its regeneration fails", async ({ build }) => {
+    const scheduled: Array<() => Promise<void>> = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+
+    await readStale({
+      async isrGet() {
+        return build();
+      },
+      isrSet,
+      async renderFreshPageForCache() {
+        throw new Error("regeneration failed");
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("keeps the regeneration's own error when re-storing the previous entry fails", async () => {
+    const scheduled: Array<() => Promise<void>> = [];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await readStale({
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation),
+          true,
+          { revalidate: 60 },
+        );
+      },
+      async isrSet() {
+        throw new Error("store unavailable");
+      },
+      async renderFreshPageForCache() {
+        throw new Error("regeneration failed");
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] Failed to keep the previous entry for html:/stale:",
+      expect.objectContaining({ message: "store unavailable" }),
+    );
+    consoleError.mockRestore();
+  });
+
+  it("doesn't retry a throwing regeneration until the re-stored revalidate elapses", async () => {
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+    const scheduled: Array<() => Promise<void>> = [];
+    const renderFreshPageForCache = async (): Promise<ReturnType<typeof freshPage>> => {
+      throw new Error("regeneration failed");
+    };
+
+    await readStale({
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation),
+          true,
+          { revalidate: 10 },
+        );
+      },
+      isrSet,
+      renderFreshPageForCache,
+      scheduled,
+    });
+    await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+
+    vi.setSystemTime(10_500);
+    const beforeRetry = await readStale({ isrGet, isrSet, renderFreshPageForCache, scheduled });
+    expect(beforeRetry?.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(scheduled).toHaveLength(1);
+
+    vi.setSystemTime(11_500);
+    const afterRetry = await readStale({ isrGet, isrSet, renderFreshPageForCache, scheduled });
+    expect(afterRetry?.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(scheduled).toHaveLength(2);
+  });
+
+  it("doesn't retry a failed regeneration of a revalidate = false entry for 3 s", async () => {
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+    const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
+    const scheduled: Array<() => Promise<void>> = [];
+    const renderFreshPageForCache = async () => freshPage({ usedDynamicApi: true });
+
+    // The first read finds the entry stale, as after an on-demand revalidation.
+    await readStale({
+      async isrGet() {
+        return buildISRCacheEntry(cachedValue, true, { revalidate: false });
+      },
+      isrSet,
+      renderFreshPageForCache,
+      scheduled,
+    });
+    await expect(scheduled[0]()).rejects.toThrow("Page changed from static to dynamic");
+
+    vi.setSystemTime(3_500);
+    const beforeRetry = await readStale({ isrGet, isrSet, renderFreshPageForCache, scheduled });
+    expect(beforeRetry?.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(beforeRetry?.text()).resolves.toBe("<h1>stale</h1>");
+    expect(scheduled).toHaveLength(1);
+
+    vi.setSystemTime(4_500);
+    const afterRetry = await readStale({ isrGet, isrSet, renderFreshPageForCache, scheduled });
+    expect(afterRetry?.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(scheduled).toHaveLength(2);
   });
 });

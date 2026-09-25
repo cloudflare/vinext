@@ -68,7 +68,14 @@ type AppPageCacheRenderResult = {
   linkHeader?: string;
   rscData: ArrayBuffer;
   rscRenderObservation: RenderObservation;
+  /**
+   * The route-level revalidate of the route this render regenerated, or null
+   * when it has none and the render's cacheLife sets it. Undefined keeps the
+   * matched route's read seed, as when the render regenerated that route.
+   */
+  revalidateSeconds?: number | null;
   tags: string[];
+  usedDynamicApi: boolean;
 };
 
 type BuildAppPageCachedResponseOptions = {
@@ -87,6 +94,7 @@ type ReadAppPageCacheResponseOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   isEdgeRuntime?: boolean;
+  isRoutePPREnabled?: boolean;
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
@@ -211,17 +219,21 @@ function getCachedAppPageValue(entry: ISRCacheEntry | null): CachedAppPageValue 
 function resolveRegeneratedAppPageCacheControl(options: {
   expireSeconds?: number;
   renderCacheControl?: CacheControlMetadata;
-  routeRevalidateSeconds: number;
+  routeRevalidateSeconds: number | null;
 }): CacheControlMetadata {
-  let revalidateSeconds = options.routeRevalidateSeconds;
   const renderRevalidateSeconds = options.renderCacheControl?.revalidate;
-  // An indefinite nested cache lifetime does not tighten the route's own
-  // finite revalidation policy.
+  // The render's cacheLife lowers the route's revalidate, down to a
+  // `revalidate = 0` route's zero, and sets it for a route without one. An
+  // indefinite nested cache lifetime does not tighten the route's own finite
+  // revalidation policy.
+  let revalidateSeconds: number;
   if (typeof renderRevalidateSeconds === "number") {
     revalidateSeconds =
-      revalidateSeconds > 0
-        ? Math.min(revalidateSeconds, renderRevalidateSeconds)
-        : renderRevalidateSeconds;
+      options.routeRevalidateSeconds === null
+        ? renderRevalidateSeconds
+        : Math.min(options.routeRevalidateSeconds, renderRevalidateSeconds);
+  } else {
+    revalidateSeconds = options.routeRevalidateSeconds ?? 0;
   }
 
   return isrCacheControl(revalidateSeconds, {
@@ -232,6 +244,28 @@ function resolveRegeneratedAppPageCacheControl(options: {
     // background regen does not quietly drop it and widen client reuse.
     staleSeconds: resolveClientStaleTimeSeconds(options.renderCacheControl),
   });
+}
+
+/**
+ * When a regeneration fails, Next.js re-stores the previous entry with a short
+ * revalidate so it isn't retried on every request
+ * (`server/response-cache/index.ts`). `revalidate = false`, which vinext holds
+ * as Infinity, retries after 3 s like Next.js's `revalidate || 3`.
+ */
+function resolveRegenerationFailureCacheControl(
+  previous: CacheControlMetadata,
+): CacheControlMetadata {
+  const previousRevalidate =
+    typeof previous.revalidate === "number" && Number.isFinite(previous.revalidate)
+      ? previous.revalidate
+      : 0;
+  const revalidate = Math.min(Math.max(previousRevalidate || 3, 3), 30);
+  return {
+    revalidate,
+    ...(previous.expire === undefined ? {} : { expire: Math.max(revalidate + 3, previous.expire) }),
+    // The client reuse bound belongs to the stored payload, which is unchanged.
+    ...(previous.stale === undefined ? {} : { stale: previous.stale }),
+  };
 }
 
 export function buildAppPageCachedResponse(
@@ -452,6 +486,32 @@ export async function readAppPageCacheResponse(
     }
 
     if (cached?.isStale && cachedValue) {
+      // Re-store a key's previous entry with a backoff policy after a failed
+      // render, as Next.js does. Another regeneration can write the key too (an
+      // HTML one also writes the RSC key), so a newer entry is left alone. A
+      // missing one is restored, as Next.js restores unconditionally.
+      const keepPreviousEntry = async (key: string, previous: ISRCacheEntry): Promise<void> => {
+        const previousValue = getCachedAppPageValue(previous);
+        const previousCacheControl = previous.value.cacheControl;
+        // Its tags come from its render observation; an entry without one can't
+        // be re-stored with the tags it was written with, so it is left alone.
+        // An expired one must not be served, so re-storing would revive it.
+        const previousTags = previousValue?.renderObservation?.cacheTags;
+        if (!previousValue || !previousCacheControl || !previousTags || previous.isExpired) return;
+        try {
+          const current = await options.isrGet(key);
+          if (!current || current.value.lastModified === previous.value.lastModified) {
+            await options.isrSet(key, previousValue, {
+              cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
+              tags: [...previousTags],
+            });
+          }
+        } catch (storeError) {
+          // Report the regeneration's own failure, not the store's.
+          console.error(`[vinext] Failed to keep the previous entry for ${key}:`, storeError);
+        }
+      };
+
       // Preserve the legacy behavior from the inline generator: stale entries
       // still trigger background regeneration even if this request cannot use
       // the stale payload and will fall through to a fresh render.
@@ -459,13 +519,32 @@ export async function readAppPageCacheResponse(
       // The regeneration key is derived from exactly the same inputs as `isrKey`
       // above (the RSC variant when `isRscRequest`, the HTML key otherwise), so
       // reuse it instead of recomputing the hash.
-      options.scheduleBackgroundRegeneration(isrKey, async () => {
+      const regenerate = async (): Promise<void> => {
         const revalidatedPage = await options.renderFreshPageForCache();
         const cacheControl = resolveRegeneratedAppPageCacheControl({
           expireSeconds: options.expireSeconds,
           renderCacheControl: revalidatedPage.cacheControl,
-          routeRevalidateSeconds: options.revalidateSeconds,
+          // The route's read seed is 0 only when it has no route-level
+          // revalidate, since a `revalidate = 0` route is never read from the
+          // cache.
+          routeRevalidateSeconds:
+            revalidatedPage.revalidateSeconds === undefined
+              ? options.revalidateSeconds || null
+              : revalidatedPage.revalidateSeconds,
         });
+        // Like Next.js, a regeneration whose render turned dynamic fails
+        // without PPR, whose shell expects it: a dynamic API use, or an
+        // effective revalidate of 0 from its fetches or its cacheLife.
+        // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+        if (
+          options.isRoutePPREnabled !== true &&
+          (revalidatedPage.usedDynamicApi || cacheControl.revalidate === 0)
+        ) {
+          throw new Error(
+            `Page changed from static to dynamic at runtime ${options.cleanPathname}` +
+              "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
+          );
+        }
         // Every query shares these entries, so a render not proven to leave
         // the query unread is never stored.
         if (
@@ -476,52 +555,76 @@ export async function readAppPageCacheResponse(
           options.isrDebug?.("regen write skipped (searchParams not proven unread)", isrKey);
           return;
         }
-        const writes = [
-          options.isrSet(
-            // For an RSC request `isrKey` is already the RSC variant key, so
-            // reuse it; an HTML-triggered regen still needs the RSC key here,
-            // computed lazily so a deduped (skipped) regen pays nothing.
-            options.isRscRequest
-              ? isrKey
-              : options.isrRscKey(
-                  options.cleanPathname,
-                  null,
-                  options.renderMode,
-                  options.interceptionContext,
-                  options.interceptionId,
-                ),
-            buildAppPageCacheValue(
-              "",
-              revalidatedPage.rscData,
-              200,
-              revalidatedPage.rscRenderObservation,
-            ),
-            { cacheControl, tags: revalidatedPage.tags },
+        // For an RSC request `isrKey` is already the RSC variant key, so
+        // reuse it; an HTML-triggered regen still needs the RSC key here,
+        // computed lazily so a deduped (skipped) regen pays nothing.
+        const rscKey = options.isRscRequest
+          ? isrKey
+          : options.isrRscKey(
+              options.cleanPathname,
+              null,
+              options.renderMode,
+              options.interceptionContext,
+              options.interceptionId,
+            );
+        // Next.js's IncrementalCache.set only warns when its cache handler
+        // fails, so a failed store is not a failed regeneration: it neither
+        // throws nor re-stores the previous entry with a backoff policy.
+        const store = async (key: string, value: CachedAppPageValue): Promise<boolean> => {
+          try {
+            await options.isrSet(key, value, { cacheControl, tags: revalidatedPage.tags });
+            return true;
+          } catch (storeError) {
+            console.warn(`[vinext] Failed to update prerender cache for ${key}:`, storeError);
+            return false;
+          }
+        };
+        const storedRsc = await store(
+          rscKey,
+          buildAppPageCacheValue(
+            "",
+            revalidatedPage.rscData,
+            200,
+            revalidatedPage.rscRenderObservation,
           ),
-        ];
+        );
+        // A failed RSC write leaves the previous page untouched, so the HTML
+        // key isn't written either.
+        if (!storedRsc) return;
 
         if (!options.isRscRequest) {
           // HTML cache is slot-state-independent (canonical), so only refresh it
           // during HTML-triggered regens. RSC-triggered regens only update the
           // requesting client's RSC slot variant; a stale HTML cache entry will
           // be regenerated independently by the next full-page HTML request.
-          writes.push(
-            options.isrSet(
-              isrKey,
-              buildAppPageCacheValue(
-                revalidatedPage.html,
-                undefined,
-                200,
-                revalidatedPage.htmlRenderObservation,
-                revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
-              ),
-              { cacheControl, tags: revalidatedPage.tags },
+          const storedHtml = await store(
+            isrKey,
+            buildAppPageCacheValue(
+              revalidatedPage.html,
+              undefined,
+              200,
+              revalidatedPage.htmlRenderObservation,
+              revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
             ),
           );
+          // A failed HTML write leaves this regeneration's RSC beside the
+          // stale HTML: the state an RSC-triggered regeneration leaves anyway,
+          // and the stale HTML regenerates on its next request.
+          if (!storedHtml) return;
         }
-
-        await Promise.all(writes);
         options.isrDebug?.("regen complete", options.cleanPathname);
+      };
+      // As in Next.js, a failed render keeps the previous entry, re-stored
+      // with a backoff policy.
+      options.scheduleBackgroundRegeneration(isrKey, async () => {
+        try {
+          await regenerate();
+        } catch (error) {
+          // Keep the previous entry under this key only: an RSC-triggered
+          // regeneration must not write its payload under the HTML key.
+          await keepPreviousEntry(isrKey, cached);
+          throw error;
+        }
       });
 
       const staleResponse = buildAppPageCachedResponse(cachedValue, {
