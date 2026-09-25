@@ -326,18 +326,30 @@ function applyRequestCacheLife(options: {
 }
 
 /**
- * A route Next.js can't make static is never cacheable. Responses that leave
- * the render before its response policy, such as error boundaries and special
- * errors, get the same never-cache header as the normal render.
+ * A render that is known dynamic before it starts is never cacheable: a route
+ * Next.js can't make static, draft mode, `force-dynamic` or `revalidate = 0`.
+ * Responses that leave the render before its response policy, such as error
+ * boundaries and special errors, get the same never-cache header as the
+ * normal render.
  */
 export function applyIneligibleRouteCachePolicy(
   response: Response,
   options: Pick<
     RenderAppPageLifecycleOptions,
-    "isDraftMode" | "isProduction" | "isStaticEligible" | "middlewareContext"
+    | "isDraftMode"
+    | "isForceDynamic"
+    | "isProduction"
+    | "isStaticEligible"
+    | "middlewareContext"
+    | "revalidateSeconds"
   >,
 ): Response {
-  if (options.isStaticEligible || options.isDraftMode) return response;
+  const isKnownDynamic =
+    !options.isStaticEligible ||
+    options.isDraftMode ||
+    options.isForceDynamic ||
+    options.revalidateSeconds === 0;
+  if (!isKnownDynamic) return response;
   // Middleware's own cache policy wins, as in the normal response builders.
   // Only keep what this response already carries from it.
   const middlewarePolicy = [...(options.middlewareContext.headers ?? [])].filter(
