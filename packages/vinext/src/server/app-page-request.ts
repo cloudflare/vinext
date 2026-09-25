@@ -1,7 +1,6 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
-import { getAppPageSegmentParamName } from "./app-page-params.js";
-import { APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS } from "./app-page-interception-markers.js";
+import { getAppPageSegmentParamName, stripAppPageInterceptionMarker } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
@@ -271,16 +270,9 @@ function remapRouteParams(
   return params;
 }
 
-/**
- * The param a loader-tree segment names. An intercepting route's tree keeps
- * its interception markers, and `(.)[photo]` names the `photo` param.
- * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/get-segment-param.tsx
- */
+/** The param a loader-tree segment names, interception marker included. */
 function getGenerateStaticParamsSegmentParamName(segment: string): string | null {
-  const marker = APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) =>
-    segment.startsWith(prefix),
-  );
-  return getAppPageSegmentParamName(marker ? segment.slice(marker.prefix.length) : segment);
+  return getAppPageSegmentParamName(stripAppPageInterceptionMarker(segment));
 }
 
 function collectParentParamNames(

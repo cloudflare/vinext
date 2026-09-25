@@ -1,4 +1,17 @@
 import type { AppPageParams } from "./app-page-boundary.js";
+import { APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS } from "./app-page-interception-markers.js";
+
+/**
+ * A loader-tree segment without its interception marker. An intercepting
+ * route's tree keeps its markers, and `(.)[photo]` names the `photo` param.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/get-segment-param.tsx
+ */
+export function stripAppPageInterceptionMarker(segment: string): string {
+  const marker = APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) =>
+    segment.startsWith(prefix),
+  );
+  return marker ? segment.slice(marker.prefix.length) : segment;
+}
 
 export function getAppPageSegmentParamName(segment: string): string | null {
   if (segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7) {

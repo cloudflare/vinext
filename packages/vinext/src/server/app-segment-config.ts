@@ -1,7 +1,6 @@
 import type { FetchCacheMode } from "vinext/shims/fetch-cache";
-import { APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS } from "./app-page-interception-markers.js";
 import { isEdgeApiRuntime } from "./edge-api-runtime.js";
-import { getAppPageSegmentParamName } from "./app-page-params.js";
+import { getAppPageSegmentParamName, stripAppPageInterceptionMarker } from "./app-page-params.js";
 
 type AppRouteSegmentDynamic = "auto" | "error" | "force-dynamic" | "force-static";
 
@@ -118,12 +117,7 @@ function resolveDynamicStaleTimeSeconds(
 }
 
 function isDynamicSegment(segment: string): boolean {
-  // An intercepting folder keeps its marker: `(.)[photo]` is the `photo` param.
-  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/get-segment-param.tsx
-  const marker = APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) =>
-    segment.startsWith(prefix),
-  );
-  const name = marker ? segment.slice(marker.prefix.length) : segment;
+  const name = stripAppPageInterceptionMarker(segment);
   return name.startsWith("[") && name.endsWith("]");
 }
 
@@ -570,7 +564,7 @@ export function hasAppPageInterceptDynamicSegment(
   interceptBranchSegments: readonly string[] | null | undefined,
 ): boolean {
   return (interceptBranchSegments ?? []).some(
-    (segment) => getAppPageSegmentParamName(segment) !== null,
+    (segment) => getAppPageSegmentParamName(stripAppPageInterceptionMarker(segment)) !== null,
   );
 }
 

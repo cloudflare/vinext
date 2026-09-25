@@ -90,7 +90,11 @@ import {
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { createAppPageTreePath, getAppPageSegmentParamName } from "./app-page-params.js";
+import {
+  createAppPageTreePath,
+  getAppPageSegmentParamName,
+  stripAppPageInterceptionMarker,
+} from "./app-page-params.js";
 import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
@@ -1354,6 +1358,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isDynamicRoute: route.isDynamic || hasAppPageInterceptDynamicSegment(interceptBranchSegments),
       optionalCatchAllParamNames: attachedCurrentRouteIntercept
         ? [...route.routeSegments, ...interceptBranchSegments]
+            .map(stripAppPageInterceptionMarker)
             .filter((segment) => segment.startsWith("[[..."))
             .flatMap((segment) => getAppPageSegmentParamName(segment) ?? [])
         : undefined,

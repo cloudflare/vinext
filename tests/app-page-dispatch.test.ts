@@ -3952,6 +3952,26 @@ describe("app page dispatch", () => {
       await expect(empty.response.text()).resolves.toBe("fresh-flight");
     });
 
+    it("gates an intercepting tree's marker-prefixed dynamic segments", async () => {
+      // The route graph keeps the markers of app/feed/@modal/(.)[id] and
+      // app/feed/@modal/(.)[[...photo]].
+      const dynamic = await dispatchStaticSourceIntercept(
+        ["(.)[id]"],
+        { id: "unknown" },
+        async () => [{ id: "known" }],
+      );
+
+      expect(dynamic.response.status).toBe(404);
+      expect(dynamic.buildPageElement).not.toHaveBeenCalled();
+
+      const omitted = await dispatchStaticSourceIntercept(["(.)[[...photo]]"], {}, async () => [
+        { photo: ["known"] },
+      ]);
+
+      expect(omitted.response.status).toBe(404);
+      expect(omitted.buildPageElement).not.toHaveBeenCalled();
+    });
+
     it("renders a generated-params miss of an intercepting tree through that tree's not-found", async () => {
       // app/feed/[slug]/@modal/(..)[slug]/not-found.tsx is the intercepting
       // tree's own not-found boundary.
