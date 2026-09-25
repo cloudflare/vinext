@@ -1750,7 +1750,15 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
     }
   }
 
-  restoreHydrationNavigationContext(window.location.pathname, window.location.search, params);
+  // Like the embedded payload, carry the path and query the server rendered,
+  // which a rewrite may have changed.
+  const rendered = new URL(
+    parseRenderedPathAndSearchHeader(
+      rscResponse.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+    ) ?? window.location.pathname + window.location.search,
+    window.location.origin,
+  );
+  restoreHydrationNavigationContext(rendered.pathname, rendered.search, params);
 
   return rscResponse.body;
 }

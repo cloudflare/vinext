@@ -78,6 +78,29 @@ test("a client page behind a delayed boundary hydrates with the rewritten query"
   expect(errors).toEqual([]);
 });
 
+test("a client page hydrates with the rewritten query when it fetches its Flight payload", async ({
+  page,
+}) => {
+  // Without the payload embedded in the document, hydration fetches it, and
+  // the query comes from that response rather than the browser URL.
+  const errors = collectPageErrors(page);
+  await page.route("**/client-page-search-params/delayed-rewritten/bar", async (route) => {
+    if (route.request().resourceType() !== "document") return route.continue();
+    const response = await route.fetch();
+    const html = (await response.text()).replace(
+      /<script>[^<]*vinext\.navigationRuntime[^<]*\.bootstrap\.rsc[^<]*<\/script>/g,
+      "",
+    );
+    return route.fulfill({ response, body: html });
+  });
+
+  await page.goto("/client-page-search-params/delayed-rewritten/bar");
+  const query = page.getByTestId("delayed-client-page-q");
+  await expect(query).toHaveAttribute("data-hydrated", "true");
+  await expect(query).toHaveText("bar");
+  expect(errors).toEqual([]);
+});
+
 test("a client page reads the query a server action re-render was rewritten to", async ({
   page,
 }) => {
