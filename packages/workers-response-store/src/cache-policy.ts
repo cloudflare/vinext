@@ -24,6 +24,11 @@ type CacheLifetime = {
   staleWhileRevalidate: number;
 };
 
+// Vinext stores `revalidate = false` as this one-year value.
+const STATIC_REVALIDATE_SECONDS = 31_536_000;
+const MIN_RETRY_SECONDS = 3;
+const MAX_RETRY_SECONDS = 30;
+
 function parseCacheLifetime(headers: Headers): CacheLifetime {
   const cacheControl =
     headers.get("Cloudflare-CDN-Cache-Control") ??
@@ -69,6 +74,29 @@ export function deriveCachePolicy(headers: Headers, now = Date.now()): CachePoli
     initialAge,
     freshUntil,
     swrUntil: freshUntil + staleWhileRevalidate * 1000,
+  };
+}
+
+/**
+ * Freshness for an entry re-stored after its regeneration failed, following
+ * Next.js: retry after `revalidate` clamped to 3-30 s, and keep serving for at
+ * least 3 s beyond that or the entry's original stale window.
+ */
+export function deriveFailedRegenerationPolicy(
+  headers: Headers,
+  now = Date.now(),
+): Pick<CachePolicy, "freshUntil" | "swrUntil"> {
+  const { maxAge, staleWhileRevalidate } = parseCacheLifetime(headers);
+  // Next.js retries `revalidate = false` entries after 3 s. An explicit
+  // one-year revalidate is indistinguishable here and also retries after 3 s
+  // rather than 30 s; only the retry cadence differs.
+  const revalidate = maxAge === STATIC_REVALIDATE_SECONDS ? MIN_RETRY_SECONDS : maxAge;
+  const retrySeconds = Math.min(Math.max(revalidate, MIN_RETRY_SECONDS), MAX_RETRY_SECONDS);
+  const expireSeconds = Math.max(retrySeconds + 3, maxAge + staleWhileRevalidate);
+
+  return {
+    freshUntil: now + retrySeconds * 1000,
+    swrUntil: now + expireSeconds * 1000,
   };
 }
 

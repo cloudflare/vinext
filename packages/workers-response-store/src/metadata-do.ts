@@ -95,6 +95,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey?: string,
+    expectedActiveRevision?: number,
   ): Promise<PublicationResult>;
   invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
@@ -911,6 +912,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey = metadata.objectKey,
+    expectedActiveRevision?: number,
   ): Promise<PublicationResult> {
     return this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
@@ -938,6 +940,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         current.pending_publishable !== 1 ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
+        (expectedActiveRevision !== undefined &&
+          current.active_revision !== expectedActiveRevision) ||
         (claimId !== undefined &&
           (current.claim_id !== claimId ||
             current.claim_revision !== revision ||

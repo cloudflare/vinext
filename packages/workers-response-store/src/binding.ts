@@ -1,6 +1,11 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { deriveCachePolicy, edgeCacheControl, representationAge } from "./cache-policy";
+import {
+  deriveCachePolicy,
+  deriveFailedRegenerationPolicy,
+  edgeCacheControl,
+  representationAge,
+} from "./cache-policy";
 import { IsolateNegativeCache } from "./isolate-negative-cache";
 import type { CacheMetadataStub } from "./metadata-do";
 
@@ -125,6 +130,14 @@ type PublicationResult = {
   edgePurgeRequired: boolean;
   entry: StoredEntry | null;
   published: boolean;
+};
+
+type RepublishSource = {
+  body: ArrayBuffer;
+  createdAt: number;
+  etag: string;
+  initialAge: number;
+  status: number;
 };
 
 class R2PublicationError extends Error {
@@ -960,6 +973,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     createdAt: number,
     initialAge: number,
     expectedR2Etag: string | null | undefined,
+    expectedActiveRevision?: number,
   ): Promise<StoreResult> {
     let publication: PublicationResult;
     try {
@@ -969,6 +983,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         candidate,
         write.claimId,
         write.objectKey,
+        expectedActiveRevision,
       );
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
@@ -1051,6 +1066,86 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     };
   }
 
+  private async readRepublishSource(entry: StoredEntry): Promise<RepublishSource | null> {
+    const object = await this.env.CACHE_BODIES.get(this.r2ObjectKey(entry.keyHash));
+    if (!object) return null;
+
+    const objectMetadata = object.customMetadata;
+    const status = metadataInteger(objectMetadata?.status);
+    const createdAt = metadataInteger(objectMetadata?.createdAt);
+    const initialAge = metadataInteger(objectMetadata?.initialAge);
+    const responseMetadataBytes = metadataInteger(objectMetadata?.responseMetadataBytes) ?? 0;
+    // Only the body of the entry being re-stored will do. Any other revision
+    // belongs to a newer write, or to one that is still being published.
+    if (
+      objectMetadata?.tombstoned === "1" ||
+      metadataInteger(objectMetadata?.latestRevision) !== entry.activeRevision ||
+      status === undefined ||
+      createdAt === undefined ||
+      initialAge === undefined ||
+      responseMetadataBytes > object.size
+    ) {
+      await object.body.cancel();
+      return null;
+    }
+
+    const stored = await object.arrayBuffer();
+    return {
+      body: responseMetadataBytes ? stored.slice(responseMetadataBytes) : stored,
+      createdAt,
+      etag: object.etag,
+      initialAge,
+      status,
+    };
+  }
+
+  /**
+   * Re-store the entry a failed regeneration was replacing, as Next.js does,
+   * so reads keep serving it and the next regeneration waits 3-30 s. It uses
+   * the regeneration's reservation, and publishes only while that entry is
+   * still the active revision, so a newer write or a purge always wins.
+   */
+  private async republishFailedRegeneration(
+    metadata: CacheMetadataStub,
+    entry: StoredEntry,
+    write: WriteReservation,
+  ): Promise<void> {
+    let source: RepublishSource | null;
+    try {
+      // Reads take freshness from the R2 object's custom metadata, which R2
+      // cannot update in place, so the body is written again under the new
+      // revision.
+      source = await this.readRepublishSource(entry);
+    } catch (error) {
+      await this.releaseFailedWrite(metadata, write);
+      throw error;
+    }
+    if (!source) {
+      await this.releaseFailedWrite(metadata, write);
+      return;
+    }
+
+    await this.publishRevision(
+      metadata,
+      write,
+      {
+        fenceTags: [...new Set([...write.fenceTags, ...entry.cacheTags])],
+        objectKey: this.r2ObjectKey(entry.keyHash),
+        statusText: entry.statusText,
+        responseHeaders: entry.responseHeaders,
+        ...deriveFailedRegenerationPolicy(new Headers(entry.responseHeaders)),
+        revalidator: entry.revalidator,
+        cacheTags: entry.cacheTags,
+      },
+      source.body,
+      source.status,
+      source.createdAt,
+      source.initialAge,
+      source.etag,
+      entry.activeRevision,
+    );
+  }
+
   private async regenerateEntry(
     metadata: CacheMetadataStub,
     entry: StoredEntry,
@@ -1088,7 +1183,17 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         reason,
       });
     } catch (error) {
-      await this.releaseFailedWrite(metadata, writeReservation);
+      await this.republishFailedRegeneration(metadata, entry, writeReservation).catch(
+        (republishError) =>
+          console.error(
+            JSON.stringify({
+              message: "Workers Response Store could not re-store a failed regeneration's entry",
+              cacheKey: entry.cacheKey,
+              error:
+                republishError instanceof Error ? republishError.message : String(republishError),
+            }),
+          ),
+      );
       throw error;
     }
 
