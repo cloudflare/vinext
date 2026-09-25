@@ -1662,15 +1662,16 @@ describe("buildPageElements", () => {
       await import("../packages/vinext/src/shims/cache-runtime.js");
 
     let pageCalls = 0;
+    let receivedPropKeys: string[] = [];
     const CachedPage = registerCachedFunction(
-      async ({ params }: { params: Promise<{ slug: string }> }): Promise<string> => {
+      async (props: { params: Promise<{ slug: string }> }): Promise<string> => {
         pageCalls++;
-        const resolvedParams = await params;
+        receivedPropKeys = Object.keys(props);
+        const resolvedParams = await props.params;
         return `primary:${resolvedParams.slug}`;
       },
       "/fixture/app/cached/page.tsx:default",
       "",
-      { appPageDefaultExport: true },
     );
     const route = createSyntheticRoute({
       page: createSyntheticPageModule(CachedPage),
@@ -1685,6 +1686,8 @@ describe("buildPageElements", () => {
       getCallCount: () => pageCalls,
       render: (query) => buildAndRenderElement(route, "page:/cached", query),
     });
+    // The cache wrapper removes the `$$isPage` marker before user code runs.
+    expect(receivedPropKeys).toEqual(["params", "searchParams"]);
   });
 
   it("keeps a cached active slot page query-inert through the React render path", async () => {
@@ -1705,7 +1708,6 @@ describe("buildPageElements", () => {
       },
       "/fixture/app/cached/@modal/page.tsx:default",
       "",
-      { appPageDefaultExport: true },
     );
     const route = createSyntheticRoute({
       page: createSyntheticPageModule(MainPage),
@@ -1748,7 +1750,6 @@ describe("buildPageElements", () => {
       },
       "/fixture/app/cached/@modal/(.)photo/page.tsx:default",
       "",
-      { appPageDefaultExport: true },
     );
     const route = createSyntheticRoute({
       page: createSyntheticPageModule(MainPage),
@@ -2617,6 +2618,45 @@ describe("probeAppPage", () => {
 
     expect(markDynamicUsageMock).toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+  });
+
+  it("derives the same cache key for a cached page in probe and render", async () => {
+    await resetUseCacheRuntime();
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+
+    let pageCalls = 0;
+    const CachedPage = registerCachedFunction(
+      async (props: { params: Promise<{ slug: string }> }): Promise<string> => {
+        pageCalls++;
+        return `probed:${(await props.params).slug}`;
+      },
+      "/fixture/app/cached-probe/page.tsx:default",
+      "",
+    );
+
+    await Promise.resolve(
+      probeAppPage({
+        asyncRouteParams: makeThenableParams({ slug: "same" }),
+        pageComponent: CachedPage,
+        searchParams: new URLSearchParams("q=probe"),
+      }),
+    );
+    expect(pageCalls).toBe(1);
+    expectNoSearchParamsObservation();
+
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(CachedPage),
+      loading: { default: () => null },
+      layouts: [],
+      routeSegments: ["cached"],
+      pattern: "/cached",
+    });
+    await expect(buildAndRenderElement(route, "page:/cached", "render")).resolves.toContain(
+      "probed:same",
+    );
+    expect(pageCalls).toBe(1);
+    expectNoSearchParamsObservation();
   });
 
   it("does NOT call markDynamicUsage just because the request query has content", () => {

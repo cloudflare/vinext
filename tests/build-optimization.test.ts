@@ -530,8 +530,28 @@ describe("optimizeDeps.exclude for vinext", () => {
       // applies top-level ssr.* as defaults for environments.ssr.*, so
       // setting noExternal: true here would force-bundle React despite
       // external: true and recreate the duplicate-React bug.
-      expect(result.ssr?.noExternal).toBeUndefined();
+      expect(result.ssr?.noExternal).not.toBe(true);
+      expect(result.ssr?.noExternal).not.toContain("react");
       expect(result.ssr?.external).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  }, 15000);
+
+  // @vercel/og 1.x throws on native import; it only runs once
+  // vinext:og-harfbuzz has transformed it, so `ssr.external: true` must not
+  // externalize it in any Node server environment.
+  it("keeps @vercel/og in the transform pipeline when ssr.external: true", async () => {
+    const fixture = await setupAppRouterConfigTest("vinext-og-no-external-");
+
+    try {
+      const result = await fixture.config({ ssr: { external: true } });
+
+      expect(result.ssr.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.rsc.resolve.external).toBe(true);
+      expect(result.environments.rsc.resolve.noExternal).toEqual(["@vercel/og"]);
+      expect(result.environments.ssr.resolve.external).toBe(true);
+      expect(result.environments.ssr.resolve.noExternal).toEqual(["@vercel/og"]);
     } finally {
       await fixture.cleanup();
     }
@@ -4296,12 +4316,14 @@ describe("createMultiStageChunkFileNames", () => {
           fsp.readFile(path.join(outputDir, "vinext-client-assets.js"), "utf8"),
         ).resolves.toContain("export default");
         const outputFiles = await fsp.readdir(outputDir, { recursive: true });
-        const responseStageFile = outputFiles.find((file) =>
+        // The browser `client` environment inherits top-level `build.ssr` in
+        // buildApp(); only the `ssr` environment may emit the stage entry.
+        const responseStageFiles = outputFiles.filter((file) =>
           /^vinext-response-stage-.+\.js$/.test(path.basename(file)),
         );
-        expect(responseStageFile).toBeDefined();
+        expect(responseStageFiles).toHaveLength(1);
         const responseStage = (await import(
-          `${pathToFileURL(path.join(outputDir, responseStageFile!)).href}?output=${index}`
+          `${pathToFileURL(path.join(outputDir, responseStageFiles[0]!)).href}?output=${index}`
         )) as { load(): Promise<unknown> };
         await expect(responseStage.load()).resolves.toBeDefined();
       }

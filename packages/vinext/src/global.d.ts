@@ -122,10 +122,10 @@ declare global {
     __VINEXT_CLIENT_REWRITES__: ClientRewrites | undefined;
 
     /**
-     * Static `middleware/proxy` matcher config embedded for client-side Pages
-     * Router middleware-effect probes. `undefined` means "match all", matching
-     * Next.js's default when middleware has no matcher or the config was too
-     * dynamic to statically serialize.
+     * Precompiled `middleware/proxy` path matchers embedded for client-side
+     * Pages Router middleware-effect probes. `undefined` means "match all",
+     * matching Next.js's default when middleware has no matcher or the config
+     * was too dynamic to statically serialize.
      */
     __VINEXT_MIDDLEWARE_MATCHER__: unknown;
 

@@ -1,5 +1,24 @@
 # @vinext/cloudflare
 
+## 1.0.0-beta.10
+
+### Features
+
+- **Response Store:** expose metadata location hints (#3383)
+
+### Bug Fixes
+
+- **Cache:** protect cache function references (#3385)
+
+### Performance
+
+- **Cloudflare:** reuse response-stage invocations (#3388)
+- **Cache:** overlap Response Store soft-tag lookup (#3373)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0-beta.9
 
 ### Features

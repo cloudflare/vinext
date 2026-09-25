@@ -112,8 +112,8 @@ export const CONFIG_FILES = [
   "next.config.js",
   "next.config.mjs",
   "next.config.ts",
-  // process.features can be undefined on Edge runtime
-  ...(process?.features?.typescript ? ["next.config.mts"] : []),
+  // Browsers have no process global; Edge runtimes may omit features.
+  ...(typeof process !== "undefined" && process.features?.typescript ? ["next.config.mts"] : []),
 ];
 export const BUILD_ID_FILE = "BUILD_ID";
 export const BLOCKED_PAGES = ["/_document", "/_app", "/_error"];

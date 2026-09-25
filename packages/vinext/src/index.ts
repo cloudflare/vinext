@@ -30,7 +30,10 @@ import {
   generatePagesResponseEntry as _generatePagesResponseEntry,
   generateServerEntry as _generateServerEntry,
 } from "./entries/pages-server-entry.js";
-import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
+import {
+  compileClientMiddlewareMatchers,
+  generateClientEntry as _generateClientEntry,
+} from "./entries/pages-client-entry.js";
 import {
   appRouteGraph,
   appRouter,
@@ -207,6 +210,7 @@ import { validateMiddlewareModuleExports } from "./plugins/middleware-export-val
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
+import { createOgHarfbuzzPlugin } from "./plugins/og-harfbuzz.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
 import {
@@ -460,6 +464,12 @@ function resolveShimModulePath(shimsDir: string, moduleName: string): string {
   }
   return path.join(shimsDir, `${moduleName}.js`);
 }
+
+// @vercel/og 1.x only runs after vinext:og-harfbuzz patches its bundled
+// HarfBuzz glue, so Node server environments must transform it even when the
+// user externalizes every dependency with `ssr.external: true`. A `noExternal`
+// entry takes precedence over `external: true` in Vite.
+const PATCHED_SERVER_PACKAGES = ["@vercel/og"];
 
 function isVercelOgImport(id: string): boolean {
   return id === "@vercel/og" || id === "@vercel/og.js";
@@ -1558,11 +1568,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const isMultiStageServerEnvironment = (environment: {
     config: { build: { ssr?: unknown }; consumer?: string };
     name: string;
-  }): boolean => {
-    if (environment.name === "client") return Boolean(environment.config.build.ssr);
-    if (hasAppDir) return environment.name === "rsc";
-    return isServerEnvironment(environment);
-  };
+  }): boolean =>
+    // A `client` environment can inherit a top-level `build.ssr` inside
+    // createBuilder().buildApp(), but it still bundles for the browser beside
+    // the real `ssr` environment. Legacy `vite build --ssr` names its sole
+    // environment `ssr`, so only server consumers ever own stage entries.
+    isServerEnvironment(environment) && (!hasAppDir || environment.name === "rsc");
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
@@ -1814,8 +1825,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           projectRoot: earlyBaseDir,
           cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
             .href,
-          getAppDir: () => appDir,
-          matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
         });
         const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
         if (useServerIndex === -1) {
@@ -1834,8 +1843,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     manualUseCachePluginPromise = createUseCacheCallablePlugin({
       projectRoot: earlyBaseDir,
       cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime")).href,
-      getAppDir: () => appDir,
-      matchesPageExtension: (fileName) => fileMatcher.extensionRegex.test(fileName),
       allowMissingRsc: true,
     });
   }
@@ -3214,7 +3221,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ...(hasCloudflarePlugin || hasNitroPlugin
             ? {}
             : config.ssr?.external === true
-              ? { ssr: { external: true as const } }
+              ? { ssr: { external: true as const, noExternal: [...PATCHED_SERVER_PACKAGES] } }
               : {
                   ssr: {
                     external: [
@@ -3560,9 +3567,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
                       // Packages in `external` above take precedence per Vite rules.
-                      // When user sets `ssr.external: true`, skip noExternal since
-                      // everything is already externalized.
-                      ...(userSsrExternal === true ? {} : { noExternal: true as const }),
+                      // When user sets `ssr.external: true`, only packages vinext
+                      // must patch stay in the transform pipeline.
+                      noExternal:
+                        userSsrExternal === true ? [...PATCHED_SERVER_PACKAGES] : (true as const),
                     },
                   }),
               optimizeDeps: {
@@ -3609,9 +3617,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       // Force all node_modules through Vite's transform pipeline
                       // so non-JS imports (CSS, images) don't hit Node's native
                       // ESM loader. Matches Next.js behavior of bundling everything.
-                      // When user sets `ssr.external: true`, skip noExternal since
-                      // everything is already externalized.
-                      ...(userSsrExternal === true ? {} : { noExternal: true as const }),
+                      // When user sets `ssr.external: true`, only packages vinext
+                      // must patch stay in the transform pipeline.
+                      noExternal:
+                        userSsrExternal === true ? [...PATCHED_SERVER_PACKAGES] : (true as const),
                     },
                   }),
               optimizeDeps: {
@@ -4775,7 +4784,7 @@ export const loadServerActionClient = ${
       // Vite resolves build.ssr=true for every server environment. The App
       // Router's named `ssr` environment is still only its HTML renderer; it
       // must never receive deployable request/response stage entries.
-      // Standalone `vite build --ssr` uses the sole `client` environment.
+      // Standalone `vite build --ssr` names its sole environment `ssr`.
       // Pages and adapter-owned server environments retain their own names.
       buildStart() {
         const entries = selectedMultiStageOutput?.entries;
@@ -5182,10 +5191,31 @@ export const loadServerActionClient = ${
         // — a new reference only when the route set changes (invalidateRouteCache
         // -> re-scan). Keying on `routes` rebuilds exactly then and reuses the
         // handler otherwise, instead of re-running it for every request.
+        // Middleware and page export-kind edits explicitly clear the cache
+        // below because their client manifests are derived from source files.
         let cachedSSRHandler: {
           routes: Awaited<ReturnType<typeof pagesRouter>>;
           handler: ReturnType<typeof createSSRHandler>;
         } | null = null;
+        const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
+        function classifyDevPageFile(filePath: string): "static" | "server" | "none" {
+          const cached = devPageRouteDataKinds.get(filePath);
+          if (cached) return cached;
+
+          let dataKind: "static" | "server" | "none" = "none";
+          try {
+            const source = fs.readFileSync(filePath, "utf8");
+            dataKind = hasExportedName(source, "getStaticProps")
+              ? "static"
+              : hasExportedName(source, "getServerSideProps")
+                ? "server"
+                : "none";
+          } catch {
+            // Dev can race with an editor deleting/renaming a page file.
+          }
+          devPageRouteDataKinds.set(filePath, dataKind);
+          return dataKind;
+        }
         function getPagesRunner() {
           if (!pagesRunner) {
             const env =
@@ -5248,6 +5278,20 @@ export const loadServerActionClient = ${
             if (mod) env.moduleGraph.invalidateModule(mod);
           }
           pagesRunner?.clearCache();
+        }
+
+        function invalidatePagesHydrationProxies() {
+          // Vite caches transformed inline HTML modules by their proxy ID.
+          // A newly rendered page can replace the proxy's source without
+          // invalidating that transformed module, leaving the old route data
+          // manifest in browsers even after a full reload.
+          const graph = server.environments.client?.moduleGraph;
+          if (!graph) return;
+          for (const mod of graph.idToModuleMap.values()) {
+            if (mod.id?.includes("?html-proxy&index=")) {
+              graph.invalidateModule(mod);
+            }
+          }
         }
 
         function invalidateAppRoutingModules() {
@@ -5415,7 +5459,16 @@ export const loadServerActionClient = ${
           if (hasCloudflarePlugin && hasPagesDir && !hasAppDir) invalidatePagesServerEntry();
         };
 
+        function invalidatePagesMiddlewareMatcher(filePath: string) {
+          if (!hasPagesDir || !middlewarePath || toSlash(filePath) !== middlewarePath) return;
+          // The handler snapshots this matcher in each __NEXT_DATA__ response.
+          // Editors may save via unlink/add instead of a change event.
+          cachedSSRHandler = null;
+          server.ws.send({ type: "full-reload" });
+        }
+
         server.watcher.on("add", (filePath: string) => {
+          invalidatePagesMiddlewareMatcher(filePath);
           updatePublicFileRoute(filePath, true);
           let routeChanged = false;
           const pagesAppChanged = isPagesAppFile(filePath);
@@ -5432,6 +5485,7 @@ export const loadServerActionClient = ${
             toSlash(filePath).startsWith(pagesDir) &&
             pageExtensions.test(filePath)
           ) {
+            devPageRouteDataKinds.delete(toSlash(filePath));
             invalidateRouteCache(pagesDir);
             routeChanged = true;
           }
@@ -5442,12 +5496,30 @@ export const loadServerActionClient = ${
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
+            if (hasPagesDir) invalidatePagesHydrationProxies();
             if (!hasAppDir) server.ws.send({ type: "full-reload" });
             invalidateHybridClientEntries();
             revalidateHybridRoutes();
           }
         });
         server.watcher.on("change", (filePath: string) => {
+          invalidatePagesMiddlewareMatcher(filePath);
+          if (
+            hasPagesDir &&
+            toSlash(filePath).startsWith(pagesDir) &&
+            pageExtensions.test(filePath)
+          ) {
+            // The handler snapshots each page's data-loading exports for the
+            // client hydration manifest, which can change without a new route.
+            const pageFile = toSlash(filePath);
+            const previousKind = devPageRouteDataKinds.get(pageFile);
+            devPageRouteDataKinds.delete(pageFile);
+            if (previousKind !== undefined && previousKind !== classifyDevPageFile(pageFile)) {
+              cachedSSRHandler = null;
+              invalidatePagesHydrationProxies();
+              server.ws.send({ type: "full-reload" });
+            }
+          }
           const pagesAppChanged = isPagesAppFile(filePath);
           const pagesAssetGraphScriptChanged = isPotentialPagesAssetGraphScript(filePath);
           if (
@@ -5458,6 +5530,7 @@ export const loadServerActionClient = ${
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
+          invalidatePagesMiddlewareMatcher(filePath);
           updatePublicFileRoute(filePath, false);
           let routeChanged = false;
           const pagesAppChanged = isPagesAppFile(filePath);
@@ -5474,6 +5547,7 @@ export const loadServerActionClient = ${
             toSlash(filePath).startsWith(pagesDir) &&
             pageExtensions.test(filePath)
           ) {
+            devPageRouteDataKinds.delete(toSlash(filePath));
             invalidateRouteCache(pagesDir);
             routeChanged = true;
           }
@@ -5484,6 +5558,7 @@ export const loadServerActionClient = ${
           }
           if (routeChanged) {
             invalidatePagesServerEntry();
+            if (hasPagesDir) invalidatePagesHydrationProxies();
             if (!hasAppDir) server.ws.send({ type: "full-reload" });
             invalidateHybridClientEntries();
             revalidateHybridRoutes();
@@ -6239,27 +6314,9 @@ export const loadServerActionClient = ${
                   hasAppDir && appDir
                     ? appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
                     : Promise.resolve([]));
-              const devPageRouteDataKinds = new Map<string, "static" | "server" | "none">();
               const classifyDevPageRoute = (
                 route: (typeof devPageRoutes)[number],
-              ): "static" | "server" | "none" => {
-                const cached = devPageRouteDataKinds.get(route.filePath);
-                if (cached) return cached;
-
-                let dataKind: "static" | "server" | "none" = "none";
-                try {
-                  const source = fs.readFileSync(route.filePath, "utf8");
-                  dataKind = hasExportedName(source, "getStaticProps")
-                    ? "static"
-                    : hasExportedName(source, "getServerSideProps")
-                      ? "server"
-                      : "none";
-                } catch {
-                  // Dev can race with an editor deleting/renaming a page file.
-                }
-                devPageRouteDataKinds.set(route.filePath, dataKind);
-                return dataKind;
-              };
+              ): "static" | "server" | "none" => classifyDevPageFile(route.filePath);
 
               const pipelineDeps: PagesPipelineDeps = {
                 basePath: bp,
@@ -6555,6 +6612,12 @@ export const loadServerActionClient = ${
                       nextConfig?.expireTime,
                       nextConfig?.crossOrigin,
                       devBuildId,
+                      middlewarePath
+                        ? compileClientMiddlewareMatchers(
+                            extractMiddlewareMatcherConfig(middlewarePath),
+                          )
+                        : undefined,
+                      classifyDevPageRoute,
                     ),
                   };
                 }
@@ -7732,6 +7795,7 @@ export const loadServerActionClient = ${
     // Handle `import x from '*.wasm?module'` — see
     // src/plugins/wasm-module-import.ts. Fixes #1351.
     createWasmModuleImportPlugin(),
+    createOgHarfbuzzPlugin(),
     {
       // @vercel/og WASM patch — universal (workerd + Node.js)
       //

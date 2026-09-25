@@ -3,6 +3,21 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4173";
 
 test.describe("Link advanced props (Pages Router)", () => {
+  // Ported from Next.js: packages/next/src/shared/lib/router/router.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/router.ts
+  test("dev client navigation executes page getInitialProps in the browser", async ({ page }) => {
+    await page.goto(`${BASE}/nav-test`);
+    await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
+    await page.evaluate(() => {
+      (window as any).__softNavMarker = true;
+    });
+
+    await page.evaluate(() => (window as any).next.router.push("/nav-compat-gip/test"));
+
+    await expect(page.locator("#gip-executed-on")).toHaveText("client");
+    expect(await page.evaluate(() => (window as any).__softNavMarker)).toBe(true);
+  });
+
   test("scroll={false} preserves scroll position", async ({ page }) => {
     await page.goto(`${BASE}/link-test`);
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
@@ -144,19 +159,11 @@ test.describe("Link onNavigate prop (Pages Router, OnNavigate fixture)", () => {
     await expect(page.locator("#is-clicked")).toHaveText("isClicked: false");
     await expect(page.locator("#is-navigated")).toHaveText("isNavigated: false");
 
-    // Upstream's fixture mounts `OnNavigate.tsx` in `_app.tsx` so the state
-    // pills survive a client-side transition and can be asserted against
-    // the post-navigation DOM. This port keeps the fixture as a single
-    // page (to avoid polluting the rest of `pages-basic`), so the source
-    // `OnNavigate` component unmounts on navigation. We stub `pushState` to
-    // a no-op so vinext's Link calls it during navigation but the browser
-    // never commits the URL change — the React synthetic handlers
-    // (`onClick` + `onNavigate`) have already run synchronously at this
-    // point and their `setIsClicked` / `setIsNavigated` state updates have
-    // flushed, so we can assert against the in-place DOM.
+    // Upstream mounts `OnNavigate.tsx` in `_app.tsx`, so its state survives
+    // navigation. Our fixture is one page; keep it mounted while testing the
+    // callbacks, and exercise real navigation in the next test.
     await page.evaluate(() => {
-      window.history.pushState = () => {};
-      window.history.replaceState = () => {};
+      (window as any).next.router.push = async () => true;
     });
 
     await page.click("#link-to-subpage");
@@ -446,30 +453,31 @@ test.describe("Link href/as bracket-pattern interpolation (Pages Router)", () =>
     expect(sawConcrete).toBe(true);
   });
 
-  // popstate (back/forward) reads `state.url` (set on push) as the route URL
-  // to fetch. If push stamped the bracket pattern into history state, forward
-  // traversal would re-issue the unservable URL even though the original push
-  // worked. Asserts state.url was interpolated, not the raw pattern.
-  test("forward popstate after dynamic Router.push fetches concrete URL", async ({ page }) => {
-    await page.goto(`${BASE}/link-test`);
+  // Query-only navigation preserves Next.js' bracket-pattern `state.url`, while
+  // popstate still has to fetch and render the concrete route on traversal.
+  test("forward popstate resolves query-only dynamic route history", async ({ page }) => {
+    await page.goto(`${BASE}/posts/1`);
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
-    // Push the dynamic destination, then go back to /link-test.
+    // Push the query-only destination, then traverse away from it.
     await page.evaluate(() => {
       const router = (window as any).next?.router;
-      return router?.push("/posts/[id]", "/posts/11");
+      return router?.push({ query: { id: "2" } });
     });
-    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 11");
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 2");
+    await expect
+      .poll(() => page.evaluate(() => ({ url: history.state?.url, as: history.state?.as })))
+      .toEqual({ url: "/posts/[id]?id=2", as: "/posts/2" });
     await page.goBack();
-    await expect(page).toHaveURL(`${BASE}/link-test`);
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 1");
 
     // Start capturing AFTER the back, so requests are scoped to the forward.
     const requests: string[] = [];
     page.on("request", (req) => requests.push(req.url()));
     await page.goForward();
 
-    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 11");
-    expect(page.url()).toBe(`${BASE}/posts/11`);
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 2");
+    expect(page.url()).toBe(`${BASE}/posts/2`);
 
     const routingRequests = requests.filter(
       (u) => /\/_next\/data\//.test(u) || /\/posts\/(?!.*\.tsx)/.test(u),

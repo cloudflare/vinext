@@ -50,6 +50,8 @@ export default {
         // Loaded dynamically by @vitejs/plugin-react when the React Compiler
         // integration test enables `react: { compiler: true }`.
         "oxc-transform-react",
+        // OG tests resolve these from vinext's @vercel/og install, not the root workspace.
+        "@vercel/og",
       ],
     },
     "packages/vinext": {

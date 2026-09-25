@@ -64,7 +64,10 @@ import {
 import { sanitizeDestination } from "../config/config-matchers.js";
 import { collectPagesDevInitialStylesheetHeadHTML } from "./pages-dev-stylesheets.js";
 import { createPagesDevModuleUrl } from "./pages-dev-module-url.js";
-import { createPagesDevHydrationScript } from "./pages-dev-hydration.js";
+import {
+  createPagesDevHydrationScript,
+  type PagesDevHydrationOptions,
+} from "./pages-dev-hydration.js";
 import { isSerializableProps } from "./pages-serializable-props.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
 import {
@@ -637,6 +640,8 @@ export function createSSRHandler(
   crossOrigin?: string,
   /** Resolved Pages Router build ID shared with the dev data-route parser. */
   buildId = process.env.__VINEXT_BUILD_ID ?? "development",
+  clientMiddlewareMatcher?: unknown,
+  classifyPageRoute?: (route: Route) => "static" | "server" | "none",
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
 
@@ -648,6 +653,19 @@ export function createSSRHandler(
   // dev exactly as they do in production. Without this, dev would fall back
   // to `__NEXT_DATA__.page` only — a dev/prod parity gap.
   const pagePatterns = routes.map((r) => patternToNextFormat(r.pattern));
+  const pageLoaders = routes.map((route) => ({
+    pattern: patternToNextFormat(route.pattern),
+    moduleSource: createPagesDevModuleUrl(server.config.root, route.filePath, "/"),
+    dataKind: classifyPageRoute?.(route) ?? "none",
+  }));
+  const errorFile = findFileWithExts(pagesDir, "_error", matcher);
+  pageLoaders.push({
+    pattern: "/_error",
+    moduleSource: errorFile
+      ? createPagesDevModuleUrl(server.config.root, errorFile, "/")
+      : "next/error",
+    dataKind: "none",
+  });
 
   // Register ALS-backed accessors in the SSR module graph so head and
   // router state are per-request isolated under concurrent load.
@@ -730,6 +748,9 @@ export function createSSRHandler(
       basePath,
       buildId,
       clientTraceMetadata,
+      pageLoaders,
+      hasMiddleware,
+      clientMiddlewareMatcher,
       locale: locale ?? currentDefaultLocale,
       locales: i18nConfig?.locales,
       defaultLocale: currentDefaultLocale,
@@ -1573,12 +1594,14 @@ export function createSSRHandler(
             appModuleUrl,
             hasMiddleware,
             routeUrl: requestAsPath,
+            clientMiddlewareMatcher,
           },
         };
 
         const hydrationScript = createPagesDevHydrationScript({
           appModuleSource,
           pageModuleSource,
+          pageLoaders,
           reactStrictMode: reactStrictMode === true,
           replaceFallbackRoute: true,
           scriptNonce,
@@ -1801,6 +1824,9 @@ async function renderErrorPage(
     basePath: string;
     buildId?: string;
     clientTraceMetadata?: readonly string[];
+    pageLoaders?: PagesDevHydrationOptions["pageLoaders"];
+    hasMiddleware?: boolean;
+    clientMiddlewareMatcher?: unknown;
     locale?: string;
     locales?: string[];
     defaultLocale?: string;
@@ -1999,10 +2025,15 @@ async function renderErrorPage(
           query: parseQuery(url),
           buildId: context.buildId ?? process.env.__VINEXT_BUILD_ID ?? "development",
           isFallback: false,
+          locale: context.locale,
+          locales: context.locales,
+          defaultLocale: context.defaultLocale,
           notFoundSrcPage: context.notFoundSrcPage,
           __vinext: {
             pageModuleUrl: errorModuleUrl ?? undefined,
             appModuleUrl: appModuleUrl ?? undefined,
+            hasMiddleware: context.hasMiddleware,
+            clientMiddlewareMatcher: context.clientMiddlewareMatcher,
           },
         },
       )}</script>`;
@@ -2011,6 +2042,7 @@ async function renderErrorPage(
         forceRouterReady: true,
         normalizePageProps: false,
         pageModuleSource: errorModuleSource,
+        pageLoaders: context.pageLoaders,
         reactStrictMode: reactStrictMode === true,
         scriptNonce,
         setPagePatternsFromNextData: true,
