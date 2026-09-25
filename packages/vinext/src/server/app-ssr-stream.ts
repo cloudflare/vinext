@@ -81,6 +81,20 @@ export function createNavigationRuntimeRscMetadataScript(
   );
 }
 
+/**
+ * The query a client page read during SSR, for a render that turned dynamic
+ * after its head told the browser to read the query from its own URL.
+ */
+export function createNavigationRuntimeRenderedSearchScript(search: string): string {
+  return (
+    "Object.assign(" +
+    navigationRuntimeRscBootstrapExpression() +
+    ",{renderedSearch:" +
+    safeJsonStringify(search) +
+    "})"
+  );
+}
+
 function createNavigationRuntimeRscChunkScript(chunk: RscEmbeddedChunk): string {
   return navigationRuntimeRscBootstrapExpression() + ".rsc.push(" + safeJsonStringify(chunk) + ")";
 }

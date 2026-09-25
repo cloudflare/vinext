@@ -1511,6 +1511,24 @@ function getHydrationRenderedPathAndSearch(): string | null {
   return search ? `${context.pathname}?${search}` : context.pathname;
 }
 
+/**
+ * A render that turns dynamic after the head sends its client pages' query
+ * later in the document (see `app-ssr-entry.ts`), possibly after bootstrap, so
+ * the hydration snapshot reads it when a client page first renders.
+ */
+function withLateRenderedSearch(
+  snapshot: ClientNavigationRenderSnapshot,
+  rsc: NavigationRuntimeRscBootstrap | undefined,
+): ClientNavigationRenderSnapshot {
+  if (!rsc) return snapshot;
+  const headRenderedSearch = snapshot.renderedSearch;
+  return Object.defineProperty(snapshot, "renderedSearch", {
+    configurable: true,
+    enumerable: true,
+    get: () => rsc.renderedSearch ?? headRenderedSearch,
+  });
+}
+
 /** Carry the rendered query over to a snapshot of the same URL. */
 function withRenderedSearchOf(
   snapshot: ClientNavigationRenderSnapshot,
@@ -1810,10 +1828,13 @@ function bootstrapHydration(
   const cacheGeneration = clientNavigationCacheGeneration;
   const [reactBranch, cacheBranch] = rscStream.tee();
   const root = decodeAppElementsPromise(createFromReadableStream<AppWireElements>(reactBranch));
-  const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
-    window.location.href,
-    latestClientParams,
-    getHydrationRenderedPathAndSearch(),
+  const initialNavigationSnapshot = withLateRenderedSearch(
+    createClientNavigationRenderSnapshot(
+      window.location.href,
+      latestClientParams,
+      getHydrationRenderedPathAndSearch(),
+    ),
+    initialRscBootstrap,
   );
   const initialParams = initialNavigationSnapshot.params;
   const initialPathAndSearch = createSnapshotPathAndSearch(initialNavigationSnapshot);

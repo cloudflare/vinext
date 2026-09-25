@@ -63,6 +63,21 @@ test("a client page reads the rewritten query in SSR, hydration and navigation",
   expect(errors).toEqual([]);
 });
 
+test("a client page behind a delayed boundary hydrates with the rewritten query", async ({
+  page,
+}) => {
+  // The page reads its searchParams only after the document head is out, so
+  // the head can't carry the rewritten query /delayed-rewritten/:q gives it.
+  const errors = collectPageErrors(page);
+
+  await page.goto("/client-page-search-params/delayed-rewritten/bar");
+  await waitForAppRouterHydration(page);
+  const query = page.getByTestId("delayed-client-page-q");
+  await expect(query).toHaveAttribute("data-hydrated", "true");
+  await expect(query).toHaveText("bar");
+  expect(errors).toEqual([]);
+});
+
 test("a force-static client page keeps an empty query during navigation", async ({ page }) => {
   const errors = collectPageErrors(page);
 

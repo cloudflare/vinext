@@ -168,6 +168,10 @@ const nextConfig: NextConfig = {
           source: "/client-page-search-params/rewritten/:q",
           destination: "/client-page-search-params?q=:q",
         },
+        {
+          source: "/client-page-search-params/delayed-rewritten/:q",
+          destination: "/client-page-search-params/delayed?q=:q",
+        },
       ],
       afterFiles: [
         // Used by Vitest: app-router.test.ts
