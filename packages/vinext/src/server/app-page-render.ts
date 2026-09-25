@@ -1473,16 +1473,12 @@ async function renderAppPageLifecycleImpl(
     isPrerenderObservationNonce(options.prerenderObservationNonce)
       ? options.prerenderObservationNonce
       : null;
-  let htmlMiddlewareContext = options.middlewareContext;
   if (prerenderObservationNonce) {
     htmlStream = appendPrerenderRenderObservations(
       htmlStream,
       prerenderObservationNonce,
       observeFinishedPrerenderRender(options, htmlRender, htmlOutputScope, rscOutputScope),
     );
-    // The appended bytes aren't counted by a Content-Length the middleware
-    // set, so the response drops it rather than cut the observations off.
-    htmlMiddlewareContext = withoutMiddlewareContentLength(options.middlewareContext);
   }
 
   // Defer clearRequestContext() until the HTML stream is fully consumed by the
@@ -1554,7 +1550,7 @@ async function renderAppPageLifecycleImpl(
       draftCookie,
       linkHeader,
       isEdgeRuntime: options.isEdgeRuntime,
-      middlewareContext: htmlMiddlewareContext,
+      middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
       requestCacheLife: requestCacheLifeForPrerender,
       timing: htmlResponseTiming,
@@ -1632,7 +1628,7 @@ async function renderAppPageLifecycleImpl(
     draftCookie,
     linkHeader,
     isEdgeRuntime: options.isEdgeRuntime,
-    middlewareContext: htmlMiddlewareContext,
+    middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
@@ -1658,15 +1654,6 @@ async function renderAppPageLifecycleImpl(
       revalidateSeconds,
     }),
   });
-}
-
-function withoutMiddlewareContentLength(
-  middlewareContext: AppPageMiddlewareContext,
-): AppPageMiddlewareContext {
-  if (!middlewareContext.headers?.has("content-length")) return middlewareContext;
-  const headers = new Headers(middlewareContext.headers);
-  headers.delete("content-length");
-  return { ...middlewareContext, headers };
 }
 
 /**

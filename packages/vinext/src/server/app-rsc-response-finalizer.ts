@@ -40,6 +40,13 @@ type FinalizeAppRscResponseOptions = {
   middlewareHeaders?: Headers | null;
   /** Whether config matching should update the active cacheability classification. */
   recordCacheability?: boolean;
+  /**
+   * Whether this is a prerender render that may append its observations to
+   * the body. A Content-Length from middleware or a matching next.config rule
+   * doesn't count those bytes, so the final response drops it rather than cut
+   * the observations off in transport.
+   */
+  mayAppendPrerenderObservations?: boolean;
 };
 
 const HAS_CONFIG_HEADERS = process.env.__VINEXT_HAS_CONFIG_HEADERS !== "false";
@@ -145,6 +152,7 @@ export async function finalizeAppRscResponse(
 
   if (configHeadersAlreadyApplied.has(response)) {
     normalizeExplicitNonCacheablePolicy(response.headers);
+    dropPrerenderObservationsContentLength(response.headers, options);
     return response;
   }
   await applyAppRscConfigHeaders(response.headers, request, options);
@@ -156,6 +164,14 @@ export async function finalizeAppRscResponse(
   if (response.status === 405 && response.headers.get("Allow") === "GET, HEAD") {
     sanitizeMethodNotAllowedHeaders(response.headers, "GET, HEAD");
   }
+  dropPrerenderObservationsContentLength(response.headers, options);
 
   return response;
+}
+
+function dropPrerenderObservationsContentLength(
+  headers: Headers,
+  options: FinalizeAppRscResponseOptions,
+): void {
+  if (options.mayAppendPrerenderObservations) headers.delete("Content-Length");
 }

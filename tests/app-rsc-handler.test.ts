@@ -4971,6 +4971,73 @@ describe("createAppRscHandler", () => {
     ]);
   });
 
+  it("drops a middleware or next.config Content-Length from a prerender that may append its observations", async () => {
+    // No Next.js test port applies: the observations are vinext-specific.
+    // The render appends them after middleware and next.config supplied the
+    // headers, so a kept Content-Length would cut them off in transport.
+    const nonce = "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f";
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    const configHandler = createHandler({
+      configHeaders: [{ source: "/about", headers: [{ key: "Content-Length", value: "4" }] }],
+      dispatchMatchedPage: vi.fn(async () => new Response("page")),
+    });
+    const middlewareHandler = createHandler({
+      configHeaders: [],
+      // Like the render, the page response carries the middleware's headers.
+      dispatchMatchedPage: vi.fn(
+        async ({ middlewareContext }) =>
+          new Response("page", { headers: middlewareContext.headers ?? undefined }),
+      ),
+      middlewareModule: {
+        default() {
+          return new Response(null, {
+            headers: { "x-middleware-next": "1", "content-length": "4" },
+          });
+        },
+      },
+    });
+    const request = (withNonce: boolean) =>
+      new Request("https://example.test/docs/about", {
+        headers: {
+          "x-vinext-prerender-secret": "test-secret",
+          ...(withNonce ? { [VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER]: nonce } : {}),
+        },
+      });
+
+    try {
+      for (const handler of [configHandler, middlewareHandler]) {
+        const response = await handler(request(true), null);
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-length")).toBeNull();
+        // Transported from an authenticated request stage.
+        const transported = await handler(request(false), null, false, undefined, null, {
+          observationNonce: nonce,
+          routeParams: null,
+          speculative: false,
+        });
+        expect(transported.headers.get("content-length")).toBeNull();
+        // Nothing is appended without the nonce, so the header stays.
+        const plain = await handler(request(false), null);
+        expect(plain.headers.get("content-length")).toBe("4");
+      }
+
+      // A staged render has its config headers composed before finalization.
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+        Promise.resolve(new Response("page")),
+      );
+      const staged = await runWithExecutionContext(
+        cacheabilityContext({ captureDeadlineAt: Date.now() + 1_000, mode: "admit" }),
+        () => configHandler(request(true), null, false, dispatchResponseStage),
+      );
+      expect(dispatchResponseStage).toHaveBeenCalledOnce();
+      expect(staged.headers.get("content-length")).toBeNull();
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+  });
+
   it("uses encoded prerender route params for rendering while retaining decoded params for static validation", async () => {
     const previousPrerender = process.env.VINEXT_PRERENDER;
     process.env.VINEXT_PRERENDER = "1";

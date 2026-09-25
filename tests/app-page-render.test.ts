@@ -2299,45 +2299,6 @@ describe("app page render lifecycle", () => {
     }
   });
 
-  it("drops a middleware Content-Length from a prerender that appends its observations", async () => {
-    // The observations are appended after the middleware counted the body, so
-    // a kept Content-Length would cut them off in transport.
-    const common = createCommonOptions();
-
-    for (const revalidateSeconds of [60, null]) {
-      const renderPrerender = (prerenderObservationNonce: string | null) =>
-        renderAppPageLifecycle({
-          ...common.options,
-          isPrerender: true,
-          isProduction: true,
-          middlewareContext: {
-            headers: new Headers({ "content-length": "17", "x-middleware": "kept" }),
-            status: null,
-          },
-          peekRenderObservationState() {
-            return { dynamicFetches: [], requestApis: [] };
-          },
-          prerenderObservationNonce,
-          revalidateSeconds,
-        });
-
-      const response = await renderPrerender(PRERENDER_OBSERVATION_NONCE);
-      expect(response.headers.get("content-length"), String(revalidateSeconds)).toBeNull();
-      expect(response.headers.get("x-middleware")).toBe("kept");
-      const { html, renderObservations } = extractPrerenderRenderObservations(
-        await response.text(),
-        PRERENDER_OBSERVATION_NONCE,
-      );
-      expect(html).toBe("<html>page</html>");
-      expect(renderObservations).not.toBeNull();
-
-      // Nothing is appended without the nonce, so the header stays.
-      const plain = await renderPrerender(null);
-      expect(plain.headers.get("content-length")).toBe("17");
-      await expect(plain.text()).resolves.toBe("<html>page</html>");
-    }
-  });
-
   it("disables HTML ISR caching when the response carries a script nonce", async () => {
     const common = createCommonOptions();
 
