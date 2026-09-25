@@ -908,14 +908,15 @@ async function finalizeWorkerCacheabilityAdmission(
   // in Next.js, even when it matches the renderer's value. Config replaces it
   // only through the header that wins the adapter's precedence; a Vary-only
   // rule or a lower-priority header leaves the renderer's policy in place.
+  // A changed effective value alone is not provenance: an adapter that cannot
+  // name its winning header may map a renderer-owned header to a new value,
+  // so an unattributed policy keeps the proof requirement.
   const effectivePolicyHeader = readCdnResponsePolicyHeaderName(response.headers);
   const replacesRendererPolicy =
     outcome !== rendererOutcome &&
-    ((effectivePolicyHeader !== null &&
-      state.configCdnCachePolicy?.get(effectivePolicyHeader) ===
-        response.headers.get(effectivePolicyHeader)) ||
-      readCdnResponseCacheControl(response.headers) !==
-        readCdnResponseCacheControl(state.frameworkResponseCachePolicy));
+    effectivePolicyHeader !== null &&
+    state.configCdnCachePolicy?.get(effectivePolicyHeader) ===
+      response.headers.get(effectivePolicyHeader);
   if (
     state.route.kind === "app-page" &&
     !replacesRendererPolicy &&

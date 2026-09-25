@@ -415,6 +415,14 @@ describe("response-stage cacheability", () => {
         isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
         readCacheControl: (headers) =>
           headers.get("X-Example-Edge-Policy") ?? headers.get("Cache-Control"),
+        // Naming the header lets core attribute config's policy, which waives
+        // the App page's searchParams proof.
+        readCacheControlHeaderName: (headers) =>
+          headers.has("X-Example-Edge-Policy")
+            ? "X-Example-Edge-Policy"
+            : headers.has("Cache-Control")
+              ? "Cache-Control"
+              : null,
         hasExplicitNonCacheablePolicy: () => false,
       },
     });

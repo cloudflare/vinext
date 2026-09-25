@@ -361,7 +361,7 @@ describe("single-request cacheability admission", () => {
     );
     const state = cacheabilityState(context);
     state.route = { kind: "app-page", pattern: "/page" };
-    // A later public policy replaces the renderer's, so it needs no
+    // A later config policy replaces the renderer's, so it needs no
     // searchParams proof.
     state.outcome = {
       cacheable: true,
@@ -370,7 +370,11 @@ describe("single-request cacheability admission", () => {
     state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
 
     const response = await finalizeWorkerCacheabilityResponse(
-      new Response("static", { headers: { "Cache-Control": "s-maxage=30" } }),
+      applyResponseStageCachePolicy(
+        new Response("static", { headers: { "Cache-Control": "no-store" } }),
+        context,
+        [["Cache-Control", "s-maxage=30"]],
+      ),
       context,
     );
 
@@ -424,9 +428,13 @@ describe("single-request cacheability admission", () => {
     );
 
     const response = await finalizeWorkerCacheabilityResponse(
-      new Response(`<head>${tracedHtml}</head><main>dynamic</main>`, {
-        headers: { "Cache-Control": "s-maxage=32" },
-      }),
+      applyResponseStageCachePolicy(
+        new Response(`<head>${tracedHtml}</head><main>dynamic</main>`, {
+          headers: { "Cache-Control": "no-store" },
+        }),
+        context,
+        [["Cache-Control", "s-maxage=32"]],
+      ),
       context,
     );
     expect(response.headers.get("Cache-Control")).toBe("s-maxage=32");
@@ -1287,15 +1295,27 @@ describe("single-request cacheability admission", () => {
         value: "allow",
         admitted: false,
       },
+      // A differing opaque value changes the effective policy, but only the
+      // adapter can say which header produced it.
+      { path, namesHeader: true, header: "X-Example-Edge-Policy", value: "extend", admitted: true },
+      {
+        path,
+        namesHeader: false,
+        header: "X-Example-Edge-Policy",
+        value: "extend",
+        admitted: false,
+      },
     ]),
   )(
-    "attributes an opaque adapter policy only through the header it names ($path, names: $namesHeader, config: $header)",
+    "attributes an opaque adapter policy only through the header it names ($path, names: $namesHeader, config: $header: $value)",
     async ({ path, namesHeader, header, value, admitted }) => {
       // The edge header's opaque values bypass Cache-Control, so a synthetic
       // Cache-Control-syntax value would fall back to the config header.
       const readEdgePolicy = (headers: Headers) => {
         const edge = headers.get("X-Example-Edge-Policy");
-        return edge === "allow" || edge === "deny" ? "X-Example-Edge-Policy" : null;
+        return edge === "allow" || edge === "extend" || edge === "deny"
+          ? "X-Example-Edge-Policy"
+          : null;
       };
       const adapter: CdnCacheAdapter = {
         ownsBackgroundRevalidation: false,
@@ -1304,9 +1324,11 @@ describe("single-request cacheability admission", () => {
           readCacheControl: (headers) =>
             headers.get("X-Example-Edge-Policy") === "allow"
               ? "public, s-maxage=60"
-              : headers.get("X-Example-Edge-Policy") === "deny"
-                ? "no-store"
-                : headers.get("Cache-Control"),
+              : headers.get("X-Example-Edge-Policy") === "extend"
+                ? "public, s-maxage=300"
+                : headers.get("X-Example-Edge-Policy") === "deny"
+                  ? "no-store"
+                  : headers.get("Cache-Control"),
           ...(namesHeader
             ? {
                 readCacheControlHeaderName: (headers: Headers) =>
