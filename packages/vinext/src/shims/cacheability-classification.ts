@@ -8,6 +8,8 @@ export type RouteCacheabilityOutcome = {
   classificationFailure?: boolean;
   dynamicUsage?: boolean;
   reason?: string;
+  /** App pages: the render proved it left searchParams unread, so its response holds for every query. */
+  searchParamsUnread?: true;
   /** A transient classification failure that may succeed on another bounded attempt. */
   retryable?: true;
   tags?: readonly string[];
@@ -33,6 +35,8 @@ export type RouteCacheabilityState = {
   completedResponseBody?: boolean;
   /** Whether admission must translate a completed response through the active adapter. */
   applyCompletedResponsePolicy?: boolean;
+  /** Core- or adapter-owned cache policy headers set by next.config, by lowercased name. */
+  configCdnCachePolicy?: Map<string, string>;
   explicitConfigCachePolicy?: boolean;
   explicitResponseCachePolicy?: boolean;
   finalResponseVetoReason?: string;
@@ -148,6 +152,25 @@ export function markRouteCacheabilityExplicitConfigPolicy(): void {
   const state = readRouteCacheabilityState();
   if (!state) return;
   state.explicitConfigCachePolicy = true;
+}
+
+/** Record a cache policy header, not just Vary, that a next.config rule set. */
+export function markRouteCacheabilityConfigCdnCachePolicy(name: string, value: string): void {
+  const state = readRouteCacheabilityState();
+  if (!state) return;
+  recordConfigCdnCachePolicyHeader(state, name, value);
+}
+
+/** Record a next.config cache policy header with the value a response carries. */
+export function recordConfigCdnCachePolicyHeader(
+  state: RouteCacheabilityState,
+  name: string,
+  value: string,
+): void {
+  state.explicitConfigCachePolicy = true;
+  // Headers.set trims HTTP whitespace, so compare against what it applies.
+  const applied = new Headers([[name, value]]).get(name) ?? value;
+  (state.configCdnCachePolicy ??= new Map()).set(name.toLowerCase(), applied);
 }
 
 /** Record a public cache policy supplied by the Route Handler itself. */

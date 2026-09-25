@@ -22,6 +22,7 @@ import type { LayoutClassificationOptions } from "../packages/vinext/src/server/
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import { consumeAppPageRenderObservationState } from "../packages/vinext/src/server/app-page-render-observation.js";
 import { createClientPageSsrSearchParamsSource } from "../packages/vinext/src/server/app-page-search-params-observation.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import {
@@ -33,6 +34,7 @@ import {
   consumeDynamicUsage,
   headersContextFromRequest,
   markDynamicUsage,
+  markRenderRequestApiUsage,
   peekDynamicUsage,
   runWithHeadersContext,
   runWithIsolatedDynamicUsage,
@@ -1337,7 +1339,11 @@ describe("app page render lifecycle", () => {
       // Renders like dispatch does for the given render, with the real
       // dynamic-usage readers. SSR runs in a child scope of the render, as in
       // handleSsr, so a mark there never reaches the render's own flag.
-      async function renderClassifying(render: ClassifyingRender, tree: ReactNode) {
+      async function renderClassifying(
+        render: ClassifyingRender,
+        tree: ReactNode,
+        { readsSearchParams = false }: { readsSearchParams?: boolean } = {},
+      ) {
         const common = createCommonOptions();
         const state: RouteCacheabilityState = {
           captureDeadlineAt: Date.now() + 10_000,
@@ -1354,10 +1360,14 @@ describe("app page render lifecycle", () => {
             new Request("https://example.test/posts/post?q=secret"),
           ),
         });
-        const response = await runWithRequestContext(requestContext, () =>
-          renderAppPageLifecycle({
+        const response = await runWithRequestContext(requestContext, () => {
+          // Recorded in the render's request scope, as the page's own
+          // searchParams observer records it.
+          if (readsSearchParams) markRenderRequestApiUsage("searchParams");
+          return renderAppPageLifecycle({
             ...common.options,
             consumeDynamicUsage,
+            consumeRenderObservationState: consumeAppPageRenderObservationState,
             peekDynamicUsage,
             getNavigationContext() {
               return {
@@ -1401,8 +1411,8 @@ describe("app page render lifecycle", () => {
                 },
               };
             },
-          }),
-        );
+          });
+        });
         return { response, completion: render === "probe" ? state.completion : undefined };
       }
 
@@ -1450,6 +1460,19 @@ describe("app page render lifecycle", () => {
           });
         }
       }
+
+      it("proves searchParams went unread only from the render's own request state", async () => {
+        const unread = await classify("probe", clientPage(StaticClientPage));
+        expect(unread.outcome).toMatchObject({ cacheable: true, searchParamsUnread: true });
+
+        // A disconnecting client finishes the probe from its cancel, outside
+        // the render's request scope.
+        const read = await renderClassifying("probe", clientPage(StaticClientPage), {
+          readsSearchParams: true,
+        });
+        await read.response.body?.cancel();
+        expect(await read.completion).not.toHaveProperty("searchParamsUnread");
+      });
 
       it("stops waiting for a speculative prerender's SSR once it turns dynamic", async () => {
         // A boundary that never resolves doesn't hold a render that is already

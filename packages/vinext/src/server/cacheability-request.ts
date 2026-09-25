@@ -1,6 +1,7 @@
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import {
   CACHEABILITY_REQUEST_STATE,
+  recordConfigCdnCachePolicyHeader,
   type RouteCacheabilityOutcome,
   type RouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
@@ -8,9 +9,11 @@ import {
   applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
   hasExplicitNonCacheableResponsePolicy,
+  isCdnResponsePolicyHeader,
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
   readCdnResponseCacheControl,
+  readCdnResponsePolicyHeaderName,
 } from "./cache-control.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
@@ -267,8 +270,7 @@ export function applyResponseStageCachePolicy(
   policyHeaders: ReadonlyArray<readonly [string, string]> | null | undefined,
 ): Response {
   if (!policyHeaders?.length) return response;
-  const state = readState(ctx);
-  if (state) state.explicitConfigCachePolicy = true;
+  recordConfigCachePolicy(readState(ctx), policyHeaders);
 
   try {
     applyResponseStagePolicyHeaders(response.headers, policyHeaders);
@@ -290,8 +292,19 @@ export function recordResponseStageCachePolicy(
   policyHeaders: ReadonlyArray<readonly [string, string]> | null | undefined,
 ): void {
   if (!policyHeaders?.length) return;
-  const state = readState(ctx);
-  if (state) state.explicitConfigCachePolicy = true;
+  recordConfigCachePolicy(readState(ctx), policyHeaders);
+}
+
+function recordConfigCachePolicy(
+  state: RouteCacheabilityState | null,
+  policyHeaders: ReadonlyArray<readonly [string, string]>,
+): void {
+  if (!state) return;
+  state.explicitConfigCachePolicy = true;
+  // A Vary-only policy leaves the renderer's cache policy in place.
+  for (const [name, value] of policyHeaders) {
+    if (isCdnResponsePolicyHeader(name)) recordConfigCdnCachePolicyHeader(state, name, value);
+  }
 }
 
 function probeResponse(
@@ -887,6 +900,28 @@ async function finalizeWorkerCacheabilityAdmission(
       await captured.body?.cancel().catch(() => {});
       return staticToDynamicResponse(manifestRoute);
     }
+    return responseWithCachePolicy(response, captured.body, null);
+  }
+  // Every query can share a rendered App page's response, so the renderer's
+  // policy is admitted only with proof the render left searchParams unread. A
+  // later next.config policy replaces the renderer's and is cached per URL, as
+  // in Next.js, even when it matches the renderer's value. Config replaces it
+  // only through the header that wins the adapter's precedence; a Vary-only
+  // rule or a lower-priority header leaves the renderer's policy in place.
+  // A changed effective value alone is not provenance: an adapter that cannot
+  // name its winning header may map a renderer-owned header to a new value,
+  // so an unattributed policy keeps the proof requirement.
+  const effectivePolicyHeader = readCdnResponsePolicyHeaderName(response.headers);
+  const replacesRendererPolicy =
+    outcome !== rendererOutcome &&
+    effectivePolicyHeader !== null &&
+    state.configCdnCachePolicy?.get(effectivePolicyHeader) ===
+      response.headers.get(effectivePolicyHeader);
+  if (
+    state.route.kind === "app-page" &&
+    !replacesRendererPolicy &&
+    rendererOutcome?.searchParamsUnread !== true
+  ) {
     return responseWithCachePolicy(response, captured.body, null);
   }
   return responseWithCachePolicy(

@@ -115,12 +115,21 @@ function hasExplicitCloudflareNonCacheableResponsePolicy(headers: Headers): bool
   );
 }
 
+/** Shared-cache policy headers in the order Cloudflare honors them. */
+const RESPONSE_POLICY_PRECEDENCE = [
+  "Cloudflare-CDN-Cache-Control",
+  "CDN-Cache-Control",
+  "Cache-Control",
+] as const;
+
+/** Name the highest-precedence policy header Cloudflare honors on a response. */
+function readCloudflareResponsePolicyHeaderName(headers: Headers): string | null {
+  return RESPONSE_POLICY_PRECEDENCE.find((name) => headers.has(name)) ?? null;
+}
+
 function readCloudflareResponseCacheControl(headers: Headers): string | null {
-  return (
-    headers.get("Cloudflare-CDN-Cache-Control") ??
-    headers.get("CDN-Cache-Control") ??
-    headers.get("Cache-Control")
-  );
+  const name = readCloudflareResponsePolicyHeaderName(headers);
+  return name ? headers.get(name) : null;
 }
 
 /** The request-context cache surface this adapter relies on (narrowed from `unknown`). */
@@ -210,6 +219,9 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     },
     readCacheControl(headers: Headers): string | null {
       return readCloudflareResponseCacheControl(headers);
+    },
+    readCacheControlHeaderName(headers: Headers): string | null {
+      return readCloudflareResponsePolicyHeaderName(headers);
     },
     hasExplicitNonCacheablePolicy(headers: Headers, baseline?: Headers): boolean {
       if (baseline) {

@@ -215,6 +215,7 @@ function finalizeEvaluatedAppPageResponse(
     if (completed) return;
     completed = true;
 
+    const observationState = options.consumeRenderObservationState?.();
     let outcome: RouteCacheabilityOutcome;
     if (
       options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
@@ -242,11 +243,13 @@ function finalizeEvaluatedAppPageResponse(
         ? {
             cacheable: true,
             cacheControl: appPageCacheControlHeader(cacheControl),
+            ...(observationState && !observationState.requestApis.includes("searchParams")
+              ? { searchParamsUnread: true }
+              : {}),
             tags: options.getPageTags(),
           }
         : { cacheable: false, reason: "render did not produce a cache policy" };
     }
-    options.consumeRenderObservationState?.();
     complete(outcome);
   };
 
