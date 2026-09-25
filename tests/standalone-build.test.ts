@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -102,6 +103,9 @@ describe("emitStandaloneOutput", () => {
           name: "vinext",
           version: "0.0.0-test",
           type: "module",
+          exports: {
+            "./server/prod-server": "./dist/server/prod-server.js",
+          },
         },
         null,
         2,
@@ -110,7 +114,20 @@ describe("emitStandaloneOutput", () => {
     writeFile(
       fakeVinextRoot,
       "dist/server/prod-server.js",
-      "export async function startProdServer() {}\n",
+      `import fs from "node:fs";
+import path from "node:path";
+
+// Capture NODE_ENV immediately at the moment the dependency is evaluated/initialized
+const capturedAtModuleInit = process.env.NODE_ENV;
+
+export async function startProdServer({ outDir }) {
+  fs.writeFileSync(
+    path.join(outDir, "captured-env.json"),
+    JSON.stringify({ capturedAtModuleInit }),
+    "utf-8",
+  );
+}
+`,
     );
 
     const result = emitStandaloneOutput({
@@ -136,7 +153,20 @@ describe("emitStandaloneOutput", () => {
       "utf-8",
     );
     expect(serverJsContent).toContain("startProdServer");
-    expect(serverJsContent).toContain('process.env.NODE_ENV ??= "production";');
+
+    // Execute the generated server.js with clean environment where NODE_ENV is unset.
+    // The fake production server must observe process.env.NODE_ENV === "production"
+    // at the moment it initializes.
+    const { NODE_ENV: _unused, ...cleanEnv } = process.env;
+    execFileSync(process.execPath, [path.join(appRoot, "dist/standalone/server.js")], {
+      cwd: path.join(appRoot, "dist/standalone"),
+      env: cleanEnv as NodeJS.ProcessEnv,
+    });
+    const captured = JSON.parse(
+      fs.readFileSync(path.join(appRoot, "dist/standalone/dist/captured-env.json"), "utf-8"),
+    ) as { capturedAtModuleInit: string | undefined };
+    expect(captured.capturedAtModuleInit).toBe("production");
+
     const standalonePkg = JSON.parse(
       fs.readFileSync(path.join(appRoot, "dist/standalone/package.json"), "utf-8"),
     ) as { type: string };
