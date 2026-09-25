@@ -224,7 +224,13 @@ export function markDynamicUsage(): void {
   forEachConnectionProbeTarget(state, (target) => {
     target.dynamicUsageDetected = true;
   });
-  latchRenderDynamic(state.renderDynamicLatch);
+  latchRenderDynamic(getRenderDynamicLatch(state));
+}
+
+// The fallback state persists on globalThis across HMR, so one created before
+// the latch existed has none. Create it on first access.
+function getRenderDynamicLatch(state: VinextHeadersShimState): RenderDynamicLatch {
+  return (state.renderDynamicLatch ??= createRenderDynamicLatch());
 }
 
 function latchRenderDynamic(latch: RenderDynamicLatch): void {
@@ -232,12 +238,20 @@ function latchRenderDynamic(latch: RenderDynamicLatch): void {
   latch.dynamic = true;
   const listeners = [...latch.listeners];
   latch.listeners.clear();
-  for (const listener of listeners) listener();
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch (error) {
+      // Listeners are never notified again, so one failing must not skip the
+      // rest, and its error isn't the dynamic API caller's to handle.
+      console.error(error);
+    }
+  }
 }
 
 /** Whether the current render has used a dynamic API at any point so far. */
 export function isRenderDynamicLatched(): boolean {
-  return _getState().renderDynamicLatch.dynamic;
+  return getRenderDynamicLatch(_getState()).dynamic;
 }
 
 /**
@@ -246,7 +260,7 @@ export function isRenderDynamicLatched(): boolean {
  * already latched; check `isRenderDynamicLatched()` first.
  */
 export function onRenderDynamicLatched(listener: () => void): () => void {
-  const latch = _getState().renderDynamicLatch;
+  const latch = getRenderDynamicLatch(_getState());
   if (latch.dynamic) return () => {};
   latch.listeners.add(listener);
   return () => {

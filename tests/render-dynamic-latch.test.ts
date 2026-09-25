@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   consumeDynamicUsage,
@@ -40,6 +40,25 @@ describe("render dynamic latch", () => {
       markDynamicUsage();
       expect(listener).toHaveBeenCalledOnce();
     });
+  });
+
+  it("notifies every waiter when one throws, without failing the dynamic API", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runWithHeadersContext(headersContext(), async () => {
+        const failure = new Error("listener failed");
+        const later = vi.fn();
+        onRenderDynamicLatched(() => {
+          throw failure;
+        });
+        onRenderDynamicLatched(later);
+        expect(() => markDynamicUsage()).not.toThrow();
+        expect(later).toHaveBeenCalledOnce();
+        expect(consoleError).toHaveBeenCalledWith(failure);
+      });
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("stops notifying an unsubscribed waiter", async () => {
@@ -106,6 +125,41 @@ describe("render dynamic latch", () => {
         expect(consumeDynamicUsage()).toBe(false);
         expect(isRenderDynamicLatched()).toBe(true);
       });
+    });
+  });
+
+  describe("with a fallback state persisted before the latch existed", () => {
+    const fallbackKey = Symbol.for("vinext.nextHeadersShim.fallback");
+    const globalState = globalThis as unknown as Record<PropertyKey, unknown>;
+    const originalFallback = globalState[fallbackKey];
+
+    afterEach(() => {
+      globalState[fallbackKey] = originalFallback;
+      vi.resetModules();
+    });
+
+    it("creates the latch on first access after the shim reloads", async () => {
+      // The shape the fallback had before the latch was added, as left on
+      // globalThis by the module instance an HMR update replaced.
+      globalState[fallbackKey] = {
+        headersContext: null,
+        dynamicUsageDetected: false,
+        renderRequestApiUsage: new Set(),
+        connectionProbe: null,
+        invalidDynamicUsageError: null,
+        pendingSetCookies: [],
+        draftModeCookieHeader: null,
+        phase: "render",
+      };
+      vi.resetModules();
+      const reloaded = await import("../packages/vinext/src/shims/headers.js");
+
+      expect(reloaded.isRenderDynamicLatched()).toBe(false);
+      const listener = vi.fn();
+      reloaded.onRenderDynamicLatched(listener);
+      reloaded.markDynamicUsage();
+      expect(listener).toHaveBeenCalledOnce();
+      expect(reloaded.isRenderDynamicLatched()).toBe(true);
     });
   });
 });
