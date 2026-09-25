@@ -770,7 +770,7 @@ describe("app page dispatch", () => {
     expect(isrGet).toHaveBeenCalled();
     expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBeNull();
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("cache-control")).toBe("private, no-cache, no-store, max-age=0, must-revalidate");
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 

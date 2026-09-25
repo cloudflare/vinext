@@ -74,7 +74,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
 
     expect(
@@ -154,7 +154,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
   });
 
@@ -171,7 +171,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
 
     expect(
@@ -187,7 +187,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
       shouldWriteToCache: false,
     });
   });
@@ -206,7 +206,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
       shouldWriteToCache: false,
     });
 
@@ -356,7 +356,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 0,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
 
     // revalidate = 0 takes priority over isForceStatic
@@ -372,7 +372,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 0,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
   });
 
@@ -390,7 +390,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 0,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
       shouldWriteToCache: false,
     });
 
@@ -408,7 +408,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 0,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
       shouldWriteToCache: false,
     });
   });

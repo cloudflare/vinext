@@ -158,7 +158,7 @@ export function resolveAppPageRscResponsePolicy(
   options: ResolveAppPageRscResponsePolicyOptions,
 ): AppPageResponsePolicy {
   if (options.isDraftMode) {
-    return { cacheControl: NO_STORE_CACHE_CONTROL };
+    return { cacheControl: NEVER_CACHE_CONTROL };
   }
 
   if (options.isStaticEligible === false) {
@@ -166,7 +166,7 @@ export function resolveAppPageRscResponsePolicy(
   }
 
   if (options.isForceDynamic || options.dynamicUsedDuringBuild) {
-    return { cacheControl: NO_STORE_CACHE_CONTROL };
+    return { cacheControl: NEVER_CACHE_CONTROL };
   }
 
   // revalidate = 0 means "always dynamic, never cache" — equivalent to
@@ -174,7 +174,7 @@ export function resolveAppPageRscResponsePolicy(
   // isForceStatic/isDynamicError branch below, which uses !revalidateSeconds
   // and would incorrectly catch 0 as a falsy value.
   if (options.revalidateSeconds === 0) {
-    return { cacheControl: NO_STORE_CACHE_CONTROL };
+    return { cacheControl: NEVER_CACHE_CONTROL };
   }
 
   // Only force-static and dynamic = "error" renders can't turn dynamic while
@@ -217,7 +217,7 @@ export function resolveAppPageHtmlResponsePolicy(
 ): AppPageHtmlResponsePolicy {
   if (options.isDraftMode) {
     return {
-      cacheControl: NO_STORE_CACHE_CONTROL,
+      cacheControl: NEVER_CACHE_CONTROL,
       shouldWriteToCache: false,
     };
   }
@@ -231,7 +231,7 @@ export function resolveAppPageHtmlResponsePolicy(
 
   if (options.isForceDynamic) {
     return {
-      cacheControl: NO_STORE_CACHE_CONTROL,
+      cacheControl: NEVER_CACHE_CONTROL,
       shouldWriteToCache: false,
     };
   }
@@ -256,7 +256,7 @@ export function resolveAppPageHtmlResponsePolicy(
   // === 0 and would incorrectly return a static Cache-Control.
   if (options.revalidateSeconds === 0) {
     return {
-      cacheControl: NO_STORE_CACHE_CONTROL,
+      cacheControl: NEVER_CACHE_CONTROL,
       shouldWriteToCache: false,
     };
   }
@@ -274,7 +274,7 @@ export function resolveAppPageHtmlResponsePolicy(
 
   if (options.dynamicUsedDuringRender) {
     return {
-      cacheControl: NO_STORE_CACHE_CONTROL,
+      cacheControl: NEVER_CACHE_CONTROL,
       shouldWriteToCache: false,
     };
   }

@@ -1284,7 +1284,7 @@ describe("app page render lifecycle", () => {
     });
 
     expect(getRequestCacheLife).toHaveBeenCalledOnce();
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("cache-control")).toBe("private, no-cache, no-store, max-age=0, must-revalidate");
     expect(response.headers.get("x-vinext-prerender-cache-life")).toBeNull();
     await expect(response.text()).resolves.toBe("<html>dynamic</html>");
   });
