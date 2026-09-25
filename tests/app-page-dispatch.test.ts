@@ -2501,6 +2501,19 @@ describe("app page dispatch", () => {
     const devResponse = await dispatchAppPage({ ...options, isProduction: false });
     expect(devResponse.headers.get("cache-control")).toBe("no-store, must-revalidate");
     await devResponse.text();
+    // So is a cacheComponents route, which stays static-eligible, with
+    // force-dynamic or revalidate = 0.
+    for (const knownDynamic of [{ dynamicConfig: "force-dynamic" }, { revalidateSeconds: 0 }]) {
+      const knownDynamicResponse = await dispatchAppPage({
+        ...options,
+        ...knownDynamic,
+        pprRuntime: appPagePprRuntime,
+      });
+      expect(knownDynamicResponse.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      await knownDynamicResponse.text();
+    }
   });
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
