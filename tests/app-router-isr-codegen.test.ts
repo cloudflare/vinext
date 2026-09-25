@@ -35,9 +35,11 @@ describe("generateRscEntry ISR code generation", () => {
   it("classifies static generation from the route's own segments and slots", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     // The generateStaticParams walk reads the main tree and every slot branch,
-    // including each slot's owner position and whether it renders its default.
+    // including each slot's owner position and whether it (or children)
+    // renders its default.
     expect(code)
       .toContain(`hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        childrenSlot: route.childrenSlot,
         layouts: route.layouts,
         layoutTreePositions: route.layoutTreePositions,
         page: route.page,
@@ -46,12 +48,17 @@ describe("generateRscEntry ISR code generation", () => {
       }),`);
     expect(code).toContain("isDefault: !slot.page,");
     expect(code).toContain("ownerTreePosition: slot.ownerTreePosition,");
-    // Only the page and its layouts decide the runtime; slots are ignored.
+    // The page and its layouts decide the runtime. Slots count only for a
+    // route that a slot page materializes.
     expect(code).toContain(`isStaticGenerationEdgeRuntime: __isEdgeRuntime(
-        __resolveAppPageStaticGenerationRuntime([
-          ...route.layouts.map((layout) => layout?.runtime),
-          route.page?.runtime,
-        ]),
+        __resolveAppPageStaticGenerationRuntime(
+          __collectAppPageStaticGenerationRuntimes({
+            childrenSlot: route.childrenSlot,
+            layouts: route.layouts,
+            page: route.page,
+            parallelBranches: __segmentConfigBranches,
+          }),
+        ),
       ),`);
   });
 

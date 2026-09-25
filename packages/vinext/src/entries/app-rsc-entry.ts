@@ -835,6 +835,7 @@ import {
   resolveAppPageGenerateStaticParamsSources as __resolveAppPageGenerateStaticParamsSources,
 } from ${JSON.stringify(appPageRequestPath)};
 import {
+  collectAppPageStaticGenerationRuntimes as __collectAppPageStaticGenerationRuntimes,
   hasAppPageGenerateStaticParamsAtLastDynamicSegment as __hasAppPageGenerateStaticParamsAtLastDynamicSegment,
   isEdgeRuntime as __isEdgeRuntime,
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
@@ -1343,10 +1344,14 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       fetchCache: __segmentConfig.fetchCache ?? null,
       isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
       isStaticGenerationEdgeRuntime: __isEdgeRuntime(
-        __resolveAppPageStaticGenerationRuntime([
-          ...route.layouts.map((layout) => layout?.runtime),
-          route.page?.runtime,
-        ]),
+        __resolveAppPageStaticGenerationRuntime(
+          __collectAppPageStaticGenerationRuntimes({
+            childrenSlot: route.childrenSlot,
+            layouts: route.layouts,
+            page: route.page,
+            parallelBranches: __segmentConfigBranches,
+          }),
+        ),
       ),
       findIntercept(pathname) {
         return findIntercept(
@@ -1365,6 +1370,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       },
       hasCustomGlobalError: ${globalErrorVar ? `Boolean(${globalErrorVar}?.default)` : "false"},
       hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        childrenSlot: route.childrenSlot,
         layouts: route.layouts,
         layoutTreePositions: route.layoutTreePositions,
         page: route.page,

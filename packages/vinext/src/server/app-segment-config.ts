@@ -36,6 +36,15 @@ type ParallelAppPageSegmentConfigBranch = {
   routeSegments?: readonly string[] | null;
 };
 
+/**
+ * The route's implicit `children` slot. A route that only a nested slot page
+ * materializes renders the owner's `default` (or nothing) as its children.
+ */
+type AppPageChildrenSlot = {
+  ownerTreePath: string;
+  state: "active" | "default" | "unmatched";
+};
+
 type ResolveAppPageSegmentConfigOptions = {
   layouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[];
   layoutTreePositions?: readonly number[];
@@ -443,6 +452,48 @@ export function resolveAppPageStaticGenerationRuntime(
 }
 
 /**
+ * Where the children slot renders its `default` instead of a page: the
+ * main-tree position of the folder that owns it. `null` when children renders
+ * a page.
+ */
+function resolveChildrenDefaultTreePosition(
+  childrenSlot: AppPageChildrenSlot | null | undefined,
+): number | null {
+  if (!childrenSlot || childrenSlot.state === "active") return null;
+  return childrenSlot.ownerTreePath.split("/").filter(Boolean).length;
+}
+
+/**
+ * The `runtime` values of an App page's file and the layouts above it, root
+ * first, for `resolveAppPageStaticGenerationRuntime`. A route that only a
+ * nested slot page materializes is built from that slot page, so its layouts
+ * include the slot's.
+ */
+export function collectAppPageStaticGenerationRuntimes(
+  options: Pick<ResolveAppPageSegmentConfigOptions, "layouts" | "page" | "parallelBranches"> & {
+    childrenSlot?: AppPageChildrenSlot | null;
+  },
+): unknown[] {
+  const layoutRuntimes = (options.layouts ?? []).map((layout) => layout?.runtime);
+  const childrenDefaultPosition = resolveChildrenDefaultTreePosition(options.childrenSlot);
+  if (childrenDefaultPosition === null) return [...layoutRuntimes, options.page?.runtime];
+
+  const slotPage = (options.parallelBranches ?? [])
+    .filter(
+      (branch): branch is ParallelAppPageSegmentConfigBranch =>
+        !!branch && !branch.isDefault && branch.ownerTreePosition === childrenDefaultPosition,
+    )
+    .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))[0];
+  if (!slotPage) return [...layoutRuntimes, options.page?.runtime];
+  return [
+    ...layoutRuntimes,
+    slotPage.layout?.runtime,
+    ...(slotPage.configLayouts ?? []).map((layout) => layout?.runtime),
+    slotPage.page?.runtime,
+  ];
+}
+
+/**
  * One segment of an App page's loader tree, as Next.js's build visits it when
  * it classifies the route.
  */
@@ -530,9 +581,16 @@ export function collectAppPageStaticParamsWalkSegments(
   options: Pick<
     ResolveAppPageSegmentConfigOptions,
     "layoutTreePositions" | "layouts" | "page" | "parallelBranches" | "routeSegments"
-  >,
+  > & { childrenSlot?: AppPageChildrenSlot | null },
 ): AppPageStaticParamsWalkSegment[] {
-  const routeSegments = options.routeSegments ?? [];
+  // When children renders the owner's `default`, the route's deeper URL
+  // segments come from a slot, and the main tree ends at the owner with a
+  // `__DEFAULT__` segment in the children position.
+  const childrenDefaultPosition = resolveChildrenDefaultTreePosition(options.childrenSlot);
+  const routeSegments =
+    childrenDefaultPosition === null
+      ? (options.routeSegments ?? [])
+      : (options.routeSegments ?? []).slice(0, childrenDefaultPosition);
   const layoutsByPosition = new Map<number, AppRouteSegmentConfigModule>();
   options.layouts?.forEach((layout, index) => {
     if (layout) layoutsByPosition.set(options.layoutTreePositions?.[index] ?? 0, layout);
@@ -582,6 +640,14 @@ export function collectAppPageStaticParamsWalkSegments(
     active.forEach((branch, rank) => {
       segments.push(...collectActiveSlotSegments(branch, [...treePath, rank]));
     });
+    if (position === childrenDefaultPosition) {
+      segments.push({
+        dynamic: false,
+        generateStaticParams: hasGenerateStaticParamsExport(options.page),
+        identity: [DEFAULT_SEGMENT_NAME, options.page ?? undefined],
+        treePath: [...treePath, active.length],
+      });
+    }
     defaults.forEach((branch, index) => {
       segments.push({
         dynamic: false,
@@ -590,6 +656,7 @@ export function collectAppPageStaticParamsWalkSegments(
         treePath: [...treePath, active.length + 1 + index],
       });
     });
+    if (position === childrenDefaultPosition) break;
     treePath = [...treePath, active.length];
   }
 

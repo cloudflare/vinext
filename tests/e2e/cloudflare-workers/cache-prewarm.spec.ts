@@ -116,9 +116,9 @@ test("a dynamic-segment route without generateStaticParams is never cached", asy
     const response = await request.get(url);
     const headers = response.headers();
     expect(response.ok(), JSON.stringify({ backend, headers })).toBe(true);
-    expect(headers["cache-control"]).toBe(
-      "private, no-cache, no-store, max-age=0, must-revalidate",
-    );
+    // Workers Cache admission rewrites a denied response to its own no-store
+    // policy, so only the no-store directive is common to every backend.
+    expect(headers["cache-control"]).toContain("no-store");
     expect(headers["x-vinext-cache"]).not.toBe("HIT");
     expect(headers["cf-cache-status"]).not.toBe("HIT");
     const renderId = /dynamic-segment-render-id[^>]*>([^<]+)</.exec(await response.text())?.[1];

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  collectAppPageStaticGenerationRuntimes,
   hasAppPageGenerateStaticParamsAtLastDynamicSegment,
   isAppPageStaticEligible,
   isEdgeRuntime,
@@ -546,6 +547,41 @@ describe("resolveAppPageStaticGenerationRuntime", () => {
   });
 });
 
+describe("collectAppPageStaticGenerationRuntimes", () => {
+  it("reads the page and its layouts, not the slots", () => {
+    expect(
+      collectAppPageStaticGenerationRuntimes({
+        childrenSlot: { ownerTreePath: "/", state: "active" },
+        layouts: [{ runtime: "nodejs" }],
+        page: {},
+        parallelBranches: [{ name: "feed", ownerTreePosition: 0, page: { runtime: "edge" } }],
+      }),
+    ).toEqual(["nodejs", undefined]);
+  });
+
+  it("reads the slot page of a route that only a slot page materializes", () => {
+    // app/@feed/foo/page.tsx with no app/foo/page.tsx: Next.js builds /foo
+    // from the slot page, whose layouts include the slot's.
+    const runtimes = collectAppPageStaticGenerationRuntimes({
+      childrenSlot: { ownerTreePath: "/", state: "default" },
+      layouts: [{ runtime: "nodejs" }],
+      page: {},
+      parallelBranches: [
+        {
+          configLayouts: [{ runtime: "nodejs" }],
+          layout: {},
+          name: "feed",
+          ownerTreePosition: 0,
+          page: { runtime: "edge" },
+          routeSegments: ["foo"],
+        },
+      ],
+    });
+    expect(runtimes).toEqual(["nodejs", undefined, "nodejs", "edge"]);
+    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+  });
+});
+
 describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
   const generateStaticParams = () => [];
 
@@ -708,6 +744,24 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
             page: {},
             routeSegments: [],
           },
+        ],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(false);
+  });
+
+  it("places the children default of a route that only a slot page materializes under its owner", () => {
+    // app/default.tsx exports it; app/@feed/[id]/page.tsx does not. Next.js's
+    // loader tree puts `__DEFAULT__` directly under the root, so the slot's
+    // deeper [id] is visited last and clears the flag.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        childrenSlot: { ownerTreePath: "/", state: "default" },
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        parallelBranches: [
+          { name: "feed", ownerTreePosition: 0, page: {}, routeSegments: ["[id]"] },
         ],
         routeSegments: ["[id]"],
       }),

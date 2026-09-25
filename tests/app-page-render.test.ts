@@ -1577,6 +1577,52 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("flight-data");
   });
 
+  it("emits the configured dynamic stale time for RSC responses of routes that can't be static", async () => {
+    // Next.js renders a dynamic segment without generateStaticParams (or an
+    // edge-runtime page) per request, so the client must not reuse it as static.
+    const common = createCommonOptions();
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: vi.fn(() => false),
+      dynamicStaleTimeSeconds: 0,
+      isProduction: true,
+      isRscRequest: true,
+      isStaticEligible: false,
+      revalidateSeconds: 60,
+    });
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("0");
+    expect(response.headers.get(VINEXT_STALE_TIME_PENDING_HEADER)).toBeNull();
+    await expect(response.text()).resolves.toBe("flight-data");
+  });
+
+  it("reports a route that can't be static as dynamic in the initial-HTML navigation metadata", async () => {
+    const common = createCommonOptions();
+    let capturedMetadataGetter: (() => InitialNavigationCacheMetadata) | undefined;
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      dynamicStaleTimeSeconds: 0,
+      isStaticEligible: false,
+      loadSsrHandler: async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: {
+            getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
+          },
+        ) {
+          capturedMetadataGetter = options?.getInitialNavigationCacheMetadata;
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+    });
+
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(capturedMetadataGetter?.()).toEqual({ kind: "dynamic", dynamicStaleTimeSeconds: 0 });
+  });
+
   it("omits the dynamic stale time header on static production default-config RSC responses", async () => {
     const common = createCommonOptions();
     const response = await renderAppPageLifecycle({
