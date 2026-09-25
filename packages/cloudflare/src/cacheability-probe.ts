@@ -32,6 +32,8 @@ const DEFAULT_CACHEABILITY_PROBE_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_CACHEABILITY_PROBE_ENVELOPE_BYTES = 64 * 1024;
 
 type ProbePayload = {
+  dynamicUsage?: true;
+  explicitConfigCachePolicy?: true;
   kind?: string;
   pattern?: string;
   reason?: string;
@@ -383,6 +385,10 @@ export async function probeStagedWorkerCacheability(options: {
   let dynamicPathCount = 0;
 
   type ConcretePathResult = {
+    /** The render used a dynamic API. OR-merged across groups sharing a result key. */
+    dynamicUsage: boolean;
+    /** A next.config header policy applied. OR-merged across groups sharing a result key. */
+    explicitConfigCachePolicy: boolean;
     rendererStatic: boolean;
     representation: CdnWarmTarget["kind"];
     state: Exclude<ProbeRouteState, "probe-failed">;
@@ -402,6 +408,10 @@ export async function probeStagedWorkerCacheability(options: {
     deferred: boolean;
     /** An unlisted path whose render failed; it is left to the route rule. */
     dropped?: boolean;
+    /** Discovery listed the path for the route it was grouped under. */
+    listedAtOrigin: boolean;
+    /** The route key the path was grouped under before any request-stage move. */
+    originKey: string;
     pattern: PatternClassification;
     primary: CdnWarmTarget;
     result?: ConcretePathResult;
@@ -474,29 +484,38 @@ export async function probeStagedWorkerCacheability(options: {
     group.targets.push(target);
     targetGroups.set(concreteKey, group);
   }
-  // Paths listed by each route's own static generation. Traffic-picked paths
-  // are unlisted; a path moved to another route counts as listed there only
-  // when that route lists its resolved pathname.
-  const listedPathnamesByRoute = new Map<string, Set<string>>();
-  for (const target of routableTargets) {
-    const route = target.route!;
-    if (route.cacheabilityProbe?.trafficPicked === true) continue;
-    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
-    const listed = listedPathnamesByRoute.get(key) ?? new Set<string>();
-    listed.add(
-      route.cacheabilityProbe?.concretePathname ??
-        cacheabilityRoutePathname(target.pathname, target.kind),
+  // A path is listed when its route's own static generation lists it;
+  // traffic-picked paths are unlisted. A path the request stage moves to
+  // another route counts as listed there only when that route lists its
+  // resolved pathname.
+  const isListedGroup = (group: ConcretePathGroup): boolean => {
+    if (
+      !/(^|\/):/.test(group.pattern.route.pattern) &&
+      normalizeCacheabilityRoutePathname(group.pattern.route.pattern) === group.routePathname
+    ) {
+      return true;
+    }
+    if (group.originKey === group.pattern.key) return group.listedAtOrigin;
+    return group.pattern.groups.some(
+      (candidate) =>
+        candidate.originKey === group.pattern.key &&
+        candidate.listedAtOrigin &&
+        !candidate.deferred &&
+        candidate.routePathname === group.routePathname,
     );
-    listedPathnamesByRoute.set(key, listed);
-  }
-  const isListedGroup = (group: ConcretePathGroup): boolean =>
-    listedPathnamesByRoute.get(group.pattern.key)?.has(group.routePathname) === true;
+  };
   const groups: ConcretePathGroup[] = Array.from(targetGroups.values(), (targetGroup) => {
     targetGroup.targets.sort((first, second) => {
       const preference = targetPreference(first) - targetPreference(second);
       return preference || first.sourcePathname.localeCompare(second.sourcePathname);
     });
-    const group = { ...targetGroup, deferred: false, primary: targetGroup.targets[0] };
+    const group = {
+      ...targetGroup,
+      deferred: false,
+      listedAtOrigin: targetGroup.targets[0].route!.cacheabilityProbe?.trafficPicked !== true,
+      originKey: targetGroup.pattern.key,
+      primary: targetGroup.targets[0],
+    };
     targetGroup.pattern.groups.push(group);
     return group;
   });
@@ -597,6 +616,8 @@ export async function probeStagedWorkerCacheability(options: {
         cacheabilityRoutePathname(target.pathname, target.kind);
       const deferredGroup: ConcretePathGroup = {
         deferred: true,
+        listedAtOrigin: group.listedAtOrigin,
+        originKey: group.pattern.key,
         pattern: group.pattern,
         primary: target,
         resultKey: routePathname,
@@ -673,6 +694,9 @@ export async function probeStagedWorkerCacheability(options: {
           result.scope !== "identity" ||
           !group.pattern.requestStageMayTerminate)) ||
       (result.rendererStatic !== undefined && typeof result.rendererStatic !== "boolean") ||
+      (result.dynamicUsage !== undefined && result.dynamicUsage !== true) ||
+      (result.explicitConfigCachePolicy !== undefined &&
+        result.explicitConfigCachePolicy !== true) ||
       (result.retryable !== undefined && result.retryable !== true) ||
       (result.retryable === true && result.state !== "probe-failed") ||
       !Number.isInteger(result.status) ||
@@ -755,6 +779,8 @@ export async function probeStagedWorkerCacheability(options: {
     }
 
     const classification: ConcretePathResult = {
+      dynamicUsage: result.dynamicUsage === true,
+      explicitConfigCachePolicy: result.explicitConfigCachePolicy === true,
       rendererStatic: result.rendererStatic === true,
       representation: target.kind,
       state: result.state,
@@ -762,15 +788,21 @@ export async function probeStagedWorkerCacheability(options: {
     };
     group.result = classification;
     const previousClassification = group.pattern.results.get(group.resultKey);
-    if (
+    const retainedClassification =
       !previousClassification ||
       (previousClassification.state === "static-candidate" && classification.state === "dynamic") ||
       (previousClassification.state === classification.state &&
         previousClassification.rendererStatic &&
         !classification.rendererStatic)
-    ) {
-      group.pattern.results.set(group.resultKey, classification);
-    }
+        ? classification
+        : previousClassification;
+    group.pattern.results.set(group.resultKey, {
+      ...retainedClassification,
+      dynamicUsage: classification.dynamicUsage || previousClassification?.dynamicUsage === true,
+      explicitConfigCachePolicy:
+        classification.explicitConfigCachePolicy ||
+        previousClassification?.explicitConfigCachePolicy === true,
+    });
     const patternIsDefinitelyDynamic =
       result.state === "dynamic" && result.scope === "pattern" && group.pattern.canPrune;
     if (patternIsDefinitelyDynamic) {
@@ -936,16 +968,63 @@ export async function probeStagedWorkerCacheability(options: {
       }
       continue;
     }
-    if (pattern.results.size === 0 && !pattern.groups.some((group) => group.deferred)) continue;
+    const hasStaticFallback = fallbackRoutes.has(pattern.key);
+    if (pattern.results.size === 0 && !pattern.groups.some((group) => group.deferred)) {
+      // Every probed path moved to another route or was dropped, so the route
+      // keeps its fallback-only entry.
+      if (hasStaticFallback) {
+        const route: CacheabilityManifestRoute = {
+          kind: pattern.route.kind,
+          pattern: pattern.route.pattern,
+          state: "static-candidate",
+        };
+        if (!addRouteWithinManifestLimits(pattern.key, route)) break;
+        classified += 1;
+      }
+      continue;
+    }
     classified += 1;
     if (Array.from(pattern.results.values()).some((result) => result.state === "dynamic")) {
       dynamic += 1;
     }
 
+    // App pages follow Next.js's build. Unknown paths of a dynamic-segment
+    // route get on-demand ISR only with a static fallback, or when the route
+    // lists paths and none it rendered used a dynamic API. A path that used a
+    // dynamic API, and an unlisted path of a route without on-demand ISR, get
+    // no state in any representation: never admitted and not warmed. A path
+    // cacheable only through a next.config policy stays runtime-checked.
+    const isAppPage = pattern.route.kind === "app-page";
+    const listedResults = pattern.groups.flatMap((group) => {
+      const result =
+        !group.deferred && !group.dropped && isListedGroup(group)
+          ? pattern.results.get(group.resultKey)
+          : undefined;
+      return result ? [result] : [];
+    });
+    const hasOnDemandIsr =
+      hasStaticFallback ||
+      (/(^|\/):/.test(pattern.route.pattern) &&
+        listedResults.length > 0 &&
+        !listedResults.some((result) => result.dynamicUsage));
+    const hasNoState = (group: ConcretePathGroup): boolean => {
+      const result = pattern.results.get(group.resultKey);
+      if (!isAppPage || !result) return false;
+      if (
+        result.state === "static-candidate" &&
+        !result.rendererStatic &&
+        result.explicitConfigCachePolicy
+      ) {
+        return false;
+      }
+      return result.dynamicUsage || (!hasOnDemandIsr && !isListedGroup(group));
+    };
+
     const rendererStaticTargets = new Map<string, CdnWarmTarget>();
     const runtimePathSet = new Set<string>();
     for (const group of pattern.groups) {
       if (group.dropped) continue;
+      if (!group.deferred && hasNoState(group)) continue;
       if (group.deferred) {
         runtimePathSet.add(group.routePathname);
         cacheableTargets.push(...group.targets);
@@ -995,14 +1074,16 @@ export async function probeStagedWorkerCacheability(options: {
     const allObservedPathsStaticallyGenerated =
       allObservedPathsStatic &&
       Array.from(pattern.results.values()).every((result) => result.rendererStatic);
-    const hasStaticFallback = fallbackRoutes.has(pattern.key);
+    const allowsUnknown = isAppPage ? hasOnDemandIsr : allObservedPathsStaticallyGenerated;
     const soleGroup = pattern.groups.length === 1 ? pattern.groups[0] : null;
     const literalPatternNamesSolePath =
       soleGroup !== null &&
       !/(^|\/):/.test(pattern.route.pattern) &&
       normalizeCacheabilityRoutePathname(pattern.route.pattern) === soleGroup.routePathname;
     let route: CacheabilityManifestRoute;
-    if (literalPatternNamesSolePath) {
+    if (literalPatternNamesSolePath && !soleGroup.deferred && hasNoState(soleGroup)) {
+      continue;
+    } else if (literalPatternNamesSolePath) {
       const result = pattern.results.get(soleGroup.resultKey);
       route =
         result?.state === "static-candidate"
@@ -1029,12 +1110,21 @@ export async function probeStagedWorkerCacheability(options: {
               pattern: pattern.route.pattern,
               state: "runtime-check",
             };
+    } else if (
+      isAppPage &&
+      !hasOnDemandIsr &&
+      runtimePathSet.size === 0 &&
+      Object.keys(staticPaths).length === 0
+    ) {
+      // Without path lists or on-demand ISR, a runtime-check entry would admit
+      // every path of the route.
+      continue;
     } else {
       route = compactManifestRoutePaths({
         kind: pattern.route.kind,
         pattern: pattern.route.pattern,
         state: "runtime-check",
-        ...(hasStaticFallback || allObservedPathsStaticallyGenerated
+        ...(hasStaticFallback || allowsUnknown
           ? { allowUnknown: true, unknownState: "static-candidate" as const }
           : {}),
         ...(runtimePathSet.size > 0 ? { runtimePaths: Array.from(runtimePathSet).sort() } : {}),

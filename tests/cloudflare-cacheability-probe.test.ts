@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { probeStagedWorkerCacheability } from "../packages/cloudflare/src/cacheability-probe.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
+import type { CdnWarmTarget } from "../packages/cloudflare/src/cdn-warm.js";
 import {
   cacheabilityManifestRouteState,
   cacheabilityManifestRouteKey,
@@ -1357,6 +1358,267 @@ describe("staged Worker cacheability probes", () => {
     ]);
   });
 
+  describe("App page classification per route", () => {
+    const listedRoute = optimizableRoute("/posts/:slug");
+    const pickedRoute = {
+      ...listedRoute,
+      cacheabilityProbe: { ...listedRoute.cacheabilityProbe, trafficPicked: true },
+    };
+    const dynamicApi = {
+      dynamicUsage: true,
+      rendererStatic: false,
+      scope: "identity",
+      state: "dynamic",
+    };
+    const veto = { rendererStatic: false, scope: "identity", state: "dynamic" };
+    const configOnly = {
+      dynamicUsage: true,
+      explicitConfigCachePolicy: true,
+      rendererStatic: false,
+    };
+
+    const pageTargets = (pathname: string, route: typeof listedRoute) => [
+      { ...target(pathname), route },
+      {
+        headers: { Accept: "text/x-component", RSC: "1" },
+        kind: "rsc-full" as const,
+        label: `${pathname} (RSC full)`,
+        pathname: `${pathname}?_rsc`,
+        route,
+        sourcePathname: pathname,
+      },
+    ];
+
+    const probe = (
+      targets: readonly CdnWarmTarget[],
+      fieldsByPathname: Record<string, Record<string, unknown>>,
+      options: Partial<Parameters<typeof probeStagedWorkerCacheability>[0]> = {},
+    ) =>
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        fetchImpl: async (input) => {
+          const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+          const route = targets.find((candidate) => candidate.pathname === pathname)!.route!;
+          return Response.json({
+            kind: route.kind,
+            pattern: route.pattern,
+            rendererStatic: true,
+            state: "static-candidate",
+            status: 200,
+            version: 1,
+            ...fieldsByPathname[pathname],
+          });
+        },
+        retries: 0,
+        root: createProbeRoot(),
+        targetUrl: "https://example.com",
+        targets,
+        ...options,
+      });
+
+    const warmed = (result: Awaited<ReturnType<typeof probe>>) =>
+      result.cacheableTargets.map((warm) => `${warm.kind} ${warm.sourcePathname}`).sort();
+
+    it("gives unknown paths on-demand ISR when no listed path used a dynamic API", async () => {
+      const result = await probe(
+        [
+          ...pageTargets("/posts/a", listedRoute),
+          ...pageTargets("/posts/vetoed", listedRoute),
+          ...pageTargets("/posts/picked-static", pickedRoute),
+          ...pageTargets("/posts/picked-dynamic", pickedRoute),
+          ...pageTargets("/posts/picked-vetoed", pickedRoute),
+        ],
+        {
+          "/posts/picked-dynamic": dynamicApi,
+          "/posts/picked-vetoed": veto,
+          "/posts/vetoed": veto,
+        },
+      );
+
+      expect(result.failures).toEqual([]);
+      const route =
+        result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")]!;
+      const state = (pathname: string) => cacheabilityManifestRouteState(route, pathname, "html");
+      expect(state("/posts/a")).toBe("static-candidate");
+      expect(state("/posts/picked-static")).toBe("static-candidate");
+      // Left out of both lists, so it gets the static-to-dynamic 500, as in Next.js.
+      expect(state("/posts/picked-dynamic")).toBe("static-candidate");
+      expect(route.runtimePaths?.map((token) => `${route.pathPrefix ?? ""}${token}`)).toEqual([
+        "/posts/picked-vetoed",
+        "/posts/vetoed",
+      ]);
+      expect(state("/posts/unprobed")).toBe("static-candidate");
+      expect(warmed(result)).toEqual([
+        "html /posts/a",
+        "html /posts/picked-static",
+        "rsc-full /posts/a",
+        "rsc-full /posts/picked-static",
+        "rsc-full /posts/picked-vetoed",
+        "rsc-full /posts/vetoed",
+      ]);
+    });
+
+    it("never admits dynamic listed paths or the unlisted paths of their route", async () => {
+      const result = await probe(
+        [
+          ...pageTargets("/posts/a", listedRoute),
+          ...pageTargets("/posts/dynamic", listedRoute),
+          ...pageTargets("/posts/vetoed", listedRoute),
+          ...pageTargets("/posts/picked-static", pickedRoute),
+          ...pageTargets("/posts/picked-vetoed", pickedRoute),
+          ...pageTargets("/posts/picked-config", pickedRoute),
+        ],
+        {
+          "/posts/dynamic": dynamicApi,
+          "/posts/picked-config": configOnly,
+          "/posts/picked-vetoed": veto,
+          "/posts/vetoed": veto,
+        },
+      );
+
+      expect(result.failures).toEqual([]);
+      const route =
+        result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")]!;
+      const state = (pathname: string) => cacheabilityManifestRouteState(route, pathname, "html");
+      expect(state("/posts/a")).toBe("static-candidate");
+      expect(state("/posts/dynamic")).toBeNull();
+      expect(cacheabilityManifestRouteState(route, "/posts/dynamic", "rsc-full")).toBeNull();
+      expect(state("/posts/vetoed")).toBe("runtime-check");
+      expect(state("/posts/picked-static")).toBeNull();
+      expect(state("/posts/picked-vetoed")).toBeNull();
+      // Cacheable only through a next.config policy: runtime-checked from any source.
+      expect(state("/posts/picked-config")).toBe("runtime-check");
+      expect(state("/posts/unprobed")).toBeNull();
+      expect(warmed(result)).toEqual([
+        "html /posts/a",
+        "html /posts/picked-config",
+        "rsc-full /posts/a",
+        "rsc-full /posts/picked-config",
+        "rsc-full /posts/vetoed",
+      ]);
+    });
+
+    it("counts a config-policy listed path toward on-demand ISR by its dynamic usage", async () => {
+      for (const [config, onDemand] of [
+        [configOnly, false],
+        [{ ...configOnly, dynamicUsage: undefined }, true],
+      ] as const) {
+        const result = await probe(
+          [
+            ...pageTargets("/posts/a", listedRoute),
+            ...pageTargets("/posts/config", listedRoute),
+            ...pageTargets("/posts/picked", pickedRoute),
+          ],
+          { "/posts/config": config },
+        );
+
+        const route =
+          result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")]!;
+        const state = (pathname: string) => cacheabilityManifestRouteState(route, pathname, "html");
+        expect(state("/posts/config")).toBe("runtime-check");
+        expect(state("/posts/picked")).toBe(onDemand ? "static-candidate" : null);
+        expect(state("/posts/unprobed")).toBe(onDemand ? "static-candidate" : null);
+      }
+    });
+
+    it("gives no entry to routes whose paths all used a dynamic API", async () => {
+      const aboutRoute = optimizableRoute("/about");
+      const fallbackRoute = {
+        ...optimizableRoute("/fallback/:id"),
+        cacheabilityProbe: {
+          canPrunePattern: true,
+          trafficPicked: true,
+        },
+      };
+      const result = await probe(
+        [
+          ...pageTargets("/posts/dynamic", listedRoute),
+          ...pageTargets("/about", aboutRoute),
+          ...pageTargets("/fallback/broken", fallbackRoute),
+        ],
+        {
+          "/about": dynamicApi,
+          "/fallback/broken": {
+            reason: "route returned HTTP 500",
+            rendererStatic: undefined,
+            state: "probe-failed",
+            status: 500,
+          },
+          "/posts/dynamic": dynamicApi,
+        },
+        { fallbackRoutePatterns: [{ kind: "app-page", pattern: "/fallback/:id" }] },
+      );
+
+      expect(result.failures).toEqual([]);
+      expect(result.cacheableTargets).toEqual([]);
+      // The fallback route keeps its fallback-only entry once its probed path drops out.
+      expect(result.manifest.routes).toEqual({
+        [cacheabilityManifestRouteKey("app-page", "/fallback/:id")]: {
+          kind: "app-page",
+          pattern: "/fallback/:id",
+          state: "static-candidate",
+        },
+      });
+    });
+
+    it("OR-merges dynamic usage across probes of one path", async () => {
+      const source = {
+        ...target("/rewrite-me"),
+        route: {
+          cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true },
+          kind: "app-page" as const,
+          pattern: "/rewrite-me",
+        },
+      };
+      for (const delayedPathname of ["/rewrite-me", "/posts/a"]) {
+        const result = await probeStagedWorkerCacheability({
+          buildId: "application-build",
+          concurrency: 2,
+          fetchImpl: async (input) => {
+            const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+            if (pathname === delayedPathname) {
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            }
+            return Response.json({
+              kind: "app-page",
+              pattern: "/posts/:slug",
+              routePathname: "/posts/a",
+              status: 200,
+              version: 1,
+              ...(pathname === "/rewrite-me" ? dynamicApi : veto),
+            });
+          },
+          retries: 0,
+          root: createProbeRoot(),
+          targetUrl: "https://example.com",
+          targets: [source, { ...target("/posts/a"), route: listedRoute }],
+        });
+
+        expect(result.failures).toEqual([]);
+        expect(result.cacheableTargets).toEqual([]);
+        expect(
+          result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")],
+        ).toBeUndefined();
+      }
+    });
+
+    it("keeps Pages Router classification unchanged", async () => {
+      const pagesRoute = { ...listedRoute, kind: "pages-page" as const };
+      const result = await probe(
+        [
+          { ...target("/posts/a"), route: pagesRoute },
+          { ...target("/posts/dynamic"), route: pagesRoute },
+        ],
+        { "/posts/dynamic": dynamicApi },
+      );
+
+      const route =
+        result.manifest.routes[cacheabilityManifestRouteKey("pages-page", "/posts/:slug")]!;
+      expect(cacheabilityManifestRouteState(route, "/posts/dynamic", "html")).toBe("runtime-check");
+      expect(cacheabilityManifestRouteState(route, "/posts/a", "html")).toBe("static-candidate");
+    });
+  });
+
   it("records a rewrite source under the concrete route resolved by the request stage", async () => {
     const root = createProbeRoot();
     const source = {
@@ -1392,13 +1654,12 @@ describe("staged Worker cacheability probes", () => {
     expect(result.failures).toEqual([]);
     expect(result).toMatchObject({ classified: 1, probed: 2 });
     expect(result.cacheableTargets).toEqual([source, direct]);
+    // A route without dynamic segments has no unknown paths to admit.
     expect(result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/safe")]).toEqual({
-      allowUnknown: true,
       kind: "app-page",
       pattern: "/safe",
       state: "runtime-check",
       staticPaths: { html: ["/safe"] },
-      unknownState: "static-candidate",
     });
   });
 
@@ -1467,20 +1728,30 @@ describe("staged Worker cacheability probes", () => {
     {
       change: "route pathname",
       expectedPattern: "/source",
+      expectedResolvedState: "static-candidate",
       expectedRoutePathname: "/resolved",
       pattern: "/source",
       routePathname: "/resolved",
     },
     {
+      // The destination route lists no paths, so the moved path is unlisted
+      // there and, without on-demand ISR, gets no state and no warm request.
       change: "route pattern",
       expectedPattern: "/destination/:slug",
+      expectedResolvedState: null,
       expectedRoutePathname: "/source",
       pattern: "/destination/:slug",
       routePathname: "/source",
     },
   ])(
     "retains deferred representation ownership when only the $change changes",
-    async ({ expectedPattern, expectedRoutePathname, pattern, routePathname }) => {
+    async ({
+      expectedPattern,
+      expectedResolvedState,
+      expectedRoutePathname,
+      pattern,
+      routePathname,
+    }) => {
       const root = createProbeRoot();
       const { html, route, rsc } = pairedRouteTargets();
       const result = await probeStagedWorkerCacheability({
@@ -1502,7 +1773,7 @@ describe("staged Worker cacheability probes", () => {
       });
 
       expect(result).toMatchObject({
-        cacheableTargets: [html, rsc],
+        cacheableTargets: expectedResolvedState ? [html, rsc] : [rsc],
         failures: [],
         probed: 1,
         speculativeTargets: [rsc],
@@ -1515,8 +1786,10 @@ describe("staged Worker cacheability probes", () => {
       const resolvedManifestRoute =
         result.manifest.routes[cacheabilityManifestRouteKey(route.kind, expectedPattern)];
       expect(
-        cacheabilityManifestRouteState(resolvedManifestRoute, expectedRoutePathname, "html"),
-      ).toBe("static-candidate");
+        resolvedManifestRoute
+          ? cacheabilityManifestRouteState(resolvedManifestRoute, expectedRoutePathname, "html")
+          : null,
+      ).toBe(expectedResolvedState);
     },
   );
 
@@ -1567,6 +1840,7 @@ describe("staged Worker cacheability probes", () => {
       buildId: "application-build",
       fetchImpl: async () =>
         Response.json({
+          explicitConfigCachePolicy: true,
           kind: "app-page",
           pattern: "/posts/:slug",
           rendererStatic: false,
