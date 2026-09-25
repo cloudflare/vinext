@@ -541,15 +541,10 @@ export class KVCacheHandler implements CacheHandler {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
-    // Store invalidation timestamp for each tag
-    // Use a long TTL (30 days) so recent invalidations are always found
-    await Promise.all(
-      validTags.map((tag) =>
-        this.kv.put(this._tagKey(tag), String(now), {
-          expirationTtl: 30 * 24 * 3600,
-        }),
-      ),
-    );
+    // Store invalidation timestamp for each tag. Markers never expire: an
+    // entry with no TTL (`revalidate = false`) must not outlive the marker that
+    // invalidated it. Newer entries pass the marker by `lastModified`.
+    await Promise.all(validTags.map((tag) => this.kv.put(this._tagKey(tag), String(now))));
     const order = ++this._tagCacheOrder;
     // Update local tag cache immediately so invalidations are reflected
     // without waiting for the TTL to expire

@@ -705,6 +705,31 @@ describe("KVCacheHandler", () => {
       expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
     });
 
+    it("keeps invalidation markers as long as a revalidate = false entry", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+      await handler.set(
+        "static-tagged",
+        {
+          kind: "APP_PAGE",
+          html: "<div>static</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: Infinity }, tags: ["posts"] },
+      );
+
+      vi.setSystemTime(2_000);
+      await handler.revalidateTag("posts");
+      // The entry has no KV TTL, so its marker must not have one either.
+      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", "2000");
+
+      vi.setSystemTime(2_000 + 31 * 24 * 60 * 60 * 1000);
+      await expect(new KVCacheHandler(kv as any).get("static-tagged")).resolves.toBeNull();
+    });
+
     it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
       const entryTime = 1000;
       const invalidatedTime = 2000;
