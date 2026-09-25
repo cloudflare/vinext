@@ -7,6 +7,7 @@ import {
   generateWranglerConfig,
   getWranglerImagesBinding,
   getWranglerVersionMetadataBinding,
+  updateViteConfigForCssModules,
   updateViteConfigForCloudflare,
   updateWranglerConfigForCloudflare,
 } from "../packages/vinext/src/init-cloudflare.js";
@@ -20,6 +21,128 @@ function expectValidConfig(output: string): void {
   });
   expect(parsed.errors.filter((diagnostic) => diagnostic.severity === "Error")).toEqual([]);
 }
+
+describe("CSS Modules configuration", () => {
+  it.each([generateAppRouterViteConfig, generatePagesRouterViteConfig])(
+    "generates a default-only plugin and stable scoped names",
+    (generate) => {
+      const config = generate(undefined, undefined, "IMAGES", false, "CF_VERSION_METADATA", true);
+      expectValidConfig(config);
+      expect(config).toContain('patchCssModules({ exportMode: "default" })');
+      expect(config).toContain("generateScopedName(name: string, filename: string)");
+    },
+  );
+
+  it("patches a literal Vite config idempotently without dropping options", () => {
+    const input =
+      'import { defineConfig } from "vite";\nexport default defineConfig({ plugins: [vinext()], css: { modules: { localsConvention: "camelCase" } } });';
+    const first = updateViteConfigForCssModules("vite.config.ts", input);
+    expectValidConfig(first.code);
+    expect(first.code).toContain('patchCssModules({ exportMode: "default" })');
+    expect(first.code).toContain('localsConvention: "camelCase"');
+    expect(updateViteConfigForCssModules("vite.config.ts", first.code).code).toBe(first.code);
+  });
+
+  it("rejects reassigned config objects and incomplete existing plugins", () => {
+    expect(() =>
+      updateViteConfigForCssModules(
+        "vite.config.ts",
+        "const config = { plugins: [] }; config.plugins = [vinext()]; export default config;",
+      ),
+    ).toThrow("inline Vite config object");
+    expect(() =>
+      updateViteConfigForCssModules(
+        "vite.config.ts",
+        'import { patchCssModules } from "vite-css-modules"; export default { plugins: [patchCssModules()] };',
+      ),
+    ).toThrow('exportMode: "default"');
+    expect(() =>
+      updateViteConfigForCssModules(
+        "vite.config.ts",
+        'import * as modules from "vite-css-modules"; export default { plugins: [modules.patchCssModules()] };',
+      ),
+    ).toThrow('exportMode: "default"');
+  });
+
+  it("preserves trailing comments when adding a property", () => {
+    const input =
+      'export default { css: { modules: { generateScopedName: "x_[local]" } }, /* note */ };';
+    const result = updateViteConfigForCssModules("vite.config.ts", input);
+    expectValidConfig(result.code);
+    expect(result.code).toContain("/* note */");
+    expect(result.code).toContain('patchCssModules({ exportMode: "default" })');
+  });
+
+  it("recognizes a trailing comma when another property contains a URL", () => {
+    const input = 'export default { plugins: [vinext()], base: "https://example.com/", };';
+    const result = updateViteConfigForCssModules("vite.config.js", input);
+    expectValidConfig(result.code);
+    expect(result.code).toContain('base: "https://example.com/"');
+  });
+
+  it.each([
+    'get generateScopedName() { return "[name]_[hash]" }',
+    "set generateScopedName(value) {}",
+  ])("rejects CSS Modules accessor properties", (property) => {
+    const input = `export default { css: { modules: { ${property} } } };`;
+    expect(() => updateViteConfigForCssModules("vite.config.js", input)).toThrow("accessors");
+  });
+
+  it.each([
+    'function patchCssModules(options) { return options }; export default { plugins: [patchCssModules({ exportMode: "default" })] };',
+    'const other = {}; export default { plugins: [other.patchCssModules({ exportMode: "default" })] };',
+  ])("rejects a plugin not imported from vite-css-modules", (input) => {
+    expect(() => updateViteConfigForCssModules("vite.config.ts", input)).toThrow(
+      'Import patchCssModules from "vite-css-modules"',
+    );
+  });
+
+  it("rejects duplicate exportMode options", () => {
+    const input =
+      'import { patchCssModules } from "vite-css-modules"; export default { plugins: [patchCssModules({ exportMode: "default", exportMode: "both" })] };';
+    expect(() => updateViteConfigForCssModules("vite.config.ts", input)).toThrow(
+      "duplicate properties",
+    );
+  });
+
+  it("rejects spreads instead of silently replacing plugin or CSS settings", () => {
+    expect(() =>
+      updateViteConfigForCssModules(
+        "vite.config.ts",
+        "export default { ...shared, plugins: [], css: { modules: {} } };",
+      ),
+    ).toThrow("spreads");
+  });
+
+  it("keeps an explicit scoped-name function without rewriting it", () => {
+    const input =
+      "export default { plugins: [], css: { modules: { generateScopedName: (name, file) => name + file } } };";
+    const result = updateViteConfigForCssModules("vite.config.ts", input);
+    expect(result.preservedExistingGenerateScopedName).toBe(true);
+    expect(result.code).not.toContain('from "node:crypto"');
+  });
+
+  it("keeps native-module aliases alongside CSS Modules without duplicate path imports", () => {
+    const config = generateAppRouterViteConfig(
+      {
+        root: "/tmp/app",
+        projectName: "app",
+        isAppRouter: true,
+        hasISR: false,
+        hasMDX: false,
+        nativeModulesToStub: ["sharp"],
+      },
+      undefined,
+      "IMAGES",
+      false,
+      "CF_VERSION_METADATA",
+      true,
+    );
+    expectValidConfig(config);
+    expect(config.match(/import path from "node:path"/g)).toHaveLength(1);
+    expect(config).toContain('"sharp": path.resolve(');
+  });
+});
 
 describe("generateWranglerConfig", () => {
   it.each(["service-binding", "self-contained"] as const)(

@@ -41,6 +41,32 @@ The scanner reports known unsupported configuration, imports, and project patter
 
 Choose Cloudflare or Node when prompted. The command installs the required packages, adds ESM and Vite configuration, and creates deployment config for the selected platform.
 
+If the project contains CSS Modules, init adds `vite-css-modules` and configures stable class names so PostCSS runs before class scoping. It updates inline Vite config objects automatically. For dynamic configs (factories, spreads, identifier exports, or CommonJS), init stops before changing the project rather than guessing how to rewrite the config. To continue with init, convert the Vite config to an inline object; otherwise finish the migration manually with equivalent CSS settings:
+
+```ts
+import { createHash } from "node:crypto";
+import path from "node:path";
+import { patchCssModules } from "vite-css-modules";
+import { defineConfig } from "vite";
+import vinext from "vinext";
+
+export default defineConfig({
+  plugins: [patchCssModules({ exportMode: "default" }), vinext()],
+  css: {
+    modules: {
+      generateScopedName(name: string, filename: string) {
+        const relativePath = path
+          .relative(import.meta.dirname, filename.replace(/\?.*$/, ""))
+          .replaceAll("\\", "/");
+        return `_${name}_${createHash("sha256").update(relativePath).digest("hex").slice(0, 7)}`;
+      },
+    },
+  },
+});
+```
+
+Keep any other plugins and options in your existing config; place `patchCssModules` before `vinext`.
+
 For a non-interactive run, select the target explicitly:
 
 <PackageManagerCommand

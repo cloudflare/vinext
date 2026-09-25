@@ -17,7 +17,7 @@
  */
 
 import fs from "node:fs";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import { spawn, spawnSync } from "node:child_process";
 import {
   detectProject,
@@ -29,7 +29,9 @@ import {
   hasViteConfig,
 } from "./utils/project.js";
 import {
+  cssModulesConfigSource,
   setupCloudflarePlatform,
+  updateViteConfigForCssModules,
   usesCommonJsViteConfig,
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
@@ -139,15 +141,42 @@ type InitResult = {
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
 
-export function generateViteConfig(_isAppRouter: boolean, prerender = false): string {
+export function generateViteConfig(
+  _isAppRouter: boolean,
+  prerender = false,
+  hasCssModules = false,
+): string {
   const vinextCall = prerender ? `vinext({ prerender: { routes: "*" } })` : "vinext()";
   return `import vinext from "vinext";
-import { defineConfig } from "vite";
+import { defineConfig } from "vite";${hasCssModules ? '\nimport { createHash } from "node:crypto";\nimport path from "node:path";\nimport { patchCssModules } from "vite-css-modules";' : ""}
 
 export default defineConfig({
-  plugins: [${vinextCall}],
+  plugins: [${hasCssModules ? 'patchCssModules({ exportMode: "default" }), ' : ""}${vinextCall}],${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;
+}
+
+const CSS_MODULE_GLOBS = [
+  "**/*.module.{css,scss,sass}",
+  "**/.*.module.{css,scss,sass}",
+  "**/.*/**/*.module.{css,scss,sass}",
+  "**/.*/**/.*.module.{css,scss,sass}",
+];
+const CSS_MODULE_IGNORES = new Set(["node_modules", ".git", ".next", ".vinext", ".wrangler"]);
+const CSS_MODULE_ROOT_IGNORES = new Set(["dist", "out", "build", "coverage"]);
+
+export function scanCssModuleFiles(root: string): boolean {
+  const canonicalRoot = path.resolve(root);
+  return fs
+    .globSync(CSS_MODULE_GLOBS, {
+      cwd: root,
+      withFileTypes: true,
+      exclude: (entry) =>
+        entry.isDirectory() &&
+        (CSS_MODULE_IGNORES.has(entry.name) ||
+          (toSlash(entry.parentPath) === canonicalRoot && CSS_MODULE_ROOT_IGNORES.has(entry.name))),
+    })
+    .some((entry) => /\.module\.(css|scss|sass)$/.test(entry.name));
 }
 
 // ─── Script Addition ─────────────────────────────────────────────────────────
@@ -229,6 +258,7 @@ export function getInitDependencyGroups(
   isAppRouter: boolean,
   platform: InitPlatform,
   cloudflare?: CloudflareInitOptions,
+  hasCssModules = false,
 ): InitDependencyGroups {
   const dependencies = ["vinext"];
   const devDependencies = ["vite", "@vitejs/plugin-react"];
@@ -246,6 +276,7 @@ export function getInitDependencyGroups(
     }
     devDependencies.push("@cloudflare/vite-plugin", "wrangler");
   }
+  if (hasCssModules) devDependencies.push("vite-css-modules", "postcss");
   return { dependencies, devDependencies };
 }
 
@@ -253,8 +284,9 @@ export function getInitDeps(
   isAppRouter: boolean,
   platform: InitPlatform,
   cloudflare?: CloudflareInitOptions,
+  hasCssModules = false,
 ): string[] {
-  const groups = getInitDependencyGroups(isAppRouter, platform, cloudflare);
+  const groups = getInitDependencyGroups(isAppRouter, platform, cloudflare, hasCssModules);
   return [...groups.dependencies, ...groups.devDependencies];
 }
 
@@ -438,6 +470,7 @@ type PlatformSetupContext = {
   viteConfigExists: boolean;
   force: boolean;
   prerender?: boolean;
+  hasCssModules: boolean;
   today?: string;
 };
 
@@ -446,21 +479,35 @@ type PlatformSetupResult = {
   skippedViteConfig: boolean;
   generatedPlatformFiles: string[];
   nextSteps: string[];
+  preservedExistingGenerateScopedName: boolean;
 };
 
 function setupNodePlatform(context: PlatformSetupContext): PlatformSetupResult {
   if (context.viteConfigExists && !context.force) {
+    if (context.hasCssModules && context.existingViteConfigPath) {
+      const current = fs.readFileSync(context.existingViteConfigPath, "utf-8");
+      const update = updateViteConfigForCssModules(context.existingViteConfigPath, current);
+      if (update.code !== current) fs.writeFileSync(context.existingViteConfigPath, update.code);
+      return {
+        generatedViteConfig: update.code !== current,
+        skippedViteConfig: update.code === current,
+        generatedPlatformFiles: [],
+        nextSteps: [],
+        preservedExistingGenerateScopedName: update.preservedExistingGenerateScopedName,
+      };
+    }
     return {
       generatedViteConfig: false,
       skippedViteConfig: true,
       generatedPlatformFiles: [],
       nextSteps: [],
+      preservedExistingGenerateScopedName: false,
     };
   }
 
   fs.writeFileSync(
     context.existingViteConfigPath ?? path.join(context.root, "vite.config.ts"),
-    generateViteConfig(context.isAppRouter, context.prerender),
+    generateViteConfig(context.isAppRouter, context.prerender, context.hasCssModules),
     "utf-8",
   );
   return {
@@ -468,6 +515,7 @@ function setupNodePlatform(context: PlatformSetupContext): PlatformSetupResult {
     skippedViteConfig: false,
     generatedPlatformFiles: [],
     nextSteps: [],
+    preservedExistingGenerateScopedName: false,
   };
 }
 
@@ -541,6 +589,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const viteConfigExists = hasViteConfig(root);
 
   const isApp = detectProject(root).isAppRouter;
+  const hasCssModules = scanCssModuleFiles(root);
   const pmName = detectPackageManagerName(root);
   const shouldInstall = options.install ?? true;
 
@@ -551,9 +600,15 @@ export async function init(options: InitOptions): Promise<InitResult> {
         isAppRouter: isApp,
         existingViteConfigPath,
         prerender: options.prerender,
+        hasCssModules,
         today: options._today,
       },
       options.cloudflare!,
+    );
+  } else if (hasCssModules && existingViteConfigPath && !options.force) {
+    updateViteConfigForCssModules(
+      existingViteConfigPath,
+      fs.readFileSync(existingViteConfigPath, "utf-8"),
     );
   }
 
@@ -604,6 +659,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     viteConfigExists,
     force: options.force ?? false,
     prerender: options.prerender,
+    hasCssModules,
     today: options._today,
   };
   const platformSetup =
@@ -618,7 +674,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
-  const neededDeps = getInitDependencyGroups(isApp, platform, options.cloudflare);
+  const neededDeps = getInitDependencyGroups(isApp, platform, options.cloudflare, hasCssModules);
   const missingDependencies = neededDeps.dependencies.filter((dep) => !isDepInstalled(root, dep));
   const missingDevDependencies = neededDeps.devDependencies.filter(
     (dep) => !isDepInstalled(root, dep),
@@ -752,6 +808,14 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (updatedGitignore) {
     console.log(
       `    ${terminalStyle.green("\u2713")} Added vinext output directories to .gitignore`,
+    );
+  }
+  if (hasCssModules) {
+    console.log(`    ${terminalStyle.green("\u2713")} Configured vite-css-modules for CSS Modules`);
+  }
+  if (platformSetup.preservedExistingGenerateScopedName) {
+    console.log(
+      `    ${terminalStyle.yellow("!")} Preserved existing css.modules.generateScopedName; verify it produces identical class names in SSR and client builds`,
     );
   }
 
