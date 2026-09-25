@@ -1874,6 +1874,10 @@ export async function handleServerActionRscRequest<
         getRouteParamNames: options.getRouteParamNames,
         getSourceRoute: options.getSourceRoute,
         isRscRequest: actionRerenderIsRscRequest,
+        // As in dispatch: an attached slot intercept loads the owner default
+        // its tree's config reads, and one the route has no slot for loads
+        // nothing.
+        routeHasSlot: (route, slotKey) => !!route.slots && Object.hasOwn(route.slots, slotKey),
         toInterceptOpts: options.toInterceptOpts,
       });
 

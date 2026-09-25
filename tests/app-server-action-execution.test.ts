@@ -56,6 +56,7 @@ type TestRoute = {
   routeHandler?: unknown;
   routeSegments?: readonly string[];
   runtime?: "edge" | "experimental-edge" | "nodejs" | null;
+  slots?: Readonly<Record<string, object>>;
   /** Manifest lazy-module thunk; set when the route's page is not yet hydrated. */
   __loadPage?: unknown;
 };
@@ -3506,8 +3507,15 @@ describe("app server action execution helpers", () => {
     const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
     const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
     const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
-    // app/feed/@modal/(..)photos/[id] intercepting /photos/42 from app/feed.
-    const feedRoute: TestRoute = { id: "feed", page: {}, params: [], pattern: "/feed" };
+    // app/feed/@modal/(..)photos/[id] intercepting /photos/42 from app/feed,
+    // whose tree renders app/feed/default.tsx in place of app/feed's children.
+    const feedRoute: TestRoute = {
+      id: "feed",
+      page: {},
+      params: [],
+      pattern: "/feed",
+      slots: { modal: {} },
+    };
     const photoRoute: TestRoute = {
       id: "photo",
       page: {},
@@ -3537,8 +3545,11 @@ describe("app server action execution helpers", () => {
         currentRouteMatch: { params: { id: "42" }, route: photoRoute },
         currentRoutePathname: "/photos/42",
         findIntercept() {
+          // The owner default loads with the rest of the intercepting tree.
           return {
+            __loadOwnerDefault: async () => feedDefault,
             matchedParams: { id: "42" },
+            ownerDefault: null,
             page: modalPage,
             slotKey: "modal",
             sourceMatchedParams: {},
@@ -3565,7 +3576,7 @@ describe("app server action execution helpers", () => {
         },
         toInterceptOpts(intercept) {
           return {
-            interceptOwnerDefault: feedDefault,
+            interceptOwnerDefault: (intercept as { ownerDefault?: unknown }).ownerDefault,
             interceptPage: intercept.page,
             interceptSlotKey: intercept.slotKey,
             interceptTargetPatternParts: ["photos", ":id"],
