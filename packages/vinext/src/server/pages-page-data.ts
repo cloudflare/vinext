@@ -752,6 +752,7 @@ function buildPagesRedirectResponse(
   props: PagesRenderProps = { pageProps: {} },
   method: "getStaticProps" | "getServerSideProps" = "getStaticProps",
   responseHeaders?: Headers,
+  responseStatus?: number,
 ): Response {
   const resolved = resolvePagesRedirect(redirect, {
     method,
@@ -781,7 +782,10 @@ function buildPagesRedirectResponse(
     if (options.deploymentId) {
       headers.set(NEXTJS_DEPLOYMENT_ID_HEADER, options.deploymentId);
     }
-    return buildNextDataPropsJsonResponse(redirectProps, options.safeJsonStringify, { headers });
+    return buildNextDataPropsJsonResponse(redirectProps, options.safeJsonStringify, {
+      headers,
+      status: responseStatus,
+    });
   }
 
   const location = resolvePagesRedirectLocation(resolved, options.basePath);
@@ -1372,6 +1376,7 @@ export async function resolvePagesPageData(
           renderProps,
           "getServerSideProps",
           getPagesGsspResponseHeaders(res),
+          res.statusCode,
         ),
       };
     }

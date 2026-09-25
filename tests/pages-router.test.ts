@@ -1009,9 +1009,11 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Headers were set");
     // Custom header set via res.setHeader
     expect(res.headers.get("x-custom-header")).toBe("hello-from-gssp");
-    // Cookie set via res.setHeader("set-cookie", ...)
-    const setCookie = res.headers.get("set-cookie");
-    expect(setCookie).toContain("gssp_token=abc123");
+    // Cookies set via res.setHeader("set-cookie", [...])
+    expect(res.headers.getSetCookie()).toEqual([
+      "gssp_token=abc123; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/; HttpOnly",
+      "gssp_notice=reauthenticate; Path=/",
+    ]);
   });
 
   // Regression for #1461: gSSP responses must carry the default Cache-Control

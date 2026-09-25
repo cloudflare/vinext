@@ -9,6 +9,11 @@ import {
   vi,
 } from "vite-plus/test";
 import { createServer, type ViteDevServer } from "vite-plus";
+import {
+  createServer as createHttpServer,
+  request as httpRequest,
+  type IncomingHttpHeaders,
+} from "node:http";
 import path from "node:path";
 import { PassThrough, Writable } from "node:stream";
 import { finished } from "node:stream/promises";
@@ -4901,6 +4906,50 @@ describe("Set-Cookie header preservation in prod-server", () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers["Vary"]).toBeUndefined();
     expect(Buffer.concat(chunks).toString()).toBe("encoded");
+  });
+
+  it("sendWebResponse keeps bodyless 205 framing valid", async () => {
+    const { sendWebResponse } = await import("../packages/vinext/src/server/prod-server.js");
+    const response = new Response(null, {
+      status: 205,
+      headers: {
+        "content-encoding": "gzip",
+        "content-length": "32",
+        "content-type": "application/json",
+        "transfer-encoding": "chunked",
+      },
+    });
+    const server = createHttpServer((req, res) => {
+      void sendWebResponse(response, req, res, false);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("HTTP server did not listen");
+      const result = await new Promise<{
+        body: Buffer;
+        headers: IncomingHttpHeaders;
+      }>((resolve, reject) => {
+        const req = httpRequest({ host: "127.0.0.1", port: address.port }, (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer) => chunks.push(chunk));
+          res.on("aborted", () => reject(new Error("response aborted")));
+          res.on("error", reject);
+          res.on("end", () => resolve({ body: Buffer.concat(chunks), headers: res.headers }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+
+      expect(result.body).toHaveLength(0);
+      expect(result.headers["content-length"]).toBeUndefined();
+      expect(result.headers["content-encoding"]).toBe("gzip");
+      expect(result.headers["content-type"]).toBe("application/json");
+      expect(result.headers["transfer-encoding"]).toBe("chunked");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("sendWebResponse resolves after the response body finishes", async () => {
