@@ -67,19 +67,13 @@ export function readCdnResponseCacheControl(headers: Headers | undefined): strin
   return policy ? policy.readCacheControl(headers) : headers.get("Cache-Control");
 }
 
-/** Name the lowercased policy header whose value `readCdnResponseCacheControl` returns. */
+/** Name the lowercased policy header whose value `readCdnResponseCacheControl` read. */
 export function readCdnResponsePolicyHeaderName(headers: Headers): string | null {
-  // Adapters expose only the winning value, which two headers may share, so
-  // probe with a distinct value per header to learn which one their precedence picks.
-  const probe = new Headers();
-  const names: string[] = [];
-  for (const [name] of headers) {
-    if (!isCdnResponsePolicyHeader(name)) continue;
-    probe.set(name, `max-age=${names.length}`);
-    names.push(name);
-  }
-  const winner = readCdnResponseCacheControl(probe)?.match(/^max-age=(\d+)$/);
-  return winner ? (names[Number(winner[1])] ?? null) : null;
+  const policy = getCdnCacheAdapter().responsePolicy;
+  if (!policy) return headers.has("Cache-Control") ? "cache-control" : null;
+  // Only the adapter knows which header its precedence picked; an adapter
+  // that does not say leaves the policy unattributed.
+  return policy.readCacheControlHeaderName?.(headers)?.toLowerCase() ?? null;
 }
 
 /** Ask the active adapter whether one policy header explicitly disables storage. */

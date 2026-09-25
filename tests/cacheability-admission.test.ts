@@ -18,6 +18,7 @@ import {
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
+  type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { finalizeAppPageCacheabilityEvaluationResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
@@ -1271,6 +1272,139 @@ describe("single-request cacheability admission", () => {
       } finally {
         setCdnCacheAdapter(new DefaultCdnCacheAdapter());
       }
+    },
+  );
+
+  it.each(
+    (["single-stage", "response-stage"] as const).flatMap((path) => [
+      { path, namesHeader: true, header: "Cache-Control", value: "s-maxage=300", admitted: false },
+      { path, namesHeader: true, header: "X-Example-Edge-Policy", value: "allow", admitted: true },
+      { path, namesHeader: false, header: "Cache-Control", value: "s-maxage=300", admitted: false },
+      {
+        path,
+        namesHeader: false,
+        header: "X-Example-Edge-Policy",
+        value: "allow",
+        admitted: false,
+      },
+    ]),
+  )(
+    "attributes an opaque adapter policy only through the header it names ($path, names: $namesHeader, config: $header)",
+    async ({ path, namesHeader, header, value, admitted }) => {
+      // The edge header's opaque values bypass Cache-Control, so a synthetic
+      // Cache-Control-syntax value would fall back to the config header.
+      const readEdgePolicy = (headers: Headers) => {
+        const edge = headers.get("X-Example-Edge-Policy");
+        return edge === "allow" || edge === "deny" ? "X-Example-Edge-Policy" : null;
+      };
+      const adapter: CdnCacheAdapter = {
+        ownsBackgroundRevalidation: false,
+        responsePolicy: {
+          isHeader: (name) => name.toLowerCase() === "x-example-edge-policy",
+          readCacheControl: (headers) =>
+            headers.get("X-Example-Edge-Policy") === "allow"
+              ? "public, s-maxage=60"
+              : headers.get("X-Example-Edge-Policy") === "deny"
+                ? "no-store"
+                : headers.get("Cache-Control"),
+          ...(namesHeader
+            ? {
+                readCacheControlHeaderName: (headers: Headers) =>
+                  readEdgePolicy(headers) ??
+                  (headers.has("Cache-Control") ? "Cache-Control" : null),
+              }
+            : {}),
+          hasExplicitNonCacheablePolicy: (headers) =>
+            headers.get("X-Example-Edge-Policy") === "deny",
+        },
+        async get() {
+          return null;
+        },
+        async set() {},
+        buildResponseHeaders({ cacheControl }) {
+          return cacheControl.includes("no-store")
+            ? { "Cache-Control": "no-store", "X-Example-Edge-Policy": null }
+            : { "Cache-Control": "max-age=0", "X-Example-Edge-Policy": "allow" };
+        },
+        async revalidateTag() {},
+      };
+      setCdnCacheAdapter(adapter);
+      try {
+        const context = createWorkerCacheabilityAdmissionContext(
+          { waitUntil() {} },
+          request,
+          null,
+          "build-a",
+          true,
+          "verbatim",
+        );
+        const state = cacheabilityState(context);
+        state.route = { kind: "app-page", pattern: "/page" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        const rendererHeaders = new Headers();
+        await runWithExecutionContext(context, () =>
+          applyCdnResponseHeaders(rendererHeaders, { cacheControl: "s-maxage=60" }),
+        );
+        state.frameworkResponseCachePolicy = new Headers(rendererHeaders);
+        const rendered = new Response("static", { headers: rendererHeaders });
+        const composed =
+          path === "single-stage"
+            ? await runWithExecutionContext(context, () =>
+                finalizeAppRscResponse(rendered, request, {
+                  basePath: "",
+                  configHeaders: [{ source: "/page", headers: [{ key: header, value }] }],
+                  i18nConfig: null,
+                  requestContext: requestContextFromRequest(request),
+                }),
+              )
+            : applyResponseStageCachePolicy(rendered, context, [[header, value]]);
+
+        const response = await finalizeWorkerCacheabilityResponse(composed, context);
+
+        expect(response.headers.get("X-Example-Edge-Policy")).toBe(admitted ? "allow" : null);
+        expect(response.headers.get("Cache-Control")).toBe(admitted ? "max-age=0" : "no-store");
+        await expect(response.text()).resolves.toBe("static");
+      } finally {
+        setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      }
+    },
+  );
+
+  it.each(["single-stage", "response-stage"] as const)(
+    "admits a whitespace-padded config policy matching the renderer's without a searchParams proof (%s)",
+    async (path) => {
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        null,
+        "build-a",
+        true,
+        "verbatim",
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-page", pattern: "/page" };
+      const cacheControl = "s-maxage=60";
+      state.outcome = { cacheable: true, cacheControl };
+      state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": cacheControl });
+      const rendered = new Response("static", { headers: { "Cache-Control": cacheControl } });
+      // Headers.set trims the padding, so the response carries config's value.
+      const value = `  ${cacheControl}\t`;
+      const composed =
+        path === "single-stage"
+          ? await runWithExecutionContext(context, () =>
+              finalizeAppRscResponse(rendered, request, {
+                basePath: "",
+                configHeaders: [{ source: "/page", headers: [{ key: "Cache-Control", value }] }],
+                i18nConfig: null,
+                requestContext: requestContextFromRequest(request),
+              }),
+            )
+          : applyResponseStageCachePolicy(rendered, context, [["Cache-Control", value]]);
+
+      const response = await finalizeWorkerCacheabilityResponse(composed, context);
+
+      expect(response.headers.get("Cache-Control")).toBe(cacheControl);
+      await expect(response.text()).resolves.toBe("static");
     },
   );
 

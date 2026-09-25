@@ -158,8 +158,19 @@ export function markRouteCacheabilityExplicitConfigPolicy(): void {
 export function markRouteCacheabilityConfigCdnCachePolicy(name: string, value: string): void {
   const state = readRouteCacheabilityState();
   if (!state) return;
+  recordConfigCdnCachePolicyHeader(state, name, value);
+}
+
+/** Record a next.config cache policy header with the value a response carries. */
+export function recordConfigCdnCachePolicyHeader(
+  state: RouteCacheabilityState,
+  name: string,
+  value: string,
+): void {
   state.explicitConfigCachePolicy = true;
-  (state.configCdnCachePolicy ??= new Map()).set(name.toLowerCase(), value);
+  // Headers.set trims HTTP whitespace, so compare against what it applies.
+  const applied = new Headers([[name, value]]).get(name) ?? value;
+  (state.configCdnCachePolicy ??= new Map()).set(name.toLowerCase(), applied);
 }
 
 /** Record a public cache policy supplied by the Route Handler itself. */

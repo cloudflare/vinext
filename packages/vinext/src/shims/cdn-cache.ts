@@ -68,6 +68,12 @@ export type CdnResponsePolicy = {
    * rules without knowing which provider header carried it.
    */
   readCacheControl(headers: Headers): string | null;
+  /**
+   * Name the response header `readCacheControl` interpreted, or `null` when
+   * none did. Core uses it to tell which stage owns the effective policy;
+   * without it, core cannot attribute that policy to next.config.
+   */
+  readCacheControlHeaderName?(headers: Headers): string | null;
   /** Whether provider policy explicitly opts out of storage. */
   hasExplicitNonCacheablePolicy(headers: Headers, baseline?: Headers): boolean;
 };

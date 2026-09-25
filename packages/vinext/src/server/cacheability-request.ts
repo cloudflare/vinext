@@ -1,6 +1,7 @@
 import type { ExecutionContextLike } from "vinext/shims/request-context";
 import {
   CACHEABILITY_REQUEST_STATE,
+  recordConfigCdnCachePolicyHeader,
   type RouteCacheabilityOutcome,
   type RouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
@@ -302,9 +303,7 @@ function recordConfigCachePolicy(
   state.explicitConfigCachePolicy = true;
   // A Vary-only policy leaves the renderer's cache policy in place.
   for (const [name, value] of policyHeaders) {
-    if (isCdnResponsePolicyHeader(name)) {
-      (state.configCdnCachePolicy ??= new Map()).set(name.toLowerCase(), value);
-    }
+    if (isCdnResponsePolicyHeader(name)) recordConfigCdnCachePolicyHeader(state, name, value);
   }
 }
 
