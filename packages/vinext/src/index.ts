@@ -94,6 +94,8 @@ import {
 } from "./build/report.js";
 import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
+import { createSharedCssChunks } from "./plugins/shared-css-chunks.js";
+import { createAppStylesheetPreloadPlugin } from "./plugins/app-stylesheet-preload.js";
 import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import {
@@ -183,7 +185,11 @@ import {
 } from "./utils/react-compiler-support.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
-import { ASSET_PREFIX_URL_DIR, resolveAssetsDir } from "./utils/asset-prefix.js";
+import {
+  ASSET_PREFIX_URL_DIR,
+  resolveAssetsDir,
+  resolveAssetUrlPrefix,
+} from "./utils/asset-prefix.js";
 import {
   assertNoPublicDirAssetConflict,
   assertNoPublicNextRequestConflict,
@@ -1338,14 +1344,21 @@ const clientCodeSplittingConfig = createClientCodeSplittingConfig(clientManualCh
 const appClientManualChunks = createClientManualChunks(_shimsDir, true);
 const appClientCodeSplittingConfig = createClientCodeSplittingConfig(appClientManualChunks);
 
-function getClientOutputConfig(assetsDir: string, preserveAppRouteBoundaries = false) {
+function getClientOutputConfig(
+  assetsDir: string,
+  preserveAppRouteBoundaries = false,
+  leadingGroups: readonly (typeof clientCodeSplittingConfig.groups)[number][] = [],
+) {
   const codeSplitting = preserveAppRouteBoundaries
     ? appClientCodeSplittingConfig
     : clientCodeSplittingConfig;
   return {
     ...createClientFileNameConfig(assetsDir),
     assetFileNames: createClientAssetFileNames(assetsDir),
-    codeSplitting,
+    codeSplitting:
+      leadingGroups.length > 0
+        ? { ...codeSplitting, groups: [...leadingGroups, ...codeSplitting.groups] }
+        : codeSplitting,
   };
 }
 
@@ -1777,6 +1790,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
   let rscPluginModulePromise: Promise<typeof import("@vitejs/plugin-rsc")> | null = null;
+  const sharedCssChunks = createSharedCssChunks({
+    async getManager(config) {
+      const rscPluginModule = await rscPluginModulePromise;
+      return rscPluginModule?.getPluginApi(config)?.manager;
+    },
+  });
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
@@ -2514,6 +2533,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         // Expose basePath to client-side code
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
+        // The literal prefix of server stylesheet hrefs when `renderBuiltUrl`
+        // rewrites asset URLs (below), so the App Router stylesheet loader can
+        // spell client-chunk stylesheets the same way and React dedupes them.
+        defines["process.env.__VINEXT_ASSET_URL_PREFIX"] = JSON.stringify(
+          nextConfig.assetPrefix || nextConfig.deploymentId
+            ? resolveAssetUrlPrefix(nextConfig.assetPrefix)
+            : "",
+        );
         // Let shared client shims compile out Pages-only behavior in pure App
         // Router builds while retaining it for Pages and hybrid applications.
         defines["process.env.__VINEXT_HAS_PAGES_ROUTER"] = JSON.stringify(String(hasPagesDir));
@@ -3582,7 +3609,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   // this, global-not-found inherits the layout's stylesheet and
                   // the route-miss 404 document resolves the cascade to the
                   // layout's rules instead of global-not-found's (issue #1549).
-                  output: createRscFrameworkChunkOutputConfig(),
+                  output: createRscFrameworkChunkOutputConfig([sharedCssChunks.codeSplittingGroup]),
                 }),
               },
             },
@@ -3706,7 +3733,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 assetsInlineLimit: clientAssetsInlineLimit,
                 ...withBuildBundlerOptions({
                   input: appClientInput,
-                  output: getClientOutputConfig(clientAssetsDir, true),
+                  output: getClientOutputConfig(clientAssetsDir, true, [
+                    sharedCssChunks.codeSplittingGroup,
+                  ]),
                   treeshake: getClientTreeshakeConfig(),
                 }),
               },
@@ -7941,6 +7970,7 @@ export const loadServerActionClient = ${
     plugins.push(rscPluginPromise);
   }
   if (earlyAppDirExists) {
+    plugins.push(sharedCssChunks.plugin, createAppStylesheetPreloadPlugin());
     plugins.push(
       createActionOwnerManifestPlugin({
         canonicalizeModuleId: canonicalize,
