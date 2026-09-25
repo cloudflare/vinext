@@ -824,6 +824,39 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     const { readAppPageCacheResponse } = await import("./app-page-cache.js");
     const reportedSsrRevalidationErrors = new Set<unknown>();
     let revalidationRscErrorTracker: ReturnType<typeof createAppPageRscErrorTracker> | null = null;
+    // The route, params and intercept a render for this request's cache entry
+    // uses. A hit sends the same navigation params a fresh render would.
+    const resolveCacheRenderTarget = async () => {
+      const revalidationTarget = await resolveAppPageInterceptionRerenderTarget({
+        cleanPathname: options.cleanPathname,
+        currentParams: options.params,
+        currentRoute: route,
+        findIntercept: options.findIntercept,
+        getRouteParamNames(sourceRoute) {
+          return sourceRoute.params;
+        },
+        getSourceRoute(sourceRouteIndex) {
+          return options.getSourceRoute(sourceRouteIndex);
+        },
+        isRscRequest: options.isRscRequest,
+        toInterceptOpts(intercept) {
+          return toInterceptOptions(options.interceptionContext, intercept);
+        },
+      });
+      // Use the full navigationParams (not narrowed params) as the base so
+      // interception-specific extras from a source-route intercept survive
+      // the slot param merge.  resolveAppPageNavigationParams preserves all
+      // base keys and overlays active slot params on top; when narrowed
+      // params were used here, non-slot extras were silently dropped.
+      const mergedNavigationParams = resolveAppPageNavigationParams(
+        revalidationTarget.route,
+        revalidationTarget.navigationParams,
+        options.cleanPathname,
+        revalidationTarget.interceptOpts,
+      );
+      revalidationTarget.navigationParams = mergedNavigationParams;
+      return revalidationTarget;
+    };
     const cachedPageResponse = await readAppPageCacheResponse({
       cleanPathname: options.cleanPathname,
       clearRequestContext: options.clearRequestContext,
@@ -841,7 +874,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
-      params: options.params,
+      params: options.isRscRequest
+        ? (await resolveCacheRenderTarget()).navigationParams
+        : undefined,
       renderedPathAndSearch: options.renderedPathAndSearch,
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
@@ -851,34 +886,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         revalidateSeconds: currentRevalidateSeconds,
       }),
       renderFreshPageForCache: async () => {
-        const revalidationTarget = await resolveAppPageInterceptionRerenderTarget({
-          cleanPathname: options.cleanPathname,
-          currentParams: options.params,
-          currentRoute: route,
-          findIntercept: options.findIntercept,
-          getRouteParamNames(sourceRoute) {
-            return sourceRoute.params;
-          },
-          getSourceRoute(sourceRouteIndex) {
-            return options.getSourceRoute(sourceRouteIndex);
-          },
-          isRscRequest: options.isRscRequest,
-          toInterceptOpts(intercept) {
-            return toInterceptOptions(options.interceptionContext, intercept);
-          },
-        });
-        // Use the full navigationParams (not narrowed params) as the base so
-        // interception-specific extras from a source-route intercept survive
-        // the slot param merge.  resolveAppPageNavigationParams preserves all
-        // base keys and overlays active slot params on top; when narrowed
-        // params were used here, non-slot extras were silently dropped.
-        const mergedNavigationParams = resolveAppPageNavigationParams(
-          revalidationTarget.route,
-          revalidationTarget.navigationParams,
-          options.cleanPathname,
-          revalidationTarget.interceptOpts,
-        );
-        revalidationTarget.navigationParams = mergedNavigationParams;
+        const revalidationTarget = await resolveCacheRenderTarget();
 
         // Hydrate the (possibly different) source route before reading its
         // page module for fetch-cache-mode resolution.

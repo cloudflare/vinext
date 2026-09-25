@@ -746,11 +746,12 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>cached</html>");
   });
 
-  it("sends the request's params and path on a cached RSC hit", async () => {
+  it("sends the request's navigation params and path on a cached RSC hit", async () => {
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("cache hit should not render the page");
       },
+      cleanPathname: "/posts/first",
       isProduction: true,
       isRscRequest: true,
       isrGet: vi.fn(async () =>
@@ -759,7 +760,18 @@ describe("app page dispatch", () => {
       hasGenerateStaticParams: true,
       params: { slug: "first" },
       revalidateSeconds: 60,
-      route: createRoute({ isDynamic: true, params: ["slug"] }),
+      route: createRoute({
+        isDynamic: true,
+        params: ["slug"],
+        // An active slot's params are part of what a fresh render sends.
+        slots: {
+          "sidebar@app/posts/@sidebar": {
+            page: { default: "sidebar-page" },
+            slotParamNames: ["section"],
+            slotPatternParts: [":section", ":slug"],
+          },
+        },
+      }),
     });
     options.renderedPathAndSearch = "/posts/first";
 
@@ -767,7 +779,7 @@ describe("app page dispatch", () => {
 
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     expect(response.headers.get("x-vinext-params")).toBe(
-      encodeURIComponent(JSON.stringify({ slug: "first" })),
+      encodeURIComponent(JSON.stringify({ slug: "first", section: "posts" })),
     );
     expect(response.headers.get("x-vinext-rendered-path-and-search")).toBe(
       encodeURIComponent("/posts/first"),
