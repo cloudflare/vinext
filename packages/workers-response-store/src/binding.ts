@@ -281,6 +281,7 @@ const REFRESH_CONCURRENCY = 6;
 const ISOLATE_MISS_CACHE_CAPACITY = 1_024;
 const ISOLATE_MISS_CACHE_TTL_MS = 1_000;
 const MAX_R2_CAS_ATTEMPTS = 3;
+const MAX_REPLACED_ENTRY_READS = 3;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const R2_CUSTOM_METADATA_SAFE_BYTES = 7 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
@@ -1373,10 +1374,16 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return this.serveR2Read(cacheKey, await this.readR2MetadataCached(cacheKey));
   }
 
+  /**
+   * Serves one R2 read. `replacedReads` counts the reads made again because
+   * the metadata's revision changed after an earlier read. Those reads fence
+   * their reservation on the revision they observed, so a write that lands
+   * in between is read again instead of regenerated over.
+   */
   private async serveR2Read(
     cacheKey: CacheKey,
     r2Read: R2Read,
-    rereadReplacedEntry = true,
+    replacedReads = 0,
   ): Promise<Response> {
     const { keyHash } = cacheKey;
     const entry = r2Read.entry;
@@ -1406,12 +1413,15 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     await r2Read?.object?.body.cancel().catch(() => {});
     const metadata = this.getMetadata(keyHash);
     const expired = now >= entry.swrUntil;
+    // An R2 object records only its own revision, not the metadata's latest
+    // reservation, so a re-read fences only the active revision.
+    const fenced = replacedReads > 0;
     let regeneration = await metadata.reserveRegeneration(
       keyHash,
       cacheKey.cacheKey,
       this.objectKeyPrefix(keyHash),
       now,
-      undefined,
+      fenced ? entry.activeRevision : undefined,
       undefined,
       expired ? entry.activeRevision : undefined,
     );
@@ -1431,14 +1441,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         activeRevision,
         latestRevision,
       );
-      if (!regeneration && rereadReplacedEntry) {
-        // Read R2 again and handle what replaced the revision as a new read
-        // would: its own freshness decides whether it is served, refreshed in
-        // the background or regenerated. Only one such re-read is made.
-        return this.serveR2Read(cacheKey, await this.readR2Metadata(cacheKey), false);
-      }
+      if (!regeneration) return this.serveReplacedEntry(cacheKey, replacedReads);
     }
     if (!regeneration) {
+      // A fenced reservation fails when the revision was replaced or purged.
+      if (fenced) return this.serveReplacedEntry(cacheKey, replacedReads);
       return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
     }
     const regenerated = await this.regenerateEntry(
@@ -1471,6 +1478,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     return response;
+  }
+
+  /**
+   * Reads R2 again and handles what replaced the revision as a new read
+   * would: its own freshness decides whether it is served, refreshed in the
+   * background or regenerated, and a purge is a miss. A key that keeps being
+   * replaced, or whose newer write has not reached R2, is a miss after
+   * `MAX_REPLACED_ENTRY_READS` reads: regenerating would replace a revision
+   * this read never saw, and whatever the last read found is not servable.
+   */
+  private async serveReplacedEntry(cacheKey: CacheKey, replacedReads: number): Promise<Response> {
+    if (replacedReads >= MAX_REPLACED_ENTRY_READS) {
+      return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+    }
+    return this.serveR2Read(cacheKey, await this.readR2Metadata(cacheKey), replacedReads + 1);
   }
 
   getTagExpiration(tags: string[]): Promise<number> {

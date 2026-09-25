@@ -172,20 +172,21 @@ function hasClientFreshness(cacheControl: string): boolean {
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const TIME = String.raw`(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})`;
 const MONTH = "(?<month>[A-Z][a-z]{2})";
 const HTTP_DATE_FORMATS = [
   // IMF-fixdate: Sun, 06 Nov 1994 08:49:37 GMT
   new RegExp(
-    String.raw`^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?<day>\d{2}) ${MONTH} (?<year>\d{4}) ${TIME} GMT$`,
+    String.raw`^(?<weekday>Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?<day>\d{2}) ${MONTH} (?<year>\d{4}) ${TIME} GMT$`,
   ),
   // Obsolete rfc850-date: Sunday, 06-Nov-94 08:49:37 GMT
   new RegExp(
-    String.raw`^(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day, (?<day>\d{2})-${MONTH}-(?<year>\d{2}) ${TIME} GMT$`,
+    String.raw`^(?<weekday>Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day, (?<day>\d{2})-${MONTH}-(?<year>\d{2}) ${TIME} GMT$`,
   ),
   // Obsolete asctime-date: Sun Nov  6 08:49:37 1994
   new RegExp(
-    String.raw`^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) ${MONTH} (?<day> \d|\d{2}) ${TIME} (?<year>\d{4})$`,
+    String.raw`^(?<weekday>Mon|Tue|Wed|Thu|Fri|Sat|Sun) ${MONTH} (?<day> \d|\d{2}) ${TIME} (?<year>\d{4})$`,
   ),
 ];
 
@@ -197,22 +198,41 @@ function parseHttpDate(value: string, now: number): number {
   const fields = HTTP_DATE_FORMATS.map((format) => format.exec(value)?.groups).find(Boolean);
   const month = MONTHS.indexOf(fields?.month ?? "");
   if (!fields || month === -1) return Number.NaN;
+  const [day, hour, minute, second] = [fields.day, fields.hour, fields.minute, fields.second].map(
+    Number,
+  ) as [number, number, number, number];
+  // 60 is a leap second.
+  if (hour > 23 || minute > 59 || second > 60) return Number.NaN;
 
-  const timestamp = (year: number) => {
+  const midnight = (year: number) => {
     const date = new Date(0);
-    date.setUTCFullYear(year, month, Number(fields.day));
-    date.setUTCHours(Number(fields.hour), Number(fields.minute), Number(fields.second));
-    return date.getTime();
+    date.setUTCFullYear(year, month, day);
+    return date;
   };
-  if (fields.year!.length === 4) return timestamp(Number(fields.year));
+  const time = ((hour * 60 + minute) * 60 + second) * 1000;
+  let year = Number(fields.year);
+  if (fields.year!.length === 2) {
+    // A two-digit year that looks more than 50 years ahead is the latest past
+    // year with those digits.
+    const current = new Date(now).getUTCFullYear();
+    year += current - (current % 100);
+    const limit = new Date(now);
+    limit.setUTCFullYear(current + 50);
+    if (midnight(year).getTime() + time > limit.getTime()) year -= 100;
+  }
 
-  // A two-digit year that looks more than 50 years ahead is the latest past
-  // year with those digits.
-  const current = new Date(now).getUTCFullYear();
-  const year = current - (current % 100) + Number(fields.year);
-  const limit = new Date(now);
-  limit.setUTCFullYear(current + 50);
-  return timestamp(year) > limit.getTime() ? timestamp(year - 100) : timestamp(year);
+  // The setter rolls a day such as 31 Feb into the next month, so the date
+  // must read back unchanged, on the weekday it names.
+  const date = midnight(year);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month ||
+    date.getUTCDate() !== day ||
+    WEEKDAYS[date.getUTCDay()] !== fields.weekday!.slice(0, 3)
+  ) {
+    return Number.NaN;
+  }
+  return date.getTime() + time;
 }
 
 /**
