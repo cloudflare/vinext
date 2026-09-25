@@ -884,6 +884,23 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         const revalidationDynamicConfig =
           options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
           (revalidationTarget.route === route ? dynamicConfig : undefined);
+        const revalidationConfigRevalidateSeconds =
+          options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
+          (revalidationTarget.route === route ? currentRevalidateSeconds : null);
+        // A stale intercepted entry regenerates its source route, so the entry
+        // takes that route's revalidate, not the matched route's read seed. A
+        // static route without one keeps `revalidate = false`.
+        const revalidationRouteRevalidateSeconds =
+          revalidationTarget.route === route
+            ? undefined
+            : (revalidationConfigRevalidateSeconds ??
+              (revalidationDynamicConfig === "force-static" ||
+              revalidationDynamicConfig === "error" ||
+              (options.isProduction &&
+                options.pprRuntime === undefined &&
+                options.resolveRouteStaticEligible(revalidationTarget.route))
+                ? Infinity
+                : null));
         return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
@@ -891,9 +908,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             currentFetchCacheMode:
               options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
               (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
-            currentFetchRevalidate:
-              options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
-              (revalidationTarget.route === route ? currentRevalidateSeconds : null),
+            currentFetchRevalidate: revalidationConfigRevalidateSeconds,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: revalidationDynamicConfig,
             params: revalidationTarget.navigationParams,
@@ -966,6 +981,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               rscRenderObservation: rendered.rscRenderObservation!,
               tags: rendered.tags,
               cacheControl: rendered.cacheControl,
+              revalidateSeconds: revalidationRouteRevalidateSeconds,
               usedDynamicApi: rendered.usedDynamicApi,
             };
           },

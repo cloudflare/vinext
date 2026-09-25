@@ -2658,6 +2658,76 @@ describe("app page dispatch", () => {
     expect(options.isrSet).not.toHaveBeenCalled();
   });
 
+  it("fails regenerating a stale intercepted entry whose source route turned revalidate = 0", async () => {
+    // app/feed/page.tsx now sets dynamic = "force-dynamic" (revalidate 0),
+    // while the matched /photos/[id] route keeps revalidate = 60.
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    let scheduledRender: unknown = null;
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream: () => createStream(["fresh-flight"]),
+      resolveRouteRevalidateSeconds: (route) => (route === sourceRoute ? 0 : null),
+      revalidateSeconds: 60,
+      route: currentRoute,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+
+    await expect(scheduledRender()).rejects.toThrow(
+      "Page changed from static to dynamic at runtime /photos/123",
+    );
+    expect(options.isrSet).not.toHaveBeenCalled();
+  });
+
   it("bypasses shared caches for an unverified interception context", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(

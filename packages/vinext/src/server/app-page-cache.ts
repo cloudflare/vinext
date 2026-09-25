@@ -68,6 +68,12 @@ type AppPageCacheRenderResult = {
   linkHeader?: string;
   rscData: ArrayBuffer;
   rscRenderObservation: RenderObservation;
+  /**
+   * The route-level revalidate of the route this render regenerated, or null
+   * when it has none and the render's cacheLife sets it. Undefined keeps the
+   * matched route's read seed, as when the render regenerated that route.
+   */
+  revalidateSeconds?: number | null;
   tags: string[];
   usedDynamicApi: boolean;
 };
@@ -521,7 +527,10 @@ export async function readAppPageCacheResponse(
           // The route's read seed is 0 only when it has no route-level
           // revalidate, since a `revalidate = 0` route is never read from the
           // cache.
-          routeRevalidateSeconds: options.revalidateSeconds || null,
+          routeRevalidateSeconds:
+            revalidatedPage.revalidateSeconds === undefined
+              ? options.revalidateSeconds || null
+              : revalidatedPage.revalidateSeconds,
         });
         // Like Next.js, a regeneration whose render turned dynamic fails
         // without PPR, whose shell expects it: a dynamic API use, or an
