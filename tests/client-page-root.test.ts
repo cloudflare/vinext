@@ -169,6 +169,19 @@ describe("ClientPageRoot in SSR", () => {
     });
   });
 
+  it("marks a direct own-property check dynamic and answers it like the browser", async () => {
+    await inRequest(async () => {
+      startCandidateSsr();
+      function OwnPropertyPage({ searchParams }: SearchParamsProps): React.ReactNode {
+        return React.createElement("p", null, `own:${String(searchParams.hasOwnProperty("q"))}`);
+      }
+      const html = await renderPage(OwnPropertyPage);
+
+      expect(html).toContain("own:true");
+      expect(isRenderDynamicLatched()).toBe(true);
+    });
+  });
+
   it("keeps handing the page the same promise across renders", async () => {
     await inRequest(async () => {
       startCandidateSsr();
@@ -224,6 +237,22 @@ describe("createClientPageSearchParams", () => {
     // What `{ ...searchParams }` copies.
     expect(Object.entries(browser)).toEqual(Object.entries(ssr));
     expect({ ...(await browser) }).toEqual({ ...(await ssr) });
+  });
+
+  it("answers direct own-property checks like the SSR thenable", async () => {
+    const query = "q=one&then=x";
+    const browser = createClientPageSearchParams(new URLSearchParams(query));
+    const ssr = makeClientPageSsrSearchParamsThenable(new URLSearchParams(query), {
+      isPprFallbackShell: true,
+    });
+
+    for (const searchParams of [browser, ssr]) {
+      expect(searchParams.hasOwnProperty("q")).toBe(true);
+      expect(searchParams.propertyIsEnumerable("q")).toBe(true);
+      expect(searchParams.hasOwnProperty("missing")).toBe(false);
+      // A reserved name isn't a query key.
+      expect(searchParams.hasOwnProperty("then")).toBe(false);
+    }
   });
 
   it("resolves to a plain object, like the SSR thenable", async () => {

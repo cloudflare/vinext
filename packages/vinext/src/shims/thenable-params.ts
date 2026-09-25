@@ -43,6 +43,10 @@ function observeReadableParamKeys<T extends Record<string, unknown>>(
   observeParamKeys(observer, keys);
 }
 
+function isOwnPropertyCheck(prop: PropertyKey): boolean {
+  return prop === "hasOwnProperty" || prop === "propertyIsEnumerable";
+}
+
 function isPromiseContinuation(prop: PropertyKey): boolean {
   return prop === "then" || prop === "catch" || prop === "finally";
 }
@@ -235,7 +239,11 @@ export function makeThenableParams<T extends Record<string, unknown>>(
       }
 
       const value = Reflect.get(target, prop, receiver);
-      return typeof value === "function" ? value.bind(target) : value;
+      if (typeof value !== "function") return value;
+      // Own-property checks answer through the traps below, so they see (and
+      // observe) the param keys, as `Object.prototype.hasOwnProperty.call`
+      // does.
+      return value.bind(isOwnPropertyCheck(prop) ? receiver : target);
     },
     getOwnPropertyDescriptor(target, prop) {
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
