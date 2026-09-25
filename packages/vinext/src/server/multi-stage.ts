@@ -23,17 +23,39 @@ export type VinextResponseStageDispatchOptions = {
   /**
    * Whether the adapter may use its shared response transport. Bypassed work
    * still uses the same response stage, but must not pass through a host cache.
-   * A shared transport must partition its baseline lookup by the request
-   * method, complete request URL (including scheme, authority, exact path, and
-   * query), plus the complete serialized stage props; each can affect handler
-   * selection or response bytes. Framework-managed selectors are already
-   * represented by that URL and the
+   * Without a `cacheIdentity`, a shared transport must partition its baseline
+   * lookup by the request method, complete request URL (including scheme,
+   * authority, exact path, and query), plus the complete serialized stage
+   * props; each can affect handler selection or response bytes.
+   * Framework-managed selectors are already represented by that URL and the
    * serialized props. A verbatim-capable transport must partition stored
    * variants by every named `Vary` request header and never store `Vary: *`.
    * Other transports must reject application-defined variance themselves or
    * opt into completed-response admission and honor core's `no-store` policy.
    */
   cache: "shared" | "bypass";
+  /**
+   * Query-free identity of a shared App page GET/HEAD dispatch, supplied only
+   * to adapters that declare `responseStageCacheIdentity: "query-free"` and
+   * require completed-response admission. A transport given one partitions
+   * its baseline lookup and stored entry by this request's method and complete
+   * URL plus these complete serialized props, instead of the dispatched request
+   * and props, and replays this identity for background regeneration.
+   * Everything else in the contract above still applies.
+   *
+   * The identity drops the user query from the URL and `resolvedUrl`, keeping
+   * framework representation selectors: the `.rsc` suffix, the `_rsc`
+   * parameter, and the render mode. That is safe only because completed-response
+   * admission refuses a cacheable App page response unless its render proved
+   * it never read `searchParams`. The dispatched request still carries the real
+   * query for the render itself. Core omits the identity when a `next.config`
+   * public cache policy applies (cached per full URL, as Next.js CDN caching
+   * is), and for bypassed, interception, and mounted-slot dispatches.
+   */
+  cacheIdentity?: {
+    props: unknown;
+    request: Request;
+  };
 };
 
 export type VinextCacheabilityProbeMode = "probe" | "identity";
@@ -65,7 +87,8 @@ export type VinextResponseStageCacheability = {
  * them over in-process dispatch, platform RPC, a service binding, or HTTP. If
  * it caches shared dispatches, its baseline identity must include the request
  * method, complete request URL (including scheme, authority, exact path, and
- * query), plus the complete serialized props. An adapter that advertises
+ * query), plus the complete serialized props, or the equivalent fields of
+ * `options.cacheIdentity` when core supplies one. An adapter that advertises
  * `responseVary: "verbatim"` must also partition stored variants by every
  * request header named in the returned `Vary` fields and reject `Vary: *` from
  * storage. Adapters without that capability must reject application-defined

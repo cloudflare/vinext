@@ -295,6 +295,13 @@ export function stripRscCacheBustingSearchParam(url: URL): void {
   url.search = pairs.length > 0 ? `?${pairs.join("&")}` : "";
 }
 
+/** Drop every search pair except the internal `_rsc` representation selector. */
+export function keepOnlyRscCacheBustingSearchParam(url: URL): void {
+  const rawQuery = url.search.startsWith("?") ? url.search.slice(1) : url.search;
+  const pairs = rawQuery.split("&").filter((pair) => isRscCacheBustingSearchPair(pair));
+  url.search = pairs.length > 0 ? `?${pairs.join("&")}` : "";
+}
+
 /**
  * Remove a trailing `.rsc` suffix from a pathname. Returns the pathname
  * unchanged when the suffix is absent.

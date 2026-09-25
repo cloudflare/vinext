@@ -1,3 +1,4 @@
+import { keepOnlyRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type {
   VinextResponseStageCacheability,
@@ -115,6 +116,27 @@ export function prepareSharedAppPageDispatch(
   return cache !== "bypass" && request.method.toUpperCase() === "HEAD"
     ? new Request(request, { method: "GET" })
     : request;
+}
+
+/**
+ * Build the query-free cache identity of a shared App page dispatch. The user
+ * query leaves both the URL and `resolvedUrl`; the `.rsc` suffix, `_rsc`, and
+ * the render mode stay because they select the representation.
+ */
+export function createSharedAppPageCacheIdentity(
+  request: Request,
+  props: AppMatchedWorkerResponseStageProps,
+): NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]> {
+  const url = new URL(request.url);
+  keepOnlyRscCacheBustingSearchParam(url);
+  const searchIndex = props.resolvedUrl.indexOf("?");
+  return {
+    props: {
+      ...props,
+      resolvedUrl: searchIndex === -1 ? props.resolvedUrl : props.resolvedUrl.slice(0, searchIndex),
+    },
+    request: new Request(url, { headers: request.headers, method: request.method }),
+  };
 }
 
 function isAppPageParams(value: unknown): value is AppPageParams {

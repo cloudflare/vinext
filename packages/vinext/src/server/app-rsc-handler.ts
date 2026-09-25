@@ -140,11 +140,14 @@ import {
   markRouteCacheabilityDynamic,
   preserveRouteCacheabilityResponsePolicy,
 } from "vinext/shims/cacheability-classification";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import {
   APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER,
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+  createSharedAppPageCacheIdentity,
   prepareSharedAppPageDispatch,
   type AppMatchedWorkerResponseStageProps,
+  type AppWorkerResponseStageProps,
   type DispatchAppWorkerResponseStage,
   type RenderAppWorkerResponseStageLocally,
 } from "./app-worker-stages.js";
@@ -245,6 +248,16 @@ function requestOptsOutOfWorkerResponseStage(
   if (isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER))) return true;
   if (request.headers.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)) return true;
   return false;
+}
+
+function adapterUsesQueryFreeCacheIdentity(): boolean {
+  const adapter = getCdnCacheAdapter();
+  // The identity is query-free, so it is safe only behind completed-response
+  // admission, which refuses App pages without a negative searchParams proof.
+  return (
+    adapter.requiresCompletedResponseAdmission === true &&
+    adapter.responseStageCacheIdentity === "query-free"
+  );
 }
 
 function hasUrlParserDotSegment(pathname: string): boolean {
@@ -1157,16 +1170,32 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               );
             }
           }
+          const stageProps: AppWorkerResponseStageProps = {
+            ...props,
+            cacheability: {
+              ...props.cacheability,
+              policyHeaders: responseStagePolicy,
+            },
+          };
+          // Shared dispatches are GET/HEAD only. A next.config public policy
+          // is admitted whatever the render read, so it keeps the full-URL
+          // identity, as Next.js CDN caching does. Interception and mounted-slot
+          // payloads stay contextual, as the RSC canonicalization above does.
+          const cacheIdentity =
+            cache === "shared" &&
+            responseStagePolicy === null &&
+            stageProps.kind === "app-page" &&
+            stageProps.matchKind !== "interception" &&
+            stageProps.interceptionContext === null &&
+            stageProps.interceptionId === null &&
+            stageProps.mountedSlotsHeader === null &&
+            adapterUsesQueryFreeCacheIdentity()
+              ? createSharedAppPageCacheIdentity(dispatchRequest, stageProps)
+              : undefined;
           let response = await dispatchResponseStage(
             dispatchRequest,
-            {
-              ...props,
-              cacheability: {
-                ...props.cacheability,
-                policyHeaders: responseStagePolicy,
-              },
-            },
-            { cache },
+            stageProps,
+            cacheIdentity ? { cache, cacheIdentity } : { cache },
           );
           if (stageRequest.method.toUpperCase() === "HEAD" && response.body) {
             await response.body.cancel();
