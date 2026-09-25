@@ -2040,15 +2040,18 @@ describe("app page regeneration failures", () => {
   };
 
   function readStale(options: {
+    isRoutePPREnabled?: boolean;
     isRscRequest?: boolean;
     isrGet: (key: string) => Promise<ISRCacheEntry | null>;
     isrSet: AppPageCacheSetter;
     renderFreshPageForCache: () => Promise<ReturnType<typeof freshPage>>;
+    revalidateSeconds?: number;
     scheduled: Array<() => Promise<void>>;
   }) {
     return readAppPageCacheResponse({
       cleanPathname: "/stale",
       clearRequestContext() {},
+      isRoutePPREnabled: options.isRoutePPREnabled,
       isRscRequest: options.isRscRequest ?? false,
       isrGet: options.isrGet,
       isrHtmlKey(pathname) {
@@ -2058,7 +2061,7 @@ describe("app page regeneration failures", () => {
         return "rsc:" + pathname;
       },
       isrSet: options.isrSet,
-      revalidateSeconds: 60,
+      revalidateSeconds: options.revalidateSeconds ?? 60,
       renderFreshPageForCache: options.renderFreshPageForCache,
       scheduleBackgroundRegeneration(_key, renderFn) {
         options.scheduled.push(renderFn);
@@ -2066,7 +2069,7 @@ describe("app page regeneration failures", () => {
     });
   }
 
-  function freshPage(overrides: { usedDynamicApi: boolean }) {
+  function freshPage(overrides: { cacheControl?: CacheControlMetadata; usedDynamicApi: boolean }) {
     return {
       ...queryInvariantRegenObservations(),
       html: "<h1>fresh</h1>",
@@ -2122,6 +2125,95 @@ describe("app page regeneration failures", () => {
       });
     },
   );
+
+  // Next.js fails a non-PPR regeneration whose render's revalidate is 0,
+  // whether a dynamic API or its fetches or cacheLife set it
+  // (`build/templates/app-page.ts`). A route without a revalidate reads the
+  // cache with a seed of 0.
+  describe("a regeneration whose effective revalidate is 0 without a dynamic API", () => {
+    type Case = {
+      cacheControl?: CacheControlMetadata;
+      label: string;
+      revalidateSeconds: number;
+    };
+    const cases: Case[] = [
+      { cacheControl: { revalidate: 0 }, label: "a zero cacheLife", revalidateSeconds: 60 },
+      { label: "a route without a revalidate or cacheLife", revalidateSeconds: 0 },
+    ];
+
+    async function regenerate(
+      page: Case,
+      isRoutePPREnabled?: boolean,
+    ): Promise<{
+      isrSet: ReturnType<typeof vi.fn<AppPageCacheSetter>>;
+      regeneration: Promise<void>;
+    }> {
+      const cachedValue = buildCachedAppPageValue(
+        "<h1>stale</h1>",
+        undefined,
+        200,
+        staleObservation,
+      );
+      const previous = buildISRCacheEntry(cachedValue, true, { revalidate: 60 });
+      const scheduled: Array<() => Promise<void>> = [];
+      const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+      await readStale({
+        isRoutePPREnabled,
+        async isrGet() {
+          return previous;
+        },
+        isrSet,
+        async renderFreshPageForCache() {
+          return freshPage({ cacheControl: page.cacheControl, usedDynamicApi: false });
+        },
+        revalidateSeconds: page.revalidateSeconds,
+        scheduled,
+      });
+      return { isrSet, regeneration: scheduled[0]() };
+    }
+
+    it.each(cases)("fails at $label and keeps the previous entry", async (page) => {
+      const { isrSet, regeneration } = await regenerate(page);
+
+      await expect(regeneration).rejects.toThrow(
+        "Page changed from static to dynamic at runtime /stale",
+      );
+      expect(isrSet).toHaveBeenCalledOnce();
+      expect(isrSet).toHaveBeenCalledWith("html:/stale", expect.anything(), {
+        cacheControl: { revalidate: 30 },
+        tags: ["_N_T_/stale", "posts"],
+      });
+      expect(isrSet.mock.calls[0][1]).toMatchObject({ html: "<h1>stale</h1>" });
+    });
+
+    it.each(cases)("stores at $label with PPR", async (page) => {
+      const { isrSet, regeneration } = await regenerate(page, true);
+
+      await expect(regeneration).resolves.toBeUndefined();
+      expect(isrSet.mock.calls.map(([key, data, policy]) => [key, data.html, policy])).toEqual([
+        ["rsc:/stale", "", { cacheControl: { revalidate: 0 }, tags: ["_N_T_/stale"] }],
+        [
+          "html:/stale",
+          "<h1>fresh</h1>",
+          { cacheControl: { revalidate: 0 }, tags: ["_N_T_/stale"] },
+        ],
+      ]);
+    });
+
+    it("stores a route without a revalidate at its cacheLife", async () => {
+      const { isrSet, regeneration } = await regenerate({
+        cacheControl: { revalidate: 300 },
+        label: "a cacheLife-only route",
+        revalidateSeconds: 0,
+      });
+
+      await expect(regeneration).resolves.toBeUndefined();
+      expect(isrSet).toHaveBeenCalledWith("html:/stale", expect.anything(), {
+        cacheControl: { revalidate: 300 },
+        tags: ["_N_T_/stale"],
+      });
+    });
+  });
 
   it("doesn't keep the previous entry over a newer one another regeneration wrote", async () => {
     const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);

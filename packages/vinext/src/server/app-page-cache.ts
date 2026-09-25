@@ -88,6 +88,7 @@ type ReadAppPageCacheResponseOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   isEdgeRuntime?: boolean;
+  isRoutePPREnabled?: boolean;
   isRscRequest: boolean;
   isrDebug?: AppPageDebugLogger;
   isrGet: AppPageCacheGetter;
@@ -212,17 +213,21 @@ function getCachedAppPageValue(entry: ISRCacheEntry | null): CachedAppPageValue 
 function resolveRegeneratedAppPageCacheControl(options: {
   expireSeconds?: number;
   renderCacheControl?: CacheControlMetadata;
-  routeRevalidateSeconds: number;
+  routeRevalidateSeconds: number | null;
 }): CacheControlMetadata {
-  let revalidateSeconds = options.routeRevalidateSeconds;
   const renderRevalidateSeconds = options.renderCacheControl?.revalidate;
-  // An indefinite nested cache lifetime does not tighten the route's own
-  // finite revalidation policy.
+  // The render's cacheLife lowers the route's revalidate, down to a
+  // `revalidate = 0` route's zero, and sets it for a route without one. An
+  // indefinite nested cache lifetime does not tighten the route's own finite
+  // revalidation policy.
+  let revalidateSeconds: number;
   if (typeof renderRevalidateSeconds === "number") {
     revalidateSeconds =
-      revalidateSeconds > 0
-        ? Math.min(revalidateSeconds, renderRevalidateSeconds)
-        : renderRevalidateSeconds;
+      options.routeRevalidateSeconds === null
+        ? renderRevalidateSeconds
+        : Math.min(options.routeRevalidateSeconds, renderRevalidateSeconds);
+  } else {
+    revalidateSeconds = options.routeRevalidateSeconds ?? 0;
   }
 
   return isrCacheControl(revalidateSeconds, {
@@ -510,17 +515,27 @@ export async function readAppPageCacheResponse(
       // reuse it instead of recomputing the hash.
       const regenerate = async (): Promise<void> => {
         const revalidatedPage = await options.renderFreshPageForCache();
-        if (revalidatedPage.usedDynamicApi) {
+        const cacheControl = resolveRegeneratedAppPageCacheControl({
+          expireSeconds: options.expireSeconds,
+          renderCacheControl: revalidatedPage.cacheControl,
+          // The route's read seed is 0 only when it has no route-level
+          // revalidate, since a `revalidate = 0` route is never read from the
+          // cache.
+          routeRevalidateSeconds: options.revalidateSeconds || null,
+        });
+        // Like Next.js, a regeneration whose render turned dynamic fails
+        // without PPR, whose shell expects it: a dynamic API use, or an
+        // effective revalidate of 0 from its fetches or its cacheLife.
+        // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+        if (
+          options.isRoutePPREnabled !== true &&
+          (revalidatedPage.usedDynamicApi || cacheControl.revalidate === 0)
+        ) {
           throw new Error(
             `Page changed from static to dynamic at runtime ${options.cleanPathname}` +
               "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
           );
         }
-        const cacheControl = resolveRegeneratedAppPageCacheControl({
-          expireSeconds: options.expireSeconds,
-          renderCacheControl: revalidatedPage.cacheControl,
-          routeRevalidateSeconds: options.revalidateSeconds,
-        });
         // Every query shares these entries, so a render not proven to leave
         // the query unread is never stored.
         if (
