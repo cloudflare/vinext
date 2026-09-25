@@ -659,6 +659,10 @@ describe("KVCacheHandler", () => {
       const stored = JSON.parse(store.get("cache:static-round-trip")!);
       expect(stored.cacheControl).toEqual({ revalidate: false });
       expect(stored.revalidateAt).toBeNull();
+      expect(kv.put).toHaveBeenCalledWith("cache:static-round-trip", expect.any(String), {
+        expirationTtl: undefined,
+        metadata: { tags: [] },
+      });
 
       vi.setSystemTime(1_000 + 365 * 24 * 60 * 60 * 1000);
       const hit = await handler.get("static-round-trip");

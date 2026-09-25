@@ -471,8 +471,12 @@ export class KVCacheHandler implements CacheHandler {
     if (effectiveRevalidate === 0) return Promise.resolve();
 
     const now = Date.now();
+    // `revalidate = false` never goes stale, so it gets no revalidateAt and,
+    // below, no KV TTL: the entry stays until it is invalidated.
     const revalidateAt =
-      typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
+      typeof effectiveRevalidate === "number" &&
+      effectiveRevalidate > 0 &&
+      Number.isFinite(effectiveRevalidate)
         ? now + effectiveRevalidate * 1000
         : null;
     const expireAt =
