@@ -3,7 +3,11 @@ import type { NavigationContext } from "vinext/shims/navigation";
 import type { RootParams } from "vinext/shims/root-params";
 import { _consumeRequestScopedCacheLife } from "vinext/shims/cache-request-state";
 import type { CacheControlMetadata } from "vinext/shims/cache-handler";
-import { consumeDynamicUsage, consumeInvalidDynamicUsageError } from "vinext/shims/headers";
+import {
+  consumeDynamicUsage,
+  consumeInvalidDynamicUsageError,
+  isRenderDynamicLatched,
+} from "vinext/shims/headers";
 import { getCollectedFetchTags } from "vinext/shims/fetch-cache";
 import {
   consumeAppPageRenderObservationState,
@@ -164,7 +168,9 @@ async function renderAppPageCacheArtifactsImpl(
   );
   const observationState = consumeAppPageRenderObservationState();
   consumeInvalidDynamicUsageError();
-  const usedDynamicApi = consumeDynamicUsage();
+  // SSR runs in a child scope, so a client page's searchParams read there
+  // reaches only the render's dynamic latch.
+  const usedDynamicApi = consumeDynamicUsage() || isRenderDynamicLatched();
 
   const htmlRenderObservation = createAppPageRenderObservation({
     boundaryOutcome: { kind: "success" },
