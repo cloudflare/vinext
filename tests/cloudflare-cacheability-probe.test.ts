@@ -291,6 +291,35 @@ describe("staged Worker cacheability probes", () => {
     expect(failed.failures).toEqual(["/posts/listed: route returned HTTP 500"]);
   });
 
+  it("fails the deploy for an unlisted Pages or Route Handler path whose render fails", async () => {
+    for (const kind of ["pages-page", "app-route"] as const) {
+      const route = { ...optimizableRoute("/posts/:slug"), kind };
+      const result = await probeStagedWorkerCacheability({
+        buildId: "application-build",
+        fetchImpl: async () =>
+          Response.json({
+            kind,
+            pattern: route.pattern,
+            reason: "route returned HTTP 500",
+            state: "probe-failed",
+            status: 500,
+            version: 1,
+          }),
+        retries: 0,
+        root: createProbeRoot(),
+        targetUrl: "https://example.com",
+        targets: [
+          {
+            ...target("/posts/picked"),
+            route: { ...route, cacheabilityProbe: { ...route.cacheabilityProbe, unlisted: true } },
+          },
+        ],
+      });
+
+      expect(result.failures).toEqual(["/posts/picked: route returned HTTP 500"]);
+    }
+  });
+
   it("retries a malformed successful probe envelope", async () => {
     const root = createProbeRoot();
     const fetchImpl = vi

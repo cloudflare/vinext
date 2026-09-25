@@ -711,13 +711,15 @@ export async function probeStagedWorkerCacheability(options: {
       return "done";
     }
     if (
+      group.pattern.route.kind === "app-page" &&
       result.state === "probe-failed" &&
       result.status! >= 500 &&
       result.reason === `route returned HTTP ${result.status}` &&
       !isListedGroup(group)
     ) {
-      // Next.js's build never renders an unlisted path, so its render error
-      // doesn't fail the deploy. The path is neither classified nor warmed.
+      // Next.js's build never renders an unlisted App page path, so its
+      // render error doesn't fail the deploy. The path is neither classified
+      // nor warmed.
       group.dropped = true;
       if (
         !group.pattern.groups.some(
