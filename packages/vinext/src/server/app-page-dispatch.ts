@@ -962,7 +962,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               htmlRenderObservation: rendered.htmlRenderObservation,
               linkHeader: rendered.linkHeader,
               rscData: rendered.rscData!,
-              rscRenderObservation: rendered.rscRenderObservation,
+              rscRenderObservation: rendered.rscRenderObservation!,
               tags: rendered.tags,
               cacheControl: rendered.cacheControl,
             };

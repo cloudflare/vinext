@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import React from "react";
 import { renderAppPageCacheArtifacts } from "../packages/vinext/src/server/app-page-cache-render.js";
+import { hasQueryInvariantRenderProof } from "../packages/vinext/src/server/cache-proof.js";
 import { _setRequestScopedCacheLife } from "../packages/vinext/src/shims/cache-request-state.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type {
@@ -168,5 +169,32 @@ describe("renderAppPageCacheArtifacts", () => {
 
     expect(result.cacheControl).toEqual({ revalidate: 1, expire: 60, stale: 30 });
     expect(result.html).toBe("<html>page</html>");
+  });
+
+  it("proves a static regeneration left the query unread, so core stores it", async () => {
+    const result = await renderAppPageCacheArtifacts({
+      captureRscData: true,
+      cleanPathname: "/posts/post",
+      element: React.createElement("div", null, "page"),
+      getFontLinks: () => [],
+      getFontPreloads: () => [],
+      getFontStyles: () => [],
+      getNavigationContext: () => null,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, options) {
+          if (options?.sideStream && options.capturedRscDataRef) {
+            options.capturedRscDataRef.value = new Response(options.sideStream).arrayBuffer();
+          }
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      navigationParams: {},
+      onError: () => undefined,
+      renderToReadableStream: () => createStream(["flight-data"]),
+      route: { pattern: "/posts/[slug]", routeSegments: [] },
+    });
+
+    expect(hasQueryInvariantRenderProof(result.htmlRenderObservation)).toBe(true);
+    expect(hasQueryInvariantRenderProof(result.rscRenderObservation)).toBe(true);
   });
 });

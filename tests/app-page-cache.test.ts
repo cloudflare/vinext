@@ -14,11 +14,7 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
-import {
-  buildRenderObservation,
-  buildRenderRequestApiObservations,
-  type RenderObservation,
-} from "../packages/vinext/src/server/cache-proof.js";
+import type { RenderObservation } from "../packages/vinext/src/server/cache-proof.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import type { CacheControlMetadata } from "../packages/vinext/src/shims/cache-handler.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
@@ -35,6 +31,12 @@ import {
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { withEnvVar } from "./env-test-helpers.js";
+import {
+  buildQueryInvariantRenderObservation,
+  buildSearchParamsReadRenderObservation,
+  queryInvariantObservationBuilders,
+  queryInvariantRegenObservations,
+} from "./render-observation-test-helpers.js";
 
 function createHeaderClearingCdnAdapter(): CdnCacheAdapter {
   return {
@@ -92,27 +94,6 @@ function buildCachedAppPageValue(
     value.renderObservation = renderObservation;
   }
   return value;
-}
-
-function buildQueryInvariantRenderObservation(): RenderObservation {
-  return buildRenderObservation({
-    boundaryOutcome: { kind: "success" },
-    cacheability: "public",
-    cacheTags: [],
-    completeness: "complete",
-    dynamicFetches: [],
-    output: {
-      kind: "app-html",
-      renderEpoch: null,
-      rootBoundaryId: null,
-      routeId: "route:/cached",
-    },
-    pathTags: [],
-    requestApis: buildRenderRequestApiObservations({
-      completeness: "complete",
-      observed: [],
-    }),
-  });
 }
 
 describe("app page cache helpers", () => {
@@ -348,6 +329,7 @@ describe("app page cache helpers", () => {
       expireSeconds: 31_536_000,
       revalidateSeconds: 60,
       renderFreshPageForCache: vi.fn(async () => ({
+        ...queryInvariantRegenObservations(),
         html: "<h1>fresh</h1>",
         rscData: new ArrayBuffer(0),
         tags: [],
@@ -563,6 +545,7 @@ describe("app page cache helpers", () => {
       async renderFreshPageForCache() {
         didRenderFresh = true;
         return {
+          ...queryInvariantRegenObservations(),
           html: "<h1>fresh</h1>",
           rscData: new ArrayBuffer(0),
           tags: [],
@@ -800,6 +783,7 @@ describe("app page cache helpers", () => {
       async renderFreshPageForCache() {
         return {
           cacheControl: { revalidate: 10, expire: 20 },
+          ...queryInvariantRegenObservations(),
           html: "<h1>fresh</h1>",
           linkHeader: "</fresh.css>; rel=preload; as=style",
           rscData,
@@ -829,6 +813,54 @@ describe("app page cache helpers", () => {
       },
     ]);
   });
+
+  it.each([
+    { isRscRequest: false, unproven: "html" },
+    { isRscRequest: false, unproven: "rsc" },
+    { isRscRequest: true, unproven: "rsc" },
+  ] as const)(
+    "skips regeneration writes when the $unproven render may have read searchParams (RSC request: $isRscRequest)",
+    async ({ isRscRequest, unproven }) => {
+      const scheduledRegenerations: Array<() => Promise<void>> = [];
+      const isrSet = vi.fn(async () => {});
+
+      const response = await readAppPageCacheResponse({
+        cleanPathname: "/stale",
+        clearRequestContext() {},
+        isRscRequest,
+        async isrGet() {
+          return buildISRCacheEntry(
+            buildCachedAppPageValue("<h1>stale</h1>", new ArrayBuffer(0)),
+            true,
+          );
+        },
+        isrHtmlKey(pathname) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        isrSet,
+        revalidateSeconds: 60,
+        async renderFreshPageForCache() {
+          return {
+            ...queryInvariantRegenObservations(),
+            [`${unproven}RenderObservation`]: buildSearchParamsReadRenderObservation(),
+            html: "<h1>fresh</h1>",
+            rscData: new ArrayBuffer(0),
+            tags: [],
+          };
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRegenerations.push(renderFn);
+        },
+      });
+
+      expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+      await scheduledRegenerations[0]();
+      expect(isrSet).not.toHaveBeenCalled();
+    },
+  );
 
   it("preserves route-level revalidate when regenerated App page fetches live longer", async () => {
     const scheduledRegenerations: Array<() => Promise<void>> = [];
@@ -863,6 +895,7 @@ describe("app page cache helpers", () => {
       async renderFreshPageForCache() {
         return {
           cacheControl: { revalidate: 9 },
+          ...queryInvariantRegenObservations(),
           html: "<h1>fresh</h1>",
           rscData,
           tags: ["/config-and-fetch-revalidate", "_N_T_/config-and-fetch-revalidate"],
@@ -1067,6 +1100,7 @@ describe("app page cache helpers", () => {
       revalidateSeconds: 60,
       async renderFreshPageForCache() {
         return {
+          ...queryInvariantRegenObservations(),
           html: "<h1>fresh</h1>",
           rscData: new TextEncoder().encode("fresh-flight").buffer,
           tags: ["/stale-html-miss", "_N_T_/stale-html-miss"],
@@ -1202,6 +1236,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
         isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(rscData),
         cleanPathname: "/fresh",
@@ -1282,6 +1317,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
         isStaticEligible: true,
         bypassInterceptionContextCache: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
@@ -1310,6 +1346,7 @@ describe("app page cache helpers", () => {
     markFrameworkLinkHeaders(rendered.headers, rendered.headers.get("link"));
 
     const response = finalizeAppPageHtmlCacheResponse(rendered, {
+      ...queryInvariantObservationBuilders,
       isStaticEligible: true,
       bypassInterceptionContextCache: true,
       capturedRscDataPromise: null,
@@ -1358,6 +1395,7 @@ describe("app page cache helpers", () => {
     const response = finalizeAppPageHtmlCacheResponse(
       new Response(`<head>${authored}${injected}</head><main>page</main>`),
       {
+        ...queryInvariantObservationBuilders,
         isStaticEligible: true,
         capturedRscDataPromise: null,
         cleanPathname: "/traced",
@@ -1388,6 +1426,7 @@ describe("app page cache helpers", () => {
     const debugCalls: Array<[string, string]> = [];
     const isrSet = vi.fn();
     const options = {
+      ...queryInvariantObservationBuilders,
       isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/dynamic-html",
@@ -1460,6 +1499,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
         isStaticEligible: true,
         capturedDynamicUsageBeforeContextCleanup() {
           return true;
@@ -1514,6 +1554,7 @@ describe("app page cache helpers", () => {
     }> = [];
 
     const didSchedule = scheduleAppPageRscCacheWrite({
+      ...queryInvariantObservationBuilders,
       isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/fresh-rsc",
@@ -1565,12 +1606,106 @@ describe("app page cache helpers", () => {
     expect(debugCalls).toEqual([["RSC cache written", "rsc:/fresh-rsc"]]);
   });
 
+  it.each(["createHtmlRenderObservation", "createRscRenderObservation"] as const)(
+    "skips HTML and RSC cache writes, keeping headers, when %s may have read searchParams",
+    async (unprovenBuilder) => {
+      const pendingCacheWrites: Promise<void>[] = [];
+      const debugCalls: Array<[string, string]> = [];
+      const isrSet = vi.fn(async () => {});
+      const finalize = (builders: typeof queryInvariantObservationBuilders) =>
+        finalizeAppPageHtmlCacheResponse(
+          new Response("<h1>fresh</h1>", {
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=60, stale-while-revalidate",
+              "X-Vinext-Cache": "MISS",
+            },
+          }),
+          {
+            ...builders,
+            isStaticEligible: true,
+            capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+            cleanPathname: "/fresh",
+            consumeDynamicUsage() {
+              return false;
+            },
+            getPageTags() {
+              return ["/fresh"];
+            },
+            isrDebug(event, detail) {
+              debugCalls.push([event, detail]);
+            },
+            isrHtmlKey(pathname) {
+              return "html:" + pathname;
+            },
+            isrRscKey(pathname) {
+              return "rsc:" + pathname;
+            },
+            isrSet,
+            revalidateSeconds: 60,
+            linkHeader: null,
+            waitUntil(promise) {
+              pendingCacheWrites.push(promise);
+            },
+          },
+        );
+
+      const proven = finalize(queryInvariantObservationBuilders);
+      const response = finalize({
+        ...queryInvariantObservationBuilders,
+        [unprovenBuilder]: buildSearchParamsReadRenderObservation,
+      });
+
+      expect([...response.headers]).toEqual([...proven.headers]);
+      await expect(response.text()).resolves.toBe("<h1>fresh</h1>");
+      await proven.text();
+      await Promise.all(pendingCacheWrites);
+      expect(isrSet.mock.calls.map(([key]) => key)).toEqual(["html:/fresh", "rsc:/fresh"]);
+      expect(debugCalls).toContainEqual([
+        "HTML cache write skipped (searchParams not proven unread)",
+        "html:/fresh",
+      ]);
+    },
+  );
+
+  it("skips RSC cache writes when the render may have read searchParams", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSet = vi.fn(async () => {});
+
+    const didSchedule = scheduleAppPageRscCacheWrite({
+      createRscRenderObservation: buildSearchParamsReadRenderObservation,
+      isStaticEligible: true,
+      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      cleanPathname: "/fresh-rsc",
+      consumeDynamicUsage() {
+        return false;
+      },
+      dynamicUsedDuringBuild: false,
+      getPageTags() {
+        return ["/fresh-rsc"];
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      isrSet,
+      revalidateSeconds: 60,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+
+    expect(didSchedule).toBe(true);
+    await Promise.all(pendingCacheWrites);
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
   it("skips persistent RSC cache writes for mounted-slot variants", async () => {
     const pendingCacheWrites: Promise<void>[] = [];
     const isrRscKey = vi.fn();
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
+      ...queryInvariantObservationBuilders,
       isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/fresh-rsc",
@@ -1612,6 +1747,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
         isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/fresh-rsc",
@@ -1655,6 +1791,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
         isStaticEligible: true,
         capturedRscDataPromise: null,
         cleanPathname: "/dynamic-rsc",
@@ -1696,6 +1833,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
         isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/fresh-rsc",
@@ -1744,6 +1882,7 @@ describe("app page cache helpers", () => {
         },
       }),
       {
+        ...queryInvariantObservationBuilders,
         isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/fresh-rsc",
@@ -1785,6 +1924,7 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
+      ...queryInvariantObservationBuilders,
       isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/dynamic-rsc",
@@ -1825,6 +1965,7 @@ describe("app page cache helpers", () => {
     const isrSet = vi.fn();
 
     const didSchedule = scheduleAppPageRscCacheWrite({
+      ...queryInvariantObservationBuilders,
       isStaticEligible: true,
       capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
       cleanPathname: "/invalid-cache-life",
