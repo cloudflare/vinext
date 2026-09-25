@@ -786,6 +786,68 @@ describe("app page dispatch", () => {
     );
   });
 
+  it("hydrates an intercepting source route before resolving a cached RSC hit's params", async () => {
+    // The source route's slots are lazy until ensureRouteLoaded runs.
+    const sidebarSlot: {
+      page?: { default?: unknown } | null;
+      slotParamNames: readonly string[];
+      slotPatternParts: readonly string[];
+    } = { slotParamNames: ["catchAll"], slotPatternParts: [":catchAll+"] };
+    const sourceRoute = createRoute({
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+      slots: {
+        "modal@app/feed/@modal": {
+          page: { default: "modal-page" },
+          slotParamNames: ["id"],
+          slotPatternParts: ["photos", ":id"],
+        },
+        "sidebar@app/feed/@sidebar": sidebarSlot,
+      },
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("cache hit should not render the page");
+      },
+      cleanPathname: "/photos/123",
+      async ensureRouteLoaded(loadedRoute) {
+        if (loadedRoute === sourceRoute) sidebarSlot.page = { default: "sidebar-page" };
+      },
+      hasGenerateStaticParams: true,
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer)),
+      ),
+      params: { id: "123" },
+      revalidateSeconds: 60,
+      route: createRoute({ isDynamic: true, params: ["id"], pattern: "/photos/[id]" }),
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      findIntercept() {
+        return {
+          interceptBranchSegments: ["(.)photos", "[id]"],
+          interceptionGraphId: "graph-interception:/feed->/photos/:id",
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(response.headers.get("x-vinext-params")).toBe(
+      encodeURIComponent(JSON.stringify({ id: "123", catchAll: ["photos", "123"] })),
+    );
+  });
+
   it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),

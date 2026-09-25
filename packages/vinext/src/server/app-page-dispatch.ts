@@ -843,6 +843,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           return toInterceptOptions(options.interceptionContext, intercept);
         },
       });
+      // Hydrate the (possibly different) source route before reading its
+      // slots for navigation params and its page module for fetch-cache-mode
+      // resolution.
+      await options.ensureRouteLoaded?.(revalidationTarget.route);
       // Use the full navigationParams (not narrowed params) as the base so
       // interception-specific extras from a source-route intercept survive
       // the slot param merge.  resolveAppPageNavigationParams preserves all
@@ -888,9 +892,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       renderFreshPageForCache: async () => {
         const revalidationTarget = await resolveCacheRenderTarget();
 
-        // Hydrate the (possibly different) source route before reading its
-        // page module for fetch-cache-mode resolution.
-        await options.ensureRouteLoaded?.(revalidationTarget.route);
         const revalidationDynamicConfig =
           options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
           (revalidationTarget.route === route ? dynamicConfig : undefined);
