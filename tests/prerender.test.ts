@@ -712,6 +712,130 @@ describe("prerenderApp — RSC extraction", () => {
     }
   });
 
+  it("stores the finished render's cache tags so revalidateTag evicts the seeds", async () => {
+    // The tags header is sent before a tagged cache scope inside Suspense
+    // runs; only the observations, built once the render finished, carry its
+    // tag.
+    const earlyObservations = queryInvariantPrerenderObservations();
+    const finishedTags = ["_N_T_/", "early-tag", "late-tag"];
+    const renderObservations: PrerenderRenderObservations = {
+      html: { ...earlyObservations.html, cacheTags: finishedTags },
+      rsc: { ...earlyObservations.rsc, cacheTags: finishedTags },
+    };
+    const document =
+      "<html><body>" +
+      runtimeRscChunkScript('0:["$","div",null,{"children":"page"}]\n') +
+      runtimeRscDoneScript() +
+      "</body></html>";
+    const root = tmpDir("vinext-prerender-late-cache-tags-");
+    const serverDir = path.join(root, "server");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
+    );
+    const server = createServer((req, res) => {
+      const nonce = req.headers[VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER];
+      if (req.url !== "/" || typeof nonce !== "string") {
+        res.statusCode = 404;
+        res.end("<html><body>not found</body></html>");
+        return;
+      }
+      res.setHeader("content-type", "text/html");
+      res.setHeader("x-next-cache-tags", "_N_T_/,early-tag");
+      void withPrerenderRenderObservations(document, nonce, renderObservations).then((text) =>
+        res.end(text),
+      );
+    });
+
+    const port = await listen(server);
+    const { MemoryCacheHandler, getCacheHandler, setCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const previousHandler = getCacheHandler();
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir: path.join(serverDir, "prerendered-routes"),
+        manifestDir: serverDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
+      });
+
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(serverDir, "vinext-prerender.json"), "utf8"),
+      );
+      const manifestRoute = manifest.routes.find((route: { route: string }) => route.route === "/");
+      expect(manifestRoute.tags).toEqual(["_N_T_/", "early-tag", "late-tag"]);
+
+      const { appIsrCacheKey } = await import("../packages/vinext/src/server/isr-cache.js");
+      const seededKeys = [
+        appIsrCacheKey("/", "html", manifest.buildId),
+        appIsrCacheKey("/", "rsc", manifest.buildId),
+      ];
+
+      // Memory seed.
+      const { seedMemoryCacheFromPrerender } =
+        await import("../packages/vinext/src/server/seed-cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+      expect(await seedMemoryCacheFromPrerender(serverDir)).toBe(1);
+      for (const key of seededKeys) {
+        expect(await getCacheHandler().get(key)).not.toBeNull();
+      }
+      await getCacheHandler().revalidateTag("late-tag");
+      for (const key of seededKeys) {
+        expect(await getCacheHandler().get(key)).toBeNull();
+      }
+
+      // KV seed.
+      const { buildPrerenderKVPairs } =
+        await import("../packages/cloudflare/src/prerender-kv-populate.js");
+      const { KVCacheHandler } =
+        await import("../packages/cloudflare/src/cache/kv-data-adapter.runtime.js");
+      const { pairs } = buildPrerenderKVPairs(serverDir, { now: Date.now() - 1000 });
+      expect(pairs).toHaveLength(2);
+      for (const pair of pairs) {
+        expect(pair.metadata?.tags).toContain("late-tag");
+      }
+      const store = new Map(pairs.map((pair) => [pair.key, pair.value]));
+      const kv = {
+        async get(key: string | string[]) {
+          return Array.isArray(key)
+            ? new Map(key.map((k) => [k, store.get(k) ?? null]))
+            : (store.get(key) ?? null);
+        },
+        async put(key: string, value: string) {
+          store.set(key, value);
+        },
+        async delete(key: string) {
+          store.delete(key);
+        },
+        async list() {
+          return { keys: [], list_complete: true };
+        },
+      };
+      const kvHandler = new KVCacheHandler(
+        kv as unknown as ConstructorParameters<typeof KVCacheHandler>[0],
+      );
+      for (const key of seededKeys) {
+        expect(await kvHandler.get(key)).not.toBeNull();
+      }
+      await kvHandler.revalidateTag("late-tag");
+      for (const key of seededKeys) {
+        expect(await kvHandler.get(key)).toBeNull();
+      }
+    } finally {
+      setCacheHandler(previousHandler ?? new MemoryCacheHandler());
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("falls back to a second RSC: 1 invocation when middleware short-circuits with custom HTML", async () => {
     // Middleware that returns a 200 HTML body bypasses the App Router
     // pipeline — the response contains no embed chunks. The driver must

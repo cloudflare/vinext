@@ -1814,6 +1814,20 @@ export async function prerenderApp({
           );
         }
 
+        // The tags header is sent before a late Suspense render finishes, but
+        // the observations carry the finished render's tags, which the seeds
+        // need for revalidateTag(). Next.js likewise stores the tags collected
+        // once the prerender has completed (`applyMetadataFromPrerenderResult`).
+        const tags = renderObservations
+          ? [
+              ...new Set([
+                ...htmlRender.tags,
+                ...renderObservations.html.cacheTags,
+                ...renderObservations.rsc.cacheTags,
+              ]),
+            ]
+          : htmlRender.tags;
+
         return {
           route: routePattern,
           status: "rendered",
@@ -1824,7 +1838,7 @@ export async function prerenderApp({
             : {}),
           ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
-          ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
+          ...(tags.length > 0 ? { tags } : {}),
           ...(renderObservations ? { renderObservations } : {}),
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
