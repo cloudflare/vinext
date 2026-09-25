@@ -79,8 +79,8 @@ export function queryInvariantPrerenderObservations(): {
 /**
  * Prerender observations that aren't complete observations of this proof
  * model: a field value the searchParams proof doesn't accept, one per field it
- * reads, a missing field, another schema version, or another artifact's
- * output. Each must give no seed, without throwing.
+ * reads, a missing field, an incomplete downgrade, another schema version, or
+ * another artifact's output. Each must give no seed, without throwing.
  */
 export function malformedPrerenderObservations(): { label: string; observations: unknown }[] {
   const corrupt = (change: (observation: Record<string, unknown>) => void): unknown => {
@@ -126,6 +126,53 @@ export function malformedPrerenderObservations(): { label: string; observations:
       label: `missing ${field}`,
       observations: corrupt((observation) => {
         delete observation[field];
+      }),
+    })),
+    ...[
+      { label: "an incomplete downgrade fallback", fallback: { kind: "breakerFallback" } },
+      {
+        label: "a downgrade fallback with an unknown code",
+        fallback: {
+          code: "bogus",
+          fields: {},
+          kind: "breakerFallback",
+          mode: "renderFresh",
+          scope: "route",
+        },
+      },
+      {
+        label: "a downgrade fallback with a bogus trace field",
+        fallback: {
+          code: "CP_PRIVATE_DYNAMIC_DOWNGRADE",
+          fields: { reasonCodes: [1] },
+          kind: "breakerFallback",
+          mode: "renderFresh",
+          scope: "route",
+        },
+      },
+    ].map(({ label, fallback }) => ({
+      label,
+      observations: corrupt((observation) => {
+        observation.downgrade = { ...(observation.downgrade as object), fallback };
+      }),
+    })),
+    ...[
+      {
+        label: "a downgrade reason with an unknown code",
+        reason: { code: "bogus", target: "freshRender" },
+      },
+      {
+        label: "a downgrade reason missing its own fields",
+        reason: { code: "CP_DOWNGRADE_DYNAMIC_FETCH", target: "freshRender" },
+      },
+      {
+        label: "a downgrade reason with another reason's target",
+        reason: { code: "CP_DOWNGRADE_CACHEABILITY_PRIVATE", target: "public" },
+      },
+    ].map(({ label, reason }) => ({
+      label,
+      observations: corrupt((observation) => {
+        observation.downgrade = { ...(observation.downgrade as object), reasons: [reason] };
       }),
     })),
     {

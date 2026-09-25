@@ -4,11 +4,11 @@ import {
   parseArtifactCompatibilityEnvelope,
   type ArtifactCompatibilityEnvelope,
 } from "./artifact-compatibility.js";
-import type {
-  CacheEntryReuseProof,
-  CacheProofBreakerFallbackMode,
-  CacheProofFallbackScope,
-  CacheProofRejectionCode,
+import {
+  isCacheProofFallbackMode,
+  isCacheProofFallbackScope,
+  isCacheProofRejectionCode,
+  type CacheEntryReuseProof,
 } from "./cache-proof.js";
 import type { ClientReuseManifestSkipDisposition } from "./client-reuse-manifest.js";
 import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
@@ -53,50 +53,6 @@ export const APP_UNMATCHED_SLOT_WIRE_VALUE = "__VINEXT_UNMATCHED_SLOT__";
 
 export const UNMATCHED_SLOT = Symbol.for("vinext.unmatchedSlot");
 const EMPTY_SKIPPED_LAYOUT_IDS: ReadonlySet<string> = new Set();
-
-function createCacheProofRejectionCodeSet<const T extends readonly CacheProofRejectionCode[]>(
-  codes: T &
-    ([CacheProofRejectionCode] extends [T[number]]
-      ? unknown
-      : readonly [
-          "Missing cache proof rejection codes",
-          Exclude<CacheProofRejectionCode, T[number]>,
-        ]),
-): ReadonlySet<string> {
-  return new Set(codes);
-}
-
-const CACHE_PROOF_REJECTION_CODES = createCacheProofRejectionCodeSet([
-  "CP_CACHE_ENTRY_PROOF_MISSING",
-  "CP_MODEL_DISABLED",
-  "CP_ARTIFACT_COMPATIBILITY_INCOMPATIBLE",
-  "CP_ARTIFACT_COMPATIBILITY_UNKNOWN",
-  "CP_DIMENSION_COUNT_EXCEEDED",
-  "CP_DIMENSION_NAME_MISSING",
-  "CP_DIMENSION_NAME_TOO_LONG",
-  "CP_DIMENSION_VALUE_COUNT_EXCEEDED",
-  "CP_DIMENSION_VALUE_TOO_LONG",
-  "CP_DIMENSION_VALUES_MISSING",
-  "CP_ENCODED_VARIANT_TOO_LONG",
-  "CP_INVALID_VARIANT_BUDGET",
-  "CP_ROUTE_VARIANT_BUDGET_ROUTE_MISMATCH",
-  "CP_ROUTE_VARIANT_CEILING_EXCEEDED",
-  "CP_UNSAFE_PUBLIC_DIMENSION",
-  "CP_BOUNDARY_OUTCOME_MISMATCH",
-  "CP_BOUNDARY_OUTCOME_UNKNOWN",
-  "CP_PRIVATE_DYNAMIC_DOWNGRADE",
-  "CP_STATIC_LAYOUT_CANDIDATE_OUTPUT_KIND",
-  "CP_STATIC_LAYOUT_CURRENT_OUTPUT_KIND",
-  "CP_STATIC_LAYOUT_ID_MISMATCH",
-  "CP_STATIC_LAYOUT_OBSERVATION_OUTPUT_KIND",
-  "CP_STATIC_LAYOUT_OBSERVATION_OUTPUT_MISMATCH",
-  "CP_STATIC_LAYOUT_PRIVATE_DYNAMIC_DOWNGRADE",
-  "CP_STATIC_LAYOUT_REQUEST_API_OBSERVED",
-  "CP_STATIC_LAYOUT_REQUEST_API_UNKNOWN",
-  "CP_STATIC_LAYOUT_ROOT_BOUNDARY_MISMATCH",
-  "CP_STATIC_LAYOUT_ROOT_BOUNDARY_UNKNOWN",
-  "CP_STATIC_LAYOUT_VARIANT_DIMENSION_UNPROVEN",
-]);
 
 type AppElementsSlotBindingState = "active" | "default" | "unmatched";
 
@@ -727,18 +683,6 @@ function createMissingCacheEntryReuseProof(): CacheEntryReuseProof {
     kind: "runtime-cache-entry",
     decision: null,
   };
-}
-
-function isCacheProofRejectionCode(value: unknown): value is CacheProofRejectionCode {
-  return typeof value === "string" && CACHE_PROOF_REJECTION_CODES.has(value);
-}
-
-function isCacheProofFallbackMode(value: unknown): value is CacheProofBreakerFallbackMode {
-  return value === "renderFresh" || value === "privateUncacheable";
-}
-
-function isCacheProofFallbackScope(value: unknown): value is CacheProofFallbackScope {
-  return value === "affectedOutput" || value === "route";
 }
 
 // Three-way wire semantics are intentional:

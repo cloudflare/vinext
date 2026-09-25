@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  ALL_RENDER_REQUEST_API_KINDS,
+  buildRenderObservation,
+  buildRenderRequestApiObservations,
+  type CacheProofOutputScope,
+  type RenderRequestApiKind,
+} from "../packages/vinext/src/server/cache-proof.js";
+import {
   appendPrerenderRenderObservations,
   createPrerenderObservationNonce,
   extractPrerenderRenderObservations,
@@ -130,6 +137,44 @@ describe("prerender render observations channel", () => {
         html: body,
         renderObservations: null,
       });
+    }
+  });
+
+  it("accepts every downgrade a render observation can carry", () => {
+    const output = queryInvariantPrerenderObservations();
+    const build = (
+      input: Partial<Parameters<typeof buildRenderObservation>[0]>,
+      observed: RenderRequestApiKind[] = [],
+    ) => {
+      const completeness = input.completeness ?? "complete";
+      return (outputScope: CacheProofOutputScope) =>
+        buildRenderObservation({
+          boundaryOutcome: { kind: "success" },
+          cacheability: "public",
+          cacheTags: [],
+          dynamicFetches: [],
+          pathTags: [],
+          requestApis: buildRenderRequestApiObservations({ completeness, observed }),
+          ...input,
+          completeness,
+          output: outputScope,
+        });
+    };
+    const renders = [
+      build({ cacheability: "private" }),
+      build({ cacheability: "uncacheable" }),
+      build({ cacheability: "unknown" }),
+      build({ dynamicFetches: ["https://example.test/data"] }),
+      build({ completeness: "partial" }),
+      build({ completeness: "unknown" }),
+      build({}, [...ALL_RENDER_REQUEST_API_KINDS]),
+    ];
+    for (const render of renders) {
+      const observations = JSON.parse(
+        JSON.stringify({ html: render(output.html.output), rsc: render(output.rsc.output) }),
+      );
+      expect(observations.html.downgrade.reasons.length).toBeGreaterThan(0);
+      expect(isPrerenderRenderObservations(observations), JSON.stringify(observations)).toBe(true);
     }
   });
 

@@ -22,7 +22,11 @@
 import {
   ALL_RENDER_REQUEST_API_KINDS,
   CACHE_PROOF_MODEL_SCHEMA_VERSION,
+  isCacheProofFallbackMode,
+  isCacheProofFallbackScope,
+  isCacheProofRejectionCode,
   type BoundaryOutcome,
+  type CacheProofDowngradeReason,
   type CacheProofDowngradeTarget,
   type RenderCacheability,
   type RenderObservation,
@@ -241,16 +245,98 @@ function isDowngrade(value: unknown): boolean {
   if (!isUnknownRecord(value)) return false;
   return (
     hasExactKeys(value, ["fallback", "isPublicCacheCandidate", "reasons", "target"]) &&
-    (value.fallback === null ||
-      (isUnknownRecord(value.fallback) && value.fallback.kind === "breakerFallback")) &&
+    (value.fallback === null || isBreakerFallback(value.fallback)) &&
     typeof value.isPublicCacheCandidate === "boolean" &&
     Array.isArray(value.reasons) &&
-    value.reasons.every(
-      (reason: unknown) =>
-        isUnknownRecord(reason) &&
-        typeof reason.code === "string" &&
-        DOWNGRADE_TARGETS.has(reason.target),
-    ) &&
+    value.reasons.every(isDowngradeReason) &&
     DOWNGRADE_TARGETS.has(value.target)
+  );
+}
+
+function isBreakerFallback(value: unknown): boolean {
+  return (
+    isUnknownRecord(value) &&
+    hasExactKeys(value, ["code", "fields", "kind", "mode", "scope"]) &&
+    value.kind === "breakerFallback" &&
+    isCacheProofRejectionCode(value.code) &&
+    isCacheProofFallbackMode(value.mode) &&
+    isCacheProofFallbackScope(value.scope) &&
+    isUnknownRecord(value.fields) &&
+    Object.values(value.fields).every(
+      (field) =>
+        field === null ||
+        typeof field === "string" ||
+        typeof field === "number" ||
+        typeof field === "boolean" ||
+        isStringArray(field),
+    )
+  );
+}
+
+type DowngradeReasonCode = CacheProofDowngradeReason["code"];
+
+/**
+ * The values each field of a downgrade reason may take, besides its `code`:
+ * a number, or one of the listed values. Typed against
+ * `CacheProofDowngradeReason`, so every reason and each of its fields must be
+ * listed, with only values that reason allows.
+ */
+type DowngradeReason<Code extends DowngradeReasonCode> = Extract<
+  CacheProofDowngradeReason,
+  { code: Code }
+>;
+
+type DowngradeReasonFieldSpec<Code extends DowngradeReasonCode> = {
+  readonly [
+    Field in Exclude<keyof DowngradeReason<Code>, "code">
+  ]-?: DowngradeReason<Code>[Field] extends number
+    ? "number"
+    : readonly DowngradeReason<Code>[Field][];
+};
+
+const DOWNGRADE_REASON_FIELDS: {
+  readonly [Code in DowngradeReasonCode]: DowngradeReasonFieldSpec<Code>;
+} = {
+  CP_DOWNGRADE_CACHEABILITY_PRIVATE: { target: ["private"] },
+  CP_DOWNGRADE_CACHEABILITY_UNCACHEABLE: { target: ["privateUncacheable"] },
+  CP_DOWNGRADE_CACHEABILITY_UNKNOWN: { target: ["freshRender"] },
+  CP_DOWNGRADE_DYNAMIC_FETCH: { dynamicFetchCount: "number", target: ["freshRender"] },
+  CP_DOWNGRADE_DYNAMIC_REQUEST_API: { requestApi: ["connection"], target: ["freshRender"] },
+  CP_DOWNGRADE_DRAFT_MODE: { requestApi: ["draftMode"], target: ["privateUncacheable"] },
+  CP_DOWNGRADE_INCOMPLETE_OBSERVATION: {
+    completeness: ["partial", "unknown"],
+    target: ["freshRender"],
+  },
+  CP_DOWNGRADE_PRIVATE_DIMENSION: {
+    inputClass: ["auth", "draft", "private", "session"],
+    source: ["auth", "cookie", "draft-mode", "header", "session"],
+    target: ["private", "privateUncacheable"],
+  },
+  CP_DOWNGRADE_PRIVATE_REQUEST_API: { requestApi: ["cookies", "headers"], target: ["private"] },
+  CP_DOWNGRADE_PUBLIC_REQUEST_API: {
+    requestApi: ["params", "searchParams"],
+    target: ["publicVariant"],
+  },
+  CP_DOWNGRADE_UNKNOWN_REQUEST_API: {
+    requestApi: ALL_RENDER_REQUEST_API_KINDS,
+    target: ["freshRender"],
+  },
+};
+
+function isDowngradeReason(value: unknown): boolean {
+  if (
+    !isUnknownRecord(value) ||
+    typeof value.code !== "string" ||
+    !Object.hasOwn(DOWNGRADE_REASON_FIELDS, value.code)
+  ) {
+    return false;
+  }
+  const fields: Readonly<Record<string, "number" | readonly unknown[]>> =
+    DOWNGRADE_REASON_FIELDS[value.code as DowngradeReasonCode];
+  return (
+    hasExactKeys(value, ["code", ...Object.keys(fields)]) &&
+    Object.entries(fields).every(([field, allowed]) =>
+      allowed === "number" ? typeof value[field] === "number" : allowed.includes(value[field]),
+    )
   );
 }
