@@ -1555,7 +1555,16 @@ describe("prerender path manifest", () => {
     writeFile("dist/server/index.js", "export default {};\n");
     writeFile(
       "app/[slug]/page.mdx",
-      'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
+      [
+        "```js",
+        "export const dynamic = 'force-dynamic'",
+        "```",
+        "",
+        'export function generateStaticParams() { return [{ slug: "hello" }] }',
+        "",
+        "# Hello",
+        "",
+      ].join("\n"),
     );
     vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
 
@@ -1575,6 +1584,8 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.paths).toEqual(["/hello"]);
     expect(manifest?.rscPaths).toEqual(["/hello"]);
+    // The page's generateStaticParams lists it. The fenced code isn't ESM.
+    expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBeUndefined();
   });
 
   it("discovers dynamic Pages MDX paths from the built runtime", async () => {

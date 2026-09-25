@@ -38,3 +38,39 @@ function scanDirForMdx(dir: string): boolean {
   }
   return false;
 }
+
+/**
+ * Keep only the ESM of an MDX module, so the JavaScript export helpers can
+ * read it. MDX takes a block as ESM when an unindented line starts with
+ * `import` or `export` outside a code fence, and the block runs until the next
+ * blank line.
+ * https://github.com/micromark/micromark-extension-mdxjs-esm
+ */
+export function extractMdxEsm(source: string): string {
+  const blocks: string[] = [];
+  let block: string[] | null = null;
+  let fence: string | null = null;
+  for (const line of source.split(/\r?\n/)) {
+    if (block) {
+      if (line.trim() === "") {
+        blocks.push(block.join("\n"));
+        block = null;
+      } else {
+        block.push(line);
+      }
+      continue;
+    }
+    const fenceMarker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (fenceMarker?.[0] === fence[0] && fenceMarker.length >= fence.length) fence = null;
+      continue;
+    }
+    if (fenceMarker) {
+      fence = fenceMarker;
+      continue;
+    }
+    if (/^(?:import|export)\s/.test(line)) block = [line];
+  }
+  if (block) blocks.push(block.join("\n"));
+  return blocks.join("\n\n");
+}

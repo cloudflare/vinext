@@ -32,6 +32,7 @@ import {
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
+import { extractMdxEsm } from "../utils/mdx-scan.js";
 import { findDir } from "../utils/project.js";
 import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
@@ -752,7 +753,8 @@ function extractPagesStaticPathLocale(
 function isAppPageRouteStaticEligible(route: AppRoute): boolean {
   const readSegmentConfig = (filePath: string | null | undefined) => {
     if (!filePath) return null;
-    const code = fs.readFileSync(filePath, "utf8");
+    const source = fs.readFileSync(filePath, "utf8");
+    const code = filePath.toLowerCase().endsWith(".mdx") ? extractMdxEsm(source) : source;
     const dynamic = extractExportConstString(code, "dynamic");
     const revalidate = extractExportConstNumber(code, "revalidate");
     const runtime = extractExportConstString(code, "runtime");
