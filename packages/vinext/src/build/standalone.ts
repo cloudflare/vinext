@@ -200,6 +200,12 @@ function writeStandaloneServerEntry(filePath: string): void {
   // (emitStandaloneOutput copies vinext's dist/ directory in full). A static
   // import gives a clearer ERR_MODULE_NOT_FOUND at startup rather than a
   // runtime error deep inside the server if the import were deferred.
+  //
+  // The VINEXT_OUT_DIR env var allows overriding the default output directory
+  // path, which is necessary when the standalone server is compiled into a
+  // single executable (e.g. via `bun build --compile`). In that case,
+  // import.meta.dirname is baked in at compile time and becomes invalid
+  // after the binary is relocated.
   const content = `#!/usr/bin/env node
 import { join } from "node:path";
 import { startProdServer } from "vinext/server/prod-server";
@@ -210,7 +216,7 @@ const host = process.env.HOST ?? "0.0.0.0";
 startProdServer({
   port,
   host,
-  outDir: join(import.meta.dirname, "dist"),
+  outDir: process.env.VINEXT_OUT_DIR ?? join(import.meta.dirname, "dist"),
 }).catch((error) => {
   console.error("[vinext] Failed to start standalone server");
   console.error(error);
