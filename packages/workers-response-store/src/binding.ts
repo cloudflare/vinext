@@ -1103,6 +1103,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
    * so reads keep serving it and the next regeneration waits 3-30 s. It uses
    * the regeneration's reservation, and publishes only while that entry is
    * still the active revision, so a newer write or a purge always wins.
+   *
+   * The re-store keeps the entry's revision and rewrites its R2 object, so a
+   * failed rewrite leaves the source object readable and still matching the
+   * metadata.
    */
   private async republishFailedRegeneration(
     metadata: CacheMetadataStub,
@@ -1118,8 +1122,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     let source: RepublishSource | null;
     try {
       // Reads take freshness from the R2 object's custom metadata, which R2
-      // cannot update in place, so the body is written again under the new
-      // revision.
+      // cannot update in place, so the body is written again.
       source = await this.readRepublishSource(entry);
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
@@ -1154,28 +1157,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
     if (!publication.published || !publication.entry) return;
 
-    const revision = publication.entry.activeRevision;
-    try {
-      await this.writeR2Response(
-        publication.entry,
-        source.body,
-        source.status,
-        source.createdAt,
-        source.initialAge,
-        source.etag,
-      );
-    } catch (error) {
-      // The rewrite replaces the only readable body, so unlike a new response
-      // it must not be tombstoned. Unless it landed, point the metadata back
-      // at the source revision that R2 still holds.
-      const current = await this.env.CACHE_BODIES.head(this.r2ObjectKey(entry.keyHash)).catch(
-        () => null,
-      );
-      if (metadataInteger(current?.customMetadata?.latestRevision) !== revision) {
-        await metadata.restoreActiveRevision(entry.keyHash, revision, entry);
-      }
-      throw error;
-    }
+    await this.writeR2Response(
+      publication.entry,
+      source.body,
+      source.status,
+      source.createdAt,
+      source.initialAge,
+      source.etag,
+    );
   }
 
   private async regenerateEntry(
