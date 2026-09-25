@@ -48,15 +48,6 @@ export type ClientPageRootProps = {
 
 const isServer = typeof window === "undefined";
 
-function defineHiddenProperty(target: object, key: string, value: unknown): void {
-  Reflect.defineProperty(target, key, {
-    configurable: true,
-    enumerable: false,
-    value,
-    writable: true,
-  });
-}
-
 /**
  * Build an untracked `searchParams` promise, like Next.js 15's browser
  * `makeUntrackedExoticSearchParams`: a settled promise whose query keys are
@@ -73,11 +64,10 @@ export function createClientPageSearchParams(
 ): Promise<ClientPageSearchParams> {
   // Spreading keeps a `__proto__` key an own entry, on Object.prototype.
   const record: ClientPageSearchParams = { ...searchParamsToRecord(searchParams) };
+  // No `status` or `value` until React tracks it, like Next.js's browser and
+  // SSR promises and the SSR thenable, so a page reading them directly
+  // renders the same in SSR and hydration.
   const promise = Promise.resolve(record);
-  // React reads `status` and `value` to use() a settled promise without
-  // suspending. Hidden from enumeration, as the SSR thenable hides them.
-  defineHiddenProperty(promise, "status", "fulfilled");
-  defineHiddenProperty(promise, "value", record);
   const isQueryKey = (prop: PropertyKey): prop is string =>
     typeof prop === "string" && !isWellKnownProperty(prop) && Object.hasOwn(record, prop);
   return new Proxy(promise, {

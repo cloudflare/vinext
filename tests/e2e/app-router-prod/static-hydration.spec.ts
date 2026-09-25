@@ -119,6 +119,19 @@ test("a client page reads the query a server action re-render was rewritten to",
   expect(errors).toEqual([]);
 });
 
+test("a client page reading React's promise fields directly hydrates as SSR rendered it", async ({
+  page,
+}) => {
+  const errors = collectPageErrors(page);
+
+  await page.goto("/client-page-search-params/promise-fields?status=y&value=z");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("client-page-promise-fields")).toHaveText(
+    "status:undefined value:undefined",
+  );
+  expect(errors).toEqual([]);
+});
+
 test("a force-static client page keeps an empty query during navigation", async ({ page }) => {
   const errors = collectPageErrors(page);
 

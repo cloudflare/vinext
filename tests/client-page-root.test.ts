@@ -1,6 +1,5 @@
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
-import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { makeClientPageSsrSearchParamsThenable } from "../packages/vinext/src/server/app-page-search-params-observation.js";
 import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
@@ -77,6 +76,16 @@ async function renderPage(
     ),
     { onError: () => {} },
   );
+  await stream.allReady;
+  return new Response(stream).text();
+}
+
+/**
+ * Render to HTML once everything settles. A page suspends the first time it
+ * uses a searchParams promise React hasn't tracked yet.
+ */
+async function renderMarkup(element: React.ReactNode): Promise<string> {
+  const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
 }
@@ -206,9 +215,10 @@ describe("createClientPageSearchParams", () => {
     );
     const record = await searchParams;
 
-    // use() reads a settled promise without suspending.
-    expect(Reflect.get(searchParams, "status")).toBe("fulfilled");
-    expect(Reflect.get(searchParams, "value")).toBe(record);
+    // Reserved names aren't query keys, and React adds its bookkeeping only
+    // once it tracks the promise, as it does with the SSR thenable.
+    expect(Reflect.get(searchParams, "status")).toBeUndefined();
+    expect(Reflect.get(searchParams, "value")).toBeUndefined();
     expect(Reflect.get(searchParams, "q")).toBe("one");
     expect(Reflect.get(searchParams, "tag")).toEqual(["a", "b"]);
     // Names Promise and React rely on keep their meaning, and stay readable
@@ -335,10 +345,10 @@ function renderInBrowser(
   snapshot: ReturnType<BrowserModules["navigation"]["createClientNavigationRenderSnapshot"]>,
   pageProps: Record<string, unknown>,
   rootProps?: { emptySearchParams?: boolean },
-): string {
+): Promise<string> {
   const Context = modules.navigation.getClientNavigationRenderContext();
   if (!Context) throw new Error("Expected client navigation render context");
-  return renderToStaticMarkup(
+  return renderMarkup(
     React.createElement(
       Context.Provider,
       { value: snapshot },
@@ -363,7 +373,7 @@ describe("ClientPageRoot in the browser", () => {
       );
 
       expect(snapshot.renderedSearch).toBe("?tab=bar");
-      expect(renderInBrowser(modules, snapshot, { params: {} })).toContain(
+      expect(await renderInBrowser(modules, snapshot, { params: {} })).toContain(
         "query:{&quot;tab&quot;:&quot;bar&quot;}",
       );
     });
@@ -377,7 +387,7 @@ describe("ClientPageRoot in the browser", () => {
       );
 
       expect(snapshot.renderedSearch).toBeUndefined();
-      expect(renderInBrowser(modules, snapshot, { params: {} })).toContain(
+      expect(await renderInBrowser(modules, snapshot, { params: {} })).toContain(
         "query:{&quot;tab&quot;:&quot;hot&quot;}",
       );
     });
@@ -399,10 +409,10 @@ describe("ClientPageRoot in the browser", () => {
         "/photo/1",
       );
 
-      expect(renderInBrowser(modules, feed, feedProps)).toContain("tab&quot;:&quot;hot");
-      expect(renderInBrowser(modules, photo, feedProps)).toContain("tab&quot;:&quot;hot");
+      expect(await renderInBrowser(modules, feed, feedProps)).toContain("tab&quot;:&quot;hot");
+      expect(await renderInBrowser(modules, photo, feedProps)).toContain("tab&quot;:&quot;hot");
       // A new server render of the page reads the navigation that sent it.
-      expect(renderInBrowser(modules, photo, { params: {} })).toContain("query:{}");
+      expect(await renderInBrowser(modules, photo, { params: {} })).toContain("query:{}");
     });
   });
 
@@ -418,7 +428,7 @@ describe("ClientPageRoot in the browser", () => {
         "/photo/1",
       );
       const renderSlot = (elements: Record<string, React.ReactNode>) =>
-        renderToStaticMarkup(
+        renderMarkup(
           React.createElement(
             Context.Provider,
             { value: photo },
@@ -437,9 +447,9 @@ describe("ClientPageRoot in the browser", () => {
 
       const refreshed = { "page:/feed": feedPage() };
       modules.slot.setAppElementsRenderedSearch(refreshed, "?tab=hot");
-      expect(renderSlot(refreshed)).toContain("query:{&quot;tab&quot;:&quot;hot&quot;}");
+      expect(await renderSlot(refreshed)).toContain("query:{&quot;tab&quot;:&quot;hot&quot;}");
       // The navigation's own output reads the navigation's query.
-      expect(renderSlot({ "page:/feed": feedPage() })).toContain("query:{}");
+      expect(await renderSlot({ "page:/feed": feedPage() })).toContain("query:{}");
     });
   });
 
@@ -519,7 +529,7 @@ describe("ClientPageRoot in the browser", () => {
       });
 
       const renderSlot = (id: string) =>
-        renderToStaticMarkup(
+        renderMarkup(
           React.createElement(
             Context.Provider,
             { value: photo },
@@ -530,8 +540,10 @@ describe("ClientPageRoot in the browser", () => {
             ),
           ),
         );
-      expect(renderSlot("page:/feed")).toContain("query:{&quot;tab&quot;:&quot;hot&quot;}");
-      expect(renderSlot("page:/refreshed")).toContain("query:{&quot;tab&quot;:&quot;new&quot;}");
+      expect(await renderSlot("page:/feed")).toContain("query:{&quot;tab&quot;:&quot;hot&quot;}");
+      expect(await renderSlot("page:/refreshed")).toContain(
+        "query:{&quot;tab&quot;:&quot;new&quot;}",
+      );
     });
   });
 
@@ -546,7 +558,7 @@ describe("ClientPageRoot in the browser", () => {
       if (!Context) throw new Error("Expected client navigation render context");
       const pageProps = { params: {} };
       for (const href of ["http://localhost/feed?tab=hot", "http://localhost/feed?tab=new"]) {
-        renderToStaticMarkup(
+        await renderMarkup(
           React.createElement(
             Context.Provider,
             { value: modules.navigation.createClientNavigationRenderSnapshot(href, {}) },
@@ -563,6 +575,50 @@ describe("ClientPageRoot in the browser", () => {
     });
   });
 
+  it("hydrates a direct read of React's promise fields as SSR rendered it", async () => {
+    // `status` and `value` are reserved on both sides, so these query keys
+    // don't shadow them, and neither promise carries React's bookkeeping yet.
+    function FieldsPage({ searchParams }: SearchParamsProps): React.ReactNode {
+      const status = String(Reflect.get(searchParams, "status"));
+      const value = String(Reflect.get(searchParams, "value"));
+      return React.createElement("p", null, `status:${status} value:${value}`);
+    }
+    const query = "status=y&value=z";
+    const ssrHtml = await inRequest(async () => {
+      const searchParams = new URLSearchParams(query);
+      setNavigationContext({
+        pathname: "/client",
+        searchParams,
+        params: {},
+        clientPageSearchParams: makeClientPageSsrSearchParamsThenable(searchParams, {}),
+      });
+      return renderPage(FieldsPage);
+    });
+
+    await withBrowserModules(async (modules) => {
+      const Context = modules.navigation.getClientNavigationRenderContext();
+      if (!Context) throw new Error("Expected client navigation render context");
+      const browserHtml = await renderMarkup(
+        React.createElement(
+          Context.Provider,
+          {
+            value: modules.navigation.createClientNavigationRenderSnapshot(
+              `http://localhost/client?${query}`,
+              {},
+            ),
+          },
+          React.createElement(modules.ClientPageRoot, {
+            Component: FieldsPage as React.ComponentType<Record<string, unknown>>,
+            pageProps: { params: {} },
+          }),
+        ),
+      );
+
+      expect(ssrHtml).toContain("status:undefined value:undefined");
+      expect(browserHtml).toBe(ssrHtml);
+    });
+  });
+
   it("keeps a force-static page's query empty during a navigation", async () => {
     // SSR renders force-static pages with an empty query, and so does Next.js
     // in the browser, whatever the destination URL.
@@ -575,7 +631,7 @@ describe("ClientPageRoot in the browser", () => {
       modules.navigation.activateNavigationSnapshot();
 
       expect(
-        renderInBrowser(modules, snapshot, { params: {} }, { emptySearchParams: true }),
+        await renderInBrowser(modules, snapshot, { params: {} }, { emptySearchParams: true }),
       ).toContain("query:{}");
     });
   });
