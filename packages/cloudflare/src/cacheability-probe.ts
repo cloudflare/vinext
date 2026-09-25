@@ -487,7 +487,7 @@ export async function probeStagedWorkerCacheability(options: {
     targetGroups.set(concreteKey, group);
   }
   // A path is listed when its route's own static generation lists it;
-  // traffic-picked paths are unlisted. A path the request stage moves to
+  // discovery marks every other path unlisted. A path the request stage moves to
   // another route counts as listed there only when that route lists its
   // resolved pathname.
   const isListedGroup = (group: ConcretePathGroup): boolean => {
@@ -514,7 +514,7 @@ export async function probeStagedWorkerCacheability(options: {
     const group = {
       ...targetGroup,
       deferred: false,
-      listedAtOrigin: targetGroup.targets[0].route!.cacheabilityProbe?.trafficPicked !== true,
+      listedAtOrigin: targetGroup.targets[0].route!.cacheabilityProbe?.unlisted !== true,
       originKey: targetGroup.pattern.key,
       primary: targetGroup.targets[0],
     };

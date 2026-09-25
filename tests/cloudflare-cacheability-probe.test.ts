@@ -250,7 +250,7 @@ describe("staged Worker cacheability probes", () => {
     const route = optimizableRoute("/posts/:slug");
     const pickedRoute = {
       ...route,
-      cacheabilityProbe: { ...route.cacheabilityProbe, trafficPicked: true },
+      cacheabilityProbe: { ...route.cacheabilityProbe, unlisted: true },
     };
     const probe = (brokenPathname: string) =>
       probeStagedWorkerCacheability({
@@ -1362,7 +1362,7 @@ describe("staged Worker cacheability probes", () => {
     const listedRoute = optimizableRoute("/posts/:slug");
     const pickedRoute = {
       ...listedRoute,
-      cacheabilityProbe: { ...listedRoute.cacheabilityProbe, trafficPicked: true },
+      cacheabilityProbe: { ...listedRoute.cacheabilityProbe, unlisted: true },
     };
     const dynamicApi = {
       dynamicUsage: true,
@@ -1529,7 +1529,7 @@ describe("staged Worker cacheability probes", () => {
         ...optimizableRoute("/fallback/:id"),
         cacheabilityProbe: {
           canPrunePattern: true,
-          trafficPicked: true,
+          unlisted: true,
         },
       };
       const result = await probe(
@@ -1601,6 +1601,36 @@ describe("staged Worker cacheability probes", () => {
         expect(
           result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")],
         ).toBeUndefined();
+      }
+    });
+
+    it("gives no entry to a route whose only generateStaticParams is above its last dynamic segment, even when discovery lists its paths", async () => {
+      // app/[category]/page.tsx lists `news` for app/[category]/details too.
+      const detailsRoute = optimizableRoute("/:category/details");
+      const unlistedDetailsRoute = {
+        ...detailsRoute,
+        cacheabilityProbe: { ...detailsRoute.cacheabilityProbe, unlisted: true },
+      };
+      const notStaticallyGenerated = {
+        reason: "route is not statically generated",
+        rendererStatic: false,
+        state: "dynamic",
+      };
+      const cases: [typeof unlistedDetailsRoute | typeof detailsRoute, Record<string, unknown>][] =
+        [
+          // The runtime reports the whole pattern dynamic.
+          [detailsRoute, { ...notStaticallyGenerated, dynamicUsage: true, scope: "pattern" }],
+          // Discovery marks the path unlisted.
+          [unlistedDetailsRoute, { ...notStaticallyGenerated, scope: "identity" }],
+        ];
+      for (const [route, fields] of cases) {
+        const result = await probe([...pageTargets("/news/details", route)], {
+          "/news/details": fields,
+        });
+
+        expect(result.failures).toEqual([]);
+        expect(result.manifest.routes).toEqual({});
+        expect(result.cacheableTargets).toEqual([]);
       }
     });
 

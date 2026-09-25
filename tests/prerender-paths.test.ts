@@ -151,7 +151,8 @@ describe("prerender path manifest", () => {
           pattern: "/cached/:slug",
         },
         "/dynamic": {
-          cacheabilityProbe: { canPrunePattern: true },
+          // force-dynamic, so Next.js's build never lists it.
+          cacheabilityProbe: { canPrunePattern: true, unlisted: true },
           kind: "app-page",
           pattern: "/dynamic",
         },
@@ -233,12 +234,92 @@ describe("prerender path manifest", () => {
       responseVary: "verbatim",
     });
 
-    const trafficPicked = (pathname: string) =>
-      manifest?.routePatterns?.[pathname]?.cacheabilityProbe?.trafficPicked;
-    expect(trafficPicked("/cached/from-traffic")).toBe(true);
-    expect(trafficPicked("/cached/intro")).toBeUndefined();
-    expect(trafficPicked("/cached/featured")).toBeUndefined();
-    expect(trafficPicked("/")).toBeUndefined();
+    const unlisted = (pathname: string) =>
+      manifest?.routePatterns?.[pathname]?.cacheabilityProbe?.unlisted;
+    expect(unlisted("/cached/from-traffic")).toBe(true);
+    expect(unlisted("/cached/intro")).toBeUndefined();
+    expect(unlisted("/cached/featured")).toBeUndefined();
+    expect(unlisted("/")).toBeUndefined();
+  });
+
+  it("lists paths only for App page routes that are static or SSG", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    // The route's only generateStaticParams is a sibling page's, above its
+    // last dynamic segment, so Next.js classifies /[category]/details as ƒ.
+    writeFile(
+      "app/[category]/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ category: 'news' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[category]/details/page.tsx",
+      "export const revalidate = 60; export default function Page() { return null; }\n",
+    );
+    // A layout's edge runtime disables static generation for its pages.
+    writeFile("app/edge/layout.tsx", "export const runtime = 'edge';\n");
+    writeFile("app/edge/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "app/edge/[id]/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      new URL(input instanceof Request ? input.url : String(input)).searchParams.get("pattern") ===
+      "/edge/:id"
+        ? Response.json([])
+        : defaultFetch(input, init),
+    );
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(expect.arrayContaining(["/news", "/news/details", "/edge"]));
+    const unlisted = (pathname: string) =>
+      manifest?.routePatterns?.[pathname]?.cacheabilityProbe?.unlisted;
+    expect(unlisted("/news")).toBeUndefined();
+    expect(unlisted("/news/details")).toBe(true);
+    expect(unlisted("/edge")).toBe(true);
+    expect(manifest?.fallbackRoutePatterns).toBeUndefined();
+  });
+
+  it("lists the paths of a route whose last dynamic segment's layout has generateStaticParams", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[category]/layout.tsx",
+      [
+        "export function generateStaticParams() { return [{ category: 'news' }]; }",
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[category]/details/page.tsx",
+      "export default function Page() { return null; }\n",
+    );
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toContain("/news/details");
+    expect(manifest?.routePatterns?.["/news/details"]?.cacheabilityProbe?.unlisted).toBeUndefined();
   });
 
   it("keeps traffic paths that an uncached request stage rewrites", async () => {
