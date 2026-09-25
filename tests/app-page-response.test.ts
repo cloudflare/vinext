@@ -74,7 +74,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
 
     expect(
@@ -154,7 +154,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
   });
 
@@ -171,7 +171,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
 
     expect(
@@ -187,7 +187,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
       shouldWriteToCache: false,
     });
   });
@@ -206,7 +206,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 60,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
       shouldWriteToCache: false,
     });
 
@@ -343,6 +343,40 @@ describe("app page response helpers", () => {
     });
   });
 
+  it("keeps dev's no-store header for known-dynamic responses", () => {
+    const base = {
+      isDraftMode: false,
+      isDynamicError: false,
+      isForceStatic: false,
+      isProduction: false,
+      isStaticEligible: true,
+      revalidateSeconds: 60,
+    };
+    for (const overrides of [
+      { isDraftMode: true },
+      { isForceDynamic: true },
+      { isStaticEligible: false },
+      { dynamicUsedDuringBuild: true },
+    ]) {
+      expect(
+        resolveAppPageRscResponsePolicy({
+          dynamicUsedDuringBuild: false,
+          isForceDynamic: false,
+          ...base,
+          ...overrides,
+        }),
+      ).toEqual({ cacheControl: "no-store, must-revalidate" });
+    }
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        ...base,
+        dynamicUsedDuringRender: true,
+        hasScriptNonce: false,
+        isForceDynamic: false,
+      }),
+    ).toEqual({ cacheControl: "no-store, must-revalidate", shouldWriteToCache: false });
+  });
+
   it("treats revalidate = 0 as no-store in RSC response policy", () => {
     expect(
       resolveAppPageRscResponsePolicy({
@@ -356,7 +390,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 0,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
 
     // revalidate = 0 takes priority over isForceStatic
@@ -372,7 +406,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 0,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
     });
   });
 
@@ -390,7 +424,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 0,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
       shouldWriteToCache: false,
     });
 
@@ -408,7 +442,7 @@ describe("app page response helpers", () => {
         revalidateSeconds: 0,
       }),
     ).toEqual({
-      cacheControl: "no-store, must-revalidate",
+      cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate",
       shouldWriteToCache: false,
     });
   });

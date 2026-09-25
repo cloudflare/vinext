@@ -500,6 +500,16 @@ describe("Cloudflare Workers Response Store adapter", () => {
     await Promise.all(responses.map((response) => response.arrayBuffer()));
   });
 
+  test("sends Next.js's never-cache header for a render that is dynamic before headers", async () => {
+    // `connection()` at the top of the page.
+    const response = await request("/use-cache");
+    await response.text();
+    assert.equal(
+      response.headers.get("cache-control"),
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
   test("keeps dynamic and unsupported Vary responses out of shared storage", async () => {
     const firstDynamic = await cacheStatus("/dynamic");
     const secondDynamic = await cacheStatus("/dynamic");

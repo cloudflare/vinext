@@ -770,7 +770,9 @@ describe("app page dispatch", () => {
     expect(isrGet).toHaveBeenCalled();
     expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBeNull();
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
@@ -2495,6 +2497,10 @@ describe("app page dispatch", () => {
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
+    // Dev keeps its no-store header.
+    const devResponse = await dispatchAppPage({ ...options, isProduction: false });
+    expect(devResponse.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    await devResponse.text();
   });
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
@@ -2789,6 +2795,87 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(200);
     expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+  });
+
+  describe("intercepted RSC of a known-dynamic source or current route", () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const knownDynamicConfigs = [
+      { dynamicConfig: "force-dynamic", revalidateSeconds: 0 },
+      { dynamicConfig: undefined, revalidateSeconds: 0 },
+    ];
+
+    function dispatchIntercept(overrides: CreateDispatchOptionsOverrides) {
+      const { options } = createDispatchOptions({
+        async buildPageElement(route) {
+          return route.pattern;
+        },
+        cleanPathname: "/photos/123",
+        findIntercept: () => ({
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        }),
+        getSourceRoute(sourceRouteIndex) {
+          return sourceRouteIndex === 1 ? sourceRoute : undefined;
+        },
+        isProduction: true,
+        isRscRequest: true,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        route: currentRoute,
+        ...overrides,
+      });
+      return dispatchAppPage(options);
+    }
+
+    for (const config of knownDynamicConfigs) {
+      const label = config.dynamicConfig ?? "revalidate = 0";
+
+      // A standard build already classifies such a source as non-static. A
+      // cacheComponents build keeps every route static-eligible, so only the
+      // source's own dynamic config marks the response.
+      it(`sends the never-cache header for a ${label} source in a cacheComponents build`, async () => {
+        const response = await dispatchIntercept({
+          pprRuntime: appPagePprRuntime,
+          resolveRouteDynamicConfig: (route) =>
+            route === sourceRoute ? config.dynamicConfig : undefined,
+          resolveRouteRevalidateSeconds: (route) =>
+            route === sourceRoute ? config.revalidateSeconds : null,
+        });
+
+        await expect(response.text()).resolves.toBe("/feed");
+        expect(response.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+      });
+
+      for (const pprRuntime of [undefined, appPagePprRuntime]) {
+        const build = pprRuntime ? "a cacheComponents build" : "a standard build";
+
+        it(`keeps a ${label} current route's header off a static source in ${build}`, async () => {
+          const response = await dispatchIntercept({
+            dynamicConfig: config.dynamicConfig,
+            pprRuntime,
+            resolveRouteDynamicConfig: (route) =>
+              route === currentRoute ? config.dynamicConfig : undefined,
+            resolveRouteRevalidateSeconds: (route) =>
+              route === currentRoute ? config.revalidateSeconds : null,
+            resolveRouteStaticEligible: (route) => route !== currentRoute,
+            revalidateSeconds: config.revalidateSeconds,
+          });
+
+          await expect(response.text()).resolves.toBe("/feed");
+          expect(response.headers.get("cache-control")).toBeNull();
+        });
+      }
+    }
   });
 
   it("passes empty searchParams to a force-static intercept source route", async () => {

@@ -27,6 +27,7 @@ import {
   buildAppPageRscResponse,
   resolveAppPageHtmlResponsePolicy,
   resolveAppPageRscResponsePolicy,
+  resolveUncacheableCacheControl,
   type AppPageMiddlewareContext,
   type AppPageResponseTiming,
 } from "./app-page-response.js";
@@ -325,18 +326,32 @@ function applyRequestCacheLife(options: {
 }
 
 /**
- * A route Next.js can't make static is never cacheable. Responses that leave
- * the render before its response policy, such as error boundaries and special
- * errors, get the same never-cache header as the normal render.
+ * A render that is known dynamic is never cacheable: a route Next.js can't make
+ * static, draft mode, `force-dynamic`, `revalidate = 0`, or a dynamic API read
+ * before the response left the render. Responses that leave the render before
+ * its response policy, such as error boundaries and special errors, get the
+ * same header as the normal render.
  */
 export function applyIneligibleRouteCachePolicy(
   response: Response,
   options: Pick<
     RenderAppPageLifecycleOptions,
-    "isDraftMode" | "isStaticEligible" | "middlewareContext"
+    | "isDraftMode"
+    | "isDynamicError"
+    | "isForceDynamic"
+    | "isForceStatic"
+    | "isProduction"
+    | "isProgressiveActionRender"
+    | "isRscRequest"
+    | "isStaticEligible"
+    | "middlewareContext"
+    | "peekDynamicUsage"
+    | "revalidateSeconds"
+    | "scriptNonce"
   >,
 ): Response {
-  if (options.isStaticEligible || options.isDraftMode) return response;
+  const cacheControl = resolveEarlyResponseCacheControl(options);
+  if (!cacheControl) return response;
   // Middleware's own cache policy wins, as in the normal response builders.
   // Only keep what this response already carries from it.
   const middlewarePolicy = [...(options.middlewareContext.headers ?? [])].filter(
@@ -349,9 +364,33 @@ export function applyIneligibleRouteCachePolicy(
     new Response(response.body, response as ResponseInit),
   );
   copyLinkHeaderProvenance(response.headers, stamped.headers);
-  applyCdnResponseHeaders(stamped.headers, { cacheControl: NEVER_CACHE_CONTROL });
+  applyCdnResponseHeaders(stamped.headers, { cacheControl });
   for (const [name, value] of middlewarePolicy) stamped.headers.set(name, value);
   return stamped;
+}
+
+/** The known-dynamic branches of the RSC and HTML response policies, in their order. */
+function resolveEarlyResponseCacheControl(
+  options: Parameters<typeof applyIneligibleRouteCachePolicy>[1],
+): string | null {
+  const uncacheable = resolveUncacheableCacheControl(options.isProduction);
+  if (!options.isStaticEligible || options.isDraftMode || options.isForceDynamic) {
+    return uncacheable;
+  }
+  // The HTML policy checks nonce-bearing and progressive action renders next,
+  // and keeps them no-store whatever else they do.
+  if (!options.isRscRequest && (options.scriptNonce || options.isProgressiveActionRender)) {
+    return NO_STORE_CACHE_CONTROL;
+  }
+  // As in the HTML response policy, only force-static and dynamic = "error"
+  // without a revalidate period stay static after a dynamic API read.
+  const ignoresDynamicUsage =
+    (options.isForceStatic || options.isDynamicError) &&
+    (options.revalidateSeconds === null || options.revalidateSeconds === Infinity);
+  const isKnownDynamic =
+    options.revalidateSeconds === 0 ||
+    (!ignoresDynamicUsage && (options.peekDynamicUsage?.() ?? peekDynamicUsage()));
+  return isKnownDynamic ? uncacheable : null;
 }
 
 function resolveAppPageCacheWriteRevalidateSeconds(options: {

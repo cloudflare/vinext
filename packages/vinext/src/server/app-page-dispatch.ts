@@ -68,9 +68,9 @@ import {
 } from "./app-page-render-observation.js";
 import {
   mergeMiddlewareResponseHeaders,
+  resolveUncacheableCacheControl,
   type AppPageMiddlewareContext,
 } from "./app-page-response.js";
-import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
@@ -743,7 +743,20 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     options.clearRequestContext();
     return applyIneligibleRouteCachePolicy(
       new Response("Page has no default export", { status: 500 }),
-      { isDraftMode, isStaticEligible, middlewareContext: options.middlewareContext },
+      {
+        isDraftMode,
+        isDynamicError,
+        isForceDynamic,
+        isForceStatic,
+        isProduction: options.isProduction,
+        isProgressiveActionRender: options.isProgressiveActionRender === true,
+        isRscRequest: options.isRscRequest,
+        isStaticEligible,
+        middlewareContext: options.middlewareContext,
+        peekDynamicUsage,
+        revalidateSeconds: currentRevalidateSeconds,
+        scriptNonce: options.scriptNonce,
+      },
     );
   }
 
@@ -990,8 +1003,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       );
       const cachePolicy = {
         isDraftMode,
+        isDynamicError,
+        isForceDynamic,
+        isForceStatic,
+        isProduction: options.isProduction,
+        isProgressiveActionRender: options.isProgressiveActionRender === true,
+        isRscRequest: options.isRscRequest,
         isStaticEligible,
         middlewareContext: options.middlewareContext,
+        peekDynamicUsage,
+        revalidateSeconds: currentRevalidateSeconds,
+        scriptNonce: options.scriptNonce,
       };
       if (renderedNotFound) {
         return applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy);
@@ -1016,6 +1038,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   let interceptDynamicConfig: string | null | undefined;
   let interceptDynamicConfigResolved = false;
+  // Whether the source route that the intercepted response renders is
+  // force-dynamic or revalidate = 0, from the config activated for its render.
+  let isInterceptSourceKnownDynamic = false;
   const interceptResult = await resolveAppPageIntercept<
     TRoute,
     unknown,
@@ -1052,8 +1077,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       } else {
         setHeadersContext(requestHeadersContext);
       }
+      const sourceRevalidateSeconds =
+        options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null;
+      isInterceptSourceKnownDynamic =
+        sourceDynamicConfig === "force-dynamic" || sourceRevalidateSeconds === 0;
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
-      setCurrentFetchRevalidate(options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null);
+      setCurrentFetchRevalidate(sourceRevalidateSeconds);
       setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
       return options.buildPageElement(
         interceptRoute,
@@ -1099,12 +1128,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         Vary: VINEXT_RSC_VARY_HEADER,
       });
       // This response renders the source route, so it takes the source's
-      // cacheability, not the matched target's. A source that can't be static
-      // is never cacheable, like its own render. Middleware's policy still
-      // wins, merged after, as in the RSC builder.
+      // cacheability and dynamic config, not the matched target's. A source
+      // that can't be static, a render known dynamic before it starts, or a
+      // draft-mode request is never cacheable, like the source's own render.
+      // Middleware's policy still wins, merged after, as in the RSC builder.
       const isSourceStaticEligible =
         options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
-      if (!isSourceStaticEligible) interceptHeaders.set("Cache-Control", NEVER_CACHE_CONTROL);
+      if (!isSourceStaticEligible || isDraftMode || isInterceptSourceKnownDynamic) {
+        interceptHeaders.set("Cache-Control", resolveUncacheableCacheControl(options.isProduction));
+      }
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       applyRscCompatibilityIdHeader(interceptHeaders);
       applyRscDeploymentIdHeader(interceptHeaders);
