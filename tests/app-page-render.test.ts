@@ -975,12 +975,13 @@ describe("app page render lifecycle", () => {
     });
     expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
 
-    // Draft mode, force-dynamic and revalidate = 0 are known dynamic too, even
-    // where the route itself can be static.
+    // Draft mode, force-dynamic, revalidate = 0 and a dynamic API read are
+    // known dynamic too, even where the route itself can be static.
     for (const knownDynamic of [
       { isDraftMode: true },
       { isForceDynamic: true },
       { revalidateSeconds: 0 },
+      { peekDynamicUsage: () => true },
     ]) {
       const redirected = await renderAppPageLifecycle({
         ...optionsWithoutElement,
@@ -993,6 +994,19 @@ describe("app page render lifecycle", () => {
       });
       expect(redirected.headers.get("cache-control")).toBe(neverCache);
     }
+
+    // A force-static render stays static after a dynamic API read.
+    const forceStaticRedirect = await renderAppPageLifecycle({
+      ...optionsWithoutElement,
+      isForceStatic: true,
+      isProduction: true,
+      isStaticEligible: true,
+      peekDynamicUsage: () => true,
+      async prepareElement() {
+        return { response: Response.redirect("https://example.test/elsewhere", 307) };
+      },
+    });
+    expect(forceStaticRedirect.headers.get("cache-control")).toBeNull();
 
     // Dev keeps its no-store header.
     const devRecovered = await renderAppPageLifecycle({

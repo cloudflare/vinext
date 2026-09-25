@@ -326,29 +326,38 @@ function applyRequestCacheLife(options: {
 }
 
 /**
- * A render that is known dynamic before it starts is never cacheable: a route
- * Next.js can't make static, draft mode, `force-dynamic` or `revalidate = 0`.
- * Responses that leave the render before its response policy, such as error
- * boundaries and special errors, get the same never-cache header as the
- * normal render.
+ * A render that is known dynamic is never cacheable: a route Next.js can't make
+ * static, draft mode, `force-dynamic`, `revalidate = 0`, or a dynamic API read
+ * before the response left the render. Responses that leave the render before
+ * its response policy, such as error boundaries and special errors, get the
+ * same never-cache header as the normal render.
  */
 export function applyIneligibleRouteCachePolicy(
   response: Response,
   options: Pick<
     RenderAppPageLifecycleOptions,
     | "isDraftMode"
+    | "isDynamicError"
     | "isForceDynamic"
+    | "isForceStatic"
     | "isProduction"
     | "isStaticEligible"
     | "middlewareContext"
+    | "peekDynamicUsage"
     | "revalidateSeconds"
   >,
 ): Response {
+  // As in the HTML response policy, only force-static and dynamic = "error"
+  // without a revalidate period stay static after a dynamic API read.
+  const ignoresDynamicUsage =
+    (options.isForceStatic || options.isDynamicError) &&
+    (options.revalidateSeconds === null || options.revalidateSeconds === Infinity);
   const isKnownDynamic =
     !options.isStaticEligible ||
     options.isDraftMode ||
     options.isForceDynamic ||
-    options.revalidateSeconds === 0;
+    options.revalidateSeconds === 0 ||
+    (!ignoresDynamicUsage && (options.peekDynamicUsage?.() ?? peekDynamicUsage()));
   if (!isKnownDynamic) return response;
   // Middleware's own cache policy wins, as in the normal response builders.
   // Only keep what this response already carries from it.
