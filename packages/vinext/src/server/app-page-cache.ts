@@ -7,7 +7,11 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
-import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
+import {
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "./headers.js";
 import { applyClientStaleTimeHeader, applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -87,6 +91,10 @@ type BuildAppPageCachedResponseOptions = {
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
+  /** The current request's route params, which the client reads on RSC responses. */
+  params?: Record<string, string | string[]>;
+  /** The current request's path and query, which the client reads on RSC responses. */
+  renderedPathAndSearch?: string | null;
   revalidateSeconds: number;
 };
 
@@ -107,7 +115,14 @@ type ReadAppPageCacheResponseOptions = {
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
+  /**
+   * Resolves the current request's route params for a cached RSC response.
+   * Called only once an entry can answer the request, since resolving them
+   * may load route modules.
+   */
+  resolveParams?: () => Promise<Record<string, string | string[]>>;
   recordCacheOutcome?: AppPageCacheOutcomeRecorder;
+  renderedPathAndSearch?: string | null;
   renderMode?: AppRscRenderMode;
   expireSeconds?: number;
   revalidateSeconds: number;
@@ -183,6 +198,7 @@ function buildAppPageCachedHeaders(options: {
   isEdgeRuntime?: boolean;
   middlewareHeaders?: Headers | null;
   mountedSlotsHeader?: string | null;
+  params?: Record<string, string | string[]>;
   staleTimeSeconds?: number;
 }): Headers {
   const headers = new Headers({
@@ -195,6 +211,11 @@ function buildAppPageCachedHeaders(options: {
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
+  // Set before middleware's headers merge, so middleware's value wins as it
+  // does on a fresh RSC response.
+  if (options.params && Object.keys(options.params).length > 0) {
+    headers.set(VINEXT_PARAMS_HEADER, encodeURIComponent(JSON.stringify(options.params)));
+  }
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
@@ -298,8 +319,17 @@ export function buildAppPageCachedResponse(
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareHeaders: options.middlewareHeaders,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      // The params and path describe the current request, not the shared RSC
+      // bytes, so a hit composes them as a fresh render does.
+      params: options.params,
       staleTimeSeconds,
     });
+    if (options.renderedPathAndSearch) {
+      rscHeaders.set(
+        VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+        encodeURIComponent(options.renderedPathAndSearch),
+      );
+    }
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
 
@@ -406,6 +436,18 @@ export async function readAppPageCacheResponse(
       )
     : options.isrHtmlKey(options.cleanPathname);
   const artifact = options.isRscRequest ? "rsc" : "html";
+  // Resolving params can load route modules, so its failure is the request's,
+  // not a cache read error to turn into a MISS; it is rethrown past the catch.
+  let paramsFailure: { error: unknown } | undefined;
+  const resolveCachedResponseParams = async (cachedValue: CachedAppPageValue) => {
+    if (!options.isRscRequest || !cachedValue.rscData) return undefined;
+    try {
+      return await options.resolveParams?.();
+    } catch (error) {
+      paramsFailure = { error };
+      throw error;
+    }
+  };
 
   try {
     const cached = await options.isrGet(isrKey);
@@ -458,6 +500,8 @@ export async function readAppPageCacheResponse(
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
+        params: await resolveCachedResponseParams(cachedValue),
+        renderedPathAndSearch: options.renderedPathAndSearch,
         revalidateSeconds: options.revalidateSeconds,
       });
 
@@ -636,6 +680,8 @@ export async function readAppPageCacheResponse(
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
+        params: await resolveCachedResponseParams(cachedValue),
+        renderedPathAndSearch: options.renderedPathAndSearch,
         revalidateSeconds: options.revalidateSeconds,
       });
 
@@ -673,6 +719,7 @@ export async function readAppPageCacheResponse(
       options.isrDebug?.("MISS (no cache entry)", options.cleanPathname);
     }
   } catch (isrReadError) {
+    if (paramsFailure) throw paramsFailure.error;
     recordAppPageCacheOutcome(options.recordCacheOutcome, {
       artifact,
       cacheKey: isrKey,

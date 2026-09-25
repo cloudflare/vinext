@@ -27,13 +27,18 @@ import {
 } from "../packages/vinext/src/shims/cache.js";
 import type { CacheControlMetadata } from "../packages/vinext/src/shims/cache-handler.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
-import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  NEXT_ROUTER_STALE_TIME_HEADER,
+  VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import {
   markClientTraceMetadataBlock,
   renderClientTraceMetadataTags,
 } from "../packages/vinext/src/server/client-trace-metadata.js";
 import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import { buildAppPageRscResponse } from "../packages/vinext/src/server/app-page-response.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -280,6 +285,157 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("Vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, Origin`);
     expect(response?.headers.get("X-Vinext-Cache")).toBe("STALE");
     await expect(response?.arrayBuffer()).resolves.toEqual(rscData);
+  });
+
+  it("composes the current request's params and path on cached RSC responses", async () => {
+    const cachedValue = buildCachedAppPageValue("<h1>cached</h1>", new ArrayBuffer(0));
+    const readCached = (isRscRequest: boolean, cacheState: "HIT" | "STALE") =>
+      readAppPageCacheResponse({
+        cleanPathname: "/posts/한글",
+        clearRequestContext() {},
+        isRscRequest,
+        async isrGet() {
+          return buildISRCacheEntry(cachedValue, cacheState === "STALE", { revalidate: 60 });
+        },
+        isrHtmlKey(pathname) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        async isrSet() {},
+        async resolveParams() {
+          return { slug: "한글" };
+        },
+        renderedPathAndSearch: "/posts/한글?q=1",
+        revalidateSeconds: 60,
+        async renderFreshPageForCache() {
+          throw new Error("regeneration is not awaited here");
+        },
+        scheduleBackgroundRegeneration() {},
+      });
+
+    for (const cacheState of ["HIT", "STALE"] as const) {
+      const rsc = await readCached(true, cacheState);
+      expect(rsc?.headers.get("x-vinext-cache")).toBe(cacheState);
+      expect(rsc?.headers.get(VINEXT_PARAMS_HEADER)).toBe(
+        encodeURIComponent(JSON.stringify({ slug: "한글" })),
+      );
+      expect(rsc?.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+        encodeURIComponent("/posts/한글?q=1"),
+      );
+    }
+
+    const html = await readCached(false, "HIT");
+    expect(html?.headers.get(VINEXT_PARAMS_HEADER)).toBeNull();
+    expect(html?.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBeNull();
+
+    const withoutParams = buildAppPageCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isRscRequest: true,
+      params: {},
+      revalidateSeconds: 60,
+    });
+    expect(withoutParams?.headers.get(VINEXT_PARAMS_HEADER)).toBeNull();
+  });
+
+  it.each(["HIT", "STALE"] as const)(
+    "surfaces a params resolution failure on a cached RSC %s instead of a cache read error",
+    async (cacheState) => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const recordCacheOutcome = vi.fn();
+        const loadFailure = new Error("route module failed to load");
+
+        await expect(
+          readAppPageCacheResponse({
+            cleanPathname: "/posts/intercepted",
+            clearRequestContext() {},
+            isRscRequest: true,
+            async isrGet() {
+              return buildISRCacheEntry(
+                buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer),
+                cacheState === "STALE",
+                { revalidate: 60 },
+              );
+            },
+            isrHtmlKey(pathname) {
+              return "html:" + pathname;
+            },
+            isrRscKey(pathname) {
+              return "rsc:" + pathname;
+            },
+            async isrSet() {},
+            recordCacheOutcome,
+            async resolveParams() {
+              throw loadFailure;
+            },
+            revalidateSeconds: 60,
+            async renderFreshPageForCache() {
+              throw new Error("regeneration is not awaited here");
+            },
+            scheduleBackgroundRegeneration() {},
+          }),
+        ).rejects.toBe(loadFailure);
+        expect(recordCacheOutcome).not.toHaveBeenCalled();
+        expect(consoleError).not.toHaveBeenCalled();
+      } finally {
+        consoleError.mockRestore();
+      }
+    },
+  );
+
+  it("keeps middleware's params and path headers from a MISS on the cached RSC HIT", async () => {
+    const middlewareHeaders = new Headers({
+      [VINEXT_PARAMS_HEADER]: encodeURIComponent(JSON.stringify({ slug: "middleware" })),
+      [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/middleware"),
+    });
+    const params = { slug: "request" };
+    const renderedPathAndSearch = "/posts/request";
+
+    const miss = buildAppPageRscResponse(new Response("flight").body!, {
+      middlewareContext: { headers: middlewareHeaders, status: null },
+      params,
+      policy: { cacheState: "MISS" },
+      renderedPathAndSearch,
+    });
+    const hit = await readAppPageCacheResponse({
+      cleanPathname: "/posts/request",
+      clearRequestContext() {},
+      isRscRequest: true,
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer),
+          false,
+          { revalidate: 60 },
+        );
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      middlewareHeaders,
+      async resolveParams() {
+        return params;
+      },
+      renderedPathAndSearch,
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("a fresh entry does not regenerate");
+      },
+      scheduleBackgroundRegeneration() {},
+    });
+
+    expect(hit?.headers.get("x-vinext-cache")).toBe("HIT");
+    for (const header of [VINEXT_PARAMS_HEADER, VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]) {
+      expect(hit?.headers.get(header)).toBe(miss.headers.get(header));
+    }
+    expect(hit?.headers.get(VINEXT_PARAMS_HEADER)).toBe(
+      encodeURIComponent(JSON.stringify({ slug: "middleware" })),
+    );
   });
 
   it("uses stored cache-control metadata instead of global config for cached HIT responses", async () => {

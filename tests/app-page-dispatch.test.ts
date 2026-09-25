@@ -746,6 +746,137 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>cached</html>");
   });
 
+  it("sends the request's navigation params and path on a cached RSC hit", async () => {
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("cache hit should not render the page");
+      },
+      cleanPathname: "/posts/first",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer)),
+      ),
+      hasGenerateStaticParams: true,
+      params: { slug: "first" },
+      revalidateSeconds: 60,
+      route: createRoute({
+        isDynamic: true,
+        params: ["slug"],
+        // An active slot's params are part of what a fresh render sends.
+        slots: {
+          "sidebar@app/posts/@sidebar": {
+            page: { default: "sidebar-page" },
+            slotParamNames: ["section"],
+            slotPatternParts: [":section", ":slug"],
+          },
+        },
+      }),
+    });
+    options.renderedPathAndSearch = "/posts/first";
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(response.headers.get("x-vinext-params")).toBe(
+      encodeURIComponent(JSON.stringify({ slug: "first", section: "posts" })),
+    );
+    expect(response.headers.get("x-vinext-rendered-path-and-search")).toBe(
+      encodeURIComponent("/posts/first"),
+    );
+  });
+
+  it("hydrates an intercepting source route before resolving a cached RSC hit's params", async () => {
+    // The source route's slots are lazy until ensureRouteLoaded runs.
+    const sidebarSlot: {
+      page?: { default?: unknown } | null;
+      slotParamNames: readonly string[];
+      slotPatternParts: readonly string[];
+    } = { slotParamNames: ["catchAll"], slotPatternParts: [":catchAll+"] };
+    const sourceRoute = createRoute({
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+      slots: {
+        "modal@app/feed/@modal": {
+          page: { default: "modal-page" },
+          slotParamNames: ["id"],
+          slotPatternParts: ["photos", ":id"],
+        },
+        "sidebar@app/feed/@sidebar": sidebarSlot,
+      },
+    });
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("cache hit should not render the page");
+      },
+      cleanPathname: "/photos/123",
+      async ensureRouteLoaded(loadedRoute) {
+        if (loadedRoute === sourceRoute) sidebarSlot.page = { default: "sidebar-page" };
+      },
+      hasGenerateStaticParams: true,
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer)),
+      ),
+      params: { id: "123" },
+      revalidateSeconds: 60,
+      route: createRoute({ isDynamic: true, params: ["id"], pattern: "/photos/[id]" }),
+    });
+
+    const response = await dispatchAppPage({
+      ...options,
+      findIntercept() {
+        return {
+          interceptBranchSegments: ["(.)photos", "[id]"],
+          interceptionGraphId: "graph-interception:/feed->/photos/:id",
+          matchedParams: { id: "123" },
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 1,
+        };
+      },
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(response.headers.get("x-vinext-params")).toBe(
+      encodeURIComponent(JSON.stringify({ id: "123", catchAll: ["photos", "123"] })),
+    );
+  });
+
+  it("validates generated params before hydrating a route for cached RSC hit params", async () => {
+    const ensureRouteLoaded = vi.fn(async () => {
+      throw new Error("route modules should not load for a generated-param miss");
+    });
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("not found", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      ensureRouteLoaded,
+      async generateStaticParams() {
+        return [{ slug: "known" }];
+      },
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () => null),
+      revalidateSeconds: 60,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage({ ...options, dynamicParamsConfig: false });
+
+    expect(response.status).toBe(404);
+    expect(ensureRouteLoaded).not.toHaveBeenCalled();
+  });
+
   it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),
