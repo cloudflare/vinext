@@ -372,6 +372,8 @@ describe("app browser server action client", () => {
           headers: {
             "content-type": "text/x-component",
             [ACTION_REVALIDATED_HEADER]: "2",
+            // A rewrite on the POST re-rendered the page with another query.
+            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/source?q=rewritten"),
           },
         }),
       ),
@@ -397,11 +399,12 @@ describe("app browser server action client", () => {
 
     expect(clearClientNavigationCaches).toHaveBeenCalledTimes(1);
     expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
-    const [elementsArg, , returnValueArg, revalidationArg] =
+    const [elementsArg, , returnValueArg, revalidationArg, renderedPathAndSearchArg] =
       commitSameUrlNavigatePayload.mock.calls[0];
     await expect(elementsArg).resolves.toEqual(normalizeAppElements(wireElements));
     expect(returnValueArg).toEqual({ ok: true, data: "value-after-revalidation" });
     expect(revalidationArg).toBe("dynamicOnly");
+    expect(renderedPathAndSearchArg).toBe("/source?q=rewritten");
   });
 
   it("commits the RSC tree for revalidated void actions with no return value", async () => {

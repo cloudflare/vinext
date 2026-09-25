@@ -172,6 +172,11 @@ const nextConfig: NextConfig = {
           source: "/client-page-search-params/delayed-rewritten/:q",
           destination: "/client-page-search-params/delayed?q=:q",
         },
+        {
+          source: "/client-page-search-params/action",
+          has: [{ type: "header", key: "next-action" }],
+          destination: "/client-page-search-params/action?q=from-action",
+        },
       ],
       afterFiles: [
         // Used by Vitest: app-router.test.ts

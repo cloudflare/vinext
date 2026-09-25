@@ -78,6 +78,24 @@ test("a client page behind a delayed boundary hydrates with the rewritten query"
   expect(errors).toEqual([]);
 });
 
+test("a client page reads the query a server action re-render was rewritten to", async ({
+  page,
+}) => {
+  // The rewrite matches only the action POST, so the re-render has a query the
+  // URL doesn't.
+  const errors = collectPageErrors(page);
+
+  await page.goto("/client-page-search-params/action");
+  await waitForAppRouterHydration(page);
+  const query = page.getByTestId("action-client-page-q");
+  await expect(query).toHaveText("(none)");
+
+  await page.getByTestId("action-client-page-submit").click();
+  await expect(query).toHaveText("from-action");
+  await expect(page).toHaveURL(/\/client-page-search-params\/action$/);
+  expect(errors).toEqual([]);
+});
+
 test("a force-static client page keeps an empty query during navigation", async ({ page }) => {
   const errors = collectPageErrors(page);
 

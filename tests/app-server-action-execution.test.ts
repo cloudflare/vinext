@@ -1725,6 +1725,26 @@ describe("app server action execution helpers", () => {
     expect(response?.headers.get("x-action-revalidated")).toBe("1");
   });
 
+  it("sends the path and query an action re-render rendered with", async () => {
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/dashboard"));
+            return "revalidated";
+          });
+        },
+        // The query a rewrite resolved, not the one in the page URL.
+        searchParams: new URLSearchParams("q=rewritten value"),
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(response?.headers.get("X-Vinext-Rendered-Path-And-Search")).toBe(
+      encodeURIComponent("/dashboard?q=rewritten+value"),
+    );
+  });
+
   it("renders same-origin action redirects as a single-pass Flight response", async () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts

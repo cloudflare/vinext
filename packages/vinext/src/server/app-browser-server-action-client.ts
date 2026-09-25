@@ -58,6 +58,7 @@ export type ClientServerActionDeps = {
     actionInitiation: ClientServerActionInitiation,
     returnValue: ServerActionResult["returnValue"] | undefined,
     revalidation: ServerActionRevalidationKind,
+    renderedPathAndSearch: string | null,
   ): Promise<unknown>;
   navigationPlanner: typeof import("./navigation-planner.js").navigationPlanner;
   performHardNavigation(url: string, historyMode?: "assign" | "replace"): void;
@@ -244,6 +245,10 @@ export async function invokeClientServerAction(
   deps.syncServerActionHttpFallbackHead(
     shouldSyncServerActionHttpFallbackHead(result) ? fetchResponse.status : null,
   );
+  // A rewrite on the POST can re-render the page with another query.
+  const renderedPathAndSearch = parseRenderedPathAndSearchHeader(
+    fetchResponse.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+  );
 
   if (isServerActionResult(result)) {
     if (result.root !== undefined) {
@@ -259,6 +264,7 @@ export async function invokeClientServerAction(
         actionInitiation,
         returnValue,
         revalidation,
+        renderedPathAndSearch,
       );
     }
     if (result.returnValue) {
@@ -275,5 +281,6 @@ export async function invokeClientServerAction(
     actionInitiation,
     undefined,
     revalidation,
+    renderedPathAndSearch,
   );
 }

@@ -848,6 +848,7 @@ async function commitSameUrlNavigatePayload(
   actionInitiation: ActionInitiationSnapshot,
   returnValue?: ServerActionResult["returnValue"],
   revalidation: ServerActionRevalidationKind = "none",
+  renderedPathAndSearch: string | null = null,
 ): Promise<unknown> {
   let shouldRetrySupplementalRefresh = false;
   let supplementalHandle: ReturnType<
@@ -915,14 +916,22 @@ async function commitSameUrlNavigatePayload(
       });
     }
   }
-  // The re-render keeps the URL, so the server rendered the same query.
-  const navigationSnapshot = withRenderedSearchOf(
-    createClientNavigationRenderSnapshot(
-      actionInitiation.href,
-      actionInitiation.routerState.navigationSnapshot.params,
-    ),
-    actionInitiation.routerState.navigationSnapshot,
-  );
+  // The re-render keeps the URL, but a rewrite on the POST can resolve
+  // another query. Without the header, keep the query the page rendered.
+  const navigationSnapshot =
+    renderedPathAndSearch === null
+      ? withRenderedSearchOf(
+          createClientNavigationRenderSnapshot(
+            actionInitiation.href,
+            actionInitiation.routerState.navigationSnapshot.params,
+          ),
+          actionInitiation.routerState.navigationSnapshot,
+        )
+      : createClientNavigationRenderSnapshot(
+          actionInitiation.href,
+          actionInitiation.routerState.navigationSnapshot.params,
+          renderedPathAndSearch,
+        );
   try {
     const result = await browserNavigationController.commitSameUrlNavigatePayload(
       nextElements,

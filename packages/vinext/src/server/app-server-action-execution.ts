@@ -29,6 +29,7 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   RSC_HEADER,
   VINEXT_MW_CTX_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "./headers.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
@@ -1844,6 +1845,7 @@ export async function handleServerActionRscRequest<
     const match = options.currentRouteMatch;
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
+    let renderedPathAndSearch: string | null = null;
     const actionRerenderIsRscRequest = true;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
@@ -1888,6 +1890,10 @@ export async function handleServerActionRscRequest<
         searchParams: actionRerenderSearchParams,
         params: resolvedActionNavigationParams,
       });
+      const renderedSearch = options.searchParams.toString();
+      renderedPathAndSearch = renderedSearch
+        ? `${options.cleanPathname}?${renderedSearch}`
+        : options.cleanPathname;
       setCurrentFetchCacheMode(
         options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
       );
@@ -1948,6 +1954,14 @@ export async function handleServerActionRscRequest<
     mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
     applyRscCompatibilityIdHeader(actionHeaders);
     setActionRevalidatedHeader(actionHeaders, actionRevalidationKind);
+    // A rewrite can give the re-render another query than the page had, and
+    // its client pages read this one, as after a navigation.
+    if (renderedPathAndSearch !== null) {
+      actionHeaders.set(
+        VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+        encodeURIComponent(renderedPathAndSearch),
+      );
+    }
     const actionResponse = createServerActionRscResponse(
       rscStream,
       {
