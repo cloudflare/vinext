@@ -220,6 +220,88 @@ async function onePathPerShard(shards: number): Promise<string[]> {
   return paths as string[];
 }
 
+// Re-exports the fixture Worker with an R2 binding whose writes of revision 2
+// fail, either before or after the object is stored.
+async function useFailingRevisionTwoWrites(mode: "before" | "after") {
+  await mf.dispose();
+  const wrapperPath = path.join(path.dirname(workerScript), "failing-revision-two.js");
+  mf = new Miniflare({
+    compatibilityDate: "2026-04-08",
+    compatibilityFlags: ["nodejs_compat"],
+    unsafeEphemeralDurableObjects: true,
+    unsafeInspectDurableObjects: true,
+    workers: [
+      {
+        name: "user-worker",
+        compatibilityDate: "2026-04-08",
+        compatibilityFlags: ["nodejs_compat"],
+        modulesRoot: path.dirname(workerScript),
+        modules: [
+          {
+            type: "ESModule",
+            path: wrapperPath,
+            contents: `
+              import worker, { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding as Base } from "./worker.js";
+              export { CacheMetadata, ResponseStoreRevalidator };
+              export default worker;
+              export class ResponseStoreBinding extends Base {
+                constructor(ctx, env) {
+                  const bucket = env.CACHE_BODIES;
+                  super(ctx, {
+                    ...env,
+                    CACHE_BODIES: {
+                      get: (...args) => bucket.get(...args),
+                      head: (...args) => bucket.head(...args),
+                      list: (...args) => bucket.list(...args),
+                      delete: (...args) => bucket.delete(...args),
+                      async put(key, value, options) {
+                        if (options?.customMetadata?.latestRevision === "2") {
+                          if (${JSON.stringify(mode)} === "after") await bucket.put(key, value, options);
+                          throw new Error("Injected R2 write failure");
+                        }
+                        return bucket.put(key, value, options);
+                      },
+                    },
+                  });
+                }
+              }
+            `,
+          },
+          { type: "ESModule", path: workerScript },
+        ],
+        durableObjects: {
+          CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+        },
+        r2Buckets: { CACHE_BODIES: "programmatic-cache-test" },
+        bindings: {
+          CF_VERSION_METADATA: {
+            id: "poc-v2",
+            tag: "test",
+            timestamp: "2026-09-04T00:00:00Z",
+          },
+        },
+      },
+    ],
+  });
+  worker = { fetch: mf.dispatchFetch.bind(mf) };
+}
+
+async function waitForFailedBackgroundRestore(cacheKey: string, revision: number) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const entry = (await metadata()).find((candidate) => candidate.cacheKey === cacheKey);
+    if (
+      (await regenerationCount()) === 1 &&
+      (await metadataRowCount("revalidation_claims")) === 0 &&
+      (await metadataRowCount("pending_objects")) === 0 &&
+      entry?.activeRevision === revision
+    ) {
+      return entry;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`${cacheKey} did not settle at revision ${revision}`);
+}
+
 async function regenerationCount(): Promise<number> {
   const response = await worker.fetch("https://user.test/admin/stats");
   return ((await response.json()) as { regenerationCount: number }).regenerationCount;
@@ -1051,6 +1133,48 @@ test("a failed regeneration keeps policies that forbid stale serving hard-expiri
   assert.equal(expired.status, 500);
   assert.match(await expired.text(), /Fixture regeneration failure/);
   assert.equal(await regenerationCount(), cases.length + 1);
+});
+
+test("a re-store whose R2 rewrite fails leaves the source revision readable", async () => {
+  await useFailingRevisionTwoWrites("before");
+  await put("/restore-write-lost", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { fail: true },
+  });
+
+  assert.equal(await (await read("/restore-write-lost")).text(), "stale-body");
+  const entry = await waitForFailedBackgroundRestore("/restore-write-lost", 1);
+  assert.equal(entry.latestRevision, 2);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+
+  const served = await read("/restore-write-lost");
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(served.headers.get("X-Workers-Response-Store-Revision"), "1");
+  assert.equal(await served.text(), "stale-body");
+  // The metadata matches R2 again, so the next stale read can claim a retry.
+  for (let attempt = 0; attempt < 100 && (await regenerationCount()) < 2; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(await regenerationCount(), 2);
+});
+
+test("a re-store whose R2 rewrite lands before reporting failure keeps it", async () => {
+  await useFailingRevisionTwoWrites("after");
+  await put("/restore-write-landed", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { fail: true },
+  });
+
+  assert.equal(await (await read("/restore-write-landed")).text(), "stale-body");
+  await waitForFailedBackgroundRestore("/restore-write-landed", 2);
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+
+  const served = await read("/restore-write-landed");
+  assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(served.headers.get("X-Workers-Response-Store-Revision"), "2");
+  assert.equal(await served.text(), "stale-body");
+  assert.equal(await regenerationCount(), 1);
 });
 
 test("a failed re-store keeps the regeneration error and releases its reservation", async () => {

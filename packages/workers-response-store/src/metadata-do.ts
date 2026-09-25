@@ -98,6 +98,11 @@ export type CacheMetadataStub = DurableObjectStub & {
     expectedActiveRevision?: number,
   ): Promise<PublicationResult>;
   invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
+  restoreActiveRevision(
+    keyHash: string,
+    revision: number,
+    source: Pick<StoredEntry, "activeRevision" | "freshUntil" | "swrUntil">,
+  ): Promise<boolean>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
   getTagExpiration(tags: string[]): Promise<number>;
   findRefreshCandidates(options: ResponseStoreRefreshOptions): Promise<StoredEntry[]>;
@@ -1075,6 +1080,32 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       this.logCleanupFailure(error),
     );
     return this.drainPendingTombstones(1, keyHash);
+  }
+
+  /**
+   * Point an entry re-stored after a failed regeneration back at its source
+   * revision when the R2 rewrite did not land. The re-store copied every other
+   * column from the source, so only the revision and freshness change.
+   */
+  restoreActiveRevision(
+    keyHash: string,
+    revision: number,
+    source: Pick<StoredEntry, "activeRevision" | "freshUntil" | "swrUntil">,
+  ): boolean {
+    return (
+      this.ctx.storage.sql
+        .exec(
+          `UPDATE entries SET active_revision = ?, fresh_until = ?, swr_until = ?
+          WHERE key_hash = ? AND active_revision = ? AND tombstoned = 0
+          RETURNING key_hash`,
+          source.activeRevision,
+          source.freshUntil,
+          source.swrUntil,
+          keyHash,
+          revision,
+        )
+        .toArray().length === 1
+    );
   }
 
   getEntry(keyHash: string): StoredEntry | null {

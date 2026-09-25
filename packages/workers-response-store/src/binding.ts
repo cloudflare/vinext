@@ -974,7 +974,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     createdAt: number,
     initialAge: number,
     expectedR2Etag: string | null | undefined,
-    expectedActiveRevision?: number,
   ): Promise<StoreResult> {
     let publication: PublicationResult;
     try {
@@ -984,7 +983,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         candidate,
         write.claimId,
         write.objectKey,
-        expectedActiveRevision,
       );
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
@@ -1132,25 +1130,52 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       return;
     }
 
-    await this.publishRevision(
-      metadata,
-      write,
-      {
-        fenceTags: [...new Set([...write.fenceTags, ...entry.cacheTags])],
-        objectKey: this.r2ObjectKey(entry.keyHash),
-        statusText: entry.statusText,
-        responseHeaders: entry.responseHeaders,
-        ...policy,
-        revalidator: entry.revalidator,
-        cacheTags: entry.cacheTags,
-      },
-      source.body,
-      source.status,
-      source.createdAt,
-      source.initialAge,
-      source.etag,
-      entry.activeRevision,
-    );
+    let publication: PublicationResult;
+    try {
+      publication = await metadata.publish(
+        write.keyHash,
+        write.revision,
+        {
+          fenceTags: [...new Set([...write.fenceTags, ...entry.cacheTags])],
+          objectKey: this.r2ObjectKey(entry.keyHash),
+          statusText: entry.statusText,
+          responseHeaders: entry.responseHeaders,
+          ...policy,
+          revalidator: entry.revalidator,
+          cacheTags: entry.cacheTags,
+        },
+        write.claimId,
+        write.objectKey,
+        entry.activeRevision,
+      );
+    } catch (error) {
+      await this.releaseFailedWrite(metadata, write);
+      throw error;
+    }
+    if (!publication.published || !publication.entry) return;
+
+    const revision = publication.entry.activeRevision;
+    try {
+      await this.writeR2Response(
+        publication.entry,
+        source.body,
+        source.status,
+        source.createdAt,
+        source.initialAge,
+        source.etag,
+      );
+    } catch (error) {
+      // The rewrite replaces the only readable body, so unlike a new response
+      // it must not be tombstoned. Unless it landed, point the metadata back
+      // at the source revision that R2 still holds.
+      const current = await this.env.CACHE_BODIES.head(this.r2ObjectKey(entry.keyHash)).catch(
+        () => null,
+      );
+      if (metadataInteger(current?.customMetadata?.latestRevision) !== revision) {
+        await metadata.restoreActiveRevision(entry.keyHash, revision, entry);
+      }
+      throw error;
+    }
   }
 
   private async regenerateEntry(
