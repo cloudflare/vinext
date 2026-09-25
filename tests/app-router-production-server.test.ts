@@ -231,6 +231,33 @@ async function waitForCondition(
   }
 }
 
+async function readResponseChunks(response: Response): Promise<{ chunks: string[]; html: string }> {
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(decoder.decode(value, { stream: true }));
+  }
+  const tail = decoder.decode();
+  if (tail.length > 0) chunks.push(tail);
+
+  return { chunks, html: chunks.join("") };
+}
+
+// Chunk boundaries are not marker boundaries: accumulate so a marker split
+// across two reads reports the chunk that completes it.
+function findMarkerChunkIndex(chunks: string[], marker: string): number {
+  let accumulated = "";
+  for (let index = 0; index < chunks.length; index++) {
+    accumulated += chunks[index];
+    if (accumulated.includes(marker)) return index;
+  }
+  return -1;
+}
+
 describe("App Router Production server (startProdServer)", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
   let server: import("node:http").Server | undefined;
@@ -1691,6 +1718,67 @@ describe("App Router Production server (startProdServer)", () => {
     expect(metadataTime! - shellTime!).toBeGreaterThan(600);
     expect(html).toContain("<title>Delayed streaming metadata</title>");
     expect(html).toContain('data-testid="metadata-streaming-shell"');
+  });
+
+  it("keeps blocking metadata in the head for an HTML-limited bot while the body streams", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming-cache-components/metadata-streaming-cache-components-custom-bots.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming-cache-components/metadata-streaming-cache-components-custom-bots.test.ts
+    // Googlebot is not HTML-limited (it executes JS and therefore streams), so
+    // this uses another default-list bot from packages/vinext/src/utils/html-limited-bots.ts.
+    const response = await fetch(`${baseUrl}/metadata-streaming-bot`, {
+      headers: { "user-agent": "Twitterbot/1.0" },
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).not.toBeNull();
+
+    const { chunks, html } = await readResponseChunks(response);
+    const headEndChunk = findMarkerChunkIndex(chunks, "</head>");
+    const fallbackChunk = findMarkerChunkIndex(chunks, "metadata-streaming-bot-fallback");
+    const contentChunk = findMarkerChunkIndex(chunks, "metadata-streaming-bot-content");
+
+    // The shell must close its head only after the generated metadata resolved,
+    // and the Suspense child must still stream in a later chunk afterwards.
+    expect(headEndChunk).toBeGreaterThanOrEqual(0);
+    expect(fallbackChunk).toBeGreaterThanOrEqual(0);
+    expect(fallbackChunk).toBeLessThan(contentChunk);
+    expect(contentChunk).toBeGreaterThan(headEndChunk);
+
+    const headEndOffset = html.indexOf("</head>") + "</head>".length;
+    const head = html.slice(0, headEndOffset);
+    const body = html.slice(headEndOffset);
+
+    expect(head).toContain("<title>Delayed bot metadata</title>");
+    expect(head).toContain('name="description"');
+    expect(head).toContain('content="Bot metadata resolved before the body shell"');
+    expect(html.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(body).not.toContain("<title>");
+  });
+
+  it("streams generated metadata into the body for a DOM-capable browser", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata-streaming-cache-components/metadata-streaming-cache-components-custom-bots.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata-streaming-cache-components/metadata-streaming-cache-components-custom-bots.test.ts
+    const response = await fetch(`${baseUrl}/metadata-streaming-bot`, {
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(response.body).not.toBeNull();
+
+    const { chunks, html } = await readResponseChunks(response);
+    const headEndChunk = findMarkerChunkIndex(chunks, "</head>");
+    const titleChunk = findMarkerChunkIndex(chunks, "<title>Delayed bot metadata</title>");
+
+    // The head closes without the title; the generated title streams after it.
+    expect(headEndChunk).toBeGreaterThanOrEqual(0);
+    expect(titleChunk).toBeGreaterThan(headEndChunk);
+
+    const headEndOffset = html.indexOf("</head>") + "</head>".length;
+    expect(html.slice(0, headEndOffset)).not.toContain("<title");
+    expect(html.slice(headEndOffset)).toContain("<title>Delayed bot metadata</title>");
+    expect(html.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("metadata-streaming-bot-content");
   });
 
   it("flushes the RSC navigation shell before slow generated metadata resolves", async () => {

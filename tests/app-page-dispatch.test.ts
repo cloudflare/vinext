@@ -3497,6 +3497,53 @@ describe("app page dispatch", () => {
     expect(options.scheduleBackgroundRegeneration).not.toHaveBeenCalled();
   });
 
+  it("bypasses the PPR fallback shell for an html-limited bot and renders the page", async () => {
+    const buildPageElement = createParamTextPageElement("fresh");
+    const isrGet = createPprBlogFallbackShellGetter(false);
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement,
+      isrGet,
+      loadSsrHandler: createFreshBodySsrHandler("fresh bot render"),
+      request: new Request("https://example.test/en/blog/new-post", {
+        headers: { "user-agent": "Twitterbot/1.0" },
+      }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
+    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    const body = await response.text();
+    expect(body).toContain("fresh bot render");
+    expect(body).not.toContain("Locale: en");
+    expect(buildPageElement).toHaveBeenCalled();
+  });
+
+  it("still serves the PPR fallback shell for a streaming-capable user agent", async () => {
+    const buildPageElement = createParamTextPageElement("fresh");
+    const isrGet = createPprBlogFallbackShellGetter(false);
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement,
+      isrGet,
+      request: new Request("https://example.test/en/blog/new-post", {
+        headers: {
+          "user-agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+        },
+      }),
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
+      "html:/en/blog/new-post",
+      "html:/en/blog/[slug]",
+    ]);
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response.text()).resolves.toContain("Locale: en");
+    expect(buildPageElement).not.toHaveBeenCalled();
+  });
+
   it("falls through to a fresh render when the cached fallback shell requires resume", async () => {
     const buildPageElement = createParamTextPageElement("fresh");
     const isrGet = vi.fn(async (key: string) => {

@@ -443,12 +443,18 @@ export async function buildPageElements<
       options.htmlLimitedBots,
     );
   const metadataPlacement = hasDynamicMetadata && streamGeneratedHead ? "body" : "head";
-  // Streaming HTML and Flight responses share the unresolved promise between
-  // the Suspense tag branch and its in-boundary error outlet. Late navigation
-  // signals remain encoded in the Flight digest; response headers are only an
-  // early optimization and must not make generated metadata block navigation.
-  const shouldDeferMetadata = metadataPlacement === "body";
-  const streamingMetadata = shouldDeferMetadata
+  // Dynamic metadata always renders through the hidden boundary, in both
+  // streaming and blocking placement: the element tree then has one shape for
+  // every response mode. Blocking placement pairs the boundary with a blocker
+  // element that holds the shell until this same resolution settles, which is
+  // what lets React hoist the tags into the still-open head while the page
+  // render keeps going in parallel. Streaming HTML and Flight responses share
+  // the unresolved promise between the Suspense tag branch and its in-boundary
+  // error outlet. Late navigation signals remain encoded in the Flight digest;
+  // response headers are only an early optimization and must not make
+  // generated metadata block navigation.
+  const deferMetadata = hasDynamicMetadata;
+  const streamingMetadata = deferMetadata
     ? isProduction
       ? preparedHead.metadata.catch((error) => {
           throw sanitizeErrorForClient(error, "production");
@@ -518,7 +524,7 @@ export async function buildPageElements<
     }).catch(() => null);
   };
   const [resolvedMetadata, resolvedViewport] = await Promise.all([
-    shouldDeferMetadata
+    deferMetadata
       ? Promise.resolve(null)
       : preparedHead.metadata.catch((error) => {
           metadataErrorOutlet = Promise.reject(
@@ -539,7 +545,7 @@ export async function buildPageElements<
         : {};
     }),
   ]);
-  const streamingMetadataTags = shouldDeferMetadata
+  const streamingMetadataTags = deferMetadata
     ? preparedHead.metadata.catch(resolveMetadataErrorTags)
     : null;
   const streamingMetadataOutletInputs = [

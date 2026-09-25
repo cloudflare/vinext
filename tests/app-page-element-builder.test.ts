@@ -2148,15 +2148,18 @@ describe("buildPageElements", () => {
       },
     });
     const record = result as Record<string, unknown>;
-    const streamingBody = Object.keys(record).find((key) =>
+    const streamingBody = Object.entries(record).find(([key]) =>
       key.startsWith("__vinext_streaming_metadata_body:"),
-    );
+    )?.[1];
     const outletEntry = Object.entries(record).find(([key]) =>
       key.startsWith("__vinext_streaming_metadata_outlet:"),
     );
     const outlet = outletEntry?.[1];
 
-    expect(streamingBody).toBeUndefined();
+    // Blocking placement renders through the same hidden boundary as streaming
+    // placement; its blocker element holds the shell until this same
+    // resolution settles so the tags hoist into the still-open head.
+    expect(React.isValidElement(streamingBody)).toBe(true);
     expect(React.isValidElement(outlet)).toBe(true);
     await expect(
       (outlet as React.ReactElement<{ metadata: Promise<unknown> }>).props.metadata,
@@ -2165,6 +2168,51 @@ describe("buildPageElements", () => {
     record[outletEntry![0]] = null;
     const html = await renderRouteEntry(result, record[APP_ROUTE_KEY] as string);
     expect(html).toContain("metadata page shell");
+    // The rejected metadata degrades to no tags instead of failing the shell.
+    expect(html).not.toContain("<title>");
+  });
+
+  it("builds blocking-placement elements without awaiting generated metadata", async () => {
+    // Blocking placement holds the response shell on the metadata resolution
+    // through its blocker element instead of awaiting it while the element map
+    // is built, so the page render starts in parallel with metadata. Awaiting
+    // the pending gate here would deadlock the build on the pre-fix shape.
+    let resolveMetadata!: (value: { title: string }) => void;
+    const metadataGate = new Promise<{ title: string }>((resolve) => {
+      resolveMetadata = resolve;
+    });
+    const route = createSyntheticRoute({
+      page: {
+        default: () => React.createElement("div", null, "pending metadata shell"),
+        async generateMetadata() {
+          await Promise.resolve();
+          return metadataGate;
+        },
+      } as AppPageModule,
+      layouts: [],
+      routeSegments: ["pending-metadata"],
+      pattern: "/pending-metadata",
+    });
+    const baseOptions = createBaseOptions({ route, routePath: "/pending-metadata" });
+    const result = await buildPageElements({
+      ...baseOptions,
+      pageRequest: {
+        ...baseOptions.pageRequest,
+        request: new Request("http://localhost/pending-metadata", {
+          headers: { "user-agent": "Twitterbot/1.0" },
+        }),
+      },
+    });
+    const record = result as Record<string, unknown>;
+    const bodyEntry = Object.entries(record).find(([key]) =>
+      key.startsWith("__vinext_streaming_metadata_body:"),
+    );
+
+    expect(React.isValidElement(bodyEntry?.[1])).toBe(true);
+    resolveMetadata({ title: "resolved after the build" });
+    const html = await renderRouteEntry(result, record[APP_ROUTE_KEY] as string);
+    expect(html).toContain("pending metadata shell");
+    expect(html).toContain("<title>resolved after the build</title>");
   });
 
   it("observes an early streaming metadata rejection while viewport resolution is pending", async () => {

@@ -790,6 +790,30 @@ async function AppPageStreamingMetadata(props: {
 }
 AppPageStreamingMetadata.displayName = "Vinext.StreamingMetadata";
 
+async function AppPageBlockingMetadata(props: {
+  metadata: Promise<Metadata | null>;
+  pathname: string;
+  trailingSlash?: boolean;
+}): Promise<ReactNode> {
+  const metadata = await props.metadata;
+  if (!metadata) return null;
+  // Host elements, not an HTML string: React only hoists tags into the
+  // still-open head when React itself renders them as elements.
+  return (
+    <MetadataHead
+      metadata={metadata}
+      pathname={props.pathname}
+      trailingSlash={props.trailingSlash}
+    />
+  );
+}
+AppPageBlockingMetadata.displayName = "Vinext.BlockingMetadata";
+
+function AppPageMetadataBlocker(props: { metadata: Promise<Metadata | null> }): Promise<null> {
+  return props.metadata.then(() => null);
+}
+AppPageMetadataBlocker.displayName = "Vinext.MetadataBlocker";
+
 async function AppPageMetadataOutlet(props: { metadata: Promise<unknown> }): Promise<null> {
   await props.metadata;
   return null;
@@ -805,16 +829,22 @@ function createAppPageStreamingMetadataOutlet(
   return suspended ? <Suspense fallback={null}>{outlet}</Suspense> : outlet;
 }
 
-function createAppPageStreamingMetadataBody(elementId: string | null): ReactNode {
+function createAppPageStreamingMetadataBody(
+  elementId: string | null,
+  blockingMetadata: Promise<Metadata | null> | null,
+): ReactNode {
   if (!elementId) return null;
   return (
     // React treats metadata tags as hoistable and otherwise waits for them
     // before flushing the document. Next.js uses the same persistent hidden
     // host boundary so the shell can flush while this Suspense branch is open.
+    // In blocking placement the sibling blocker holds the shell flush on the
+    // same resolution, so the tags hoist into the head before it closes.
     <div hidden>
       <Suspense fallback={null}>
         <Slot id={elementId} />
       </Suspense>
+      {blockingMetadata ? <AppPageMetadataBlocker metadata={blockingMetadata} /> : null}
     </div>
   );
 }
@@ -1028,14 +1058,26 @@ export function buildAppPageElements<
     elements[APP_STATIC_SIBLINGS_KEY] = options.route.staticSiblings;
   }
   if (options.streamingMetadata && streamingMetadataBodyId) {
-    elements[streamingMetadataBodyId] = (
-      <AppPageStreamingMetadata
-        metadata={options.streamingMetadataTags ?? options.streamingMetadata}
-        pathname={options.resolvedMetadataPathname ?? options.routePath}
-        scriptNonce={options.scriptNonce}
-        trailingSlash={options.trailingSlash}
-      />
-    );
+    const slotMetadata = options.streamingMetadataTags ?? options.streamingMetadata;
+    const slotPathname = options.resolvedMetadataPathname ?? options.routePath;
+    elements[streamingMetadataBodyId] =
+      metadataPlacement === "body" ? (
+        <AppPageStreamingMetadata
+          metadata={slotMetadata}
+          pathname={slotPathname}
+          scriptNonce={options.scriptNonce}
+          trailingSlash={options.trailingSlash}
+        />
+      ) : (
+        // A closed/absent streaming path (HTML-limited bots, prerender) still
+        // renders through the same boundary; the paired blocker holds the
+        // shell so these tags hoist into the head before it closes.
+        <AppPageBlockingMetadata
+          metadata={slotMetadata}
+          pathname={slotPathname}
+          trailingSlash={options.trailingSlash}
+        />
+      );
   }
   if (options.streamingMetadataOutlet && streamingMetadataOutletId) {
     elements[streamingMetadataOutletId] = (
@@ -1807,7 +1849,12 @@ export function buildAppPageElements<
         options.trailingSlash,
         options.scriptNonce,
       )}
-      {createAppPageStreamingMetadataBody(streamingMetadataBodyId)}
+      {createAppPageStreamingMetadataBody(
+        streamingMetadataBodyId,
+        metadataPlacement === "head" && options.streamingMetadata != null
+          ? (options.streamingMetadataTags ?? options.streamingMetadata)
+          : null,
+      )}
     </>
   );
   elements[routeId] = pageRenderDependency
