@@ -9,7 +9,7 @@ type CandidateSearchParamsGate = {
   gate: SearchParamsGate;
   /**
    * Wrap the Flight stream SSR reads. The gate settles once SSR has read it to
-   * the end, or it is cancelled or fails.
+   * the end, and opens if it is cancelled or fails.
    */
   settleWhenConsumed: (flightStream: ReadableStream<Uint8Array>) => ReadableStream<Uint8Array>;
 };
@@ -27,12 +27,16 @@ export function startCandidateSearchParamsGate(): CandidateSearchParamsGate {
   const unsubscribe = onRenderDynamicLatched(() => controller.open());
   if (isRenderDynamicLatched()) controller.open();
 
-  let settled = false;
-  const settle = (): void => {
-    if (settled) return;
-    settled = true;
+  let finished = false;
+  const finish = (endedNormally: boolean): void => {
+    if (finished) return;
+    finished = true;
     unsubscribe();
-    controller.settle();
+    // Only a normal end proves no server component can still mark the render
+    // dynamic. A failed or cancelled stream opens the gate instead, so the
+    // render is never stored and its real failure isn't replaced by a bailout.
+    if (endedNormally) controller.settle();
+    else controller.open();
   };
 
   return {
@@ -45,19 +49,19 @@ export function startCandidateSearchParamsGate(): CandidateSearchParamsGate {
           try {
             result = await reader.read();
           } catch (error) {
-            settle();
+            finish(false);
             streamController.error(error);
             return;
           }
           if (result.done) {
             streamController.close();
-            settle();
+            finish(true);
             return;
           }
           streamController.enqueue(result.value);
         },
         cancel(reason) {
-          settle();
+          finish(false);
           return reader.cancel(reason);
         },
       });

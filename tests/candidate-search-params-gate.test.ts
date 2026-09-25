@@ -214,12 +214,30 @@ describe("candidate render useSearchParams() gate", () => {
     });
   });
 
-  it("settles when SSR cancels the Flight stream", async () => {
+  it("opens, rather than bails out, when SSR cancels the Flight stream", async () => {
     await inRequest(async () => {
       const { gate, settleWhenConsumed } = startCandidateSearchParamsGate();
       const flight = settleWhenConsumed(new ReadableStream<Uint8Array>());
       await flight.cancel();
-      expect(gate.decision).toBe("bailout");
+      expect(gate.decision).toBe("real");
+      expect(consumeDynamicUsage()).toBe(true);
+    });
+  });
+
+  it("keeps a Flight failure instead of turning it into a bailout", async () => {
+    await inRequest(async () => {
+      const { gate, settleWhenConsumed } = startCandidateSearchParamsGate();
+      const failure = new Error("flight failed");
+      const flight = settleWhenConsumed(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(failure);
+          },
+        }),
+      );
+      await expect(flight.getReader().read()).rejects.toBe(failure);
+      expect(gate.decision).toBe("real");
+      expect(consumeDynamicUsage()).toBe(true);
     });
   });
 });
