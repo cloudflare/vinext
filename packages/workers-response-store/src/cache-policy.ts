@@ -163,8 +163,8 @@ function capFreshness(cacheControl: string, maxSeconds: number): string {
 /**
  * Headers served for an entry re-stored after its regeneration failed. Like
  * Next.js, it is served as new: a stored `Date` moves to the re-store time, and
- * forwarded freshness is capped at the retry window so no downstream cache
- * keeps the entry past the next retry.
+ * forwarded freshness, including a later `Expires`, is capped at the retry
+ * window so no downstream cache keeps the entry past the next retry.
  */
 export function failedRegenerationHeaders(
   headers: [string, string][],
@@ -172,9 +172,14 @@ export function failedRegenerationHeaders(
   now = Date.now(),
 ): [string, string][] {
   const date = new Date(now).toUTCString();
+  const retryUntil = now + retrySeconds * 1000;
   return headers.map(([name, value]) => {
     const lower = name.toLowerCase();
     if (lower === "date") return [name, date];
+    // An unparseable `Expires` already means expired, so only a later date moves.
+    if (lower === "expires" && Date.parse(value) > retryUntil) {
+      return [name, new Date(retryUntil).toUTCString()];
+    }
     if (POLICY_HEADERS.has(lower)) return [name, capFreshness(value, retrySeconds)];
     return [name, value];
   });

@@ -23,6 +23,7 @@ const r2Root = `runtime-cache/${versionId}/r2-v1`;
 type PutOptions = {
   age?: number;
   date?: string;
+  expires?: string;
   bodyDelayMs?: number;
   bodyFailure?: boolean;
   cacheControl?: string;
@@ -89,6 +90,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   if (options.host) headers.set("X-Cache-Host", options.host);
   if (options.age !== undefined) headers.set("X-Response-Age", String(options.age));
   if (options.date) headers.set("X-Response-Date", options.date);
+  if (options.expires) headers.set("X-Response-Expires", options.expires);
   if (options.status !== undefined) headers.set("X-Response-Status", String(options.status));
   if (options.cloudflareCacheControl) {
     headers.set("X-Response-Cloudflare-CDN-Cache-Control", options.cloudflareCacheControl);
@@ -937,6 +939,18 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
       },
     },
     {
+      path: "/backoff/expires",
+      options: {
+        cacheControl: "public",
+        cloudflareCacheControl: "max-age=60, stale-while-revalidate=5",
+        expires: new Date(Date.now() + 86_400_000).toUTCString(),
+        age: 60,
+      },
+      retry: 30,
+      expire: 65,
+      forwarded: { "Cache-Control": "public" },
+    },
+    {
       path: "/backoff/static",
       options: {
         cacheControl: "public, max-age=31536000, immutable",
@@ -1001,6 +1015,11 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
     if ("date" in options) {
       const date = Date.parse(fresh.headers.get("Date") ?? "");
       assert.ok(Math.abs(Date.now() - date) < 3000, `${path}: ${fresh.headers.get("Date")}`);
+    }
+    // A later Expires is capped too; a browser falls back to it without a max-age.
+    if ("expires" in options) {
+      const expires = Date.parse(fresh.headers.get("Expires") ?? "");
+      assert.ok(expires <= Date.now() + retry * 1000, `${path}: ${fresh.headers.get("Expires")}`);
     }
     assert.equal(await fresh.text(), `stale:${path}`);
   }
