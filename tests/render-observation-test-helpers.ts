@@ -80,8 +80,8 @@ export function queryInvariantPrerenderObservations(): {
  * Prerender observations that aren't complete observations of this proof
  * model: a field value the searchParams proof doesn't accept, one per field it
  * reads, a request API registry without exactly one entry per kind, a missing
- * field, an incomplete downgrade, another schema version, or another
- * artifact's output. Each must give no seed, without throwing.
+ * field, an incomplete downgrade or one the observation doesn't classify to,
+ * another schema version, or another artifact's output. Each must give no seed, without throwing.
  */
 export function malformedPrerenderObservations(): { label: string; observations: unknown }[] {
   const corrupt = (change: (observation: Record<string, unknown>) => void): unknown => {
@@ -197,6 +197,48 @@ export function malformedPrerenderObservations(): { label: string; observations:
         observation.downgrade = { ...(observation.downgrade as object), reasons: [reason] };
       }),
     })),
+    // Valid downgrades, but not the one the observation classifies to.
+    {
+      label: "a public downgrade on an observation with a dynamic fetch",
+      observations: corrupt((observation) => {
+        observation.dynamicFetches = ["https://example.test/data"];
+      }),
+    },
+    {
+      label: "a public downgrade on an uncacheable observation",
+      observations: corrupt((observation) => {
+        observation.cacheability = "uncacheable";
+      }),
+    },
+    {
+      label: "a public downgrade on an observation that read draftMode",
+      observations: replacingRequestApi("draftMode", { kind: "draftMode", status: "observed" }),
+    },
+    {
+      label: "a downgrade with another target",
+      observations: corrupt((observation) => {
+        observation.downgrade = {
+          ...(observation.downgrade as object),
+          isPublicCacheCandidate: true,
+          target: "publicVariant",
+        };
+      }),
+    },
+    {
+      label: "a downgrade with a reason the observation doesn't carry",
+      observations: corrupt((observation) => {
+        observation.downgrade = {
+          ...(observation.downgrade as object),
+          reasons: [
+            {
+              code: "CP_DOWNGRADE_PUBLIC_REQUEST_API",
+              requestApi: "params",
+              target: "publicVariant",
+            },
+          ],
+        };
+      }),
+    },
     {
       label: "another proof model schema version",
       observations: corrupt((observation) => {

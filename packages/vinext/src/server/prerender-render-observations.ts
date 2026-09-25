@@ -22,12 +22,8 @@
 import {
   ALL_RENDER_REQUEST_API_KINDS,
   CACHE_PROOF_MODEL_SCHEMA_VERSION,
-  isCacheProofFallbackMode,
-  isCacheProofFallbackScope,
-  isCacheProofRejectionCode,
+  classifyRenderObservationDowngrade,
   type BoundaryOutcome,
-  type CacheProofDowngradeReason,
-  type CacheProofDowngradeTarget,
   type RenderCacheability,
   type RenderObservation,
   type RenderObservationCompleteness,
@@ -144,13 +140,6 @@ const RENDER_CACHEABILITY: ReadonlySet<unknown> = new Set<RenderCacheability>([
   "uncacheable",
   "unknown",
 ]);
-const DOWNGRADE_TARGETS: ReadonlySet<unknown> = new Set<CacheProofDowngradeTarget>([
-  "freshRender",
-  "private",
-  "privateUncacheable",
-  "public",
-  "publicVariant",
-]);
 const BOUNDARY_OUTCOME_KINDS: ReadonlySet<unknown> = new Set<BoundaryOutcome["kind"]>([
   "error",
   "forbidden",
@@ -205,7 +194,8 @@ function isRenderObservation(value: unknown, outputKind: "app-html" | "app-rsc")
     isStringArray(value.cacheTags) &&
     isStringArray(value.pathTags) &&
     RENDER_CACHEABILITY.has(value.cacheability) &&
-    isDowngrade(value.downgrade)
+    // Only once the fields it's derived from are valid.
+    isDerivedDowngrade(value)
   );
 }
 
@@ -231,6 +221,44 @@ function isRequestApiRegistry(value: unknown): boolean {
     kinds.add(requestApi.kind);
   }
   return true;
+}
+
+/**
+ * Whether the observation's downgrade is the one its cacheability,
+ * completeness, dynamic fetches and request APIs classify to, as
+ * `buildRenderObservation` derives it. `value`'s other fields must already be
+ * valid.
+ */
+function isDerivedDowngrade(value: Record<string, unknown>): boolean {
+  const observation = value as unknown as RenderObservation;
+  return isEqualJsonValue(
+    value.downgrade,
+    classifyRenderObservationDowngrade({
+      cacheability: observation.cacheability,
+      completeness: observation.completeness,
+      dynamicFetches: observation.dynamicFetches,
+      requestApis: observation.requestApis,
+    }),
+  );
+}
+
+/** Whether untyped JSON `value` equals `expected`, with the same keys and array order. */
+function isEqualJsonValue(value: unknown, expected: unknown): boolean {
+  if (Array.isArray(expected)) {
+    return (
+      Array.isArray(value) &&
+      value.length === expected.length &&
+      expected.every((item, index) => isEqualJsonValue(value[index], item))
+    );
+  }
+  if (isUnknownRecord(expected)) {
+    return (
+      isUnknownRecord(value) &&
+      hasExactKeys(value, Object.keys(expected)) &&
+      Object.entries(expected).every(([key, item]) => isEqualJsonValue(value[key], item))
+    );
+  }
+  return value === expected;
 }
 
 function isOutputScope(value: unknown, kind: "app-html" | "app-rsc"): boolean {
@@ -269,104 +297,4 @@ function isBoundaryOutcome(value: unknown): boolean {
     default:
       return hasExactKeys(value, ["kind"]);
   }
-}
-
-function isDowngrade(value: unknown): boolean {
-  if (!isUnknownRecord(value)) return false;
-  return (
-    hasExactKeys(value, ["fallback", "isPublicCacheCandidate", "reasons", "target"]) &&
-    (value.fallback === null || isBreakerFallback(value.fallback)) &&
-    typeof value.isPublicCacheCandidate === "boolean" &&
-    Array.isArray(value.reasons) &&
-    value.reasons.every(isDowngradeReason) &&
-    DOWNGRADE_TARGETS.has(value.target)
-  );
-}
-
-function isBreakerFallback(value: unknown): boolean {
-  return (
-    isUnknownRecord(value) &&
-    hasExactKeys(value, ["code", "fields", "kind", "mode", "scope"]) &&
-    value.kind === "breakerFallback" &&
-    isCacheProofRejectionCode(value.code) &&
-    isCacheProofFallbackMode(value.mode) &&
-    isCacheProofFallbackScope(value.scope) &&
-    isUnknownRecord(value.fields) &&
-    Object.values(value.fields).every(
-      (field) =>
-        field === null ||
-        typeof field === "string" ||
-        typeof field === "number" ||
-        typeof field === "boolean" ||
-        isStringArray(field),
-    )
-  );
-}
-
-type DowngradeReasonCode = CacheProofDowngradeReason["code"];
-
-/**
- * The values each field of a downgrade reason may take, besides its `code`:
- * a number, or one of the listed values. Typed against
- * `CacheProofDowngradeReason`, so every reason and each of its fields must be
- * listed, with only values that reason allows.
- */
-type DowngradeReason<Code extends DowngradeReasonCode> = Extract<
-  CacheProofDowngradeReason,
-  { code: Code }
->;
-
-type DowngradeReasonFieldSpec<Code extends DowngradeReasonCode> = {
-  readonly [
-    Field in Exclude<keyof DowngradeReason<Code>, "code">
-  ]-?: DowngradeReason<Code>[Field] extends number
-    ? "number"
-    : readonly DowngradeReason<Code>[Field][];
-};
-
-const DOWNGRADE_REASON_FIELDS: {
-  readonly [Code in DowngradeReasonCode]: DowngradeReasonFieldSpec<Code>;
-} = {
-  CP_DOWNGRADE_CACHEABILITY_PRIVATE: { target: ["private"] },
-  CP_DOWNGRADE_CACHEABILITY_UNCACHEABLE: { target: ["privateUncacheable"] },
-  CP_DOWNGRADE_CACHEABILITY_UNKNOWN: { target: ["freshRender"] },
-  CP_DOWNGRADE_DYNAMIC_FETCH: { dynamicFetchCount: "number", target: ["freshRender"] },
-  CP_DOWNGRADE_DYNAMIC_REQUEST_API: { requestApi: ["connection"], target: ["freshRender"] },
-  CP_DOWNGRADE_DRAFT_MODE: { requestApi: ["draftMode"], target: ["privateUncacheable"] },
-  CP_DOWNGRADE_INCOMPLETE_OBSERVATION: {
-    completeness: ["partial", "unknown"],
-    target: ["freshRender"],
-  },
-  CP_DOWNGRADE_PRIVATE_DIMENSION: {
-    inputClass: ["auth", "draft", "private", "session"],
-    source: ["auth", "cookie", "draft-mode", "header", "session"],
-    target: ["private", "privateUncacheable"],
-  },
-  CP_DOWNGRADE_PRIVATE_REQUEST_API: { requestApi: ["cookies", "headers"], target: ["private"] },
-  CP_DOWNGRADE_PUBLIC_REQUEST_API: {
-    requestApi: ["params", "searchParams"],
-    target: ["publicVariant"],
-  },
-  CP_DOWNGRADE_UNKNOWN_REQUEST_API: {
-    requestApi: ALL_RENDER_REQUEST_API_KINDS,
-    target: ["freshRender"],
-  },
-};
-
-function isDowngradeReason(value: unknown): boolean {
-  if (
-    !isUnknownRecord(value) ||
-    typeof value.code !== "string" ||
-    !Object.hasOwn(DOWNGRADE_REASON_FIELDS, value.code)
-  ) {
-    return false;
-  }
-  const fields: Readonly<Record<string, "number" | readonly unknown[]>> =
-    DOWNGRADE_REASON_FIELDS[value.code as DowngradeReasonCode];
-  return (
-    hasExactKeys(value, ["code", ...Object.keys(fields)]) &&
-    Object.entries(fields).every(([field, allowed]) =>
-      allowed === "number" ? typeof value[field] === "number" : allowed.includes(value[field]),
-    )
-  );
 }
