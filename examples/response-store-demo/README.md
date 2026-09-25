@@ -35,6 +35,9 @@ vinext({ cache: responseStoreAdapter({ shards: 4 }) });
   cached with the fallback in its HTML, and `/search-params/unwrapped/[slug]` that a call
   outside Suspense returns a 500, as in Next.js. `/search-params/dynamic` reads `headers()`, so it
   server-renders the real query and is never stored.
+- `/client-search-params/ignores` verifies that a `"use client"` page that never reads its
+  `searchParams` prop is stored once for every query, and `/client-search-params/reads` that a
+  client page reading it is never stored, as in Next.js.
 - `/force-dynamic` verifies that explicit build-time dynamic config bypasses response-cache lookup.
 - `/dynamic-segment/[slug]` verifies that a dynamic-segment route without `generateStaticParams`
   bypasses response-cache lookup, as in Next.js.

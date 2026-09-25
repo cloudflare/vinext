@@ -31,6 +31,8 @@ import {
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
+import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
+import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
@@ -41,6 +43,19 @@ import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/s
 const { markDynamicUsageMock, markRenderRequestApiUsageMock } = vi.hoisted(() => ({
   markDynamicUsageMock: vi.fn(),
   markRenderRequestApiUsageMock: vi.fn(),
+}));
+
+// A stand-in that records its props, so tests can see what reaches Flight
+// even when the page element sits inside a wrapper component.
+const { clientPageRootProps } = vi.hoisted(() => ({
+  clientPageRootProps: [] as Record<string, unknown>[],
+}));
+
+vi.mock("../packages/vinext/src/shims/client-page-root.js", () => ({
+  ClientPageRoot(props: Record<string, unknown>) {
+    clientPageRootProps.push(props);
+    return null;
+  },
 }));
 
 const recordedTraceDescriptors: ResolvedFrameworkSpanDescriptor[] = [];
@@ -152,6 +167,46 @@ async function buildSearchPageSearchParams(options?: {
   return { searchParams: capturedSearchParams };
 }
 
+function createClientReference(): React.ComponentType & { $$typeof: symbol } {
+  return Object.assign(() => null, { $$typeof: Symbol.for("react.client.reference") });
+}
+
+function findElementOfType(
+  node: unknown,
+  type: unknown,
+): React.ReactElement<Record<string, unknown>> | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findElementOfType(child, type);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!React.isValidElement<Record<string, unknown>>(node)) return null;
+  if (node.type === type) return node;
+  for (const value of Object.values(node.props)) {
+    const found = findElementOfType(value, type);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** Resolve promise props the way Flight does while serializing them. */
+async function serializeLikeFlight(props: Readonly<Record<string, unknown>>): Promise<string> {
+  const resolved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(props)) {
+    if (typeof value === "function") continue;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      resolved[key] = isPromiseLike(value)
+        ? await value
+        : JSON.parse(await serializeLikeFlight(value as Record<string, unknown>));
+      continue;
+    }
+    resolved[key] = value;
+  }
+  return JSON.stringify(resolved);
+}
+
 async function resetUseCacheRuntime(): Promise<void> {
   const { MemoryCacheHandler, setCacheHandler } =
     await import("../packages/vinext/src/shims/cache.js");
@@ -257,6 +312,7 @@ describe("buildPageElements", () => {
   beforeEach(() => {
     markDynamicUsageMock.mockClear();
     markRenderRequestApiUsageMock.mockClear();
+    clientPageRootProps.length = 0;
     recordedTraceDescriptors.length = 0;
   });
 
@@ -1083,10 +1139,11 @@ describe("buildPageElements", () => {
     await expect(renderElementEntry(result, "slot:modal:/")).resolves.toContain("memo slot");
   });
 
-  it("records serialized queryless searchParams without marking client pages dynamic", async () => {
-    const ClientPage = Object.assign(() => null, {
-      $$typeof: Symbol.for("react.client.reference"),
-    });
+  it("hands a client page to ClientPageRoot without sending searchParams through Flight", async () => {
+    // Next.js's ClientPageRoot gets the query where the page renders, so the
+    // RSC payload carries none and serializing it reads nothing.
+    // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/client/components/client-page.tsx
+    const ClientPage = createClientReference();
     const route = createSyntheticRoute({
       page: createSyntheticPageModule(ClientPage),
       layouts: [],
@@ -1098,24 +1155,89 @@ describe("buildPageElements", () => {
       ...createBaseOptions({
         route,
         routePath: "/client-isr",
-        searchParams: new URLSearchParams(),
+        searchParams: new URLSearchParams("q=secret"),
       }),
       pageRequest: {
         ...createBaseOptions().pageRequest,
         isRscRequest: true,
         observePageSearchParamsAccess: true,
-        searchParams: new URLSearchParams(),
+        searchParams: new URLSearchParams("q=secret"),
       },
     });
-    const pageElement = (result as Record<string, React.ReactNode>)["page:/client-isr"];
-    if (!React.isValidElement<{ searchParams: Promise<Record<string, unknown>> }>(pageElement)) {
-      throw new Error("Expected client page element");
+    const pageRoot = findElementOfType(
+      (result as Record<string, React.ReactNode>)["page:/client-isr"],
+      ClientPageRoot,
+    );
+    if (!pageRoot) {
+      throw new Error("Expected ClientPageRoot element");
     }
 
-    await pageElement.props.searchParams;
-
+    expect(pageRoot.props.Component).toBe(ClientPage);
+    expect(Object.keys(pageRoot.props)).not.toContain("searchParams");
+    expect(Object.keys(pageRoot.props.pageProps as object)).toEqual(["params"]);
+    expect(await serializeLikeFlight(pageRoot.props)).not.toContain("secret");
     expect(markDynamicUsageMock).not.toHaveBeenCalled();
-    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
+  });
+
+  it("drops the route searchParams from a client slot page's props", async () => {
+    const ClientSlotPage = createClientReference();
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(() => null),
+      layouts: [],
+      routeSegments: ["client-slot"],
+      pattern: "/client-slot",
+      slots: {
+        modal: {
+          layoutIndex: -1,
+          name: "modal",
+          page: createSyntheticPageModule(ClientSlotPage),
+          routeSegments: [],
+        },
+      },
+    });
+
+    const result = await buildPageElements({
+      ...createBaseOptions({
+        route,
+        routePath: "/client-slot",
+        searchParams: new URLSearchParams("q=secret"),
+      }),
+      pageRequest: {
+        ...createBaseOptions().pageRequest,
+        observePageSearchParamsAccess: true,
+        searchParams: new URLSearchParams("q=secret"),
+      },
+    });
+    // The slot entry wraps its page in a render-dependency component, so
+    // render it to reach the ClientPageRoot element.
+    await renderElementEntry(result, "slot:modal:/");
+    const slotRootProps = clientPageRootProps.find((props) => props.Component === ClientSlotPage);
+    if (!slotRootProps) {
+      throw new Error("Expected ClientPageRoot to render the slot page");
+    }
+
+    expect(Object.keys(slotRootProps.pageProps as object)).not.toContain("searchParams");
+    expect(await serializeLikeFlight(slotRootProps)).not.toContain("secret");
+    expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
+  });
+
+  it("renders a client page without searchParams directly when the request has none", async () => {
+    const ClientPage = createClientReference();
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(ClientPage),
+      layouts: [],
+      routeSegments: ["client-boundary"],
+      pattern: "/client-boundary",
+    });
+
+    const result = await buildPageElements(
+      createBaseOptions({ route, routePath: "/client-boundary", searchParams: null }),
+    );
+    const pageElement = (result as Record<string, React.ReactNode>)["page:/client-boundary"];
+
+    expect(React.isValidElement(pageElement) && pageElement.type).toBe(ClientPage);
+    expect(findElementOfType(pageElement, ClientPageRoot)).toBeNull();
   });
 
   it("attaches route-state slot bindings for active, default, and unmatched slots", async () => {

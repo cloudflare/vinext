@@ -10,6 +10,7 @@ import {
   type ThenableParamsObserver,
 } from "vinext/shims/thenable-params";
 import type { AppPageSearchParams } from "./app-page-head.js";
+import { searchParamsToRecord } from "../utils/query.js";
 
 type AppPageSearchParamsObservationOptions = {
   markDynamic?: boolean;
@@ -47,4 +48,21 @@ export function makeObservedAppPageSearchParamsThenable(
     });
   }
   return makeThenableParams(pageSearchParams, observer);
+}
+
+/**
+ * The `searchParams` a client page receives during SSR (see
+ * `shims/client-page-root.tsx`). Its RSC payload carries no query, so this is
+ * the only place a client page can read it on the server, and a read counts
+ * like a server page's: the render is dynamic and won't be stored. With
+ * `observe` false the query is handed over without tracking.
+ */
+export function makeClientPageSsrSearchParamsThenable(
+  searchParams: URLSearchParams,
+  options: { observe: boolean },
+): ThenableParams<AppPageSearchParams> {
+  const pageSearchParams = searchParamsToRecord(searchParams);
+  return options.observe
+    ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
+    : makeThenableParams(pageSearchParams);
 }

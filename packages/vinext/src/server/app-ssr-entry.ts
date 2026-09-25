@@ -20,6 +20,7 @@ import {
 } from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { startCandidateSearchParamsGate } from "./app-ssr-search-params-gate.js";
+import { makeClientPageSsrSearchParamsThenable } from "./app-page-search-params-observation.js";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -433,11 +434,21 @@ export async function handleSsr(
       options.isForceStatic !== true
         ? startCandidateSearchParamsGate()
         : null;
+    const requiredNavigationContext = requireNavigationContext(navContext);
     const ssrNavigationContext = {
-      ...requireNavigationContext(navContext),
+      ...requiredNavigationContext,
       isStaticGeneration: options?.isStaticGeneration,
       isForceStatic: options?.isForceStatic,
       searchParamsGate: searchParamsGate?.gate,
+      // A client page reading this marks the render dynamic, like a server
+      // page's searchParams. force-static reads an empty query, which isn't a
+      // read, and PPR fallback shells keep their untracked query.
+      clientPageSearchParams: makeClientPageSsrSearchParamsThenable(
+        requiredNavigationContext.searchParams,
+        {
+          observe: options?.isForceStatic !== true && options?.pprFallbackShellSignal === undefined,
+        },
+      ),
     };
 
     await clientReferencePreloader.preload();

@@ -21,3 +21,20 @@ test("force-static hydration keeps search params empty", async ({ page }) => {
   await waitForAppRouterHydration(page);
   await expect(page.getByTestId("force-static-search-params")).toHaveText("N/A");
 });
+
+test("a client page reads its searchParams prop from the URL in the browser", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  page.on("pageerror", (error) => errors.push(error.message));
+
+  await page.goto("/client-page-search-params?q=hello");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("client-page-search-params-q")).toHaveText("hello");
+
+  await page.getByTestId("client-page-search-params-link").click();
+  await expect(page).toHaveURL(/\?q=world$/);
+  await expect(page.getByTestId("client-page-search-params-q")).toHaveText("world");
+  expect(errors).toEqual([]);
+});

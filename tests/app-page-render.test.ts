@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
+import { renderToReadableStream } from "react-dom/server.edge";
 import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   APP_LAYOUT_FLAGS_KEY,
@@ -21,6 +22,12 @@ import type { LayoutClassificationOptions } from "../packages/vinext/src/server/
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import { makeClientPageSsrSearchParamsThenable } from "../packages/vinext/src/server/app-page-search-params-observation.js";
+import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
+import {
+  setNavigationContext,
+  type NavigationContext,
+} from "../packages/vinext/src/shims/navigation.js";
 import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
 import {
   headersContextFromRequest,
@@ -1151,6 +1158,93 @@ describe("app page render lifecycle", () => {
         expect(common.isrSet).not.toHaveBeenCalled();
       },
     );
+  });
+
+  describe("client page searchParams read in SSR", () => {
+    type ClientPageProps = { searchParams: Promise<Record<string, string | string[]>> };
+
+    function ReadingClientPage({ searchParams }: ClientPageProps): ReactNode {
+      return React.createElement("p", null, `q:${String(React.use(searchParams).q)}`);
+    }
+
+    function StaticClientPage(): ReactNode {
+      return React.createElement("p", null, "static client page");
+    }
+
+    // Mirrors what handleSsr does for a client page: the query comes from the
+    // SSR navigation context, never from the RSC payload.
+    async function renderClientPageCandidate(Page: (props: ClientPageProps) => ReactNode) {
+      const common = createCommonOptions();
+      const html = await runWithHeadersContext(
+        headersContextFromRequest(new Request("https://example.test/posts/post?q=secret")),
+        async () => {
+          const response = await renderAppPageLifecycle({
+            ...common.options,
+            getNavigationContext() {
+              return {
+                pathname: "/posts/post",
+                searchParams: new URLSearchParams("q=secret"),
+                params: { slug: "post" },
+              };
+            },
+            isCacheCandidate: true,
+            isProduction: true,
+            revalidateSeconds: Infinity,
+            async loadSsrHandler() {
+              return {
+                async handleSsr(_rscStream, navContext, _fontData, options) {
+                  if (options?.capturedRscDataRef) {
+                    options.capturedRscDataRef.value = Promise.resolve(
+                      new TextEncoder().encode("flight-data").buffer,
+                    );
+                    if (options.sideStream) void options.sideStream.getReader().cancel();
+                  }
+                  const ssrNavigationContext = navContext as NavigationContext;
+                  setNavigationContext({
+                    ...ssrNavigationContext,
+                    clientPageSearchParams: makeClientPageSsrSearchParamsThenable(
+                      ssrNavigationContext.searchParams,
+                      { observe: true },
+                    ),
+                  });
+                  return renderToReadableStream(
+                    React.createElement(ClientPageRoot, {
+                      Component: Page as React.ComponentType<Record<string, unknown>>,
+                      pageProps: {},
+                    }),
+                  );
+                },
+              };
+            },
+          });
+          const body = await response.text();
+          await Promise.all(common.waitUntilPromises);
+          return body;
+        },
+      );
+      setNavigationContext(null);
+      return { html, isrSet: common.isrSet };
+    }
+
+    it("stores a static client page that never reads searchParams", async () => {
+      const { html, isrSet } = await renderClientPageCandidate(StaticClientPage);
+
+      expect(html).toContain("static client page");
+      expect(isrSet).toHaveBeenCalledWith(
+        "html:/posts/post",
+        expect.objectContaining({ kind: "APP_PAGE" }),
+        expect.anything(),
+      );
+    });
+
+    it("never stores a client page that reads searchParams during SSR", async () => {
+      // Next.js makes the route dynamic when a client page reads searchParams.
+      // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+      const { html, isrSet } = await renderClientPageCandidate(ReadingClientPage);
+
+      expect(html).toContain("q:secret");
+      expect(isrSet).not.toHaveBeenCalled();
+    });
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {
