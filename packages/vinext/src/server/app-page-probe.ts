@@ -521,7 +521,8 @@ function ignoreProbeOutcome(): void {}
  * Probes what a direct intercepted RSC response renders ahead of its loading
  * boundaries, since it sets its headers before its render: the source route's
  * layouts and templates, its page (or a sibling-page intercept's layouts and
- * page), and each parallel slot's layout chain and page or default, with the
+ * page), each parallel slot's layout chain and page or default, and the first
+ * loading component each of those branches renders as its fallback, with the
  * intercepting branch in the slot it intercepts. What renders follows route
  * wiring (app-page-route-wiring.tsx), including the render mode's prefetch
  * plan (a loading-shell prefetch's selected route and slot loading components
@@ -592,7 +593,9 @@ export function buildAppPageInterceptSourceProbes(options: {
   const firstLoadingTreePosition = (entries: readonly AppPageLoadingEntry[]) =>
     getFirstLoadingEntry(entries)?.treePosition ?? Infinity;
   // A loading-shell prefetch renders its selected loading components directly,
-  // in place of the page or slot page they'd wrap.
+  // in place of the page or slot page they'd wrap. Otherwise each branch's
+  // first loading component renders as its Suspense fallback, ahead of what
+  // that boundary wraps.
   const probeLoading = (entry: AppPageLoadingEntry | null) => {
     const LoadingComponent = entry?.loadingModule?.default;
     if (typeof LoadingComponent !== "function") return;
@@ -632,7 +635,11 @@ export function buildAppPageInterceptSourceProbes(options: {
     routeLayouts.filter(({ treePosition }) => prefetchPlan.includesTreePosition(treePosition)),
     prefetchPlan.isPrefetchLoadingShell ? Infinity : routeLoadingTreePosition,
   );
-  probeLoading(prefetchPlan.prefetchLoadingEntry);
+  probeLoading(
+    prefetchPlan.isPrefetchLoadingShell
+      ? prefetchPlan.prefetchLoadingEntry
+      : getFirstLoadingEntry(routeLoadingEntries),
+  );
 
   // Every route loading boundary wraps the page, which a loading-shell
   // prefetch omits.
@@ -663,6 +670,7 @@ export function buildAppPageInterceptSourceProbes(options: {
         }),
         firstLoadingTreePosition(interceptLoadingEntries),
       );
+      probeLoading(getFirstLoadingEntry(interceptLoadingEntries));
       if (interceptLoadingEntries.length === 0) {
         probe(() =>
           probeAppPage({
@@ -733,6 +741,8 @@ export function buildAppPageInterceptSourceProbes(options: {
       // The route's loading UI, when the slot is owned at its cutoff, is
       // already probed above.
       if (!shellLoading.isOwnedAtRoutePrefetchCutoff) probeLoading(shellLoading.entry);
+    } else {
+      probeLoading(getFirstLoadingEntry(slotLoadingEntries));
     }
 
     const slotOwnerParams = resolveAppPageSegmentParams(

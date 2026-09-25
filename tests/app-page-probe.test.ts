@@ -1240,6 +1240,84 @@ describe("buildAppPageInterceptSourceProbes", () => {
     expect(consumeDynamicUsage()).toBe(false);
   });
 
+  // app/feed/loading.tsx
+  it("probes the source's loading component, its fallback", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        layouts: [{ default: recording("feed", probed) }],
+        layoutTreePositions: [1],
+        loadings: [{ default: recording("feed-loading", probed, true) }],
+        loadingTreePositions: [1],
+        routeSegments: ["feed"],
+      },
+      pageComponent: neverSettling("page", probed),
+    });
+
+    expect(probed.sort()).toEqual(["feed", "feed-loading"]);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // app/feed/@sidebar/loading.tsx and app/feed/@modal/(.)photos/loading.tsx
+  it("probes each slot's first loading component, its fallback", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        slots: {
+          modal: { layout: { default: recording("modal", probed) } },
+          sidebar: {
+            layout: { default: recording("sidebar", probed) },
+            loadings: [
+              { default: recording("sidebar-loading", probed, true) },
+              { default: recording("settings-loading", probed) },
+            ],
+            loadingTreePositions: [0, 1],
+            page: { default: neverSettling("sidebar-page", probed) },
+          },
+        },
+      },
+      intercept: {
+        interceptBranchSegments: ["(.)photos"],
+        interceptLayouts: [{ default: recording("photos", probed) }],
+        interceptLayoutSegments: [["(.)photos"]],
+        interceptLoadings: [{ default: recording("photos-loading", probed) }],
+        interceptLoadingTreePositions: [1],
+        page: { default: neverSettling("intercept", probed) },
+        slotKey: "modal",
+      },
+    });
+
+    expect(probed.sort()).toEqual([
+      "modal",
+      "photos",
+      "photos-loading",
+      "sidebar",
+      "sidebar-loading",
+    ]);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // app/feed/(..)photos/loading.tsx
+  it("probes a sibling-page intercept's loading component, its fallback", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {},
+      intercept: {
+        interceptBranchSegments: ["(..)photos", "[id]"],
+        interceptLayouts: [{ default: recording("photos", probed) }],
+        interceptLayoutSegments: [["(..)photos"]],
+        interceptLoadings: [{ default: recording("photos-loading", probed, true) }],
+        interceptLoadingTreePositions: [1],
+        page: { default: neverSettling("intercept", probed) },
+        slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+      },
+      pageComponent: neverSettling("page", probed),
+    });
+
+    expect(probed.sort()).toEqual(["photos", "photos-loading"]);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
   // app/[id]/@sidebar/[slug]/page.tsx inherited by app/[id]/page.tsx
   it("passes an inherited slot the params it rematches for the request", async () => {
     const received: Record<string, unknown>[] = [];
