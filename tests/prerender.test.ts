@@ -1869,19 +1869,22 @@ describe("prerenderApp — speculative render observations", () => {
     fs.rmSync(serverDir, { recursive: true, force: true });
   });
 
-  it("gives a page that reads searchParams after the shell no proof and no seed", async () => {
+  it("skips a page that reads searchParams after the shell and doesn't seed it", async () => {
     const { hasQueryInvariantRenderProof } =
       await import("../packages/vinext/src/server/cache-proof.js");
     const { seedMemoryCacheFromPrerender } =
       await import("../packages/vinext/src/server/seed-cache.js");
 
-    const late = findRoute(results, "/late");
-    expect(late?.status).toBe("rendered");
-    if (late?.status === "rendered") {
-      expect(hasQueryInvariantRenderProof(late.renderObservations?.html)).toBe(false);
-      expect(hasQueryInvariantRenderProof(late.renderObservations?.rsc)).toBe(false);
-    }
+    // A client page's searchParams read makes it dynamic, as in Next.js's
+    // build, even when it happens after the speculative prerender's shell.
+    // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    expect(findRoute(results, "/late")).toEqual({
+      route: "/late",
+      status: "skipped",
+      reason: "dynamic",
+    });
     const home = findRoute(results, "/");
+    expect(home?.status).toBe("rendered");
     if (home?.status === "rendered") {
       expect(hasQueryInvariantRenderProof(home.renderObservations?.html)).toBe(true);
     }
