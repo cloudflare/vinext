@@ -25,6 +25,7 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import {
+  createPrerenderObservationNonce,
   extractPrerenderRenderObservations,
   type PrerenderRenderObservations,
 } from "../server/prerender-render-observations.js";
@@ -47,6 +48,7 @@ import {
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -1622,6 +1624,10 @@ export async function prerenderApp({
         if (isSpeculative) {
           htmlHeaders.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
         }
+        // The render frames the observations it appends with this request's
+        // nonce, so only they are stripped from the HTML.
+        const observationNonce = createPrerenderObservationNonce();
+        htmlHeaders.set(VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER, observationNonce);
         // Match Next.js's export worker: when trailingSlash is enabled, render
         // the canonical slash form instead of letting the request pipeline
         // return a 308 that the exporter would misclassify as a failed route.
@@ -1667,6 +1673,7 @@ export async function prerenderApp({
             // HTML is used in any other way.
             const { html, renderObservations } = extractPrerenderRenderObservations(
               await response.text(),
+              observationNonce,
             );
             // Prefer the response side channel so single-process and pooled
             // prerender record the same cache-life metadata; still consume the
@@ -1892,7 +1899,7 @@ export async function prerenderApp({
         () => rscHandler(notFoundRequest),
       );
       if (notFoundRes.status === 404) {
-        const { html: html404 } = extractPrerenderRenderObservations(await notFoundRes.text());
+        const html404 = await notFoundRes.text();
         results.push({
           route: "/404",
           status: "rendered",

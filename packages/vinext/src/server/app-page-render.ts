@@ -87,6 +87,7 @@ import {
 } from "./app-page-render-observation.js";
 import {
   appendPrerenderRenderObservations,
+  isPrerenderObservationNonce,
   type PrerenderRenderObservations,
 } from "./prerender-render-observations.js";
 import type {
@@ -188,6 +189,11 @@ type RenderAppPageLifecycleOptionsBase = {
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
   isSpeculativePrerender?: boolean;
+  /**
+   * The nonce the prerender sent with this request. A prerender appends its
+   * render observations to the HTML, framed with it, only when one was sent.
+   */
+  prerenderObservationNonce?: string | null;
   isProduction: boolean;
   probePageBeforeRender?: boolean;
   omitPendingDynamicCacheState?: boolean;
@@ -1458,14 +1464,21 @@ async function renderAppPageLifecycleImpl(
   // render's observations to its HTML body for the seeds. They're built only
   // once SSR and the RSC capture have finished: a speculative prerender sends
   // its shell before Suspense content renders, and a late searchParams read
-  // must still reach the observation. Without a way to read the state, no
-  // observation is sent, and the page isn't seeded.
-  const prerenderRenderObservations =
-    options.isPrerender === true && !htmlRender.shellErrorRecovered
-      ? observeFinishedPrerenderRender(options, htmlRender, htmlOutputScope, rscOutputScope)
+  // must still reach the observation. Without a way to read the state, or
+  // without the prerender's nonce to frame them, no observation is sent, and
+  // the page isn't seeded.
+  const prerenderObservationNonce =
+    options.isPrerender === true &&
+    !htmlRender.shellErrorRecovered &&
+    isPrerenderObservationNonce(options.prerenderObservationNonce)
+      ? options.prerenderObservationNonce
       : null;
-  if (prerenderRenderObservations) {
-    htmlStream = appendPrerenderRenderObservations(htmlStream, prerenderRenderObservations);
+  if (prerenderObservationNonce) {
+    htmlStream = appendPrerenderRenderObservations(
+      htmlStream,
+      prerenderObservationNonce,
+      observeFinishedPrerenderRender(options, htmlRender, htmlOutputScope, rscOutputScope),
+    );
   }
 
   // Defer clearRequestContext() until the HTML stream is fully consumed by the

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   appendPrerenderRenderObservations,
+  createPrerenderObservationNonce,
   extractPrerenderRenderObservations,
 } from "../packages/vinext/src/server/prerender-render-observations.js";
 import {
@@ -10,17 +11,19 @@ import {
 
 const HTML = "<!DOCTYPE html><html><body><p>page</p></body></html>";
 const MARKER_PREFIX = "<!--vinext-prerender-render-observations:";
+const NONCE = "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f";
 
-function withMarker(html: string, payload: string): string {
-  return `${html}${MARKER_PREFIX}${payload}-->`;
+function withMarker(html: string, nonce: string, payload: string): string {
+  return `${html}${MARKER_PREFIX}${nonce}:${payload}-->`;
 }
 
 async function appendTo(
   html: string,
-  observations: Parameters<typeof appendPrerenderRenderObservations>[1],
+  observations: Parameters<typeof appendPrerenderRenderObservations>[2],
+  nonce = NONCE,
 ): Promise<string> {
   return new Response(
-    appendPrerenderRenderObservations(new Response(html).body!, observations),
+    appendPrerenderRenderObservations(new Response(html).body!, nonce, observations),
   ).text();
 }
 
@@ -31,7 +34,23 @@ describe("prerender render observations channel", () => {
     const body = await appendTo(HTML, Promise.resolve(renderObservations));
 
     expect(body.startsWith(HTML)).toBe(true);
-    expect(extractPrerenderRenderObservations(body)).toEqual({ html: HTML, renderObservations });
+    expect(extractPrerenderRenderObservations(body, NONCE)).toEqual({
+      html: HTML,
+      renderObservations,
+    });
+  });
+
+  it("creates a fresh nonce the reader accepts for each request", async () => {
+    const nonce = createPrerenderObservationNonce();
+    expect(nonce).not.toBe(createPrerenderObservationNonce());
+    const renderObservations = queryInvariantPrerenderObservations();
+
+    const body = await appendTo(HTML, Promise.resolve(renderObservations), nonce);
+
+    expect(extractPrerenderRenderObservations(body, nonce)).toEqual({
+      html: HTML,
+      renderObservations,
+    });
   });
 
   it("appends nothing without observations", async () => {
@@ -39,33 +58,62 @@ describe("prerender render observations channel", () => {
   });
 
   it("leaves a body without the marker untouched", () => {
-    expect(extractPrerenderRenderObservations(HTML)).toEqual({
+    expect(extractPrerenderRenderObservations(HTML, NONCE)).toEqual({
       html: HTML,
       renderObservations: null,
     });
     const userComment = `${HTML}<!-- user comment -->`;
-    expect(extractPrerenderRenderObservations(userComment)).toEqual({
+    expect(extractPrerenderRenderObservations(userComment, NONCE)).toEqual({
       html: userComment,
       renderObservations: null,
     });
   });
 
+  it("leaves user HTML ending in a lookalike marker untouched", () => {
+    const encoded = encodeURIComponent(JSON.stringify(queryInvariantPrerenderObservations()));
+    const lookalikes = [
+      // No nonce, as HTML that didn't come from the renderer would end.
+      `${HTML}${MARKER_PREFIX}not-json-->`,
+      `${HTML}${MARKER_PREFIX}${encoded}-->`,
+      // Another request's nonce.
+      withMarker(HTML, "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", encoded),
+      withMarker(HTML, "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", "not-json"),
+    ];
+    for (const body of lookalikes) {
+      expect(extractPrerenderRenderObservations(body, NONCE), body).toEqual({
+        html: body,
+        renderObservations: null,
+      });
+    }
+  });
+
+  it("reads nothing with a nonce the prerender can't have sent", () => {
+    const encoded = encodeURIComponent(JSON.stringify(queryInvariantPrerenderObservations()));
+    for (const nonce of ["", "short", "not a nonce -->"]) {
+      const body = withMarker(HTML, nonce, encoded);
+      expect(extractPrerenderRenderObservations(body, nonce), nonce).toEqual({
+        html: body,
+        renderObservations: null,
+      });
+    }
+  });
+
   it("only reads a marker at the very end of the body", () => {
     const encoded = encodeURIComponent(JSON.stringify(queryInvariantPrerenderObservations()));
-    const notTrailing = `${withMarker(HTML, encoded)}<p>after</p>`;
-    expect(extractPrerenderRenderObservations(notTrailing)).toEqual({
+    const notTrailing = `${withMarker(HTML, NONCE, encoded)}<p>after</p>`;
+    expect(extractPrerenderRenderObservations(notTrailing, NONCE)).toEqual({
       html: notTrailing,
       renderObservations: null,
     });
     // A payload that isn't encodeURIComponent output isn't the marker.
-    const spansMarkup = withMarker(HTML, "x<p>y</p>");
-    expect(extractPrerenderRenderObservations(spansMarkup)).toEqual({
+    const spansMarkup = withMarker(HTML, NONCE, "x<p>y</p>");
+    expect(extractPrerenderRenderObservations(spansMarkup, NONCE)).toEqual({
       html: spansMarkup,
       renderObservations: null,
     });
   });
 
-  it("strips a malformed marker and yields no observations", () => {
+  it("strips a malformed marker carrying the request's nonce and yields no observations", () => {
     const malformed = [
       "not-json",
       "%E0%A4%A",
@@ -76,7 +124,7 @@ describe("prerender render observations channel", () => {
       ),
     ];
     for (const payload of malformed) {
-      expect(extractPrerenderRenderObservations(withMarker(HTML, payload))).toEqual({
+      expect(extractPrerenderRenderObservations(withMarker(HTML, NONCE, payload), NONCE)).toEqual({
         html: HTML,
         renderObservations: null,
       });
@@ -86,7 +134,10 @@ describe("prerender render observations channel", () => {
   it("rejects field values the searchParams proof doesn't accept", () => {
     for (const { label, observations } of malformedPrerenderObservations()) {
       const payload = encodeURIComponent(JSON.stringify(observations));
-      expect(extractPrerenderRenderObservations(withMarker(HTML, payload)), label).toEqual({
+      expect(
+        extractPrerenderRenderObservations(withMarker(HTML, NONCE, payload), NONCE),
+        label,
+      ).toEqual({
         html: HTML,
         renderObservations: null,
       });

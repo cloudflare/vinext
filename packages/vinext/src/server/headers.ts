@@ -105,6 +105,13 @@ export const VINEXT_RENDERED_PATH_AND_SEARCH_HEADER = "X-Vinext-Rendered-Path-An
 /** Prerender-only JSON side channel carrying request cacheLife metadata. */
 export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life";
 
+/**
+ * Random per-request nonce the prerender sends with each App page request.
+ * The prerender server frames the render observations it appends to the HTML
+ * with it (see `server/prerender-render-observations.ts`).
+ */
+export const VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER = "x-vinext-prerender-observation-nonce";
+
 /** Marks a local prerender-server 500 that originated from a thrown render error. */
 export const VINEXT_PRERENDER_RENDER_ERROR_HEADER = "x-vinext-prerender-render-error";
 

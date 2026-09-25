@@ -26,7 +26,10 @@ import {
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import {
   appendPrerenderRenderObservations,
   type PrerenderRenderObservations,
@@ -95,14 +98,18 @@ function runtimeRscDoneScriptWithCacheMetadata(): string {
   return `<script>Object.assign(${RSC_RUNTIME_BOOTSTRAP_EXPRESSION},{"initialCacheKind":"static"});${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true</script>`;
 }
 
-/** An HTML body as a prerender server sends it, with the render's observations. */
+/**
+ * An HTML body as a prerender server sends it, with the render's observations
+ * framed with the request's nonce.
+ */
 function withPrerenderRenderObservations(
   html: string,
+  nonce: string,
   renderObservations: PrerenderRenderObservations,
 ): Promise<string> {
   const stream = new Response(html).body!;
   return new Response(
-    appendPrerenderRenderObservations(stream, Promise.resolve(renderObservations)),
+    appendPrerenderRenderObservations(stream, nonce, Promise.resolve(renderObservations)),
   ).text();
 }
 
@@ -596,7 +603,44 @@ describe("prerenderApp — RSC extraction", () => {
       runtimeRscDoneScript() +
       "</body></html>";
 
-    for (const rscFetchedSeparately of [false, true]) {
+    const encoded = encodeURIComponent(JSON.stringify(renderObservations));
+    const cases: {
+      label: string;
+      html: string;
+      body: (nonce: string) => Promise<string> | string;
+      recorded: boolean;
+    }[] = [
+      {
+        label: "embedded RSC",
+        html: document,
+        body: (nonce) => withPrerenderRenderObservations(document, nonce, renderObservations),
+        recorded: true,
+      },
+      {
+        // Without embedded chunks the prerender renders the RSC payload
+        // separately, and this HTML render's observations don't describe it.
+        label: "separate RSC",
+        html: "<html><body>custom</body></html>",
+        body: (nonce) =>
+          withPrerenderRenderObservations(
+            "<html><body>custom</body></html>",
+            nonce,
+            renderObservations,
+          ),
+        recorded: false,
+      },
+      {
+        // Middleware HTML that happens to end like the marker, without this
+        // request's nonce, is written as it is.
+        label: "lookalike marker",
+        html: `<html><body>custom</body></html><!--vinext-prerender-render-observations:${encoded}-->`,
+        body: () =>
+          `<html><body>custom</body></html><!--vinext-prerender-render-observations:${encoded}-->`,
+        recorded: false,
+      },
+    ];
+
+    for (const { label, html, body, recorded } of cases) {
       const root = tmpDir("vinext-prerender-render-observation-");
       const outDir = path.join(root, "out");
       const appDir = path.join(root, "app");
@@ -605,10 +649,7 @@ describe("prerenderApp — RSC extraction", () => {
         path.join(appDir, "page.tsx"),
         "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
       );
-      // Without embedded chunks the prerender renders the RSC payload
-      // separately, and this HTML render's observations don't describe it.
-      const html = rscFetchedSeparately ? "<html><body>custom</body></html>" : document;
-      const body = await withPrerenderRenderObservations(html, renderObservations);
+      const nonces = new Set<string>();
       const server = createServer((req, res) => {
         if (req.url === "/__vinext_nonexistent_for_404__") {
           res.statusCode = 404;
@@ -620,8 +661,15 @@ describe("prerenderApp — RSC extraction", () => {
           res.end('0:["$","div",null,{"children":"separate"}]\n');
           return;
         }
+        const nonce = req.headers[VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER];
+        if (typeof nonce !== "string") {
+          res.statusCode = 500;
+          res.end("missing nonce");
+          return;
+        }
+        nonces.add(nonce);
         res.setHeader("content-type", "text/html");
-        res.end(body);
+        void Promise.resolve(body(nonce)).then((text) => res.end(text));
       });
 
       const port = await listen(server);
@@ -641,20 +689,21 @@ describe("prerenderApp — RSC extraction", () => {
           _prodServer: { server, port },
         });
 
+        expect(nonces.size, label).toBe(1);
         // The written artifact is byte-identical to the body without the marker.
-        expect(fs.readFileSync(path.join(outDir, "index.html"), "utf-8")).toBe(html);
+        expect(fs.readFileSync(path.join(outDir, "index.html"), "utf-8"), label).toBe(html);
         const rendered = findRoute(prerenderResult.routes, "/");
         expect(rendered?.status).toBe("rendered");
         const index = JSON.parse(
           fs.readFileSync(path.join(outDir, "vinext-prerender.json"), "utf8"),
         );
         const manifestRoute = index.routes.find((route: { route: string }) => route.route === "/");
-        if (rscFetchedSeparately) {
-          expect(rendered).not.toHaveProperty("renderObservations");
-          expect(manifestRoute).not.toHaveProperty("renderObservations");
+        if (recorded) {
+          expect(rendered, label).toMatchObject({ renderObservations });
+          expect(manifestRoute, label).toMatchObject({ renderObservations });
         } else {
-          expect(rendered).toMatchObject({ renderObservations });
-          expect(manifestRoute).toMatchObject({ renderObservations });
+          expect(rendered, label).not.toHaveProperty("renderObservations");
+          expect(manifestRoute, label).not.toHaveProperty("renderObservations");
         }
       } finally {
         await closeServer(server);

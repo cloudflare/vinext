@@ -5,9 +5,16 @@
  *
  * The observations are only final once the render has finished, after the
  * response headers are sent, so they travel as a private marker appended to
- * the end of the prerender's HTML body. The prerender strips it before the
- * HTML is written or read in any other way. Only prerender servers
- * (`VINEXT_PRERENDER=1`) append it.
+ * the end of the prerender's HTML body. Response headers can't carry them:
+ * two observations with their tags can pass the HTTP client's header limit.
+ *
+ * The prerender sends a fresh random nonce with each page request
+ * (`VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER`), and the marker carries it.
+ * The prerender strips only a marker with its own nonce, before the HTML is
+ * written or read in any other way, so HTML that didn't come from the App
+ * renderer (a middleware response, say) is never mistaken for the channel,
+ * whatever it ends with. Only prerender servers (`VINEXT_PRERENDER=1`)
+ * append the marker, and only for a request that sent a nonce.
  */
 import {
   ALL_RENDER_REQUEST_API_KINDS,
@@ -26,13 +33,26 @@ const MARKER_PREFIX = "<!--vinext-prerender-render-observations:";
 const MARKER_SUFFIX = "-->";
 // encodeURIComponent output, so a match can't span other markup.
 const ENCODED_PAYLOAD = /^[A-Za-z0-9\-_.!~*'()%]*$/;
+// Long enough to be unguessable, and safe inside an HTML comment.
+const NONCE = /^[A-Za-z0-9-]{16,128}$/;
+
+/** A fresh nonce for one prerender page request. */
+export function createPrerenderObservationNonce(): string {
+  return crypto.randomUUID();
+}
+
+export function isPrerenderObservationNonce(value: unknown): value is string {
+  return typeof value === "string" && NONCE.test(value);
+}
 
 /**
- * Append the observations to the end of a prerender's HTML stream, once the
- * upstream has closed and `observations` has settled. `null` appends nothing.
+ * Append the observations, framed with the request's nonce, to the end of a
+ * prerender's HTML stream once the upstream has closed and `observations` has
+ * settled. `null` appends nothing.
  */
 export function appendPrerenderRenderObservations(
   stream: ReadableStream<Uint8Array>,
+  nonce: string,
   observations: Promise<PrerenderRenderObservations | null>,
 ): ReadableStream<Uint8Array> {
   return stream.pipeThrough(
@@ -42,7 +62,7 @@ export function appendPrerenderRenderObservations(
         if (!settled) return;
         controller.enqueue(
           new TextEncoder().encode(
-            MARKER_PREFIX + encodeURIComponent(JSON.stringify(settled)) + MARKER_SUFFIX,
+            `${MARKER_PREFIX}${nonce}:${encodeURIComponent(JSON.stringify(settled))}${MARKER_SUFFIX}`,
           ),
         );
       },
@@ -51,19 +71,26 @@ export function appendPrerenderRenderObservations(
 }
 
 /**
- * Split a prerendered HTML body into the document and its trailing
- * observations. A body without a well-formed marker keeps its bytes and has
- * no observations; a marker whose payload is malformed is still stripped.
+ * Split a prerendered HTML body into the document and the observations the
+ * render appended for the request that sent `nonce`. A body that doesn't end
+ * with that request's marker keeps every byte and has no observations. A
+ * marker with the nonce but a malformed payload is still stripped: only the
+ * renderer knew the nonce.
  */
-export function extractPrerenderRenderObservations(body: string): {
+export function extractPrerenderRenderObservations(
+  body: string,
+  nonce: string,
+): {
   html: string;
   renderObservations: PrerenderRenderObservations | null;
 } {
-  if (!body.endsWith(MARKER_SUFFIX)) return { html: body, renderObservations: null };
-  const start = body.lastIndexOf(MARKER_PREFIX);
-  if (start === -1) return { html: body, renderObservations: null };
-  const payload = body.slice(start + MARKER_PREFIX.length, body.length - MARKER_SUFFIX.length);
-  if (!ENCODED_PAYLOAD.test(payload)) return { html: body, renderObservations: null };
+  const unchanged = { html: body, renderObservations: null };
+  if (!isPrerenderObservationNonce(nonce) || !body.endsWith(MARKER_SUFFIX)) return unchanged;
+  const prefix = `${MARKER_PREFIX}${nonce}:`;
+  const start = body.lastIndexOf(prefix);
+  if (start === -1) return unchanged;
+  const payload = body.slice(start + prefix.length, body.length - MARKER_SUFFIX.length);
+  if (!ENCODED_PAYLOAD.test(payload)) return unchanged;
 
   const html = body.slice(0, start);
   try {

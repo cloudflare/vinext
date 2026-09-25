@@ -85,7 +85,11 @@ import {
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageTreePath } from "./app-page-route-wiring.js";
 import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import {
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
@@ -1329,6 +1333,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isCacheCandidate,
     isPrerender,
     isSpeculativePrerender,
+    prerenderObservationNonce: isPrerender
+      ? options.request.headers.get(VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER)
+      : null,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
     traceOperation,

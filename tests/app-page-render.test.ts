@@ -77,6 +77,8 @@ import {
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
+const PRERENDER_OBSERVATION_NONCE = "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f";
+
 function captureRecord(value: ReactNode | AppOutgoingElements): Record<string, unknown> {
   if (!isAppElementsRecord(value)) {
     throw new Error("Expected captured element to be a plain record");
@@ -2063,6 +2065,7 @@ describe("app page render lifecycle", () => {
           return ["_N_T_/posts/post", "test-update-tag"];
         },
         isPrerender: true,
+        prerenderObservationNonce: PRERENDER_OBSERVATION_NONCE,
         isProduction: true,
         peekRenderObservationState() {
           return { dynamicFetches: [], requestApis };
@@ -2086,6 +2089,7 @@ describe("app page render lifecycle", () => {
 
     const { html, renderObservations } = extractPrerenderRenderObservations(
       await (await renderPrerender("headers")).text(),
+      PRERENDER_OBSERVATION_NONCE,
     );
     expect(html).toBe("<html>page</html>");
     expect(renderObservations?.html.output.kind).toBe("app-html");
@@ -2099,6 +2103,7 @@ describe("app page render lifecycle", () => {
 
     const searchParamsRead = extractPrerenderRenderObservations(
       await (await renderPrerender("searchParams")).text(),
+      PRERENDER_OBSERVATION_NONCE,
     ).renderObservations;
     expect(searchParamsRead).not.toBeNull();
     expect(hasQueryInvariantRenderProof(searchParamsRead?.html)).toBe(false);
@@ -2125,6 +2130,7 @@ describe("app page render lifecycle", () => {
         return pageTags;
       },
       isPrerender: true,
+      prerenderObservationNonce: PRERENDER_OBSERVATION_NONCE,
       isProduction: true,
       isSpeculativePrerender: true,
       loadSsrHandler: vi.fn(async () => ({
@@ -2162,7 +2168,10 @@ describe("app page render lifecycle", () => {
     renderComplete.resolve();
 
     const response = await responsePromise;
-    const { html, renderObservations } = extractPrerenderRenderObservations(await response.text());
+    const { html, renderObservations } = extractPrerenderRenderObservations(
+      await response.text(),
+      PRERENDER_OBSERVATION_NONCE,
+    );
     expect(html).toBe("<html>shell</html>");
     expect(renderObservations).not.toBeNull();
     expect(hasQueryInvariantRenderProof(renderObservations?.html)).toBe(false);
@@ -2191,6 +2200,7 @@ describe("app page render lifecycle", () => {
     const responsePromise = renderAppPageLifecycle({
       ...common.options,
       isPrerender: true,
+      prerenderObservationNonce: PRERENDER_OBSERVATION_NONCE,
       isProduction: true,
       isSpeculativePrerender: true,
       loadSsrHandler: vi.fn(async () => ({
@@ -2230,7 +2240,10 @@ describe("app page render lifecycle", () => {
     requestApis = ["searchParams"];
     renderComplete.resolve();
 
-    const { html, renderObservations } = extractPrerenderRenderObservations(await body);
+    const { html, renderObservations } = extractPrerenderRenderObservations(
+      await body,
+      PRERENDER_OBSERVATION_NONCE,
+    );
     expect(html).toBe("<html>shell</html>");
     expect(renderObservations).not.toBeNull();
     expect(hasQueryInvariantRenderProof(renderObservations?.html)).toBe(false);
@@ -2243,6 +2256,7 @@ describe("app page render lifecycle", () => {
     const response = await renderAppPageLifecycle({
       ...common.options,
       isPrerender: true,
+      prerenderObservationNonce: PRERENDER_OBSERVATION_NONCE,
       isProduction: true,
       peekRenderObservationState: undefined,
       revalidateSeconds: 60,
@@ -2264,6 +2278,25 @@ describe("app page render lifecycle", () => {
     });
 
     await expect(response.text()).resolves.toBe("<html>page</html>");
+  });
+
+  it("sends no prerender observations without the prerender's nonce", async () => {
+    const common = createCommonOptions();
+
+    for (const prerenderObservationNonce of [undefined, null, "", "short"]) {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isPrerender: true,
+        isProduction: true,
+        peekRenderObservationState() {
+          return { dynamicFetches: [], requestApis: [] };
+        },
+        prerenderObservationNonce,
+        revalidateSeconds: 60,
+      });
+
+      await expect(response.text()).resolves.toBe("<html>page</html>");
+    }
   });
 
   it("disables HTML ISR caching when the response carries a script nonce", async () => {
