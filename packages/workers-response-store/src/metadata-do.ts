@@ -969,8 +969,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       }
 
       // A re-store after a failed regeneration keeps the active revision, whose
-      // R2 object it rewrites, and only moves its freshness. The metadata and
-      // R2 therefore agree on the revision whether or not that rewrite lands.
+      // R2 object it rewrites, and only moves its freshness and `Date`. The
+      // metadata and R2 therefore agree on the revision whether or not that
+      // rewrite lands.
       const update =
         restoredRevision === undefined
           ? this.ctx.storage.sql.exec<{ key_hash: string }>(
@@ -995,9 +996,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
               revision,
             )
           : this.ctx.storage.sql.exec<{ key_hash: string }>(
-              `UPDATE entries SET fresh_until = ?, swr_until = ?
+              `UPDATE entries SET response_headers = ?, fresh_until = ?, swr_until = ?
               WHERE key_hash = ? AND active_revision = ?
               RETURNING key_hash`,
+              JSON.stringify(metadata.responseHeaders),
               metadata.freshUntil,
               metadata.swrUntil,
               keyHash,

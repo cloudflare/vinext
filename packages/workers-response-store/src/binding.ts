@@ -1098,8 +1098,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
    *
    * The re-store keeps the entry's revision and rewrites its R2 object, so a
    * failed rewrite leaves the source object readable and still matching the
-   * metadata. Like a Next.js re-store, it starts the entry's age again, so the
-   * edge can cache it for the whole retry window.
+   * metadata. Like a Next.js re-store, it serves the entry as new: its age
+   * starts again and a stored `Date` moves to the re-store time, so the edge
+   * can cache it for the whole retry window.
    */
   private async republishFailedRegeneration(
     metadata: CacheMetadataStub,
@@ -1127,6 +1128,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       return;
     }
 
+    const date = new Date(now).toUTCString();
+    const responseHeaders = entry.responseHeaders.map(([name, value]): [string, string] => [
+      name,
+      name.toLowerCase() === "date" ? date : value,
+    ]);
+
     let publication: PublicationResult;
     try {
       publication = await metadata.publish(
@@ -1136,7 +1143,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           fenceTags: [...new Set([...write.fenceTags, ...entry.cacheTags])],
           objectKey: this.r2ObjectKey(entry.keyHash),
           statusText: entry.statusText,
-          responseHeaders: entry.responseHeaders,
+          responseHeaders,
           ...policy,
           revalidator: entry.revalidator,
           cacheTags: entry.cacheTags,

@@ -22,6 +22,7 @@ const r2Root = `runtime-cache/${versionId}/r2-v1`;
 
 type PutOptions = {
   age?: number;
+  date?: string;
   bodyDelayMs?: number;
   bodyFailure?: boolean;
   cacheControl?: string;
@@ -87,6 +88,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   if (options.tags) headers.set("X-Response-Cache-Tag", options.tags.join(","));
   if (options.host) headers.set("X-Cache-Host", options.host);
   if (options.age !== undefined) headers.set("X-Response-Age", String(options.age));
+  if (options.date) headers.set("X-Response-Date", options.date);
   if (options.status !== undefined) headers.set("X-Response-Status", String(options.status));
   if (options.cloudflareCacheControl) {
     headers.set("X-Response-Cloudflare-CDN-Cache-Control", options.cloudflareCacheControl);
@@ -910,7 +912,11 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
     },
     {
       path: "/backoff/60",
-      options: { cacheControl: "public, max-age=60, stale-while-revalidate=5", age: 60 },
+      options: {
+        cacheControl: "public, max-age=60, stale-while-revalidate=5",
+        age: 60,
+        date: new Date(Date.now() - 60_000).toUTCString(),
+      },
       retry: 30,
       expire: 65,
     },
@@ -958,6 +964,12 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
     // The re-store starts the entry's age again, so the edge can use the
     // retry window instead of treating the response as already stale.
     assert.match(fresh.headers.get("Age") ?? "", /^[01]$/, path);
+    // A stored Date moves to the re-store time as well, so shared caches do
+    // not derive an older apparent age from it.
+    if ("date" in options) {
+      const date = Date.parse(fresh.headers.get("Date") ?? "");
+      assert.ok(Math.abs(Date.now() - date) < 3000, `${path}: ${fresh.headers.get("Date")}`);
+    }
     assert.equal(await fresh.text(), `stale:${path}`);
   }
 
