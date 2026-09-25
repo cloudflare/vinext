@@ -21,10 +21,15 @@
  */
 import {
   ALL_RENDER_REQUEST_API_KINDS,
+  CACHE_PROOF_MODEL_SCHEMA_VERSION,
+  type BoundaryOutcome,
+  type CacheProofDowngradeTarget,
+  type RenderCacheability,
   type RenderObservation,
   type RenderObservationCompleteness,
   type RenderRequestApiStatus,
 } from "./cache-proof.js";
+import { isUnknownRecord } from "../utils/record.js";
 import { isPrerenderObservationNonce } from "./prerender-route-params.js";
 
 export { isPrerenderObservationNonce };
@@ -104,9 +109,8 @@ export function extractPrerenderRenderObservations(
 export function isPrerenderRenderObservations(
   value: unknown,
 ): value is PrerenderRenderObservations {
-  if (typeof value !== "object" || value === null) return false;
-  const { html, rsc } = value as { html?: unknown; rsc?: unknown };
-  return isRenderObservationShape(html) && isRenderObservationShape(rsc);
+  if (!isUnknownRecord(value)) return false;
+  return isRenderObservation(value.html, "app-html") && isRenderObservation(value.rsc, "app-rsc");
 }
 
 const RENDER_OBSERVATION_COMPLETENESS: ReadonlySet<unknown> =
@@ -117,22 +121,136 @@ const RENDER_REQUEST_API_STATUSES: ReadonlySet<unknown> = new Set<RenderRequestA
   "observed",
   "unknown",
 ]);
+const RENDER_CACHEABILITY: ReadonlySet<unknown> = new Set<RenderCacheability>([
+  "private",
+  "public",
+  "uncacheable",
+  "unknown",
+]);
+const DOWNGRADE_TARGETS: ReadonlySet<unknown> = new Set<CacheProofDowngradeTarget>([
+  "freshRender",
+  "private",
+  "privateUncacheable",
+  "public",
+  "publicVariant",
+]);
+const BOUNDARY_OUTCOME_KINDS: ReadonlySet<unknown> = new Set<BoundaryOutcome["kind"]>([
+  "error",
+  "forbidden",
+  "globalError",
+  "notFound",
+  "redirect",
+  "success",
+  "unauthorized",
+  "unknown",
+]);
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const own = Object.keys(value);
+  return own.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function isStringArray(value: unknown): boolean {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function isStringOrNull(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
 
 /**
- * Whether `value` holds every field the searchParams proof reads, with values
- * it accepts, so reading a malformed observation yields no proof instead of
- * throwing.
+ * Whether `value` is a complete render observation of this proof model's
+ * schema for the prerender's `outputKind` artifact. The manifest is untyped
+ * input: anything else, including an observation from another schema version,
+ * yields no proof instead of a seed, and never throws.
  */
-function isRenderObservationShape(value: unknown): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const observation = value as { completeness?: unknown; requestApis?: unknown };
+function isRenderObservation(value: unknown, outputKind: "app-html" | "app-rsc"): boolean {
+  if (!isUnknownRecord(value)) return false;
   return (
-    RENDER_OBSERVATION_COMPLETENESS.has(observation.completeness) &&
-    Array.isArray(observation.requestApis) &&
-    observation.requestApis.every((requestApi: unknown) => {
-      if (typeof requestApi !== "object" || requestApi === null) return false;
-      const { kind, status } = requestApi as { kind?: unknown; status?: unknown };
-      return RENDER_REQUEST_API_KINDS.has(kind) && RENDER_REQUEST_API_STATUSES.has(status);
-    })
+    hasExactKeys(value, [
+      "boundaryOutcome",
+      "cacheTags",
+      "cacheability",
+      "completeness",
+      "downgrade",
+      "dynamicFetches",
+      "output",
+      "pathTags",
+      "requestApis",
+      "schemaVersion",
+    ]) &&
+    value.schemaVersion === CACHE_PROOF_MODEL_SCHEMA_VERSION &&
+    isOutputScope(value.output, outputKind) &&
+    RENDER_OBSERVATION_COMPLETENESS.has(value.completeness) &&
+    isBoundaryOutcome(value.boundaryOutcome) &&
+    Array.isArray(value.requestApis) &&
+    value.requestApis.every(
+      (requestApi: unknown) =>
+        isUnknownRecord(requestApi) &&
+        hasExactKeys(requestApi, ["kind", "status"]) &&
+        RENDER_REQUEST_API_KINDS.has(requestApi.kind) &&
+        RENDER_REQUEST_API_STATUSES.has(requestApi.status),
+    ) &&
+    isStringArray(value.dynamicFetches) &&
+    isStringArray(value.cacheTags) &&
+    isStringArray(value.pathTags) &&
+    RENDER_CACHEABILITY.has(value.cacheability) &&
+    isDowngrade(value.downgrade)
+  );
+}
+
+function isOutputScope(value: unknown, kind: "app-html" | "app-rsc"): boolean {
+  if (!isUnknownRecord(value) || value.kind !== kind) return false;
+  const common =
+    isStringOrNull(value.renderEpoch) &&
+    isStringOrNull(value.rootBoundaryId) &&
+    typeof value.routeId === "string";
+  return kind === "app-html"
+    ? common && hasExactKeys(value, ["kind", "renderEpoch", "rootBoundaryId", "routeId"])
+    : common &&
+        isStringOrNull(value.mountedSlotsFingerprint) &&
+        hasExactKeys(value, [
+          "kind",
+          "mountedSlotsFingerprint",
+          "renderEpoch",
+          "rootBoundaryId",
+          "routeId",
+        ]);
+}
+
+function isBoundaryOutcome(value: unknown): boolean {
+  if (!isUnknownRecord(value) || !BOUNDARY_OUTCOME_KINDS.has(value.kind)) return false;
+  switch (value.kind) {
+    case "error":
+    case "globalError":
+      return Object.hasOwn(value, "digest")
+        ? typeof value.digest === "string" && hasExactKeys(value, ["kind", "digest"])
+        : hasExactKeys(value, ["kind"]);
+    case "redirect":
+      return (
+        typeof value.location === "string" &&
+        typeof value.status === "number" &&
+        hasExactKeys(value, ["kind", "location", "status"])
+      );
+    default:
+      return hasExactKeys(value, ["kind"]);
+  }
+}
+
+function isDowngrade(value: unknown): boolean {
+  if (!isUnknownRecord(value)) return false;
+  return (
+    hasExactKeys(value, ["fallback", "isPublicCacheCandidate", "reasons", "target"]) &&
+    (value.fallback === null ||
+      (isUnknownRecord(value.fallback) && value.fallback.kind === "breakerFallback")) &&
+    typeof value.isPublicCacheCandidate === "boolean" &&
+    Array.isArray(value.reasons) &&
+    value.reasons.every(
+      (reason: unknown) =>
+        isUnknownRecord(reason) &&
+        typeof reason.code === "string" &&
+        DOWNGRADE_TARGETS.has(reason.target),
+    ) &&
+    DOWNGRADE_TARGETS.has(value.target)
   );
 }

@@ -77,8 +77,10 @@ export function queryInvariantPrerenderObservations(): {
 }
 
 /**
- * Prerender observations with a field value the searchParams proof doesn't
- * accept, one per field it reads. Each must give no seed, without throwing.
+ * Prerender observations that aren't complete observations of this proof
+ * model: a field value the searchParams proof doesn't accept, one per field it
+ * reads, a missing field, another schema version, or another artifact's
+ * output. Each must give no seed, without throwing.
  */
 export function malformedPrerenderObservations(): { label: string; observations: unknown }[] {
   const corrupt = (change: (observation: Record<string, unknown>) => void): unknown => {
@@ -111,6 +113,33 @@ export function malformedPrerenderObservations(): { label: string; observations:
       observations: corrupt((observation) => {
         observation.completeness = "bogus";
       }),
+    },
+    {
+      label: "only the fields the searchParams proof reads",
+      observations: corrupt((observation) => {
+        for (const key of Object.keys(observation)) {
+          if (key !== "completeness" && key !== "requestApis") delete observation[key];
+        }
+      }),
+    },
+    ...["schemaVersion", "output", "cacheTags", "downgrade"].map((field) => ({
+      label: `missing ${field}`,
+      observations: corrupt((observation) => {
+        delete observation[field];
+      }),
+    })),
+    {
+      label: "another proof model schema version",
+      observations: corrupt((observation) => {
+        observation.schemaVersion = 2;
+      }),
+    },
+    {
+      label: "another artifact's output",
+      observations: (() => {
+        const { html, rsc } = queryInvariantPrerenderObservations();
+        return { html: rsc, rsc: html };
+      })(),
     },
   ];
 }

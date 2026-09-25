@@ -3,6 +3,7 @@ import {
   appendPrerenderRenderObservations,
   createPrerenderObservationNonce,
   extractPrerenderRenderObservations,
+  isPrerenderRenderObservations,
 } from "../packages/vinext/src/server/prerender-render-observations.js";
 import {
   malformedPrerenderObservations,
@@ -132,8 +133,10 @@ describe("prerender render observations channel", () => {
     }
   });
 
-  it("rejects field values the searchParams proof doesn't accept", () => {
+  it("rejects anything but complete observations of this proof model", () => {
+    expect(isPrerenderRenderObservations(queryInvariantPrerenderObservations())).toBe(true);
     for (const { label, observations } of malformedPrerenderObservations()) {
+      expect(isPrerenderRenderObservations(observations), label).toBe(false);
       const body = withMarker(HTML, NONCE, encodeURIComponent(JSON.stringify(observations)));
       expect(extractPrerenderRenderObservations(body, NONCE), label).toEqual({
         html: body,
