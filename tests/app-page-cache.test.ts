@@ -954,6 +954,7 @@ describe("app page cache helpers", () => {
         async renderFreshPageForCache() {
           return {
             cacheControl: renderCacheControl,
+            ...queryInvariantRegenObservations(),
             html: "<h1>fresh</h1>",
             rscData: new TextEncoder().encode("fresh-flight").buffer,
             tags: ["/static", "_N_T_/static"],
