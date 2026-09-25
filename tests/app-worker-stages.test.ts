@@ -244,7 +244,7 @@ describe("App Worker response stage", () => {
       new Request("https://example.com/missing"),
       undefined,
       undefined,
-      { ...notFoundStage, protocolVersion: 9 } as unknown as AppWorkerResponseStageProps,
+      { ...notFoundStage, protocolVersion: 10 } as unknown as AppWorkerResponseStageProps,
       async () => new Response("request-stage"),
       { cache: "shared" },
     );
