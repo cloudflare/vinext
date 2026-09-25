@@ -244,6 +244,52 @@ describe("staged Worker cacheability probes", () => {
     expect(result.failures).toEqual(["/broken: probe returned HTTP 500"]);
   });
 
+  it("drops an unlisted path whose render fails, but fails the deploy for a listed one", async () => {
+    const root = createProbeRoot();
+    const route = optimizableRoute("/posts/:slug");
+    const pickedRoute = {
+      ...route,
+      cacheabilityProbe: { ...route.cacheabilityProbe, trafficPicked: true },
+    };
+    const probe = (brokenPathname: string) =>
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        fetchImpl: async (input) => {
+          const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+          return pathname === brokenPathname
+            ? Response.json({
+                kind: "app-page",
+                pattern: route.pattern,
+                reason: "route returned HTTP 500",
+                state: "probe-failed",
+                status: 500,
+                version: 1,
+              })
+            : staticProbeResponse(route.pattern);
+        },
+        retries: 0,
+        root,
+        targetUrl: "https://example.com",
+        targets: [
+          { ...target("/posts/listed"), route },
+          { ...target("/posts/picked"), route: pickedRoute },
+        ],
+      });
+
+    const dropped = await probe("/posts/picked");
+    expect(dropped).toMatchObject({ failures: [], skipped: 0 });
+    expect(dropped.cacheableTargets.map((warm) => warm.pathname)).toEqual(["/posts/listed"]);
+    const routeRecord =
+      dropped.manifest.routes[cacheabilityManifestRouteKey("app-page", route.pattern)];
+    expect(routeRecord?.runtimePaths).toBeUndefined();
+    expect(cacheabilityManifestRouteState(routeRecord!, "/posts/picked", "html")).not.toBe(
+      "runtime-check",
+    );
+
+    const failed = await probe("/posts/listed");
+    expect(failed.failures).toEqual(["/posts/listed: route returned HTTP 500"]);
+  });
+
   it("retries a malformed successful probe envelope", async () => {
     const root = createProbeRoot();
     const fetchImpl = vi

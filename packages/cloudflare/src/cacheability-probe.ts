@@ -400,6 +400,8 @@ export async function probeStagedWorkerCacheability(options: {
   };
   type ConcretePathGroup = {
     deferred: boolean;
+    /** An unlisted path whose render failed; it is left to the route rule. */
+    dropped?: boolean;
     pattern: PatternClassification;
     primary: CdnWarmTarget;
     result?: ConcretePathResult;
@@ -472,6 +474,23 @@ export async function probeStagedWorkerCacheability(options: {
     group.targets.push(target);
     targetGroups.set(concreteKey, group);
   }
+  // Paths listed by each route's own static generation. Traffic-picked paths
+  // are unlisted; a path moved to another route counts as listed there only
+  // when that route lists its resolved pathname.
+  const listedPathnamesByRoute = new Map<string, Set<string>>();
+  for (const target of routableTargets) {
+    const route = target.route!;
+    if (route.cacheabilityProbe?.trafficPicked === true) continue;
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    const listed = listedPathnamesByRoute.get(key) ?? new Set<string>();
+    listed.add(
+      route.cacheabilityProbe?.concretePathname ??
+        cacheabilityRoutePathname(target.pathname, target.kind),
+    );
+    listedPathnamesByRoute.set(key, listed);
+  }
+  const isListedGroup = (group: ConcretePathGroup): boolean =>
+    listedPathnamesByRoute.get(group.pattern.key)?.has(group.routePathname) === true;
   const groups: ConcretePathGroup[] = Array.from(targetGroups.values(), (targetGroup) => {
     targetGroup.targets.sort((first, second) => {
       const preference = targetPreference(first) - targetPreference(second);
@@ -661,6 +680,27 @@ export async function probeStagedWorkerCacheability(options: {
       result.status! > 599
     ) {
       failures.push(`${target.label}: ${result.reason ?? "probe returned an invalid envelope"}`);
+      completedPathCount += 1;
+      reportProgress();
+      return "done";
+    }
+    if (
+      result.state === "probe-failed" &&
+      result.status! >= 500 &&
+      result.reason === `route returned HTTP ${result.status}` &&
+      !isListedGroup(group)
+    ) {
+      // Next.js's build never renders an unlisted path, so its render error
+      // doesn't fail the deploy. The path is neither classified nor warmed.
+      group.dropped = true;
+      if (
+        !group.pattern.groups.some(
+          (candidate) => candidate !== group && candidate.resultKey === group.resultKey,
+        )
+      ) {
+        group.pattern.resultKeys.delete(group.resultKey);
+      }
+      skippedPathCount += 1;
       completedPathCount += 1;
       reportProgress();
       return "done";
@@ -905,6 +945,7 @@ export async function probeStagedWorkerCacheability(options: {
     const rendererStaticTargets = new Map<string, CdnWarmTarget>();
     const runtimePathSet = new Set<string>();
     for (const group of pattern.groups) {
+      if (group.dropped) continue;
       if (group.deferred) {
         runtimePathSet.add(group.routePathname);
         cacheableTargets.push(...group.targets);

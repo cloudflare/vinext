@@ -210,6 +210,36 @@ describe("prerender path manifest", () => {
     });
   });
 
+  it("marks traffic-picked paths that the route's static generation doesn't list", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ slug: 'intro' }, { slug: 'featured' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      candidatePaths: ["/cached/from-traffic", "/cached/intro", "/"],
+      responseVary: "verbatim",
+    });
+
+    const trafficPicked = (pathname: string) =>
+      manifest?.routePatterns?.[pathname]?.cacheabilityProbe?.trafficPicked;
+    expect(trafficPicked("/cached/from-traffic")).toBe(true);
+    expect(trafficPicked("/cached/intro")).toBeUndefined();
+    expect(trafficPicked("/cached/featured")).toBeUndefined();
+    expect(trafficPicked("/")).toBeUndefined();
+  });
+
   it("keeps traffic paths that an uncached request stage rewrites", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

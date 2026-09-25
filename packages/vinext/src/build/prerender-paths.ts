@@ -60,6 +60,12 @@ export type PrerenderRoutePattern = {
     routeMayResolve?: boolean;
     /** A request representation may terminate before reaching the response stage. */
     requestStageMayTerminate?: boolean;
+    /**
+     * Picked from traffic, not listed by the route's own static generation
+     * (`generateStaticParams`, `getStaticPaths` or a route without dynamic
+     * segments). A path both listed and picked counts as listed.
+     */
+    trafficPicked?: boolean;
   };
 };
 export type PrerenderPathManifest = {
@@ -1120,6 +1126,7 @@ function annotateCacheabilityProbeSafety(
   config: Pick<ResolvedNextConfig, "basePath" | "headers" | "i18n" | "trailingSlash">,
   routeMayResolve: ReadonlySet<string>,
   requestStageMayTerminate: ReadonlySet<string>,
+  trafficPicked: ReadonlySet<string>,
   isResponsePolicyHeader: (name: string) => boolean,
 ): Record<string, PrerenderRoutePattern> {
   const cachePolicyRules = config.headers.filter((rule) =>
@@ -1171,6 +1178,7 @@ function annotateCacheabilityProbeSafety(
             canPrunePattern,
             ...(routeMayResolve.has(pathname) ? { routeMayResolve: true } : {}),
             ...(requestStageMayTerminate.has(pathname) ? { requestStageMayTerminate: true } : {}),
+            ...(trafficPicked.has(pathname) ? { trafficPicked: true } : {}),
           },
         },
       ];
@@ -1440,6 +1448,7 @@ export async function discoverPrerenderPathManifest(
     }
   });
 
+  const trafficPickedPathSet = new Set<string>();
   for (const publicPathname of options.candidatePaths ?? []) {
     let pathname = normalizePathTrailingSlash(
       new URL(publicPathname, "http://vinext.local").pathname,
@@ -1451,6 +1460,7 @@ export async function discoverPrerenderPathManifest(
         pathname = pathname.slice(config.basePath.length);
       else continue;
     }
+    if (!seen.has(pathname)) trafficPickedPathSet.add(pathname);
     addPath(paths, seen, pathname);
     if (pagesDir) addPath(discoveredPagesPaths, seenPagesPaths, pathname);
   }
@@ -1596,6 +1606,7 @@ export async function discoverPrerenderPathManifest(
     config,
     routeMayResolveWarmPathSet,
     requestStageMayTerminateWarmPathSet,
+    trafficPickedPathSet,
     (name) =>
       name.trim().toLowerCase() === "cache-control" ||
       options.isResponsePolicyHeader?.(name) === true,
