@@ -296,6 +296,7 @@ type CreateDispatchOptionsOverrides = {
   ensureRouteLoaded?: DispatchOptions["ensureRouteLoaded"];
   generateStaticParams?: DispatchOptions["generateStaticParams"];
   hasCustomGlobalError?: DispatchOptions["hasCustomGlobalError"];
+  hasAnyGenerateStaticParams?: DispatchOptions["hasAnyGenerateStaticParams"];
   hasGenerateStaticParams?: DispatchOptions["hasGenerateStaticParams"];
   isStaticGenerationEdgeRuntime?: DispatchOptions["isStaticGenerationEdgeRuntime"];
   formState?: DispatchOptions["formState"];
@@ -380,6 +381,10 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
         params: { slug: "hello" },
       })),
     getSourceRoute: overrides.getSourceRoute ?? (() => undefined),
+    hasAnyGenerateStaticParams:
+      overrides.hasAnyGenerateStaticParams ??
+      overrides.hasGenerateStaticParams ??
+      typeof overrides.generateStaticParams === "function",
     hasGenerateStaticParams:
       overrides.hasGenerateStaticParams ?? typeof overrides.generateStaticParams === "function",
     hasCustomGlobalError: overrides.hasCustomGlobalError,
@@ -3675,6 +3680,23 @@ describe("app page dispatch", () => {
       expect(isrGet).toHaveBeenCalledWith("html:/posts/hello");
       expect(isrSet.mock.calls.map(([key]) => key)).toContain("html:/posts/hello");
       expect(isrSet.mock.calls[0]![2].cacheControl.revalidate).toBe(60);
+    });
+
+    it("keeps the revalidate = false default from a parent generateStaticParams in a cacheComponents build", async () => {
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const { options } = createDispatchOptions({
+        hasAnyGenerateStaticParams: true,
+        hasGenerateStaticParams: false,
+        isProduction: true,
+        isrSet,
+        pprRuntime: appPagePprRuntime,
+        route: createDynamicSegmentRoute(),
+      });
+
+      await dispatchAndDrain(options);
+
+      const htmlWrite = isrSet.mock.calls.find(([key]) => key === "html:/posts/hello");
+      expect(htmlWrite?.[2].cacheControl.revalidate).toBe(Infinity);
     });
 
     for (const dynamicConfig of ["force-static", "error"]) {

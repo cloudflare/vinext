@@ -1370,6 +1370,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         return routes[sourceRouteIndex];
       },
       hasCustomGlobalError: ${globalErrorVar ? `Boolean(${globalErrorVar}?.default)` : "false"},
+      hasAnyGenerateStaticParams: __generateStaticParams.length > 0,
       hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
         childrenSlot: route.childrenSlot,
         layouts: route.layouts,

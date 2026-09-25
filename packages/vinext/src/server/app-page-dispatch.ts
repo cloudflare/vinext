@@ -346,6 +346,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
    * dynamic segment (`hasAppPageGenerateStaticParamsAtLastDynamicSegment`).
    */
   hasGenerateStaticParams: boolean;
+  /** Whether any segment of the route exports `generateStaticParams`. */
+  hasAnyGenerateStaticParams: boolean;
   hasCustomGlobalError?: boolean;
   hasPageDefaultExport: boolean;
   hasPageModule: boolean;
@@ -669,8 +671,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // the generator returns no concrete paths. Its default `revalidate = false`
   // then applies to the first on-demand render of an unknown path.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+  // Any segment's generator still sets this default, which the fetch shim and
+  // cacheComponents fallback shells read. Only the full-page cache eligibility
+  // below needs the generator at or below the last dynamic segment.
   const currentRevalidateSeconds =
-    options.revalidateSeconds ?? (options.hasGenerateStaticParams ? Infinity : null);
+    options.revalidateSeconds ?? (options.hasAnyGenerateStaticParams ? Infinity : null);
   const interceptionId = options.isRscRequest
     ? options.request.headers.get(VINEXT_INTERCEPTION_ID_HEADER)
     : null;
