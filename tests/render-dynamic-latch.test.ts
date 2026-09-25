@@ -188,6 +188,34 @@ describe("render dynamic latch", () => {
     });
   });
 
+  describe("createRequestContext", () => {
+    it("starts the default latch set when pre-populated with dynamic usage", async () => {
+      const ctx = createRequestContext({
+        headersContext: headersContext(),
+        dynamicUsageDetected: true,
+      });
+
+      expect(ctx.renderDynamicLatch.dynamic).toBe(true);
+      await runWithRequestContext(ctx, async () => {
+        await runWithIsolatedDynamicUsage(() => {
+          expect(isRenderDynamicLatched()).toBe(true);
+        });
+        expect(isRenderDynamicLatched()).toBe(true);
+      });
+    });
+
+    it("keeps an explicitly passed latch", () => {
+      const renderDynamicLatch = { dynamic: false, listeners: new Set<() => void>() };
+      const ctx = createRequestContext({
+        headersContext: headersContext(),
+        dynamicUsageDetected: true,
+        renderDynamicLatch,
+      });
+
+      expect(ctx.renderDynamicLatch).toBe(renderDynamicLatch);
+    });
+  });
+
   describe("with a unified request context created before the latch existed", () => {
     // A request that was in flight when an HMR update replaced the module
     // keeps the context the old instance created, which has no latch.

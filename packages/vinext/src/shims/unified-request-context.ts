@@ -110,7 +110,9 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     dynamicUsageDetected: false,
-    renderDynamicLatch: { dynamic: false, listeners: new Set() },
+    // Seed from a pre-populated dynamicUsageDetected, since `...opts` below only
+    // overrides the flag; an explicitly passed latch still wins.
+    renderDynamicLatch: { dynamic: opts?.dynamicUsageDetected === true, listeners: new Set() },
     renderRequestApiUsage: new Set(),
     connectionProbe: null,
     invalidDynamicUsageError: null,
