@@ -14,6 +14,7 @@ export type CloudflareInitOptions = {
   imageOptimization: InitImageOptimization;
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
+  experimentalCf?: boolean;
 };
 
 export const INIT_PLATFORMS = {
@@ -147,6 +148,15 @@ export function parseWarmCdnCacheArg(args: string[]): boolean | undefined {
   );
 }
 
+export function parseExperimentalCfArg(args: string[]): boolean | undefined {
+  return parseBooleanArg(
+    args,
+    "--experimental-cf",
+    "--no-experimental-cf",
+    '--experimental-cf expects true or false when using the "--experimental-cf=value" form.',
+  );
+}
+
 function parseBooleanArg(
   args: string[],
   enabledFlag: string,
@@ -222,9 +232,16 @@ export async function resolveInitOptions(
   args: string[],
   options: PlatformPromptOptions = {},
 ): Promise<ResolvedInitOptions> {
-  const platform = await resolveInitPlatform(args, options);
+  const experimentalCf = parseExperimentalCfArg(args);
+  const platform =
+    experimentalCf && !parsePlatformArg(args)
+      ? "cloudflare"
+      : await resolveInitPlatform(args, options);
   const platformOptions = await INIT_PLATFORMS[platform].options(args, options);
   const explicitWarmCdnCache = parseWarmCdnCacheArg(args);
+  if (experimentalCf && platform !== "cloudflare") {
+    throw new Error("--experimental-cf requires --platform=cloudflare.");
+  }
   const explicitPrerender = parsePrerenderArg(args);
   const supportsWarmCdnCache =
     platformOptions?.cdnCache === "response-store" || platformOptions?.cdnCache === "workers-cache";
@@ -251,7 +268,7 @@ export async function resolveInitOptions(
     prerender,
     cloudflare:
       platform === "cloudflare" && platformOptions
-        ? { ...platformOptions, warmCdnCache }
+        ? { ...platformOptions, warmCdnCache, ...(experimentalCf ? { experimentalCf } : {}) }
         : undefined,
   };
 }

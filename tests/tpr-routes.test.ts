@@ -15,6 +15,42 @@ afterEach(() => {
 });
 
 describe("TPR route resolution", () => {
+  it("uses a generated typed-config domain instead of a Wrangler config", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-typed-"));
+    try {
+      fs.writeFileSync(
+        path.join(root, "wrangler.jsonc"),
+        JSON.stringify({ custom_domains: ["stale.example.org"] }),
+      );
+      const configPath = path.join(
+        root,
+        ".cloudflare/output/v0/workers/default/worker.config.json",
+      );
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({ domains: ["app.example.com"] }));
+      process.env.CLOUDFLARE_API_TOKEN = "token";
+      const fetchMock = vi.fn(async () => Response.json({ success: true, result: [] }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(
+        resolveTPRRoutes({ root, typedConfig: true, window: 24 }),
+      ).resolves.toMatchObject({ skipped: "could not resolve zone for app.example.com" });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://api.cloudflare.com/client/v4/zones?name=example.com",
+        expect.any(Object),
+      );
+
+      fs.writeFileSync(configPath, JSON.stringify({ domains: [] }));
+      fetchMock.mockClear();
+      await expect(
+        resolveTPRRoutes({ root, typedConfig: true, window: 24 }),
+      ).resolves.toMatchObject({ skipped: "no custom domain — zone analytics unavailable" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("filters non-page traffic and selects the smallest requested coverage", () => {
     const traffic = filterTrafficPaths([
       { path: "/hot", requests: 70 },

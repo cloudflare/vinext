@@ -866,6 +866,115 @@ describe("init — basic functionality", () => {
     expect(readFile(tmpDir, "cloudflare.config.ts")).toBe("export default {};\n");
   });
 
+  it("generates typed Cloudflare config without Wrangler for both routers", async () => {
+    for (const router of ["app", "pages"] as const) {
+      const root = path.join(tmpDir, router);
+      fs.mkdirSync(root);
+      setupProject(root, { router });
+      const { result } = await runInit(root, {
+        install: false,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "cloudflare-images",
+          experimentalCf: true,
+        },
+      });
+      expect(result.generatedPlatformFiles).toEqual(["cloudflare.config.ts"]);
+      expect(fs.existsSync(path.join(root, "wrangler.jsonc"))).toBe(false);
+      const config = readFile(root, "cloudflare.config.ts");
+      expect(config).toContain('entrypoint: "vinext/server/fetch-handler"');
+      expect(config).toContain("ASSETS: bindings.assets()");
+      expect(config).toContain("IMAGES: bindings.images()");
+      const vite = readFile(root, "vite.config.ts");
+      expect(vite).toContain("cloudflare(");
+      expect(vite.includes('name: "rsc"')).toBe(router === "app");
+      const pkg = readPkg(root) as {
+        devDependencies: Record<string, string>;
+        scripts: Record<string, string>;
+      };
+      expect(pkg.devDependencies.cf).toBe("1.0.0-beta.1");
+      expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe("2.0.0-beta.sha-805ec1ff3");
+      expect(pkg.devDependencies.vite).toBe("8.3.0");
+      expect(pkg.devDependencies.wrangler).toBeUndefined();
+      expect(pkg.scripts["build:vinext"]).toBe("cf build");
+      expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
+    }
+  });
+
+  it("generates a typed Response Store auxiliary Worker without a separate deploy script", async () => {
+    setupProject(tmpDir);
+    const { result } = await runInit(tmpDir, {
+      install: false,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        responseStoreMode: "service-binding",
+        imageOptimization: "none",
+        experimentalCf: true,
+      },
+    });
+    expect(result.generatedPlatformFiles).toEqual(["cloudflare.config.ts"]);
+    expect(readFile(tmpDir, "cloudflare.config.ts")).toContain(
+      "createWorkersResponseStoreServiceBindingConfig",
+    );
+    expect(readFile(tmpDir, "vite.config.ts")).toContain(
+      "auxiliaryWorkers: [{ config: responseStoreServiceBinding }]",
+    );
+    expect(
+      (readPkg(tmpDir) as { scripts: Record<string, string> }).scripts["deploy:response-store"],
+    ).toBeUndefined();
+    const vite = readFile(tmpDir, "vite.config.ts");
+    const typedConfig = readFile(tmpDir, "cloudflare.config.ts");
+    await runInit(tmpDir, {
+      install: false,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        responseStoreMode: "service-binding",
+        imageOptimization: "none",
+        experimentalCf: true,
+      },
+    });
+    expect(readFile(tmpDir, "vite.config.ts")).toBe(vite);
+    expect(readFile(tmpDir, "cloudflare.config.ts")).toBe(typedConfig);
+  });
+
+  it("rejects an existing Wrangler config before mutating an experimental cf project", async () => {
+    setupProject(tmpDir);
+    writeFile(tmpDir, "wrangler.jsonc", "{}\n");
+    const before = snapshotProject(tmpDir);
+    await expect(
+      runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          experimentalCf: true,
+        },
+      }),
+    ).rejects.toThrow("existing Wrangler config");
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
+  it("rejects an incompatible typed Response Store config before mutating the project", async () => {
+    setupProject(tmpDir);
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
+    const before = snapshotProject(tmpDir);
+    await expect(
+      runInit(tmpDir, {
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "response-store",
+          responseStoreMode: "service-binding",
+          imageOptimization: "none",
+          experimentalCf: true,
+        },
+      }),
+    ).rejects.toThrow("must export responseStoreServiceBinding");
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
   it("supports CDN fallthrough with no data cache or image optimization", async () => {
     setupProject(tmpDir, { router: "app" });
 

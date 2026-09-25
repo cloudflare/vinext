@@ -357,6 +357,18 @@ const OPTIONAL_OPTIMIZE_DEPS_WARNING_RE =
   /Failed to resolve dependency: .*use-sync-external-store\/with-selector.*present in .* 'optimizeDeps\.include'/;
 const VINEXT_FILTERED_OPTIMIZE_DEPS_WARN = Symbol.for("vinext.filteredOptimizeDepsWarn");
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
+
+function scopeRscPlugin(plugin: Plugin): Plugin {
+  const applyToEnvironment = plugin.applyToEnvironment;
+  return {
+    ...plugin,
+    applyToEnvironment(environment) {
+      if (!RSC_ENVIRONMENTS.has(environment.name)) return false;
+      return applyToEnvironment?.(environment) ?? true;
+    },
+  };
+}
 
 // Install the process-level peer-disconnect backstop at module load.
 // Vite plugin lifecycle hooks (config / configureServer) proved
@@ -1561,7 +1573,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // createBuilder().buildApp(), but it still bundles for the browser beside
     // the real `ssr` environment. Legacy `vite build --ssr` names its sole
     // environment `ssr`, so only server consumers ever own stage entries.
-    isServerEnvironment(environment) && (!hasAppDir || environment.name !== "ssr");
+    isServerEnvironment(environment) && (!hasAppDir || environment.name === "rsc");
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
@@ -1819,7 +1831,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
         }
         plugins.splice(useServerIndex, 0, useCachePlugin);
-        return plugins;
+        return plugins.map(scopeRscPlugin);
       })
       .catch((cause) => {
         throw new Error("vinext: Failed to load @vitejs/plugin-rsc.", {
@@ -4756,6 +4768,10 @@ export const loadServerActionClient = ${
         // specifically so it can recognize those layouts.
         filter: { id: /virtual:|\.[cm]?[jt]sx?(?:\?|$)/ },
         handler(code, id) {
+          const environment = this.environment;
+          if (!isServeCommand && (!environment || !isMultiStageServerEnvironment(environment))) {
+            return null;
+          }
           const transformed = matchedMultiStageOutput?.transformHostEntry?.({ code, id });
           return transformed == null ? null : { code: transformed, map: null };
         },

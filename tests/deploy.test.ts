@@ -7,16 +7,23 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
   deploy,
+  buildCfDeployArgs,
   buildNodeCliInvocation,
   buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
   getZeroPercentStagingTraffic,
+  isCfCliInstalled,
   parseDeployArgs,
   projectRequiresRouteCacheabilityProbeManifest,
+  resolveCfBin,
+  resolveDeploymentTool,
+  resolveViteBuildMode,
+  resolveDeploymentControlPlaneOptions,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
-  runWranglerKVBulkPut,
+  runKVBulkPut,
+  runCfDeploy,
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
@@ -101,6 +108,14 @@ function writeWranglerPackageForTest(
 ) {
   writeFile(dir, "node_modules/wrangler/package.json", JSON.stringify({ name: "wrangler", bin }));
   writeFile(dir, "node_modules/wrangler/bin/wrangler.js", "#!/usr/bin/env node");
+}
+
+function writeCfPackageForTest(
+  dir: string,
+  bin: string | Record<string, string> = { cf: "bin/cf" },
+) {
+  writeFile(dir, "node_modules/cf/package.json", JSON.stringify({ name: "cf", bin }));
+  writeFile(dir, "node_modules/cf/bin/cf", "#!/usr/bin/env node");
 }
 
 function expectedWranglerBinForTest(dir: string): string {
@@ -281,6 +296,14 @@ describe("buildWranglerKVBulkPutArgs", () => {
 });
 
 describe("deploy environment validation", () => {
+  it("keeps the typed Cloudflare config authoritative for the Worker name", async () => {
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
+
+    await expect(deploy({ root: tmpDir, name: "cli-worker", dryRun: true })).rejects.toThrow(
+      "Set `name` in cloudflare.config.ts instead.",
+    );
+  });
+
   it("rejects invalid environment names before project side effects", async () => {
     writeFile(tmpDir, "package.json", '{"name":"unchanged"}\n');
     const before = fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8");
@@ -575,6 +598,143 @@ describe("resolveWranglerBin", () => {
   });
 });
 
+describe("cf Build Output deployment", () => {
+  it("builds the selected Cloudflare mode before prebuilt deployment", () => {
+    expect(resolveViteBuildMode("cf", undefined)).toBe("production");
+    expect(resolveViteBuildMode("cf", "staging")).toBe("staging");
+    expect(resolveViteBuildMode("wrangler", "staging")).toBe("production");
+  });
+
+  it("selects cf for typed Cloudflare configs and Wrangler for legacy configs", () => {
+    expect(resolveDeploymentTool(tmpDir)).toBe("wrangler");
+    writeFile(tmpDir, "wrangler.jsonc", "{}");
+    expect(resolveDeploymentTool(tmpDir)).toBe("wrangler");
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};");
+    expect(resolveDeploymentTool(tmpDir)).toBe("cf");
+  });
+
+  it("resolves cf's JavaScript entrypoint from its bin map", () => {
+    writeCfPackageForTest(tmpDir);
+    expect(resolveCfBin(tmpDir)).toBe(
+      fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
+    );
+  });
+
+  it("detects whether the cf CLI is installed", () => {
+    expect(isCfCliInstalled(tmpDir, () => "/app/node_modules/cf/package.json")).toBe(true);
+    expect(isCfCliInstalled(tmpDir, () => null)).toBe(false);
+  });
+
+  it("uses the typed Build Output Worker name without a Wrangler fallback", () => {
+    expect(
+      resolveDeploymentControlPlaneOptions(
+        { deploymentTool: "cf", env: "staging" },
+        { workerName: "typed-staging-worker" },
+      ),
+    ).toEqual({ deploymentTool: "cf", env: "staging", name: "typed-staging-worker" });
+    expect(
+      resolveDeploymentControlPlaneOptions(
+        { deploymentTool: "wrangler", name: "legacy-worker" },
+        { workerName: "other-worker" },
+      ),
+    ).toEqual({ deploymentTool: "wrangler", name: "legacy-worker" });
+  });
+
+  it("builds prebuilt deploy args with an optional Cloudflare mode", () => {
+    expect(buildCfDeployArgs({})).toEqual({ args: ["deploy", "--prebuilt"], mode: undefined });
+    expect(buildCfDeployArgs({ env: "staging" })).toEqual({
+      args: ["deploy", "--prebuilt", "--mode", "staging"],
+      mode: "staging",
+    });
+  });
+
+  it("runs cf with shell disabled and returns its workers.dev URL", async () => {
+    writeCfPackageForTest(tmpDir);
+    let observed: Parameters<typeof spawn> | undefined;
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      observed = args;
+      return createMockChildProcess(
+        "Worker Version ID: 095f00a7-23a7-43b7-a227-e4c97cab5f22\nhttps://app.example.workers.dev\n",
+      );
+    }) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, {}, execute)).resolves.toBe("https://app.example.workers.dev");
+    expect(observed?.[0]).toBe(process.execPath);
+    expect(observed?.[1]).toEqual([
+      fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf")),
+      "deploy",
+      "--prebuilt",
+    ]);
+    expect(observed?.[2]).toMatchObject({ shell: false });
+  });
+
+  it("deploys named Build Output Workers before the default Worker", async () => {
+    writeCfPackageForTest(tmpDir);
+    const auxiliaryDir = path.join(
+      tmpDir,
+      ".cloudflare",
+      "output",
+      "v0",
+      "workers",
+      "z-response-store-service-binding",
+    );
+    fs.mkdirSync(auxiliaryDir, { recursive: true });
+    writeFile(auxiliaryDir, "worker.config.json", JSON.stringify({ name: "response-store" }));
+    mkdir(tmpDir, ".cloudflare/output/v0/workers/a-service");
+    const invocations: Parameters<typeof spawn>[] = [];
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      invocations.push(args);
+      return createMockChildProcess(
+        args[1].includes("--worker") ? "" : "https://app.example.workers.dev\n",
+      );
+    }) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, { env: "staging" }, execute)).resolves.toBe(
+      "https://app.example.workers.dev",
+    );
+
+    expect(invocations).toHaveLength(3);
+    expect(invocations[0]?.[0]).toBe(process.execPath);
+    const cfBin = fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf"));
+    expect(invocations.map(([, args]) => args)).toEqual([
+      [cfBin, "deploy", "--prebuilt", "--mode", "staging", "--worker", "a-service"],
+      [
+        cfBin,
+        "deploy",
+        "--prebuilt",
+        "--mode",
+        "staging",
+        "--worker",
+        "z-response-store-service-binding",
+      ],
+      [cfBin, "deploy", "--prebuilt", "--mode", "staging"],
+    ]);
+    for (const [, , options] of invocations) {
+      expect(options).toMatchObject({ cwd: tmpDir, shell: false });
+    }
+    expect(invocations.map(([, , options]) => options?.stdio)).toEqual([
+      "inherit",
+      "inherit",
+      ["inherit", "pipe", "pipe"],
+    ]);
+  });
+
+  it("does not deploy the default Worker if a named Worker fails", async () => {
+    writeCfPackageForTest(tmpDir);
+    mkdir(tmpDir, ".cloudflare/output/v0/workers/response-store");
+    const invocations: Parameters<typeof spawn>[] = [];
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      invocations.push(args);
+      return createMockChildProcess("", 1);
+    }) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, {}, execute)).rejects.toThrow(
+      "cf deploy failed for auxiliary Worker response-store with exit code 1",
+    );
+    expect(invocations).toHaveLength(1);
+  });
+});
+
 describe("parseWorkerDeploymentUrl", () => {
   it.each([
     "app.example.com (custom domain - zone id: 023e105f4ecef8ad9ca31a8372d0c353)",
@@ -622,7 +782,70 @@ describe("parseWorkerDeploymentUrl", () => {
   });
 });
 
-describe("runWranglerKVBulkPut", () => {
+describe("runKVBulkPut", () => {
+  it("uses the generated KV namespace with cf and never invokes Wrangler", async () => {
+    writeCfPackageForTest(tmpDir);
+    writeFile(
+      tmpDir,
+      ".cloudflare/output/v0/workers/default/worker.config.json",
+      JSON.stringify({ env: { VINEXT_KV_CACHE: { type: "kv", id: "namespace-id" } } }),
+    );
+    let observed: Parameters<typeof spawn> | undefined;
+    let bulkFilePath = "";
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      observed = args;
+      bulkFilePath = (args[1] as string[])[6]!.slice(1);
+      expect(JSON.parse(fs.readFileSync(bulkFilePath, "utf8"))).toEqual([
+        { key: "cache-key", value: "cache-value" },
+      ]);
+      return createMockChildProcess();
+    }) as typeof spawn;
+
+    await runKVBulkPut(
+      tmpDir,
+      {
+        binding: "VINEXT_KV_CACHE",
+        deploymentTool: "cf",
+        env: "preview",
+        pairs: [{ key: "cache-key", value: "cache-value" }],
+        tempDir: tmpDir,
+      },
+      execute,
+    );
+
+    expect(observed?.[1]).toEqual([
+      fs.realpathSync(path.join(tmpDir, "node_modules/cf/bin/cf")),
+      "kv",
+      "bulk",
+      "update",
+      "namespace-id",
+      "--body",
+      `@${bulkFilePath}`,
+      "--mode",
+      "preview",
+    ]);
+    expect(observed?.[2]).toMatchObject({ cwd: tmpDir, shell: false, stdio: "inherit" });
+    expect(fs.existsSync(path.dirname(bulkFilePath))).toBe(false);
+  });
+
+  it("rejects a missing generated KV binding before uploading", async () => {
+    writeCfPackageForTest(tmpDir);
+    writeFile(
+      tmpDir,
+      ".cloudflare/output/v0/workers/default/worker.config.json",
+      JSON.stringify({ env: { VINEXT_KV_CACHE: { type: "r2", name: "wrong" } } }),
+    );
+    const execute = vi.fn() as unknown as typeof spawn;
+    await expect(
+      runKVBulkPut(
+        tmpDir,
+        { binding: "VINEXT_KV_CACHE", deploymentTool: "cf", pairs: [] },
+        execute,
+      ),
+    ).rejects.toThrow('does not declare KV binding "VINEXT_KV_CACHE"');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("writes prerender pairs to a temporary file and invokes Wrangler without a shell", async () => {
     writeWranglerPackageForTest(tmpDir);
     let observed: Parameters<typeof spawn> | undefined;
@@ -636,10 +859,11 @@ describe("runWranglerKVBulkPut", () => {
       return createMockChildProcess();
     }) as typeof spawn;
 
-    await runWranglerKVBulkPut(
+    await runKVBulkPut(
       tmpDir,
       {
         binding: "VINEXT_KV_CACHE",
+        deploymentTool: "wrangler",
         env: "staging",
         pairs: [
           {
@@ -689,10 +913,11 @@ describe("runWranglerKVBulkPut", () => {
       return createMockChildProcess();
     }) as typeof spawn;
 
-    await runWranglerKVBulkPut(
+    await runKVBulkPut(
       tmpDir,
       {
         binding: "VINEXT_KV_CACHE",
+        deploymentTool: "wrangler",
         pairs: Array.from({ length: 26 }, (_, i) => ({
           key: `cache:app:v2:build:/route-${i}:html`,
           value: String(i),
@@ -1500,6 +1725,12 @@ describe("formatMissingCacheAdapterError", () => {
     expect(msg).toContain("npx wrangler kv namespace create VINEXT_KV_CACHE");
   });
 
+  it("points typed-config projects to their Cloudflare config instead of Wrangler", () => {
+    const message = formatMissingCacheAdapterError({ typedConfig: true });
+    expect(message).toContain("cloudflare.config.ts");
+    expect(message).not.toContain("wrangler");
+  });
+
   it("no longer references the cdn adapter", () => {
     const msg = formatMissingCacheAdapterError({});
     expect(msg).not.toContain("cdnAdapter");
@@ -1513,6 +1744,12 @@ describe("formatImageOptimizationHint", () => {
     expect(message).toContain("--image-optimization=cloudflare-images");
     expect(message).toContain("imagesOptimizer()");
     expect(message).toContain("IMAGES binding");
+  });
+
+  it("points typed-config projects to cloudflare.config.ts instead of Wrangler", () => {
+    const message = formatImageOptimizationHint(true);
+    expect(message).toContain("cloudflare.config.ts");
+    expect(message).not.toContain("Wrangler");
   });
 });
 
@@ -2422,6 +2659,19 @@ describe("getMissingDeps", () => {
 
     const missing = getMissingDeps(info);
     expect(missing).toContainEqual(expect.objectContaining({ name: "wrangler" }));
+  });
+
+  it("does not require wrangler for a typed Cloudflare config", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = false;
+    info.hasRscPlugin = true;
+
+    expect(getMissingDeps(info, () => true)).not.toContainEqual(
+      expect.objectContaining({ name: "wrangler" }),
+    );
   });
 
   it("reports missing @vitejs/plugin-rsc for App Router", () => {

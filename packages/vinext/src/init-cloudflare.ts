@@ -56,6 +56,57 @@ export function validateCloudflarePlatformSetup(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): void {
+  if (cloudflare.experimentalCf) {
+    const existingWrangler = [
+      "wrangler.toml",
+      "wrangler.json",
+      "wrangler.jsonc",
+      RESPONSE_STORE_WRANGLER_CONFIG,
+    ].find((name) => fs.existsSync(path.join(context.root, name)));
+    if (existingWrangler) {
+      throw new Error(
+        `--experimental-cf cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first.`,
+      );
+    }
+    const typedConfigPath = path.join(context.root, "cloudflare.config.ts");
+    if (
+      cloudflare.cdnCache === "response-store" &&
+      (cloudflare.responseStoreMode ?? "service-binding") === "service-binding" &&
+      fs.existsSync(typedConfigPath) &&
+      !fs
+        .readFileSync(typedConfigPath, "utf-8")
+        .includes("export const responseStoreServiceBinding")
+    ) {
+      throw new Error(
+        "The existing cloudflare.config.ts must export responseStoreServiceBinding for the Response Store auxiliary Worker. Configure it before rerunning init.",
+      );
+    }
+    if (
+      context.existingViteConfigPath &&
+      cloudflare.cdnCache === "response-store" &&
+      (cloudflare.responseStoreMode ?? "service-binding") === "service-binding" &&
+      !fs
+        .readFileSync(context.existingViteConfigPath, "utf-8")
+        .includes("auxiliaryWorkers: [{ config: responseStoreServiceBinding }]")
+    ) {
+      throw new Error(
+        "--experimental-cf with Response Store service-binding requires a fresh Vite config so the auxiliary Worker is connected. Remove the existing Vite config or configure it manually.",
+      );
+    }
+    if (context.existingViteConfigPath) {
+      updateViteConfigForCloudflare(
+        context.existingViteConfigPath,
+        fs.readFileSync(context.existingViteConfigPath, "utf-8"),
+        {
+          isAppRouter: context.isAppRouter,
+          nativeModulesToStub: detectProject(context.root).nativeModulesToStub,
+          cache: cloudflare,
+          prerender: context.prerender,
+        },
+      );
+    }
+    return;
+  }
   const tomlPath = path.join(context.root, "wrangler.toml");
   if (fs.existsSync(tomlPath)) {
     throw new Error(
@@ -106,6 +157,7 @@ export function setupCloudflarePlatform(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
 ): CloudflarePlatformSetupResult {
+  if (cloudflare.experimentalCf) return setupExperimentalCfPlatform(context, cloudflare);
   const projectInfo = detectProject(context.root);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))
@@ -241,6 +293,149 @@ export function setupCloudflarePlatform(
     generatedPlatformFiles,
     nextSteps,
   };
+}
+
+function setupExperimentalCfPlatform(
+  context: CloudflarePlatformSetupContext,
+  cloudflare: CloudflareInitOptions,
+): CloudflarePlatformSetupResult {
+  const projectInfo = detectProject(context.root);
+  const serviceBinding =
+    cloudflare.cdnCache === "response-store" &&
+    (cloudflare.responseStoreMode ?? "service-binding") === "service-binding";
+  let generatedViteConfig = false;
+  if (context.existingViteConfigPath) {
+    const current = fs.readFileSync(context.existingViteConfigPath, "utf-8");
+    const updated = updateViteConfigForCloudflare(context.existingViteConfigPath, current, {
+      isAppRouter: context.isAppRouter,
+      nativeModulesToStub: projectInfo.nativeModulesToStub,
+      cache: cloudflare,
+      prerender: context.prerender,
+    });
+    if (updated !== current) {
+      fs.writeFileSync(context.existingViteConfigPath, updated, "utf-8");
+      generatedViteConfig = true;
+    }
+  } else {
+    const viteConfig = context.isAppRouter
+      ? generateAppRouterViteConfig(
+          projectInfo,
+          cloudflare,
+          "IMAGES",
+          context.prerender,
+          DEFAULT_VERSION_METADATA_BINDING,
+          serviceBinding,
+        )
+      : generatePagesRouterViteConfig(
+          projectInfo,
+          cloudflare,
+          "IMAGES",
+          context.prerender,
+          DEFAULT_VERSION_METADATA_BINDING,
+          serviceBinding,
+        );
+    fs.writeFileSync(path.join(context.root, "vite.config.ts"), viteConfig, "utf-8");
+    generatedViteConfig = true;
+  }
+
+  const configPath = path.join(context.root, "cloudflare.config.ts");
+  const generatedPlatformFiles: string[] = [];
+  if (!fs.existsSync(configPath)) {
+    fs.writeFileSync(
+      configPath,
+      generateTypedCloudflareConfig(projectInfo, cloudflare, context.today),
+    );
+    generatedPlatformFiles.push("cloudflare.config.ts");
+  }
+  const nextSteps: string[] = [];
+  if (cloudflare.dataCache === "kv") {
+    nextSteps.push(
+      "Cloudflare setup is incomplete until you create a KV namespace:",
+      `   cf kv namespaces create --title=${projectInfo.projectName}-cache`,
+      'Copy its ID into VINEXT_KV_CACHE in cloudflare.config.ts (replace "<your-kv-namespace-id>").',
+    );
+  }
+  if (cloudflare.cdnCache === "response-store") {
+    const bucket = serviceBinding
+      ? compactResourceName(`${projectInfo.projectName}-response-store`, "-cache-bodies", 63)
+      : compactResourceName(projectInfo.projectName, "-response-store-cache-bodies", 63);
+    nextSteps.push(
+      `Create the Response Store R2 bucket if needed: cf r2 buckets create --name=${bucket}`,
+    );
+  }
+  nextSteps.push(
+    'For TypeScript, add ".cloudflare/types" to the include list in tsconfig.json.',
+    "Worker types are generated during dev/build; run `cf workers types` before standalone type-checks.",
+  );
+  return {
+    generatedViteConfig,
+    skippedViteConfig: !generatedViteConfig,
+    generatedPlatformFiles,
+    nextSteps,
+  };
+}
+
+function generateTypedCloudflareConfig(
+  info: CloudflareProjectInfo,
+  options: CloudflareInitOptions,
+  today = new Date().toISOString().split("T")[0],
+): string {
+  const serviceBinding =
+    options.cdnCache === "response-store" &&
+    (options.responseStoreMode ?? "service-binding") === "service-binding";
+  const selfContained = options.cdnCache === "response-store" && !serviceBinding;
+  const workersCache = options.cdnCache === "workers-cache";
+  const helper = serviceBinding
+    ? "createWorkersResponseStoreServiceBindingConfig"
+    : selfContained
+      ? "createWorkersResponseStoreSelfContainedConfig"
+      : workersCache
+        ? "createWorkersCacheConfig"
+        : undefined;
+  const imports = [
+    `import { bindings, defineConfig, defineWorker${helper ? ", exports" : ""} } from "@cloudflare/vite-plugin/experimental-config";`,
+    ...(helper ? [`import { ${helper} } from "@vinext/cloudflare/cache/config";`] : []),
+  ];
+  const responseStoreName = compactResourceName(info.projectName, "-response-store", 63);
+  const bucket = serviceBinding
+    ? compactResourceName(responseStoreName, "-cache-bodies", 63)
+    : compactResourceName(info.projectName, "-response-store-cache-bodies", 63);
+  const shared = serviceBinding
+    ? `const responseStore = ${helper}({
+  worker: { name: ${JSON.stringify(responseStoreName)}, compatibilityDate: ${JSON.stringify(today)}, compatibilityFlags: ["nodejs_compat"] },
+  bucket: ${JSON.stringify(bucket)},
+  bindings,
+  exports,
+});
+
+export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
+`
+    : selfContained
+      ? `const cache = ${helper}({ worker: ${JSON.stringify(info.projectName)}, bucket: ${JSON.stringify(bucket)}, bindings, exports });\n`
+      : workersCache
+        ? `const cache = ${helper}({ bindings, exports });\n`
+        : "";
+  const cacheSpread = serviceBinding
+    ? "responseStore.applicationWorker"
+    : helper
+      ? "cache"
+      : undefined;
+  return `${imports.join("\n")}
+
+${shared}export default defineConfig({
+  worker: defineWorker({
+    ${cacheSpread ? `...${cacheSpread},\n    ` : ""}name: ${JSON.stringify(info.projectName)},
+    entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
+    compatibilityDate: ${JSON.stringify(today)},
+    compatibilityFlags: ["nodejs_compat"],
+    assets: { notFoundHandling: "none" },
+    env: {
+      ${cacheSpread ? `...${cacheSpread}.env,\n      ` : ""}ASSETS: bindings.assets(),
+      ${options.imageOptimization === "cloudflare-images" ? "IMAGES: bindings.images(),\n      " : ""}${options.dataCache === "kv" ? 'VINEXT_KV_CACHE: bindings.kv({ id: "<your-kv-namespace-id>" }),\n      ' : ""}
+    },
+  }),
+});
+`;
 }
 
 /**
@@ -1097,11 +1292,15 @@ export function generateAppRouterViteConfig(
   imagesBinding = "IMAGES",
   prerender = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
+  serviceBinding = false,
 ): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
+    ...(serviceBinding
+      ? ['import { responseStoreServiceBinding } from "./cloudflare.config.ts";']
+      : []),
     ...cacheImports(options),
   ];
 
@@ -1126,7 +1325,7 @@ export function generateAppRouterViteConfig(
   );
 
   plugins.push(`    cloudflare({
-      viteEnvironment: {
+      ${serviceBinding ? "auxiliaryWorkers: [{ config: responseStoreServiceBinding }],\n      " : ""}viteEnvironment: {
         name: "rsc",
         childEnvironments: ["ssr"],
       },
@@ -1164,11 +1363,15 @@ export function generatePagesRouterViteConfig(
   imagesBinding = "IMAGES",
   prerender = false,
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
+  serviceBinding = false,
 ): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
+    ...(serviceBinding
+      ? ['import { responseStoreServiceBinding } from "./cloudflare.config.ts";']
+      : []),
     ...cacheImports(options),
   ];
 
@@ -1203,7 +1406,7 @@ export default defineConfig({
       prerender,
       versionMetadataBinding,
     ).replace(/\n/g, "\n    ")},
-    cloudflare(),
+    cloudflare(${serviceBinding ? "{ auxiliaryWorkers: [{ config: responseStoreServiceBinding }] }" : ""}),
   ],${resolveBlock}
 });
 `;

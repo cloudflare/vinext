@@ -257,7 +257,10 @@ export function workerEntryHasCacheHandler(root: string): boolean {
  * persistent cache backend; vinext no longer scaffolds one into the Worker
  * entry, so it must be declared via `vinext({ cache })`.
  */
-export function formatMissingCacheAdapterError(options: { configFile?: string }): string {
+export function formatMissingCacheAdapterError(options: {
+  configFile?: string;
+  typedConfig?: boolean;
+}): string {
   const configRef = options.configFile ? options.configFile : "your Vite config";
   return (
     `[vinext] This app uses ISR / caching but no cache adapter is configured in ${configRef}.\n\n` +
@@ -274,13 +277,22 @@ export function formatMissingCacheAdapterError(options: { configFile?: string })
     `        cloudflare(),\n` +
     `      ],\n` +
     `    });\n\n` +
-    `  The VINEXT_KV_CACHE namespace binding is added to wrangler.jsonc for you.\n` +
-    `  Create the namespace with:\n\n` +
-    `    npx wrangler kv namespace create VINEXT_KV_CACHE`
+    (options.typedConfig
+      ? `  Configure the VINEXT_KV_CACHE namespace binding in cloudflare.config.ts.`
+      : `  The VINEXT_KV_CACHE namespace binding is added to wrangler.jsonc for you.\n` +
+        `  Create the namespace with:\n\n` +
+        `    npx wrangler kv namespace create VINEXT_KV_CACHE`)
   );
 }
 
-export function formatImageOptimizationHint(): string {
+export function formatImageOptimizationHint(typedConfig = false): string {
+  if (typedConfig) {
+    return (
+      `  [vinext] next/image is served unoptimized. To enable edge image\n` +
+      `  optimization via Cloudflare Images, configure imagesOptimizer() in your\n` +
+      `  Vite config and the IMAGES binding in cloudflare.config.ts.`
+    );
+  }
   return (
     `  [vinext] next/image is served unoptimized. To enable edge image\n` +
     `  optimization via Cloudflare Images, run:\n\n` +

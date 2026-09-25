@@ -134,6 +134,39 @@ function writeTwoStageWorkerArtifact(): void {
   );
 }
 
+function writeBuildOutputWorkerArtifact(): void {
+  writeFile(
+    ".cloudflare/output/v0/workers/default/worker.config.json",
+    JSON.stringify({
+      manifest: { mainModule: "index.js", modules: {}, type: "partial" },
+      name: "my-worker",
+      type: "worker",
+    }),
+  );
+  writeFile(
+    ".cloudflare/output/v0/workers/default/bundle/index.js",
+    'void import("./response-stage.js");\n',
+  );
+  writeFile(
+    ".cloudflare/output/v0/workers/default/bundle/response-stage.js",
+    `import "./${CACHEABILITY_MANIFEST_MODULE}";\n`,
+  );
+  writeFile(
+    ".cloudflare/output/v0/workers/default/bundle/.vite/manifest.json",
+    JSON.stringify({
+      "virtual:cloudflare/worker-entry": {
+        dynamicImports: ["virtual:vinext-response-stage"],
+        file: "index.js",
+      },
+      "virtual:vinext-response-stage": { file: "response-stage.js" },
+    }),
+  );
+  writeFile(
+    `.cloudflare/output/v0/workers/default/bundle/${CACHEABILITY_MANIFEST_MODULE}`,
+    "export default null;\n",
+  );
+}
+
 function appPageProbeResponse(
   state: "static-candidate" | "probe-failed" = "static-candidate",
   pattern = "/about",
@@ -404,6 +437,88 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         version: 1,
       }),
     ).toThrow(`Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}`);
+  });
+
+  it("writes a cacheability manifest into the cf Build Output bundle", () => {
+    writeBuildOutputWorkerArtifact();
+
+    expect(
+      writeCacheabilityManifestArtifact(
+        tmpDir,
+        "wrangler.jsonc",
+        { buildId: "build-a", routes: {}, version: 1 },
+        "cf",
+      ),
+    ).toBe(".cloudflare/output/v0/workers/default/worker.config.json");
+    expect(
+      fs.readFileSync(
+        path.join(
+          tmpDir,
+          ".cloudflare/output/v0/workers/default/bundle",
+          CACHEABILITY_MANIFEST_MODULE,
+        ),
+        "utf8",
+      ),
+    ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
+  });
+
+  it("stages and promotes a typed-config Worker using cf without Wrangler", async () => {
+    writeBuildOutputWorkerArtifact();
+    writeFile(
+      "node_modules/cf/package.json",
+      JSON.stringify({ name: "cf", bin: { cf: "bin/cf" } }),
+    );
+    writeFile("node_modules/cf/bin/cf", "#!/usr/bin/env node\n");
+    const events: string[] = [];
+    execFileSyncMock.mockImplementation((_file: string, args: string[]) => {
+      if (args.includes("create") && args.includes("versions")) {
+        events.push("upload");
+        return JSON.stringify({
+          id: PROBE_VERSION,
+          preview_url: "https://preview.example.workers.dev",
+        });
+      }
+      if (args.includes("list")) {
+        events.push("status");
+        return JSON.stringify({
+          deployments: [
+            { id: "active", versions: [{ version_id: OLD_VERSION, percentage: 100 }] },
+            { id: "older", versions: [{ version_id: FINAL_VERSION, percentage: 100 }] },
+          ],
+        });
+      }
+      if (args.includes("create") && args.includes("deployments")) {
+        const versions = JSON.parse(args[args.indexOf("--versions") + 1]!);
+        events.push(versions.length === 2 ? "stage" : "promote");
+        return "https://app.example.workers.dev";
+      }
+      if (args.includes("triggers")) {
+        events.push("triggers");
+        return "Deployed my-worker triggers\n  https://app.example.workers.dev\n";
+      }
+      throw new Error(`Unexpected cf args: ${args.join(" ")}`);
+    });
+    const { deployWithCdnWarmup } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(
+      deployWithCdnWarmup(tmpDir, [], {
+        deploymentTool: "cf",
+        allowEmptyWarmPlan: true,
+        discoverWarmPlan: async () => {
+          events.push("discover");
+          return { loadingShellPaths: [], paths: [], rscPaths: [] };
+        },
+        warmCdnTarget: "https://app.example.workers.dev",
+      }),
+    ).resolves.toBe("https://app.example.workers.dev");
+    expect(events).toEqual(["upload", "status", "stage", "triggers", "discover", "promote"]);
+    const args = (execFileSyncMock.mock.calls as Array<[string, string[]]>).map(
+      ([, value]) => value,
+    );
+    expect(args).toContainEqual(
+      expect.arrayContaining(["workers", "deployments", "create", "--strategy", "percentage"]),
+    );
+    expect(args.some((value: string[]) => value.includes("wrangler"))).toBe(false);
   });
 
   it.each([

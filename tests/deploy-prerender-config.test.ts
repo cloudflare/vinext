@@ -179,6 +179,16 @@ function writeProjectWithInlineNextConfig(nextConfig: string): void {
   );
 }
 
+function writeCfBuildOutputScaffolding(): void {
+  writeFile("cloudflare.config.ts", "export default {};\n");
+  writeFile(
+    ".cloudflare/output/v0/workers/default/worker.config.json",
+    JSON.stringify({ name: "inline-next-config-app" }),
+  );
+  writeFile("node_modules/cf/package.json", JSON.stringify({ name: "cf", bin: { cf: "bin/cf" } }));
+  writeFile("node_modules/cf/bin/cf", "#!/usr/bin/env node\n");
+}
+
 function writeApiOnlyProject(): void {
   writeFile("package.json", JSON.stringify({ name: "warm-skip-build-app", type: "module" }));
   writeFile(
@@ -251,6 +261,26 @@ describe("deploy prerender config wiring", () => {
       "does not declare version_metadata",
     );
     expect(execFileSync).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("requires the cf CLI when a typed Cloudflare config selects Build Output", async () => {
+    writeProject("false");
+    writeFile("cloudflare.config.ts", "export default {};\n");
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deploy({ root: tmpDir, dryRun: true })).rejects.toThrow(
+      "Missing deployment dependencies: cf",
+    );
+  });
+
+  it("accepts a typed Cloudflare app without a Wrangler config", async () => {
+    writeProject("false");
+    fs.rmSync(path.join(tmpDir, "wrangler.jsonc"));
+    writeCfBuildOutputScaffolding();
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await expect(deploy({ root: tmpDir, dryRun: true })).resolves.toBeUndefined();
     expect(spawn).not.toHaveBeenCalled();
   });
 
@@ -677,6 +707,57 @@ describe("deploy prerender config wiring", () => {
     );
   });
 
+  it.each([undefined, "staging"])("uses Build Output mode %s for dotenv and cf", async (env) => {
+    const mode = env ?? "production";
+    const envKey = "VINEXT_TEST_CF_BUILD_MODE";
+    delete process.env[envKey];
+    writeProjectWithInlineNextConfig(
+      `{ output: "export", generateBuildId: () => process.env.${envKey} ?? "missing" }`,
+    );
+    writeCfBuildOutputScaffolding();
+    writeFile(".env.production", `${envKey}=production\n`);
+    writeFile(".env.staging", `${envKey}=staging\n`);
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    try {
+      await deploy({ root: tmpDir, skipBuild: true, env });
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nextConfig: expect.objectContaining({ buildId: mode }),
+        }),
+      );
+      expect(spawn).toHaveBeenCalledWith(
+        process.execPath,
+        [path.join(tmpDir, "node_modules/cf/bin/cf"), "deploy", "--prebuilt", "--mode", mode],
+        expect.objectContaining({ cwd: tmpDir }),
+      );
+    } finally {
+      delete process.env[envKey];
+    }
+  });
+
+  it("keeps production dotenv mode for legacy Wrangler environments", async () => {
+    const envKey = "VINEXT_TEST_WRANGLER_BUILD_MODE";
+    delete process.env[envKey];
+    writeProjectWithInlineNextConfig(
+      `{ output: "export", generateBuildId: () => process.env.${envKey} ?? "missing" }`,
+    );
+    writeFile(".env.production", `${envKey}=production\n`);
+    writeFile(".env.staging", `${envKey}=staging\n`);
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    try {
+      await deploy({ root: tmpDir, skipBuild: true, env: "staging" });
+      expect(runPrerenderMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          nextConfig: expect.objectContaining({ buildId: "production" }),
+        }),
+      );
+    } finally {
+      delete process.env[envKey];
+    }
+  });
+
   it("uploads prerendered App Router artifacts to KV only when configured in Vite", async () => {
     writeProject('{ routes: "*" }', '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     runPrerenderMock.mockImplementationOnce(async () => {
@@ -711,6 +792,52 @@ describe("deploy prerender config wiring", () => {
       "--remote",
     ]);
     expect(calls.at(-1)?.[1]).toEqual([expect.stringContaining("wrangler"), "deploy"]);
+  });
+
+  it("uploads prerendered KV entries with cf for typed configs without Wrangler", async () => {
+    writeProject('{ routes: "*" }', '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+    fs.rmSync(path.join(tmpDir, "wrangler.jsonc"));
+    writeCfBuildOutputScaffolding();
+    writeFile(
+      ".cloudflare/output/v0/workers/default/worker.config.json",
+      JSON.stringify({ name: "prerender-config-app", env: { MY_KV: { type: "kv", id: "kv-id" } } }),
+    );
+    runPrerenderMock.mockImplementationOnce(async () => {
+      writeFile(
+        "dist/server/vinext-prerender.json",
+        JSON.stringify({
+          buildId: "build-1",
+          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+        }),
+      );
+      writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
+      return { routes: [] };
+    });
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    const calls = vi.mocked(spawn).mock.calls;
+    const kvCall = calls.find(([, args]) => (args as string[]).includes("bulk"));
+    expect(kvCall?.[1]).toEqual([
+      expect.stringContaining("/cf"),
+      "kv",
+      "bulk",
+      "update",
+      "kv-id",
+      "--body",
+      expect.stringMatching(/^@.*\.json$/),
+      "--mode",
+      "production",
+    ]);
+    expect(calls.at(-1)?.[1]).toEqual([
+      expect.stringContaining("/cf"),
+      "deploy",
+      "--prebuilt",
+      "--mode",
+      "production",
+    ]);
+    expect(calls.every(([, args]) => !(args as string[])[0]?.includes("wrangler"))).toBe(true);
   });
 
   it("continues deploy when configured KV prerender upload fails", async () => {
