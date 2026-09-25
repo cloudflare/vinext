@@ -85,6 +85,8 @@ export type PrerenderPathManifest = {
   routeHandlerPaths?: string[];
   /** App Router paths with an ordinary main-tree loading boundary. */
   loadingShellPaths?: string[];
+  /** Every App page route pattern with an ordinary main-tree loading boundary. */
+  loadingBoundaryRoutePatterns?: string[];
   /** Pages Router paths selected by the existing HTML warm discovery pass. */
   pagesPaths?: string[];
   /** Pages Router JSON data identities corresponding to discovered static paths. */
@@ -948,12 +950,22 @@ async function resolveAppWarmPaths(options: {
   appPaths: string[];
   appRoutePaths: string[];
   htmlPaths: string[];
+  loadingBoundaryRoutePatterns: string[];
   loadingShellPaths: string[];
   pagesPaths: string[];
   rscPaths: string[];
   routePatterns: Record<string, PrerenderRoutePattern>;
 }> {
   const appRoutes = await appRouter(options.appDir, options.pageExtensions);
+  // Read from the route graph for every App page route. A configured
+  // candidate path can be recorded without a matched route, so per-path
+  // metadata can't carry it.
+  const loadingBoundaryRoutePatterns = appRoutes
+    .filter(
+      (route) => !(route.routePath && !route.pagePath) && appRouteHasMainTreeLoadingBoundary(route),
+    )
+    .map((route) => route.pattern)
+    .sort();
   const routeHandlerClassifications = new Map(
     appRoutes.flatMap((route) =>
       route.routePath && !route.pagePath
@@ -1036,6 +1048,7 @@ async function resolveAppWarmPaths(options: {
     appPaths,
     appRoutePaths,
     htmlPaths,
+    loadingBoundaryRoutePatterns,
     loadingShellPaths,
     pagesPaths,
     routePatterns,
@@ -1565,6 +1578,7 @@ export async function discoverPrerenderPathManifest(
         appPaths: [],
         appRoutePaths: [],
         htmlPaths: pagesOnlyWarmPaths,
+        loadingBoundaryRoutePatterns: [],
         loadingShellPaths: [],
         pagesPaths: pagesOnlyWarmPaths,
         routePatterns: pagesWarmMetadata.routePatterns,
@@ -1646,6 +1660,9 @@ export async function discoverPrerenderPathManifest(
       : {}),
     ...(excludedWarmPathSet.size > 0 ? { excludedWarmPaths: Array.from(excludedWarmPathSet) } : {}),
     ...(fallbackRoutePatterns.length > 0 ? { fallbackRoutePatterns } : {}),
+    ...(appOwnedWarmPaths.loadingBoundaryRoutePatterns.length > 0
+      ? { loadingBoundaryRoutePatterns: appOwnedWarmPaths.loadingBoundaryRoutePatterns }
+      : {}),
     ...(rscBuildId ? { rscBuildId } : {}),
     ...(options.responseVary ? { responseVary: options.responseVary } : {}),
     ...(includeCanonicalRsc ? { rscPaths: appOwnedWarmPaths.rscPaths } : {}),

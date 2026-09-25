@@ -174,7 +174,7 @@ describe("staged Worker cacheability probes", () => {
       unknownState: "static-candidate",
       pattern: "/cached/:slug",
       state: "runtime-check",
-      staticPaths: { html: ["/cached/intro"] },
+      staticPaths: { html: ["/cached/intro"], "rsc-full": ["/cached/intro"] },
     });
     expect(result.cacheableTargets).toEqual([target]);
   });
@@ -811,7 +811,7 @@ describe("staged Worker cacheability probes", () => {
         unknownState: "static-candidate",
         pattern: route.pattern,
         state: "runtime-check",
-        staticPaths: { html: ["/posts/one"] },
+        staticPaths: { html: ["/posts/one"], "rsc-full": ["/posts/one"] },
       }),
     ]);
   });
@@ -1185,7 +1185,7 @@ describe("staged Worker cacheability probes", () => {
       expect.objectContaining({
         pattern: route.pattern,
         state: "runtime-check",
-        staticRepresentation: "html",
+        staticPaths: { html: ["/missing"], "rsc-full": ["/missing"] },
       }),
     ]);
   });
@@ -1353,7 +1353,7 @@ describe("staged Worker cacheability probes", () => {
         pattern: route.pattern,
         runtimePaths: ["/posts/conditionally-dynamic"],
         state: "runtime-check",
-        staticPaths: { html: ["/posts/static"] },
+        staticPaths: { html: ["/posts/static"], "rsc-full": ["/posts/static"] },
       }),
     ]);
   });
@@ -1398,7 +1398,9 @@ describe("staged Worker cacheability probes", () => {
         buildId: "application-build",
         fetchImpl: async (input) => {
           const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
-          const route = targets.find((candidate) => candidate.pathname === pathname)!.route!;
+          const route = targets.find(
+            (candidate) => candidate.pathname.split("?")[0] === pathname,
+          )!.route!;
           return Response.json({
             kind: route.kind,
             pattern: route.pattern,
@@ -1602,6 +1604,40 @@ describe("staged Worker cacheability probes", () => {
       }
     });
 
+    it("certifies the RSC representations of a static HTML render", async () => {
+      const aboutRoute = optimizableRoute("/about");
+      const rscOnly = pageTargets("/posts/rsc-only", listedRoute)[1]!;
+      const result = await probe(
+        [...pageTargets("/posts/a", listedRoute), rscOnly, ...pageTargets("/about", aboutRoute)],
+        {},
+        { loadingBoundaryRoutePatterns: ["/posts/:slug"] },
+      );
+
+      expect(result.failures).toEqual([]);
+      const posts =
+        result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")]!;
+      for (const representation of ["html", "rsc-full", "rsc-loading-shell"] as const) {
+        expect(cacheabilityManifestRouteState(posts, "/posts/a", representation)).toBe(
+          "static-candidate",
+        );
+      }
+      // Probed only through RSC, so only its RSC render is certified.
+      expect(cacheabilityManifestRouteState(posts, "/posts/rsc-only", "rsc-full")).toBe(
+        "static-candidate",
+      );
+      expect(posts.staticPaths?.html).toEqual(["a"]);
+      expect(posts.staticPaths?.["rsc-loading-shell"]).toEqual(["a"]);
+
+      const about = result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/about")]!;
+      expect(about.staticRepresentation).toBeUndefined();
+      expect(cacheabilityManifestRouteState(about, "/about", "html")).toBe("static-candidate");
+      expect(cacheabilityManifestRouteState(about, "/about", "rsc-full")).toBe("static-candidate");
+      // No loading boundary, so no loading-shell render to certify.
+      expect(cacheabilityManifestRouteState(about, "/about", "rsc-loading-shell")).not.toBe(
+        "static-candidate",
+      );
+    });
+
     it("keeps Pages Router classification unchanged", async () => {
       const pagesRoute = { ...listedRoute, kind: "pages-page" as const };
       const result = await probe(
@@ -1659,7 +1695,7 @@ describe("staged Worker cacheability probes", () => {
       kind: "app-page",
       pattern: "/safe",
       state: "runtime-check",
-      staticPaths: { html: ["/safe"] },
+      staticPaths: { html: ["/safe"], "rsc-full": ["/safe"] },
     });
   });
 
@@ -1714,7 +1750,7 @@ describe("staged Worker cacheability probes", () => {
       kind: "app-page",
       pattern: "/html-target",
       state: "runtime-check",
-      staticRepresentation: "html",
+      staticPaths: { html: ["/html-target"], "rsc-full": ["/html-target"] },
     });
     expect(cacheabilityManifestRouteState(sourceManifestRoute, "/source", "rsc-full")).toBe(
       "runtime-check",
@@ -2075,7 +2111,7 @@ describe("staged Worker cacheability probes", () => {
         pattern: route.pattern,
         runtimePaths: ["/posts/z-ordinary"],
         state: "runtime-check",
-        staticPaths: { html: ["/posts/a-special"] },
+        staticPaths: { html: ["/posts/a-special"], "rsc-full": ["/posts/a-special"] },
       }),
     ]);
   });
@@ -2127,7 +2163,7 @@ describe("staged Worker cacheability probes", () => {
       expect.objectContaining({
         pattern: route.pattern,
         state: "runtime-check",
-        staticRepresentation: "html",
+        staticPaths: { html: ["/conditional"], "rsc-full": ["/conditional"] },
       }),
     ]);
   });
@@ -2290,12 +2326,13 @@ describe("staged Worker cacheability probes", () => {
         state: "runtime-check",
         staticPaths: {
           html: Array.from({ length: pathCount - 1 }, (_, index) => `${index}`).sort(),
+          "rsc-full": Array.from({ length: pathCount - 1 }, (_, index) => `${index}`).sort(),
         },
       }),
     ]);
-    // One exact path string per cacheable render is the irreducible safety
-    // information. It is still far smaller than per-HTML/RSC route records.
-    expect(Buffer.byteLength(JSON.stringify(result.manifest))).toBeLessThan(20 * 1024);
+    // One exact path string per certified representation is the irreducible
+    // safety information. It is still far smaller than per-path route records.
+    expect(Buffer.byteLength(JSON.stringify(result.manifest))).toBeLessThan(40 * 1024);
     expect(progress.at(-1)).toBe(pathCount);
   });
 
@@ -2379,7 +2416,7 @@ describe("staged Worker cacheability probes", () => {
       expect.objectContaining({
         pattern: "/static",
         state: "runtime-check",
-        staticRepresentation: "html",
+        staticPaths: { html: ["/static"], "rsc-full": ["/static"] },
       }),
     ]);
   });
@@ -2391,7 +2428,7 @@ describe("staged Worker cacheability probes", () => {
       kind: "app-page",
       pattern: firstTarget.pathname,
       state: "runtime-check",
-      staticRepresentation: "html",
+      staticPaths: { html: [firstTarget.pathname], "rsc-full": [firstTarget.pathname] },
     };
     const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
     const exactBytes = Buffer.byteLength(

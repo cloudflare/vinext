@@ -130,6 +130,7 @@ describe("prerender path manifest", () => {
       appPaths: ["/", "/dynamic", "/cached/intro", "/cached/featured"],
       buildId: "build-a",
       buildIdentity: "rsc-build-a",
+      loadingBoundaryRoutePatterns: ["/cached/:slug"],
       loadingShellPaths: ["/cached/intro", "/cached/featured"],
       rscBuildId: "rsc-build-a",
       responseVary: "verbatim",
@@ -884,6 +885,27 @@ describe("prerender path manifest", () => {
     expect(manifest?.excludedWarmPaths).toEqual(["/rewrite-me"]);
     expect(manifest?.rscPaths).toEqual(["/safe"]);
     expect(manifest?.loadingShellPaths).toEqual(["/safe"]);
+  });
+
+  it("lists every App page route with a loading boundary, including routes with no warm paths", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/about/page.tsx", "export default function Page() {}\n");
+    writeFile(
+      "app/posts/[slug]/page.tsx",
+      "export const revalidate = 60; export default function Page() {}\n",
+    );
+    writeFile("app/posts/loading.tsx", "export default function Loading() { return null; }\n");
+    writeFile("app/posts/feed/route.ts", "export function GET() {}\n");
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await emitPrerenderPathManifest({ root: tmpDir });
+
+    expect(manifest?.paths).toEqual(["/about"]);
+    expect(manifest?.loadingBoundaryRoutePatterns).toEqual(["/posts/:slug"]);
   });
 
   it("warms rewrite source paths when routing runs in an uncached stage", async () => {

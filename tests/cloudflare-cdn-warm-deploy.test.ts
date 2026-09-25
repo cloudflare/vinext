@@ -731,6 +731,7 @@ describe("Cloudflare CDN warmup deploy flow", () => {
         appPaths: ["/about", "/dynamic"],
         buildId: "app-build-a",
         buildIdentity: "app-build-a",
+        loadingBoundaryRoutePatterns: ["/:slug"],
         loadingShellPaths: [],
         pagesDataPaths: ["/_next/data/app-build-a/pages-about.json"],
         pagesPaths: ["/pages-about"],
@@ -841,7 +842,11 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           kind: "app-page",
           pattern: "/:slug",
           runtimePaths: ["/dynamic"],
-          staticPaths: { html: ["/about"] },
+          staticPaths: {
+            html: ["/about"],
+            "rsc-full": ["/about"],
+            "rsc-loading-shell": ["/about"],
+          },
           state: "runtime-check",
         }),
         expect.objectContaining({

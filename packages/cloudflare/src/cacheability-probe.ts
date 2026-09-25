@@ -335,6 +335,8 @@ export async function probeStagedWorkerCacheability(options: {
   expectedResponseBuildId?: string;
   fallbackRoutePatterns?: readonly PrerenderRoutePattern[];
   fetchImpl?: typeof fetch;
+  /** App page route patterns with a main-tree loading boundary. */
+  loadingBoundaryRoutePatterns?: readonly string[];
   headers?: HeadersInit;
   retries?: number;
   retryDelayMs?: number;
@@ -943,10 +945,13 @@ export async function probeStagedWorkerCacheability(options: {
     classified += 1;
   }
   if (limitFailure) throw limitFailure;
-  // Next.js classifies every generateStaticParams result independently. Store
-  // each observed concrete path exactly once, then compact the shared route
-  // prefix. Paired HTML/RSC or HTML/data representations reuse the path's
-  // membership but must pass their own completed-render admission check.
+  // Next.js classifies every generateStaticParams result independently. A
+  // path appears at most once per representation list, and never both
+  // runtime-checked and static. A certified-static App page is listed under
+  // HTML and its RSC representations, which Next.js serves from one render.
+  // Paired representations must still pass their own completed-render
+  // admission check. The shared route prefix is compacted last.
+  const loadingBoundaryRoutePatterns = new Set(options.loadingBoundaryRoutePatterns);
   for (const pattern of patterns.values()) {
     if (pattern.pruned) {
       classified += 1;
@@ -1058,14 +1063,30 @@ export async function probeStagedWorkerCacheability(options: {
         speculativeTargets.push(...pairedTargets);
       }
     }
+    // The HTML probe ran SSR, so it saw every read the RSC renders can make.
+    // A path probed only through RSC keeps its single listing.
+    const staticRepresentations = (
+      representation: CdnWarmTarget["kind"],
+    ): CdnWarmTarget["kind"][] =>
+      isAppPage && representation === "html"
+        ? [
+            "html",
+            "rsc-full",
+            ...(loadingBoundaryRoutePatterns.has(pattern.route.pattern)
+              ? (["rsc-loading-shell"] as const)
+              : []),
+          ]
+        : [representation];
     const staticPaths: CacheabilityManifestRoute["staticPaths"] = {};
     for (const [routePathname, staticTarget] of rendererStaticTargets) {
       // Conflicting observations for one resolved route identity must retain
       // runtime admission rather than certifying the static observation.
       if (runtimePathSet.has(routePathname)) continue;
-      const paths = staticPaths[staticTarget.kind] ?? [];
-      paths.push(routePathname);
-      staticPaths[staticTarget.kind] = paths;
+      for (const representation of staticRepresentations(staticTarget.kind)) {
+        const paths = staticPaths[representation] ?? [];
+        paths.push(routePathname);
+        staticPaths[representation] = paths;
+      }
     }
     for (const paths of Object.values(staticPaths)) paths?.sort();
     const allObservedPathsStatic =
@@ -1093,18 +1114,30 @@ export async function probeStagedWorkerCacheability(options: {
                 pattern: pattern.route.pattern,
                 state: "static-candidate",
               }
-            : result.rendererStatic
-              ? {
+            : result.rendererStatic && isAppPage && result.representation === "html"
+              ? compactManifestRoutePaths({
                   kind: pattern.route.kind,
                   pattern: pattern.route.pattern,
                   state: "runtime-check",
-                  staticRepresentation: result.representation,
-                }
-              : {
-                  kind: pattern.route.kind,
-                  pattern: pattern.route.pattern,
-                  state: "runtime-check",
-                }
+                  staticPaths: Object.fromEntries(
+                    staticRepresentations("html").map((representation) => [
+                      representation,
+                      [soleGroup.routePathname],
+                    ]),
+                  ),
+                })
+              : result.rendererStatic
+                ? {
+                    kind: pattern.route.kind,
+                    pattern: pattern.route.pattern,
+                    state: "runtime-check",
+                    staticRepresentation: result.representation,
+                  }
+                : {
+                    kind: pattern.route.kind,
+                    pattern: pattern.route.pattern,
+                    state: "runtime-check",
+                  }
           : {
               kind: pattern.route.kind,
               pattern: pattern.route.pattern,
