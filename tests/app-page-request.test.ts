@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { resolveAppPageSpecialError } from "../packages/vinext/src/server/app-page-execution.js";
 import {
   buildAppPageElement,
+  loadAppPageCurrentRouteIntercept,
+  matchAppPageCurrentRouteIntercept,
   resolveAppPageActionRerenderTarget,
   resolveAppPageIntercept,
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageGenerateStaticParamsSources,
   validateAppPageDynamicParams,
 } from "../packages/vinext/src/server/app-page-request.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import { cookies, headersContextFromRequest } from "../packages/vinext/src/shims/headers.js";
 import {
   createRequestContext,
@@ -83,6 +86,47 @@ describe("app page request helpers", () => {
     });
 
     expect(response?.status).toBe(404);
+  });
+
+  it.each([
+    ["an independent", () => [{ path: ["known"] }]],
+    [
+      "a chained",
+      [
+        {
+          chained: true as const,
+          generateStaticParams: () => [{ path: ["known"] }],
+          parentParamNames: [],
+        },
+      ],
+    ],
+  ])(
+    "compares an omitted optional catch-all against %s generator's values",
+    async (_name, source) => {
+      const validate = (params: Record<string, string[]>) =>
+        validateAppPageDynamicParams({
+          enforceStaticParamsOnly: true,
+          generateStaticParams: source,
+          isDynamicRoute: true,
+          optionalCatchAllParamNames: ["path"],
+          params,
+        });
+
+      expect((await validate({}))?.status).toBe(404);
+      expect(await validate({ path: ["known"] })).toBeNull();
+    },
+  );
+
+  it("allows an omitted optional catch-all that a generator leaves explicitly empty", async () => {
+    const response = await validateAppPageDynamicParams({
+      enforceStaticParamsOnly: true,
+      generateStaticParams: () => [{ path: [] }],
+      isDynamicRoute: true,
+      optionalCatchAllParamNames: ["path"],
+      params: {},
+    });
+
+    expect(response).toBeNull();
   });
 
   it("allows matching static params, including nested parent params", async () => {
@@ -228,6 +272,36 @@ describe("app page request helpers", () => {
         params: { region: "EU", lang: "en" },
       }),
     ).resolves.toMatchObject({ status: 404 });
+  });
+
+  it("names the param of an intercepting route's marked segment", async () => {
+    // app/feed/[slug]/@modal/(..)[slug]/page.tsx generates the slug its own
+    // segment names, so it is no parent param of that generator.
+    const interceptGenerateStaticParams = vi.fn(() => [{ slug: "known" }]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [null],
+      layoutTreePositions: [0],
+      parallelBranches: [
+        {
+          page: { generateStaticParams: interceptGenerateStaticParams },
+          routeSegments: ["(..)[slug]"],
+        },
+      ],
+      routeSegments: ["feed", "[slug]"],
+    });
+    const validate = (slug: string) =>
+      validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams,
+        isDynamicRoute: true,
+        params: { slug },
+      });
+
+    await expect(validate("known")).resolves.toBeNull();
+    await expect(validate("unknown")).resolves.toMatchObject({ status: 404 });
+    expect(interceptGenerateStaticParams).toHaveBeenCalledTimes(2);
+    expect(interceptGenerateStaticParams).toHaveBeenNthCalledWith(1, { params: {} });
+    expect(interceptGenerateStaticParams).toHaveBeenNthCalledWith(2, { params: {} });
   });
 
   it("validates chained and parallel branch params independently", async () => {
@@ -564,6 +638,7 @@ describe("app page request helpers", () => {
         return { ...params, catchAll: ["photos", "123"] };
       },
       renderInterceptResponse,
+      routeHasSlot: () => true,
       searchParams: new URLSearchParams("from=feed"),
       setNavigationContext,
       toInterceptOpts(intercept) {
@@ -631,6 +706,7 @@ describe("app page request helpers", () => {
       async renderInterceptResponse() {
         throw new Error("should not render a separate intercept response");
       },
+      routeHasSlot: () => true,
       searchParams: new URLSearchParams(),
       setNavigationContext() {},
       toInterceptOpts(intercept) {
@@ -647,6 +723,247 @@ describe("app page request helpers", () => {
       interceptPage: { default: "modal-page" },
       interceptParams: { id: "123" },
       interceptSlotKey: "modal@app/feed/@modal",
+    });
+  });
+
+  describe("owner default of a slot intercept", () => {
+    const currentRoute = { params: ["id"], pattern: "/photos/[id]", slots: {} };
+    const feedDefault = { default: "feed-default", dynamic: "force-static" };
+
+    async function resolveWithSource(
+      sourceRoute: { params: string[]; pattern: string; slots: Record<string, unknown> },
+      slotKey: string,
+      routeHasSlot = (route: typeof sourceRoute, key: string) => Object.hasOwn(route.slots, key),
+    ) {
+      const __loadOwnerDefault = vi.fn(async () => feedDefault);
+      const loadInterceptLayout = vi.fn(async () => ({ default: "modal-layout" }));
+      const renderInterceptResponse = vi.fn(
+        (_route: unknown, _element: unknown, _opts: { interceptOwnerDefault: unknown }) =>
+          new Response("intercepted"),
+      );
+      const result = await resolveAppPageIntercept({
+        async buildPageElement(route) {
+          return route.pattern;
+        },
+        cleanPathname: "/photos/123",
+        currentRoute,
+        findIntercept() {
+          return {
+            __loadInterceptLayouts: [loadInterceptLayout],
+            __loadOwnerDefault,
+            interceptLayouts: [null],
+            matchedParams: { id: "123" },
+            ownerDefault: null,
+            page: { default: "modal-page" },
+            slotKey,
+            sourceRouteIndex: 0,
+          };
+        },
+        getRouteParamNames(route) {
+          return route.params;
+        },
+        getSourceRoute() {
+          return sourceRoute;
+        },
+        isRscRequest: true,
+        resolveNavigationParams(_route, params) {
+          return params;
+        },
+        renderInterceptResponse,
+        routeHasSlot,
+        searchParams: new URLSearchParams(),
+        setNavigationContext() {},
+        toInterceptOpts(intercept) {
+          return { interceptOwnerDefault: intercept.ownerDefault };
+        },
+      });
+      return { __loadOwnerDefault, loadInterceptLayout, renderInterceptResponse, result };
+    }
+
+    it("loads it once the concrete source has the intercepted slot", async () => {
+      const sourceRoute = {
+        params: [],
+        pattern: "/feed",
+        slots: { "modal@app/feed/@modal": {} },
+      };
+      const { __loadOwnerDefault, loadInterceptLayout, renderInterceptResponse } =
+        await resolveWithSource(sourceRoute, "modal@app/feed/@modal");
+
+      expect(__loadOwnerDefault).toHaveBeenCalledTimes(1);
+      expect(loadInterceptLayout).toHaveBeenCalledTimes(1);
+      expect(renderInterceptResponse).toHaveBeenCalledWith(sourceRoute, "/feed", {
+        interceptOwnerDefault: feedDefault,
+      });
+    });
+
+    it("skips it when the concrete source variant lacks the intercepted slot", async () => {
+      // A route-group variant of app/feed without @modal renders its own page,
+      // so a throwing or slow app/feed/default.tsx, or any module of the
+      // unused intercept, must not run.
+      const sourceRoute = { params: [], pattern: "/feed", slots: {} };
+      const { __loadOwnerDefault, loadInterceptLayout, renderInterceptResponse } =
+        await resolveWithSource(sourceRoute, "modal@app/feed/@modal");
+
+      expect(__loadOwnerDefault).not.toHaveBeenCalled();
+      expect(loadInterceptLayout).not.toHaveBeenCalled();
+      expect(renderInterceptResponse).toHaveBeenCalledWith(sourceRoute, "/feed", {
+        interceptOwnerDefault: null,
+      });
+    });
+
+    it("skips it for a sibling-page intercept", async () => {
+      // The intercepting page replaces the source's page, not the children of
+      // a slot's owner, whatever slots the source has.
+      const sourceRoute = {
+        params: [],
+        pattern: "/feed",
+        slots: { "modal@app/feed/@modal": {} },
+      };
+      const { __loadOwnerDefault, renderInterceptResponse } = await resolveWithSource(
+        sourceRoute,
+        SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+        () => true,
+      );
+
+      expect(__loadOwnerDefault).not.toHaveBeenCalled();
+      expect(renderInterceptResponse).toHaveBeenCalledWith(sourceRoute, "/feed", {
+        interceptOwnerDefault: null,
+      });
+    });
+
+    it("loads it for a current-route interception, which renders the intercepting tree", async () => {
+      const __loadOwnerDefault = vi.fn(async () => feedDefault);
+      const feedRoute = { params: [], pattern: "/feed", slots: { "modal@app/feed/@modal": {} } };
+
+      const result = await resolveAppPageIntercept({
+        async buildPageElement() {
+          throw new Error("should not build a separate intercept element");
+        },
+        cleanPathname: "/feed",
+        currentRoute: feedRoute,
+        findIntercept: () => ({
+          __loadOwnerDefault,
+          matchedParams: {},
+          ownerDefault: null,
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 0,
+        }),
+        getRouteParamNames: (route) => route.params,
+        getSourceRoute: () => feedRoute,
+        isRscRequest: true,
+        resolveNavigationParams: (_route, params) => params,
+        async renderInterceptResponse() {
+          throw new Error("should not render a separate intercept response");
+        },
+        routeHasSlot: (route, key) => Object.hasOwn(route.slots, key),
+        searchParams: new URLSearchParams(),
+        setNavigationContext() {},
+        toInterceptOpts: (intercept) => ({ interceptOwnerDefault: intercept.ownerDefault }),
+      });
+
+      expect(result.response).toBeNull();
+      expect(__loadOwnerDefault).toHaveBeenCalledTimes(1);
+      expect(result.interceptOpts).toEqual({ interceptOwnerDefault: feedDefault });
+    });
+
+    it("leaves it unloaded on re-render targets, which never classify", async () => {
+      const __loadOwnerDefault = vi.fn(async () => feedDefault);
+      const sourceRoute = {
+        params: [],
+        pattern: "/feed",
+        slots: { "modal@app/feed/@modal": {} },
+      };
+
+      const result = await resolveAppPageActionRerenderTarget({
+        cleanPathname: "/photos/123",
+        currentParams: { id: "123" },
+        currentRoute,
+        findIntercept: () => ({
+          __loadOwnerDefault,
+          matchedParams: { id: "123" },
+          ownerDefault: null,
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 0,
+        }),
+        getRouteParamNames: (route) => route.params,
+        getSourceRoute: () => sourceRoute,
+        isRscRequest: true,
+        toInterceptOpts: (intercept) => ({ interceptPage: intercept.page }),
+      });
+
+      expect(result.route).toBe(sourceRoute);
+      expect(__loadOwnerDefault).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("current-route interception", () => {
+    const feedRoute = { pattern: "/feed", slots: { "modal@app/feed/@modal": {} } };
+
+    function createIntercept(slotKey = "modal@app/feed/@modal") {
+      return {
+        __loadOwnerDefault: vi.fn(async () => ({ default: "feed-default" })),
+        __pageLoader: vi.fn(async () => ({ default: "modal-page" })),
+        matchedParams: {},
+        ownerDefault: null,
+        page: null,
+        slotKey,
+        sourceRouteIndex: 0,
+      };
+    }
+
+    it("matches an interception whose source is the current route without loading it", async () => {
+      const intercept = createIntercept();
+
+      const match = await matchAppPageCurrentRouteIntercept({
+        cleanPathname: "/feed",
+        currentRoute: feedRoute,
+        findIntercept: () => intercept,
+        getSourceRoute: () => feedRoute,
+        isRscRequest: true,
+      });
+
+      expect(match).toBe(intercept);
+      expect(intercept.__pageLoader).not.toHaveBeenCalled();
+      expect(intercept.__loadOwnerDefault).not.toHaveBeenCalled();
+    });
+
+    it("matches nothing for another source route or a non-RSC request", async () => {
+      const intercept = createIntercept();
+      const options = {
+        cleanPathname: "/feed",
+        currentRoute: feedRoute,
+        findIntercept: () => intercept,
+        isRscRequest: true,
+      };
+
+      await expect(
+        matchAppPageCurrentRouteIntercept({ ...options, getSourceRoute: () => ({ ...feedRoute }) }),
+      ).resolves.toBeNull();
+      await expect(
+        matchAppPageCurrentRouteIntercept({
+          ...options,
+          getSourceRoute: () => feedRoute,
+          isRscRequest: false,
+        }),
+      ).resolves.toBeNull();
+    });
+
+    it("loads the intercepting tree's page and the owner's default for a slot the route has", async () => {
+      const intercept = createIntercept();
+      const routeHasSlot = (route: typeof feedRoute, key: string) =>
+        Object.hasOwn(route.slots, key);
+
+      await loadAppPageCurrentRouteIntercept(intercept, feedRoute, routeHasSlot);
+
+      expect(intercept.page).toEqual({ default: "modal-page" });
+      expect(intercept.ownerDefault).toEqual({ default: "feed-default" });
+
+      const siblingIntercept = createIntercept(SIBLING_PAGE_INTERCEPT_SLOT_KEY);
+      await loadAppPageCurrentRouteIntercept(siblingIntercept, feedRoute, () => true);
+      expect(siblingIntercept.page).toEqual({ default: "modal-page" });
+      expect(siblingIntercept.__loadOwnerDefault).not.toHaveBeenCalled();
     });
   });
 
@@ -765,6 +1082,45 @@ describe("resolveAppPageInterceptionRerenderTarget intercept loading", () => {
     // /feed has no dynamic params, so the slice is empty.
     expect(result.params).toEqual({});
     expect(result.interceptOpts).toEqual(toInterceptOpts(intercept));
+  });
+
+  it("loads a slot intercept's owner default before building its intercept options", async () => {
+    // A stale variant regenerates with the intercepting route's tree, where
+    // app/feed/default.tsx replaces app/feed's children, so its config must be
+    // loaded before the options it classifies with are built.
+    const feedDefault = { default: "feed-default", dynamic: "force-dynamic" };
+    const resolveWith = async (slots: Record<string, unknown>) => {
+      const __loadOwnerDefault = vi.fn(async () => feedDefault);
+      const result = await resolveAppPageInterceptionRerenderTarget({
+        cleanPathname: "/photos/123",
+        currentParams: { id: "123" },
+        currentRoute,
+        findIntercept: () => ({
+          __loadOwnerDefault,
+          matchedParams: { id: "123" },
+          ownerDefault: null,
+          page: { default: "modal-page" },
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 0,
+        }),
+        getRouteParamNames: (route) => route.params,
+        getSourceRoute: () => ({ ...sourceRoute, slots }),
+        isRscRequest: true,
+        routeHasSlot: (route, key) =>
+          Object.hasOwn((route as { slots?: Record<string, unknown> }).slots ?? {}, key),
+        toInterceptOpts: (intercept) => ({ interceptOwnerDefault: intercept.ownerDefault }),
+      });
+      return { __loadOwnerDefault, result };
+    };
+
+    const attached = await resolveWith({ "modal@app/feed/@modal": {} });
+    expect(attached.__loadOwnerDefault).toHaveBeenCalledTimes(1);
+    expect(attached.result.interceptOpts).toEqual({ interceptOwnerDefault: feedDefault });
+
+    // A source variant without @modal renders unchanged and never loads it.
+    const unattached = await resolveWith({});
+    expect(unattached.__loadOwnerDefault).not.toHaveBeenCalled();
+    expect(unattached.result.interceptOpts).toEqual({ interceptOwnerDefault: null });
   });
 
   it("deduplicates concurrent intercept page and layout loads", async () => {

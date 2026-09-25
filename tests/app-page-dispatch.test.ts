@@ -12,12 +12,15 @@ import {
   buildPageElements,
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
-import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import {
+  buildAppPageInterceptSourceProbes,
+  probeAppPage,
+} from "../packages/vinext/src/server/app-page-probe.js";
+import {
+  createAppPageTreePath,
   resolveAppPageSegmentParamScopeKeys,
   resolveAppPageSegmentParams,
 } from "../packages/vinext/src/server/app-page-params.js";
-import { createAppPageTreePath } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -31,8 +34,17 @@ import {
   buildRenderRequestApiObservations,
   type RenderObservation,
 } from "../packages/vinext/src/server/cache-proof.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  type AppRscRenderMode,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import {
+  resolveAppPageInterceptSegmentConfig,
+  resolveAppPageInterceptTree,
+} from "../packages/vinext/src/server/app-segment-config.js";
 import { after, connection } from "../packages/vinext/src/shims/server.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
@@ -53,6 +65,7 @@ import {
 } from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
@@ -69,7 +82,10 @@ import {
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -94,12 +110,16 @@ type TestRoute = {
         loading?: { default?: unknown } | null;
         loadings?: readonly ({ default?: unknown } | null | undefined)[] | null;
         loadingTreePositions?: readonly number[] | null;
+        layout?: { default?: unknown } | null;
+        name?: string;
         page?: { default?: unknown; generateMetadata?: unknown } | null;
         slotParamNames?: readonly string[] | null;
         slotPatternParts?: readonly string[] | null;
       }
     >
   >;
+  templates?: readonly ({ default?: unknown } | null | undefined)[];
+  templateTreePositions?: readonly number[];
   unauthorizeds?: readonly ({ default?: unknown } | null | undefined)[];
 };
 type DispatchOptions = Parameters<typeof dispatchAppPage<TestRoute>>[0];
@@ -296,8 +316,10 @@ type CreateDispatchOptionsOverrides = {
   cleanPathname?: string;
   clearRequestContext?: DispatchOptions["clearRequestContext"];
   createRscOnErrorHandler?: DispatchOptions["createRscOnErrorHandler"];
+  probeInterceptSource?: DispatchOptions["probeInterceptSource"];
   dynamicConfig?: DispatchOptions["dynamicConfig"];
   dynamicParamsConfig?: DispatchOptions["dynamicParamsConfig"];
+  dynamicStaleTimeSeconds?: DispatchOptions["dynamicStaleTimeSeconds"];
   findIntercept?: DispatchOptions["findIntercept"];
   ensureRouteLoaded?: DispatchOptions["ensureRouteLoaded"];
   generateStaticParams?: DispatchOptions["generateStaticParams"];
@@ -335,6 +357,11 @@ type CreateDispatchOptionsOverrides = {
   resolveRouteFetchCacheMode?: DispatchOptions["resolveRouteFetchCacheMode"];
   resolveRouteRevalidateSeconds?: DispatchOptions["resolveRouteRevalidateSeconds"];
   resolveRouteDynamicConfig?: DispatchOptions["resolveRouteDynamicConfig"];
+  resolveRouteDynamicStaleTimeSeconds?: DispatchOptions["resolveRouteDynamicStaleTimeSeconds"];
+  resolveRouteDynamicParamsConfig?: DispatchOptions["resolveRouteDynamicParamsConfig"];
+  resolveRouteInterceptTreeDynamicConfig?: DispatchOptions["resolveRouteInterceptTreeDynamicConfig"];
+  resolveRouteGenerateStaticParams?: DispatchOptions["resolveRouteGenerateStaticParams"];
+  resolveRouteHasAnyGenerateStaticParams?: DispatchOptions["resolveRouteHasAnyGenerateStaticParams"];
   resolveRouteStaticEligible?: DispatchOptions["resolveRouteStaticEligible"];
   route?: TestRoute;
   scheduleBackgroundRegeneration?: DispatchOptions["scheduleBackgroundRegeneration"];
@@ -364,10 +391,12 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     bypassInterceptionContextCache: overrides.bypassInterceptionContextCache,
     cleanPathname: overrides.cleanPathname ?? "/posts/hello",
     clearRequestContext,
+    probeInterceptSource: overrides.probeInterceptSource,
     createRscOnErrorHandler: overrides.createRscOnErrorHandler ?? (() => () => undefined),
     draftModeSecret: "draft-secret",
     dynamicConfig: overrides.dynamicConfig,
     dynamicParamsConfig: overrides.dynamicParamsConfig,
+    dynamicStaleTimeSeconds: overrides.dynamicStaleTimeSeconds,
     ensureRouteLoaded: overrides.ensureRouteLoaded,
     findIntercept: overrides.findIntercept ?? (() => null),
     generateStaticParams: overrides.generateStaticParams ?? null,
@@ -438,6 +467,11 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
     resolveRouteRevalidateSeconds: overrides.resolveRouteRevalidateSeconds,
     resolveRouteDynamicConfig: overrides.resolveRouteDynamicConfig,
+    resolveRouteDynamicStaleTimeSeconds: overrides.resolveRouteDynamicStaleTimeSeconds,
+    resolveRouteDynamicParamsConfig: overrides.resolveRouteDynamicParamsConfig,
+    resolveRouteInterceptTreeDynamicConfig: overrides.resolveRouteInterceptTreeDynamicConfig,
+    resolveRouteGenerateStaticParams: overrides.resolveRouteGenerateStaticParams,
+    resolveRouteHasAnyGenerateStaticParams: overrides.resolveRouteHasAnyGenerateStaticParams,
     resolveRouteStaticEligible:
       overrides.resolveRouteStaticEligible ?? ((candidate) => !candidate.isDynamic),
     route,
@@ -2820,7 +2854,69 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     await expect(response.text()).resolves.toBe("/feed");
-    expect(resolveRouteStaticEligible).toHaveBeenCalledWith(sourceRoute);
+    expect(resolveRouteStaticEligible).toHaveBeenCalledWith(
+      sourceRoute,
+      expect.objectContaining({ interceptSlotKey: "modal@app/feed/@modal" }),
+    );
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
+
+  it("classifies intercepted RSC with the intercepting branch in the source's slot", async () => {
+    // app/feed/page.tsx is static, but app/feed/@modal/(.)photos/[id]/page.tsx
+    // sets dynamic = "force-dynamic". Next.js serves the response from the
+    // intercepting route, whose tree includes that page.
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const interceptLayouts = [{ default: "modal-layout" }];
+    const interceptPage = { default: "modal-page", dynamic: "force-dynamic" };
+    const resolveRouteStaticEligible = vi.fn<DispatchOptions["resolveRouteStaticEligible"]>(
+      (_route, intercept) =>
+        (intercept?.interceptPage as { dynamic?: string } | undefined)?.dynamic !== "force-dynamic",
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        interceptBranchSegments: ["(.)photos", "[id]"],
+        interceptLayouts,
+        interceptLayoutSegments: [["(.)photos"]],
+        matchedParams: { id: "123" },
+        page: interceptPage,
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+        targetPatternParts: ["feed", "photos", ":id"],
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      isProduction: true,
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      resolveRouteStaticEligible,
+      route: currentRoute,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    await expect(response.text()).resolves.toBe("/feed");
+    expect(resolveRouteStaticEligible).toHaveBeenCalledWith(sourceRoute, {
+      interceptBranchSegments: ["(.)photos", "[id]"],
+      interceptLayoutSegments: [["(.)photos"]],
+      interceptLayouts,
+      interceptPage,
+      interceptSlotKey: "modal@app/feed/@modal",
+      interceptTargetPatternParts: ["feed", "photos", ":id"],
+    });
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
@@ -2828,6 +2924,1135 @@ describe("app page dispatch", () => {
     const devResponse = await dispatchAppPage({ ...options, isProduction: false });
     expect(devResponse.headers.get("cache-control")).toBe("no-store, must-revalidate");
     await devResponse.text();
+  });
+
+  it("classifies intercepted RSC with the owner's default the matched intercept loads", async () => {
+    // app/feed/default.tsx sets dynamic = "force-static" and takes app/feed's
+    // children in the intercepting route's tree. Only the matched intercept
+    // loads it, so classification must see it hydrated.
+    const sourceRoute = createRoute({
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+      slots: { "modal@app/feed/@modal": { default: { default: "modal-default" } } },
+    });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const feedDefault = { default: "feed-default", dynamic: "force-static" };
+    const intercept = {
+      matchedParams: { id: "123" },
+      ownerDefault: null,
+      __loadOwnerDefault: vi.fn(async () => feedDefault),
+      page: { default: "modal-page" },
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 1,
+    };
+    const resolveRouteStaticEligible = vi.fn<DispatchOptions["resolveRouteStaticEligible"]>(
+      (_route, matched) =>
+        (matched?.interceptOwnerDefault as { dynamic?: string } | undefined)?.dynamic ===
+        "force-static",
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({ ...intercept }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      isProduction: true,
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      resolveRouteStaticEligible,
+      route: currentRoute,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    await expect(response.text()).resolves.toBe("/feed");
+    expect(intercept.__loadOwnerDefault).toHaveBeenCalledTimes(1);
+    expect(resolveRouteStaticEligible).toHaveBeenCalledWith(
+      sourceRoute,
+      expect.objectContaining({ interceptOwnerDefault: feedDefault }),
+    );
+    expect(response.headers.get("cache-control")).toBeNull();
+  });
+
+  it("renders intercepted RSC without the owner's default when the source lacks the slot", async () => {
+    // A route-group variant of app/feed matched as the source has no @modal,
+    // so its own page renders and app/feed/default.tsx, which throws at the
+    // top level here, must not be evaluated.
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const intercept = {
+      matchedParams: { id: "123" },
+      ownerDefault: null,
+      __loadOwnerDefault: vi.fn(async () => {
+        throw new Error("app/feed/default.tsx must not be evaluated");
+      }),
+      page: { default: "modal-page" },
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 1,
+    };
+    const resolveRouteStaticEligible = vi.fn<DispatchOptions["resolveRouteStaticEligible"]>(
+      () => true,
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({ ...intercept }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      isProduction: true,
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      resolveRouteStaticEligible,
+      route: currentRoute,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("/feed");
+    expect(intercept.__loadOwnerDefault).not.toHaveBeenCalled();
+    expect(resolveRouteStaticEligible).toHaveBeenCalledWith(
+      sourceRoute,
+      expect.objectContaining({ interceptOwnerDefault: null }),
+    );
+  });
+
+  describe("current-route interception cacheability", () => {
+    // app/feed/page.tsx is static and owns app/feed/@modal, whose
+    // (.)feed/[id] interception the /feed route renders itself. Next.js
+    // classifies that intercepting route's own tree.
+    const neverCache = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+    function createCurrentRouteDispatch(
+      interceptPage: Record<string, unknown>,
+      overrides: CreateDispatchOptionsOverrides = {},
+    ) {
+      const route = createRoute({
+        params: [],
+        pattern: "/feed",
+        routeSegments: ["feed"],
+        slots: { "modal@app/feed/@modal": { default: { default: "modal-default" } } },
+      });
+      const cachedEntry = buildISRCacheEntry(
+        buildCachedAppPageValue(
+          "",
+          new TextEncoder().encode("cached-flight").buffer,
+          undefined,
+          buildQueryInvariantRenderObservation(),
+        ),
+      );
+      const isrGet = vi.fn(async () => cachedEntry);
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const resolveRouteStaticEligible = vi.fn<DispatchOptions["resolveRouteStaticEligible"]>(
+        (_route, intercept) =>
+          (intercept?.interceptPage as { dynamic?: string } | undefined)?.dynamic !==
+          "force-dynamic",
+      );
+      // The intercepting tree's config is its page's, as generated.
+      const interceptConfig = (
+        intercept: Parameters<NonNullable<DispatchOptions["resolveRouteDynamicConfig"]>>[1],
+      ) =>
+        intercept?.interceptPage as
+          | { dynamic?: string; revalidate?: number; unstable_dynamicStaleTime?: number }
+          | undefined;
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
+        async (_route, _params, opts) => opts?.interceptSlotKey ?? "direct",
+      );
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        cleanPathname: "/feed",
+        findIntercept: () => ({
+          matchedParams: {},
+          page: interceptPage,
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 0,
+        }),
+        getSourceRoute: (sourceRouteIndex) => (sourceRouteIndex === 0 ? route : undefined),
+        interceptionContext: "/feed",
+        isProduction: true,
+        isRscRequest: true,
+        isrGet,
+        isrSet,
+        params: {},
+        renderToReadableStream: () => createStream(["fresh-flight"]),
+        resolveRouteDynamicConfig: (_route, intercept) => interceptConfig(intercept)?.dynamic,
+        resolveRouteRevalidateSeconds: (_route, intercept) =>
+          interceptConfig(intercept)?.revalidate ?? null,
+        resolveRouteDynamicStaleTimeSeconds: (_route, intercept) =>
+          interceptConfig(intercept)?.unstable_dynamicStaleTime,
+        resolveRouteStaticEligible,
+        revalidateSeconds: 60,
+        route,
+        ...overrides,
+      });
+      return { buildPageElement, isrGet, isrSet, options, resolveRouteStaticEligible, route };
+    }
+
+    // Renders a cache miss and waits for its background write.
+    async function dispatchMiss(overrides: CreateDispatchOptionsOverrides & { page: object }) {
+      const { page, ...dispatchOverrides } = overrides;
+      const isrGet = vi.fn(async () => null);
+      const dispatch = createCurrentRouteDispatch(page as Record<string, unknown>, {
+        isrGet,
+        ...dispatchOverrides,
+      });
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const response = await runWithExecutionContext(
+        { waitUntil: (promise) => waitUntilPromises.push(promise) },
+        () => dispatchAppPage(dispatch.options),
+      );
+      await expect(response.text()).resolves.toBe("fresh-flight");
+      await Promise.all(waitUntilPromises);
+      return { ...dispatch, isrGet, response };
+    }
+
+    it.each([
+      ["force-dynamic", { dynamicConfig: "force-dynamic" }],
+      ["revalidate = 0", { revalidateSeconds: 0 }],
+    ])(
+      "admits and stores a static sibling-page intercept over a %s page",
+      async (_name, baseConfig) => {
+        // The intercepting branch replaces app/feed/page.tsx, and its tree
+        // keeps none of that page's config.
+        const page = { default: "photo-page", revalidate: 30 };
+        const { isrGet, isrSet, response } = await dispatchMiss({
+          ...baseConfig,
+          findIntercept: () => ({
+            matchedParams: {},
+            page,
+            slotKey: "__vinext_page_intercept",
+            sourceRouteIndex: 0,
+          }),
+          page,
+        });
+
+        expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+        expect(isrGet).toHaveBeenCalledTimes(1);
+        expect(isrSet).toHaveBeenCalledTimes(1);
+        expect(isrSet.mock.calls[0]![2].cacheControl.revalidate).toBe(30);
+      },
+    );
+
+    it("reads, advertises and stores its variant with the intercepting tree's revalidate", async () => {
+      const page = { default: "modal-page", revalidate: 10 };
+      const hit = createCurrentRouteDispatch(page, { revalidateSeconds: 3600 });
+      const hitResponse = await dispatchAppPage(hit.options);
+
+      expect(hitResponse.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(hitResponse.headers.get("cache-control")).toBe("s-maxage=10, stale-while-revalidate");
+
+      const { isrSet, response } = await dispatchMiss({ page, revalidateSeconds: 3600 });
+
+      expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(isrSet).toHaveBeenCalledTimes(1);
+      expect(isrSet.mock.calls[0]![2].cacheControl.revalidate).toBe(10);
+    });
+
+    it("stores a force-static intercepting tree over a route without a revalidate", async () => {
+      // app/feed is edge, so it has no static revalidate default of its own.
+      const { isrSet, response } = await dispatchMiss({
+        isStaticGenerationEdgeRuntime: true,
+        page: { default: "modal-page", dynamic: "force-static" },
+        revalidateSeconds: null,
+      });
+
+      expect(response.headers.get("x-vinext-cache")).toBe("STATIC");
+      expect(isrSet).toHaveBeenCalledTimes(1);
+      expect(isrSet.mock.calls[0]![2].cacheControl.revalidate).toBe(Infinity);
+    });
+
+    // In a cacheComponents build only generateStaticParams sets the
+    // `revalidate = false` default of a tree without a revalidate.
+    async function dispatchPprMiss(
+      interceptExports: { generateStaticParams?: () => unknown[] },
+      routeHasGenerator: boolean,
+    ) {
+      const page = { default: "modal-page", ...interceptExports };
+      // The intercepting tree's generators are its page's, as generated.
+      const resolveRouteHasAnyGenerateStaticParams = vi.fn<
+        NonNullable<DispatchOptions["resolveRouteHasAnyGenerateStaticParams"]>
+      >(
+        (_route, intercept) =>
+          intercept.interceptPage === page && typeof page.generateStaticParams === "function",
+      );
+      const result = await dispatchMiss({
+        hasAnyGenerateStaticParams: routeHasGenerator,
+        page,
+        pprRuntime: appPagePprRuntime,
+        resolveRouteHasAnyGenerateStaticParams,
+        revalidateSeconds: null,
+      });
+      return { ...result, page, resolveRouteHasAnyGenerateStaticParams };
+    }
+
+    it("keeps the revalidate = false default from the intercepting tree's generateStaticParams in a cacheComponents build", async () => {
+      const { isrSet, page, resolveRouteHasAnyGenerateStaticParams, response, route } =
+        await dispatchPprMiss({ generateStaticParams: () => [] }, false);
+
+      expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(resolveRouteHasAnyGenerateStaticParams).toHaveBeenCalledWith(
+        route,
+        expect.objectContaining({ interceptPage: page }),
+      );
+      expect(isrSet).toHaveBeenCalledTimes(1);
+      expect(isrSet.mock.calls[0]![2].cacheControl.revalidate).toBe(Infinity);
+    });
+
+    it("drops the revalidate = false default from the replaced branch's generateStaticParams in a cacheComponents build", async () => {
+      // app/feed/@modal/page.tsx exports generateStaticParams, but the
+      // intercepting page that replaces it doesn't.
+      const { isrSet, response } = await dispatchPprMiss({}, true);
+
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
+      expect(isrSet).not.toHaveBeenCalled();
+    });
+
+    it("neither reads nor stores its variant when the intercepting tree can't be static", async () => {
+      const interceptPage = { default: "modal-page", dynamic: "force-dynamic" };
+      const { buildPageElement, isrGet, isrSet, options, resolveRouteStaticEligible, route } =
+        createCurrentRouteDispatch(interceptPage);
+
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).resolves.toBe("fresh-flight");
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe(neverCache);
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(isrSet).not.toHaveBeenCalled();
+      expect(resolveRouteStaticEligible).toHaveBeenCalledWith(
+        route,
+        expect.objectContaining({ interceptPage }),
+      );
+      expect(buildPageElement).toHaveBeenCalledWith(
+        route,
+        {},
+        expect.objectContaining({ interceptSlotKey: "modal@app/feed/@modal" }),
+        expect.any(URLSearchParams),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("reads its variant when the intercepting tree is static but the route's own isn't", async () => {
+      // app/feed/@modal/page.tsx is edge, but the intercepting branch takes
+      // its place in the intercepting route's tree.
+      const { isrGet, options } = createCurrentRouteDispatch(
+        { default: "modal-page" },
+        { isStaticGenerationEdgeRuntime: true },
+      );
+
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).resolves.toBe("cached-flight");
+      expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(isrGet).toHaveBeenCalledTimes(1);
+    });
+
+    it("sends the uncacheable header on an uncached render of a dynamic intercepting tree", async () => {
+      // Outside production the cache is never read, so only the render
+      // policy classifies the intercepting tree. Dev keeps its no-store header.
+      const { isrGet, isrSet, options } = createCurrentRouteDispatch(
+        { default: "modal-page", dynamic: "force-dynamic" },
+        { isProduction: false },
+      );
+
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).resolves.toBe("fresh-flight");
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(isrSet).not.toHaveBeenCalled();
+    });
+
+    // Renders a sibling-page intercept whose dynamic config is the inverse of
+    // the page it replaces, and records the render policy its element is
+    // built under.
+    async function renderInverseConfigIntercept(
+      interceptDynamic: string,
+      overrides: CreateDispatchOptionsOverrides,
+    ) {
+      const renders: Record<string, unknown>[] = [];
+      const page = { default: "photo-page", dynamic: interceptDynamic };
+      const { options } = createCurrentRouteDispatch(page, {
+        async buildPageElement(_route, _params, opts, searchParams, _paramAccess, buildOptions) {
+          renders.push({
+            forceDynamicFetchDefault: getRequestContext().currentForceDynamicFetchDefault,
+            observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess,
+            requestHeader: getHeadersContext()?.headers.get("x-request-value") ?? null,
+            search: searchParams.toString(),
+          });
+          return opts?.interceptSlotKey ?? "direct";
+        },
+        findIntercept: () => ({
+          matchedParams: {},
+          page,
+          slotKey: "__vinext_page_intercept",
+          sourceRouteIndex: 0,
+        }),
+        isrGet: vi.fn(async () => null),
+        searchParams: new URLSearchParams("q=1"),
+        ...overrides,
+      });
+      const requestContext = createRequestContext({
+        headersContext: {
+          cookies: new Map(),
+          headers: new Headers({ "x-request-value": "request" }),
+        },
+      });
+      const response = await runWithRequestContext(requestContext, () => dispatchAppPage(options));
+      await expect(response.text()).resolves.toBe("fresh-flight");
+      return renders;
+    }
+
+    const staticRender = {
+      forceDynamicFetchDefault: false,
+      observePageSearchParamsAccess: false,
+      requestHeader: null,
+      search: "",
+    };
+    const dynamicRender = {
+      forceDynamicFetchDefault: true,
+      observePageSearchParamsAccess: true,
+      requestHeader: "request",
+      search: "q=1",
+    };
+
+    it.each([
+      ["in dev", { isProduction: false }],
+      ["in a cacheComponents build", { pprRuntime: appPagePprRuntime }],
+      ["for an unverified interception context", { bypassInterceptionContextCache: true }],
+    ])(
+      "renders a force-static intercepting tree over a force-dynamic page as static %s",
+      async (_name, overrides) => {
+        const renders = await renderInverseConfigIntercept("force-static", {
+          dynamicConfig: "force-dynamic",
+          revalidateSeconds: 0,
+          ...overrides,
+        });
+
+        expect(renders).toEqual([staticRender]);
+      },
+    );
+
+    it.each([
+      ["in dev", { isProduction: false }],
+      ["in a cacheComponents build", { pprRuntime: appPagePprRuntime }],
+      ["for an unverified interception context", { bypassInterceptionContextCache: true }],
+    ])(
+      "renders a force-dynamic intercepting tree over a force-static page as dynamic %s",
+      async (_name, overrides) => {
+        const renders = await renderInverseConfigIntercept("force-dynamic", {
+          dynamicConfig: "force-static",
+          revalidateSeconds: null,
+          ...overrides,
+        });
+
+        expect(renders).toEqual([dynamicRender]);
+      },
+    );
+
+    it.each([
+      ["force-dynamic", undefined, undefined],
+      ["force-static", "force-dynamic", 'dynamic = "force-dynamic"'],
+    ])(
+      "marks a cacheability probe's pattern from the route's own config, not a %s intercepting tree's",
+      async (interceptDynamic, routeDynamic, patternDynamicReason) => {
+        // The pattern covers every request to the route, while the
+        // intercepting tree renders only this one.
+        const context: ExecutionContextLike = { waitUntil() {} };
+        const state: RouteCacheabilityState = {
+          captureDeadlineAt: Date.now() + 10_000,
+          mode: "probe",
+        };
+        Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+        const forceDynamicFetchDefaults: boolean[] = [];
+        const page = { default: "photo-page", dynamic: interceptDynamic };
+        const { options } = createCurrentRouteDispatch(page, {
+          async buildPageElement(_route, _params, opts) {
+            forceDynamicFetchDefaults.push(getRequestContext().currentForceDynamicFetchDefault);
+            return opts?.interceptSlotKey ?? "direct";
+          },
+          dynamicConfig: routeDynamic,
+          findIntercept: () => ({
+            matchedParams: {},
+            page,
+            slotKey: "__vinext_page_intercept",
+            sourceRouteIndex: 0,
+          }),
+          revalidateSeconds: routeDynamic === "force-dynamic" ? 0 : null,
+        });
+
+        const response = await runWithExecutionContext(context, () =>
+          runWithRequestContext(createRequestContext(), () => dispatchAppPage(options)),
+        );
+        await response.text();
+
+        expect(state.patternDynamicReason).toBe(patternDynamicReason);
+        expect(forceDynamicFetchDefaults).toEqual([interceptDynamic === "force-dynamic"]);
+      },
+    );
+
+    it.each([
+      ["its own", 5, "5"],
+      // Without one, the configured staleTimes.dynamic applies.
+      ["the configured", undefined, "0"],
+    ])(
+      "advertises %s dynamic stale time for a sibling-page intercept, not the replaced page's",
+      async (_name, interceptStaleTime, header) => {
+        // app/feed/page.tsx sets unstable_dynamicStaleTime = 300, but the
+        // intercepting page replaces it.
+        const page = {
+          default: "photo-page",
+          dynamic: "force-dynamic",
+          unstable_dynamicStaleTime: interceptStaleTime,
+        };
+        const { options } = createCurrentRouteDispatch(page, {
+          dynamicConfig: "force-dynamic",
+          dynamicStaleTimeSeconds: 300,
+          findIntercept: () => ({
+            matchedParams: {},
+            page,
+            slotKey: "__vinext_page_intercept",
+            sourceRouteIndex: 0,
+          }),
+        });
+
+        const response = await dispatchAppPage(options);
+
+        await expect(response.text()).resolves.toBe("fresh-flight");
+        expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe(header);
+      },
+    );
+
+    it("classifies the intercepting tree with the owner's default it loads", async () => {
+      const feedDefault = { default: "feed-default", dynamic: "force-static" };
+      const __loadOwnerDefault = vi.fn(async () => feedDefault);
+      // The manifest's intercept is one object, which keeps what it loads.
+      const intercept = {
+        __loadOwnerDefault,
+        matchedParams: {},
+        ownerDefault: null,
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 0,
+      };
+      const { options, resolveRouteStaticEligible, route } = createCurrentRouteDispatch(
+        { default: "modal-page" },
+        { findIntercept: () => intercept },
+      );
+
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).resolves.toBe("cached-flight");
+      expect(__loadOwnerDefault).toHaveBeenCalledTimes(1);
+      expect(resolveRouteStaticEligible).toHaveBeenCalledWith(
+        route,
+        expect.objectContaining({ interceptOwnerDefault: feedDefault }),
+      );
+    });
+
+    function createUnattachedInterceptDispatch(overrides: CreateDispatchOptionsOverrides = {}) {
+      // A route-group variant of app/feed without @modal is the source, so it
+      // renders unchanged and the unused intercepting tree, whose modules
+      // throw at the top level here, must not be evaluated.
+      const route = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+      const loaders = {
+        __loadInterceptLayouts: [
+          vi.fn(async () => {
+            throw new Error("the intercepting layout must not be evaluated");
+          }),
+        ],
+        __loadNotFound: vi.fn(async () => {
+          throw new Error("the intercepting not-found must not be evaluated");
+        }),
+        __loadOwnerDefault: vi.fn(async () => {
+          throw new Error("app/feed/default.tsx must not be evaluated");
+        }),
+        __pageLoader: vi.fn(async () => {
+          throw new Error("the intercepting page must not be evaluated");
+        }),
+      };
+      const dispatch = createCurrentRouteDispatch(
+        { default: "modal-page" },
+        {
+          findIntercept: () => ({
+            ...loaders,
+            interceptLayouts: [null],
+            matchedParams: {},
+            notFound: null,
+            ownerDefault: null,
+            page: null,
+            slotKey: "modal@app/feed/@modal",
+            sourceRouteIndex: 0,
+          }),
+          getSourceRoute: () => route,
+          route,
+          ...overrides,
+        },
+      );
+      return { ...dispatch, loaders, route };
+    }
+
+    function expectNoInterceptLoads(
+      loaders: ReturnType<typeof createUnattachedInterceptDispatch>["loaders"],
+    ) {
+      expect(loaders.__pageLoader).not.toHaveBeenCalled();
+      expect(loaders.__loadNotFound).not.toHaveBeenCalled();
+      expect(loaders.__loadOwnerDefault).not.toHaveBeenCalled();
+      expect(loaders.__loadInterceptLayouts[0]).not.toHaveBeenCalled();
+    }
+
+    it("serves a cached variant without loading a slot intercept the route has no slot for", async () => {
+      const { isrGet, loaders, options, resolveRouteStaticEligible, route } =
+        createUnattachedInterceptDispatch();
+
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).resolves.toBe("cached-flight");
+      expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(isrGet).toHaveBeenCalledTimes(1);
+      expectNoInterceptLoads(loaders);
+      expect(resolveRouteStaticEligible).toHaveBeenCalledWith(
+        route,
+        expect.objectContaining({ interceptPage: null, interceptSlotKey: "modal@app/feed/@modal" }),
+      );
+    });
+
+    it("regenerates a stale variant without loading a slot intercept the route has no slot for", async () => {
+      const staleEntry = buildISRCacheEntry(
+        buildCachedAppPageValue(
+          "",
+          new TextEncoder().encode("cached-flight").buffer,
+          undefined,
+          buildQueryInvariantRenderObservation(),
+        ),
+        true,
+      );
+      let regeneration: Promise<void> | undefined;
+      const { buildPageElement, loaders, options } = createUnattachedInterceptDispatch({
+        isrGet: vi.fn(async () => staleEntry),
+        scheduleBackgroundRegeneration: vi.fn((_key, renderFn) => {
+          regeneration = renderFn();
+        }),
+      });
+
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).resolves.toBe("cached-flight");
+      expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+      // Only the rerender target's module loading matters here, not the write.
+      await regeneration?.catch(() => {});
+      expect(buildPageElement).toHaveBeenCalledTimes(1);
+      expectNoInterceptLoads(loaders);
+    });
+
+    it("renders a cache miss without loading a slot intercept the route has no slot for", async () => {
+      const isrGet = vi.fn(async () => null);
+      const { buildPageElement, loaders, options } = createUnattachedInterceptDispatch({ isrGet });
+
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).resolves.toBe("fresh-flight");
+      expect(isrGet).toHaveBeenCalledTimes(1);
+      expect(buildPageElement).toHaveBeenCalledTimes(1);
+      expectNoInterceptLoads(loaders);
+    });
+
+    function createGeneratedParamsDispatch(overrides: CreateDispatchOptionsOverrides = {}) {
+      // /feed/[slug] renders the (.)feed/[slug]/[id] interception in its own
+      // @modal slot. app/feed/[slug]/layout.tsx exports dynamicParams = false
+      // and generateStaticParams, so the intercepting tree keeps both.
+      const generateStaticParams = vi.fn(async () => [{ slug: "known" }]);
+      const route = createRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/feed/:slug",
+        routeSegments: ["feed", "[slug]"],
+        slots: { "modal@app/feed/[slug]/@modal": {} },
+      });
+      const dispatch = createCurrentRouteDispatch(
+        { default: "modal-page" },
+        {
+          cleanPathname: "/feed/unknown",
+          dynamicParamsConfig: false,
+          findIntercept: () => ({
+            matchedParams: { slug: "unknown" },
+            page: { default: "modal-page" },
+            slotKey: "modal@app/feed/[slug]/@modal",
+            sourceRouteIndex: 0,
+          }),
+          generateStaticParams,
+          getSourceRoute: () => route,
+          params: { slug: "unknown" },
+          resolveRouteDynamicParamsConfig: () => false,
+          resolveRouteGenerateStaticParams: () => generateStaticParams,
+          route,
+          ...overrides,
+        },
+      );
+      return { ...dispatch, generateStaticParams, route };
+    }
+
+    it("serves a cached variant without generating the route's static params", async () => {
+      // Like any other request, generated params are checked only on a miss.
+      const { generateStaticParams, isrGet, options } = createGeneratedParamsDispatch();
+
+      const response = await dispatchAppPage(options);
+
+      await expect(response.text()).resolves.toBe("cached-flight");
+      expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(isrGet).toHaveBeenCalledTimes(1);
+      expect(generateStaticParams).not.toHaveBeenCalled();
+    });
+
+    it("404s a generated-params miss once the cache misses", async () => {
+      const isrGet = vi.fn(async () => null);
+      const { buildPageElement, generateStaticParams, isrSet, options } =
+        createGeneratedParamsDispatch({ isrGet });
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      expect(isrGet).toHaveBeenCalledTimes(1);
+      expect(generateStaticParams).toHaveBeenCalledTimes(1);
+      expect(buildPageElement).not.toHaveBeenCalled();
+      expect(isrSet).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["rendered", true],
+      ["plain", false],
+    ])(
+      "sends the never-cache header on a %s generated-params miss of a dynamic intercepting tree",
+      async (_kind, rendersNotFound) => {
+        // The intercepting tree skipped the cache, so its 404 is never-cache
+        // like its normal render, even though the route's own tree is static.
+        // Its revalidate = 0 keeps the params gate, which a force-dynamic tree
+        // skips in production.
+        const interceptPage = { default: "modal-page", revalidate: 0 };
+        const { buildPageElement, generateStaticParams, isrGet, isrSet, options } =
+          createGeneratedParamsDispatch({
+            findIntercept: () => ({
+              matchedParams: { slug: "unknown" },
+              page: interceptPage,
+              slotKey: "modal@app/feed/[slug]/@modal",
+              sourceRouteIndex: 0,
+            }),
+            resolveRouteStaticEligible: (_route, intercept) => intercept === undefined,
+          });
+        if (rendersNotFound) {
+          options.renderHttpAccessFallbackPage = vi.fn(
+            async () => new Response("not-found", { status: 404 }),
+          );
+        }
+
+        const response = await dispatchAppPage(options);
+
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(neverCache);
+        expect(isrGet).not.toHaveBeenCalled();
+        expect(generateStaticParams).toHaveBeenCalledTimes(1);
+        expect(buildPageElement).not.toHaveBeenCalled();
+        expect(isrSet).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ["in dev", { isProduction: false }, "no-store, must-revalidate"],
+      [
+        "when the interception cache is bypassed",
+        { bypassInterceptionContextCache: true },
+        neverCache,
+      ],
+    ])(
+      "sends the never-cache header on a generated-params miss of a dynamic intercepting tree %s",
+      async (_kind, readSkippingOverrides, cacheControl) => {
+        // No cache read classifies the intercepting tree here, so the miss must
+        // load and classify it before responding, like its normal render. Its
+        // revalidate = 0 keeps the params gate, which a force-dynamic tree
+        // skips in production.
+        const interceptPage = { default: "modal-page", revalidate: 0 };
+        const __pageLoader = vi.fn(async () => interceptPage);
+        const { buildPageElement, generateStaticParams, isrGet, isrSet, options } =
+          createGeneratedParamsDispatch({
+            findIntercept: () => ({
+              __pageLoader,
+              matchedParams: { slug: "unknown" },
+              page: null,
+              slotKey: "modal@app/feed/[slug]/@modal",
+              sourceRouteIndex: 0,
+            }),
+            resolveRouteStaticEligible: (_route, intercept) => intercept === undefined,
+            ...readSkippingOverrides,
+          });
+
+        const response = await dispatchAppPage(options);
+
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(cacheControl);
+        expect(__pageLoader).toHaveBeenCalledTimes(1);
+        expect(isrGet).not.toHaveBeenCalled();
+        expect(generateStaticParams).toHaveBeenCalledTimes(1);
+        expect(buildPageElement).not.toHaveBeenCalled();
+        expect(isrSet).not.toHaveBeenCalled();
+      },
+    );
+
+    it("404s a generated-params miss in dev without loading a slot intercept the route has no slot for", async () => {
+      const generateStaticParams = vi.fn(async () => [{ slug: "known" }]);
+      const { buildPageElement, isrGet, loaders, options, route } =
+        createUnattachedInterceptDispatch({
+          cleanPathname: "/feed/unknown",
+          dynamicParamsConfig: false,
+          generateStaticParams,
+          isProduction: false,
+          params: { slug: "unknown" },
+          // An unattached intercept leaves the route's own tree, as generated.
+          resolveRouteDynamicParamsConfig: () => false,
+          resolveRouteGenerateStaticParams: () => generateStaticParams,
+        });
+      // The route-group variant is dynamic too: app/(group)/feed/[slug].
+      route.isDynamic = true;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(generateStaticParams).toHaveBeenCalledTimes(1);
+      expect(buildPageElement).not.toHaveBeenCalled();
+      expectNoInterceptLoads(loaders);
+    });
+
+    // app/feed/[slug]/@modal/(.)[slug]/page.tsx intercepts /feed/[slug] from
+    // itself, in place of app/feed/[slug]/@modal/default.tsx, and the
+    // intercepting tree drops app/feed/[slug]/page.tsx. Only the intercepting
+    // tree's own segments set its dynamicParams and generators, as generated.
+    type InterceptPage = {
+      default: string;
+      dynamicParams?: boolean;
+      generateStaticParams?: () => Promise<Record<string, string>[]>;
+    };
+    function dispatchInterceptedGeneratedParams(
+      interceptPage: InterceptPage,
+      slug: string,
+      overrides: CreateDispatchOptionsOverrides = {},
+    ) {
+      const isrGet = vi.fn(async () => null);
+      const resolveRouteDynamicParamsConfig = vi.fn<
+        NonNullable<DispatchOptions["resolveRouteDynamicParamsConfig"]>
+      >((_route, intercept) => (intercept.interceptPage as InterceptPage).dynamicParams);
+      const resolveRouteGenerateStaticParams = vi.fn<
+        NonNullable<DispatchOptions["resolveRouteGenerateStaticParams"]>
+      >((_route, intercept) => {
+        const generator = (intercept.interceptPage as InterceptPage).generateStaticParams;
+        return generator ? [generator] : [];
+      });
+      const dispatch = createGeneratedParamsDispatch({
+        cleanPathname: `/feed/${slug}`,
+        findIntercept: () => ({
+          matchedParams: { slug },
+          page: interceptPage,
+          slotKey: "modal@app/feed/[slug]/@modal",
+          sourceRouteIndex: 0,
+        }),
+        isrGet,
+        params: { slug },
+        resolveRouteDynamicParamsConfig,
+        resolveRouteGenerateStaticParams,
+        ...overrides,
+      });
+      return {
+        ...dispatch,
+        isrGet,
+        resolveRouteDynamicParamsConfig,
+        resolveRouteGenerateStaticParams,
+        response: dispatchAppPage(dispatch.options),
+      };
+    }
+
+    it("404s a param the intercepting tree's dynamicParams = false doesn't generate over a route that allows it", async () => {
+      const interceptGenerator = vi.fn(async () => [{ slug: "known" }]);
+      const interceptPage = {
+        default: "modal-page",
+        dynamicParams: false,
+        generateStaticParams: interceptGenerator,
+      };
+      // app/feed/[slug]/page.tsx allows any slug and has no generator.
+      const routeConfig = { dynamicParamsConfig: undefined, generateStaticParams: undefined };
+      const miss = dispatchInterceptedGeneratedParams(interceptPage, "unknown", routeConfig);
+      const response = await miss.response;
+
+      expect(response.status).toBe(404);
+      expect(miss.isrGet).toHaveBeenCalledTimes(1);
+      expect(miss.resolveRouteDynamicParamsConfig).toHaveBeenCalledWith(
+        miss.route,
+        expect.objectContaining({ interceptPage }),
+      );
+      expect(miss.resolveRouteGenerateStaticParams).toHaveBeenCalledWith(
+        miss.route,
+        expect.objectContaining({ interceptPage }),
+      );
+      expect(interceptGenerator).toHaveBeenCalledTimes(1);
+      expect(miss.buildPageElement).not.toHaveBeenCalled();
+
+      const known = dispatchInterceptedGeneratedParams(interceptPage, "known", routeConfig);
+      const knownResponse = await known.response;
+
+      expect(knownResponse.status).toBe(200);
+      await expect(knownResponse.text()).resolves.toBe("fresh-flight");
+    });
+
+    it("renders any param under an intercepting tree that allows it over a dynamicParams = false route", async () => {
+      // app/feed/[slug]/page.tsx exports dynamicParams = false and generates
+      // only "known", but the intercepting tree drops it.
+      const { buildPageElement, generateStaticParams, response } =
+        dispatchInterceptedGeneratedParams({ default: "modal-page" }, "other");
+
+      const rendered = await response;
+      expect(rendered.status).toBe(200);
+      await expect(rendered.text()).resolves.toBe("fresh-flight");
+      expect(generateStaticParams).not.toHaveBeenCalled();
+      expect(buildPageElement).toHaveBeenCalledTimes(1);
+    });
+
+    it("checks the intercepting tree's generators, not the replaced branch's, over a dynamicParams = false route", async () => {
+      const interceptGenerator = vi.fn(async () => [{ slug: "other" }]);
+      const interceptPage = {
+        default: "modal-page",
+        dynamicParams: false,
+        generateStaticParams: interceptGenerator,
+      };
+      // The route's generators allow only "known"; the intercepting tree's
+      // allow only "other".
+      const other = dispatchInterceptedGeneratedParams(interceptPage, "other");
+      const otherResponse = await other.response;
+
+      expect(otherResponse.status).toBe(200);
+      await expect(otherResponse.text()).resolves.toBe("fresh-flight");
+      expect(interceptGenerator).toHaveBeenCalledTimes(1);
+      expect(other.generateStaticParams).not.toHaveBeenCalled();
+
+      const known = dispatchInterceptedGeneratedParams(interceptPage, "known");
+      const knownResponse = await known.response;
+
+      expect(knownResponse.status).toBe(404);
+      expect(known.generateStaticParams).not.toHaveBeenCalled();
+      expect(known.buildPageElement).not.toHaveBeenCalled();
+    });
+
+    it("checks the params the intercepting tree renders with", async () => {
+      // app/feed/[slug]/@modal/(.)[photo]/page.tsx names the param photo.
+      const interceptGenerator = vi.fn(async () => [{ photo: "known" }]);
+      const interceptPage = {
+        default: "modal-page",
+        dynamicParams: false,
+        generateStaticParams: interceptGenerator,
+      };
+      const { options } = createGeneratedParamsDispatch({
+        cleanPathname: "/feed/unknown",
+        findIntercept: () => ({
+          matchedParams: { photo: "unknown", slug: "unknown" },
+          page: interceptPage,
+          slotKey: "modal@app/feed/[slug]/@modal",
+          sourceRouteIndex: 0,
+        }),
+        isrGet: vi.fn(async () => null),
+        resolveRouteDynamicParamsConfig: () => false,
+        resolveRouteGenerateStaticParams: () => [interceptGenerator],
+      });
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      expect(interceptGenerator).toHaveBeenCalledTimes(1);
+    });
+
+    // A cache miss of the static /feed rendering its @modal intercept with the
+    // given branch, params and generators, under dynamicParams = false.
+    async function dispatchStaticSourceIntercept(
+      interceptBranchSegments: string[],
+      matchedParams: Record<string, string | string[]>,
+      generateStaticParams: () => Promise<Record<string, unknown>[]>,
+    ) {
+      const interceptPage = { default: "modal-page", dynamicParams: false, generateStaticParams };
+      const { buildPageElement, options } = createCurrentRouteDispatch(interceptPage, {
+        findIntercept: () => ({
+          interceptBranchSegments,
+          matchedParams,
+          page: interceptPage,
+          slotKey: "modal@app/feed/@modal",
+          sourceRouteIndex: 0,
+        }),
+        isrGet: vi.fn(async () => null),
+        resolveRouteDynamicParamsConfig: () => false,
+        resolveRouteGenerateStaticParams: () => [generateStaticParams],
+      });
+      const response = await dispatchAppPage(options);
+      return { buildPageElement, response };
+    }
+
+    it("gates the params of an intercepting tree's own dynamic segments under a static route", async () => {
+      // app/feed/page.tsx is static, but app/feed/@modal/(.)photo/[id] adds
+      // [id] to the intercepting route's tree.
+      const generator = vi.fn(async () => [{ id: "known" }]);
+      const unknown = await dispatchStaticSourceIntercept(
+        ["photo", "[id]"],
+        { id: "unknown" },
+        generator,
+      );
+
+      expect(unknown.response.status).toBe(404);
+      expect(generator).toHaveBeenCalledTimes(1);
+      expect(unknown.buildPageElement).not.toHaveBeenCalled();
+
+      const known = await dispatchStaticSourceIntercept(
+        ["photo", "[id]"],
+        { id: "known" },
+        generator,
+      );
+
+      expect(known.response.status).toBe(200);
+      await expect(known.response.text()).resolves.toBe("fresh-flight");
+    });
+
+    it("gates an intercepting tree's omitted optional catch-all by an explicit empty value", async () => {
+      // app/feed/@modal/(.)[[...photo]] matches without a photo param, a path
+      // Next.js generates only from an explicit empty value.
+      const known = await dispatchStaticSourceIntercept(["[[...photo]]"], {}, async () => [
+        { photo: ["known"] },
+      ]);
+
+      expect(known.response.status).toBe(404);
+      expect(known.buildPageElement).not.toHaveBeenCalled();
+
+      const empty = await dispatchStaticSourceIntercept(["[[...photo]]"], {}, async () => [
+        { photo: [] },
+      ]);
+
+      expect(empty.response.status).toBe(200);
+      await expect(empty.response.text()).resolves.toBe("fresh-flight");
+    });
+
+    it("renders a generated-params miss of an intercepting tree through that tree's not-found", async () => {
+      // app/feed/[slug]/@modal/(..)[slug]/not-found.tsx is the intercepting
+      // tree's own not-found boundary.
+      const interceptNotFound = { default: "modal-not-found" };
+      const interceptPage = {
+        default: "modal-page",
+        dynamicParams: false,
+        generateStaticParams: vi.fn(async () => [{ slug: "known" }]),
+      };
+      const renderHttpAccessFallbackPage = vi.fn<DispatchOptions["renderHttpAccessFallbackPage"]>(
+        async () => new Response("modal-not-found", { status: 404 }),
+      );
+      const { buildPageElement, options } = createGeneratedParamsDispatch({
+        findIntercept: () => ({
+          interceptBranchSegments: ["(..)[slug]"],
+          matchedParams: { slug: "unknown" },
+          notFound: interceptNotFound,
+          notFoundTreePosition: 1,
+          page: interceptPage,
+          slotKey: "modal@app/feed/[slug]/@modal",
+          sourceRouteIndex: 0,
+        }),
+        isrGet: vi.fn(async () => null),
+        resolveRouteDynamicParamsConfig: () => false,
+        resolveRouteGenerateStaticParams: () => [interceptPage.generateStaticParams],
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      await expect(response.text()).resolves.toBe("modal-not-found");
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledTimes(1);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        404,
+        {
+          intercept: expect.objectContaining({
+            interceptBranchSegments: ["(..)[slug]"],
+            interceptNotFound,
+            interceptNotFoundTreePosition: 1,
+            interceptPage,
+            interceptParams: { slug: "unknown" },
+            interceptSlotKey: "modal@app/feed/[slug]/@modal",
+          }),
+          matchedParams: { slug: "unknown" },
+        },
+        options.middlewareContext,
+      );
+      expect(buildPageElement).not.toHaveBeenCalled();
+    });
+
+    it("keeps a static intercepting tree's params gate under a force-dynamic active sibling in production", async () => {
+      // app/feed/[slug]/page.tsx, which vinext renders beside the intercept
+      // where Next.js's intercepting route has the owner's default, exports
+      // dynamic = "force-dynamic". That makes the render dynamic, but the
+      // intercepting route's own tree is not force-dynamic, so its prerender
+      // manifest entry still has the NOT_FOUND fallback.
+      const interceptGenerator = vi.fn(async () => [{ slug: "known" }]);
+      const interceptPage = {
+        default: "modal-page",
+        dynamicParams: false,
+        generateStaticParams: interceptGenerator,
+      };
+      const resolveRouteInterceptTreeDynamicConfig = vi.fn<
+        NonNullable<DispatchOptions["resolveRouteInterceptTreeDynamicConfig"]>
+      >(() => null);
+      const miss = dispatchInterceptedGeneratedParams(interceptPage, "unknown", {
+        resolveRouteDynamicConfig: () => "force-dynamic",
+        resolveRouteInterceptTreeDynamicConfig,
+      });
+      const response = await miss.response;
+
+      expect(response.status).toBe(404);
+      expect(miss.isrGet).not.toHaveBeenCalled();
+      expect(resolveRouteInterceptTreeDynamicConfig).toHaveBeenCalledWith(
+        miss.route,
+        expect.objectContaining({ interceptPage }),
+      );
+      expect(interceptGenerator).toHaveBeenCalledTimes(1);
+      expect(miss.buildPageElement).not.toHaveBeenCalled();
+    });
+
+    it("skips the params gate of a force-dynamic intercepting tree in production", async () => {
+      // Next.js's production build leaves the intercepting route out of its
+      // prerender manifest when its own tree is force-dynamic.
+      const interceptGenerator = vi.fn(async () => [{ slug: "known" }]);
+      const interceptPage = {
+        default: "modal-page",
+        dynamicParams: false,
+        generateStaticParams: interceptGenerator,
+      };
+      const miss = dispatchInterceptedGeneratedParams(interceptPage, "unknown", {
+        resolveRouteDynamicConfig: () => "force-dynamic",
+        resolveRouteInterceptTreeDynamicConfig: () => "force-dynamic",
+      });
+      const response = await miss.response;
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe("fresh-flight");
+      expect(interceptGenerator).not.toHaveBeenCalled();
+    });
   });
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
@@ -2922,8 +4147,14 @@ describe("app page dispatch", () => {
     expect(scheduledRender).toBeNull();
 
     const [routeArg, paramsArg, optsArg, searchParamsArg] = buildPageElement.mock.calls[0];
-    expect(resolveRouteFetchCacheMode).toHaveBeenCalledWith(sourceRoute);
-    expect(resolveRouteRevalidateSeconds).toHaveBeenCalledWith(sourceRoute);
+    expect(resolveRouteFetchCacheMode).toHaveBeenCalledWith(
+      sourceRoute,
+      expect.objectContaining({ interceptSlotKey: "modal@app/feed/@modal" }),
+    );
+    expect(resolveRouteRevalidateSeconds).toHaveBeenCalledWith(
+      sourceRoute,
+      expect.objectContaining({ interceptSlotKey: "modal@app/feed/@modal" }),
+    );
     expect(routeArg).toBe(sourceRoute);
     expect(paramsArg).toEqual({});
     expect(searchParamsArg.toString()).toBe("tab=popular");
@@ -3142,7 +4373,10 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(
+      sourceRoute,
+      expect.objectContaining({ interceptSlotKey: "modal@app/feed/@modal" }),
+    );
   });
 
   it("does not leak the current route's force-dynamic config into the intercept source route", async () => {
@@ -3191,7 +4425,10 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(
+      sourceRoute,
+      expect.objectContaining({ interceptSlotKey: "modal@app/feed/@modal" }),
+    );
   });
 
   describe("intercepted RSC of a known-dynamic source or current route", () => {
@@ -3207,6 +4444,8 @@ describe("app page dispatch", () => {
     ];
 
     function dispatchIntercept(overrides: CreateDispatchOptionsOverrides) {
+      // Start from a request headers context, not one an earlier test left.
+      setHeadersContext(null);
       const { options } = createDispatchOptions({
         async buildPageElement(route) {
           return route.pattern;
@@ -3232,6 +4471,297 @@ describe("app page dispatch", () => {
       return dispatchAppPage(options);
     }
 
+    it("sends the never-cache header for a source that reads a dynamic API while probed", async () => {
+      // app/feed has no dynamic config, but a component its intercepted
+      // render includes calls headers().
+      const probedSourceRoute = createRoute({
+        layouts: [{ default: () => null }],
+        params: [],
+        pattern: "/feed",
+        routeSegments: ["feed"],
+      });
+      const probeInterceptSource = vi.fn<NonNullable<DispatchOptions["probeInterceptSource"]>>(
+        () => {
+          markDynamicUsage();
+        },
+      );
+      const response = await dispatchIntercept({
+        probeInterceptSource,
+        getSourceRoute: (index) => (index === 1 ? probedSourceRoute : undefined),
+      });
+
+      await expect(response.text()).resolves.toBe("/feed");
+      expect(probeInterceptSource).toHaveBeenCalledWith(
+        probedSourceRoute,
+        {},
+        expect.any(URLSearchParams),
+      );
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    });
+
+    it("waits for the source probes before choosing its headers", async () => {
+      const response = await dispatchIntercept({
+        async probeInterceptSource() {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          markDynamicUsage();
+        },
+      });
+
+      await expect(response.text()).resolves.toBe("/feed");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    });
+
+    // The source's own tree includes app/feed/@modal/page.tsx, which the
+    // intercepting page replaces in the rendered tree.
+    const staticInterceptPage = { default: "modal-page" };
+    const interceptStaticPage = () => ({
+      matchedParams: { id: "123" },
+      page: staticInterceptPage,
+      slotKey: "modal@app/feed/@modal",
+      sourceRouteIndex: 1,
+    });
+
+    it("reads revalidate from the tree with the intercepting page in the replaced slot", async () => {
+      // app/feed/@modal/page.tsx sets revalidate = 0, but the static
+      // intercepting page replaces it.
+      const resolveRouteRevalidateSeconds = vi.fn<
+        NonNullable<DispatchOptions["resolveRouteRevalidateSeconds"]>
+      >((route, intercept) =>
+        route === sourceRoute && intercept?.interceptPage !== staticInterceptPage ? 0 : null,
+      );
+      const response = await dispatchIntercept({
+        findIntercept: interceptStaticPage,
+        pprRuntime: appPagePprRuntime,
+        resolveRouteRevalidateSeconds,
+      });
+
+      await expect(response.text()).resolves.toBe("/feed");
+      expect(resolveRouteRevalidateSeconds).toHaveBeenCalledWith(
+        sourceRoute,
+        expect.objectContaining({
+          interceptPage: staticInterceptPage,
+          interceptSlotKey: "modal@app/feed/@modal",
+        }),
+      );
+      expect(response.headers.get("cache-control")).toBeNull();
+    });
+
+    it("reads fetchCache from the tree with the intercepting page in the replaced slot", async () => {
+      // app/feed/@modal/page.tsx sets fetchCache = "force-no-store", but the
+      // intercepting page replaces it and sets "force-cache".
+      const fetchCacheModes: unknown[] = [];
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchIntercept({
+          async buildPageElement(route) {
+            fetchCacheModes.push(getRequestContext().currentFetchCacheMode);
+            return route.pattern;
+          },
+          findIntercept: interceptStaticPage,
+          resolveRouteFetchCacheMode: (route, intercept) =>
+            route === sourceRoute && intercept?.interceptPage === staticInterceptPage
+              ? "force-cache"
+              : "force-no-store",
+        }),
+      );
+
+      await expect(response.text()).resolves.toBe("/feed");
+      expect(fetchCacheModes).toEqual(["force-cache"]);
+    });
+
+    it("counts an intercepting page's dynamic API read when a replaced slot page is force-static", async () => {
+      // app/feed/@modal/page.tsx sets dynamic = "force-static", but the
+      // intercepting page replaces it and calls headers().
+      const response = await dispatchIntercept({
+        probeInterceptSource() {
+          markDynamicUsage();
+        },
+        findIntercept: interceptStaticPage,
+        resolveRouteDynamicConfig: (route, intercept) =>
+          route === sourceRoute && intercept?.interceptPage !== staticInterceptPage
+            ? "force-static"
+            : undefined,
+      });
+
+      await expect(response.text()).resolves.toBe("/feed");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    });
+
+    it("counts a dynamic API read while the source element is built", async () => {
+      // app/feed/page.tsx's generateMetadata (or generateViewport) calls
+      // headers(), which runs while the element tree is built, not in the
+      // layout and page probes.
+      const response = await dispatchIntercept({
+        async buildPageElement(route) {
+          if (route === sourceRoute) markDynamicUsage();
+          return route.pattern;
+        },
+        probeInterceptSource() {},
+      });
+
+      await expect(response.text()).resolves.toBe("/feed");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    });
+
+    it("doesn't count dynamic API reads from before the source is probed", async () => {
+      const response = await dispatchIntercept({
+        probeInterceptSource() {},
+        findIntercept() {
+          // Stands in for anything the matched target read earlier.
+          markDynamicUsage();
+          return {
+            matchedParams: { id: "123" },
+            page: { default: "modal-page" },
+            slotKey: "modal@app/feed/@modal",
+            sourceRouteIndex: 1,
+          };
+        },
+      });
+
+      await expect(response.text()).resolves.toBe("/feed");
+      expect(response.headers.get("cache-control")).toBeNull();
+    });
+
+    describe("with the source probes the generated entry composes", () => {
+      // Like probeInterceptSource in app-rsc-entry.ts.
+      const probeSourceLikeEntry =
+        (renderMode?: AppRscRenderMode): NonNullable<DispatchOptions["probeInterceptSource"]> =>
+        (route, params, searchParams) =>
+          Promise.all(
+            buildAppPageInterceptSourceProbes({
+              route,
+              pageComponent: undefined,
+              intercept: { page: { default: "modal-page" }, slotKey: "modal@app/feed/@modal" },
+              sourceParams: params,
+              searchParams,
+              mountedSlotsHeader: null,
+              renderMode,
+              makeThenableParams: (value) => makeThenableParams(value as Record<string, unknown>),
+            }),
+          );
+      // Stands in for a component that calls headers() or cookies().
+      function DynamicComponent(props: { children?: React.ReactNode }) {
+        markDynamicUsage();
+        return props.children ?? null;
+      }
+      // A dynamic component that never settles.
+      function PendingDynamicComponent(): Promise<React.ReactNode> {
+        markDynamicUsage();
+        return new Promise(() => {});
+      }
+      const dispatchSource = (source: Partial<TestRoute>, renderMode?: AppRscRenderMode) =>
+        Promise.race([
+          dispatchIntercept({
+            getSourceRoute: (index) =>
+              index === 1
+                ? createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"], ...source })
+                : undefined,
+            probeInterceptSource: probeSourceLikeEntry(renderMode),
+          }),
+          new Promise<"stalled">((resolve) => setTimeout(() => resolve("stalled"), 100)),
+        ]);
+      const neverCache = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+      it("sends the never-cache header for a source template that reads a dynamic API", async () => {
+        // app/feed/template.tsx
+        const response = await dispatchSource({
+          templates: [{ default: DynamicComponent }],
+          templateTreePositions: [1],
+        });
+
+        expect(response).not.toBe("stalled");
+        expect((response as Response).headers.get("cache-control")).toBe(neverCache);
+      });
+
+      it("sends the never-cache header for an ordinary slot layout that reads a dynamic API", async () => {
+        // app/feed/@sidebar/layout.tsx around app/feed/@sidebar/page.tsx
+        const response = await dispatchSource({
+          slots: {
+            "modal@app/feed/@modal": { name: "modal" },
+            "sidebar@app/feed/@sidebar": {
+              layout: { default: DynamicComponent },
+              name: "sidebar",
+              page: { default: () => null },
+            },
+          },
+        });
+
+        expect(response).not.toBe("stalled");
+        expect((response as Response).headers.get("cache-control")).toBe(neverCache);
+      });
+
+      // app/feed/@sidebar/default.tsx, which the prefetch doesn't render
+      const slotsWithDefault = (DefaultComponent: unknown) => ({
+        "modal@app/feed/@modal": { name: "modal" },
+        "sidebar@app/feed/@sidebar": { default: { default: DefaultComponent }, name: "sidebar" },
+        // app/feed/@team/loading.tsx gives a loading-shell prefetch its shell.
+        "team@app/feed/@team": {
+          loading: { default: () => null },
+          name: "team",
+          page: { default: () => null },
+        },
+      });
+
+      it("sends the never-cache header for a loading-shell route loading UI that reads a dynamic API", async () => {
+        // app/feed/loading.tsx, which the shell renders in place of the page
+        const response = await dispatchSource(
+          { loadings: [{ default: DynamicComponent }], loadingTreePositions: [1] },
+          APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        );
+
+        expect(response).not.toBe("stalled");
+        expect((response as Response).headers.get("cache-control")).toBe(neverCache);
+      });
+
+      it("sends the never-cache header for a loading-shell slot loading UI that reads a dynamic API", async () => {
+        // app/feed/@team/loading.tsx, which the shell renders in place of the
+        // slot's page
+        const response = await dispatchSource(
+          {
+            slots: {
+              "modal@app/feed/@modal": { name: "modal" },
+              "team@app/feed/@team": {
+                loading: { default: DynamicComponent },
+                name: "team",
+                page: { default: PendingDynamicComponent },
+              },
+            },
+          },
+          APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        );
+
+        expect(response).not.toBe("stalled");
+        expect((response as Response).headers.get("cache-control")).toBe(neverCache);
+      });
+
+      for (const renderMode of [
+        APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
+        APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      ] as const) {
+        for (const [label, DefaultComponent] of [
+          ["dynamic", DynamicComponent],
+          ["pending dynamic", PendingDynamicComponent],
+        ] as const) {
+          it(`doesn't probe a ${label} slot default a ${renderMode} render leaves out`, async () => {
+            const response = await dispatchSource(
+              { slots: slotsWithDefault(DefaultComponent) },
+              renderMode,
+            );
+
+            expect(response).not.toBe("stalled");
+            expect((response as Response).headers.get("cache-control")).toBeNull();
+          });
+        }
+      }
+    });
+
     for (const config of knownDynamicConfigs) {
       const label = config.dynamicConfig ?? "revalidate = 0";
 
@@ -3245,6 +4775,38 @@ describe("app page dispatch", () => {
             route === sourceRoute ? config.dynamicConfig : undefined,
           resolveRouteRevalidateSeconds: (route) =>
             route === sourceRoute ? config.revalidateSeconds : null,
+        });
+
+        await expect(response.text()).resolves.toBe("/feed");
+        expect(response.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+      });
+
+      it(`sends the never-cache header for a ${label} intercepting page in a cacheComponents build`, async () => {
+        // app/feed/@modal/(.)photos/[id]/page.tsx sets the config, so the
+        // intercepting route's tree is known dynamic.
+        const interceptPage = {
+          default: "modal-page",
+          dynamic: config.dynamicConfig,
+          revalidate: config.revalidateSeconds,
+        };
+        const response = await dispatchIntercept({
+          findIntercept: () => ({
+            matchedParams: { id: "123" },
+            page: interceptPage,
+            slotKey: "modal@app/feed/@modal",
+            sourceRouteIndex: 1,
+          }),
+          pprRuntime: appPagePprRuntime,
+          resolveRouteDynamicConfig: (route, intercept) =>
+            route === sourceRoute && intercept?.interceptPage === interceptPage
+              ? config.dynamicConfig
+              : undefined,
+          resolveRouteRevalidateSeconds: (route, intercept) =>
+            route === sourceRoute && intercept?.interceptPage === interceptPage
+              ? config.revalidateSeconds
+              : null,
         });
 
         await expect(response.text()).resolves.toBe("/feed");
@@ -3337,7 +4899,10 @@ describe("app page dispatch", () => {
     const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
     expect(navigationContext?.searchParams.toString()).toBe("");
     expect(resolveRouteDynamicConfig).toHaveBeenCalledTimes(1);
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(sourceRoute);
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(
+      sourceRoute,
+      expect.objectContaining({ interceptSlotKey: "modal@app/feed/@modal" }),
+    );
   });
 
   it("observes searchParams access for a dynamic-error intercept source route", async () => {
@@ -4029,9 +5594,402 @@ describe("app page dispatch", () => {
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     await expect(response.text()).resolves.toBe("flight");
     expect(scheduledRender).toBeNull();
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(targetRoute);
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(
+      targetRoute,
+      expect.objectContaining({ interceptSlotKey: "modal@app/feed/@modal" }),
+    );
     const [routeArg] = buildPageElement.mock.calls[0];
     expect(routeArg).toBe(targetRoute);
+  });
+
+  async function regenerateStaleInterceptedRscEntry(overrides: {
+    currentRoute: TestRoute;
+    dynamicConfig?: string;
+    fetchCache?: DispatchOptions["fetchCache"];
+    interceptPage: unknown;
+    pprRuntime?: DispatchOptions["pprRuntime"];
+    readsHeaders?: boolean;
+    resolveRouteDynamicConfig: DispatchOptions["resolveRouteDynamicConfig"];
+    resolveRouteFetchCacheMode: DispatchOptions["resolveRouteFetchCacheMode"];
+    resolveRouteHasAnyGenerateStaticParams?: DispatchOptions["resolveRouteHasAnyGenerateStaticParams"];
+    resolveRouteRevalidateSeconds: DispatchOptions["resolveRouteRevalidateSeconds"];
+    revalidateSeconds: number;
+    sourceRoute: TestRoute;
+  }) {
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const renders: Record<string, unknown>[] = [];
+    const staleValue = buildCachedAppPageValue(
+      "",
+      new TextEncoder().encode("stale-flight").buffer,
+      undefined,
+      buildQueryInvariantRenderObservation(),
+    );
+    const staleEntry = buildISRCacheEntry(staleValue, true);
+    staleEntry.value.cacheControl = { revalidate: 60 };
+    const { options } = createDispatchOptions({
+      async buildPageElement(route, _params, _opts, _searchParams, _paramAccess, buildOptions) {
+        // Stands in for headers(), which force-static answers without
+        // marking the render dynamic.
+        if (overrides.readsHeaders !== false) markDynamicUsage();
+        const context = getRequestContext();
+        renders.push({
+          dynamicUsage: consumeDynamicUsage(),
+          fetchCacheMode: context.currentFetchCacheMode,
+          fetchRevalidate: context.currentFetchRevalidate,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess,
+        });
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      dynamicConfig: overrides.dynamicConfig,
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: overrides.interceptPage,
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute: (index) => (index === 1 ? overrides.sourceRoute : undefined),
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () => staleEntry),
+      isrRscKey(pathname, _mountedSlotsHeader, _renderMode, interceptionContext) {
+        return `rsc:${pathname}:${interceptionContext ?? "none"}`;
+      },
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("regenerated-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>regenerated</html>"]);
+        },
+      }),
+      pprRuntime: overrides.pprRuntime,
+      resolveRouteDynamicConfig: overrides.resolveRouteDynamicConfig,
+      resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
+      resolveRouteHasAnyGenerateStaticParams: overrides.resolveRouteHasAnyGenerateStaticParams,
+      resolveRouteRevalidateSeconds: overrides.resolveRouteRevalidateSeconds,
+      revalidateSeconds: overrides.revalidateSeconds,
+      route: overrides.currentRoute,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+    options.fetchCache = overrides.fetchCache;
+
+    const response = await dispatchAppPage(options);
+    await expect(response.text()).resolves.toBe("stale-flight");
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale intercepted entry to schedule regeneration");
+    }
+    const regeneration: Promise<unknown> = scheduledRender();
+    return { isrSet, regeneration, renders, staleValue };
+  }
+
+  it("regenerates a stale intercepted RSC entry with its intercepted tree's config", async () => {
+    // app/feed/@modal/(.)photos/[id]/page.tsx sets dynamic = "force-static",
+    // fetchCache = "force-cache" and revalidate = 30; app/feed's own tree
+    // doesn't, and app/photos/[id] sets revalidate = 60.
+    const sourceRoute = createRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const interceptPage = { default: "modal-page" };
+    const isInterceptTree = (
+      route: TestRoute,
+      intercept?: Parameters<NonNullable<DispatchOptions["resolveRouteDynamicConfig"]>>[1],
+    ) => route === sourceRoute && intercept?.interceptPage === interceptPage;
+    const { isrSet, regeneration, renders } = await regenerateStaleInterceptedRscEntry({
+      currentRoute,
+      interceptPage,
+      resolveRouteDynamicConfig: (route, intercept) =>
+        isInterceptTree(route, intercept) ? "force-static" : undefined,
+      resolveRouteFetchCacheMode: (route, intercept) =>
+        isInterceptTree(route, intercept) ? "force-cache" : "force-no-store",
+      resolveRouteRevalidateSeconds: (route, intercept) =>
+        isInterceptTree(route, intercept) ? 30 : null,
+      revalidateSeconds: 60,
+      sourceRoute,
+    });
+    await regeneration;
+
+    expect(renders).toEqual([
+      {
+        dynamicUsage: false,
+        fetchCacheMode: "force-cache",
+        fetchRevalidate: 30,
+        observePageSearchParamsAccess: false,
+      },
+    ]);
+    // The render collected no revalidate of its own, so the entry keeps the
+    // intercepted tree's, not the matched route's 60 seconds.
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(isrSet).toHaveBeenCalledWith("rsc:/photos/123:/feed", expect.anything(), {
+      cacheControl: { revalidate: 30 },
+      tags: expect.any(Array),
+    });
+  });
+
+  // Resolves app/feed's intercepted tree like the generated entry: Next.js's
+  // tree for the intercepting route, merged with app/feed/@sidebar's active
+  // page, which vinext renders where Next.js renders its default.
+  function regenerateStaleInterceptWithActiveSidebar(
+    interceptPage: Record<string, unknown>,
+    sidebarPage: Record<string, unknown>,
+  ) {
+    const sourceRoute = createRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const resolveConfig = (
+      route: TestRoute,
+      intercept?: Parameters<NonNullable<DispatchOptions["resolveRouteDynamicConfig"]>>[1],
+    ) => {
+      if (route !== sourceRoute || !intercept) return null;
+      const [interceptTree, renderedTree] = [false, true].map((keepActiveSiblings) =>
+        resolveAppPageInterceptTree({
+          interceptBranchSegments: ["(.)photos", "[id]"],
+          interceptPage: intercept.interceptPage as Record<string, unknown>,
+          isSiblingPageIntercept: false,
+          keepActiveSiblings,
+          layouts: [{}, {}],
+          layoutTreePositions: [0, 1],
+          page: {},
+          parallelBranches: [
+            { isDefault: true, layout: null, name: "modal", ownerTreePosition: 1, page: {} },
+            {
+              default: {},
+              isDefault: false,
+              layout: null,
+              name: "sidebar",
+              ownerTreePosition: 1,
+              page: sidebarPage,
+              routeSegments: [],
+            },
+          ],
+          routeSegments: ["feed"],
+          slotIndex: 0,
+        }),
+      );
+      return resolveAppPageInterceptSegmentConfig(interceptTree, renderedTree);
+    };
+    return regenerateStaleInterceptedRscEntry({
+      currentRoute: createRoute({
+        params: ["id"],
+        pattern: "/photos/[id]",
+        routeSegments: ["photos", "[id]"],
+      }),
+      interceptPage,
+      resolveRouteDynamicConfig: (route, intercept) =>
+        resolveConfig(route, intercept)?.dynamicConfig ?? null,
+      resolveRouteFetchCacheMode: (route, intercept) =>
+        resolveConfig(route, intercept)?.fetchCache ?? null,
+      resolveRouteRevalidateSeconds: (route, intercept) =>
+        resolveConfig(route, intercept)?.revalidateSeconds ?? null,
+      revalidateSeconds: 60,
+      sourceRoute,
+    });
+  }
+
+  it("regenerates a stale intercepted RSC entry under an active sibling's shorter revalidate", async () => {
+    // app/feed/@modal/(.)photos/[id]/page.tsx sets dynamic = "force-static"
+    // and revalidate = 30; app/feed/@sidebar/page.tsx, which renders beside
+    // it, sets revalidate = 10.
+    const { isrSet, regeneration, renders } = await regenerateStaleInterceptWithActiveSidebar(
+      { default: "modal-page", dynamic: "force-static", revalidate: 30 },
+      { default: "sidebar-page", revalidate: 10 },
+    );
+    await expect(regeneration).resolves.toBeUndefined();
+
+    expect(renders).toEqual([
+      {
+        dynamicUsage: false,
+        fetchCacheMode: null,
+        fetchRevalidate: 10,
+        observePageSearchParamsAccess: false,
+      },
+    ]);
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(isrSet).toHaveBeenCalledWith("rsc:/photos/123:/feed", expect.anything(), {
+      cacheControl: { revalidate: 10 },
+      tags: expect.any(Array),
+    });
+  });
+
+  it("regenerates a stale intercepted RSC entry with an active sibling's dynamic and fetchCache", async () => {
+    // app/feed/@sidebar/page.tsx sets dynamic = "force-static" and
+    // fetchCache = "force-no-store"; the intercepting page sets neither.
+    const { isrSet, regeneration, renders } = await regenerateStaleInterceptWithActiveSidebar(
+      { default: "modal-page" },
+      { default: "sidebar-page", dynamic: "force-static", fetchCache: "force-no-store" },
+    );
+    await expect(regeneration).resolves.toBeUndefined();
+
+    expect(renders).toEqual([
+      {
+        dynamicUsage: false,
+        fetchCacheMode: "force-no-store",
+        fetchRevalidate: null,
+        observePageSearchParamsAccess: false,
+      },
+    ]);
+    // A force-static tree without a revalidate keeps `revalidate = false`.
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(isrSet).toHaveBeenCalledWith("rsc:/photos/123:/feed", expect.anything(), {
+      cacheControl: { revalidate: Infinity },
+      tags: expect.any(Array),
+    });
+  });
+
+  it("regenerates an intercept on the matched route without the replaced branch's config", async () => {
+    // app/photos/[id]/@modal/page.tsx sets dynamic = "force-static",
+    // fetchCache = "force-cache" and revalidate = 60, which the matched
+    // route's tree takes. The intercepting page that replaces it on the same
+    // route sets none of them.
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const interceptPage = { default: "modal-page" };
+    const { isrSet, regeneration, renders, staleValue } = await regenerateStaleInterceptedRscEntry({
+      currentRoute,
+      dynamicConfig: "force-static",
+      fetchCache: "force-cache",
+      interceptPage,
+      resolveRouteDynamicConfig: (_route, intercept) => (intercept ? null : "force-static"),
+      resolveRouteFetchCacheMode: (_route, intercept) => (intercept ? null : "force-cache"),
+      resolveRouteRevalidateSeconds: (_route, intercept) => (intercept ? null : 60),
+      revalidateSeconds: 60,
+      sourceRoute: currentRoute,
+    });
+    // Without the replaced branch's force-static, the render's headers() read
+    // is dynamic usage, which fails the regeneration as in Next.js.
+    await expect(regeneration).rejects.toThrow(
+      "Page changed from static to dynamic at runtime /photos/123",
+    );
+
+    expect(renders).toEqual([
+      {
+        dynamicUsage: true,
+        fetchCacheMode: null,
+        fetchRevalidate: null,
+        observePageSearchParamsAccess: true,
+      },
+    ]);
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(isrSet).toHaveBeenCalledWith("rsc:/photos/123:/feed", staleValue, {
+      cacheControl: { revalidate: 30 },
+      tags: expect.any(Array),
+    });
+  });
+
+  it("regenerates a stale intercepted RSC entry with its tree's generateStaticParams default in a cacheComponents build", async () => {
+    // app/feed/@modal/(.)photos/[id]/page.tsx exports generateStaticParams
+    // and no revalidate, so the intercepting tree keeps `revalidate = false`.
+    const sourceRoute = createRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const interceptPage = { default: "modal-page", generateStaticParams: () => [] };
+    const resolveRouteHasAnyGenerateStaticParams = vi.fn<
+      NonNullable<DispatchOptions["resolveRouteHasAnyGenerateStaticParams"]>
+    >((route, intercept) => route === sourceRoute && intercept.interceptPage === interceptPage);
+    const { isrSet, regeneration } = await regenerateStaleInterceptedRscEntry({
+      currentRoute,
+      interceptPage,
+      pprRuntime: appPagePprRuntime,
+      resolveRouteDynamicConfig: () => null,
+      resolveRouteFetchCacheMode: () => null,
+      resolveRouteHasAnyGenerateStaticParams,
+      resolveRouteRevalidateSeconds: (route, intercept) => (intercept ? null : 60),
+      revalidateSeconds: 60,
+      sourceRoute,
+    });
+    await regeneration;
+
+    expect(resolveRouteHasAnyGenerateStaticParams).toHaveBeenCalledWith(
+      sourceRoute,
+      expect.objectContaining({ interceptPage }),
+    );
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(isrSet).toHaveBeenCalledWith("rsc:/photos/123:/feed", expect.anything(), {
+      cacheControl: { revalidate: Infinity },
+      tags: expect.any(Array),
+    });
+  });
+
+  describe("a stale intercepted entry whose intercepted tree turned dynamic", () => {
+    // app/feed/@modal/(.)photos/[id]/page.tsx now sets revalidate = 0 or
+    // dynamic = "force-dynamic" (which resolves revalidate = 0), and its
+    // render reads no request API. app/photos/[id] sets revalidate = 60.
+    const sourceRoute = createRoute({ pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const interceptPage = { default: "modal-page" };
+    const isInterceptTree = (
+      route: TestRoute,
+      intercept?: Parameters<NonNullable<DispatchOptions["resolveRouteDynamicConfig"]>>[1],
+    ) => route === sourceRoute && intercept?.interceptPage === interceptPage;
+    const regenerate = (
+      dynamicConfig: string | undefined,
+      pprRuntime?: DispatchOptions["pprRuntime"],
+    ) =>
+      regenerateStaleInterceptedRscEntry({
+        currentRoute,
+        interceptPage,
+        pprRuntime,
+        readsHeaders: false,
+        resolveRouteDynamicConfig: (route, intercept) =>
+          isInterceptTree(route, intercept) ? dynamicConfig : undefined,
+        resolveRouteFetchCacheMode: () => null,
+        resolveRouteRevalidateSeconds: (route, intercept) =>
+          isInterceptTree(route, intercept) ? 0 : null,
+        revalidateSeconds: 60,
+        sourceRoute,
+      });
+
+    it.each([
+      ["revalidate = 0", undefined],
+      ['dynamic = "force-dynamic"', "force-dynamic"],
+    ])("fails its regeneration at %s and keeps the previous entry", async (_label, config) => {
+      const { isrSet, regeneration, renders, staleValue } = await regenerate(config);
+
+      // Like Next.js, an effective revalidate of 0 fails a regeneration
+      // without PPR even when the render used no dynamic API.
+      await expect(regeneration).rejects.toThrow(
+        "Page changed from static to dynamic at runtime /photos/123",
+      );
+      expect(renders).toEqual([expect.objectContaining({ dynamicUsage: false })]);
+      expect(isrSet).toHaveBeenCalledTimes(1);
+      expect(isrSet).toHaveBeenCalledWith("rsc:/photos/123:/feed", staleValue, {
+        cacheControl: { revalidate: 30 },
+        tags: expect.any(Array),
+      });
+    });
+
+    it("stores its PPR regeneration", async () => {
+      const { isrSet, regeneration } = await regenerate(undefined, appPagePprRuntime);
+
+      await expect(regeneration).resolves.toBeUndefined();
+      expect(isrSet).toHaveBeenCalledTimes(1);
+      expect(isrSet).toHaveBeenCalledWith(
+        "rsc:/photos/123:/feed",
+        expect.objectContaining({
+          rscData: new TextEncoder().encode("regenerated-flight").buffer,
+        }),
+        { cacheControl: { revalidate: 0 }, tags: expect.any(Array) },
+      );
+    });
   });
 
   it("does not leak the current route's force-dynamic config into the revalidation target route", async () => {
@@ -4123,7 +6081,10 @@ describe("app page dispatch", () => {
     // the target route's dynamic config instead of inheriting the current route's.
     const response = await dispatchAppPage(options);
     expect(response.status).toBe(200);
-    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(targetRoute);
+    expect(resolveRouteDynamicConfig).toHaveBeenCalledWith(
+      targetRoute,
+      expect.objectContaining({ interceptSlotKey: "modal@app/feed/@modal" }),
+    );
   });
 
   it("serves exact cache HIT instead of fallback shell", async () => {

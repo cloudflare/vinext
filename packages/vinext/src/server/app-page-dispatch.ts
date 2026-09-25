@@ -44,6 +44,7 @@ import {
 } from "./app-page-boundary.js";
 import {
   buildAppPageSpecialErrorResponse,
+  probeAppPageComponent,
   probeAppPageThrownError,
   resolveAppPageSpecialError,
   type AppPageFontPreload,
@@ -52,10 +53,16 @@ import {
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
-import { isAppPageStaticEligible } from "./app-segment-config.js";
+import {
+  hasAppPageInterceptDynamicSegment,
+  isAppPageStaticEligible,
+} from "./app-segment-config.js";
 import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import {
   buildAppPageElement,
+  isAppPageInterceptAttachedToRoute,
+  loadAppPageCurrentRouteIntercept,
+  matchAppPageCurrentRouteIntercept,
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   validateAppPageDynamicParams,
@@ -83,7 +90,7 @@ import {
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { createAppPageTreePath } from "./app-page-route-wiring.js";
+import { createAppPageTreePath, getAppPageSegmentParamName } from "./app-page-params.js";
 import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
 import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
 import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
@@ -147,6 +154,7 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   interceptNotFoundBranchSegments?: readonly string[] | null;
   notFound?: unknown;
   notFoundTreePosition?: number | null;
+  ownerDefault?: unknown;
   matchedParams: AppPageParams;
   sourceMatchedParams?: AppPageParams;
   page: TPage;
@@ -170,6 +178,7 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptNotFoundBranchSegments?: readonly string[] | null;
   interceptNotFound?: unknown;
   interceptNotFoundTreePosition?: number | null;
+  interceptOwnerDefault?: unknown;
   interceptPage: TPage;
   interceptParams: AppPageParams;
   interceptSlotId?: string | null;
@@ -179,6 +188,22 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptTargetPatternParts?: readonly string[] | null;
   interceptTargetRouteGraphId?: string | null;
 };
+
+/**
+ * The intercepting branch a direct intercepted RSC response renders in place
+ * of the source route's slot (or page), and the pattern of the route it
+ * intercepts.
+ */
+export type AppPageStaticEligibilityIntercept = Pick<
+  AppPageDispatchInterceptOptions,
+  | "interceptBranchSegments"
+  | "interceptLayoutSegments"
+  | "interceptLayouts"
+  | "interceptOwnerDefault"
+  | "interceptPage"
+  | "interceptSlotKey"
+  | "interceptTargetPatternParts"
+>;
 
 type AppPageModule = {
   default?: unknown;
@@ -405,6 +430,16 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   rootParams?: RootParams;
   probeLayoutAt: (layoutIndex: number, layoutParamAccess?: AppLayoutParamAccessTracker) => unknown;
   probePage: (searchParams?: URLSearchParams) => unknown;
+  /**
+   * Probes what a direct intercepted RSC response renders ahead of its loading
+   * boundaries: the source route with the intercepting branch, for this
+   * request's render mode (`buildAppPageInterceptSourceProbes`).
+   */
+  probeInterceptSource?: (
+    route: TRoute,
+    params: AppPageParams,
+    searchParams: URLSearchParams,
+  ) => unknown;
   expireSeconds?: number;
   renderErrorBoundaryPage: (
     error: unknown,
@@ -432,16 +467,76 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   request: Request;
   revalidateSeconds: number | null;
   renderedPathAndSearch?: string | null;
-  resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
-  resolveRouteRevalidateSeconds?: (route: TRoute) => number | null;
-  resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
+  /**
+   * With an intercept, these resolve the tree a direct intercepted RSC
+   * response renders: the source route with the intercepting branch in place
+   * of what it intercepts, as `resolveRouteStaticEligible` classifies it,
+   * merged with the active sibling pages vinext renders where Next.js's tree
+   * has their defaults.
+   */
+  resolveRouteFetchCacheMode?: (
+    route: TRoute,
+    intercept?: AppPageStaticEligibilityIntercept,
+  ) => FetchCacheMode | null;
+  resolveRouteRevalidateSeconds?: (
+    route: TRoute,
+    intercept?: AppPageStaticEligibilityIntercept,
+  ) => number | null;
+  resolveRouteDynamicConfig?: (
+    route: TRoute,
+    intercept?: AppPageStaticEligibilityIntercept,
+  ) => string | null | undefined;
+  resolveRouteDynamicStaleTimeSeconds?: (
+    route: TRoute,
+    intercept?: AppPageStaticEligibilityIntercept,
+  ) => number | undefined;
+  /**
+   * `dynamicParamsConfig` for the tree a direct intercepted RSC response
+   * renders, from the segments of the intercepting route's own tree.
+   */
+  resolveRouteDynamicParamsConfig?: (
+    route: TRoute,
+    intercept: AppPageStaticEligibilityIntercept,
+  ) => boolean | undefined;
+  /**
+   * The `dynamic` config of the intercepting route's own tree, without the
+   * active sibling pages `resolveRouteDynamicConfig` merges in: whether
+   * Next.js's production build leaves that route out of its prerender
+   * manifest as `force-dynamic`.
+   */
+  resolveRouteInterceptTreeDynamicConfig?: (
+    route: TRoute,
+    intercept: AppPageStaticEligibilityIntercept,
+  ) => string | null | undefined;
+  /**
+   * `generateStaticParams` for the tree a direct intercepted RSC response
+   * renders: the generators of the intercepting route's own tree.
+   */
+  resolveRouteGenerateStaticParams?: (
+    route: TRoute,
+    intercept: AppPageStaticEligibilityIntercept,
+  ) => ValidateAppPageDynamicParamsOptions["generateStaticParams"];
+  /**
+   * `hasAnyGenerateStaticParams` for the tree a direct intercepted RSC
+   * response renders: whether any segment of the intercepting route's own
+   * tree exports `generateStaticParams`.
+   */
+  resolveRouteHasAnyGenerateStaticParams?: (
+    route: TRoute,
+    intercept: AppPageStaticEligibilityIntercept,
+  ) => boolean;
   /**
    * `isAppPageStaticEligible` for another route, from that route's own segment
    * config, `generateStaticParams`, dynamism and runtime. A direct intercepted
-   * RSC response renders its source route, so it takes the source's
-   * cacheability.
+   * RSC response renders its source route with the intercepting branch in the
+   * intercepted slot, so it passes that branch and the pattern of the route it
+   * intercepts:
+   * Next.js classifies the intercepting route's own loader tree.
    */
-  resolveRouteStaticEligible: (route: TRoute) => boolean;
+  resolveRouteStaticEligible: (
+    route: TRoute,
+    intercept?: AppPageStaticEligibilityIntercept,
+  ) => boolean;
   rootForbiddenModule?: AppPageModule | null;
   rootNotFoundModule?: AppPageModule | null;
   rootUnauthorizedModule?: AppPageModule | null;
@@ -558,18 +653,26 @@ export function shouldReadAppPageCache(options: {
   );
 }
 
-function resolveAppPageCacheReadRevalidateSeconds(options: {
+type AppPageRouteRevalidateOptions = {
   isDynamicError: boolean;
   isForceStatic: boolean;
   revalidateSeconds: number | null;
-}): number {
+};
+
+/** A route's own revalidate, or null when its render's cacheLife sets it. */
+function resolveAppPageRouteRevalidateSeconds(
+  options: AppPageRouteRevalidateOptions,
+): number | null {
   if (options.revalidateSeconds === null && (options.isForceStatic || options.isDynamicError)) {
     return Infinity;
   }
+  return options.revalidateSeconds;
+}
 
+function resolveAppPageCacheReadRevalidateSeconds(options: AppPageRouteRevalidateOptions): number {
   // cacheLife-only routes discover their actual revalidate during the fresh
   // render; this seed only gets them into the cache read path.
-  return options.revalidateSeconds ?? 0;
+  return resolveAppPageRouteRevalidateSeconds(options) ?? 0;
 }
 
 export function hasSearchParams(searchParams: URLSearchParams | null | undefined): boolean {
@@ -631,6 +734,24 @@ async function runAppPageRevalidationContext<
   }
 }
 
+/**
+ * The intercepting branch a direct intercepted RSC response renders, for the
+ * route config resolvers.
+ */
+export function toRouteConfigIntercept(
+  interceptOpts: AppPageDispatchInterceptOptions,
+): AppPageStaticEligibilityIntercept {
+  return {
+    interceptBranchSegments: interceptOpts.interceptBranchSegments,
+    interceptLayoutSegments: interceptOpts.interceptLayoutSegments,
+    interceptLayouts: interceptOpts.interceptLayouts,
+    interceptOwnerDefault: interceptOpts.interceptOwnerDefault,
+    interceptPage: interceptOpts.interceptPage,
+    interceptSlotKey: interceptOpts.interceptSlotKey,
+    interceptTargetPatternParts: interceptOpts.interceptTargetPatternParts,
+  };
+}
+
 function toInterceptOptions(
   interceptionContext: string | null,
   intercept: AppPageDispatchIntercept,
@@ -647,6 +768,7 @@ function toInterceptOptions(
     interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
     interceptNotFound: intercept.notFound,
     interceptNotFoundTreePosition: intercept.notFoundTreePosition,
+    interceptOwnerDefault: intercept.ownerDefault,
     interceptPage: intercept.page,
     interceptParams: intercept.matchedParams,
     interceptSlotId: intercept.slotId ?? null,
@@ -656,6 +778,37 @@ function toInterceptOptions(
     interceptTargetPatternParts: intercept.targetPatternParts ?? null,
     interceptTargetRouteGraphId: intercept.targetRouteGraphId ?? null,
   };
+}
+
+/**
+ * Probe the source route that a direct intercepted RSC response renders, since
+ * that response picks its headers before its render, and report whether it
+ * read a dynamic API while its element was built (viewport and metadata
+ * resolution) or probed. The caller discards earlier usage, which doesn't
+ * belong to the source, before building the element.
+ */
+async function probeAppPageInterceptSourceDynamicUsage<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  route: TRoute,
+  params: AppPageParams,
+  searchParams: URLSearchParams,
+): Promise<boolean> {
+  const probeInterceptSource = options.probeInterceptSource;
+  if (probeInterceptSource) {
+    // Special errors and other probe failures surface through the intercepted
+    // response's own render, as before.
+    await probeAppPageComponent({
+      awaitAsyncResult: true,
+      async onError() {
+        return null;
+      },
+      probePage: () => probeInterceptSource(route, params, searchParams),
+      runWithSuppressedHookWarning(probe) {
+        return options.runWithSuppressedHookWarning(probe);
+      },
+    });
+  }
+  return consumeDynamicUsage();
 }
 
 /**
@@ -703,7 +856,65 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     options.clearRequestContext();
     return new Response(null, { status: 204 });
   }
-  const dynamicConfig = options.dynamicConfig;
+  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
+
+  // The lookup this request's interception resolution shares with its
+  // current-route match, so an RSC request doesn't match its path twice.
+  let requestIntercept: AppPageDispatchIntercept | null | undefined;
+  const findIntercept = (pathname: string) => {
+    if (pathname !== options.cleanPathname) return options.findIntercept(pathname);
+    if (requestIntercept === undefined) requestIntercept = options.findIntercept(pathname);
+    return requestIntercept;
+  };
+  const routeHasSlot = (sourceRoute: TRoute, slotKey: string) =>
+    !!sourceRoute.slots && Object.hasOwn(sourceRoute.slots, slotKey);
+
+  // A route renders an interception whose source is the route itself with the
+  // intercepting branch in its slot (or page). Next.js serves that
+  // intercepting route as its own app path, so its own segment config, not
+  // this route's, decides how it renders and whether the response may be read
+  // from or written to the cache, in every render: dev, draft mode, actions
+  // and cacheComponents builds included. Matching loads nothing, so a request
+  // without the interception does no extra work. Loading it is like loading
+  // the route's own modules: generated params are still checked only once the
+  // cache misses.
+  const matchedCurrentRouteIntercept = await matchAppPageCurrentRouteIntercept({
+    cleanPathname: options.cleanPathname,
+    currentRoute: route,
+    findIntercept,
+    getSourceRoute: options.getSourceRoute,
+    isRscRequest: options.isRscRequest,
+  });
+  if (matchedCurrentRouteIntercept) {
+    await loadAppPageCurrentRouteIntercept(matchedCurrentRouteIntercept, route, routeHasSlot);
+  }
+  // An intercept the route has no slot for renders nothing, so the route
+  // renders with its own params.
+  const attachedCurrentRouteIntercept =
+    matchedCurrentRouteIntercept &&
+    isAppPageInterceptAttachedToRoute(matchedCurrentRouteIntercept, route, routeHasSlot)
+      ? matchedCurrentRouteIntercept
+      : undefined;
+  const currentRouteIntercept = matchedCurrentRouteIntercept
+    ? toRouteConfigIntercept(
+        toInterceptOptions(options.interceptionContext, matchedCurrentRouteIntercept),
+      )
+    : undefined;
+  // With an intercept, a null from these resolvers means the intercepting
+  // tree has no such config: this route's config belongs to the branch the
+  // intercept replaced.
+  const dynamicConfig = currentRouteIntercept
+    ? (options.resolveRouteDynamicConfig?.(route, currentRouteIntercept) ?? undefined)
+    : options.dynamicConfig;
+  const configRevalidateSeconds = currentRouteIntercept
+    ? (options.resolveRouteRevalidateSeconds?.(route, currentRouteIntercept) ?? null)
+    : options.revalidateSeconds;
+  const dynamicStaleTimeSeconds = currentRouteIntercept
+    ? options.resolveRouteDynamicStaleTimeSeconds?.(route, currentRouteIntercept)
+    : options.dynamicStaleTimeSeconds;
+  const dynamicParamsConfig = currentRouteIntercept
+    ? options.resolveRouteDynamicParamsConfig?.(route, currentRouteIntercept)
+    : options.dynamicParamsConfig;
   const interceptionId = options.isRscRequest
     ? options.request.headers.get(VINEXT_INTERCEPTION_ID_HEADER)
     : null;
@@ -714,13 +925,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // full-page cache candidates. Every other route renders per request and is
   // never stored, whatever its revalidate or cacheLife. cacheComponents builds
   // (PPR fallback shells) follow a different model and keep their own rules.
-  const isNextStaticEligible = isAppPageStaticEligible({
-    dynamicConfig,
-    hasGenerateStaticParams: options.hasGenerateStaticParams,
-    isDynamicRoute: route.isDynamic,
-    isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
-    revalidateSeconds: options.revalidateSeconds,
-  });
+  const isNextStaticEligible = currentRouteIntercept
+    ? options.resolveRouteStaticEligible(route, currentRouteIntercept)
+    : isAppPageStaticEligible({
+        dynamicConfig,
+        hasGenerateStaticParams: options.hasGenerateStaticParams,
+        isDynamicRoute: route.isDynamic,
+        isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
+        revalidateSeconds: configRevalidateSeconds,
+      });
   const isStaticEligible = options.pprRuntime !== undefined || isNextStaticEligible;
   // Next.js defaults every static or SSG route to `revalidate = false`, so a
   // render that uses no dynamic API is stored until it is revalidated. This
@@ -728,15 +941,22 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // paths, on the first on-demand render of an unknown path. Dev has no ISR.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
   // Any segment's generator still sets this default, which the fetch shim and
-  // cacheComponents fallback shells read.
+  // cacheComponents fallback shells read. An intercepting tree, like its
+  // regeneration, takes it from its own classification and generators.
   const hasStaticRevalidateDefault =
     options.isProduction && options.pprRuntime === undefined && isNextStaticEligible;
+  const hasAnyGenerateStaticParams = currentRouteIntercept
+    ? options.resolveRouteHasAnyGenerateStaticParams?.(route, currentRouteIntercept) === true
+    : options.hasAnyGenerateStaticParams;
   const currentRevalidateSeconds =
-    options.revalidateSeconds ??
-    (hasStaticRevalidateDefault || options.hasAnyGenerateStaticParams ? Infinity : null);
+    configRevalidateSeconds ??
+    (hasStaticRevalidateDefault || hasAnyGenerateStaticParams ? Infinity : null);
   if (isRouteCacheabilityProbe()) {
     // A route that isn't static or SSG is never stored, so its probe reports
-    // the whole pattern dynamic, whichever of its paths discovery listed.
+    // the whole pattern dynamic, whichever of its paths discovery listed. A
+    // pattern-wide decision comes from the route's own config: an intercepting
+    // tree's config covers only the requests that render it.
+    const isRouteForceDynamic = options.dynamicConfig === "force-dynamic";
     const isRouteStaticEligible =
       options.pprRuntime !== undefined ||
       isAppPageStaticEligible({
@@ -746,9 +966,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
         revalidateSeconds: options.revalidateSeconds ?? null,
       });
-    const patternDynamicReason = isForceDynamic
+    const patternDynamicReason = isRouteForceDynamic
       ? 'dynamic = "force-dynamic"'
-      : currentRevalidateSeconds === 0
+      : options.revalidateSeconds === 0
         ? "revalidate = 0"
         : !isRouteStaticEligible
           ? "route is not statically generated"
@@ -767,7 +987,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const placeGeneratedMetadataInBody =
     (!isPrerender || options.pprFallbackShell !== undefined) && serveStreamingMetadata;
   const isPrefetchDynamicShell = options.renderMode === APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL;
-  const isDraftMode = isDraftModeRequest(options.request, options.draftModeSecret);
   const requestHeadersContext = getHeadersContext();
   const shouldUseEmptySearchParams = isForceStatic || isPrefetchDynamicShell;
   const hasRequestSearchParams =
@@ -780,7 +999,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const hasActiveLoadingBoundary = activeLoadingTreePositions.length > 0;
 
   setCurrentFetchSoftTags(buildAppPageTags(options.cleanPathname, [], route.routeSegments));
-  setCurrentFetchCacheMode(options.fetchCache ?? null);
+  setCurrentFetchCacheMode(
+    currentRouteIntercept
+      ? (options.resolveRouteFetchCacheMode?.(route, currentRouteIntercept) ?? null)
+      : (options.fetchCache ?? null),
+  );
   setCurrentFetchRevalidate(currentRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(isForceDynamic);
 
@@ -841,6 +1064,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
   }
 
+  const resolveInterceptStaticEligible = (
+    sourceRoute: TRoute,
+    interceptOpts: AppPageDispatchInterceptOptions,
+  ) =>
+    options.pprRuntime !== undefined ||
+    options.resolveRouteStaticEligible(sourceRoute, toRouteConfigIntercept(interceptOpts));
+
   const isCacheEligibleRender =
     options.bypassInterceptionContextCache !== true &&
     shouldReadAppPageCache({
@@ -871,6 +1101,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isPrerender,
     });
     const { readAppPageCacheResponse } = await import("./app-page-cache.js");
+    const cacheReadRevalidateSeconds = resolveAppPageCacheReadRevalidateSeconds({
+      isDynamicError,
+      isForceStatic,
+      revalidateSeconds: currentRevalidateSeconds,
+    });
     const reportedSsrRevalidationErrors = new Set<unknown>();
     let revalidationRscErrorTracker: ReturnType<typeof createAppPageRscErrorTracker> | null = null;
     // The route, params and intercept a render for this request's cache entry
@@ -888,6 +1123,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           return options.getSourceRoute(sourceRouteIndex);
         },
         isRscRequest: options.isRscRequest,
+        routeHasSlot,
         toInterceptOpts(intercept) {
           return toInterceptOptions(options.interceptionContext, intercept);
         },
@@ -933,41 +1169,70 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       renderedPathAndSearch: options.renderedPathAndSearch,
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,
-      revalidateSeconds: resolveAppPageCacheReadRevalidateSeconds({
-        isDynamicError,
-        isForceStatic,
-        revalidateSeconds: currentRevalidateSeconds,
-      }),
+      revalidateSeconds: cacheReadRevalidateSeconds,
       renderFreshPageForCache: async () => {
         const revalidationTarget = await resolveCacheRenderTarget();
 
+        // A stale intercepted entry regenerates the tree its direct render
+        // rendered, so it takes that tree's config, not the source route's.
+        const revalidationConfigIntercept = revalidationTarget.interceptOpts
+          ? toRouteConfigIntercept(revalidationTarget.interceptOpts)
+          : undefined;
+        // With an intercept, a null from these resolvers means the intercepted
+        // tree has no such config, even when the intercept is on the matched
+        // route itself: the matched tree's config belongs to the branch the
+        // intercept replaced.
+        const usesMatchedRouteConfig =
+          revalidationConfigIntercept === undefined && revalidationTarget.route === route;
         const revalidationDynamicConfig =
-          options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
-          (revalidationTarget.route === route ? dynamicConfig : undefined);
+          options.resolveRouteDynamicConfig?.(
+            revalidationTarget.route,
+            revalidationConfigIntercept,
+          ) ?? (usesMatchedRouteConfig ? dynamicConfig : undefined);
         const revalidationConfigRevalidateSeconds =
-          options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
-          (revalidationTarget.route === route ? currentRevalidateSeconds : null);
-        // A stale intercepted entry regenerates its source route, so the entry
-        // takes that route's revalidate, not the matched route's read seed. A
-        // static route without one keeps `revalidate = false`.
+          options.resolveRouteRevalidateSeconds?.(
+            revalidationTarget.route,
+            revalidationConfigIntercept,
+          ) ?? (usesMatchedRouteConfig ? currentRevalidateSeconds : null);
+        // The regenerated entry stores the rendered tree's revalidate, lowered
+        // by what the render collects, like Next.js' prerender store: it starts
+        // at the tree's segment config, and a static tree without one, or one
+        // with a generator, keeps `revalidate = false`.
+        // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/app-render/create-component-tree.tsx
         const revalidationRouteRevalidateSeconds =
-          revalidationTarget.route === route
-            ? undefined
-            : (revalidationConfigRevalidateSeconds ??
-              (revalidationDynamicConfig === "force-static" ||
-              revalidationDynamicConfig === "error" ||
-              (options.isProduction &&
-                options.pprRuntime === undefined &&
-                options.resolveRouteStaticEligible(revalidationTarget.route))
-                ? Infinity
-                : null));
+          revalidationConfigIntercept === undefined
+            ? resolveAppPageRouteRevalidateSeconds({
+                isDynamicError,
+                isForceStatic,
+                revalidateSeconds: currentRevalidateSeconds,
+              })
+            : resolveAppPageRouteRevalidateSeconds({
+                isDynamicError: revalidationDynamicConfig === "error",
+                isForceStatic: revalidationDynamicConfig === "force-static",
+                revalidateSeconds:
+                  revalidationConfigRevalidateSeconds ??
+                  ((options.isProduction &&
+                    options.pprRuntime === undefined &&
+                    options.resolveRouteStaticEligible(
+                      revalidationTarget.route,
+                      revalidationConfigIntercept,
+                    )) ||
+                  options.resolveRouteHasAnyGenerateStaticParams?.(
+                    revalidationTarget.route,
+                    revalidationConfigIntercept,
+                  ) === true
+                    ? Infinity
+                    : null),
+              });
         return runAppPageRevalidationContext(
           {
             cleanPathname: options.cleanPathname,
             displayPathname: options.displayPathname,
             currentFetchCacheMode:
-              options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
-              (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
+              options.resolveRouteFetchCacheMode?.(
+                revalidationTarget.route,
+                revalidationConfigIntercept,
+              ) ?? (usesMatchedRouteConfig ? (options.fetchCache ?? null) : null),
             currentFetchRevalidate: revalidationConfigRevalidateSeconds,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: revalidationDynamicConfig,
@@ -1066,24 +1331,57 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // Next.js' production force-dynamic routes are absent from the prerender
   // manifest, so they never enter its generated-path fallback gate. Dev still
   // resolves and exact-matches generateStaticParams for the same route.
-  if (options.skipStaticParamsValidation !== true && !(options.isProduction && isForceDynamic)) {
+  // A current-route interception serves the intercepting route, whose own
+  // tree's dynamicParams and generators gate the params it renders with. Only
+  // that tree's own force-dynamic leaves it out of the manifest: the active
+  // sibling pages vinext also renders make its render dynamic, not its route.
+  const isManifestForceDynamic = currentRouteIntercept
+    ? options.resolveRouteInterceptTreeDynamicConfig?.(route, currentRouteIntercept) ===
+      "force-dynamic"
+    : isForceDynamic;
+  if (
+    options.skipStaticParamsValidation !== true &&
+    !(options.isProduction && isManifestForceDynamic)
+  ) {
+    // The intercepting tree's own dynamic segments make it dynamic under a
+    // static route, and its optional catch-alls are part of its params.
+    const interceptBranchSegments = attachedCurrentRouteIntercept?.interceptBranchSegments ?? [];
     const dynamicParamsResponse = await validateAppPageDynamicParams({
-      enforceStaticParamsOnly: options.dynamicParamsConfig === false,
-      generateStaticParams: options.generateStaticParams,
-      isDynamicRoute: route.isDynamic,
-      params: options.staticParamsValidationParams ?? options.params,
+      enforceStaticParamsOnly: dynamicParamsConfig === false,
+      generateStaticParams: currentRouteIntercept
+        ? options.resolveRouteGenerateStaticParams?.(route, currentRouteIntercept)
+        : options.generateStaticParams,
+      isDynamicRoute: route.isDynamic || hasAppPageInterceptDynamicSegment(interceptBranchSegments),
+      optionalCatchAllParamNames: attachedCurrentRouteIntercept
+        ? [...route.routeSegments, ...interceptBranchSegments]
+            .filter((segment) => segment.startsWith("[[..."))
+            .flatMap((segment) => getAppPageSegmentParamName(segment) ?? [])
+        : undefined,
+      params:
+        options.staticParamsValidationParams ??
+        attachedCurrentRouteIntercept?.matchedParams ??
+        options.params,
     });
     if (dynamicParamsResponse) {
       // A generated-param miss belongs to a matched App route, so render the
       // route's not-found boundary just like a page-level notFound() signal.
       // The plain response remains a defensive fallback if boundary rendering
       // is unavailable, but the normal path must include Next.js's canonical
-      // not-found markup (and custom not-found.tsx when present).
+      // not-found markup (and custom not-found.tsx when present). A
+      // current-route interception's miss belongs to the intercepting tree, so
+      // it renders through that tree like a notFound() from its page does.
       const renderedNotFound = await options.renderHttpAccessFallbackPage(
         404,
-        { matchedParams: options.params },
+        {
+          intercept: attachedCurrentRouteIntercept
+            ? toInterceptOptions(options.interceptionContext, attachedCurrentRouteIntercept)
+            : undefined,
+          matchedParams: options.params,
+        },
         options.middlewareContext,
       );
+      // The current-route interception classified above decides this
+      // response's cacheability too, like the render it replaces.
       const cachePolicy = {
         isDraftMode,
         isDynamicError,
@@ -1121,8 +1419,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   let interceptDynamicConfig: string | null | undefined;
   let interceptDynamicConfigResolved = false;
-  // Whether the source route that the intercepted response renders is
-  // force-dynamic or revalidate = 0, from the config activated for its render.
+  // Whether the tree that the intercepted response renders (the source route
+  // with the intercepting branch) is force-dynamic or revalidate = 0, from the
+  // config activated for its render, or read a dynamic API while probed.
   let isInterceptSourceKnownDynamic = false;
   const interceptResult = await resolveAppPageIntercept<
     TRoute,
@@ -1143,9 +1442,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // The intercept route's fetch defaults must also stay active past this
       // call — its server components fetch lazily during the
       // renderToReadableStream in renderInterceptResponse below.
+      const routeConfigIntercept = interceptOpts
+        ? toRouteConfigIntercept(interceptOpts)
+        : undefined;
       const sourceDynamicConfig = interceptDynamicConfigResolved
         ? interceptDynamicConfig
-        : options.resolveRouteDynamicConfig?.(interceptRoute);
+        : options.resolveRouteDynamicConfig?.(interceptRoute, routeConfigIntercept);
       if (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error") {
         const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
         setHeadersContext(
@@ -1161,13 +1463,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         setHeadersContext(requestHeadersContext);
       }
       const sourceRevalidateSeconds =
-        options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null;
+        options.resolveRouteRevalidateSeconds?.(interceptRoute, routeConfigIntercept) ?? null;
       isInterceptSourceKnownDynamic =
         sourceDynamicConfig === "force-dynamic" || sourceRevalidateSeconds === 0;
-      setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
+      setCurrentFetchCacheMode(
+        options.resolveRouteFetchCacheMode?.(interceptRoute, routeConfigIntercept) ?? null,
+      );
       setCurrentFetchRevalidate(sourceRevalidateSeconds);
       setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
-      return options.buildPageElement(
+      // Usage recorded so far belongs to the matched target, not the source.
+      consumeDynamicUsage();
+      const interceptElement = await options.buildPageElement(
         interceptRoute,
         interceptParams,
         interceptOpts,
@@ -1180,12 +1486,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           serveStreamingMetadata: placeGeneratedMetadataInBody,
         },
       );
+      if (
+        await probeAppPageInterceptSourceDynamicUsage(
+          options,
+          interceptRoute,
+          interceptParams,
+          interceptSearchParams,
+        )
+      ) {
+        isInterceptSourceKnownDynamic = true;
+      }
+      return interceptElement;
     },
     cleanPathname: options.cleanPathname,
     currentRoute: route,
-    findIntercept(pathname) {
-      return options.findIntercept(pathname);
-    },
+    findIntercept,
     getRouteParamNames(sourceRoute) {
       return sourceRoute.params;
     },
@@ -1197,7 +1512,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     resolveNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts) {
       return resolveAppPageNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts);
     },
-    renderInterceptResponse(sourceRoute, interceptElement) {
+    routeHasSlot,
+    renderInterceptResponse(sourceRoute, interceptElement, interceptOpts) {
       const interceptOnError = options.createRscOnErrorHandler(
         options.cleanPathname,
         sourceRoute.pattern,
@@ -1211,13 +1527,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
-      // This response renders the source route, so it takes the source's
-      // cacheability and dynamic config, not the matched target's. A source
-      // that can't be static, a render known dynamic before it starts, or a
-      // draft-mode request is never cacheable, like the source's own render.
-      // Middleware's policy still wins, merged after, as in the RSC builder.
-      const isSourceStaticEligible =
-        options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
+      // This response renders the source route with the intercepting branch,
+      // so it takes that tree's cacheability and the source's dynamic config,
+      // not the matched target's. A render known dynamic before it starts is
+      // never cacheable, like the source's own render. Middleware's policy
+      // still wins, merged after, as in the RSC builder.
+      const isSourceStaticEligible = resolveInterceptStaticEligible(sourceRoute, interceptOpts);
       if (!isSourceStaticEligible || isDraftMode || isInterceptSourceKnownDynamic) {
         interceptHeaders.set("Cache-Control", resolveUncacheableCacheControl(options.isProduction));
       }
@@ -1229,9 +1544,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         headers: interceptHeaders,
       });
     },
-    async resolveSearchParams(sourceRoute, searchParams) {
+    async resolveSearchParams(sourceRoute, searchParams, interceptOpts) {
       await options.ensureRouteLoaded?.(sourceRoute);
-      interceptDynamicConfig = options.resolveRouteDynamicConfig?.(sourceRoute);
+      interceptDynamicConfig = options.resolveRouteDynamicConfig?.(
+        sourceRoute,
+        toRouteConfigIntercept(interceptOpts),
+      );
       interceptDynamicConfigResolved = true;
       return interceptDynamicConfig === "force-static" ? new URLSearchParams() : searchParams;
     },
@@ -1439,7 +1757,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         return runWithIsolatedDynamicUsage(fn);
       },
     },
-    dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
+    dynamicStaleTimeSeconds,
     revalidateSeconds: currentRevalidateSeconds,
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,

@@ -1,14 +1,17 @@
 import type { AppPageSpecialError } from "./app-page-execution.js";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
+import { APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS } from "./app-page-interception-markers.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import {
   loadAppInterceptLayouts,
   loadAppInterceptNotFound,
+  loadAppInterceptOwnerDefault,
   loadAppInterceptPage,
 } from "./app-route-module-loader.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type GenerateStaticParams = (args: { params: AppPageParams }) => unknown;
@@ -95,11 +98,15 @@ type AppPageInterceptMatch<TPage = unknown> = {
   notFound?: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
+  ownerDefault?: unknown;
+  __loadOwnerDefault?: (() => Promise<unknown>) | null;
   __loadState?: {
     page: TPage;
     pageLoading: Promise<TPage> | null;
     notFound?: unknown;
     notFoundLoading?: Promise<unknown> | null;
+    ownerDefault?: unknown;
+    ownerDefaultLoading?: Promise<unknown> | null;
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
   slotId?: string | null;
@@ -115,15 +122,21 @@ type AppPageInterceptState<TRoute, TPage> =
   | { kind: "current-route"; intercept: AppPageInterceptMatch<TPage> }
   | { kind: "source-route"; intercept: AppPageInterceptMatch<TPage>; sourceRoute: TRoute };
 
-type ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts> = {
+type MatchAppPageInterceptOptions<TRoute, TPage> = {
   cleanPathname: string;
   currentRoute: TRoute;
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
-  getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
   isRscRequest: boolean;
-  toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
+
+type ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts> =
+  MatchAppPageInterceptOptions<TRoute, TPage> & {
+    getRouteParamNames: (route: TRoute) => readonly string[];
+    /** When given, an intercept the rendered route has no slot for isn't loaded. */
+    routeHasSlot?: (route: TRoute, slotKey: string) => boolean;
+    toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
+  };
 
 type ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = {
   cleanPathname: string;
@@ -133,6 +146,8 @@ type ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOp
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
   isRscRequest: boolean;
+  /** When given, an intercept the rendered route has no slot for isn't loaded. */
+  routeHasSlot?: (route: TRoute, slotKey: string) => boolean;
   toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
 
@@ -174,10 +189,17 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     pathname: string,
     interceptOpts: TInterceptOpts,
   ) => AppPageParams;
-  renderInterceptResponse: (route: TRoute, element: TElement) => Promise<Response> | Response;
+  /** Whether `route` has the parallel slot keyed `slotKey`. */
+  routeHasSlot: (route: TRoute, slotKey: string) => boolean;
+  renderInterceptResponse: (
+    route: TRoute,
+    element: TElement,
+    interceptOpts: TInterceptOpts,
+  ) => Promise<Response> | Response;
   resolveSearchParams?: (
     route: TRoute,
     searchParams: URLSearchParams,
+    interceptOpts: TInterceptOpts,
   ) => Awaitable<URLSearchParams>;
   searchParams: URLSearchParams;
   setNavigationContext: (context: {
@@ -249,6 +271,18 @@ function remapRouteParams(
   return params;
 }
 
+/**
+ * The param a loader-tree segment names. An intercepting route's tree keeps
+ * its interception markers, and `(.)[photo]` names the `photo` param.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/get-segment-param.tsx
+ */
+function getGenerateStaticParamsSegmentParamName(segment: string): string | null {
+  const marker = APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) =>
+    segment.startsWith(prefix),
+  );
+  return getAppPageSegmentParamName(marker ? segment.slice(marker.prefix.length) : segment);
+}
+
 function collectParentParamNames(
   routeSegments: readonly string[],
   boundaryPosition: number,
@@ -257,7 +291,7 @@ function collectParentParamNames(
   const names: string[] = [];
 
   for (const segment of routeSegments.slice(0, limit)) {
-    const name = getAppPageSegmentParamName(segment);
+    const name = getGenerateStaticParamsSegmentParamName(segment);
     if (name && !names.includes(name)) {
       names.push(name);
     }
@@ -295,7 +329,7 @@ function getParallelParentParamNames(
   const branchParamNames = collectParentParamNames(branch.routeSegments ?? [], boundaryPosition);
   const branchParamNameSet = new Set(
     (branch.routeSegments ?? []).flatMap((segment) => {
-      const name = getAppPageSegmentParamName(segment);
+      const name = getGenerateStaticParamsSegmentParamName(segment);
       return name ? [name] : [];
     }),
   );
@@ -336,7 +370,7 @@ export function resolveAppPageGenerateStaticParamsSources(
   }
 
   const routeParamNames = options.routeSegments.flatMap((segment) => {
-    const name = getAppPageSegmentParamName(segment);
+    const name = getGenerateStaticParamsSegmentParamName(segment);
     return name ? [name] : [];
   });
   for (const [independentChain, parallelBranch] of (options.parallelBranches ?? []).entries()) {
@@ -587,6 +621,14 @@ export async function validateAppPageDynamicParams(
   if (generateStaticParamsSources.length === 0) {
     return notFoundResponse();
   }
+  // Matching leaves an omitted optional catch-all out of the params, but
+  // Next.js generates that path only from an explicit empty value, so its
+  // key is still compared.
+  const paramKeys =
+    options.requiredParamNames ??
+    Array.from(
+      new Set([...Object.keys(options.params), ...(options.optionalCatchAllParamNames ?? [])]),
+    );
 
   const chainedSources = generateStaticParamsSources.filter((source) => source.chained);
   let chainedStaticParams: Record<string, unknown>[] | null = null;
@@ -620,7 +662,7 @@ export async function validateAppPageDynamicParams(
           options.params,
           result.staticParams,
           options.requiredParamNames === undefined,
-          options.requiredParamNames,
+          paramKeys,
           options.optionalCatchAllParamNames,
         )
       ) {
@@ -638,7 +680,15 @@ export async function validateAppPageDynamicParams(
     // results are validated against those combinations above; without a
     // parallel result, the primary chain itself must match exactly.
     // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
-    if (!areStaticParamsAllowed(options.params, chainedStaticParams)) {
+    if (
+      !areStaticParamsAllowed(
+        options.params,
+        chainedStaticParams,
+        false,
+        paramKeys,
+        options.optionalCatchAllParamNames,
+      )
+    ) {
       return notFoundResponse();
     }
   }
@@ -646,8 +696,8 @@ export async function validateAppPageDynamicParams(
   return null;
 }
 
-async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
-  options: ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts>,
+async function matchAppPageInterceptState<TRoute, TPage>(
+  options: MatchAppPageInterceptOptions<TRoute, TPage>,
 ): Promise<AppPageInterceptState<TRoute, TPage>> {
   if (!options.isRscRequest) {
     return { kind: "none" };
@@ -656,12 +706,6 @@ async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
   const intercept = options.findIntercept(options.cleanPathname);
   if (!intercept) {
     return { kind: "none" };
-  }
-
-  await loadAppInterceptPage(intercept);
-  await loadAppInterceptNotFound(intercept);
-  if (intercept.__loadInterceptLayouts || intercept.__loadInterceptLoadings) {
-    await loadAppInterceptLayouts(intercept);
   }
 
   const sourceRoute = await options.getSourceRoute(intercept.sourceRouteIndex);
@@ -676,6 +720,104 @@ async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
   return { kind: "source-route", intercept, sourceRoute };
 }
 
+async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
+  options: ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts>,
+): Promise<AppPageInterceptState<TRoute, TPage>> {
+  const interceptState = await matchAppPageInterceptState(options);
+  if (interceptState.kind === "none") return interceptState;
+  const renderRoute =
+    interceptState.kind === "source-route" ? interceptState.sourceRoute : options.currentRoute;
+  if (!options.routeHasSlot) {
+    await loadAppPageInterceptModules(interceptState.intercept);
+    return interceptState;
+  }
+  if (
+    isAppPageInterceptAttachedToRoute(interceptState.intercept, renderRoute, options.routeHasSlot)
+  ) {
+    await loadAppPageInterceptModules(interceptState.intercept);
+    // A rerender classifies the intercepting route's tree like the render it
+    // repeats, so that tree's owner default is loaded too.
+    await loadAppPageInterceptOwnerDefault(
+      interceptState.intercept,
+      renderRoute,
+      options.routeHasSlot,
+    );
+  }
+  return interceptState;
+}
+
+async function loadAppPageInterceptModules<TPage>(
+  intercept: AppPageInterceptMatch<TPage>,
+): Promise<void> {
+  await loadAppInterceptPage(intercept);
+  await loadAppInterceptNotFound(intercept);
+  if (intercept.__loadInterceptLayouts || intercept.__loadInterceptLoadings) {
+    await loadAppInterceptLayouts(intercept);
+  }
+}
+
+/**
+ * The interception an RSC request renders its own matched route with, when
+ * that route is also the interception's source. Nothing is loaded yet.
+ */
+export async function matchAppPageCurrentRouteIntercept<TRoute, TPage>(
+  options: MatchAppPageInterceptOptions<TRoute, TPage>,
+): Promise<AppPageInterceptMatch<TPage> | null> {
+  const interceptState = await matchAppPageInterceptState(options);
+  return interceptState.kind === "current-route" ? interceptState.intercept : null;
+}
+
+/**
+ * Whether an interception puts its branch into `route`'s tree. A sibling-page
+ * intercept always replaces the route's page; a slot intercept needs the route
+ * to have the intercepted slot, and otherwise the route renders unchanged, as
+ * `isAppPageInterceptAttached` classifies it.
+ */
+export function isAppPageInterceptAttachedToRoute<TRoute, TPage>(
+  intercept: AppPageInterceptMatch<TPage>,
+  route: TRoute,
+  routeHasSlot: (route: TRoute, slotKey: string) => boolean,
+): boolean {
+  return (
+    intercept.slotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY || routeHasSlot(route, intercept.slotKey)
+  );
+}
+
+/**
+ * Load the modules of a current-route interception's intercepting tree, as
+ * `resolveAppPageIntercept` does before rendering it. An intercept the route
+ * has no slot for renders nothing, so none of its modules are evaluated.
+ */
+export async function loadAppPageCurrentRouteIntercept<TRoute, TPage>(
+  intercept: AppPageInterceptMatch<TPage>,
+  currentRoute: TRoute,
+  routeHasSlot: (route: TRoute, slotKey: string) => boolean,
+): Promise<void> {
+  if (!isAppPageInterceptAttachedToRoute(intercept, currentRoute, routeHasSlot)) return;
+  await loadAppPageInterceptModules(intercept);
+  await loadAppPageInterceptOwnerDefault(intercept, currentRoute, routeHasSlot);
+}
+
+/**
+ * Only the intercepting route's tree holds the default of the folder that
+ * owns a slot intercept, in place of that folder's children. That tree exists
+ * only when the concrete source has the intercepted slot: a sibling-page
+ * intercept replaces the source's page instead, and a source variant without
+ * the slot renders unchanged, so neither evaluates the owner's default.
+ */
+async function loadAppPageInterceptOwnerDefault<TRoute, TPage>(
+  intercept: AppPageInterceptMatch<TPage>,
+  sourceRoute: TRoute,
+  routeHasSlot: (route: TRoute, slotKey: string) => boolean,
+): Promise<void> {
+  if (
+    intercept.slotKey !== SIBLING_PAGE_INTERCEPT_SLOT_KEY &&
+    routeHasSlot(sourceRoute, intercept.slotKey)
+  ) {
+    await loadAppInterceptOwnerDefault(intercept);
+  }
+}
+
 export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TInterceptOpts>(
   options: ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts>,
 ): Promise<ResolveAppPageInterceptionRerenderTargetResult<TRoute, TInterceptOpts>> {
@@ -686,6 +828,7 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     getRouteParamNames: options.getRouteParamNames,
     getSourceRoute: options.getSourceRoute,
     isRscRequest: options.isRscRequest,
+    routeHasSlot: options.routeHasSlot,
     toInterceptOpts: options.toInterceptOpts,
   });
 
@@ -726,18 +869,29 @@ export function resolveAppPageActionRerenderTarget<TRoute, TPage, TInterceptOpts
 export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TElement>(
   options: ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement>,
 ): Promise<ResolveAppPageInterceptResult<TInterceptOpts>> {
-  const interceptState = await resolveAppPageInterceptState({
+  const interceptState = await matchAppPageInterceptState({
     cleanPathname: options.cleanPathname,
     currentRoute: options.currentRoute,
     findIntercept: options.findIntercept,
-    getRouteParamNames: options.getRouteParamNames,
     getSourceRoute: options.getSourceRoute,
     isRscRequest: options.isRscRequest,
-    toInterceptOpts: options.toInterceptOpts,
   });
 
   if (interceptState.kind === "source-route") {
     const renderRoute = interceptState.sourceRoute;
+    // A slot intercept the source has no slot for renders the source
+    // unchanged, so none of its modules are evaluated.
+    if (
+      isAppPageInterceptAttachedToRoute(interceptState.intercept, renderRoute, options.routeHasSlot)
+    ) {
+      await loadAppPageInterceptModules(interceptState.intercept);
+    }
+    // Only a rendered interception classifies the intercepting route's tree.
+    await loadAppPageInterceptOwnerDefault(
+      interceptState.intercept,
+      renderRoute,
+      options.routeHasSlot,
+    );
     const interceptOpts = options.toInterceptOpts(interceptState.intercept);
     const sourceMatchedParams =
       interceptState.intercept.sourceMatchedParams ?? interceptState.intercept.matchedParams;
@@ -746,7 +900,7 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
       ...interceptState.intercept.matchedParams,
     };
     const renderSearchParams = options.resolveSearchParams
-      ? await options.resolveSearchParams(renderRoute, options.searchParams)
+      ? await options.resolveSearchParams(renderRoute, options.searchParams, interceptOpts)
       : options.searchParams;
     const renderParams = pickRouteParams(
       sourceMatchedParams,
@@ -773,19 +927,22 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
 
     return {
       interceptOpts: undefined,
-      response: await options.renderInterceptResponse(renderRoute, interceptElement),
+      response: await options.renderInterceptResponse(renderRoute, interceptElement, interceptOpts),
     };
   }
 
   // Reproduce the current-route-is-source branch where we still need the opts
-  // bag even though we did not render a separate intercepted response.
-  return {
-    interceptOpts:
-      interceptState.kind === "current-route"
-        ? options.toInterceptOpts(interceptState.intercept)
-        : undefined,
-    response: null,
-  };
+  // bag even though we did not render a separate intercepted response. The
+  // matched route renders the intercepting tree, so it is classified too.
+  if (interceptState.kind === "current-route") {
+    await loadAppPageCurrentRouteIntercept(
+      interceptState.intercept,
+      options.currentRoute,
+      options.routeHasSlot,
+    );
+    return { interceptOpts: options.toInterceptOpts(interceptState.intercept), response: null };
+  }
+  return { interceptOpts: undefined, response: null };
 }
 
 export async function buildAppPageElement<TElement>(

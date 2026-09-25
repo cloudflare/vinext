@@ -1,5 +1,7 @@
 import type { FetchCacheMode } from "vinext/shims/fetch-cache";
+import { APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS } from "./app-page-interception-markers.js";
 import { isEdgeApiRuntime } from "./edge-api-runtime.js";
+import { getAppPageSegmentParamName } from "./app-page-params.js";
 
 type AppRouteSegmentDynamic = "auto" | "error" | "force-dynamic" | "force-static";
 
@@ -25,6 +27,11 @@ type EffectiveAppPageSegmentConfig = {
 type ParallelAppPageSegmentConfigBranch = {
   configLayouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[] | null;
   configLayoutTreePositions?: readonly number[] | null;
+  /**
+   * The slot's `default` module, which replaces an active slot page when a
+   * sibling branch intercepts.
+   */
+  default?: AppRouteSegmentConfigModule | null;
   /** Whether the slot renders its `default` module instead of a matched page. */
   isDefault?: boolean;
   layout?: AppRouteSegmentConfigModule | null;
@@ -111,7 +118,13 @@ function resolveDynamicStaleTimeSeconds(
 }
 
 function isDynamicSegment(segment: string): boolean {
-  return segment.startsWith("[") && segment.endsWith("]");
+  // An intercepting folder keeps its marker: `(.)[photo]` is the `photo` param.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/get-segment-param.tsx
+  const marker = APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) =>
+    segment.startsWith(prefix),
+  );
+  const name = marker ? segment.slice(marker.prefix.length) : segment;
+  return name.startsWith("[") && name.endsWith("]");
 }
 
 function resolveSegmentConfigOwnerPosition(
@@ -274,6 +287,12 @@ function describeFetchCacheConflict(value: FetchCacheMode): string {
 export function resolveAppPageSegmentConfig(
   options: ResolveAppPageSegmentConfigOptions,
 ): EffectiveAppPageSegmentConfig {
+  return applyAppPageFetchCacheDefault(reduceAppPageSegmentConfig(options));
+}
+
+function reduceAppPageSegmentConfig(
+  options: ResolveAppPageSegmentConfigOptions,
+): EffectiveAppPageSegmentConfig {
   const segments = [...(options.layouts ?? []), options.page];
   const parallelSegments = getParallelSegments(options);
   // Reduction strategies differ by field:
@@ -398,6 +417,12 @@ export function resolveAppPageSegmentConfig(
     config.revalidateSeconds = 0;
   }
 
+  return config;
+}
+
+function applyAppPageFetchCacheDefault(
+  config: EffectiveAppPageSegmentConfig,
+): EffectiveAppPageSegmentConfig {
   // Static-only dynamic modes supply fetchCache defaults unless a segment does.
   // `dynamic = "force-dynamic"` is handled at the fetch decision layer: it
   // defaults no-config fetches to no-store but must not override explicit
@@ -513,6 +538,277 @@ function mergeParallelRuntime(
   if (current === undefined) return sibling;
   if (sibling === undefined || current === sibling) return current;
   return isEdgeRuntime(current) ? current : sibling;
+}
+
+/**
+ * The modules and shape of an App page's loader tree, as the static
+ * generation helpers read it.
+ */
+export type AppPageSegmentConfigTree = Pick<
+  ResolveAppPageSegmentConfigOptions,
+  "layoutTreePositions" | "layouts" | "page" | "parallelBranches" | "routeSegments"
+> & { childrenSlot?: AppPageChildrenSlot | null };
+
+type AppPageInterceptAttachment = AppPageSegmentConfigTree & {
+  /** Whether the intercept replaces the source's page rather than a slot. */
+  isSiblingPageIntercept: boolean;
+  /** Index of the intercepted slot's branch in `parallelBranches`, or -1. */
+  slotIndex: number;
+};
+
+function resolveAppPageInterceptedSlot(
+  options: AppPageInterceptAttachment,
+): ParallelAppPageSegmentConfigBranch | null {
+  return options.slotIndex === -1 ? null : (options.parallelBranches?.[options.slotIndex] ?? null);
+}
+
+/**
+ * Whether an attached intercept's branch adds a dynamic segment to the source
+ * route's tree, whose params the intercepting tree then renders.
+ */
+export function hasAppPageInterceptDynamicSegment(
+  interceptBranchSegments: readonly string[] | null | undefined,
+): boolean {
+  return (interceptBranchSegments ?? []).some(
+    (segment) => getAppPageSegmentParamName(segment) !== null,
+  );
+}
+
+/**
+ * Whether an intercepting route is dynamic. Next.js's `isDynamicRoute`
+ * classifies an intercepting app path by the route it intercepts, built from
+ * its folders (`interceptTargetPatternParts`), not by its source route's
+ * segments.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/is-dynamic.ts
+ */
+export function isAppPageInterceptTargetDynamic(
+  interceptTargetPatternParts: readonly string[] | null | undefined,
+): boolean {
+  return (interceptTargetPatternParts ?? []).some((part) => part.startsWith(":"));
+}
+
+/**
+ * Whether an intercept puts its branch into the source route's tree. A
+ * sibling-page intercept always replaces the source's page; a slot intercept
+ * needs the source to have the intercepted slot, and otherwise the source
+ * renders unchanged (see `resolveAppPageInterceptTree`).
+ */
+export function isAppPageInterceptAttached(options: AppPageInterceptAttachment): boolean {
+  return options.isSiblingPageIntercept || resolveAppPageInterceptedSlot(options) !== null;
+}
+
+/**
+ * A direct intercepted RSC response renders the source route with the
+ * intercepting branch in place of what it intercepts. Next.js serves it from
+ * the intercepting route, an app path of its own whose loader tree holds the
+ * source's layouts and that branch, and classifies that tree.
+ *
+ * - A slot intercept replaces the intercepted slot's branch, which holds the
+ *   layouts of the slot's folders above the marker, then those at and below
+ *   it. The children of the slot's folder are replaced too, by the folder's
+ *   `default` module (or the built-in `default-null`) as a `__DEFAULT__`
+ *   leaf, which drops the source's page and every folder below. vinext still
+ *   renders the source's page, so `keepActiveSiblings` keeps it.
+ * - A slot intercept whose slot the source route doesn't have renders nothing
+ *   in its place: vinext renders the source route unchanged, so its tree stays.
+ * - A sibling-page intercept replaces the source's page: its folders, layouts
+ *   and page continue the main tree below the source page's folder.
+ * - At each folder on the intercepting branch's path, every other slot is
+ *   replaced by its `default` module alone, as a `__DEFAULT__` leaf without
+ *   the slot's layouts. vinext still renders those slots' active pages, so
+ *   `keepActiveSiblings` resolves the tree it renders instead.
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1270-L1290
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1414-L1473
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1515-L1548
+ */
+export function resolveAppPageInterceptTree(
+  options: AppPageInterceptAttachment & {
+    interceptBranchSegments?: readonly string[] | null;
+    interceptLayoutSegments?: readonly (readonly string[])[] | null;
+    interceptLayouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[] | null;
+    /**
+     * The `default` module of the folder that owns an intercepted slot, which
+     * replaces that folder's children in the intercepting route's tree.
+     */
+    interceptOwnerDefault?: AppRouteSegmentConfigModule | null;
+    interceptPage?: AppRouteSegmentConfigModule | null;
+    /**
+     * Whether other slots, and a slot intercept's children, keep the branches
+     * vinext renders, not their defaults.
+     */
+    keepActiveSiblings?: boolean;
+  },
+): AppPageSegmentConfigTree {
+  const interceptLayouts = options.interceptLayouts ?? [];
+  const interceptLayoutDepths = interceptLayouts.map(
+    (_, index) => options.interceptLayoutSegments?.[index]?.length ?? 0,
+  );
+  const tree: AppPageSegmentConfigTree = {
+    childrenSlot: options.childrenSlot,
+    layoutTreePositions: options.layoutTreePositions,
+    layouts: options.layouts,
+    page: options.page,
+    parallelBranches: options.parallelBranches,
+    routeSegments: options.routeSegments,
+  };
+  const sourceDepth = options.routeSegments?.length ?? 0;
+  // Next.js swaps each non-intercepting sibling at or above the intercept's
+  // folder for its default. Slots owned deeper sit inside the children it
+  // replaces, so they drop out with them.
+  const replaceSiblingsWithDefaults = (interceptOwner: number, interceptIndex: number) =>
+    (options.parallelBranches ?? []).map((branch, index) => {
+      if (!branch || index === interceptIndex || options.keepActiveSiblings) return branch;
+      const owner = resolveParallelBranchOwnerPosition(branch, sourceDepth);
+      if (owner > interceptOwner) return null;
+      return {
+        configLayouts: [],
+        configLayoutTreePositions: [],
+        isDefault: true,
+        layout: null,
+        name: branch.name,
+        ownerTreePosition: owner,
+        page: branch.isDefault ? branch.page : (branch.default ?? null),
+        routeSegments: [],
+      };
+    });
+  if (!options.isSiblingPageIntercept) {
+    const slot = resolveAppPageInterceptedSlot(options);
+    if (!slot) return tree;
+    const interceptOwner = resolveParallelBranchOwnerPosition(slot, sourceDepth);
+    const parallelBranches = replaceSiblingsWithDefaults(interceptOwner, options.slotIndex);
+    parallelBranches[options.slotIndex] = {
+      configLayouts: interceptLayouts,
+      configLayoutTreePositions: interceptLayoutDepths,
+      isDefault: false,
+      layout: slot.layout ?? null,
+      name: slot.name,
+      ownerTreePosition: slot.ownerTreePosition,
+      page: options.interceptPage ?? null,
+      routeSegments: options.interceptBranchSegments ?? [],
+    };
+    if (options.keepActiveSiblings) return { ...tree, parallelBranches };
+    // Next.js's `keys_to_replace` covers `children` as well. Without a
+    // `default` of its own, an interception path's children get the
+    // built-in `default-null`, which exports no config.
+    const ownerSegments = (options.routeSegments ?? []).slice(0, interceptOwner);
+    const ownerLayouts = (options.layouts ?? []).flatMap((layout, index) => {
+      const position = options.layoutTreePositions?.[index] ?? 0;
+      return position > interceptOwner ? [] : [{ layout, position }];
+    });
+    return {
+      childrenSlot: { ownerTreePath: `/${ownerSegments.join("/")}`, state: "default" },
+      layoutTreePositions: ownerLayouts.map(({ position }) => position),
+      layouts: ownerLayouts.map(({ layout }) => layout),
+      page: options.interceptOwnerDefault ?? null,
+      parallelBranches,
+      routeSegments: ownerSegments,
+    };
+  }
+  const routeSegments = options.routeSegments ?? [];
+  const layouts = options.layouts ?? [];
+  return {
+    ...tree,
+    childrenSlot: null,
+    layoutTreePositions: [
+      ...layouts.map((_, index) => options.layoutTreePositions?.[index] ?? 0),
+      ...interceptLayoutDepths.map((depth) => routeSegments.length + depth),
+    ],
+    layouts: [...layouts, ...interceptLayouts],
+    page: options.interceptPage ?? null,
+    parallelBranches: replaceSiblingsWithDefaults(sourceDepth, -1),
+    routeSegments: [...routeSegments, ...(options.interceptBranchSegments ?? [])],
+  };
+}
+
+type AppPageSegmentConfigModules = Pick<
+  ResolveAppPageSegmentConfigOptions,
+  "layouts" | "page" | "parallelBranches"
+>;
+
+// A route-wide `fetchCache` mode of either tree applies to a direct
+// intercepted response, in this order: a `force-*` mode overrides an `only-*`
+// one, as within a tree, and the no-store mode wins a conflict between trees.
+const ROUTE_WIDE_FETCH_CACHE_MODES: readonly FetchCacheMode[] = [
+  "force-no-store",
+  "force-cache",
+  "only-no-store",
+  "only-cache",
+];
+
+/**
+ * The segment config a direct intercepted RSC response renders under.
+ * Next.js takes it from the segments its intercepting route renders
+ * (`interceptTree`, from `resolveAppPageInterceptTree`), but vinext also
+ * renders the active pages that tree swaps for defaults (`renderedTree`, with
+ * `keepActiveSiblings`). Each tree is reduced on its own, since a slot's
+ * `default` and its active page never render together, and the two policies
+ * merge: the shortest revalidate, a `force-dynamic`, a `dynamicParams = false`
+ * and a route-wide `fetchCache` mode from either tree apply, and the
+ * intercepting route's own tree keeps precedence for the rest. The shortest
+ * `unstable_dynamicStaleTime` of either tree's pages (a slot's `default`
+ * included, as Next.js reads it) applies too.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/app-render/create-component-tree.tsx
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/app-render/app-render.tsx
+ */
+export function resolveAppPageInterceptSegmentConfig(
+  interceptTree: AppPageSegmentConfigModules,
+  renderedTree: AppPageSegmentConfigModules,
+): EffectiveAppPageSegmentConfig {
+  // The `dynamic = "error"` fetchCache default applies once, to the merged
+  // `dynamic` mode, not to either tree's.
+  const [intercept, rendered] = [interceptTree, renderedTree].map((tree) =>
+    reduceAppPageSegmentConfig({
+      layouts: tree.layouts,
+      page: tree.page,
+      parallelBranches: tree.parallelBranches,
+      parallelPages: (tree.parallelBranches ?? []).map((branch) => branch?.page),
+    }),
+  );
+  const dynamicConfig =
+    intercept.dynamicConfig === "force-dynamic" || rendered.dynamicConfig === "force-dynamic"
+      ? "force-dynamic"
+      : (intercept.dynamicConfig ?? rendered.dynamicConfig);
+  const dynamicParamsConfig =
+    intercept.dynamicParamsConfig === false || rendered.dynamicParamsConfig === false
+      ? false
+      : (intercept.dynamicParamsConfig ?? rendered.dynamicParamsConfig);
+  const dynamicStaleTimeSeconds = resolveDynamicStaleTimeSeconds(
+    intercept.dynamicStaleTimeSeconds,
+    rendered.dynamicStaleTimeSeconds,
+  );
+  const fetchCache =
+    ROUTE_WIDE_FETCH_CACHE_MODES.find(
+      (mode) => intercept.fetchCache === mode || rendered.fetchCache === mode,
+    ) ??
+    intercept.fetchCache ??
+    rendered.fetchCache;
+  const runtime = intercept.runtime ?? rendered.runtime;
+  return applyAppPageFetchCacheDefault({
+    ...(dynamicConfig === undefined ? {} : { dynamicConfig }),
+    ...(dynamicParamsConfig === undefined ? {} : { dynamicParamsConfig }),
+    ...(dynamicStaleTimeSeconds === undefined ? {} : { dynamicStaleTimeSeconds }),
+    ...(fetchCache === undefined ? {} : { fetchCache }),
+    revalidateSeconds: resolveRevalidateSeconds(
+      intercept.revalidateSeconds,
+      rendered.revalidateSeconds,
+    ),
+    ...(runtime === undefined ? {} : { runtime }),
+  });
+}
+
+/**
+ * The main-tree position of the folder that owns a slot, for a route whose
+ * main tree is `routeDepth` folders deep.
+ */
+function resolveParallelBranchOwnerPosition(
+  branch: ParallelAppPageSegmentConfigBranch,
+  routeDepth: number,
+): number {
+  return Math.min(
+    branch.ownerTreePosition ??
+      routeDepth - (branch.isDefault ? 0 : (branch.routeSegments ?? []).length),
+    routeDepth,
+  );
 }
 
 /**
@@ -640,11 +936,7 @@ export function collectAppPageStaticParamsWalkSegments(
   const branchesByOwner = new Map<number, ParallelAppPageSegmentConfigBranch[]>();
   for (const branch of options.parallelBranches ?? []) {
     if (!branch) continue;
-    const owner = Math.min(
-      branch.ownerTreePosition ??
-        routeSegments.length - (branch.isDefault ? 0 : (branch.routeSegments ?? []).length),
-      routeSegments.length,
-    );
+    const owner = resolveParallelBranchOwnerPosition(branch, routeSegments.length);
     branchesByOwner.set(owner, [...(branchesByOwner.get(owner) ?? []), branch]);
   }
 
@@ -755,6 +1047,21 @@ export function hasAppPageGenerateStaticParamsAtLastDynamicSegment(
   options: Parameters<typeof collectAppPageStaticParamsWalkSegments>[0],
 ): boolean {
   return lastDynamicSegmentHasGenerateStaticParams(collectAppPageStaticParamsWalkSegments(options));
+}
+
+/**
+ * Whether any segment of an App page route's loader tree exports
+ * `generateStaticParams`, read from its layout, page and parallel-slot
+ * modules. Next.js collects every segment of the route's own loader tree, its
+ * parallel routes included, and calls each segment's generator.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/segment-config/app/app-segments.ts#L72-L126
+ */
+export function hasAppPageAnyGenerateStaticParams(
+  options: Parameters<typeof collectAppPageStaticParamsWalkSegments>[0],
+): boolean {
+  return collectAppPageStaticParamsWalkSegments(options).some(
+    (segment) => segment.generateStaticParams,
+  );
 }
 
 /**

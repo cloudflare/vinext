@@ -2,12 +2,16 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   collectAppPageStaticGenerationRuntimes,
   collectAppPageStaticParamsWalkSegments,
+  hasAppPageAnyGenerateStaticParams,
   hasAppPageGenerateStaticParamsAtLastDynamicSegment,
+  isAppPageInterceptAttached,
   isAppPageStaticEligible,
   isEdgeRuntime,
   lastDynamicSegmentHasGenerateStaticParams,
   resolveAppPageDynamicConfig,
   resolveAppPageFetchCacheMode,
+  resolveAppPageInterceptSegmentConfig,
+  resolveAppPageInterceptTree,
   resolveAppPageSegmentConfig,
   resolveAppPageStaticGenerationRuntime,
   resolveAppRouteHandlerFetchCacheMode,
@@ -1032,5 +1036,754 @@ describe("isAppPageStaticEligible", () => {
         isAppPageStaticEligible({ ...base, ...config, isStaticGenerationEdgeRuntime: true }),
       ).toBe(false);
     }
+  });
+});
+
+describe("resolveAppPageInterceptTree", () => {
+  // app/layout.tsx, app/feed/layout.tsx, app/feed/page.tsx and
+  // app/feed/@modal/default.tsx.
+  const layouts = [{}, {}];
+  const layoutTreePositions = [0, 1];
+  const routeSegments = ["feed"];
+  const modalDefault = {
+    isDefault: true,
+    layout: null,
+    name: "modal",
+    ownerTreePosition: 1,
+    page: {},
+  };
+
+  function classify(
+    interceptPage: Record<string, unknown>,
+    options: {
+      isDynamicRoute?: boolean;
+      interceptOwnerDefault?: Record<string, unknown>;
+      siblingBranches?: Parameters<typeof resolveAppPageInterceptTree>[0]["parallelBranches"];
+      sourcePage?: Record<string, unknown>;
+      slotIndex?: number;
+    } = {},
+  ) {
+    // app/feed/@modal/(.)photos/[id]/page.tsx, or app/feed/(.)photos/[id]/
+    // page.tsx for a sibling-page intercept. Like the generated entry, both
+    // Next.js's tree and the one vinext renders must be static.
+    return [false, true].every((keepActiveSiblings) => {
+      const tree = resolveAppPageInterceptTree({
+        childrenSlot: { ownerTreePath: "/feed", state: "active" },
+        interceptBranchSegments: ["(.)photos", "[id]"],
+        interceptLayouts: [],
+        interceptLayoutSegments: [],
+        interceptOwnerDefault: options.interceptOwnerDefault,
+        interceptPage,
+        keepActiveSiblings,
+        layouts,
+        layoutTreePositions,
+        page: options.sourcePage ?? {},
+        parallelBranches: [modalDefault, ...(options.siblingBranches ?? [])],
+        routeSegments,
+        isSiblingPageIntercept: options.slotIndex === -1,
+        slotIndex: options.slotIndex ?? 0,
+      });
+      const config = resolveAppPageSegmentConfig(tree);
+      return isAppPageStaticEligible({
+        dynamicConfig: config.dynamicConfig,
+        hasGenerateStaticParams: hasAppPageGenerateStaticParamsAtLastDynamicSegment(tree),
+        isDynamicRoute: options.isDynamicRoute ?? false,
+        isStaticGenerationEdgeRuntime: isEdgeRuntime(
+          resolveAppPageStaticGenerationRuntime(collectAppPageStaticGenerationRuntimes(tree)) as
+            | string
+            | undefined,
+        ),
+        revalidateSeconds: config.revalidateSeconds,
+      });
+    });
+  }
+
+  it("puts the intercepting branch in place of the intercepted slot's", () => {
+    const interceptPage = { dynamic: "force-dynamic" };
+    const tree = resolveAppPageInterceptTree({
+      interceptBranchSegments: ["(.)photos", "[id]"],
+      interceptLayouts: [{ revalidate: 60 }],
+      interceptLayoutSegments: [["(.)photos"]],
+      interceptPage,
+      layouts,
+      layoutTreePositions,
+      page: {},
+      parallelBranches: [modalDefault],
+      routeSegments,
+      isSiblingPageIntercept: false,
+      slotIndex: 0,
+    });
+    expect(tree.parallelBranches).toEqual([
+      {
+        configLayouts: [{ revalidate: 60 }],
+        configLayoutTreePositions: [1],
+        isDefault: false,
+        layout: null,
+        name: "modal",
+        ownerTreePosition: 1,
+        page: interceptPage,
+        routeSegments: ["(.)photos", "[id]"],
+      },
+    ]);
+  });
+
+  it("keeps the slot's layouts above the intercept marker in its branch", () => {
+    // app/layout.tsx, app/gallery/page.tsx, app/@modal/default.tsx,
+    // app/@modal/gallery/layout.tsx (force-dynamic), app/@modal/gallery/
+    // (.)photo/layout.tsx and app/@modal/gallery/(.)photo/page.tsx. Next.js's
+    // intercepting route tree holds the @modal/gallery folder, and its layout,
+    // above the (.)photo branch.
+    const galleryLayout = { dynamic: "force-dynamic" };
+    const photoLayout = {};
+    const interceptPage = {};
+    const source = {
+      childrenSlot: { ownerTreePath: "/gallery", state: "active" },
+      interceptBranchSegments: ["gallery", "(.)photo"],
+      interceptLayouts: [galleryLayout, photoLayout],
+      interceptLayoutSegments: [["gallery"], ["gallery", "(.)photo"]],
+      interceptPage,
+      isSiblingPageIntercept: false,
+      layouts: [{}],
+      layoutTreePositions: [0],
+      page: {},
+      parallelBranches: [{ ...modalDefault, ownerTreePosition: 0 }],
+      routeSegments: ["gallery"],
+      slotIndex: 0,
+    } as const;
+
+    for (const keepActiveSiblings of [false, true]) {
+      const tree = resolveAppPageInterceptTree({ ...source, keepActiveSiblings });
+      expect(tree.parallelBranches?.[0]).toEqual({
+        configLayouts: [galleryLayout, photoLayout],
+        configLayoutTreePositions: [1, 2],
+        isDefault: false,
+        layout: null,
+        name: "modal",
+        ownerTreePosition: 0,
+        page: interceptPage,
+        routeSegments: ["gallery", "(.)photo"],
+      });
+      expect(collectAppPageStaticParamsWalkSegments(tree)).toContainEqual({
+        dynamic: false,
+        generateStaticParams: false,
+        identity: ["gallery", galleryLayout],
+        treePath: [1, 0],
+      });
+      expect(resolveAppPageSegmentConfig(tree).dynamicConfig).toBe("force-dynamic");
+    }
+  });
+
+  it("puts a sibling-page intercept in place of the source's page", () => {
+    const interceptLayout = {};
+    const interceptPage = {};
+    const tree = resolveAppPageInterceptTree({
+      childrenSlot: { ownerTreePath: "/feed", state: "active" },
+      interceptBranchSegments: ["(.)photos", "[id]"],
+      interceptLayouts: [interceptLayout],
+      interceptLayoutSegments: [["(.)photos"]],
+      interceptPage,
+      layouts,
+      layoutTreePositions,
+      page: { dynamic: "force-static" },
+      parallelBranches: [modalDefault],
+      routeSegments,
+      isSiblingPageIntercept: true,
+      slotIndex: -1,
+    });
+    expect(tree).toEqual({
+      childrenSlot: null,
+      layoutTreePositions: [0, 1, 2],
+      layouts: [{}, {}, interceptLayout],
+      page: interceptPage,
+      parallelBranches: [
+        {
+          configLayouts: [],
+          configLayoutTreePositions: [],
+          isDefault: true,
+          layout: null,
+          name: "modal",
+          ownerTreePosition: 1,
+          page: modalDefault.page,
+          routeSegments: [],
+        },
+      ],
+      routeSegments: ["feed", "(.)photos", "[id]"],
+    });
+  });
+
+  it("replaces active sibling slots at or above the intercept with their defaults", () => {
+    // For the source app/feed/nested/page.tsx, app/@global/feed/nested/page.tsx
+    // and app/feed/@sidebar/nested/page.tsx sit on the intercepting branch's
+    // path; app/feed/nested/@aside/page.tsx sits inside app/feed's children,
+    // which Next.js replaces with app/feed's default.
+    const globalDefault = { revalidate: 30 };
+    const sidebarDefault = { runtime: "edge" };
+    const aside = {
+      default: {},
+      isDefault: false,
+      layout: {},
+      name: "aside",
+      ownerTreePosition: 2,
+      page: { runtime: "nodejs" },
+      routeSegments: [],
+    };
+    const tree = resolveAppPageInterceptTree({
+      interceptBranchSegments: ["(.)photos", "[id]"],
+      interceptPage: {},
+      isSiblingPageIntercept: false,
+      layouts: [{}, {}, {}],
+      layoutTreePositions: [0, 1, 2],
+      page: {},
+      parallelBranches: [
+        {
+          configLayouts: [{}],
+          configLayoutTreePositions: [1],
+          default: globalDefault,
+          isDefault: false,
+          layout: { dynamic: "force-dynamic" },
+          name: "global",
+          ownerTreePosition: 0,
+          page: {},
+          routeSegments: ["feed", "nested"],
+        },
+        { ...modalDefault, default: modalDefault.page },
+        {
+          default: sidebarDefault,
+          isDefault: false,
+          layout: null,
+          name: "sidebar",
+          ownerTreePosition: 1,
+          page: { runtime: "nodejs" },
+          routeSegments: ["nested"],
+        },
+        aside,
+      ],
+      routeSegments: ["feed", "nested"],
+      slotIndex: 1,
+    });
+    const leaf = {
+      configLayouts: [],
+      configLayoutTreePositions: [],
+      isDefault: true,
+      layout: null,
+    };
+    expect(tree.parallelBranches).toEqual([
+      { ...leaf, name: "global", ownerTreePosition: 0, page: globalDefault, routeSegments: [] },
+      expect.objectContaining({ isDefault: false, name: "modal" }),
+      { ...leaf, name: "sidebar", ownerTreePosition: 1, page: sidebarDefault, routeSegments: [] },
+      null,
+    ]);
+  });
+
+  it("replaces a slot intercept's children with the owner's default, but renders the source", () => {
+    // app/feed/nested/layout.tsx, app/feed/nested/page.tsx and
+    // app/feed/nested/@aside/page.tsx sit below app/feed, whose children
+    // Next.js replaces with app/feed/default.tsx as a __DEFAULT__ leaf.
+    const feedDefault = { revalidate: 30 };
+    const sourcePage = { dynamic: "force-static" };
+    const nestedLayout = { dynamic: "force-static" };
+    const aside = {
+      default: {},
+      isDefault: false,
+      layout: null,
+      name: "aside",
+      ownerTreePosition: 2,
+      page: {},
+      routeSegments: [],
+    };
+    const source = {
+      childrenSlot: { ownerTreePath: "/feed/nested", state: "active" },
+      interceptBranchSegments: ["(.)photos", "[id]"],
+      interceptOwnerDefault: feedDefault,
+      interceptPage: {},
+      isSiblingPageIntercept: false,
+      layouts: [layouts[0], layouts[1], nestedLayout],
+      layoutTreePositions: [0, 1, 2],
+      page: sourcePage,
+      parallelBranches: [modalDefault, aside],
+      routeSegments: ["feed", "nested"],
+      slotIndex: 0,
+    } as const;
+    const intercept = expect.objectContaining({ isDefault: false, name: "modal" });
+
+    const nextTree = resolveAppPageInterceptTree(source);
+    expect(nextTree).toEqual({
+      childrenSlot: { ownerTreePath: "/feed", state: "default" },
+      layoutTreePositions: [0, 1],
+      layouts: [layouts[0], layouts[1]],
+      page: feedDefault,
+      parallelBranches: [intercept, null],
+      routeSegments: ["feed"],
+    });
+    expect(collectAppPageStaticParamsWalkSegments(nextTree)).toContainEqual({
+      dynamic: false,
+      generateStaticParams: false,
+      identity: ["__DEFAULT__", feedDefault],
+      treePath: [0, 0],
+    });
+
+    const renderedTree = resolveAppPageInterceptTree({ ...source, keepActiveSiblings: true });
+    expect(renderedTree).toEqual({
+      childrenSlot: source.childrenSlot,
+      layoutTreePositions: source.layoutTreePositions,
+      layouts: source.layouts,
+      page: sourcePage,
+      parallelBranches: [intercept, aside],
+      routeSegments: source.routeSegments,
+    });
+  });
+
+  it("drops a force-static source page from a slot intercept's tree", () => {
+    // app/feed/page.tsx sets dynamic = "force-static"; the intercepting
+    // app/feed/@modal/(.)photos/[id]/page.tsx has no generateStaticParams,
+    // and app/feed has no default.tsx, so its children are default-null.
+    const sourcePage = { dynamic: "force-static" };
+    expect(classify({}, { isDynamicRoute: true, sourcePage })).toBe(false);
+    // A force-static app/feed/default.tsx takes the source page's place.
+    expect(
+      classify(
+        {},
+        { interceptOwnerDefault: { dynamic: "force-static" }, isDynamicRoute: true, sourcePage },
+      ),
+    ).toBe(true);
+  });
+
+  it("classifies a slot intercept with an active sibling's edge default as edge", () => {
+    // app/feed/@sidebar/page.tsx is Node; app/feed/@sidebar/default.tsx is edge.
+    const sidebar = {
+      default: { runtime: "edge" },
+      isDefault: false,
+      layout: null,
+      name: "sidebar",
+      ownerTreePosition: 1,
+      page: { runtime: "nodejs" },
+      routeSegments: [],
+    };
+    expect(classify({}, { siblingBranches: [sidebar] })).toBe(false);
+    expect(classify({}, { siblingBranches: [{ ...sidebar, default: {} }] })).toBe(true);
+  });
+
+  it("keeps a slot intercept's rendered force-dynamic sibling page dynamic", () => {
+    // app/feed/@sidebar/page.tsx is force-dynamic and still renders beside
+    // the intercept; app/feed/@sidebar/default.tsx is static.
+    const sidebar = {
+      default: {},
+      isDefault: false,
+      layout: null,
+      name: "sidebar",
+      ownerTreePosition: 1,
+      page: { dynamic: "force-dynamic" },
+      routeSegments: [],
+    };
+    expect(classify({}, { siblingBranches: [sidebar] })).toBe(false);
+    expect(classify({}, { siblingBranches: [sidebar], slotIndex: -1 })).toBe(false);
+  });
+
+  it("keeps an active sibling slot's page when resolving the tree vinext renders", () => {
+    const sidebar = {
+      default: {},
+      isDefault: false,
+      layout: null,
+      name: "sidebar",
+      ownerTreePosition: 1,
+      page: { dynamic: "force-dynamic" },
+      routeSegments: [],
+    };
+    const tree = resolveAppPageInterceptTree({
+      interceptBranchSegments: ["(.)photos", "[id]"],
+      interceptPage: {},
+      isSiblingPageIntercept: false,
+      keepActiveSiblings: true,
+      layouts,
+      layoutTreePositions,
+      page: {},
+      parallelBranches: [modalDefault, sidebar],
+      routeSegments,
+      slotIndex: 0,
+    });
+    expect(tree.parallelBranches?.[1]).toBe(sidebar);
+  });
+
+  it("drops an active sibling slot's config from a sibling-page intercept's tree", () => {
+    // app/feed/@sidebar/page.tsx sets dynamic = "force-static"; the
+    // intercepting app/feed/(.)photos/[id]/page.tsx has no generateStaticParams.
+    const sidebar = {
+      default: {},
+      isDefault: false,
+      layout: null,
+      name: "sidebar",
+      ownerTreePosition: 1,
+      page: { dynamic: "force-static" },
+      routeSegments: [],
+    };
+    expect(classify({}, { isDynamicRoute: true, siblingBranches: [sidebar], slotIndex: -1 })).toBe(
+      false,
+    );
+  });
+
+  it("keeps the source's tree when the source route lacks the intercepted slot", () => {
+    // A route-group variant of app/feed matched as the source has no @modal,
+    // so the intercepting page doesn't render and the dynamic source page does.
+    const sourcePage = { dynamic: "force-dynamic" };
+    const tree = resolveAppPageInterceptTree({
+      interceptBranchSegments: ["(.)photos", "[id]"],
+      interceptPage: {},
+      isSiblingPageIntercept: false,
+      layouts,
+      layoutTreePositions,
+      page: sourcePage,
+      parallelBranches: [],
+      routeSegments,
+      slotIndex: -1,
+    });
+    expect(tree.page).toBe(sourcePage);
+    expect(tree.routeSegments).toEqual(routeSegments);
+    expect(resolveAppPageSegmentConfig(tree).dynamicConfig).toBe("force-dynamic");
+  });
+
+  it("attaches a slot intercept only to a source that has the slot", () => {
+    const source = { layouts, layoutTreePositions, page: {}, routeSegments };
+    expect(
+      isAppPageInterceptAttached({
+        ...source,
+        isSiblingPageIntercept: false,
+        parallelBranches: [modalDefault],
+        slotIndex: 0,
+      }),
+    ).toBe(true);
+    expect(
+      isAppPageInterceptAttached({
+        ...source,
+        isSiblingPageIntercept: false,
+        parallelBranches: [],
+        slotIndex: -1,
+      }),
+    ).toBe(false);
+    // A sibling-page intercept replaces the source's page, whatever its slots.
+    expect(
+      isAppPageInterceptAttached({
+        ...source,
+        isSiblingPageIntercept: true,
+        parallelBranches: [],
+        slotIndex: -1,
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps a static intercepting branch static", () => {
+    expect(classify({})).toBe(true);
+  });
+
+  it("makes the tree dynamic when the intercepting page is force-dynamic", () => {
+    expect(classify({ dynamic: "force-dynamic" })).toBe(false);
+  });
+
+  it("makes the tree dynamic when the intercepting page sets revalidate = 0", () => {
+    expect(classify({ revalidate: 0 })).toBe(false);
+  });
+
+  it("disables static generation when the intercepting page is edge", () => {
+    expect(classify({ runtime: "edge" })).toBe(false);
+  });
+
+  it("needs generateStaticParams on the intercepting branch of a dynamic intercepted route", () => {
+    expect(classify({}, { isDynamicRoute: true })).toBe(false);
+    expect(classify({ generateStaticParams: () => [] }, { isDynamicRoute: true })).toBe(true);
+  });
+
+  it("drops a force-static source page from a sibling-page intercept's tree", () => {
+    // app/feed/page.tsx sets dynamic = "force-static"; the intercepting
+    // app/feed/(.)photos/[id]/page.tsx has no generateStaticParams.
+    expect(
+      classify(
+        {},
+        {
+          isDynamicRoute: true,
+          slotIndex: -1,
+          sourcePage: { dynamic: "force-static" },
+        },
+      ),
+    ).toBe(false);
+  });
+
+  it("drops a source page's generateStaticParams from a sibling-page intercept's tree", () => {
+    // app/u/[user]/page.tsx exports generateStaticParams; the intercepting
+    // app/u/[user]/(.)settings/page.tsx doesn't, so [user] has none left.
+    const tree = resolveAppPageInterceptTree({
+      childrenSlot: { ownerTreePath: "/u/[user]", state: "active" },
+      interceptBranchSegments: ["(.)settings"],
+      interceptPage: {},
+      layouts: [{}],
+      layoutTreePositions: [0],
+      page: { generateStaticParams: () => [] },
+      parallelBranches: [],
+      routeSegments: ["u", "[user]"],
+      isSiblingPageIntercept: true,
+      slotIndex: -1,
+    });
+    expect(hasAppPageGenerateStaticParamsAtLastDynamicSegment(tree)).toBe(false);
+  });
+
+  it("counts a marker-prefixed intercepting folder as a dynamic segment", () => {
+    // app/[user]/layout.tsx exports generateStaticParams; the intercepting
+    // app/[user]/feed/@modal/(.)[photo]/page.tsx, or the sibling-page
+    // app/[user]/feed/(..)(..)[photo]/page.tsx, doesn't, so [photo] has none.
+    const source = {
+      childrenSlot: { ownerTreePath: "/[user]/feed", state: "active" },
+      interceptPage: {},
+      layouts: [{}, { generateStaticParams: () => [] }],
+      layoutTreePositions: [0, 1],
+      page: {},
+      routeSegments: ["[user]", "feed"],
+    } as const;
+    const slotTree = resolveAppPageInterceptTree({
+      ...source,
+      interceptBranchSegments: ["(.)[photo]"],
+      isSiblingPageIntercept: false,
+      parallelBranches: [{ ...modalDefault, ownerTreePosition: 2 }],
+      slotIndex: 0,
+    });
+    const siblingTree = resolveAppPageInterceptTree({
+      ...source,
+      interceptBranchSegments: ["(..)(..)[photo]"],
+      isSiblingPageIntercept: true,
+      parallelBranches: [],
+      slotIndex: -1,
+    });
+    expect(hasAppPageGenerateStaticParamsAtLastDynamicSegment(slotTree)).toBe(false);
+    expect(hasAppPageGenerateStaticParamsAtLastDynamicSegment(siblingTree)).toBe(false);
+  });
+});
+
+describe("hasAppPageAnyGenerateStaticParams", () => {
+  const generator = () => [];
+
+  it("reads a generator from any segment, not only at or below the last dynamic one", () => {
+    // app/[lang]/layout.tsx exports generateStaticParams; app/[lang]/[slug]
+    // has none.
+    const route = {
+      layouts: [{}, { generateStaticParams: generator }],
+      layoutTreePositions: [0, 1],
+      page: {},
+      routeSegments: ["[lang]", "[slug]"],
+    };
+    expect(hasAppPageAnyGenerateStaticParams(route)).toBe(true);
+    expect(hasAppPageGenerateStaticParamsAtLastDynamicSegment(route)).toBe(false);
+    expect(hasAppPageAnyGenerateStaticParams({ ...route, layouts: [{}, {}] })).toBe(false);
+  });
+
+  // app/layout.tsx, app/feed/layout.tsx, app/feed/page.tsx,
+  // app/feed/@modal/default.tsx, app/feed/@modal/gallery/layout.tsx,
+  // app/feed/@modal/gallery/(.)photo/page.tsx and app/feed/@sidebar/page.tsx.
+  function resolveInterceptTree(
+    modules: {
+      galleryLayout?: object;
+      interceptPage?: object;
+      rootLayout?: object;
+      sidebarPage?: object;
+      sourcePage?: object;
+    },
+    keepActiveSiblings = false,
+  ) {
+    return resolveAppPageInterceptTree({
+      childrenSlot: { ownerTreePath: "/feed", state: "active" },
+      interceptBranchSegments: ["gallery", "(.)photo"],
+      interceptLayouts: [modules.galleryLayout ?? {}],
+      interceptLayoutSegments: [["gallery"]],
+      interceptPage: modules.interceptPage ?? {},
+      isSiblingPageIntercept: false,
+      keepActiveSiblings,
+      layouts: [modules.rootLayout ?? {}, {}],
+      layoutTreePositions: [0, 1],
+      page: modules.sourcePage ?? {},
+      parallelBranches: [
+        { isDefault: true, layout: null, name: "modal", ownerTreePosition: 1, page: {} },
+        {
+          default: {},
+          isDefault: false,
+          layout: null,
+          name: "sidebar",
+          ownerTreePosition: 1,
+          page: modules.sidebarPage ?? {},
+          routeSegments: [],
+        },
+      ],
+      routeSegments: ["feed"],
+      slotIndex: 0,
+    });
+  }
+
+  it.each([
+    ["a shared ancestor layout", { rootLayout: { generateStaticParams: generator } }],
+    ["the intercepting page", { interceptPage: { generateStaticParams: generator } }],
+    [
+      "a slot layout above the intercept marker",
+      { galleryLayout: { generateStaticParams: generator } },
+    ],
+  ])("reads a generator from %s of an intercepting route's tree", (_name, modules) => {
+    expect(hasAppPageAnyGenerateStaticParams(resolveInterceptTree(modules))).toBe(true);
+    expect(hasAppPageAnyGenerateStaticParams(resolveInterceptTree({}))).toBe(false);
+  });
+
+  it.each([
+    ["the source page the intercept's children default replaces", "sourcePage"],
+    ["an active sibling page Next.js's tree has the default of", "sidebarPage"],
+  ])("does not read a generator from %s", (_name, module) => {
+    const modules = { [module]: { generateStaticParams: generator } };
+    expect(hasAppPageAnyGenerateStaticParams(resolveInterceptTree(modules))).toBe(false);
+    // vinext still renders it, but the intercepting route's tree doesn't.
+    expect(hasAppPageAnyGenerateStaticParams(resolveInterceptTree(modules, true))).toBe(true);
+  });
+});
+
+describe("resolveAppPageInterceptSegmentConfig", () => {
+  // app/layout.tsx, app/feed/layout.tsx, app/feed/page.tsx, the intercepting
+  // app/feed/@modal/(.)photos/[id]/page.tsx, and app/feed/@sidebar, whose
+  // page vinext renders beside the intercept where Next.js renders its default.
+  const modalDefault = {
+    isDefault: true,
+    layout: null,
+    name: "modal",
+    ownerTreePosition: 1,
+    page: {},
+  };
+
+  function resolve(
+    interceptPage: Record<string, unknown>,
+    sidebar: { default?: Record<string, unknown>; page: Record<string, unknown> },
+    options: { isSiblingPageIntercept?: boolean; page?: Record<string, unknown> } = {},
+  ) {
+    const [interceptTree, renderedTree] = [false, true].map((keepActiveSiblings) =>
+      resolveAppPageInterceptTree({
+        interceptBranchSegments: ["(.)photos", "[id]"],
+        interceptPage,
+        isSiblingPageIntercept: options.isSiblingPageIntercept ?? false,
+        keepActiveSiblings,
+        layouts: [{}, {}],
+        layoutTreePositions: [0, 1],
+        page: options.page ?? {},
+        parallelBranches: [
+          modalDefault,
+          {
+            default: sidebar.default ?? {},
+            isDefault: false,
+            layout: null,
+            name: "sidebar",
+            ownerTreePosition: 1,
+            page: sidebar.page,
+            routeSegments: [],
+          },
+        ],
+        routeSegments: ["feed"],
+        slotIndex: options.isSiblingPageIntercept ? -1 : 0,
+      }),
+    );
+    return resolveAppPageInterceptSegmentConfig(interceptTree, renderedTree);
+  }
+
+  it("takes the shorter revalidate of an active sibling page", () => {
+    // app/feed/@sidebar/page.tsx sets revalidate = 10 beside an intercepting
+    // page at 30.
+    expect(resolve({ revalidate: 30 }, { page: { revalidate: 10 } }).revalidateSeconds).toBe(10);
+    expect(
+      resolve({ revalidate: 30 }, { page: { revalidate: 10 } }, { isSiblingPageIntercept: true })
+        .revalidateSeconds,
+    ).toBe(10);
+    // A longer active sibling revalidate leaves the intercepting page's.
+    expect(resolve({ revalidate: 30 }, { page: { revalidate: 60 } }).revalidateSeconds).toBe(30);
+  });
+
+  it("keeps the shorter revalidate of the default Next.js renders instead", () => {
+    // app/feed/@sidebar/default.tsx sets revalidate = 5.
+    expect(
+      resolve({ revalidate: 30 }, { default: { revalidate: 5 }, page: {} }).revalidateSeconds,
+    ).toBe(5);
+  });
+
+  it("makes the render force-dynamic for a force-dynamic active sibling page", () => {
+    expect(resolve({ dynamic: "force-static" }, { page: { dynamic: "force-dynamic" } })).toEqual(
+      expect.objectContaining({ dynamicConfig: "force-dynamic", revalidateSeconds: 0 }),
+    );
+  });
+
+  it("keeps the intercepting branch's dynamic mode over an active sibling's", () => {
+    expect(resolve({ dynamic: "force-static" }, { page: { dynamic: "error" } }).dynamicConfig).toBe(
+      "force-static",
+    );
+    // With none of its own, the active sibling's applies.
+    expect(resolve({}, { page: { dynamic: "force-static" } }).dynamicConfig).toBe("force-static");
+  });
+
+  it("takes an active sibling page's route-wide fetchCache mode", () => {
+    expect(
+      resolve({ fetchCache: "default-cache" }, { page: { fetchCache: "force-no-store" } })
+        .fetchCache,
+    ).toBe("force-no-store");
+    expect(resolve({}, { page: { fetchCache: "default-no-store" } }).fetchCache).toBe(
+      "default-no-store",
+    );
+    expect(() =>
+      resolve({ fetchCache: "force-cache" }, { page: { fetchCache: "force-no-store" } }),
+    ).toThrow(/incompatible fetchCache values/);
+  });
+
+  it("never reduces a slot's default together with the active page it replaces", () => {
+    // app/feed/@sidebar/default.tsx and app/feed/@sidebar/page.tsx never
+    // render together, so conflicting fetchCache modes don't throw. The
+    // no-store mode wins between the two trees.
+    expect(
+      resolve(
+        {},
+        { default: { fetchCache: "force-cache" }, page: { fetchCache: "force-no-store" } },
+      ).fetchCache,
+    ).toBe("force-no-store");
+    expect(
+      resolve(
+        {},
+        { default: { fetchCache: "only-no-store" }, page: { fetchCache: "only-cache" } },
+        { isSiblingPageIntercept: true },
+      ).fetchCache,
+    ).toBe("only-no-store");
+    // A force mode of either tree overrides an only mode of the other.
+    expect(
+      resolve({}, { default: { fetchCache: "only-no-store" }, page: { fetchCache: "force-cache" } })
+        .fetchCache,
+    ).toBe("force-cache");
+  });
+
+  it("applies the dynamic = error fetchCache default to the merged dynamic mode only", () => {
+    // app/feed/page.tsx sets dynamic = "error", which only vinext's tree
+    // renders beside the force-static intercepting page, whose mode wins.
+    const merged = resolve(
+      { dynamic: "force-static" },
+      { page: {} },
+      { page: { dynamic: "error" } },
+    );
+    expect(merged.dynamicConfig).toBe("force-static");
+    expect(merged).not.toHaveProperty("fetchCache");
+    // With none of its own, app/feed/page.tsx's dynamic = "error" applies.
+    expect(resolve({}, { page: {} }, { page: { dynamic: "error" } }).fetchCache).toBe("only-cache");
+  });
+
+  it("takes the shortest unstable_dynamicStaleTime of the pages either tree renders", () => {
+    const staleTime = (...args: Parameters<typeof resolve>) =>
+      resolve(...args).dynamicStaleTimeSeconds;
+    // The intercepting page, in the modal slot or in place of app/feed/page.tsx.
+    expect(staleTime({ unstable_dynamicStaleTime: 30 }, { page: {} })).toBe(30);
+    expect(
+      staleTime({ unstable_dynamicStaleTime: 30 }, { page: {} }, { isSiblingPageIntercept: true }),
+    ).toBe(30);
+    // An active sibling page, or the default Next.js renders in its place.
+    expect(
+      staleTime({ unstable_dynamicStaleTime: 30 }, { page: { unstable_dynamicStaleTime: 10 } }),
+    ).toBe(10);
+    expect(
+      staleTime(
+        { unstable_dynamicStaleTime: 30 },
+        { default: { unstable_dynamicStaleTime: 5 }, page: {} },
+        { isSiblingPageIntercept: true },
+      ),
+    ).toBe(5);
+    expect(staleTime({}, { page: {} })).toBeUndefined();
   });
 });

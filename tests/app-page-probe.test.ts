@@ -1,14 +1,18 @@
 import React from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  buildAppPageInterceptSourceProbes,
   buildAppPageProbes,
   probeAppPage,
   probeAppPageBeforeRender,
   probeReactServerSubtree,
+  resolveAppPageProbeIntercept,
 } from "../packages/vinext/src/server/app-page-probe.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
+  markDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 
 // Mirrors makeThenableParams() from app-rsc-entry.ts — the function that
@@ -718,12 +722,13 @@ describe("buildAppPageProbes", () => {
         slots: {
           modal: { page: { default: recordingPage("modal", probed) } },
           sidebar: { page: { default: recordingPage("sidebar", probed) } },
+          photos: {},
         },
       },
       pageComponent: recordingPage("page", probed),
       asyncRouteParams: makeThenableParams({ slug: "intro" }),
       searchParams: new URLSearchParams("q=hello"),
-      intercept: { page: { default: recordingPage("intercept", probed) } },
+      intercept: { page: { default: recordingPage("intercept", probed) }, slotKey: "photos" },
       isRscRequest: true,
       matchedParams: { slug: "intro" },
       makeThenableParams: makeThenableParamsLoose,
@@ -792,6 +797,32 @@ describe("buildAppPageProbes", () => {
     // modal-page is skipped (overridden); intercept renders in its place.
     expect(probed.sort()).toEqual(["intercept", "page", "sidebar"]);
     expect(probed).not.toContain("modal-page");
+  });
+
+  it("omits the probe of a slot intercept the route has no slot for", async () => {
+    // A route-group variant of the source without @modal renders unchanged,
+    // so the intercepting page never renders and must not bail it out.
+    const probed: string[] = [];
+    const route = { slots: { sidebar: { page: { default: recordingPage("sidebar", probed) } } } };
+    const intercept = { slotKey: "modal", page: { default: recordingPage("intercept", probed) } };
+    const probes = buildAppPageProbes({
+      route,
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: new URLSearchParams("q=hello"),
+      intercept,
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probed.sort()).toEqual(["page", "sidebar"]);
+    expect(resolveAppPageProbeIntercept(route, intercept)).toBeNull();
+    expect(resolveAppPageProbeIntercept({ slots: { modal: {} } }, intercept)).toBe(intercept);
+    const siblingIntercept = { ...intercept, slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY };
+    expect(resolveAppPageProbeIntercept(route, siblingIntercept)).toBe(siblingIntercept);
   });
 
   it("omits the interception probe when no interception matches", async () => {
@@ -936,11 +967,11 @@ describe("buildAppPageProbes", () => {
 
     const fallbackParams = { username: "ada" };
     const probes = buildAppPageProbes({
-      route: {},
+      route: { slots: { modal: {} } },
       pageComponent: () => "page",
       asyncRouteParams: makeThenableParams({}),
       searchParams: null,
-      intercept: { page: { default: InterceptPage } },
+      intercept: { page: { default: InterceptPage }, slotKey: "modal" },
       isRscRequest: true,
       matchedParams: fallbackParams,
       makeThenableParams: makeThenableParamsLoose,
@@ -950,5 +981,622 @@ describe("buildAppPageProbes", () => {
 
     expect(receivedParams).toHaveLength(1);
     expect(await (receivedParams[0] as Promise<Record<string, unknown>>)).toEqual(fallbackParams);
+  });
+
+  // app/feed/page.tsx with app/feed/(.)photos/[id]/page.tsx
+  it("probes a sibling-page intercept's page in place of the source page", async () => {
+    const probed: string[] = [];
+    const probe = (sourceIsDynamic: boolean) =>
+      buildAppPageProbes({
+        route: {},
+        pageComponent: function Page() {
+          probed.push("page");
+          // Stands in for headers() or cookies().
+          if (sourceIsDynamic) markDynamicUsage();
+          return "page";
+        },
+        asyncRouteParams: makeThenableParams({}),
+        searchParams: null,
+        intercept: {
+          page: {
+            default: function Photo() {
+              probed.push("intercept");
+              if (!sourceIsDynamic) markDynamicUsage();
+              return "intercept";
+            },
+          },
+          slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+        },
+        isRscRequest: true,
+        matchedParams: {},
+        makeThenableParams: makeThenableParamsLoose,
+      });
+    consumeDynamicUsage();
+
+    await Promise.all(probe(true));
+    expect(consumeDynamicUsage()).toBe(false);
+    await Promise.all(probe(false));
+    expect(consumeDynamicUsage()).toBe(true);
+    expect(probed).toEqual(["intercept", "intercept"]);
+  });
+
+  // A route-group variant of the source without app/feed/@modal.
+  it("does not probe an interception for a slot the route doesn't have", async () => {
+    const probed: string[] = [];
+    consumeDynamicUsage();
+    const probes = buildAppPageProbes({
+      route: { slots: { sidebar: { page: { default: recordingPage("sidebar", probed) } } } },
+      pageComponent: recordingPage("page", probed),
+      asyncRouteParams: makeThenableParams({}),
+      searchParams: null,
+      intercept: {
+        page: {
+          default: function Photo() {
+            probed.push("intercept");
+            markDynamicUsage();
+            return "intercept";
+          },
+        },
+        slotKey: "modal",
+      },
+      isRscRequest: true,
+      matchedParams: {},
+      makeThenableParams: makeThenableParamsLoose,
+    });
+
+    await Promise.all(probes);
+
+    expect(probed.sort()).toEqual(["page", "sidebar"]);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+});
+
+// buildAppPageInterceptSourceProbes() runs, ahead of a direct intercepted RSC
+// response's headers, what that response's render includes before any loading
+// boundary.
+describe("buildAppPageInterceptSourceProbes", () => {
+  const makeThenableParamsLoose = (params: unknown): unknown =>
+    makeThenableParams((params ?? {}) as Record<string, unknown>);
+
+  // A layout, template, page or default that records its render and, when
+  // `dynamic`, stands in for a headers() or cookies() call.
+  function recording(label: string, sink: string[], dynamic = false) {
+    return function Component(props: { children?: React.ReactNode }) {
+      sink.push(label);
+      if (dynamic) markDynamicUsage();
+      return props.children ?? label;
+    };
+  }
+
+  // A component that awaits forever; awaiting its probe would hold the
+  // response headers.
+  function neverSettling(label: string, sink: string[]) {
+    return function Component(): Promise<React.ReactNode> {
+      sink.push(label);
+      markDynamicUsage();
+      return new Promise(() => {});
+    };
+  }
+
+  function probeSource(
+    options: Partial<Parameters<typeof buildAppPageInterceptSourceProbes>[0]> &
+      Pick<Parameters<typeof buildAppPageInterceptSourceProbes>[0], "route">,
+  ): Promise<void[]> {
+    consumeDynamicUsage();
+    return Promise.all(
+      buildAppPageInterceptSourceProbes({
+        pageComponent: undefined,
+        sourceParams: {},
+        searchParams: null,
+        mountedSlotsHeader: null,
+        renderMode: undefined,
+        makeThenableParams: makeThenableParamsLoose,
+        ...options,
+      }),
+    );
+  }
+
+  const modalIntercept = (sink: string[]) => ({
+    page: { default: recording("intercept", sink) },
+    slotKey: "modal",
+  });
+
+  it("probes the intercepted slot's layout and the intercepting branch's layouts", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        slots: {
+          modal: { layout: { default: recording("modal", probed) } },
+          // Its layout wraps only a page it doesn't have.
+          sidebar: { layout: { default: recording("sidebar", probed) } },
+        },
+      },
+      intercept: {
+        ...modalIntercept(probed),
+        interceptLayouts: [{ default: recording("photos", probed) }, null],
+        matchedParams: { id: "123" },
+      },
+    });
+
+    expect(probed).toEqual(["modal", "photos", "intercept"]);
+  });
+
+  it("records an intercepting layout's dynamic API read", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: { slots: { modal: {} } },
+      intercept: {
+        ...modalIntercept(probed),
+        interceptLayouts: [{ default: recording("photos", probed, true) }],
+      },
+    });
+
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // app/feed/template.tsx
+  it("probes the source's templates", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        layouts: [{ default: recording("layout", probed) }],
+        layoutTreePositions: [1],
+        routeSegments: ["feed"],
+        templates: [{ default: recording("template", probed, true) }],
+        templateTreePositions: [1],
+      },
+      pageComponent: recording("page", probed),
+    });
+
+    expect(probed).toEqual(["layout", "template", "page"]);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // app/feed/loading.tsx above app/feed/[id]/template.tsx
+  it("stops the source's layouts and templates at its loading boundary", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        layouts: [{ default: recording("feed", probed) }, { default: neverSettling("id", probed) }],
+        layoutTreePositions: [1, 2],
+        loadings: [{ default: () => null }],
+        loadingTreePositions: [1],
+        routeSegments: ["feed", "[id]"],
+        templates: [
+          { default: recording("feed-template", probed) },
+          { default: neverSettling("id-template", probed) },
+        ],
+        templateTreePositions: [1, 2],
+      },
+      pageComponent: neverSettling("page", probed),
+    });
+
+    expect(probed).toEqual(["feed", "feed-template"]);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  // app/feed/@sidebar/layout.tsx and app/feed/@sidebar/settings/layout.tsx
+  it("probes an ordinary slot's layout chain", async () => {
+    const probed: string[] = [];
+    const received: Record<string, unknown>[] = [];
+    await probeSource({
+      route: {
+        layoutTreePositions: [0, 2],
+        routeSegments: ["[team]", "feed"],
+        slots: {
+          modal: {},
+          sidebar: {
+            configLayouts: [
+              {
+                default: async function SettingsLayout(props: {
+                  params: Promise<Record<string, unknown>>;
+                }) {
+                  received.push({ ...(await props.params) });
+                  probed.push("settings");
+                  return null;
+                },
+              },
+            ],
+            configLayoutTreePositions: [1],
+            layout: { default: recording("sidebar", probed, true) },
+            layoutIndex: 1,
+            name: "sidebar",
+            page: { default: recording("sidebar-page", probed) },
+            routeSegments: ["settings"],
+          },
+        },
+      },
+      intercept: modalIntercept(probed),
+      sourceParams: { team: "acme" },
+    });
+
+    expect(probed.sort()).toEqual(["intercept", "settings", "sidebar", "sidebar-page"]);
+    expect(received).toEqual([{ team: "acme" }]);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // app/feed/@sidebar/settings/loading.tsx
+  it("stops an ordinary slot's layout chain at its loading boundary", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        slots: {
+          sidebar: {
+            configLayouts: [
+              { default: recording("settings", probed) },
+              { default: neverSettling("advanced", probed) },
+            ],
+            configLayoutTreePositions: [1, 2],
+            layout: { default: recording("sidebar", probed) },
+            loadings: [{ default: () => null }],
+            loadingTreePositions: [1],
+            page: { default: neverSettling("sidebar-page", probed) },
+          },
+        },
+      },
+    });
+
+    expect(probed.sort()).toEqual(["settings", "sidebar"]);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  it("probes a slot's default where route wiring renders it", async () => {
+    const probed: string[] = [];
+    const defaultOnly = (name: string, extra: Record<string, unknown> = {}) => ({
+      default: { default: recording(name, probed) },
+      // Its layout wraps only a page, not its default.
+      layout: { default: recording(`${name}-layout`, probed) },
+      layoutIndex: 1,
+      name,
+      ...extra,
+    });
+    const probe = (mountedSlotsHeader: string | null) =>
+      probeSource({
+        route: {
+          layoutTreePositions: [0, 1],
+          routeSegments: ["feed"],
+          slots: {
+            // Its page renders, not its default.
+            analytics: {
+              ...defaultOnly("analytics-default"),
+              page: { default: recording("analytics", probed) },
+            },
+            // Replaced by the interception.
+            modal: defaultOnly("modal"),
+            sidebar: defaultOnly("sidebar"),
+            // Behind its loading boundary.
+            team: defaultOnly("team", { loading: { default: () => "loading" } }),
+          },
+        },
+        pageComponent: recording("page", probed),
+        intercept: modalIntercept(probed),
+        mountedSlotsHeader,
+      });
+
+    await probe(null);
+    expect(probed.splice(0).sort()).toEqual([
+      "analytics",
+      "analytics-default-layout",
+      "intercept",
+      "modal-layout",
+      "page",
+      "sidebar",
+    ]);
+    // The client keeps app/feed/@sidebar mounted, so the payload omits it.
+    await probe("slot:sidebar:/feed");
+    expect(probed.splice(0).sort()).toEqual([
+      "analytics",
+      "analytics-default-layout",
+      "intercept",
+      "modal-layout",
+      "page",
+    ]);
+  });
+
+  it("probes nothing for a prefetch-empty render", async () => {
+    const probed: string[] = [];
+    const probes = buildAppPageInterceptSourceProbes({
+      route: {
+        layouts: [{ default: recording("layout", probed, true) }],
+        slots: {
+          modal: {},
+          // Its default reads a dynamic API and never settles.
+          sidebar: { default: { default: neverSettling("sidebar", probed) }, name: "sidebar" },
+        },
+      },
+      pageComponent: recording("page", probed, true),
+      intercept: modalIntercept(probed),
+      sourceParams: {},
+      searchParams: null,
+      mountedSlotsHeader: null,
+      renderMode: "prefetch-empty",
+      makeThenableParams: makeThenableParamsLoose,
+    });
+    consumeDynamicUsage();
+
+    await Promise.all(probes);
+
+    expect(probes).toEqual([]);
+    expect(probed).toEqual([]);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  // app/feed/@team/loading.tsx, with app/feed/@sidebar/default.tsx
+  it("probes only what a loading-shell prefetch renders", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        layouts: [{ default: recording("layout", probed) }],
+        layoutTreePositions: [0],
+        slots: {
+          // The shell renders only branches with a loading boundary.
+          sidebar: { default: { default: neverSettling("sidebar", probed) }, name: "sidebar" },
+          team: {
+            layout: { default: recording("team-layout", probed) },
+            loading: { default: () => null },
+            name: "team",
+            page: { default: neverSettling("team-page", probed) },
+          },
+        },
+      },
+      // The shell omits the page.
+      pageComponent: neverSettling("page", probed),
+      renderMode: "prefetch-loading-shell",
+    });
+
+    expect(probed.sort()).toEqual(["layout", "team-layout"]);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  // app/feed/@team/loading.tsx, where app/feed/layout.tsx owns app/feed/@team
+  it("probes no layout below a loading-shell prefetch's cutoff", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        layouts: [
+          { default: recording("root", probed) },
+          { default: recording("feed", probed) },
+          { default: neverSettling("id", probed) },
+        ],
+        layoutTreePositions: [0, 1, 2],
+        routeSegments: ["feed", "[id]"],
+        slots: {
+          team: {
+            layout: { default: recording("team-layout", probed) },
+            layoutIndex: 1,
+            loading: { default: () => null },
+            name: "team",
+            ownerTreePosition: 1,
+            page: { default: neverSettling("team-page", probed) },
+          },
+        },
+      },
+      renderMode: "prefetch-loading-shell",
+    });
+
+    // The shell stops at the deepest owner of a slot loading boundary.
+    expect(probed.sort()).toEqual(["feed", "root", "team-layout"]);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  // app/loading.tsx and app/feed/[id]/loading.tsx
+  it("probes the route loading component a loading-shell prefetch renders", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        layouts: [
+          { default: recording("root", probed) },
+          { default: recording("feed", probed) },
+          { default: recording("id", probed) },
+        ],
+        layoutTreePositions: [0, 1, 2],
+        loadings: [
+          { default: recording("root-loading", probed) },
+          { default: recording("id-loading", probed, true) },
+        ],
+        loadingTreePositions: [0, 2],
+        routeSegments: ["feed", "[id]"],
+      },
+      pageComponent: neverSettling("page", probed),
+      renderMode: "prefetch-loading-shell",
+    });
+
+    // The shell renders the first loading UI below the root, with no
+    // Suspense boundary for the root's, so every layout above it renders.
+    expect(probed.sort()).toEqual(["feed", "id", "id-loading", "root"]);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // app/feed/@team/loading.tsx
+  it("probes the slot loading component a loading-shell prefetch renders", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        layouts: [{ default: recording("layout", probed) }],
+        layoutTreePositions: [0],
+        slots: {
+          modal: {},
+          team: {
+            layout: { default: recording("team-layout", probed) },
+            loading: { default: recording("team-loading", probed, true) },
+            name: "team",
+            page: { default: neverSettling("team-page", probed) },
+          },
+        },
+      },
+      intercept: modalIntercept(probed),
+      renderMode: "prefetch-loading-shell",
+    });
+
+    expect(probed.sort()).toEqual(["layout", "team-layout", "team-loading"]);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
+  // app/[team]/feed/@modal/(.)photos/layout.tsx and
+  // app/[team]/feed/@modal/(.)photos/[id]/layout.tsx
+  it("passes each layout the params its place in the intercepted tree sees", async () => {
+    const received: [string, Record<string, unknown>][] = [];
+    const paramsLayout = (label: string, readsHeadersWithId = false) =>
+      async function Layout(props: {
+        children?: React.ReactNode;
+        params: Promise<Record<string, unknown>>;
+      }) {
+        const params = await props.params;
+        received.push([label, { ...params }]);
+        // Stands in for a headers() call that only a child param triggers.
+        if (readsHeadersWithId && params.id) markDynamicUsage();
+        return props.children;
+      };
+
+    await probeSource({
+      route: {
+        layoutTreePositions: [0, 2],
+        routeSegments: ["[team]", "feed"],
+        slots: { modal: { layout: { default: paramsLayout("modal") }, layoutIndex: 1 } },
+      },
+      intercept: {
+        interceptBranchSegments: ["(.)photos", "[id]"],
+        interceptLayouts: [
+          { default: paramsLayout("photos", true) },
+          { default: paramsLayout("photo") },
+        ],
+        interceptLayoutSegments: [["(.)photos"], ["(.)photos", "[id]"]],
+        matchedParams: { id: "123", team: "acme" },
+        page: { default: () => null },
+        slotKey: "modal",
+      },
+      sourceParams: { team: "acme" },
+    });
+
+    expect(received).toEqual([
+      ["modal", { team: "acme" }],
+      ["photos", { team: "acme" }],
+      ["photo", { id: "123", team: "acme" }],
+    ]);
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  // app/[team]/(.)photos/layout.tsx and app/[team]/(.)photos/[id]/layout.tsx
+  it("passes a sibling-page intercept's layouts the params their segments see", async () => {
+    const received: [string, Record<string, unknown>][] = [];
+    const paramsLayout = (label: string) =>
+      async function Layout(props: {
+        children?: React.ReactNode;
+        params: Promise<Record<string, unknown>>;
+      }) {
+        received.push([label, { ...(await props.params) }]);
+        return props.children;
+      };
+
+    await probeSource({
+      route: { routeSegments: ["[team]", "feed"] },
+      intercept: {
+        interceptBranchSegments: ["(.)photos", "[id]"],
+        interceptLayouts: [{ default: paramsLayout("photos") }, { default: paramsLayout("photo") }],
+        interceptLayoutSegments: [["(.)photos"], ["(.)photos", "[id]"]],
+        matchedParams: { id: "123", team: "acme" },
+        slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+      },
+      sourceParams: { team: "acme" },
+    });
+
+    expect(received).toEqual([
+      ["photos", { team: "acme" }],
+      ["photo", { id: "123", team: "acme" }],
+    ]);
+  });
+
+  // app/feed/@modal/(.)photos/loading.tsx above
+  // app/feed/@modal/(.)photos/[id]/layout.tsx
+  it("stops at an intercepting loading boundary", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: { slots: { modal: { layout: { default: recording("modal", probed) } } } },
+      intercept: {
+        interceptBranchSegments: ["(.)photos", "[id]"],
+        interceptLayouts: [
+          { default: recording("photos", probed) },
+          { default: neverSettling("photo", probed) },
+        ],
+        interceptLayoutSegments: [["(.)photos"], ["(.)photos", "[id]"]],
+        interceptLoadings: [{ default: () => null }],
+        interceptLoadingTreePositions: [1],
+        matchedParams: { id: "123" },
+        page: { default: neverSettling("intercept", probed) },
+        slotKey: "modal",
+      },
+    });
+
+    expect(probed).toEqual(["modal", "photos"]);
+  });
+
+  it("stops below the intercepted slot's root loading boundary", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: {
+        slots: {
+          modal: {
+            layout: { default: recording("modal", probed) },
+            loading: { default: () => null },
+          },
+        },
+      },
+      intercept: {
+        interceptBranchSegments: ["(.)photos"],
+        interceptLayouts: [{ default: neverSettling("photos", probed) }],
+        interceptLayoutSegments: [["(.)photos"]],
+        page: { default: neverSettling("intercept", probed) },
+        slotKey: "modal",
+      },
+    });
+
+    expect(probed).toEqual(["modal"]);
+  });
+
+  it("probes no slot inside a source loading boundary", async () => {
+    const probed: string[] = [];
+    const probe = (slotKey: string, loadingTreePosition: number) =>
+      probeSource({
+        route: {
+          layoutTreePositions: [0, 1],
+          loadings: [{ default: () => null }],
+          loadingTreePositions: [loadingTreePosition],
+          routeSegments: ["feed", "[id]"],
+          slots: { modal: { layout: { default: recording("modal", probed) }, layoutIndex: 1 } },
+        },
+        intercept: {
+          interceptLayouts: [{ default: recording("photos", probed) }],
+          interceptLayoutSegments: [["(.)photos"]],
+          page: { default: () => null },
+          slotKey,
+        },
+      });
+
+    // app/feed/loading.tsx wraps the slot that app/feed/layout.tsx owns.
+    await probe("modal", 1);
+    expect(probed.splice(0)).toEqual([]);
+    // A sibling-page intercept renders in place of the source's page.
+    await probe(SIBLING_PAGE_INTERCEPT_SLOT_KEY, 2);
+    expect(probed.splice(0)).toEqual([]);
+    // A loading boundary below the slot's owner doesn't wrap the slot.
+    await probe("modal", 2);
+    expect(probed.splice(0)).toEqual(["modal", "photos"]);
+  });
+
+  // A route-group variant of the source without app/feed/@modal.
+  it("probes no interception for a slot the route doesn't have", async () => {
+    const probed: string[] = [];
+    await probeSource({
+      route: { slots: { sidebar: { page: { default: recording("sidebar", probed) } } } },
+      intercept: {
+        interceptLayouts: [{ default: recording("photos", probed) }],
+        page: { default: recording("intercept", probed, true) },
+        slotKey: "modal",
+      },
+      pageComponent: recording("page", probed),
+    });
+
+    expect(probed.sort()).toEqual(["page", "sidebar"]);
+    expect(consumeDynamicUsage()).toBe(false);
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   ensureAppRouteModulesLoaded,
   loadAppInterceptNotFound,
+  loadAppInterceptOwnerDefault,
   loadAppInterceptPage,
   loadAppInterceptLayouts,
   type LazyLoadableRoute,
@@ -213,6 +214,33 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.slots?.["@modal"].configLayouts).toEqual([nestedSlotLayout]);
     expect(route.slots?.["@modal"].loadings).toEqual([nestedSlotLoading]);
   });
+
+  it("leaves a slot intercept's owner default to the matched intercept", async () => {
+    // app/feed/default.tsx replaces app/feed's children only in the tree of
+    // app/feed/@modal/(.)photos/[id], so a direct /feed request never
+    // evaluates it.
+    const feedDefault = { default: () => null, dynamic: "force-static" };
+    const __loadOwnerDefault = vi.fn(async () => feedDefault);
+    const intercept = { ownerDefault: null, __loadOwnerDefault };
+    const route: LazyLoadableRoute = {
+      slots: {
+        "@modal": {
+          page: null,
+          __loadPage: async () => ({ default: () => null }),
+          intercepts: [intercept],
+        },
+      },
+    };
+
+    await ensureAppRouteModulesLoaded(route);
+
+    expect(__loadOwnerDefault).not.toHaveBeenCalled();
+    expect(intercept.ownerDefault).toBeNull();
+
+    await loadAppInterceptOwnerDefault(intercept);
+
+    expect(intercept.ownerDefault).toBe(feedDefault);
+  });
 });
 
 describe("loadAppInterceptLayouts", () => {
@@ -245,6 +273,7 @@ describe("loadAppInterceptLayouts", () => {
 describe.each([
   ["page", "__pageLoader", "pageLoading", loadAppInterceptPage],
   ["notFound", "__loadNotFound", "notFoundLoading", loadAppInterceptNotFound],
+  ["ownerDefault", "__loadOwnerDefault", "ownerDefaultLoading", loadAppInterceptOwnerDefault],
 ] as const)("loadAppIntercept%s", (field, loaderField, loadingField, load) => {
   it("publishes a shared concurrent load onto every request-local intercept clone", async () => {
     let release!: () => void;
@@ -261,6 +290,8 @@ describe.each([
       pageLoading: null,
       notFound: null,
       notFoundLoading: null,
+      ownerDefault: null,
+      ownerDefaultLoading: null,
       interceptLayoutsLoading: null,
     };
     const first = {

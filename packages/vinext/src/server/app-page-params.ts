@@ -21,6 +21,17 @@ export function getAppPageSegmentParamName(segment: string): string | null {
   return null;
 }
 
+export function createAppPageTreePath(
+  routeSegments: readonly string[] | null | undefined,
+  treePosition: number,
+): string {
+  const treePathSegments = routeSegments?.slice(0, treePosition) ?? [];
+  if (treePathSegments.length === 0) {
+    return "/";
+  }
+  return `/${treePathSegments.join("/")}`;
+}
+
 function isEmptyOptionalCatchAll(segment: string, paramValue: string | string[]): boolean {
   return segment.startsWith("[[...") && Array.isArray(paramValue) && paramValue.length === 0;
 }
@@ -92,4 +103,22 @@ export function resolveAppPageBranchParams(
     resolveAppPageSegmentParams(scopedSegments, treePosition, matchedParams),
   );
   return scopedParams;
+}
+
+/** Params of a layout at `treePosition` in a parallel slot's branch. */
+export function resolveSlotLayoutParams(
+  routeSegments: readonly string[],
+  treePosition: number,
+  params: AppPageParams,
+): AppPageParams {
+  return resolveAppPageBranchParams(routeSegments, treePosition, params);
+}
+
+/** Params of a sibling-page intercepting layout at `layoutSegments`. */
+export function resolveInterceptLayoutParams(
+  branchSegments: readonly string[],
+  layoutSegments: readonly string[],
+  params: AppPageParams,
+): AppPageParams {
+  return resolveAppPageBranchParams(branchSegments, layoutSegments.length, params, layoutSegments);
 }

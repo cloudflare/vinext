@@ -39,7 +39,11 @@ type InterceptingRoute = {
   pagePath: string;
   /** Filesystem segments from app/ root to the intercepting page directory. */
   sourcePageSegments?: string[];
-  /** Absolute layout paths inside the intercepting route tree, outermost to innermost */
+  /**
+   * Absolute layout paths inside the intercepting route tree, outermost to
+   * innermost. A slot intercept's chain starts with the layouts of the slot's
+   * folders above the marker, below the slot root.
+   */
   layoutPaths: string[];
   /** Normalized branch segments accumulated at each intercept layout. */
   layoutSegments?: string[][];
@@ -83,6 +87,11 @@ type ParallelSlot = {
   pagePath: string | null;
   /** Absolute path to the slot's default.tsx fallback */
   defaultPath: string | null;
+  /**
+   * Absolute path to the owner directory's default.tsx, which Next.js puts in
+   * place of the owner's children when this slot intercepts.
+   */
+  ownerDefaultPath?: string | null;
   /** Absolute path to the slot's layout component (wraps slot content) */
   layoutPath: string | null;
   /** Nested active-branch layouts whose exports contribute route config. */
@@ -1576,6 +1585,51 @@ function findSlotConfigLayoutTreePositions(
   });
 }
 
+/**
+ * The layouts of the folders from below an intercept's branch root (a slot's
+ * root, or a sibling-page intercept's source page folder) down to the folder
+ * that holds its interception marker, with the root-relative segments
+ * accumulated at each. Next.js builds the intercepting route's loader tree
+ * from every folder on the intercepting page's path, each with its layout, so
+ * these wrap the marker's branch, and its page and metadata.
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1182-L1260
+ */
+function findInterceptAncestorLayoutEntries(
+  branchRootDir: string,
+  interceptParentDir: string,
+  matcher: ValidFileMatcher,
+): { path: string; segments: string[] }[] {
+  const segments = path.relative(branchRootDir, interceptParentDir).split(path.sep).filter(Boolean);
+  const layouts: { path: string; segments: string[] }[] = [];
+  let currentDir = branchRootDir;
+  for (const [index, segment] of segments.entries()) {
+    currentDir = path.join(currentDir, segment);
+    const layoutPath = findFile(currentDir, "layout", matcher);
+    if (layoutPath) layouts.push({ path: layoutPath, segments: segments.slice(0, index + 1) });
+  }
+  return layouts;
+}
+
+/**
+ * The loading boundaries of the same folders, at their root-relative tree
+ * positions.
+ */
+function findInterceptAncestorLoadingEntries(
+  branchRootDir: string,
+  interceptParentDir: string,
+  matcher: ValidFileMatcher,
+): { path: string; treePosition: number }[] {
+  const segments = path.relative(branchRootDir, interceptParentDir).split(path.sep).filter(Boolean);
+  const loadings: { path: string; treePosition: number }[] = [];
+  let currentDir = branchRootDir;
+  for (const [index, segment] of segments.entries()) {
+    currentDir = path.join(currentDir, segment);
+    const loadingPath = findFile(currentDir, "loading", matcher);
+    if (loadingPath) loadings.push({ path: loadingPath, treePosition: index + 1 });
+  }
+  return loadings;
+}
+
 function findSlotLoadingEntries(
   slotDir: string,
   pagePath: string | null,
@@ -2468,6 +2522,7 @@ function discoverParallelSlots(
       hasPage: pagePath !== null,
       pagePath,
       defaultPath,
+      ownerDefaultPath: findFile(dir, "default", matcher),
       layoutPath: findFile(slotDir, "layout", matcher),
       configLayoutPaths,
       configLayoutTreePositions: findSlotConfigLayoutTreePositions(slotDir, configLayoutPaths),
@@ -2586,6 +2641,23 @@ function discoverSiblingInterceptingRoutes(
         // Collect all intercept targets from the marker subtree.
         const restOfName = entry.name.slice(marker.prefix.length);
         const parentDir = dir; // directory that owns the marker (the "intercepting route" dir)
+        // Find the route that serves the parentDir. Fall back to scanning all
+        // routes that live under parentDir (handles the case where the route
+        // pattern is a catch-all like /templates/:catchAll+ rather than /templates).
+        const owner = findOwnerRouteForDir(parentDir, appDir, routes, routesByDir);
+        // The intercepting page continues the main tree below its source
+        // page's folder, so the folders between that folder and the marker,
+        // such as a route group, are on its path too.
+        const ownerFilePath = owner ? (owner.pagePath ?? owner.routePath) : null;
+        const ownerDir = ownerFilePath ? path.dirname(ownerFilePath) : null;
+        const ownerRelativeParentDir = ownerDir ? path.relative(ownerDir, parentDir) : "";
+        const siblingSourceDir =
+          ownerDir &&
+          ownerRelativeParentDir &&
+          !ownerRelativeParentDir.startsWith("..") &&
+          !path.isAbsolute(ownerRelativeParentDir)
+            ? ownerDir
+            : null;
         const results: InterceptingRoute[] = [];
         collectInterceptingPages(
           childDir,
@@ -2598,6 +2670,12 @@ function discoverSiblingInterceptingRoutes(
           null,
           results,
           matcher,
+          [],
+          siblingSourceDir
+            ? findInterceptAncestorLoadingEntries(siblingSourceDir, parentDir, matcher)
+            : [],
+          siblingSourceDir ? ownerRelativeParentDir.split(path.sep).filter(Boolean).length : 0,
+          siblingSourceDir,
         );
         for (const ir of results) {
           ir.slotId = createAppRouteGraphSiblingInterceptSlotId(ir.sourceMatchPattern);
@@ -2606,10 +2684,6 @@ function discoverSiblingInterceptingRoutes(
             ir.sourceMatchPattern,
             ir.targetPattern,
           );
-          // Find the route that serves the parentDir. Fall back to scanning all
-          // routes that live under parentDir (handles the case where the route
-          // pattern is a catch-all like /templates/:catchAll+ rather than /templates).
-          const owner = findOwnerRouteForDir(parentDir, appDir, routes, routesByDir);
           if (owner) {
             owner.siblingIntercepts.push(ir);
           }
@@ -2794,6 +2868,11 @@ function collectInterceptingPages(
   parentLayoutPaths: readonly string[] = [],
   parentLoadingEntries: readonly { path: string; treePosition: number }[] = [],
   treePositionOffset = 0,
+  /**
+   * The source page's folder of a sibling-page intercept whose marker sits
+   * below it; null for slot intercepts and markers in the source's folder.
+   */
+  siblingSourceDir: string | null = null,
 ): void {
   const currentLayoutPath = findFile(currentDir, "layout", matcher);
   const layoutPaths = currentLayoutPath
@@ -2827,29 +2906,39 @@ function collectInterceptingPages(
         page,
         matcher,
       );
-      const slotParentSegments = slotRootDir
-        ? path.relative(slotRootDir, interceptParentDir).split(path.sep).filter(Boolean)
+      const branchRootDir = slotRootDir ?? siblingSourceDir;
+      const parentSegments = branchRootDir
+        ? path.relative(branchRootDir, interceptParentDir).split(path.sep).filter(Boolean)
         : [];
       const branchSegments = [
-        ...slotParentSegments,
+        ...parentSegments,
         interceptSegment,
         ...path.relative(interceptRoot, path.dirname(page)).split(path.sep).filter(Boolean),
       ];
+      const ancestorLayouts = branchRootDir
+        ? findInterceptAncestorLayoutEntries(branchRootDir, interceptParentDir, matcher)
+        : [];
       results.push({
         branchSegments,
         convention,
-        layoutPaths: [...layoutPaths],
-        layoutSegments: layoutPaths.map((layoutPath) => {
-          const relativeDir = path.relative(interceptRoot, path.dirname(layoutPath));
-          return [
-            ...slotParentSegments,
-            interceptSegment,
-            ...relativeDir.split(path.sep).filter(Boolean),
-          ];
-        }),
+        layoutPaths: [...ancestorLayouts.map((layout) => layout.path), ...layoutPaths],
+        layoutSegments: [
+          ...ancestorLayouts.map((layout) => layout.segments),
+          ...layoutPaths.map((layoutPath) => {
+            const relativeDir = path.relative(interceptRoot, path.dirname(layoutPath));
+            return [
+              ...parentSegments,
+              interceptSegment,
+              ...relativeDir.split(path.sep).filter(Boolean),
+            ];
+          }),
+        ],
         loadingPaths: loadingEntries.map((loading) => loading.path),
         loadingTreePositions: loadingEntries.map((loading) => loading.treePosition),
-        notFoundBranchSegments: branchSegments,
+        // A sibling's not-found position counts from its marker.
+        notFoundBranchSegments: slotRootDir
+          ? branchSegments
+          : branchSegments.slice(parentSegments.length),
         notFoundPath: notFoundBoundary.path,
         notFoundTreePosition:
           notFoundBoundary.treePosition === null
@@ -2887,6 +2976,7 @@ function collectInterceptingPages(
       layoutPaths,
       loadingEntries,
       treePositionOffset,
+      siblingSourceDir,
     );
   }
 }

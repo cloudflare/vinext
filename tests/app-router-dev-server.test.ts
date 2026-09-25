@@ -1,5 +1,6 @@
 import http from "node:http";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -2582,5 +2583,89 @@ describe("App Router public files whose route starts with basePath in dev", () =
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("GET, HEAD");
     expect(await res.text()).toBe("Method Not Allowed");
+  });
+});
+
+describe("App Router slot intercept owner default in dev", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+  let root: string;
+  let evaluationKey: string;
+
+  beforeAll(async () => {
+    root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-owner-default-"));
+    evaluationKey = `vinext-owner-default:${root}`;
+    const write = async (file: string, code: string) => {
+      await fsp.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+      await fsp.writeFile(path.join(root, file), code);
+    };
+    await fsp.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "node_modules"),
+      "junction",
+    );
+    await write("package.json", JSON.stringify({ type: "module", private: true }));
+    await write(
+      "app/layout.tsx",
+      "export default function Layout({ children }) { return <html><body>{children}</body></html>; }",
+    );
+    await write(
+      "app/feed/layout.tsx",
+      "export default function Layout({ children, modal }) { return <>{children}{modal}</>; }",
+    );
+    await write(
+      "app/feed/page.tsx",
+      'export const dynamic = "force-static";\nexport default function Page() { return <main>Feed page</main>; }',
+    );
+    // Only the intercepting route's tree holds app/feed/default.tsx, in place
+    // of app/feed's children.
+    await write(
+      "app/feed/default.tsx",
+      `globalThis[${JSON.stringify(evaluationKey)}] = (globalThis[${JSON.stringify(evaluationKey)}] ?? 0) + 1;
+export const dynamic = "force-static";
+export default function Default() { return null; }`,
+    );
+    await write(
+      "app/feed/@modal/default.tsx",
+      "export default function Default() { return null; }",
+    );
+    await write(
+      "app/feed/@modal/(..)photos/[id]/page.tsx",
+      "export default function Modal() { return <div>Photo modal</div>; }",
+    );
+    await write(
+      "app/photos/[id]/page.tsx",
+      "export default function Photo() { return <main>Photo page</main>; }",
+    );
+    ({ server, baseUrl } = await startFixtureServer(root, { appRouter: true }));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+    Reflect.deleteProperty(globalThis, evaluationKey);
+    if (root) await fsp.rm(root, { recursive: true, force: true });
+  });
+
+  it("evaluates the owner's default only for an intercepted request", async () => {
+    const direct = await fetch(`${baseUrl}/feed`);
+    expect(direct.status).toBe(200);
+    expect(await direct.text()).toContain("Feed page");
+    expect(Reflect.get(globalThis, evaluationKey)).toBeUndefined();
+
+    // The force-static default takes app/feed's children in the intercepting
+    // route's tree, so the auto modal without generateStaticParams is static.
+    // Without it, that tree's children would be the built-in default-null.
+    const intercepted = await fetch(`${baseUrl}/photos/1.rsc`, {
+      headers: {
+        Accept: "text/x-component",
+        "X-Vinext-Interception-Context": "/feed",
+      },
+    });
+    expect(intercepted.status).toBe(200);
+    expect(await intercepted.text()).toContain("Photo modal");
+    expect(Reflect.get(globalThis, evaluationKey)).toBe(1);
+    expect(intercepted.headers.get("cache-control")).not.toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   });
 });

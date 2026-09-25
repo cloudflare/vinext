@@ -40,6 +40,10 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
+import {
+  toRouteConfigIntercept,
+  type AppPageStaticEligibilityIntercept,
+} from "./app-page-dispatch.js";
 import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
@@ -400,9 +404,22 @@ export type HandleServerActionRscRequestOptions<
     options: RenderServerActionRscStreamOptions<TTemporaryReferences>,
   ) => BodyInit | null | Promise<BodyInit | null>;
   reportRequestError: AppServerActionErrorReporter;
-  resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
-  resolveRouteRevalidateSeconds?: (route: TRoute) => number | null;
-  resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
+  /**
+   * With an intercept, these resolve the tree the rerendered intercepting
+   * route renders, as `dispatchAppPage`'s resolvers do.
+   */
+  resolveRouteFetchCacheMode?: (
+    route: TRoute,
+    intercept?: AppPageStaticEligibilityIntercept,
+  ) => FetchCacheMode | null;
+  resolveRouteRevalidateSeconds?: (
+    route: TRoute,
+    intercept?: AppPageStaticEligibilityIntercept,
+  ) => number | null;
+  resolveRouteDynamicConfig?: (
+    route: TRoute,
+    intercept?: AppPageStaticEligibilityIntercept,
+  ) => string | null | undefined;
   resolveRouteRuntime?: (route: TRoute) => AppServerActionRouteRuntime;
   request: Request;
   sanitizeErrorForClient: (error: unknown) => unknown;
@@ -1874,8 +1891,19 @@ export async function handleServerActionRscRequest<
       );
       // Hydrate the re-render target before reading its page module.
       await options.ensureRouteLoaded?.(actionRerenderTarget.route);
+      // The rerender repeats the intercepted render, so it takes that render's
+      // config. As above, toInterceptOpts produces the dispatch intercept
+      // options, which the generic TInterceptOpts doesn't express.
+      const actionRerenderConfigIntercept = actionRerenderTarget.interceptOpts
+        ? toRouteConfigIntercept(
+            actionRerenderTarget.interceptOpts as unknown as Parameters<
+              typeof toRouteConfigIntercept
+            >[0],
+          )
+        : undefined;
       const actionRerenderDynamicConfig = options.resolveRouteDynamicConfig?.(
         actionRerenderTarget.route,
+        actionRerenderConfigIntercept,
       );
       const actionRerenderSearchParams = prepareActionPageRerenderContext({
         draftModeCookie: actionDraftCookie,
@@ -1895,10 +1923,16 @@ export async function handleServerActionRscRequest<
         ? `${options.cleanPathname}?${renderedSearch}`
         : options.cleanPathname;
       setCurrentFetchCacheMode(
-        options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
+        options.resolveRouteFetchCacheMode?.(
+          actionRerenderTarget.route,
+          actionRerenderConfigIntercept,
+        ) ?? null,
       );
       setCurrentFetchRevalidate(
-        options.resolveRouteRevalidateSeconds?.(actionRerenderTarget.route) ?? null,
+        options.resolveRouteRevalidateSeconds?.(
+          actionRerenderTarget.route,
+          actionRerenderConfigIntercept,
+        ) ?? null,
       );
       setCurrentForceDynamicFetchDefault(actionRerenderDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(

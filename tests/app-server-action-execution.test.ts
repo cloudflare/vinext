@@ -3500,6 +3500,90 @@ describe("app server action execution helpers", () => {
     revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
+
+  it("resolves an intercepted rerender's config from the intercepting tree it renders", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+    // app/feed/@modal/(..)photos/[id] intercepting /photos/42 from app/feed.
+    const feedRoute: TestRoute = { id: "feed", page: {}, params: [], pattern: "/feed" };
+    const photoRoute: TestRoute = {
+      id: "photo",
+      page: {},
+      params: ["id"],
+      pattern: "/photos/:id",
+    };
+    const modalPage = { default: "modal-photo" };
+    const feedDefault = { default: "feed-default" };
+    const isInterceptingTree = (
+      route: TestRoute,
+      intercept?: {
+        interceptOwnerDefault?: unknown;
+        interceptPage?: unknown;
+        interceptSlotKey?: string;
+        interceptTargetPatternParts?: readonly string[] | null;
+      },
+    ) =>
+      route === feedRoute &&
+      intercept?.interceptOwnerDefault === feedDefault &&
+      intercept.interceptPage === modalPage &&
+      intercept.interceptSlotKey === "modal" &&
+      intercept.interceptTargetPatternParts?.join("/") === "photos/:id";
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        cleanPathname: "/photos/42",
+        currentRouteMatch: { params: { id: "42" }, route: photoRoute },
+        currentRoutePathname: "/photos/42",
+        findIntercept() {
+          return {
+            matchedParams: { id: "42" },
+            page: modalPage,
+            slotKey: "modal",
+            sourceMatchedParams: {},
+            sourceRouteIndex: 0,
+          };
+        },
+        getSourceRoute() {
+          return feedRoute;
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/photos/42"));
+            return "revalidated";
+          });
+        },
+        resolveRouteFetchCacheMode(route, intercept) {
+          return isInterceptingTree(route, intercept) ? "force-no-store" : null;
+        },
+        resolveRouteRevalidateSeconds(route, intercept) {
+          return isInterceptingTree(route, intercept) ? 45 : null;
+        },
+        resolveRouteDynamicConfig(route, intercept) {
+          return isInterceptingTree(route, intercept) ? "force-dynamic" : null;
+        },
+        toInterceptOpts(intercept) {
+          return {
+            interceptOwnerDefault: feedDefault,
+            interceptPage: intercept.page,
+            interceptSlotKey: intercept.slotKey,
+            interceptTargetPatternParts: ["photos", ":id"],
+            slot: intercept.slotKey,
+          } as TestInterceptOptions;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(modeSpy).toHaveBeenCalledWith("force-no-store");
+    expect(revalidateSpy).toHaveBeenCalledWith(45);
+    expect(forceDynamicSpy).toHaveBeenCalledWith(true);
+
+    modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
+  });
 });
 
 // The client-side counterpart of `createServerActionNotFoundResponse`: when the

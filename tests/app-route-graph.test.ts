@@ -1639,6 +1639,82 @@ describe("App Router route graph builder", () => {
       });
     });
 
+    it("starts a slot intercept's layout chain with the slot's layouts above the marker", async () => {
+      // Next.js builds the loader tree of app/@modal/gallery/(.)photo/page.tsx
+      // from every folder on its path, so app/@modal/gallery/layout.tsx wraps
+      // the (.)photo branch outside the marker's own layout.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "gallery/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "gallery/photo/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@modal/default.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "@modal/gallery/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "@modal/gallery/(.)photo/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "@modal/gallery/(.)photo/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const intercept = findRoute(graph.routes, "/gallery").parallelSlots[0]
+          ?.interceptingRoutes[0];
+
+        expect(intercept?.layoutPaths).toEqual([
+          canonical(appDir, "@modal/gallery/layout.tsx"),
+          canonical(appDir, "@modal/gallery/(.)photo/layout.tsx"),
+        ]);
+        expect(intercept?.layoutSegments).toEqual([["gallery"], ["gallery", "photo"]]);
+        expect(intercept?.branchSegments).toEqual(["gallery", "photo"]);
+      });
+    });
+
+    it("starts a sibling intercept's layout chain with the folders between its source and the marker", async () => {
+      // app/feed/(shell)/(.)photo/page.tsx replaces app/feed/page.tsx, and
+      // Next.js's intercepting route tree continues below app/feed through
+      // (shell), so its layout and loading wrap the (.)photo branch.
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "feed/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "photo/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "feed/(shell)/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "feed/(shell)/loading.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "feed/(shell)/(.)photo/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "feed/(shell)/(.)photo/loading.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "feed/(shell)/(.)photo/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const intercept = findRoute(graph.routes, "/feed").siblingIntercepts[0];
+
+        expect(intercept?.layoutPaths).toEqual([
+          canonical(appDir, "feed/(shell)/layout.tsx"),
+          canonical(appDir, "feed/(shell)/(.)photo/layout.tsx"),
+        ]);
+        expect(intercept?.layoutSegments).toEqual([["(shell)"], ["(shell)", "photo"]]);
+        expect(intercept?.branchSegments).toEqual(["(shell)", "photo"]);
+        expect(intercept?.loadingPaths).toEqual([
+          canonical(appDir, "feed/(shell)/loading.tsx"),
+          canonical(appDir, "feed/(shell)/(.)photo/loading.tsx"),
+        ]);
+        expect(intercept?.loadingTreePositions).toEqual([1, 2]);
+        // Its not-found position still counts from the marker.
+        expect(intercept?.notFoundBranchSegments).toEqual(["photo"]);
+      });
+    });
+
+    it("keeps a sibling intercept in its source's folder rooted at the marker", async () => {
+      await withTempApp(async (appDir) => {
+        await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "feed/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "photo/page.tsx", EMPTY_PAGE);
+        await writeAppFile(appDir, "feed/(.)photo/layout.tsx", EMPTY_LAYOUT);
+        await writeAppFile(appDir, "feed/(.)photo/page.tsx", EMPTY_PAGE);
+
+        const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+        const intercept = findRoute(graph.routes, "/feed").siblingIntercepts[0];
+
+        expect(intercept?.layoutPaths).toEqual([canonical(appDir, "feed/(.)photo/layout.tsx")]);
+        expect(intercept?.layoutSegments).toEqual([["photo"]]);
+        expect(intercept?.branchSegments).toEqual(["photo"]);
+      });
+    });
+
     it("includes dynamic ancestor params for (.) slot with a dynamic ancestor segment", async () => {
       // Regression for the double-conversion bug: raw filesystem segments must be
       // passed as baseParts so that [locale] is not converted to :locale before
