@@ -482,7 +482,9 @@ export class KVCacheHandler implements CacheHandler {
     const cacheControl: CacheControlMetadata | undefined =
       typeof effectiveRevalidate === "number"
         ? {
-            revalidate: effectiveRevalidate,
+            // JSON can't hold Infinity, so store `revalidate = false` as false,
+            // like Next.js does. Reads turn it back into Infinity.
+            revalidate: Number.isFinite(effectiveRevalidate) ? effectiveRevalidate : false,
             ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
             // Client-router reuse bound — must survive KV so warm hits replay
             // the producing render's claim (see CacheControlMetadata.stale).
@@ -684,7 +686,9 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   }
   if (obj.cacheControl !== undefined) {
     if (!isUnknownRecord(obj.cacheControl)) return null;
-    if (typeof obj.cacheControl.revalidate !== "number") return null;
+    if (typeof obj.cacheControl.revalidate !== "number" && obj.cacheControl.revalidate !== false) {
+      return null;
+    }
     if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
       return null;
     }
@@ -698,6 +702,11 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
     if (!obj.value || typeof obj.value !== "object") return null;
     const value = obj.value as Record<string, unknown>;
     if (typeof value.kind !== "string" || !VALID_KINDS.has(value.kind)) return null;
+  }
+
+  // Serve the same `revalidate = false` policy the other backends keep in memory.
+  if (obj.cacheControl?.revalidate === false) {
+    obj.cacheControl = { ...obj.cacheControl, revalidate: Infinity };
   }
 
   return raw as KVCacheEntry;

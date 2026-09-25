@@ -639,6 +639,34 @@ describe("KVCacheHandler", () => {
       expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: 300, stale: 30 });
     });
 
+    it("round-trips a revalidate = false policy through stored cacheControl", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+
+      await handler.set(
+        "static-round-trip",
+        {
+          kind: "APP_PAGE",
+          html: "<div>static</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: Infinity } },
+      );
+
+      const stored = JSON.parse(store.get("cache:static-round-trip")!);
+      expect(stored.cacheControl).toEqual({ revalidate: false });
+      expect(stored.revalidateAt).toBeNull();
+
+      vi.setSystemTime(1_000 + 365 * 24 * 60 * 60 * 1000);
+      const hit = await handler.get("static-round-trip");
+      expect(hit?.cacheState).toBeUndefined();
+      expect(hit?.cacheControl).toEqual({ revalidate: Infinity });
+      expect(hit?.value?.kind).toBe("APP_PAGE");
+    });
+
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);
