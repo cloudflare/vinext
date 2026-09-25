@@ -3,6 +3,7 @@ import {
   createTemporaryReferenceSet,
   encodeReply,
 } from "@vitejs/plugin-rsc/browser";
+import { parseRenderedPathAndSearchHeader } from "vinext/shims/navigation";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import {
   createServerActionResultFacts,
@@ -27,6 +28,7 @@ import {
   ACTION_REDIRECT_HEADER,
   ACTION_REDIRECT_STATUS_HEADER,
   ACTION_REDIRECT_TYPE_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "./headers.js";
 import { hasBasePath } from "../utils/base-path.js";
 
@@ -43,6 +45,8 @@ type ActionRedirectTarget = {
   href: string;
   type: string;
   status: number;
+  /** The path and query the server rendered the target with, when known. */
+  renderedPathAndSearch: string | null;
 };
 
 export type ClientServerActionDeps = {
@@ -106,6 +110,10 @@ function resolveActionRedirectTarget(
       href: redirectUrl.href,
       type: response.headers.get(ACTION_REDIRECT_TYPE_HEADER) ?? "push",
       status: statusHeader ? parseInt(statusHeader, 10) : 307,
+      // The target's own render, which a rewrite may give another query.
+      renderedPathAndSearch: parseRenderedPathAndSearchHeader(
+        response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+      ),
     };
   } catch {
     performHardNavigation(actionRedirect);

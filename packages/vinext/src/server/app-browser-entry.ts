@@ -1749,6 +1749,7 @@ function registerServerActionCallback(): void {
               navigationSnapshot: createClientNavigationRenderSnapshot(
                 target.href,
                 actionInitiation.routerState.navigationSnapshot.params,
+                target.renderedPathAndSearch,
               ),
               navId: actionInitiation.navigationId,
               operationLane: resolveServerActionOperationLane(revalidation),
