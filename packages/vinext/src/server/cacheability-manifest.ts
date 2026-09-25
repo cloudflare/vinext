@@ -44,6 +44,8 @@ export type CacheabilityManifestRoute = {
   staticRepresentation?: CacheabilityRepresentation;
   /** Exact dynamic paths observed in a mixed or pattern-dynamic route. */
   runtimePaths?: string[];
+  /** Exact paths runtime-checked only in the listed representation. */
+  runtimeRepresentationPaths?: Partial<Record<CacheabilityRepresentation, string[]>>;
   /** Exact paths statically certified per representation. A path may appear in several lists. */
   staticPaths?: Partial<Record<CacheabilityRepresentation, string[]>>;
 };
@@ -140,6 +142,10 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
     route.runtimePaths === undefined ? undefined : parsePathList(route.runtimePaths, pathPrefix);
   const staticPaths =
     route.staticPaths === undefined ? undefined : parseStaticPaths(route.staticPaths, pathPrefix);
+  const runtimeRepresentationPaths =
+    route.runtimeRepresentationPaths === undefined
+      ? undefined
+      : parseStaticPaths(route.runtimeRepresentationPaths, pathPrefix);
   const staticRepresentation = isRepresentation(route.staticRepresentation)
     ? route.staticRepresentation
     : undefined;
@@ -159,16 +165,19 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
         pathPrefix !== undefined ||
         staticRepresentation !== undefined ||
         runtimePaths !== undefined ||
-        staticPaths !== undefined)) ||
+        staticPaths !== undefined ||
+        runtimeRepresentationPaths !== undefined)) ||
     (staticRepresentation !== undefined &&
       (route.state !== "runtime-check" ||
         /(^|\/):/.test(route.pattern) ||
         runtimePaths !== undefined ||
-        staticPaths !== undefined)) ||
-    (pathPrefix !== undefined && !runtimePaths && !staticPaths) ||
+        staticPaths !== undefined ||
+        runtimeRepresentationPaths !== undefined)) ||
+    (pathPrefix !== undefined && !runtimePaths && !staticPaths && !runtimeRepresentationPaths) ||
     (route.runtimePaths !== undefined && !runtimePaths) ||
     (route.staticPaths !== undefined && !staticPaths) ||
-    ((runtimePaths || staticPaths || route.allowUnknown === true) &&
+    (route.runtimeRepresentationPaths !== undefined && !runtimeRepresentationPaths) ||
+    ((runtimePaths || staticPaths || runtimeRepresentationPaths || route.allowUnknown === true) &&
       route.state !== "runtime-check")
   ) {
     return null;
@@ -185,6 +194,7 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
     ...(runtimeRepresentation ? { runtimeRepresentation } : {}),
     ...(staticRepresentation ? { staticRepresentation } : {}),
     ...(runtimePaths ? { runtimePaths } : {}),
+    ...(runtimeRepresentationPaths ? { runtimeRepresentationPaths } : {}),
     ...(staticPaths ? { staticPaths } : {}),
   };
 
@@ -197,6 +207,16 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
   for (const tokens of Object.values(staticPaths ?? {})) {
     for (const token of tokens ?? []) {
       if (runtimePathSet.has(expandPathToken(pathPrefix, token)!)) return null;
+    }
+  }
+  // A representation-only runtime path is neither runtime-checked in every
+  // representation nor certified static in its own.
+  for (const [representation, tokens] of Object.entries(runtimeRepresentationPaths ?? {})) {
+    const staticTokens = new Set(staticPaths?.[representation as CacheabilityRepresentation]);
+    for (const token of tokens ?? []) {
+      if (runtimePathSet.has(expandPathToken(pathPrefix, token)!) || staticTokens.has(token)) {
+        return null;
+      }
     }
   }
   return key === cacheabilityManifestRouteKey(parsed.kind, parsed.pattern) ? parsed : null;
@@ -370,7 +390,15 @@ export function cacheabilityManifestRouteState(
   if (route.runtimeRepresentation !== undefined) {
     return representation === route.runtimeRepresentation ? route.state : null;
   }
-  if (!route.staticPaths && !route.runtimePaths && route.allowUnknown !== true) {
+  if (representation && includesPath(route.runtimeRepresentationPaths?.[representation])) {
+    return route.state;
+  }
+  if (
+    !route.staticPaths &&
+    !route.runtimePaths &&
+    !route.runtimeRepresentationPaths &&
+    route.allowUnknown !== true
+  ) {
     return route.state;
   }
   if (includesPath(route.runtimePaths)) return route.state;

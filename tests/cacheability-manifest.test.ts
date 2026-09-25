@@ -267,6 +267,49 @@ describe("cacheability manifest", () => {
     expect(cacheabilityManifestRouteState(shellRoute, "/posts/one", "html")).toBeNull();
   });
 
+  it("authorizes a runtime representation only at its listed paths", () => {
+    const mixedRoute: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pathPrefix: "/posts/",
+      pattern: "/posts/:slug",
+      runtimeRepresentationPaths: { "rsc-loading-shell": ["two"] },
+      state: "runtime-check",
+      staticPaths: { html: ["one"], "rsc-full": ["one"], "rsc-loading-shell": ["one"] },
+    };
+    const mixedKey = cacheabilityManifestRouteKey(mixedRoute.kind, mixedRoute.pattern);
+    const parse = (value: CacheabilityManifestRoute) =>
+      parseCacheabilityManifest(
+        JSON.stringify({ buildId: "build-a", routes: { [mixedKey]: value }, version: 1 }),
+        "build-a",
+      );
+    expect(parse(mixedRoute)?.routes[mixedKey]).toEqual(mixedRoute);
+    expect(cacheabilityManifestRouteState(mixedRoute, "/posts/two", "rsc-loading-shell")).toBe(
+      "runtime-check",
+    );
+    expect(cacheabilityManifestRouteState(mixedRoute, "/posts/two", "rsc-full")).toBeNull();
+    expect(cacheabilityManifestRouteState(mixedRoute, "/posts/two", "html")).toBeNull();
+    expect(cacheabilityManifestRouteState(mixedRoute, "/posts/one", "rsc-loading-shell")).toBe(
+      "static-candidate",
+    );
+    expect(
+      cacheabilityManifestRouteState(mixedRoute, "/posts/three", "rsc-loading-shell"),
+    ).toBeNull();
+    // A path is never both representation-only and runtime-checked or static.
+    expect(parse({ ...mixedRoute, runtimePaths: ["two"] })).toBeNull();
+    expect(
+      parse({ ...mixedRoute, runtimeRepresentationPaths: { "rsc-loading-shell": ["one"] } }),
+    ).toBeNull();
+    expect(
+      parse({
+        kind: "app-page",
+        pattern: "/posts/:slug",
+        runtimeRepresentation: "rsc-loading-shell",
+        runtimeRepresentationPaths: { "rsc-loading-shell": ["/posts/two"] },
+        state: "runtime-check",
+      }),
+    ).toBeNull();
+  });
+
   it("keeps HTML query variants and RSC representations distinct", () => {
     expect(
       cacheabilityRequestIdentity(
