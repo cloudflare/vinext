@@ -19,6 +19,7 @@ import {
   setNavigationContext,
 } from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
+import { startCandidateSearchParamsGate } from "./app-ssr-search-params-gate.js";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -411,6 +412,12 @@ export async function handleSsr(
     isStaticGeneration?: boolean;
     /** `dynamic = "force-static"` suppresses the useSearchParams bailout. */
     isForceStatic?: boolean;
+    /**
+     * Production render that may be stored under a query-free key. SSR
+     * `useSearchParams()` waits on a per-request gate, and the navigation
+     * payload leaves the query for the browser to read.
+     */
+    isCacheCandidate?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
@@ -418,10 +425,19 @@ export async function handleSsr(
 ): Promise<AppSsrRenderResult> {
   return runWithNavigationContext(async () => {
     const assetCrossOrigin = pagesClientAssets.crossOrigin ?? "";
+    // Static generation already bails out at once, and force-static reads an
+    // empty query, so neither needs the gate.
+    const searchParamsGate =
+      options?.isCacheCandidate === true &&
+      options.isStaticGeneration !== true &&
+      options.isForceStatic !== true
+        ? startCandidateSearchParamsGate()
+        : null;
     const ssrNavigationContext = {
       ...requireNavigationContext(navContext),
       isStaticGeneration: options?.isStaticGeneration,
       isForceStatic: options?.isForceStatic,
+      searchParamsGate: searchParamsGate?.gate,
     };
 
     await clientReferencePreloader.preload();
@@ -462,6 +478,10 @@ export async function handleSsr(
             scriptNonce: options?.scriptNonce,
             getInitialNavigationCacheMetadata: options?.getInitialNavigationCacheMetadata,
           });
+        }
+
+        if (searchParamsGate) {
+          ssrStream = searchParamsGate.settleWhenConsumed(ssrStream);
         }
 
         let flightRoot: PromiseLike<AppWireElements> | null = null;
@@ -726,14 +746,24 @@ export async function handleSsr(
           if (didInjectHeadHTML) return insertedHTML + errorMetaHTML;
 
           didInjectHeadHTML = true;
+          // A stored document must not carry the request's query, so the
+          // browser reads it from its own URL instead. A gate that has
+          // already opened means the render won't be stored, so it keeps the
+          // effective query (which a rewrite may have changed).
+          const hidesQuery = searchParamsGate !== null && searchParamsGate.gate.decision !== "real";
+          const isSearchParamsFromBrowser =
+            hidesQuery ||
+            (options?.isStaticGeneration === true ? options.isForceStatic !== true : undefined);
           return buildHeadInjectionHtml(
-            ssrNavigationContext,
+            hidesQuery
+              ? { ...ssrNavigationContext, searchParams: new URLSearchParams() }
+              : ssrNavigationContext,
             bootstrapModuleUrl,
             options?.formState ?? null,
             insertedHTML + errorMetaHTML + getTraceMetaHTML() + initialDevServerErrorHTML,
             fontHTML,
             options?.dynamicStaleTimeSeconds,
-            options?.isStaticGeneration === true ? options.isForceStatic !== true : undefined,
+            isSearchParamsFromBrowser,
             options?.scriptNonce,
           );
         };

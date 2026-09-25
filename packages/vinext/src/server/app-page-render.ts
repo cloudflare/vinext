@@ -7,6 +7,9 @@ import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
+import { internalServerErrorResponse } from "./http-error-responses.js";
+import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { isBailoutToCSRError } from "vinext/shims/navigation-errors";
 import {
   finalizeAppPageCacheabilityEvaluationResponse,
   finalizeAppPageHtmlCacheResponse,
@@ -23,6 +26,7 @@ import {
 } from "./app-page-execution.js";
 import { probeAppPageBeforeRender } from "./app-page-probe.js";
 import {
+  applyEdgeRuntimeHeader,
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
   resolveAppPageHtmlResponsePolicy,
@@ -85,7 +89,7 @@ import type {
   StaticLayoutObservationSkipRejection,
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
-import { peekDynamicUsage } from "vinext/shims/headers";
+import { isRenderDynamicLatched, peekDynamicUsage } from "vinext/shims/headers";
 import {
   bindRequestContext,
   preserveFullyBufferedBodyMetadata,
@@ -167,6 +171,12 @@ type RenderAppPageLifecycleOptionsBase = {
    * (`isAppPageStaticEligible`). Other routes are never full-page cached.
    */
   isStaticEligible: boolean;
+  /**
+   * Production render that may be stored under a query-free key: SSR
+   * `useSearchParams()` waits until the render is known to be dynamic, and
+   * bails out to client rendering otherwise.
+   */
+  isCacheCandidate?: boolean;
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
   isSpeculativePrerender?: boolean;
@@ -812,11 +822,20 @@ async function renderAppPageLifecycleImpl(
   // cannot hide it from the other.
   let dynamicUsageObserved = false;
   let dynamicUsageFinalized = false;
+  const isCacheCandidateHtmlRender =
+    options.isCacheCandidate === true && options.isPrerender !== true && !options.isRscRequest;
   // Some readers, such as the streamed completion marker, run in the response
   // stream's pull context rather than this render's request scope.
-  const consumeDynamicUsage = bindRequestContext(options.consumeDynamicUsage);
+  const readDynamicUsage = bindRequestContext(
+    (): boolean =>
+      options.consumeDynamicUsage() ||
+      // A candidate's SSR useSearchParams() gate opens with the real query
+      // once the render latches dynamic. The latch also sees usage in child
+      // scopes (the layout probe, SSR) that never reach this render's flag.
+      (isCacheCandidateHtmlRender && isRenderDynamicLatched()),
+  );
   const consumeRenderDynamicUsage = (): boolean => {
-    if (!dynamicUsageObserved) dynamicUsageObserved = consumeDynamicUsage();
+    if (!dynamicUsageObserved) dynamicUsageObserved = readDynamicUsage();
     return dynamicUsageObserved;
   };
   const finalizeRenderDynamicUsage = (): boolean => {
@@ -1210,6 +1229,22 @@ async function renderAppPageLifecycleImpl(
       }
     },
     renderErrorBoundaryResponse(error) {
+      if (isCacheCandidateHtmlRender && isBailoutToCSRError(error)) {
+        // A gated useSearchParams() outside Suspense. Next.js rethrows the
+        // bail-out instead of rendering an error boundary, so the request
+        // fails with a 500 and nothing is stored.
+        console.error(
+          `${error.reason} should be wrapped in a suspense boundary at page "${options.routePattern}". Read more: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout`,
+        );
+        options.clearRequestContext();
+        const headers = new Headers();
+        mergeMiddlewareResponseHeaders(headers, options.middlewareContext.headers);
+        headers.set("Cache-Control", NEVER_CACHE_CONTROL);
+        applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
+        const response = internalServerErrorResponse(undefined, { headers });
+        applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
+        return Promise.resolve(response);
+      }
       const capturedRscError = rscErrorTracker.getCapturedError();
       return options.renderErrorBoundaryResponse(
         capturedRscError ?? error,
@@ -1300,6 +1335,7 @@ async function renderAppPageLifecycleImpl(
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
+        isCacheCandidate: isCacheCandidateHtmlRender,
         onSsrError: createAppPageSsrErrorHandler(onSsrError, rscErrorTracker.isCapturedError),
       });
     },

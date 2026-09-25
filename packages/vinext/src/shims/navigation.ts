@@ -2245,6 +2245,16 @@ export function useSearchParams(): ReadonlyURLSearchParams {
       // into the static HTML while the browser fills in the real URL values.
       throw new NavigationBailoutToCSRError("useSearchParams()");
     }
+    const gate = ctx?.searchParamsGate;
+    if (gate) {
+      // A cache-candidate render waits until it is known whether the render
+      // will be stored: real values once it is dynamic, otherwise the same
+      // client-render boundary as a static render.
+      React.use(gate.decided);
+      if (gate.decision === "bailout") {
+        throw new NavigationBailoutToCSRError("useSearchParams()");
+      }
+    }
     markPprFallbackShellDynamicBoundary();
     // During SSR for "use client" components, the navigation context may not be set.
     // getServerSearchParamsSnapshot also covers the Pages Router compat shim.

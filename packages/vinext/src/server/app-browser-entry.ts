@@ -171,7 +171,7 @@ import {
   createDevOnCaughtError,
   createOnUncaughtError,
   createProdOnCaughtError,
-  prodOnRecoverableError,
+  createProdOnRecoverableError,
 } from "./app-browser-error.js";
 import {
   createHydrationCachePublication,
@@ -1853,10 +1853,9 @@ function bootstrapHydration(
     hydrationCachePublication.fail();
     reportUncaughtError(...args);
   };
-  const onRecoverableError = (...args: Parameters<typeof prodOnRecoverableError>) => {
+  const onRecoverableError = createProdOnRecoverableError(() => {
     hydrationCachePublication.fail();
-    prodOnRecoverableError(...args);
-  };
+  });
   const invalidateOnCaughtError = <T extends (...args: never[]) => void>(handler: T): T =>
     ((...args: Parameters<T>) => {
       hydrationCachePublication.fail();

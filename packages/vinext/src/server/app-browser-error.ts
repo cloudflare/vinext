@@ -1,3 +1,4 @@
+import { isBailoutToCSRError } from "vinext/shims/navigation-errors";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { isUnknownRecord } from "../utils/record.js";
 
@@ -75,6 +76,19 @@ export function createDevOnCaughtError(
   };
 }
 
-export function prodOnRecoverableError(error: unknown): void {
-  reportGlobalError(error instanceof Error && error.cause !== undefined ? error.cause : error);
+// Production onRecoverableError handler for hydrateRoot. Ported from Next.js's
+// react-client-callbacks/on-recoverable-error: a useSearchParams() bail-out
+// leaves its Suspense boundary for the browser to client-render, which React
+// reports as a recoverable error carrying the bail-out digest. That switch is
+// the intended render, not a failure, so it is neither reported nor passed to
+// onReportedError.
+export function createProdOnRecoverableError(
+  onReportedError: () => void,
+): (error: unknown) => void {
+  return (error) => {
+    const cause = error instanceof Error && error.cause !== undefined ? error.cause : error;
+    if (isBailoutToCSRError(cause)) return;
+    onReportedError();
+    reportGlobalError(cause);
+  };
 }

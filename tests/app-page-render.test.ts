@@ -21,6 +21,13 @@ import type { LayoutClassificationOptions } from "../packages/vinext/src/server/
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
+import {
+  headersContextFromRequest,
+  markDynamicUsage,
+  runWithHeadersContext,
+  runWithIsolatedDynamicUsage,
+} from "../packages/vinext/src/shims/headers.js";
 import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
@@ -42,7 +49,6 @@ import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
-import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
 import {
   hasFrameworkLinkHeaders,
   markFrameworkLinkHeaders,
@@ -1046,6 +1052,105 @@ describe("app page render lifecycle", () => {
       },
     });
     expect(devRecovered.headers.get("cache-control")).toBe("no-store, must-revalidate");
+  });
+
+  it("fails a candidate render with a 500 when useSearchParams() bails out outside Suspense", async () => {
+    // Next.js rethrows the bail-out instead of rendering error.tsx.
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/app-render.tsx#L3477-L3488
+    const common = createCommonOptions();
+    const clearRequestContext = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ssrOptions: { isCacheCandidate?: boolean }[] = [];
+
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        clearRequestContext,
+        isCacheCandidate: true,
+        isEdgeRuntime: true,
+        isProduction: true,
+        middlewareContext: {
+          headers: new Headers({ "set-cookie": "mw=1; Path=/", "x-middleware": "kept" }),
+          status: null,
+        },
+        async loadSsrHandler() {
+          return {
+            async handleSsr(_rscStream, _navContext, _fontData, options) {
+              ssrOptions.push({ isCacheCandidate: options?.isCacheCandidate });
+              throw new BailoutToCSRError("useSearchParams()");
+            },
+          };
+        },
+        routePattern: "/search",
+      });
+
+      expect(ssrOptions).toEqual([{ isCacheCandidate: true }]);
+      expect(response.status).toBe(500);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(response.headers.get("set-cookie")).toBe("mw=1; Path=/");
+      expect(response.headers.get("x-middleware")).toBe("kept");
+      expect(response.headers.get("x-edge-runtime")).toBe("1");
+      await expect(response.text()).resolves.toBe("Internal Server Error");
+      expect(common.renderErrorBoundaryResponse).not.toHaveBeenCalled();
+      expect(common.isrSet).not.toHaveBeenCalled();
+      expect(clearRequestContext).toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledWith(
+        'useSearchParams() should be wrapped in a suspense boundary at page "/search". Read more: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout',
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("keeps the error boundary for a bail-out outside a candidate render", async () => {
+    const common = createCommonOptions();
+    const bailout = new BailoutToCSRError("useSearchParams()");
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      async loadSsrHandler() {
+        return {
+          async handleSsr() {
+            throw bailout;
+          },
+        };
+      },
+    });
+
+    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(bailout, "ssr");
+    expect(response.status).toBe(200);
+  });
+
+  it("never stores a candidate render that latched dynamic outside its own scope", async () => {
+    // A dynamic API in an isolated scope (the layout probe) or in SSR opens the
+    // useSearchParams() gate with the real query, but never reaches the
+    // render's own dynamic flag.
+    const common = createCommonOptions();
+    await runWithHeadersContext(
+      headersContextFromRequest(new Request("https://example.test/posts/post?q=secret")),
+      async () => {
+        await runWithIsolatedDynamicUsage(() => {
+          markDynamicUsage();
+        });
+
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          consumeDynamicUsage: vi.fn(() => false),
+          isCacheCandidate: true,
+          isProduction: true,
+          revalidateSeconds: 30,
+        });
+
+        expect(response.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+        await response.text();
+        await Promise.all(common.waitUntilPromises);
+        expect(common.isrSet).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {

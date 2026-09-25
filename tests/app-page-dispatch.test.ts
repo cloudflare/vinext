@@ -56,6 +56,7 @@ import {
   consumeRenderRequestApiUsage,
   draftMode,
   getHeadersContext,
+  headersContextFromRequest,
   markDynamicUsage,
   markRenderRequestApiUsage,
   setHeadersContext,
@@ -711,6 +712,10 @@ describe("app page dispatch", () => {
   afterEach(() => {
     consumeDynamicUsage();
     consumeRenderRequestApiUsage();
+    // Tests that run outside a request share the fallback state, whose dynamic
+    // latch is otherwise only reset by a new headers context.
+    setHeadersContext(headersContextFromRequest(new Request("https://example.test/")));
+    setHeadersContext(null);
     vi.unstubAllEnvs();
   });
 
@@ -776,9 +781,10 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
-  it("caches fresh query-bearing HTML when the page probe does not read searchParams", async () => {
+  it("renders query-bearing HTML as a cache candidate and stores it when searchParams is unread", async () => {
     const probePage = vi.fn(() => null);
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const ssrOptions: { isCacheCandidate?: boolean }[] = [];
     const waitUntilPromises: Promise<unknown>[] = [];
     const executionContext = {
       waitUntil(promise) {
@@ -788,6 +794,12 @@ describe("app page dispatch", () => {
     const { options } = createDispatchOptions({
       isProduction: true,
       isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, handleSsrOptions) {
+          ssrOptions.push({ isCacheCandidate: handleSsrOptions?.isCacheCandidate });
+          return createStream(["<html>page</html>"]);
+        },
+      }),
       probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("utm_source=google"),
@@ -797,8 +809,11 @@ describe("app page dispatch", () => {
       dispatchAppPage(options),
     );
 
+    // SSR keeps the query out of the output unless the render turns dynamic,
+    // so a candidate miss reports MISS with or without a query.
+    expect(ssrOptions).toEqual([{ isCacheCandidate: true }]);
     expect(probePage).not.toHaveBeenCalled();
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     await expect(response.text()).resolves.toBe("<html>page</html>");
     await Promise.all(waitUntilPromises.splice(0));
@@ -814,6 +829,35 @@ describe("app page dispatch", () => {
     expect(cachePolicy.cacheControl.revalidate).toBe(60);
     expect(cachePolicy.tags).toEqual(expect.arrayContaining(["_N_T_/posts/hello"]));
     expect(cachePolicy.cacheControl.expire).toBeUndefined();
+  });
+
+  it("renders draft-mode and dev HTML outside cache-candidate mode", async () => {
+    for (const overrides of [
+      {
+        isProduction: true,
+        request: new Request("https://example.com/posts/hello?q=1", {
+          headers: { cookie: "__prerender_bypass=draft-secret" },
+        }),
+      },
+      { isProduction: false },
+    ]) {
+      const ssrOptions: { isCacheCandidate?: boolean }[] = [];
+      const { options } = createDispatchOptions({
+        ...overrides,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, handleSsrOptions) {
+            ssrOptions.push({ isCacheCandidate: handleSsrOptions?.isCacheCandidate });
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+        revalidateSeconds: 60,
+        searchParams: new URLSearchParams("q=1"),
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+      expect(ssrOptions).toEqual([{ isCacheCandidate: false }]);
+    }
   });
 
   it("writes HTML-captured RSC data under the plain key when interception context is absent", async () => {
@@ -1380,7 +1424,9 @@ describe("app page dispatch", () => {
       );
       const completed = extractRscCompletionMetadata(await response.arrayBuffer());
       await Promise.all(waitUntilPromises.splice(0));
-      expect(response.headers.get("x-vinext-cache")).not.toBe("HIT");
+      // A query-bearing RSC render may still read searchParams after its
+      // headers are built, so it sends no provisional cache state.
+      expect(response.headers.get("x-vinext-cache")).toBeNull();
       expect(response.headers.get("x-vinext-rsc-completion-metadata")).toBe("1");
       expect(completed.metadata).toEqual({
         dynamicStaleTimeSeconds: 0,
