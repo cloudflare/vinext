@@ -160,6 +160,17 @@ function capFreshness(cacheControl: string, maxSeconds: number): string {
     .join(", ");
 }
 
+// Directives that keep a browser from assigning heuristic freshness: a
+// lifetime of its own, or a rule against reusing the response unvalidated.
+// `s-maxage` applies only to shared caches, so it is not one of them.
+const CLIENT_FRESHNESS_DIRECTIVES = new Set(["max-age", "no-cache", "no-store"]);
+
+function hasClientFreshness(cacheControl: string): boolean {
+  return splitDirectives(cacheControl).some((part) =>
+    CLIENT_FRESHNESS_DIRECTIVES.has(part.split("=")[0]!.trim().toLowerCase()),
+  );
+}
+
 /**
  * Headers served for an entry re-stored after its regeneration failed. Like
  * Next.js, it is served as new: a stored `Date` moves to the re-store time, and
@@ -173,7 +184,7 @@ export function failedRegenerationHeaders(
 ): [string, string][] {
   const date = new Date(now).toUTCString();
   const retryUntil = now + retrySeconds * 1000;
-  return headers.map(([name, value]) => {
+  const restored = headers.map(([name, value]): [string, string] => {
     const lower = name.toLowerCase();
     if (lower === "date") return [name, date];
     // An unparseable `Expires` already means expired, so only a later date moves.
@@ -183,6 +194,19 @@ export function failedRegenerationHeaders(
     if (POLICY_HEADERS.has(lower)) return [name, capFreshness(value, retrySeconds)];
     return [name, value];
   });
+
+  // Without an explicit lifetime, a browser may derive heuristic freshness
+  // from `Last-Modified` and `Date`, and the new `Date` restarts it too. Cap
+  // it the same way, by giving such a response the retry window as its
+  // lifetime.
+  if (restored.some(([name]) => name.toLowerCase() === "expires")) return restored;
+  const index = restored.findIndex(([name]) => name.toLowerCase() === "cache-control");
+  const cap = `max-age=${retrySeconds}`;
+  if (index === -1) return [...restored, ["cache-control", cap]];
+  const [name, value] = restored[index]!;
+  if (hasClientFreshness(value)) return restored;
+  restored[index] = [name, value ? `${value}, ${cap}` : cap];
+  return restored;
 }
 
 export function representationAge(createdAt: number, initialAge: number, now = Date.now()): number {

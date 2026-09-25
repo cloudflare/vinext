@@ -58,6 +58,7 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
   const age = request.headers.get("X-Response-Age");
   const date = request.headers.get("X-Response-Date");
   const expires = request.headers.get("X-Response-Expires");
+  const lastModified = request.headers.get("X-Response-Last-Modified");
   const cloudflareCacheControl = request.headers.get("X-Response-Cloudflare-CDN-Cache-Control");
   const cdnCacheControl = request.headers.get("X-Response-CDN-Cache-Control");
   const largeHeaderBytes = Number.parseInt(
@@ -69,6 +70,7 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
   if (age) headers.set("Age", age);
   if (date) headers.set("Date", date);
   if (expires) headers.set("Expires", expires);
+  if (lastModified) headers.set("Last-Modified", lastModified);
   if (cloudflareCacheControl) {
     headers.set("Cloudflare-CDN-Cache-Control", cloudflareCacheControl);
   }

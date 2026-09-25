@@ -24,6 +24,7 @@ type PutOptions = {
   age?: number;
   date?: string;
   expires?: string;
+  lastModified?: string;
   bodyDelayMs?: number;
   bodyFailure?: boolean;
   cacheControl?: string;
@@ -91,6 +92,7 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   if (options.age !== undefined) headers.set("X-Response-Age", String(options.age));
   if (options.date) headers.set("X-Response-Date", options.date);
   if (options.expires) headers.set("X-Response-Expires", options.expires);
+  if (options.lastModified) headers.set("X-Response-Last-Modified", options.lastModified);
   if (options.status !== undefined) headers.set("X-Response-Status", String(options.status));
   if (options.cloudflareCacheControl) {
     headers.set("X-Response-Cloudflare-CDN-Cache-Control", options.cloudflareCacheControl);
@@ -1008,6 +1010,20 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
       retry: 30,
       expire: 65,
       forwarded: { "Cache-Control": "public" },
+    },
+    {
+      path: "/backoff/heuristic",
+      options: {
+        cacheControl: "public",
+        cloudflareCacheControl: "max-age=60, stale-while-revalidate=5",
+        lastModified: new Date(Date.now() - 30 * 86_400_000).toUTCString(),
+        age: 60,
+      },
+      retry: 30,
+      expire: 65,
+      // Without a lifetime of its own, a browser could derive a heuristic one
+      // from Last-Modified that far outlives the retry window.
+      forwarded: { "Cache-Control": "public, max-age=30" },
     },
     {
       path: "/backoff/static",
