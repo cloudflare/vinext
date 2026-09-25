@@ -443,6 +443,98 @@ describe("ClientPageRoot in the browser", () => {
     });
   });
 
+  it("reads its own navigation's query when a kept branch first renders under a later one", async () => {
+    // /feed?tab=hot commits its loading shell while the page is still
+    // streaming. An intercepted /photo/1 then keeps that branch, and the page
+    // first renders under /photo/1.
+    await withBrowserModules(async (modules) => {
+      const { AppElementsWire, normalizeAppElements } =
+        await import("../packages/vinext/src/server/app-elements.js");
+      const { FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN, createPendingNavigationCommitFromElements } =
+        await import("../packages/vinext/src/server/app-browser-state.js");
+      const Context = modules.navigation.getClientNavigationRenderContext();
+      if (!Context) throw new Error("Expected client navigation render context");
+      const feed = modules.navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/feed?tab=hot",
+        {},
+        "/feed?tab=hot",
+      );
+      const photo = modules.navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/photo/1",
+        { id: "1" },
+        "/photo/1",
+      );
+      const createElements = (routeId: string, entries: Record<string, unknown>) =>
+        normalizeAppElements({
+          ...AppElementsWire.createMetadataEntries({
+            interception: null,
+            interceptionContext: null,
+            layoutIds: [],
+            rootLayoutTreePath: null,
+            routeId,
+            slotBindings: [],
+            sourcePage: null,
+          }),
+          ...entries,
+        });
+      const feedPage = () =>
+        React.createElement(modules.ClientPageRoot, {
+          Component: QueryPage as React.ComponentType<Record<string, unknown>>,
+          pageProps: { params: {} },
+        });
+      // A kept branch a refresh fetched from its own URL, merged in first.
+      const refreshed = { "page:/refreshed": feedPage() };
+      modules.slot.setAppElementsRenderedSearch(refreshed, "?tab=new");
+      const feedElements = createElements("route:/feed", {
+        "page:/feed": feedPage(),
+        ...refreshed,
+      });
+
+      createPendingNavigationCommitFromElements({
+        currentState: {
+          activeOperation: null,
+          bfcacheIds: {},
+          elements: createElements("route:/", {}),
+          interception: null,
+          interceptionContext: null,
+          layoutFlags: {},
+          layoutIds: [],
+          navigationSnapshot: modules.navigation.createClientNavigationRenderSnapshot(
+            "http://localhost/",
+            {},
+          ),
+          previousNextUrl: null,
+          renderId: 0,
+          rootLayoutTreePath: null,
+          routeId: "route:/",
+          slotBindings: [],
+          visibleCommitVersion: 0,
+        },
+        navigationSnapshot: feed,
+        nextElements: feedElements,
+        operationLane: "navigation",
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        renderId: 1,
+        type: "navigate",
+      });
+
+      const renderSlot = (id: string) =>
+        renderToStaticMarkup(
+          React.createElement(
+            Context.Provider,
+            { value: photo },
+            React.createElement(
+              modules.slot.ElementsContext.Provider,
+              { value: feedElements },
+              React.createElement(modules.slot.Slot, { id }),
+            ),
+          ),
+        );
+      expect(renderSlot("page:/feed")).toContain("query:{&quot;tab&quot;:&quot;hot&quot;}");
+      expect(renderSlot("page:/refreshed")).toContain("query:{&quot;tab&quot;:&quot;new&quot;}");
+    });
+  });
+
   it("keeps handing a kept page the same promise", async () => {
     await withBrowserModules(async (modules) => {
       const received: unknown[] = [];

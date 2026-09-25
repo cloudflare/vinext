@@ -168,6 +168,7 @@ import {
   BfcacheIdentityMapContext,
   ElementsContext,
   Slot,
+  bindAppElementsRenderedSearch,
   setAppElementsRenderedSearch,
 } from "vinext/shims/slot";
 import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
@@ -1870,7 +1871,6 @@ function bootstrapHydration(
   const hydrationCachePublication = createHydrationCachePublication();
   const cacheGeneration = clientNavigationCacheGeneration;
   const [reactBranch, cacheBranch] = rscStream.tee();
-  const root = decodeAppElementsPromise(createFromReadableStream<AppWireElements>(reactBranch));
   const initialNavigationSnapshot = withLateRenderedSearch(
     createClientNavigationRenderSnapshot(
       window.location.href,
@@ -1879,6 +1879,12 @@ function bootstrapHydration(
     ),
     initialRscBootstrap,
   );
+  const root = decodeAppElementsPromise(
+    createFromReadableStream<AppWireElements>(reactBranch),
+  ).then((elements) => {
+    bindAppElementsRenderedSearch(elements, initialNavigationSnapshot);
+    return elements;
+  });
   const initialParams = initialNavigationSnapshot.params;
   const initialPathAndSearch = createSnapshotPathAndSearch(initialNavigationSnapshot);
   const initialCacheBuffer = new Response(cacheBranch).arrayBuffer();

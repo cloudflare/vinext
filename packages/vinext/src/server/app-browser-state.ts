@@ -38,6 +38,7 @@ import {
   createSnapshotPathAndSearch,
   type ClientNavigationRenderSnapshot,
 } from "vinext/shims/navigation";
+import { bindAppElementsRenderedSearch } from "vinext/shims/slot";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { normalizePath } from "./normalize-path.js";
 import type { BfcacheIdMap } from "./app-history-state.js";
@@ -665,6 +666,10 @@ export function createPendingNavigationCommitFromElements(
   options: CreatePendingNavigationCommitOptions & { nextElements: AppElements },
 ): PendingNavigationCommit {
   const elements = options.nextElements;
+  // Before any merge into the visible tree: a page still streaming when a
+  // later navigation keeps its branch first renders under that navigation,
+  // but reads the query of the response that delivered it.
+  bindAppElementsRenderedSearch(elements, options.navigationSnapshot);
   const metadata = AppElementsWire.readMetadata(elements);
   const cacheEntryReuseProof =
     metadata.cacheEntryReuseProof ??

@@ -16,8 +16,10 @@
  *   page's server output first renders. Next.js reads it from the page's own
  *   segment payload, so a rewritten query survives, and a page that stays
  *   mounted (an intercepted modal's background, a kept parallel slot) keeps
- *   its query when the URL changes. A kept branch that a refresh fetches from
- *   its own URL carries its own query (`RenderedSearchContext`).
+ *   its query when the URL changes. The router tags each payload's elements
+ *   with the query they were rendered with (`RenderedSearchContext`), so a
+ *   kept page that first renders under a later navigation (still streaming,
+ *   or refreshed from its own URL) reads its own response's query.
  *
  * `emptySearchParams` pages (`dynamic = "force-static"`, static export) always
  * get an empty, untracked query, as the server renders them.
