@@ -152,7 +152,7 @@ type BrowserNavigationController = {
   ): Promise<unknown>;
   hmrReplaceTree(
     nextElements: Promise<AppElements>,
-    navigationSnapshot: ClientNavigationRenderSnapshot,
+    navigationSnapshot: ClientNavigationRenderSnapshot | Promise<ClientNavigationRenderSnapshot>,
   ): Promise<void>;
   /**
    * Force-drain the queued pre-paint effect for the given renderId without
@@ -507,14 +507,20 @@ export function createAppBrowserNavigationController(
 
   async function hmrReplaceTree(
     nextElements: Promise<AppElements>,
-    navigationSnapshot: ClientNavigationRenderSnapshot,
+    pendingNavigationSnapshot:
+      | ClientNavigationRenderSnapshot
+      | Promise<ClientNavigationRenderSnapshot>,
   ): Promise<void> {
+    // Claim the generation before the snapshot (read from the response
+    // headers) resolves, so an older update still decoding cannot commit.
     const hmrUpdateId = ++latestHmrUpdateId;
     const startedDuringUserNavigation = pendingUserNavigationLane === "navigation";
     if (!hasBrowserRouterState()) return;
 
     const currentState = getBrowserRouterState();
     const renderId = allocateRenderId();
+    // Await both so a failed response does not leave either rejection unobserved.
+    const [navigationSnapshot] = await Promise.all([pendingNavigationSnapshot, nextElements]);
     const pending = await createPendingNavigationCommit({
       currentState,
       nextElements,

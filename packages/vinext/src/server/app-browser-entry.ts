@@ -3065,33 +3065,32 @@ function bootstrapHydration(
           browserNavigationController.getBrowserRouterState().elements,
         ),
       });
-      const hmrResponse = await fetch(
+      const hmrHref = window.location.href;
+      const hmrParams = latestClientParams;
+      // Same URL, so the same rendered query unless the response says otherwise.
+      const sameQuerySnapshot = withRenderedSearchOf(
+        createClientNavigationRenderSnapshot(hmrHref, hmrParams),
+        browserNavigationController.getBrowserRouterState().navigationSnapshot,
+      );
+      const hmrResponse = fetch(
         await createRscRequestUrl(window.location.pathname + window.location.search, hmrHeaders),
         { headers: hmrHeaders },
       );
-      if (updateId !== latestRscHmrUpdateId) return;
-      // Same URL, but a rewrite can resolve another query than the tree had.
-      const renderedPathAndSearch = parseRenderedPathAndSearchHeader(
-        hmrResponse.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
-      );
-      const navigationSnapshot =
-        renderedPathAndSearch === null
-          ? withRenderedSearchOf(
-              createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
-              browserNavigationController.getBrowserRouterState().navigationSnapshot,
-            )
-          : createClientNavigationRenderSnapshot(
-              window.location.href,
-              latestClientParams,
-              renderedPathAndSearch,
-            );
+      // Enter the controller before the response arrives, so this update
+      // supersedes an older one that is still decoding.
       await browserNavigationController.hmrReplaceTree(
         decodeAppElementsPromise(
-          createFromFetch<AppWireElements>(
-            Promise.resolve(stripRscCompletionMetadataResponse(hmrResponse)),
-          ),
+          createFromFetch<AppWireElements>(hmrResponse.then(stripRscCompletionMetadataResponse)),
         ),
-        navigationSnapshot,
+        hmrResponse.then((response) => {
+          // A rewrite can resolve another query than the tree had.
+          const renderedPathAndSearch = parseRenderedPathAndSearchHeader(
+            response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+          );
+          return renderedPathAndSearch === null
+            ? sameQuerySnapshot
+            : createClientNavigationRenderSnapshot(hmrHref, hmrParams, renderedPathAndSearch);
+        }),
       );
     };
 

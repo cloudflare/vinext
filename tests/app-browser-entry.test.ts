@@ -89,7 +89,10 @@ import {
   type AppElementsInterception,
   type AppElementsSlotBinding,
 } from "../packages/vinext/src/server/app-elements.js";
-import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
+import {
+  createClientNavigationRenderSnapshot,
+  type ClientNavigationRenderSnapshot,
+} from "../packages/vinext/src/shims/navigation.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
@@ -3059,6 +3062,52 @@ describe("app browser entry state helpers", () => {
       await secondHmrPromise;
 
       expect(stateRef.current.routeId).toBe("route:/hmr-b");
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not commit an older decoding HMR payload while a newer update awaits its response headers", async () => {
+    const { controller, detach, stateRef, setBrowserRouterState } = createControllerHarness();
+    let resolveFirstHmrPayload!: (elements: AppElements) => void;
+    let resolveSecondHmrPayload!: (elements: AppElements) => void;
+    let resolveSecondSnapshot!: (snapshot: ClientNavigationRenderSnapshot) => void;
+    const firstHmrPayload = new Promise<AppElements>((resolve) => {
+      resolveFirstHmrPayload = resolve;
+    });
+    const secondHmrPayload = new Promise<AppElements>((resolve) => {
+      resolveSecondHmrPayload = resolve;
+    });
+    const secondSnapshot = new Promise<ClientNavigationRenderSnapshot>((resolve) => {
+      resolveSecondSnapshot = resolve;
+    });
+
+    try {
+      const firstHmrPromise = controller.hmrReplaceTree(
+        firstHmrPayload,
+        stateRef.current.navigationSnapshot,
+      );
+      // The newer update enters before its response (and so its snapshot) arrives.
+      const secondHmrPromise = controller.hmrReplaceTree(secondHmrPayload, secondSnapshot);
+
+      resolveFirstHmrPayload(createResolvedElements("route:/hmr-a", "/"));
+      await firstHmrPromise;
+
+      expect(stateRef.current.routeId).toBe("route:/initial");
+      expect(setBrowserRouterState).not.toHaveBeenCalled();
+
+      const renderedSnapshot = createClientNavigationRenderSnapshot(
+        "https://example.com/initial",
+        {},
+        "/initial?rewritten=1",
+      );
+      resolveSecondSnapshot(renderedSnapshot);
+      resolveSecondHmrPayload(createResolvedElements("route:/hmr-b", "/"));
+      await secondHmrPromise;
+
+      expect(stateRef.current.routeId).toBe("route:/hmr-b");
+      expect(stateRef.current.navigationSnapshot).toBe(renderedSnapshot);
       expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
     } finally {
       detach();
