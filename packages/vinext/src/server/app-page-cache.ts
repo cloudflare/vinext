@@ -506,56 +506,49 @@ export async function readAppPageCacheResponse(
           options.isrDebug?.("regen write skipped (searchParams not proven unread)", isrKey);
           return;
         }
-        const writes = [
-          options.isrSet(
-            // For an RSC request `isrKey` is already the RSC variant key, so
-            // reuse it; an HTML-triggered regen still needs the RSC key here,
-            // computed lazily so a deduped (skipped) regen pays nothing.
-            options.isRscRequest
-              ? isrKey
-              : options.isrRscKey(
-                  options.cleanPathname,
-                  null,
-                  options.renderMode,
-                  options.interceptionContext,
-                  options.interceptionId,
-                ),
-            buildAppPageCacheValue(
-              "",
-              revalidatedPage.rscData,
-              200,
-              revalidatedPage.rscRenderObservation,
-            ),
-            { cacheControl, tags: revalidatedPage.tags },
+        await options.isrSet(
+          // For an RSC request `isrKey` is already the RSC variant key, so
+          // reuse it; an HTML-triggered regen still needs the RSC key here,
+          // computed lazily so a deduped (skipped) regen pays nothing.
+          options.isRscRequest
+            ? isrKey
+            : options.isrRscKey(
+                options.cleanPathname,
+                null,
+                options.renderMode,
+                options.interceptionContext,
+                options.interceptionId,
+              ),
+          buildAppPageCacheValue(
+            "",
+            revalidatedPage.rscData,
+            200,
+            revalidatedPage.rscRenderObservation,
           ),
-        ];
+          { cacheControl, tags: revalidatedPage.tags },
+        );
 
         if (!options.isRscRequest) {
           // HTML cache is slot-state-independent (canonical), so only refresh it
           // during HTML-triggered regens. RSC-triggered regens only update the
           // requesting client's RSC slot variant; a stale HTML cache entry will
           // be regenerated independently by the next full-page HTML request.
-          writes.push(
-            options.isrSet(
-              isrKey,
-              buildAppPageCacheValue(
-                revalidatedPage.html,
-                undefined,
-                200,
-                revalidatedPage.htmlRenderObservation,
-                revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
-              ),
-              { cacheControl, tags: revalidatedPage.tags },
+          //
+          // Written only once the RSC write has succeeded, so a failed RSC
+          // write leaves this key's previous entry for the failure handler to
+          // keep, and no sibling write is still pending when it does.
+          await options.isrSet(
+            isrKey,
+            buildAppPageCacheValue(
+              revalidatedPage.html,
+              undefined,
+              200,
+              revalidatedPage.htmlRenderObservation,
+              revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
             ),
+            { cacheControl, tags: revalidatedPage.tags },
           );
         }
-
-        // Let every write settle before a failure keeps the previous entry, so
-        // a slower sibling write can't land over the one it re-stores.
-        const failedWrite = (await Promise.allSettled(writes)).find(
-          (result) => result.status === "rejected",
-        );
-        if (failedWrite) throw failedWrite.reason;
         options.isrDebug?.("regen complete", options.cleanPathname);
       };
       // As in Next.js, any failure, whether rendering or storing the new

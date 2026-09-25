@@ -2201,23 +2201,31 @@ describe("app page regeneration failures", () => {
     expect(isrSet).toHaveBeenCalledWith("html:/stale", cachedValue, expect.anything());
   });
 
-  it("re-stores the previous entry only after a slower sibling write settles", async () => {
+  it("keeps the previous entry when the regeneration's sibling RSC write fails", async () => {
     const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
     const scheduled: Array<() => Promise<void>> = [];
-    const writes: string[] = [];
-    const isrSet = vi.fn<AppPageCacheSetter>(async (key, data) => {
-      if (data === cachedValue) {
-        writes.push("restore " + key);
-        return;
-      }
-      if (key === "rsc:/stale") throw new Error("rsc store failed");
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      writes.push("fresh " + key);
+    // A store whose writes get a newer lastModified, so the failure handler
+    // sees any HTML this regeneration itself wrote as a newer entry.
+    const store = new Map<string, ISRCacheEntry>([
+      ["html:/stale", buildISRCacheEntry(cachedValue, true, { revalidate: 60 })],
+    ]);
+    let writes = 0;
+    const isrSet = vi.fn<AppPageCacheSetter>(async (key, data, policy) => {
+      if (data !== cachedValue && key === "rsc:/stale") throw new Error("rsc store failed");
+      writes++;
+      store.set(key, {
+        isStale: false,
+        value: {
+          cacheControl: policy.cacheControl,
+          lastModified: Date.now() + writes,
+          value: data,
+        },
+      });
     });
 
     await readStale({
-      async isrGet() {
-        return buildISRCacheEntry(cachedValue, true, { revalidate: 60 });
+      async isrGet(key) {
+        return store.get(key) ?? null;
       },
       isrSet,
       async renderFreshPageForCache() {
@@ -2227,7 +2235,14 @@ describe("app page regeneration failures", () => {
     });
 
     await expect(scheduled[0]()).rejects.toThrow("rsc store failed");
-    expect(writes).toEqual(["fresh html:/stale", "restore html:/stale"]);
+    expect(store.get("html:/stale")?.value).toEqual({
+      cacheControl: { revalidate: 30 },
+      lastModified: expect.any(Number),
+      value: cachedValue,
+    });
+    expect(
+      isrSet.mock.calls.filter(([key, data]) => key === "html:/stale" && data !== cachedValue),
+    ).toEqual([]);
   });
 
   it.each([
