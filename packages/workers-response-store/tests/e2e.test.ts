@@ -224,12 +224,12 @@ async function onePathPerShard(shards: number): Promise<string[]> {
   return paths as string[];
 }
 
-// Re-exports the fixture Worker with an R2 binding whose second write fails,
-// either before or after the object is stored. "after-head-fails" also fails
-// every HEAD, so the outcome of that write cannot be checked.
-async function useFailingSecondR2Write(mode: "before" | "after" | "after-head-fails") {
+// Re-exports the fixture Worker with its R2 binding replaced. `wrapBucket` is
+// the source of an expression that evaluates, once per isolate, to a function
+// from the real bucket to the one the Worker uses.
+async function restartWithWrappedR2Bucket(fileName: string, wrapBucket: string) {
   await mf.dispose();
-  const wrapperPath = path.join(path.dirname(workerScript), "failing-second-r2-write.js");
+  const wrapperPath = path.join(path.dirname(workerScript), fileName);
   mf = new Miniflare({
     compatibilityDate: "2026-04-08",
     compatibilityFlags: ["nodejs_compat"],
@@ -249,30 +249,10 @@ async function useFailingSecondR2Write(mode: "before" | "after" | "after-head-fa
               import worker, { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding as Base } from "./worker.js";
               export { CacheMetadata, ResponseStoreRevalidator };
               export default worker;
-              const mode = ${JSON.stringify(mode)};
-              let puts = 0;
+              const wrapBucket = ${wrapBucket};
               export class ResponseStoreBinding extends Base {
                 constructor(ctx, env) {
-                  const bucket = env.CACHE_BODIES;
-                  super(ctx, {
-                    ...env,
-                    CACHE_BODIES: {
-                      get: (...args) => bucket.get(...args),
-                      head: (...args) =>
-                        mode === "after-head-fails"
-                          ? Promise.reject(new Error("Injected R2 HEAD failure"))
-                          : bucket.head(...args),
-                      list: (...args) => bucket.list(...args),
-                      delete: (...args) => bucket.delete(...args),
-                      async put(key, value, options) {
-                        if (++puts === 2) {
-                          if (mode !== "before") await bucket.put(key, value, options);
-                          throw new Error("Injected R2 write failure");
-                        }
-                        return bucket.put(key, value, options);
-                      },
-                    },
-                  });
+                  super(ctx, { ...env, CACHE_BODIES: wrapBucket(env.CACHE_BODIES) });
                 }
               }
             `,
@@ -294,6 +274,71 @@ async function useFailingSecondR2Write(mode: "before" | "after" | "after-head-fa
     ],
   });
   worker = { fetch: mf.dispatchFetch.bind(mf) };
+}
+
+// Re-exports the fixture Worker with an R2 binding whose second write fails,
+// either before or after the object is stored. "after-head-fails" also fails
+// every HEAD, so the outcome of that write cannot be checked.
+async function useFailingSecondR2Write(mode: "before" | "after" | "after-head-fails") {
+  await restartWithWrappedR2Bucket(
+    "failing-second-r2-write.js",
+    `(() => {
+      const mode = ${JSON.stringify(mode)};
+      let puts = 0;
+      return (bucket) => ({
+        get: (...args) => bucket.get(...args),
+        head: (...args) =>
+          mode === "after-head-fails"
+            ? Promise.reject(new Error("Injected R2 HEAD failure"))
+            : bucket.head(...args),
+        list: (...args) => bucket.list(...args),
+        delete: (...args) => bucket.delete(...args),
+        async put(key, value, options) {
+          if (++puts === 2) {
+            if (mode !== "before") await bucket.put(key, value, options);
+            throw new Error("Injected R2 write failure");
+          }
+          return bucket.put(key, value, options);
+        },
+      });
+    })()`,
+  );
+}
+
+// Re-exports the fixture Worker with an R2 binding that holds its second write
+// until a third one starts, then lands the second before or after the third.
+// The third write's request performs both, since a request cannot use another
+// request's bucket.
+async function restartWithHeldSecondR2Write(order: "before" | "after") {
+  await restartWithWrappedR2Bucket(
+    "held-second-r2-write.js",
+    `(() => {
+      const order = ${JSON.stringify(order)};
+      let puts = 0;
+      let held;
+      return (bucket) => ({
+        get: (...args) => bucket.get(...args),
+        head: (...args) => bucket.head(...args),
+        list: (...args) => bucket.list(...args),
+        delete: (...args) => bucket.delete(...args),
+        async put(key, value, options) {
+          const put = ++puts;
+          if (put === 2) {
+            return new Promise((resolve, reject) => {
+              held = { key, value, options, resolve, reject };
+            });
+          }
+          if (put !== 3) return bucket.put(key, value, options);
+          const landHeld = () =>
+            bucket.put(held.key, held.value, held.options).then(held.resolve, held.reject);
+          if (order === "before") await landHeld();
+          const stored = await bucket.put(key, value, options);
+          if (order === "after") await landHeld();
+          return stored;
+        },
+      });
+    })()`,
+  );
 }
 
 async function regenerationCount(): Promise<number> {
@@ -2411,6 +2456,60 @@ test("concurrent failed foreground regenerations leave R2 and the metadata in st
   ).head(`${r2Root}/${entry.keyHash}/active`);
   assert.equal(object?.customMetadata?.freshUntil, String(entry.freshUntil));
   assert.equal(object?.customMetadata?.swrUntil, String(entry.swrUntil));
+});
+
+// Two failed foreground regenerations re-store successive states of the same
+// revision: the second reads R2 while the first re-store's rewrite is held,
+// and the held rewrite then lands before or after the second one.
+async function restoreSuccessiveStates(order: "before" | "after") {
+  await restartWithHeldSecondR2Write(order);
+  const cacheKey = `/restore-race-${order}`;
+  await put(cacheKey, "still-active", {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    revalidator: { fail: true },
+  });
+
+  const first = read(cacheKey);
+  let firstRestore: any;
+  for (let attempt = 0; attempt < 100 && !firstRestore; attempt++) {
+    const [entry] = await metadata();
+    if (entry.freshUntil > Date.now()) firstRestore = entry;
+    else await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(firstRestore, "the first re-store was not published");
+
+  const second = await read(cacheKey);
+  assert.equal(second.status, 500);
+  await second.arrayBuffer();
+  const firstResponse = await first;
+  assert.equal(firstResponse.status, 500);
+  await firstResponse.arrayBuffer();
+  await waitForNoPendingObjects();
+
+  const [entry] = await metadata();
+  assert.equal(entry.activeRevision, firstRestore.activeRevision);
+  assert.notEqual(entry.freshUntil, firstRestore.freshUntil);
+  const object = await (
+    await mf.getR2Bucket("CACHE_BODIES", "user-worker")
+  ).head(`${r2Root}/${entry.keyHash}/active`);
+  assert.equal(object?.customMetadata?.freshUntil, String(entry.freshUntil));
+  assert.equal(object?.customMetadata?.swrUntil, String(entry.swrUntil));
+
+  const stored = await read(cacheKey);
+  assert.equal(stored.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await stored.text(), "still-active");
+}
+
+test("a re-store that loses to an earlier state's rewrite replaces it", async () => {
+  await restoreSuccessiveStates("before");
+});
+
+// Both rewrites carry the same body, so this relies on each re-store storing
+// unique bytes: R2 ETags hash the bytes, and the held write would otherwise
+// still match the source ETag it compares.
+test("an earlier state's re-store cannot overwrite a later one", async () => {
+  await restoreSuccessiveStates("after");
 });
 
 test("a write reserved after a tag purge is not rejected by its timestamp", async () => {

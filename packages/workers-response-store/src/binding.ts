@@ -738,6 +738,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     createdAt: number,
     initialAge: number,
     expectedEtag?: string | null,
+    restoreRevision?: number,
   ): Promise<boolean> {
     this.invalidateEntryRead(entry.keyHash);
     try {
@@ -753,9 +754,20 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         swrUntil: String(entry.swrUntil),
         latestRevision: String(entry.activeRevision),
       };
-      if (customMetadataSize(customMetadata) > R2_CUSTOM_METADATA_SAFE_BYTES) {
+      // R2 ETags hash an object's bytes, so a re-store, which rewrites the same
+      // body, keeps the ETag that its conditional write compares. Its response
+      // metadata goes in the body with the re-store's reservation revision,
+      // which makes each re-store's bytes and ETag unique.
+      if (
+        restoreRevision !== undefined ||
+        customMetadataSize(customMetadata) > R2_CUSTOM_METADATA_SAFE_BYTES
+      ) {
         const responseMetadata = new TextEncoder().encode(
-          JSON.stringify({ statusText: entry.statusText, responseHeaders: entry.responseHeaders }),
+          JSON.stringify({
+            statusText: entry.statusText,
+            responseHeaders: entry.responseHeaders,
+            ...(restoreRevision === undefined ? {} : { restoreRevision }),
+          }),
         );
         storedBody = new Blob([responseMetadata, body]);
         customMetadata = {
@@ -1162,10 +1174,55 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     // Only one re-store publishes per source state, so this conditional
     // rewrite has no same-revision competitor from that state. It can still
-    // lose to a newer revision, or to a re-store of an earlier state whose
-    // write was in flight; the next re-store starts from the metadata row and
-    // replaces whatever R2 then holds.
-    await this.writeR2Response(publication.entry, source.body, source.status, now, 0, source.etag);
+    // lose to a newer revision, or to the re-store of an earlier state whose
+    // write was still in flight when this one read its source. If that write
+    // lands first, R2 is left on the earlier retry schedule, so it is replaced
+    // while the metadata still holds this state; if it lands later, its own
+    // conditional write fails. R2 is read before the metadata, so a later
+    // re-store that lands in between fails this rewrite instead of being
+    // replaced by it.
+    const restored = publication.entry;
+    const objectKey = this.r2ObjectKey(entry.keyHash);
+    let expectedEtag = source.etag;
+    for (let attempt = 0; attempt < MAX_R2_CAS_ATTEMPTS; attempt++) {
+      if (
+        await this.writeR2Response(
+          restored,
+          source.body,
+          source.status,
+          now,
+          0,
+          expectedEtag,
+          write.revision,
+        )
+      ) {
+        return;
+      }
+
+      const current = await this.env.CACHE_BODIES.head(objectKey);
+      const currentMetadata = current?.customMetadata;
+      if (
+        !current ||
+        currentMetadata?.tombstoned === "1" ||
+        metadataInteger(currentMetadata?.latestRevision) !== restored.activeRevision ||
+        (metadataInteger(currentMetadata?.freshUntil) === restored.freshUntil &&
+          metadataInteger(currentMetadata?.swrUntil) === restored.swrUntil)
+      ) {
+        return;
+      }
+      const latest = await metadata.getEntry(entry.keyHash);
+      if (
+        latest?.activeRevision !== restored.activeRevision ||
+        latest.freshUntil !== restored.freshUntil ||
+        latest.swrUntil !== restored.swrUntil
+      ) {
+        return;
+      }
+      expectedEtag = current.etag;
+    }
+    throw new Error(
+      `R2 revision ${restored.activeRevision} could not be re-stored after concurrent re-stores`,
+    );
   }
 
   private async regenerateEntry(
