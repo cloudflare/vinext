@@ -388,3 +388,52 @@ export function findCacheabilityManifestRoute(
 ): CacheabilityManifestRoute | null {
   return manifest.routes[cacheabilityManifestRouteKey(kind, pattern)] ?? null;
 }
+
+export function resolveCacheabilityRepresentation(
+  representation: CacheabilityRepresentation,
+  routeKind: "app-page" | "app-route" | "pages-api" | "pages-page",
+): CacheabilityRepresentation {
+  // Accept describes the representation a caller would prefer; it does not
+  // determine whether the resolved pathname belongs to an App Page or a Route
+  // Handler. Browser fetch() uses Accept: */* by default, while Route Handlers
+  // may legitimately be requested with Accept: text/html. Once routing has
+  // resolved the owner, make that result authoritative for non-RSC requests.
+  if (representation !== "html" && representation !== "app-route") {
+    return representation;
+  }
+  return routeKind === "app-route" || routeKind === "pages-api" ? "app-route" : "html";
+}
+
+/** Whether completed-response admission can store a page route under this representation. */
+export function cacheabilityRepresentationMatchesPageRoute(
+  routeKind: "app-page" | "pages-page",
+  representation: CacheabilityRepresentation,
+): boolean {
+  return routeKind === "app-page"
+    ? representation === "html" ||
+        representation === "rsc-full" ||
+        representation === "rsc-loading-shell"
+    : representation === "html" || representation === "pages-data";
+}
+
+/**
+ * The manifest state completed-response admission gives a page request, or
+ * null when admission refuses it. `requestRepresentation` is the request
+ * identity's, and `routePathname` is built from the resolved pathname with
+ * `cacheabilityRoutePathname`, as admission builds it. The Workers Cache
+ * request stage decides its query-free dispatch with this same function, so
+ * the dispatch and admission always see the same state.
+ */
+export function cacheabilityManifestPageState(
+  manifest: CacheabilityManifest,
+  route: { kind: "app-page" | "pages-page"; pattern: string },
+  requestRepresentation: CacheabilityRepresentation,
+  routePathname: string,
+): CacheabilityManifestRouteState | null {
+  const representation = resolveCacheabilityRepresentation(requestRepresentation, route.kind);
+  if (!cacheabilityRepresentationMatchesPageRoute(route.kind, representation)) return null;
+  const manifestRoute = findCacheabilityManifestRoute(manifest, route.kind, route.pattern);
+  return manifestRoute
+    ? cacheabilityManifestRouteState(manifestRoute, routePathname, representation)
+    : null;
+}
