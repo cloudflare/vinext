@@ -949,7 +949,8 @@ test("a regeneration whose body fails midway backs off in the background", async
 
 test("a foreground regeneration whose body fails midway returns the error and backs off", async () => {
   await put("/mid-body/foreground", "still-active", {
-    cacheControl: "public, max-age=0",
+    cacheControl: "public, max-age=1",
+    age: 1,
     revalidator: { failMidBody: true },
   });
 
@@ -971,9 +972,56 @@ test("a foreground regeneration whose body fails midway returns the error and ba
   assert.equal(await regenerationCount(), 1);
 });
 
+test("a failed regeneration does not make a non-reusable entry fresh", async () => {
+  const cases = [
+    { path: "/no-reuse/private", cacheControl: "private, max-age=60, stale-while-revalidate=60" },
+    { path: "/no-reuse/no-store", cacheControl: "no-store, max-age=60, stale-while-revalidate=60" },
+    { path: "/no-reuse/no-cache", cacheControl: "public, no-cache, stale-while-revalidate=30" },
+    { path: "/no-reuse/zero", cacheControl: "public, max-age=0" },
+  ];
+  let regenerations = 0;
+
+  async function readAfterFailedRegeneration(path: string) {
+    const response = await read(path);
+    assert.doesNotMatch(
+      response.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      /max-age=[1-9]/,
+      path,
+    );
+    if (response.status === 500) {
+      assert.match(await response.text(), /Fixture regeneration failure/);
+    } else {
+      assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-STALE", path);
+      assert.equal(await response.text(), "must-stay-stale");
+    }
+    regenerations++;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (
+        (await regenerationCount()) === regenerations &&
+        (await metadataRowCount("pending_objects")) === 0
+      ) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(await regenerationCount(), regenerations);
+    await waitForSettledRevision(path, 1);
+    assert.equal(await metadataRowCount("revalidation_claims"), 0);
+  }
+
+  for (const { path, cacheControl } of cases) {
+    await put(path, "must-stay-stale", { cacheControl, revalidator: { fail: true } });
+    // The failed regeneration leaves the entry as it was, so the next read
+    // regenerates again instead of serving it as fresh.
+    await readAfterFailedRegeneration(path);
+    await readAfterFailedRegeneration(path);
+  }
+});
+
 test("a failed re-store keeps the regeneration error and releases its reservation", async () => {
   await put("/republish-failure", "still-active", {
-    cacheControl: "public, max-age=0",
+    cacheControl: "public, max-age=1",
+    age: 1,
     revalidator: { fail: true },
   });
   const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
@@ -991,7 +1039,8 @@ test("a failed re-store keeps the regeneration error and releases its reservatio
 
 test("a failed regeneration does not replace a newer concurrent write", async () => {
   await put("/republish-race", "old", {
-    cacheControl: "public, max-age=0",
+    cacheControl: "public, max-age=1",
+    age: 1,
     revalidator: { fail: true, delayMs: 300 },
   });
   const newer = put("/republish-race", "newer", { bodyDelayMs: 150 });

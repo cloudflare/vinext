@@ -1111,6 +1111,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     entry: StoredEntry,
     write: WriteReservation,
   ): Promise<void> {
+    const policy = deriveFailedRegenerationPolicy(new Headers(entry.responseHeaders));
+    if (!policy) {
+      await this.releaseFailedWrite(metadata, write);
+      return;
+    }
+
     let source: RepublishSource | null;
     try {
       // Reads take freshness from the R2 object's custom metadata, which R2
@@ -1134,7 +1140,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         objectKey: this.r2ObjectKey(entry.keyHash),
         statusText: entry.statusText,
         responseHeaders: entry.responseHeaders,
-        ...deriveFailedRegenerationPolicy(new Headers(entry.responseHeaders)),
+        ...policy,
         revalidator: entry.revalidator,
         cacheTags: entry.cacheTags,
       },
