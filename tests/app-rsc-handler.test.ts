@@ -71,6 +71,15 @@ import {
   markFrameworkLinkHeaders,
   serializeResponseStageLinkProvenance,
 } from "../packages/vinext/src/server/app-response-header-provenance.js";
+import {
+  cacheabilityManifestPageState,
+  cacheabilityManifestRouteKey,
+  projectCacheabilityManifestForRequestStage,
+  type CacheabilityManifest,
+  type CacheabilityManifestRoute,
+  type CacheabilityRepresentation,
+} from "../packages/vinext/src/server/cacheability-manifest.js";
+import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src/server/cacheability-request.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
 import { workUnitAsyncStorage } from "../packages/vinext/src/shims/internal/work-unit-async-storage.js";
@@ -153,6 +162,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
   return createAppRscHandler<TestRoute>({
     basePath: "/docs",
     buildId: overrides.buildId ?? "build-id",
+    cacheabilityRequestProjection: overrides.cacheabilityRequestProjection,
     clearRequestContext: overrides.clearRequestContext ?? (() => {}),
     configHeaders: overrides.configHeaders ?? [
       {
@@ -977,6 +987,472 @@ describe("createAppRscHandler", () => {
         ["app-page", "request", { cache: "shared" }],
         ["app-page", "interception", { cache: "shared" }],
         ["app-route-handler", "request", { cache: "shared" }],
+      ]);
+    });
+  });
+
+  describe("Workers Cache query-free dispatch", () => {
+    const aboutRoute: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/about",
+      state: "runtime-check",
+      staticPaths: { html: ["/about"], "rsc-full": ["/about"], "rsc-loading-shell": ["/about"] },
+    };
+    const productsRoute: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/products/:id",
+      pathPrefix: "/products/",
+      runtimePaths: ["dynamic"],
+      state: "runtime-check",
+      staticPaths: { html: ["static"] },
+    };
+
+    function manifest(...routes: CacheabilityManifestRoute[]): CacheabilityManifest {
+      return {
+        buildId: "build-id",
+        routes: Object.fromEntries(
+          routes.map((route) => [cacheabilityManifestRouteKey(route.kind, route.pattern), route]),
+        ),
+        version: 1,
+      };
+    }
+
+    function projection(...routes: CacheabilityManifestRoute[]): string {
+      return JSON.stringify(manifest(...routes));
+    }
+
+    function pathAndSearch(url: string): string {
+      const parsed = new URL(url);
+      return `${parsed.pathname}${parsed.search}`;
+    }
+
+    function createProductsHandler(overrides: Partial<TestHandlerOptions> = {}) {
+      const about = createPageRoute({ canUseCanonicalLoadingShell: true });
+      const products = createPageRoute({
+        isDynamic: true,
+        params: ["id"],
+        pattern: "/products/:id",
+        routeSegments: ["products", "[id]"],
+      });
+      const matchRoute = (
+        pathname: string,
+      ): { params: Record<string, string>; route: TestRoute } | null => {
+        if (pathname === "/about") return { params: {}, route: about };
+        if (pathname.startsWith("/products/")) {
+          return { params: { id: pathname.slice("/products/".length) }, route: products };
+        }
+        return null;
+      };
+      return createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles: [{ source: "/promo", destination: "/products/static" }],
+          fallback: [],
+        },
+        matchRequestRoute: matchRoute,
+        matchRoute,
+        ...overrides,
+      });
+    }
+
+    async function navigationRequest(pathAndQuery: string): Promise<Request> {
+      const headers = createRscRequestHeaders({
+        routerState: { pathAndSearch: "/source", routeId: "route:/source" },
+      });
+      return new Request(
+        new URL(await createRscRequestUrl(pathAndQuery, headers), "https://example.test"),
+        { headers },
+      );
+    }
+
+    async function loadingShellRequest(pathAndQuery: string): Promise<Request> {
+      const headers = createRscRequestHeaders({
+        prefetchRouterState: { pathAndSearch: "/source", routeId: "route:/source" },
+        renderMode: "prefetch-loading-shell",
+      });
+      return new Request(
+        new URL(await createRscRequestUrl(pathAndQuery, headers), "https://example.test"),
+        { headers },
+      );
+    }
+
+    it("drops the user query from shared dispatches of static-candidate App page paths", async () => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createProductsHandler({
+        cacheabilityRequestProjection: projection(aboutRoute),
+      });
+
+      for (const init of [
+        { headers: { Accept: "text/html" } },
+        { headers: { Accept: "text/html" }, method: "HEAD" },
+        // A curl-style request has no text/html Accept. Admission maps it to
+        // html once the route resolves to an App page, and so does the strip.
+        {},
+      ]) {
+        dispatchResponseStage.mockClear();
+        await handler(
+          new Request("https://example.test/docs/about?tab=latest&utm_source=x", init),
+          null,
+          false,
+          dispatchResponseStage,
+        );
+
+        const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+        expect(request.url).toBe("https://example.test/docs/about");
+        expect(request.method).toBe("GET");
+        expect(props).toMatchObject({
+          cacheability: { resolvedRoutePathname: "/about" },
+          kind: "app-page",
+          resolvedUrl: "/about",
+        });
+        expect(options).toEqual({ cache: "shared" });
+      }
+    });
+
+    it("builds the canonical RSC and loading-shell URLs from the query-free dispatch", async () => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("rsc"),
+      );
+      const handler = createProductsHandler({
+        cacheabilityRequestProjection: projection(aboutRoute),
+      });
+
+      const navigation = await handler(
+        await navigationRequest("/docs/about?tab=latest"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      let [request, props] = dispatchResponseStage.mock.calls[0]!;
+      expect(pathAndSearch(request.url)).toBe("/docs/about?_rsc");
+      expect(props).toMatchObject({ renderMode: "navigation", resolvedUrl: "/about" });
+      // The request stage still describes the routed request, query included.
+      expect(navigation.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+        encodeURIComponent("/about?tab=latest"),
+      );
+
+      dispatchResponseStage.mockClear();
+      await handler(
+        await loadingShellRequest("/docs/about?tab=latest"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      [request, props] = dispatchResponseStage.mock.calls[0]!;
+      const shellUrl = new URL(request.url);
+      expect([...shellUrl.searchParams.keys()]).toEqual([VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM]);
+      expect(shellUrl.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM)).toBe(
+        await computeRscCacheBustingSearchParam(request.headers),
+      );
+      expect(props).toMatchObject({ renderMode: "prefetch-loading-shell", resolvedUrl: "/about" });
+
+      dispatchResponseStage.mockClear();
+      await handler(
+        new Request("https://example.test/docs/about.rsc?tab=latest", {
+          headers: createRscRequestHeaders(),
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      [request, props] = dispatchResponseStage.mock.calls[0]!;
+      expect(pathAndSearch(request.url)).toBe("/docs/about.rsc?_rsc");
+      expect(props).toMatchObject({ resolvedUrl: "/about" });
+    });
+
+    it("judges a rewritten request by its resolved route pathname", async () => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createProductsHandler({
+        cacheabilityRequestProjection: projection(productsRoute),
+      });
+
+      for (const path of ["/docs/promo", "/docs/products/static", "/docs/products/dynamic"]) {
+        await handler(
+          new Request(`https://example.test${path}?tab=latest`, {
+            headers: { Accept: "text/html" },
+          }),
+          null,
+          false,
+          dispatchResponseStage,
+        );
+      }
+
+      expect(
+        dispatchResponseStage.mock.calls.map(([request, props]) => [
+          pathAndSearch(request.url),
+          "resolvedUrl" in props ? props.resolvedUrl : null,
+        ]),
+      ).toEqual([
+        ["/docs/promo", "/products/static"],
+        ["/docs/products/static", "/products/static"],
+        ["/docs/products/dynamic?tab=latest", "/products/dynamic?tab=latest"],
+      ]);
+    });
+
+    it("keeps the query where the projection gives no static-candidate state", async () => {
+      const handlerRoute = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        pattern: "/route",
+        routeHandler: { GET: () => new Response("get") },
+        routeSegments: ["route"],
+      });
+      const fallbackAbout = createPageRoute({ canUseCanonicalLoadingShell: true });
+      const matchRoute = (pathname: string) => {
+        if (pathname === "/about") return { params: {}, route: fallbackAbout };
+        if (pathname === "/route") return { params: {}, route: handlerRoute };
+        return null;
+      };
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("payload"),
+      );
+      const htmlOnly = createProductsHandler({
+        cacheabilityRequestProjection: projection({
+          ...aboutRoute,
+          staticPaths: { html: ["/about"] },
+        }),
+      });
+      // A fallback-only record answers static-candidate for any representation.
+      const fallbackOnly = createHandler({
+        cacheabilityRequestProjection: projection(
+          { kind: "app-page", pattern: "/about", state: "static-candidate" },
+          { kind: "app-page", pattern: "/route", state: "static-candidate" },
+        ),
+        configHeaders: [],
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      // Only the HTML version of the path is certified.
+      await htmlOnly(
+        await navigationRequest("/docs/about?tab=latest"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      // A mounted-slot request has no representation, so admission refuses it.
+      const mountedHeaders = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+      await fallbackOnly(
+        new Request(
+          new URL(
+            await createRscRequestUrl("/docs/about?tab=latest", mountedHeaders),
+            "https://example.test",
+          ),
+          { headers: mountedHeaders },
+        ),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      // Route handlers read the query without tracking it.
+      await fallbackOnly(
+        new Request("https://example.test/docs/route?tab=latest"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      // The route has no record in the projection.
+      await createProductsHandler({ cacheabilityRequestProjection: projection(productsRoute) })(
+        new Request("https://example.test/docs/about?tab=latest", {
+          headers: { Accept: "text/html" },
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(
+        dispatchResponseStage.mock.calls.map(([request]) =>
+          new URL(request.url).searchParams.get("tab"),
+        ),
+      ).toEqual(["latest", "latest", "latest", "latest"]);
+    });
+
+    it("keeps the query of a Pages data URL that a root catch-all App page matches", async () => {
+      // app/[...path]/page.tsx with generateStaticParams returning [] gets a
+      // fallback-only record, which answers static-candidate for any
+      // representation. A pages-data request isn't an App page representation.
+      const catchAll = createPageRoute({
+        isDynamic: true,
+        params: ["path"],
+        pattern: "/:path+",
+        routeSegments: ["[...path]"],
+      });
+      const matchRoute = (pathname: string) => ({
+        params: { path: pathname.slice(1).split("/") },
+        route: catchAll,
+      });
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({
+        cacheabilityRequestProjection: projection({
+          kind: "app-page",
+          pattern: "/:path+",
+          state: "static-candidate",
+        }),
+        configHeaders: [],
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      for (const headers of [{}, { Accept: "application/json" }] as Record<string, string>[]) {
+        await handler(
+          new Request("https://example.test/docs/_next/data/build-id/foo.json?q=1", { headers }),
+          null,
+          false,
+          dispatchResponseStage,
+        );
+      }
+      // The same route's HTML is stripped.
+      await handler(
+        new Request("https://example.test/docs/foo?q=1", { headers: { Accept: "text/html" } }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(
+        dispatchResponseStage.mock.calls.map(([request]) => pathAndSearch(request.url)),
+      ).toEqual([
+        "/docs/_next/data/build-id/foo.json?q=1",
+        "/docs/_next/data/build-id/foo.json?q=1",
+        "/docs/foo",
+      ]);
+    });
+
+    it("keeps the full URL under a next.config policy, for bypassed dispatches and without a projection", async () => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const html = (headers: Record<string, string> = {}) =>
+        new Request("https://example.test/docs/about?tab=latest", {
+          headers: { Accept: "text/html", ...headers },
+        });
+
+      await createProductsHandler({
+        cacheabilityRequestProjection: projection(aboutRoute),
+        configHeaders: [
+          { source: "/about", headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }] },
+        ],
+      })(html(), null, false, dispatchResponseStage);
+      const handler = createProductsHandler({
+        cacheabilityRequestProjection: projection(aboutRoute),
+      });
+      await handler(
+        html({ Cookie: "__prerender_bypass=test-draft-secret" }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      // A request carrying a CSP nonce renders per request.
+      await handler(
+        html({ "Content-Security-Policy": "script-src 'nonce-request-nonce'" }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      await handler(html(), null, false, dispatchResponseStage, "probe");
+      await createProductsHandler()(html(), null, false, dispatchResponseStage);
+      await createProductsHandler({
+        buildId: "other-build",
+        cacheabilityRequestProjection: projection(aboutRoute),
+      })(html(), null, false, dispatchResponseStage);
+
+      expect(
+        dispatchResponseStage.mock.calls.map(([request, props, options]) => [
+          pathAndSearch(request.url),
+          "resolvedUrl" in props ? props.resolvedUrl : null,
+          options.cache,
+        ]),
+      ).toEqual([
+        ["/docs/about?tab=latest", "/about?tab=latest", "shared"],
+        ["/docs/about?tab=latest", "/about?tab=latest", "bypass"],
+        ["/docs/about?tab=latest", "/about?tab=latest", "bypass"],
+        ["/docs/about?tab=latest", "/about?tab=latest", "bypass"],
+        ["/docs/about?tab=latest", "/about?tab=latest", "shared"],
+        ["/docs/about?tab=latest", "/about?tab=latest", "shared"],
+      ]);
+    });
+
+    it("strips exactly the dispatches completed-response admission gives static-candidate", async () => {
+      const full = manifest(
+        { ...aboutRoute, staticPaths: { html: ["/about"], "rsc-full": ["/about"] } },
+        productsRoute,
+        { kind: "app-route", pattern: "/about", state: "static-candidate" },
+      );
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("payload"),
+      );
+      const handler = createProductsHandler({
+        cacheabilityRequestProjection: JSON.stringify(
+          projectCacheabilityManifestForRequestStage(full),
+        ),
+      });
+      const html = (path: string) =>
+        new Request(`https://example.test${path}?tab=latest`, {
+          headers: { Accept: "text/html" },
+        });
+      const requests: Array<[string, Request]> = [
+        ["html", html("/docs/about")],
+        ["curl", new Request("https://example.test/docs/about?tab=latest")],
+        ["rsc", await navigationRequest("/docs/about?tab=latest")],
+        ["loading shell", await loadingShellRequest("/docs/about?tab=latest")],
+        ["listed static", html("/docs/products/static")],
+        ["rewritten", html("/docs/promo")],
+        ["listed static rsc", await navigationRequest("/docs/products/static?tab=latest")],
+        ["listed dynamic", new Request("https://example.test/docs/products/dynamic?tab=latest")],
+        ["unlisted", html("/docs/products/unlisted")],
+      ];
+
+      const results: Array<[string, boolean, string | null]> = [];
+      for (const [label, request] of requests) {
+        dispatchResponseStage.mockClear();
+        await handler(request, null, false, dispatchResponseStage);
+        const [dispatched, props] = dispatchResponseStage.mock.calls[0]!;
+        if (props.kind !== "app-page") throw new Error(`${label} did not dispatch a page`);
+        const admission = Reflect.get(
+          createWorkerCacheabilityAdmissionContext(
+            { waitUntil() {} },
+            dispatched,
+            JSON.stringify(full),
+            "build-id",
+            true,
+            undefined,
+            props.cacheability.resolvedRoutePathname,
+            props.cacheability.representation,
+          ),
+          CACHEABILITY_REQUEST_STATE,
+        ).admission as NonNullable<RouteCacheabilityState["admission"]>;
+        const admissionState =
+          admission.policy === "manifest" && admission.routePathname
+            ? cacheabilityManifestPageState(
+                admission.manifest as CacheabilityManifest,
+                { kind: "app-page", pattern: props.routePattern },
+                admission.representation as CacheabilityRepresentation,
+                admission.routePathname,
+              )
+            : null;
+        const stripped = !new URL(dispatched.url).searchParams.has("tab");
+        expect(stripped, label).toBe(admissionState === "static-candidate");
+        results.push([label, stripped, admissionState]);
+      }
+      expect(results).toEqual([
+        ["html", true, "static-candidate"],
+        ["curl", true, "static-candidate"],
+        ["rsc", true, "static-candidate"],
+        ["loading shell", false, "runtime-check"],
+        ["listed static", true, "static-candidate"],
+        ["rewritten", true, "static-candidate"],
+        ["listed static rsc", false, "runtime-check"],
+        ["listed dynamic", false, "runtime-check"],
+        ["unlisted", false, null],
       ]);
     });
   });

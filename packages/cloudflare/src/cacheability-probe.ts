@@ -10,6 +10,7 @@ import {
   normalizeCacheabilityRoutePathname,
   type CacheabilityManifest,
   type CacheabilityManifestRoute,
+  type CacheabilityRepresentation,
 } from "vinext/internal/server/cacheability-manifest";
 import type { PrerenderRoutePattern } from "vinext/internal/build/prerender-paths";
 import {
@@ -32,6 +33,8 @@ const DEFAULT_CACHEABILITY_PROBE_REQUEST_TIMEOUT_MS = 30_000;
 const MAX_CACHEABILITY_PROBE_ENVELOPE_BYTES = 64 * 1024;
 
 type ProbePayload = {
+  dynamicUsage?: true;
+  explicitConfigCachePolicy?: true;
   kind?: string;
   pattern?: string;
   reason?: string;
@@ -98,27 +101,31 @@ function sharedPathPrefix(pathnames: readonly string[]): string | null {
 function compactManifestRoutePaths(route: CacheabilityManifestRoute): CacheabilityManifestRoute {
   const pathnames = [
     ...(route.runtimePaths ?? []),
+    ...Object.values(route.runtimeRepresentationPaths ?? {}).flatMap((paths) => paths ?? []),
     ...Object.values(route.staticPaths ?? {}).flatMap((paths) => paths ?? []),
   ];
   const pathPrefix = sharedPathPrefix(pathnames);
   if (!pathPrefix) return route;
 
+  const compactPathLists = (
+    lists: Partial<Record<CacheabilityRepresentation, string[]>>,
+  ): Partial<Record<CacheabilityRepresentation, string[]>> =>
+    Object.fromEntries(
+      Object.entries(lists).map(([representation, paths]) => [
+        representation,
+        paths!.map((pathname) => pathname.slice(pathPrefix.length)),
+      ]),
+    );
   const compacted: CacheabilityManifestRoute = {
     ...route,
     pathPrefix,
     ...(route.runtimePaths
       ? { runtimePaths: route.runtimePaths.map((pathname) => pathname.slice(pathPrefix.length)) }
       : {}),
-    ...(route.staticPaths
-      ? {
-          staticPaths: Object.fromEntries(
-            Object.entries(route.staticPaths).map(([representation, paths]) => [
-              representation,
-              paths!.map((pathname) => pathname.slice(pathPrefix.length)),
-            ]),
-          ),
-        }
+    ...(route.runtimeRepresentationPaths
+      ? { runtimeRepresentationPaths: compactPathLists(route.runtimeRepresentationPaths) }
       : {}),
+    ...(route.staticPaths ? { staticPaths: compactPathLists(route.staticPaths) } : {}),
   };
   return Buffer.byteLength(JSON.stringify(compacted)) < Buffer.byteLength(JSON.stringify(route))
     ? compacted
@@ -383,6 +390,10 @@ export async function probeStagedWorkerCacheability(options: {
   let dynamicPathCount = 0;
 
   type ConcretePathResult = {
+    /** The render used a dynamic API. OR-merged across groups sharing a result key. */
+    dynamicUsage: boolean;
+    /** A next.config header policy applied. OR-merged across groups sharing a result key. */
+    explicitConfigCachePolicy: boolean;
     rendererStatic: boolean;
     representation: CdnWarmTarget["kind"];
     state: Exclude<ProbeRouteState, "probe-failed">;
@@ -400,6 +411,8 @@ export async function probeStagedWorkerCacheability(options: {
   };
   type ConcretePathGroup = {
     deferred: boolean;
+    /** An unlisted path whose render failed; it is left to the route rule. */
+    dropped?: boolean;
     pattern: PatternClassification;
     primary: CdnWarmTarget;
     result?: ConcretePathResult;
@@ -472,12 +485,41 @@ export async function probeStagedWorkerCacheability(options: {
     group.targets.push(target);
     targetGroups.set(concreteKey, group);
   }
+  // A path is listed when the route that owns it at runtime lists it in its
+  // own static generation; discovery marks every other path unlisted, even one
+  // another route generates. A path the request stage moves, to another route
+  // or another pathname, counts as listed only when its destination route lists
+  // the resolved pathname. Those build-time facts are keyed by route and
+  // pathname, and fixed before any probe runs: groups move between patterns as
+  // route-moving probes complete, so the listing is never read back from them.
+  // Discovery's fact wins over the pattern's shape: a literal route that isn't
+  // static or SSG doesn't list its own path. Only a literal route discovery has
+  // no fact for lists it.
+  const buildTimeListing = new Map<string, boolean>();
+  const isListedAt = (
+    route: Pick<PrerenderRoutePattern, "kind" | "pattern">,
+    routePathname: string,
+  ): boolean => {
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    const listed = buildTimeListing.get(`${key}\0${routePathname}`);
+    if (listed !== undefined) return listed;
+    return (
+      !/(^|\/):/.test(route.pattern) &&
+      normalizeCacheabilityRoutePathname(route.pattern) === routePathname
+    );
+  };
+  const isListedGroup = (group: ConcretePathGroup): boolean =>
+    isListedAt(group.pattern.route, group.routePathname);
   const groups: ConcretePathGroup[] = Array.from(targetGroups.values(), (targetGroup) => {
     targetGroup.targets.sort((first, second) => {
       const preference = targetPreference(first) - targetPreference(second);
       return preference || first.sourcePathname.localeCompare(second.sourcePathname);
     });
     const group = { ...targetGroup, deferred: false, primary: targetGroup.targets[0] };
+    buildTimeListing.set(
+      `${group.pattern.key}\0${group.routePathname}`,
+      group.primary.route!.cacheabilityProbe?.unlisted !== true,
+    );
     targetGroup.pattern.groups.push(group);
     return group;
   });
@@ -654,6 +696,9 @@ export async function probeStagedWorkerCacheability(options: {
           result.scope !== "identity" ||
           !group.pattern.requestStageMayTerminate)) ||
       (result.rendererStatic !== undefined && typeof result.rendererStatic !== "boolean") ||
+      (result.dynamicUsage !== undefined && result.dynamicUsage !== true) ||
+      (result.explicitConfigCachePolicy !== undefined &&
+        result.explicitConfigCachePolicy !== true) ||
       (result.retryable !== undefined && result.retryable !== true) ||
       (result.retryable === true && result.state !== "probe-failed") ||
       !Number.isInteger(result.status) ||
@@ -661,6 +706,52 @@ export async function probeStagedWorkerCacheability(options: {
       result.status! > 599
     ) {
       failures.push(`${target.label}: ${result.reason ?? "probe returned an invalid envelope"}`);
+      completedPathCount += 1;
+      reportProgress();
+      return "done";
+    }
+    if (
+      result.state === "probe-failed" &&
+      result.kind === "app-page" &&
+      result.status! >= 500 &&
+      result.reason === `route returned HTTP ${result.status}` &&
+      target.route &&
+      // A route the request stage may not move to, or a move without its
+      // concrete pathname, fails as any other resolution below.
+      ((result.kind === target.route.kind && result.pattern === target.route.pattern) ||
+        (target.route.cacheabilityProbe?.routeMayResolve === true &&
+          result.routePathname !== undefined)) &&
+      !isListedAt(
+        { kind: result.kind, pattern: result.pattern },
+        result.routePathname === undefined
+          ? group.routePathname
+          : normalizeCacheabilityRoutePathname(result.routePathname),
+      )
+    ) {
+      // Next.js's build never renders an unlisted App page path, so its
+      // render error doesn't fail the deploy. The path is neither classified
+      // nor warmed. Listing is judged under the route the request resolved.
+      // A failure the request stage moved proves only its own destination, so
+      // the paired representations stay at the original route, as they do
+      // after a moved success, and only the failed primary is dropped.
+      if (
+        target.route.cacheabilityProbe?.routeMayResolve === true &&
+        (result.kind !== target.route.kind ||
+          result.pattern !== target.route.pattern ||
+          (result.routePathname !== undefined &&
+            normalizeCacheabilityRoutePathname(result.routePathname) !== group.routePathname))
+      ) {
+        deferPairedRepresentationsAtOriginalRoute(group);
+      }
+      group.dropped = true;
+      if (
+        !group.pattern.groups.some(
+          (candidate) => candidate !== group && candidate.resultKey === group.resultKey,
+        )
+      ) {
+        group.pattern.resultKeys.delete(group.resultKey);
+      }
+      skippedPathCount += 1;
       completedPathCount += 1;
       reportProgress();
       return "done";
@@ -715,6 +806,8 @@ export async function probeStagedWorkerCacheability(options: {
     }
 
     const classification: ConcretePathResult = {
+      dynamicUsage: result.dynamicUsage === true,
+      explicitConfigCachePolicy: result.explicitConfigCachePolicy === true,
       rendererStatic: result.rendererStatic === true,
       representation: target.kind,
       state: result.state,
@@ -722,15 +815,21 @@ export async function probeStagedWorkerCacheability(options: {
     };
     group.result = classification;
     const previousClassification = group.pattern.results.get(group.resultKey);
-    if (
+    const retainedClassification =
       !previousClassification ||
       (previousClassification.state === "static-candidate" && classification.state === "dynamic") ||
       (previousClassification.state === classification.state &&
         previousClassification.rendererStatic &&
         !classification.rendererStatic)
-    ) {
-      group.pattern.results.set(group.resultKey, classification);
-    }
+        ? classification
+        : previousClassification;
+    group.pattern.results.set(group.resultKey, {
+      ...retainedClassification,
+      dynamicUsage: classification.dynamicUsage || previousClassification?.dynamicUsage === true,
+      explicitConfigCachePolicy:
+        classification.explicitConfigCachePolicy ||
+        previousClassification?.explicitConfigCachePolicy === true,
+    });
     const patternIsDefinitelyDynamic =
       result.state === "dynamic" && result.scope === "pattern" && group.pattern.canPrune;
     if (patternIsDefinitelyDynamic) {
@@ -871,10 +970,12 @@ export async function probeStagedWorkerCacheability(options: {
     classified += 1;
   }
   if (limitFailure) throw limitFailure;
-  // Next.js classifies every generateStaticParams result independently. Store
-  // each observed concrete path exactly once, then compact the shared route
-  // prefix. Paired HTML/RSC or HTML/data representations reuse the path's
-  // membership but must pass their own completed-render admission check.
+  // Next.js classifies every generateStaticParams result independently. A
+  // path appears at most once per representation list, and never both
+  // runtime-checked and static. A certified-static App page is listed under
+  // HTML and its full RSC payload, which Next.js serves from one render.
+  // Paired representations must still pass their own completed-render
+  // admission check. The shared route prefix is compacted last.
   for (const pattern of patterns.values()) {
     if (pattern.pruned) {
       classified += 1;
@@ -896,15 +997,81 @@ export async function probeStagedWorkerCacheability(options: {
       }
       continue;
     }
-    if (pattern.results.size === 0 && !pattern.groups.some((group) => group.deferred)) continue;
+    const hasStaticFallback = fallbackRoutes.has(pattern.key);
+    if (pattern.results.size === 0 && !pattern.groups.some((group) => group.deferred)) {
+      // Every probed path moved to another route or was dropped, so the route
+      // keeps its fallback-only entry.
+      if (hasStaticFallback) {
+        const route: CacheabilityManifestRoute = {
+          kind: pattern.route.kind,
+          pattern: pattern.route.pattern,
+          state: "static-candidate",
+        };
+        if (!addRouteWithinManifestLimits(pattern.key, route)) break;
+        classified += 1;
+      }
+      continue;
+    }
     classified += 1;
     if (Array.from(pattern.results.values()).some((result) => result.state === "dynamic")) {
       dynamic += 1;
     }
 
+    // App pages follow Next.js's build. Unknown paths of a dynamic-segment
+    // route get on-demand ISR only with a static fallback, or when the route
+    // lists paths and none it rendered used a dynamic API. A path that used a
+    // dynamic API, and an unlisted path of a route without on-demand ISR, get
+    // no state in any representation: never admitted and not warmed. A path
+    // cacheable only through a next.config policy stays runtime-checked.
+    const isAppPage = pattern.route.kind === "app-page";
+    const listedResults = pattern.groups.flatMap((group) => {
+      const result =
+        !group.deferred && !group.dropped && isListedGroup(group)
+          ? pattern.results.get(group.resultKey)
+          : undefined;
+      return result ? [result] : [];
+    });
+    const hasOnDemandIsr =
+      hasStaticFallback ||
+      (/(^|\/):/.test(pattern.route.pattern) &&
+        listedResults.length > 0 &&
+        !listedResults.some((result) => result.dynamicUsage));
+    const hasNoState = (group: ConcretePathGroup): boolean => {
+      const result = pattern.results.get(group.resultKey);
+      if (!isAppPage || !result) return false;
+      if (
+        result.state === "static-candidate" &&
+        !result.rendererStatic &&
+        result.explicitConfigCachePolicy
+      ) {
+        return false;
+      }
+      return result.dynamicUsage || (!hasOnDemandIsr && !isListedGroup(group));
+    };
+
     const rendererStaticTargets = new Map<string, CdnWarmTarget>();
     const runtimePathSet = new Set<string>();
+    const loadingShellRuntimePathSet = new Set<string>();
     for (const group of pattern.groups) {
+      if (group.dropped) continue;
+      if (!group.deferred && hasNoState(group)) {
+        // A dynamic API can sit below the loading boundary, so the loading
+        // shell of a path the route would otherwise keep stays warmable. Its
+        // completed render decides admission.
+        const loadingShellTargets = group.targets.filter(
+          (target) => target.kind === "rsc-loading-shell",
+        );
+        if (
+          loadingShellTargets.length > 0 &&
+          pattern.results.get(group.resultKey)?.dynamicUsage &&
+          (hasOnDemandIsr || isListedGroup(group))
+        ) {
+          loadingShellRuntimePathSet.add(group.routePathname);
+          cacheableTargets.push(...loadingShellTargets);
+          speculativeTargets.push(...loadingShellTargets);
+        }
+        continue;
+      }
       if (group.deferred) {
         runtimePathSet.add(group.routePathname);
         cacheableTargets.push(...group.targets);
@@ -938,30 +1105,60 @@ export async function probeStagedWorkerCacheability(options: {
         speculativeTargets.push(...pairedTargets);
       }
     }
+    // The HTML probe ran SSR, so it saw every read the full RSC render can
+    // make. The loading shell renders the loading boundary, which a static
+    // page's render may never reach, so a path listed static elsewhere leaves
+    // its loading shell runtime-checked. A path probed only through RSC keeps
+    // its single listing.
+    const staticRepresentations = (
+      representation: CdnWarmTarget["kind"],
+    ): CdnWarmTarget["kind"][] =>
+      isAppPage && representation === "html" ? ["html", "rsc-full"] : [representation];
     const staticPaths: CacheabilityManifestRoute["staticPaths"] = {};
     for (const [routePathname, staticTarget] of rendererStaticTargets) {
       // Conflicting observations for one resolved route identity must retain
       // runtime admission rather than certifying the static observation.
       if (runtimePathSet.has(routePathname)) continue;
-      const paths = staticPaths[staticTarget.kind] ?? [];
-      paths.push(routePathname);
-      staticPaths[staticTarget.kind] = paths;
+      for (const representation of staticRepresentations(staticTarget.kind)) {
+        const paths = staticPaths[representation] ?? [];
+        paths.push(routePathname);
+        staticPaths[representation] = paths;
+      }
     }
     for (const paths of Object.values(staticPaths)) paths?.sort();
+    const loadingShellRuntimePaths = Array.from(loadingShellRuntimePathSet)
+      .filter(
+        (routePathname) =>
+          !runtimePathSet.has(routePathname) &&
+          !staticPaths["rsc-loading-shell"]?.includes(routePathname),
+      )
+      .sort();
+    const runtimeRepresentationPaths: CacheabilityManifestRoute["runtimeRepresentationPaths"] =
+      loadingShellRuntimePaths.length > 0
+        ? { "rsc-loading-shell": loadingShellRuntimePaths }
+        : undefined;
     const allObservedPathsStatic =
       pattern.results.size === pattern.resultKeys.size &&
       Array.from(pattern.results.values()).every((result) => result.state === "static-candidate");
     const allObservedPathsStaticallyGenerated =
       allObservedPathsStatic &&
       Array.from(pattern.results.values()).every((result) => result.rendererStatic);
-    const hasStaticFallback = fallbackRoutes.has(pattern.key);
+    const allowsUnknown = isAppPage ? hasOnDemandIsr : allObservedPathsStaticallyGenerated;
     const soleGroup = pattern.groups.length === 1 ? pattern.groups[0] : null;
     const literalPatternNamesSolePath =
       soleGroup !== null &&
       !/(^|\/):/.test(pattern.route.pattern) &&
       normalizeCacheabilityRoutePathname(pattern.route.pattern) === soleGroup.routePathname;
     let route: CacheabilityManifestRoute;
-    if (literalPatternNamesSolePath) {
+    if (literalPatternNamesSolePath && !soleGroup.deferred && hasNoState(soleGroup)) {
+      if (!runtimeRepresentationPaths) continue;
+      route = {
+        kind: pattern.route.kind,
+        pattern: pattern.route.pattern,
+        runtimeRepresentation: "rsc-loading-shell",
+        state: "runtime-check",
+      };
+    } else if (literalPatternNamesSolePath) {
       const result = pattern.results.get(soleGroup.resultKey);
       route =
         result?.state === "static-candidate"
@@ -971,32 +1168,55 @@ export async function probeStagedWorkerCacheability(options: {
                 pattern: pattern.route.pattern,
                 state: "static-candidate",
               }
-            : result.rendererStatic
-              ? {
+            : result.rendererStatic && isAppPage && result.representation === "html"
+              ? compactManifestRoutePaths({
                   kind: pattern.route.kind,
                   pattern: pattern.route.pattern,
                   state: "runtime-check",
-                  staticRepresentation: result.representation,
-                }
-              : {
-                  kind: pattern.route.kind,
-                  pattern: pattern.route.pattern,
-                  state: "runtime-check",
-                }
+                  staticPaths: Object.fromEntries(
+                    staticRepresentations("html").map((representation) => [
+                      representation,
+                      [soleGroup.routePathname],
+                    ]),
+                  ),
+                })
+              : result.rendererStatic
+                ? {
+                    kind: pattern.route.kind,
+                    pattern: pattern.route.pattern,
+                    state: "runtime-check",
+                    staticRepresentation: result.representation,
+                  }
+                : {
+                    kind: pattern.route.kind,
+                    pattern: pattern.route.pattern,
+                    state: "runtime-check",
+                  }
           : {
               kind: pattern.route.kind,
               pattern: pattern.route.pattern,
               state: "runtime-check",
             };
+    } else if (
+      isAppPage &&
+      !hasOnDemandIsr &&
+      runtimePathSet.size === 0 &&
+      !runtimeRepresentationPaths &&
+      Object.keys(staticPaths).length === 0
+    ) {
+      // Without path lists or on-demand ISR, a runtime-check entry would admit
+      // every path of the route.
+      continue;
     } else {
       route = compactManifestRoutePaths({
         kind: pattern.route.kind,
         pattern: pattern.route.pattern,
         state: "runtime-check",
-        ...(hasStaticFallback || allObservedPathsStaticallyGenerated
+        ...(hasStaticFallback || allowsUnknown
           ? { allowUnknown: true, unknownState: "static-candidate" as const }
           : {}),
         ...(runtimePathSet.size > 0 ? { runtimePaths: Array.from(runtimePathSet).sort() } : {}),
+        ...(runtimeRepresentationPaths ? { runtimeRepresentationPaths } : {}),
         ...(Object.keys(staticPaths).length > 0 ? { staticPaths } : {}),
       });
     }

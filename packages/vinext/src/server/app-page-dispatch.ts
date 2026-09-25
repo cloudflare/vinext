@@ -100,7 +100,13 @@ import {
   isRouteCacheabilityIdentityProbe,
   isRouteCacheabilityProbe,
   markRouteCacheabilityPatternDynamic,
+  readRouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
+import {
+  cacheabilityManifestPageState,
+  type CacheabilityManifest,
+  type CacheabilityRepresentation,
+} from "./cacheability-manifest.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { traceResponseStart } from "./response-start-tracing.js";
 
@@ -652,6 +658,28 @@ function toInterceptOptions(
   };
 }
 
+/**
+ * Workers Cache never admits a path its deploy manifest gives no state: a
+ * listed path that used a dynamic API, or an unlisted path of a route without
+ * on-demand ISR. Next.js serves those per request, so they render normally,
+ * with real values. Without a manifest, admission uses the `runtime` policy
+ * and every path keeps candidate mode, as on core.
+ */
+function hasNoManifestAdmissionState(routePattern: string): boolean {
+  const admission = readRouteCacheabilityState()?.admission;
+  return (
+    admission?.policy === "manifest" &&
+    admission.representation !== undefined &&
+    admission.routePathname !== undefined &&
+    cacheabilityManifestPageState(
+      admission.manifest as CacheabilityManifest,
+      { kind: "app-page", pattern: routePattern },
+      admission.representation as CacheabilityRepresentation,
+      admission.routePathname,
+    ) === null
+  );
+}
+
 export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
@@ -706,10 +734,26 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const currentRevalidateSeconds =
     options.revalidateSeconds ??
     (hasStaticRevalidateDefault || options.hasAnyGenerateStaticParams ? Infinity : null);
-  if (isRouteCacheabilityProbe() && (isForceDynamic || currentRevalidateSeconds === 0)) {
-    markRouteCacheabilityPatternDynamic(
-      isForceDynamic ? 'dynamic = "force-dynamic"' : "revalidate = 0",
-    );
+  if (isRouteCacheabilityProbe()) {
+    // A route that isn't static or SSG is never stored, so its probe reports
+    // the whole pattern dynamic, whichever of its paths discovery listed.
+    const isRouteStaticEligible =
+      options.pprRuntime !== undefined ||
+      isAppPageStaticEligible({
+        dynamicConfig: options.dynamicConfig,
+        hasGenerateStaticParams: options.hasGenerateStaticParams,
+        isDynamicRoute: route.isDynamic,
+        isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
+        revalidateSeconds: options.revalidateSeconds ?? null,
+      });
+    const patternDynamicReason = isForceDynamic
+      ? 'dynamic = "force-dynamic"'
+      : currentRevalidateSeconds === 0
+        ? "revalidate = 0"
+        : !isRouteStaticEligible
+          ? "route is not statically generated"
+          : null;
+    if (patternDynamicReason) markRouteCacheabilityPatternDynamic(patternDynamicReason);
   }
   const isPrerender = process.env.VINEXT_PRERENDER === "1";
   let traceOperation: "prerender" | "render" = isPrerender ? "prerender" : "render";
@@ -797,8 +841,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
   }
 
-  const shouldReadCache =
-    !isRouteCacheabilityProbe() &&
+  const isCacheEligibleRender =
     options.bypassInterceptionContextCache !== true &&
     shouldReadAppPageCache({
       isDraftMode,
@@ -809,10 +852,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       revalidateSeconds: currentRevalidateSeconds,
       scriptNonce: options.scriptNonce,
     });
+  const shouldReadCache = !isRouteCacheabilityProbe() && isCacheEligibleRender;
   // A render that may be stored, and so must not let the request's query reach
-  // its output unless it turns out dynamic. PPR fallback shells follow
-  // cacheComponents' model instead.
-  const isCacheCandidate = shouldReadCache && isStaticEligible && options.pprRuntime === undefined;
+  // its output unless it turns out dynamic. The Workers Cache deploy probe
+  // renders this way too, so its manifest matches the runtime. PPR fallback
+  // shells follow cacheComponents' model instead.
+  const isCacheCandidate =
+    isCacheEligibleRender &&
+    isStaticEligible &&
+    options.pprRuntime === undefined &&
+    !hasNoManifestAdmissionState(route.pattern);
   if (shouldReadCache && isStaticEligible) {
     traceOperation = resolveAppPageTraceOperation({
       hasRequestSearchParams,

@@ -12,8 +12,10 @@ import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/sr
 import { writeCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
 import {
   CACHEABILITY_MANIFEST_MODULE,
+  CACHEABILITY_REQUEST_PROJECTION_MODULE,
   cacheabilityManifestRouteKey,
   type CacheabilityManifest,
+  type CacheabilityManifestRoute,
 } from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
@@ -110,24 +112,40 @@ const OLD_VERSION = "11111111-1111-4111-8111-111111111111";
 const PROBE_VERSION = "22222222-2222-4222-8222-222222222222";
 const FINAL_VERSION = "33333333-3333-4333-8333-333333333333";
 
-function writeTwoStageWorkerArtifact(): void {
+// An App Router build also emits the request stage's projection module, which
+// its request stage imports.
+function writeTwoStageWorkerArtifact({
+  appRouter = true,
+  importsProjection = appRouter,
+}: { appRouter?: boolean; importsProjection?: boolean } = {}): void {
   writeFile(
     "dist/server/wrangler.json",
     JSON.stringify({ main: "index.js", name: "my-worker", workers_dev: true }),
   );
-  writeFile("dist/server/index.js", 'void import("./response-stage.js");\n');
+  writeFile(
+    "dist/server/index.js",
+    'void import("./request-stage.js");\nvoid import("./response-stage.js");\n',
+  );
+  writeFile(
+    "dist/server/request-stage.js",
+    importsProjection ? `import "./${CACHEABILITY_REQUEST_PROJECTION_MODULE}";\n` : "",
+  );
   writeFile("dist/server/response-stage.js", `import "./${CACHEABILITY_MANIFEST_MODULE}";\n`);
   writeFile(
     "dist/server/.vite/manifest.json",
     JSON.stringify({
       "virtual:cloudflare/worker-entry": {
-        dynamicImports: ["virtual:vinext-response-stage"],
+        dynamicImports: ["virtual:vinext-request-stage", "virtual:vinext-response-stage"],
         file: "index.js",
       },
+      "virtual:vinext-request-stage": { file: "request-stage.js" },
       "virtual:vinext-response-stage": { file: "response-stage.js" },
     }),
   );
   writeFile(`dist/server/${CACHEABILITY_MANIFEST_MODULE}`, "export default null;\n");
+  if (appRouter) {
+    writeFile(`dist/server/${CACHEABILITY_REQUEST_PROJECTION_MODULE}`, "export default null;\n");
+  }
   writeFile(
     "dist/server/vinext-server.json",
     JSON.stringify({ prerenderSecret: "test-prerender-secret" }),
@@ -463,6 +481,144 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
   });
 
+  it("writes the request stage's projection of the App page routes that admit query-free entries", () => {
+    writeTwoStageWorkerArtifact();
+    const routes: CacheabilityManifest["routes"] = {};
+    const records: CacheabilityManifestRoute[] = [
+      {
+        kind: "app-page",
+        pattern: "/blog/:slug",
+        state: "runtime-check",
+        allowUnknown: true,
+        unknownState: "static-candidate",
+        runtimePaths: ["/blog/vetoed"],
+      },
+      {
+        kind: "app-page",
+        pattern: "/about",
+        state: "runtime-check",
+        staticPaths: { html: ["/about"], "rsc-full": ["/about"] },
+      },
+      { kind: "app-page", pattern: "/fallback/:id", state: "static-candidate" },
+      {
+        kind: "app-page",
+        pattern: "/dynamic/:id",
+        state: "runtime-check",
+        runtimePaths: ["/dynamic/a"],
+      },
+      {
+        kind: "app-page",
+        pattern: "/pruned/:id",
+        state: "runtime-check",
+        runtimeRepresentation: "rsc-loading-shell",
+      },
+      { kind: "app-route", pattern: "/api/static", state: "static-candidate" },
+      {
+        kind: "pages-page",
+        pattern: "/legacy",
+        state: "runtime-check",
+        staticRepresentation: "html",
+      },
+    ];
+    for (const route of records) {
+      routes[cacheabilityManifestRouteKey(route.kind, route.pattern)] = route;
+    }
+
+    writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+      buildId: "build-a",
+      routes,
+      version: 1,
+    });
+
+    const source = fs.readFileSync(
+      path.join(tmpDir, "dist/server", CACHEABILITY_REQUEST_PROJECTION_MODULE),
+      "utf8",
+    );
+    const projection = JSON.parse(
+      JSON.parse(source.slice("export default ".length, -";\n".length)),
+    ) as CacheabilityManifest;
+    // Route records stay unchanged, so a lookup agrees with the full manifest.
+    expect(projection).toEqual({
+      buildId: "build-a",
+      routes: {
+        [cacheabilityManifestRouteKey("app-page", "/blog/:slug")]:
+          routes[cacheabilityManifestRouteKey("app-page", "/blog/:slug")],
+        [cacheabilityManifestRouteKey("app-page", "/about")]:
+          routes[cacheabilityManifestRouteKey("app-page", "/about")],
+        [cacheabilityManifestRouteKey("app-page", "/fallback/:id")]:
+          routes[cacheabilityManifestRouteKey("app-page", "/fallback/:id")],
+      },
+      version: 1,
+    });
+  });
+
+  it("writes no projection for a Pages Router build", () => {
+    writeTwoStageWorkerArtifact({ appRouter: false });
+    const route: CacheabilityManifestRoute = {
+      kind: "pages-page",
+      pattern: "/legacy",
+      state: "static-candidate",
+    };
+
+    writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+      buildId: "build-a",
+      routes: { [cacheabilityManifestRouteKey(route.kind, route.pattern)]: route },
+      version: 1,
+    });
+
+    expect(
+      fs.existsSync(path.join(tmpDir, "dist/server", CACHEABILITY_REQUEST_PROJECTION_MODULE)),
+    ).toBe(false);
+  });
+
+  it("rejects an App page manifest for an artifact without the request stage's projection module", () => {
+    // A stale or pre-built artifact would otherwise deploy RSC listings its
+    // request stage never strips the query for.
+    writeTwoStageWorkerArtifact({ appRouter: false });
+    const route: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/about",
+      state: "static-candidate",
+    };
+
+    expect(() =>
+      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+        buildId: "build-a",
+        routes: { [cacheabilityManifestRouteKey(route.kind, route.pattern)]: route },
+        version: 1,
+      }),
+    ).toThrow(
+      `requires ${CACHEABILITY_REQUEST_PROJECTION_MODULE} in the generated Worker artifact`,
+    );
+    expect(
+      fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
+    ).toBe("export default null;\n");
+  });
+
+  it("rejects an App page manifest when the Worker graph doesn't import the projection", () => {
+    // The file exists, but no request-stage module reads it, so the request
+    // stage would keep full-query dispatches the response stage admits.
+    writeTwoStageWorkerArtifact({ importsProjection: false });
+    const route: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/about",
+      state: "static-candidate",
+    };
+
+    expect(() =>
+      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+        buildId: "build-a",
+        routes: { [cacheabilityManifestRouteKey(route.kind, route.pattern)]: route },
+        version: 1,
+      }),
+    ).toThrow(
+      `requires the generated Worker graph to statically import ${CACHEABILITY_REQUEST_PROJECTION_MODULE}`,
+    );
+    expect(
+      fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
+    ).toBe("export default null;\n");
+  });
+
   it("accepts a manifest over one MiB with more than 10,000 route patterns", () => {
     writeTwoStageWorkerArtifact();
     const routes = Object.fromEntries(
@@ -753,7 +909,10 @@ describe("Cloudflare CDN warmup deploy flow", () => {
           kind: "app-page",
           pattern: "/:slug",
           runtimePaths: ["/dynamic"],
-          staticPaths: { html: ["/about"] },
+          staticPaths: {
+            html: ["/about"],
+            "rsc-full": ["/about"],
+          },
           state: "runtime-check",
         }),
         expect.objectContaining({

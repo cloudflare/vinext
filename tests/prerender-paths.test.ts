@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { toSlash } from "pathslash";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
@@ -150,7 +151,8 @@ describe("prerender path manifest", () => {
           pattern: "/cached/:slug",
         },
         "/dynamic": {
-          cacheabilityProbe: { canPrunePattern: true },
+          // force-dynamic, so Next.js's build never lists it.
+          cacheabilityProbe: { canPrunePattern: true, unlisted: true },
           kind: "app-page",
           pattern: "/dynamic",
         },
@@ -208,6 +210,214 @@ describe("prerender path manifest", () => {
       kind: "app-page",
       pattern: "/cached/:slug",
     });
+  });
+
+  it("marks traffic-picked paths that the route's static generation doesn't list", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile("app/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "app/cached/[slug]/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ slug: 'intro' }, { slug: 'featured' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      candidatePaths: ["/cached/from-traffic", "/cached/intro", "/"],
+      responseVary: "verbatim",
+    });
+
+    const unlisted = (pathname: string) =>
+      manifest?.routePatterns?.[pathname]?.cacheabilityProbe?.unlisted;
+    expect(unlisted("/cached/from-traffic")).toBe(true);
+    expect(unlisted("/cached/intro")).toBeUndefined();
+    expect(unlisted("/cached/featured")).toBeUndefined();
+    expect(unlisted("/")).toBeUndefined();
+  });
+
+  it("lists paths only for App page routes that are static or SSG", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    // The route's only generateStaticParams is a sibling page's, above its
+    // last dynamic segment, so Next.js classifies /[category]/details as ƒ.
+    writeFile(
+      "app/[category]/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ category: 'news' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[category]/details/page.tsx",
+      "export const revalidate = 60; export default function Page() { return null; }\n",
+    );
+    // A layout's edge runtime disables static generation for its pages.
+    writeFile("app/edge/layout.tsx", "export const runtime = 'edge';\n");
+    writeFile("app/edge/page.tsx", "export default function Page() { return null; }\n");
+    writeFile(
+      "app/edge/[id]/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      new URL(input instanceof Request ? input.url : String(input)).searchParams.get("pattern") ===
+      "/edge/:id"
+        ? Response.json([])
+        : defaultFetch(input, init),
+    );
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(expect.arrayContaining(["/news", "/news/details", "/edge"]));
+    const unlisted = (pathname: string) =>
+      manifest?.routePatterns?.[pathname]?.cacheabilityProbe?.unlisted;
+    expect(unlisted("/news")).toBeUndefined();
+    expect(unlisted("/news/details")).toBe(true);
+    expect(unlisted("/edge")).toBe(true);
+    expect(manifest?.fallbackRoutePatterns).toBeUndefined();
+  });
+
+  it("marks a path unlisted when a route other than its runtime owner generates it", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    // Next.js's build renders each generated path under the route that
+    // generated it, so the static catch-all's paths are never build-rendered
+    // by the more specific routes that own them at runtime.
+    writeFile(
+      "app/[...slug]/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/specific/[id]/page.tsx",
+      "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
+    );
+    writeFile(
+      "app/static/[id]/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ id: 'own' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pattern = new URL(
+        input instanceof Request ? input.url : String(input),
+      ).searchParams.get("pattern");
+      if (pattern === "/:slug+") {
+        return Response.json([
+          { slug: ["specific", "value"] },
+          { slug: ["static", "foreign"] },
+          { slug: ["other", "value"] },
+        ]);
+      }
+      if (pattern === "/static/:id") return Response.json([{ id: "own" }]);
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(
+      expect.arrayContaining(["/specific/value", "/static/foreign", "/other/value", "/static/own"]),
+    );
+    const route = (pathname: string) => manifest?.routePatterns?.[pathname];
+    expect(route("/specific/value")).toMatchObject({
+      cacheabilityProbe: { unlisted: true },
+      pattern: "/specific/:id",
+    });
+    expect(route("/static/foreign")).toMatchObject({
+      cacheabilityProbe: { unlisted: true },
+      pattern: "/static/:id",
+    });
+    expect(route("/static/own")?.cacheabilityProbe?.unlisted).toBeUndefined();
+    expect(route("/other/value")).toMatchObject({ pattern: "/:slug+" });
+    expect(route("/other/value")?.cacheabilityProbe?.unlisted).toBeUndefined();
+  });
+
+  it("doesn't count a type-only generateStaticParams export toward static generation", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[category]/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ category: 'news' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[category]/details/page.tsx",
+      [
+        "type generateStaticParams = () => unknown[];",
+        "export type { generateStaticParams };",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toContain("/news/details");
+    expect(manifest?.routePatterns?.["/news/details"]?.cacheabilityProbe?.unlisted).toBe(true);
+  });
+
+  it("lists the paths of a route whose last dynamic segment's layout has generateStaticParams", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[category]/layout.tsx",
+      [
+        "export function generateStaticParams() { return [{ category: 'news' }]; }",
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[category]/details/page.tsx",
+      "export default function Page() { return null; }\n",
+    );
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toContain("/news/details");
+    expect(manifest?.routePatterns?.["/news/details"]?.cacheabilityProbe?.unlisted).toBeUndefined();
   });
 
   it("keeps traffic paths that an uncached request stage rewrites", async () => {
@@ -1422,7 +1632,20 @@ describe("prerender path manifest", () => {
     writeFile("dist/server/index.js", "export default {};\n");
     writeFile(
       "app/[slug]/page.mdx",
-      'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
+      [
+        "```js",
+        "export const dynamic = 'force-dynamic'",
+        "```",
+        "",
+        // MDX keeps ESM open across a blank line until the JavaScript parses.
+        "export function generateStaticParams() {",
+        "",
+        '  return [{ slug: "hello" }]',
+        "}",
+        "",
+        "# Hello",
+        "",
+      ].join("\n"),
     );
     vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
 
@@ -1442,6 +1665,236 @@ describe("prerender path manifest", () => {
 
     expect(manifest?.paths).toEqual(["/hello"]);
     expect(manifest?.rscPaths).toEqual(["/hello"]);
+    // The page's generateStaticParams lists it. The fenced code isn't ESM.
+    expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBeUndefined();
+  });
+
+  it("doesn't take MDX paragraph text that looks like an export as ESM", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[slug]/page.mdx",
+      [
+        "An export can't interrupt a paragraph, so this is text:",
+        "export function generateStaticParams() {}",
+        "",
+        "# Hello",
+        "",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+      tmpDir,
+    );
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      nextConfig,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(["/hello"]);
+    expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBe(true);
+  });
+
+  it("reads MDX with the parser beside an MDX plugin the app installs", async () => {
+    // vinext's own @mdx-js/rollup isn't installed; the app registers its own.
+    const rollupDir = path.dirname(
+      createRequire(new URL("../packages/vinext/package.json", import.meta.url)).resolve(
+        "@mdx-js/rollup",
+      ),
+    );
+    vi.resetModules();
+    vi.doMock("node:module", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:module")>();
+      const createRequireWithoutVinextMdx = (base: string | URL) => {
+        const require = actual.createRequire(base);
+        if (!String(base).includes("/utils/mdx-scan.")) return require;
+        return Object.assign((id: string) => require(id), require, {
+          resolve: (id: string, options?: { paths?: string[] }) => {
+            if (id === "@mdx-js/rollup") throw new Error(`Cannot find module '${id}'`);
+            return require.resolve(id, options);
+          },
+        });
+      };
+      return Object.assign({}, actual, { createRequire: createRequireWithoutVinextMdx });
+    });
+    try {
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      fs.mkdirSync(path.join(tmpDir, "node_modules", "@mdx-js"), { recursive: true });
+      fs.symlinkSync(rollupDir, path.join(tmpDir, "node_modules", "@mdx-js", "rollup"), "dir");
+      writeFile(
+        "app/[slug]/page.mdx",
+        'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
+      );
+      // Only a route read with the parser keeps its force-dynamic config.
+      writeFile(
+        "app/forced/[slug]/page.mdx",
+        [
+          'export const dynamic = "force-dynamic"',
+          'export function generateStaticParams() { return [{ slug: "hello" }] }',
+          "",
+          "# Forced",
+          "",
+        ].join("\n"),
+      );
+      vi.mocked(fetch).mockImplementation(async () => Response.json([{ slug: "hello" }]));
+
+      const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+        import("../packages/vinext/src/build/prerender-paths.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+      ]);
+      const nextConfig = await resolveNextConfig(
+        { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+        tmpDir,
+      );
+      const manifest = await emitPrerenderPathManifest({
+        root: tmpDir,
+        nextConfig,
+        responseVary: "verbatim",
+      });
+
+      expect(manifest?.paths).toEqual(["/forced/hello", "/hello"]);
+      expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBeUndefined();
+      expect(manifest?.routePatterns?.["/forced/hello"]?.cacheabilityProbe?.unlisted).toBe(true);
+    } finally {
+      vi.doUnmock("node:module");
+      vi.resetModules();
+    }
+  });
+
+  it("lists an MDX route's paths without the MDX parser, so their render failures still fail", async () => {
+    vi.resetModules();
+    vi.doMock("../packages/vinext/src/utils/mdx-scan.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../packages/vinext/src/utils/mdx-scan.js")>()),
+      loadMdxEsmReader: async () => null,
+    }));
+    try {
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      writeFile(
+        "dist/server/vinext-server.json",
+        JSON.stringify({ prerenderSecret: "probe-secret" }),
+      );
+      writeFile(
+        "app/[slug]/page.mdx",
+        'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
+      );
+      vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
+
+      const [
+        { emitPrerenderPathManifest },
+        { resolveNextConfig },
+        { probeStagedWorkerCacheability },
+      ] = await Promise.all([
+        import("../packages/vinext/src/build/prerender-paths.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+        import("../packages/cloudflare/src/cacheability-probe.js"),
+      ]);
+      const nextConfig = await resolveNextConfig(
+        { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+        tmpDir,
+      );
+      const manifest = await emitPrerenderPathManifest({
+        root: tmpDir,
+        nextConfig,
+        responseVary: "verbatim",
+      });
+
+      expect(manifest?.paths).toEqual(["/hello"]);
+      const route = manifest?.routePatterns?.["/hello"];
+      expect(route?.cacheabilityProbe?.unlisted).toBeUndefined();
+
+      const result = await probeStagedWorkerCacheability({
+        buildId: "build-a",
+        fetchImpl: async () =>
+          Response.json({
+            kind: "app-page",
+            pattern: route?.pattern,
+            reason: "route returned HTTP 500",
+            state: "probe-failed",
+            status: 500,
+            version: 1,
+          }),
+        retries: 0,
+        root: tmpDir,
+        targetUrl: "https://example.com",
+        targets: [
+          {
+            headers: { Accept: "text/html" },
+            kind: "html",
+            label: "/hello",
+            pathname: "/hello",
+            route,
+            sourcePathname: "/hello",
+          },
+        ],
+      });
+      expect(result.failures).toEqual(["/hello: route returned HTTP 500"]);
+    } finally {
+      vi.doUnmock("../packages/vinext/src/utils/mdx-scan.js");
+      vi.resetModules();
+    }
+  });
+
+  it("doesn't certify an unreadable MDX route's empty static params fallback", async () => {
+    vi.resetModules();
+    vi.doMock("../packages/vinext/src/utils/mdx-scan.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../packages/vinext/src/utils/mdx-scan.js")>()),
+      loadMdxEsmReader: async () => null,
+    }));
+    try {
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      // Without the parser, the layout's edge runtime can't be read, so no
+      // probe proves the fallback static.
+      writeFile(
+        "app/posts/layout.mdx",
+        'export const runtime = "edge"\n\n# Posts\n\n{props.children}\n',
+      );
+      writeFile(
+        "app/posts/[slug]/page.tsx",
+        [
+          "export function generateStaticParams() { return []; }",
+          "export default function Page() { return null; }",
+        ].join("\n"),
+      );
+      vi.mocked(fetch).mockResolvedValue(Response.json([]));
+
+      const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+        import("../packages/vinext/src/build/prerender-paths.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+      ]);
+      const nextConfig = await resolveNextConfig(
+        { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+        tmpDir,
+      );
+      const manifest = await emitPrerenderPathManifest({
+        root: tmpDir,
+        nextConfig,
+        responseVary: "verbatim",
+      });
+
+      expect(manifest?.paths).toEqual([]);
+      expect(manifest?.fallbackRoutePatterns).toBeUndefined();
+    } finally {
+      vi.doUnmock("../packages/vinext/src/utils/mdx-scan.js");
+      vi.resetModules();
+    }
   });
 
   it("discovers dynamic Pages MDX paths from the built runtime", async () => {

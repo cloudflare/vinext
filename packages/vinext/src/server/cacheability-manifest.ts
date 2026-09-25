@@ -15,6 +15,8 @@ import {
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "./app-rsc-render-mode.js";
 
 export const CACHEABILITY_MANIFEST_MODULE = "__vinext_cacheability_manifest.js";
+/** Request-stage projection of the manifest: the App page routes that can admit a query-free entry. */
+export const CACHEABILITY_REQUEST_PROJECTION_MODULE = "__vinext_cacheability_request_projection.js";
 
 export type CacheabilityRouteKind = "app-page" | "app-route" | "pages-page";
 export type CacheabilityRepresentation =
@@ -42,7 +44,9 @@ export type CacheabilityManifestRoute = {
   staticRepresentation?: CacheabilityRepresentation;
   /** Exact dynamic paths observed in a mixed or pattern-dynamic route. */
   runtimePaths?: string[];
-  /** Exact paths statically certified by the representation that was probed. */
+  /** Exact paths runtime-checked only in the listed representation. */
+  runtimeRepresentationPaths?: Partial<Record<CacheabilityRepresentation, string[]>>;
+  /** Exact paths statically certified per representation. A path may appear in several lists. */
   staticPaths?: Partial<Record<CacheabilityRepresentation, string[]>>;
 };
 
@@ -138,6 +142,10 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
     route.runtimePaths === undefined ? undefined : parsePathList(route.runtimePaths, pathPrefix);
   const staticPaths =
     route.staticPaths === undefined ? undefined : parseStaticPaths(route.staticPaths, pathPrefix);
+  const runtimeRepresentationPaths =
+    route.runtimeRepresentationPaths === undefined
+      ? undefined
+      : parseStaticPaths(route.runtimeRepresentationPaths, pathPrefix);
   const staticRepresentation = isRepresentation(route.staticRepresentation)
     ? route.staticRepresentation
     : undefined;
@@ -157,16 +165,19 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
         pathPrefix !== undefined ||
         staticRepresentation !== undefined ||
         runtimePaths !== undefined ||
-        staticPaths !== undefined)) ||
+        staticPaths !== undefined ||
+        runtimeRepresentationPaths !== undefined)) ||
     (staticRepresentation !== undefined &&
       (route.state !== "runtime-check" ||
         /(^|\/):/.test(route.pattern) ||
         runtimePaths !== undefined ||
-        staticPaths !== undefined)) ||
-    (pathPrefix !== undefined && !runtimePaths && !staticPaths) ||
+        staticPaths !== undefined ||
+        runtimeRepresentationPaths !== undefined)) ||
+    (pathPrefix !== undefined && !runtimePaths && !staticPaths && !runtimeRepresentationPaths) ||
     (route.runtimePaths !== undefined && !runtimePaths) ||
     (route.staticPaths !== undefined && !staticPaths) ||
-    ((runtimePaths || staticPaths || route.allowUnknown === true) &&
+    (route.runtimeRepresentationPaths !== undefined && !runtimeRepresentationPaths) ||
+    ((runtimePaths || staticPaths || runtimeRepresentationPaths || route.allowUnknown === true) &&
       route.state !== "runtime-check")
   ) {
     return null;
@@ -183,15 +194,29 @@ function parseRoute(key: string, value: unknown): CacheabilityManifestRoute | nu
     ...(runtimeRepresentation ? { runtimeRepresentation } : {}),
     ...(staticRepresentation ? { staticRepresentation } : {}),
     ...(runtimePaths ? { runtimePaths } : {}),
+    ...(runtimeRepresentationPaths ? { runtimeRepresentationPaths } : {}),
     ...(staticPaths ? { staticPaths } : {}),
   };
 
-  const observedPaths = new Set<string>();
-  for (const tokens of [runtimePaths, ...Object.values(staticPaths ?? {})]) {
+  // A certified App page path is listed under each representation that shares
+  // its render (HTML and its RSC versions). Each list is sorted and unique, and
+  // a runtime-checked path is never also certified static.
+  const runtimePathSet = new Set(
+    (runtimePaths ?? []).map((token) => expandPathToken(pathPrefix, token)!),
+  );
+  for (const tokens of Object.values(staticPaths ?? {})) {
     for (const token of tokens ?? []) {
-      const pathname = expandPathToken(pathPrefix, token)!;
-      if (observedPaths.has(pathname)) return null;
-      observedPaths.add(pathname);
+      if (runtimePathSet.has(expandPathToken(pathPrefix, token)!)) return null;
+    }
+  }
+  // A representation-only runtime path is neither runtime-checked in every
+  // representation nor certified static in its own.
+  for (const [representation, tokens] of Object.entries(runtimeRepresentationPaths ?? {})) {
+    const staticTokens = new Set(staticPaths?.[representation as CacheabilityRepresentation]);
+    for (const token of tokens ?? []) {
+      if (runtimePathSet.has(expandPathToken(pathPrefix, token)!) || staticTokens.has(token)) {
+        return null;
+      }
     }
   }
   return key === cacheabilityManifestRouteKey(parsed.kind, parsed.pattern) ? parsed : null;
@@ -365,7 +390,15 @@ export function cacheabilityManifestRouteState(
   if (route.runtimeRepresentation !== undefined) {
     return representation === route.runtimeRepresentation ? route.state : null;
   }
-  if (!route.staticPaths && !route.runtimePaths && route.allowUnknown !== true) {
+  if (representation && includesPath(route.runtimeRepresentationPaths?.[representation])) {
+    return route.state;
+  }
+  if (
+    !route.staticPaths &&
+    !route.runtimePaths &&
+    !route.runtimeRepresentationPaths &&
+    route.allowUnknown !== true
+  ) {
     return route.state;
   }
   if (includesPath(route.runtimePaths)) return route.state;
@@ -384,4 +417,84 @@ export function findCacheabilityManifestRoute(
   pattern: string,
 ): CacheabilityManifestRoute | null {
   return manifest.routes[cacheabilityManifestRouteKey(kind, pattern)] ?? null;
+}
+
+export function resolveCacheabilityRepresentation(
+  representation: CacheabilityRepresentation,
+  routeKind: "app-page" | "app-route" | "pages-api" | "pages-page",
+): CacheabilityRepresentation {
+  // Accept describes the representation a caller would prefer; it does not
+  // determine whether the resolved pathname belongs to an App Page or a Route
+  // Handler. Browser fetch() uses Accept: */* by default, while Route Handlers
+  // may legitimately be requested with Accept: text/html. Once routing has
+  // resolved the owner, make that result authoritative for non-RSC requests.
+  if (representation !== "html" && representation !== "app-route") {
+    return representation;
+  }
+  return routeKind === "app-route" || routeKind === "pages-api" ? "app-route" : "html";
+}
+
+/** Whether completed-response admission can store a page route under this representation. */
+export function cacheabilityRepresentationMatchesPageRoute(
+  routeKind: "app-page" | "pages-page",
+  representation: CacheabilityRepresentation,
+): boolean {
+  return routeKind === "app-page"
+    ? representation === "html" ||
+        representation === "rsc-full" ||
+        representation === "rsc-loading-shell"
+    : representation === "html" || representation === "pages-data";
+}
+
+/**
+ * The manifest state completed-response admission gives a page request, or
+ * null when admission refuses it. `requestRepresentation` is the request
+ * identity's, and `routePathname` is built from the resolved pathname with
+ * `cacheabilityRoutePathname`, as admission builds it. The Workers Cache
+ * request stage decides its query-free dispatch with this same function, so
+ * the dispatch and admission always see the same state.
+ */
+export function cacheabilityManifestPageState(
+  manifest: CacheabilityManifest,
+  route: { kind: "app-page" | "pages-page"; pattern: string },
+  requestRepresentation: CacheabilityRepresentation,
+  routePathname: string,
+): CacheabilityManifestRouteState | null {
+  const representation = resolveCacheabilityRepresentation(requestRepresentation, route.kind);
+  if (!cacheabilityRepresentationMatchesPageRoute(route.kind, representation)) return null;
+  const manifestRoute = findCacheabilityManifestRoute(manifest, route.kind, route.pattern);
+  return manifestRoute
+    ? cacheabilityManifestRouteState(manifestRoute, routePathname, representation)
+    : null;
+}
+
+/** Whether any path or representation of a route can resolve to `static-candidate`. */
+function canResolveStaticCandidate(route: CacheabilityManifestRoute): boolean {
+  return (
+    route.state === "static-candidate" ||
+    route.unknownState === "static-candidate" ||
+    route.staticRepresentation !== undefined ||
+    route.staticPaths !== undefined
+  );
+}
+
+/**
+ * Project the manifest onto the Workers Cache request stage, which strips the
+ * query from App page dispatches whose manifest state is `static-candidate`.
+ * The projection keeps every App page route record that can resolve to that
+ * state, unchanged, so a lookup against it returns `static-candidate` exactly
+ * when the full manifest does. Every other route is left out.
+ */
+export function projectCacheabilityManifestForRequestStage(
+  manifest: CacheabilityManifest,
+): CacheabilityManifest {
+  return {
+    buildId: manifest.buildId,
+    routes: Object.fromEntries(
+      Object.entries(manifest.routes).filter(
+        ([, route]) => route.kind === "app-page" && canResolveStaticCandidate(route),
+      ),
+    ),
+    version: 1,
+  };
 }

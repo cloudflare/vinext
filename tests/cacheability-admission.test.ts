@@ -1949,6 +1949,50 @@ describe("cacheability probe finalization", () => {
     });
   });
 
+  it("reports dynamic usage and an applied next.config policy", async () => {
+    const envelope = async (state: Omit<RouteCacheabilityState, "captureDeadlineAt" | "mode">) =>
+      (await finalizeWorkerCacheabilityResponse(
+        new Response("body", { headers: { "Cache-Control": "s-maxage=60" } }),
+        contextWith({ captureDeadlineAt: Date.now() + 1_000, mode: "probe", ...state }),
+      ).then((response) => response.json())) as Record<string, unknown>;
+    const route = { kind: "app-page" as const, pattern: "/posts/:slug" };
+
+    const staticEnvelope = await envelope({
+      outcome: { cacheable: true, cacheControl: "s-maxage=60" },
+      route,
+    });
+    expect(staticEnvelope).toMatchObject({ rendererStatic: true, state: "static-candidate" });
+    expect(staticEnvelope).not.toHaveProperty("dynamicUsage");
+    expect(staticEnvelope).not.toHaveProperty("explicitConfigCachePolicy");
+
+    await expect(
+      envelope({
+        explicitConfigCachePolicy: true,
+        frameworkResponseCachePolicy: new Headers({ "Cache-Control": "no-store" }),
+        outcome: { cacheable: false, dynamicUsage: true },
+        route,
+      }),
+    ).resolves.toMatchObject({
+      dynamicUsage: true,
+      explicitConfigCachePolicy: true,
+      rendererStatic: false,
+      state: "static-candidate",
+    });
+
+    const outcome = {
+      cacheable: false,
+      dynamicUsage: true,
+      reason: '"use cache: private" requires request-time execution',
+    };
+    await expect(
+      envelope({ outcome, probeBailout: { kind: "private-cache", outcome }, route }),
+    ).resolves.toMatchObject({ dynamicUsage: true, state: "dynamic" });
+
+    await expect(
+      envelope({ patternDynamicReason: 'dynamic = "force-dynamic"', route }),
+    ).resolves.toMatchObject({ dynamicUsage: true, scope: "pattern", state: "dynamic" });
+  });
+
   it("does not let ordinary dynamic usage hide a route 500", async () => {
     const state: RouteCacheabilityState = {
       captureDeadlineAt: Date.now() + 1_000,

@@ -202,3 +202,76 @@ test("useSearchParams() server-renders the real query once the page is dynamic",
   expect(headers["x-vinext-cache"]).not.toBe("HIT");
   expect(headers["cf-cache-status"]).not.toBe("HIT");
 });
+
+test("Workers Cache serves every query of a static page from one entry", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  test.skip(backend !== "workers-cache", "the query-free dispatch is specific to Workers Cache");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(180_000);
+
+  // Next.js serves a static page's one render for any query. Each request
+  // carries a query no earlier request used, so only an entry shared across
+  // queries can report a HIT with the previous response's render. No query
+  // ever reaches the shared render.
+  const expectSharedAcrossQueries = async (
+    label: string,
+    urlFor: (query: string) => string,
+    headers: Record<string, string>,
+    content: string,
+    renderOf: (body: string) => string | undefined,
+  ) => {
+    const queries: string[] = [];
+    let previousRender: string | undefined;
+    await expect
+      .poll(
+        async () => {
+          const query = randomUUID();
+          queries.push(query);
+          const response = await request.get(urlFor(query), { headers });
+          const responseHeaders = response.headers();
+          const trace = JSON.stringify({ label, headers: responseHeaders });
+          expect(response.ok(), trace).toBe(true);
+          const body = await response.text();
+          expect(body, trace).toContain(content);
+          for (const sent of queries) expect(body, trace).not.toContain(sent);
+          const render = renderOf(body);
+          expect(render, trace).toBeTruthy();
+          const shared = responseHeaders["cf-cache-status"] === "HIT" && render === previousRender;
+          previousRender = render;
+          return shared;
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe(true);
+  };
+
+  await expectSharedAcrossQueries(
+    "HTML",
+    (query) => `${baseURL}/cached/featured?q=${query}`,
+    { accept: "text/html" },
+    "Post: featured",
+    (body) => /data-render-id-tag[^>]*>([^<]+)</.exec(body)?.[1],
+  );
+  // The canonical navigation RSC request: no router-state headers, so its
+  // validated `_rsc` value is empty.
+  await expectSharedAcrossQueries(
+    "RSC navigation",
+    (query) => `${baseURL}/cached/featured?q=${query}&_rsc`,
+    { accept: "text/x-component", rsc: "1" },
+    "Post: featured",
+    // A HIT returns the stored payload byte for byte.
+    (body) => body,
+  );
+  // A static page that reads useSearchParams() inside Suspense: Next.js
+  // prerenders it once with the fallback, and the browser reads the query.
+  await expectSharedAcrossQueries(
+    "HTML with useSearchParams() inside Suspense",
+    (query) => `${baseURL}/search-params/suspense?q=${query}`,
+    { accept: "text/html" },
+    'data-testid="search-fallback"',
+    (body) => /search-suspense-render-id[^>]*>([^<]+)</.exec(body)?.[1],
+  );
+});

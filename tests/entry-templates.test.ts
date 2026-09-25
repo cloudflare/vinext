@@ -1141,6 +1141,12 @@ describe("App Router entry templates", () => {
     );
     expect(code).toContain('from "virtual:vinext-cdn-cache-adapter"');
     expect(code).not.toContain('from "virtual:vinext-cache-adapters"');
+    // The request stage reads only the Workers Cache manifest's projection.
+    expect(code).toContain(
+      'import __cacheabilityRequestProjection from "virtual:vinext-cacheability-request-projection"',
+    );
+    expect(code).toContain("cacheabilityRequestProjection: __cacheabilityRequestProjection,");
+    expect(code).not.toContain("virtual:vinext-cacheability-manifest");
     expect(code).toContain('dispatchPagesResponseStage(stageRequest, "api")');
     expect(code).toContain(
       'dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument)',

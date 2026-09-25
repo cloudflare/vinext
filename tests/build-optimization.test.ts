@@ -3975,6 +3975,12 @@ describe("createMultiStageChunkFileNames", () => {
     expect(fileName({ name: "vinext-stage-runtime~virtual_vinext-response-stage" } as never)).toBe(
       "vinext-stage-runtime~virtual_vinext-response-stage-[hash].js",
     );
+    expect(fileName({ name: "_virtual_vinext-request-stage" } as never)).toBe(
+      "_virtual_vinext-request-stage-[hash].js",
+    );
+    expect(fileName({ name: "vinext-stage-runtime~virtual_vinext-request-stage" } as never)).toBe(
+      "vinext-stage-runtime~virtual_vinext-request-stage-[hash].js",
+    );
     expect(fileName({ name: "request-runtime" } as never)).toBe(
       "_next/static/request-runtime-[hash].js",
     );

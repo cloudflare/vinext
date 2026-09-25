@@ -28,11 +28,14 @@ import {
   CACHEABILITY_PROBE_TIMEOUT_MS,
 } from "./cacheability-limits.js";
 import {
+  cacheabilityManifestPageState,
   cacheabilityManifestRouteState,
+  cacheabilityRepresentationMatchesPageRoute,
   cacheabilityRequestIdentity,
   cacheabilityRoutePathname,
   findCacheabilityManifestRoute,
   parseCacheabilityManifest,
+  resolveCacheabilityRepresentation,
   type CacheabilityManifest,
   type CacheabilityManifestRoute,
   type CacheabilityRouteKind,
@@ -48,6 +51,10 @@ type CacheabilityProbeRouteState =
 
 type CacheabilityProbeResult = {
   cacheControl?: string;
+  /** The render used a dynamic API, a private cache or a route-wide dynamic config. */
+  dynamicUsage?: true;
+  /** A matching next.config header policy applied to the response. */
+  explicitConfigCachePolicy?: true;
   kind?: "app-page" | "app-route" | "pages-api" | "pages-page";
   pattern?: string;
   reason?: string;
@@ -248,21 +255,6 @@ function readState(ctx: ExecutionContextLike): RouteCacheabilityState | null {
   );
 }
 
-function resolveCacheabilityRepresentation(
-  representation: CacheabilityRepresentation,
-  routeKind: "app-page" | "app-route" | "pages-api" | "pages-page",
-): CacheabilityRepresentation {
-  // Accept describes the representation a caller would prefer; it does not
-  // determine whether the resolved pathname belongs to an App Page or a Route
-  // Handler. Browser fetch() uses Accept: */* by default, while Route Handlers
-  // may legitimately be requested with Accept: text/html. Once routing has
-  // resolved the owner, make that result authoritative for non-RSC requests.
-  if (representation !== "html" && representation !== "app-route") {
-    return representation;
-  }
-  return routeKind === "app-route" || routeKind === "pages-api" ? "app-route" : "html";
-}
-
 /** Apply request-stage-vetted positive config policy inside the admission boundary. */
 export function applyResponseStageCachePolicy(
   response: Response,
@@ -312,14 +304,22 @@ function probeResponse(
   routeState: CacheabilityProbeRouteState,
   outcome: RouteCacheabilityOutcome,
   status: number,
-  rendererStatic?: boolean,
+  renderer?: { dynamicUsage: boolean; static: boolean },
 ): Response {
+  // Next.js's build treats a private cache and a route-wide dynamic config as
+  // dynamic usage too.
+  const dynamicUsage =
+    renderer?.dynamicUsage === true ||
+    outcome.dynamicUsage === true ||
+    state.patternDynamicReason !== undefined;
   const body: CacheabilityProbeResult = {
     cacheControl: outcome.cacheControl,
+    ...(dynamicUsage ? { dynamicUsage: true as const } : {}),
+    ...(state.explicitConfigCachePolicy ? { explicitConfigCachePolicy: true as const } : {}),
     kind: state.route?.kind,
     pattern: state.route?.pattern,
     reason: outcome.reason,
-    ...(rendererStatic !== undefined ? { rendererStatic } : {}),
+    ...(renderer ? { rendererStatic: renderer.static } : {}),
     ...(outcome.retryable ? { retryable: true as const } : {}),
     ...(state.resolvedRoutePathname ? { routePathname: state.resolvedRoutePathname } : {}),
     ...(routeState === "dynamic"
@@ -830,17 +830,10 @@ async function finalizeWorkerCacheabilityAdmission(
   ) {
     return responseWithCachePolicy(response, response.body, null);
   }
-  const representation = resolveCacheabilityRepresentation(
-    admission.representation as CacheabilityRepresentation,
-    state.route.kind,
-  );
-  const representationMatchesRoute =
-    state.route.kind === "app-page"
-      ? representation === "html" ||
-        representation === "rsc-full" ||
-        representation === "rsc-loading-shell"
-      : representation === "html" || representation === "pages-data";
-  if (!representationMatchesRoute) {
+  const pageRoute = { kind: state.route.kind, pattern: state.route.pattern };
+  const requestRepresentation = admission.representation as CacheabilityRepresentation;
+  const representation = resolveCacheabilityRepresentation(requestRepresentation, pageRoute.kind);
+  if (!cacheabilityRepresentationMatchesPageRoute(pageRoute.kind, representation)) {
     return responseWithCachePolicy(response, response.body, null);
   }
 
@@ -848,11 +841,15 @@ async function finalizeWorkerCacheabilityAdmission(
   let manifestRouteState: ReturnType<typeof cacheabilityManifestRouteState> = null;
   if (admission.policy === "manifest") {
     const manifest = admission.manifest as CacheabilityManifest;
-    manifestRoute = findCacheabilityManifestRoute(manifest, state.route.kind, state.route.pattern);
-    manifestRouteState =
-      manifestRoute && admission.routePathname
-        ? cacheabilityManifestRouteState(manifestRoute, admission.routePathname, representation)
-        : null;
+    manifestRoute = findCacheabilityManifestRoute(manifest, pageRoute.kind, pageRoute.pattern);
+    manifestRouteState = admission.routePathname
+      ? cacheabilityManifestPageState(
+          manifest,
+          pageRoute,
+          requestRepresentation,
+          admission.routePathname,
+        )
+      : null;
     if (!manifestRoute || !manifestRouteState) {
       return responseWithCachePolicy(response, response.body, null);
     }
@@ -1028,6 +1025,9 @@ export async function finalizeWorkerCacheabilityResponse(
         : "dynamic",
     outcome,
     response.status,
-    rendererOutcome?.cacheable === true && rendererOutcome.dynamicUsage !== true,
+    {
+      dynamicUsage: rendererOutcome?.dynamicUsage === true,
+      static: rendererOutcome?.cacheable === true && rendererOutcome.dynamicUsage !== true,
+    },
   );
 }

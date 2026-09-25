@@ -3,6 +3,8 @@ import path from "node:path";
 import { Buffer } from "node:buffer";
 import {
   CACHEABILITY_MANIFEST_MODULE,
+  CACHEABILITY_REQUEST_PROJECTION_MODULE,
+  projectCacheabilityManifestForRequestStage,
   type CacheabilityManifest,
 } from "vinext/internal/server/cacheability-manifest";
 import {
@@ -158,7 +160,7 @@ function resolveGeneratedServerConfig(root: string, configuredPath: string | und
   return configPath;
 }
 
-function assertManifestModuleReachable(configPath: string): void {
+function assertModuleReachable(configPath: string, moduleName: string): void {
   const serverDirectory = path.dirname(configPath);
   let config: unknown;
   try {
@@ -203,16 +205,11 @@ function assertManifestModuleReachable(configPath: string): void {
     if (!entry || typeof entry.file !== "string") continue;
     const modulePath = path.resolve(serverDirectory, entry.file);
     if (fs.existsSync(modulePath) && fs.lstatSync(modulePath).isFile()) {
-      const relativeManifest = path
-        .relative(
-          path.dirname(modulePath),
-          path.join(serverDirectory, CACHEABILITY_MANIFEST_MODULE),
-        )
+      const relativeModule = path
+        .relative(path.dirname(modulePath), path.join(serverDirectory, moduleName))
         .split(path.sep)
         .join("/");
-      const specifier = relativeManifest.startsWith(".")
-        ? relativeManifest
-        : `./${relativeManifest}`;
+      const specifier = relativeModule.startsWith(".") ? relativeModule : `./${relativeModule}`;
       reachable = hasStaticModuleSpecifier(fs.readFileSync(modulePath, "utf8"), specifier);
     }
     for (const references of [entry.imports, entry.dynamicImports]) {
@@ -223,8 +220,19 @@ function assertManifestModuleReachable(configPath: string): void {
   }
   if (!reachable) {
     throw new Error(
-      `Two-stage CDN warming requires the generated Worker graph to statically import ${CACHEABILITY_MANIFEST_MODULE}.`,
+      `Two-stage CDN warming requires the generated Worker graph to statically import ${moduleName}.`,
     );
+  }
+}
+
+function writeStringModule(modulePath: string, value: string): void {
+  const source = `export default ${JSON.stringify(value)};\n`;
+  const pendingPath = `${modulePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(pendingPath, source, "utf8");
+    fs.renameSync(pendingPath, modulePath);
+  } finally {
+    if (fs.existsSync(pendingPath)) fs.unlinkSync(pendingPath);
   }
 }
 
@@ -232,6 +240,11 @@ function assertManifestModuleReachable(configPath: string): void {
  * Write the version-specific manifest into the built Worker artifact.
  * The application build already imports this stable module asset, so the
  * completed dist directory remains the exact input to the final upload.
+ *
+ * App Router builds also emit the request stage's projection module. It
+ * carries the App page routes that can admit a query-free entry, so the
+ * request stage can strip the query from those dispatches without loading the
+ * full manifest.
  */
 export function writeCacheabilityManifestArtifact(
   root: string,
@@ -239,7 +252,7 @@ export function writeCacheabilityManifestArtifact(
   manifest: CacheabilityManifest,
 ): string {
   const configPath = resolveGeneratedServerConfig(root, configuredPath);
-  assertManifestModuleReachable(configPath);
+  assertModuleReachable(configPath, CACHEABILITY_MANIFEST_MODULE);
   const serverDirectory = path.dirname(configPath);
   const manifestPath = path.join(serverDirectory, CACHEABILITY_MANIFEST_MODULE);
   if (!fs.existsSync(manifestPath) || !fs.lstatSync(manifestPath).isFile()) {
@@ -253,13 +266,26 @@ export function writeCacheabilityManifestArtifact(
     throw cacheabilityManifestByteLimitError(manifestBytes);
   }
 
-  const manifestSource = `export default ${JSON.stringify(serializedManifest)};\n`;
-  const pendingManifestPath = `${manifestPath}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(pendingManifestPath, manifestSource, "utf8");
-    fs.renameSync(pendingManifestPath, manifestPath);
-  } finally {
-    if (fs.existsSync(pendingManifestPath)) fs.unlinkSync(pendingManifestPath);
+  const projectionPath = path.join(serverDirectory, CACHEABILITY_REQUEST_PROJECTION_MODULE);
+  const hasProjectionModule =
+    fs.existsSync(projectionPath) && fs.lstatSync(projectionPath).isFile();
+  // Without the projection, the request stage would never drop the query for
+  // the App page paths this manifest certifies.
+  if (Object.values(manifest.routes).some((route) => route.kind === "app-page")) {
+    if (!hasProjectionModule) {
+      throw new Error(
+        `Two-stage CDN warming requires ${CACHEABILITY_REQUEST_PROJECTION_MODULE} in the generated Worker artifact. Rebuild the app before deploying.`,
+      );
+    }
+    assertModuleReachable(configPath, CACHEABILITY_REQUEST_PROJECTION_MODULE);
+  }
+
+  writeStringModule(manifestPath, serializedManifest);
+  if (hasProjectionModule) {
+    writeStringModule(
+      projectionPath,
+      JSON.stringify(projectCacheabilityManifestForRequestStage(manifest)),
+    );
   }
   return path.relative(root, configPath);
 }

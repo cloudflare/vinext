@@ -6,7 +6,11 @@ import {
   serializeWorkerCacheabilityProbeRoute,
   type WorkerCacheabilityProbeMode,
 } from "../packages/vinext/src/server/cacheability-request.js";
-import { VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
+  VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { cacheabilityManifestRouteKey } from "../packages/vinext/src/server/cacheability-manifest.js";
 import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
 import {
@@ -224,6 +228,84 @@ describe("response-stage cacheability", () => {
     expect(deferred).toBe(false);
     expect(response.status).toBe(500);
     await expect(response.text()).resolves.toContain("changed from static to dynamic");
+  });
+
+  it("drops request-scoped headers before admitting a shared response", async () => {
+    const route = { kind: "app-page" as const, pattern: "/page", state: "static-candidate" };
+    const rawManifest = JSON.stringify({
+      buildId: "build-a",
+      routes: { [cacheabilityManifestRouteKey(route.kind, route.pattern)]: route },
+      version: 1,
+    });
+    const rscRequest = () =>
+      new Request("https://example.com/page?_rsc", {
+        headers: { Accept: "text/x-component", RSC: "1" },
+      });
+    const admitted: Response[] = [];
+    const render = (options: {
+      cache: "bypass" | "shared";
+      rawManifest: string | null;
+      recomposesRequestScopedHeaders: boolean;
+    }) =>
+      withResponseStageCacheability(
+        {
+          ...options,
+          buildId: "build-a",
+          context: baseContext(),
+          registerCacheAdapters() {},
+          request: rscRequest(),
+        },
+        async (context) => {
+          const state = contextState(context);
+          if (state) {
+            state.route = { kind: "app-page", pattern: "/page" };
+            state.outcome = {
+              cacheable: true,
+              cacheControl: "s-maxage=60",
+              searchParamsUnread: true,
+            };
+          }
+          return new Response("rsc", {
+            headers: {
+              [VINEXT_PARAMS_HEADER]: encodeURIComponent('{"id":"one"}'),
+              [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/page?q=1"),
+            },
+          });
+        },
+      );
+    setCdnCacheAdapter({
+      ...admissionAdapter(),
+      deferCompletedPageResponseAdmission(response) {
+        admitted.push(response);
+        return null;
+      },
+    });
+
+    // Manifest admission stores the response as returned.
+    const manifestAdmitted = await render({
+      cache: "shared",
+      rawManifest,
+      recomposesRequestScopedHeaders: true,
+    });
+    expect(manifestAdmitted.headers.get("Cache-Control")).toBe("s-maxage=60");
+    expect(manifestAdmitted.headers.has(VINEXT_PARAMS_HEADER)).toBe(false);
+    expect(manifestAdmitted.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(false);
+    await expect(manifestAdmitted.text()).resolves.toBe("rsc");
+
+    // Deferred runtime admission sees the response without them too.
+    await render({ cache: "shared", rawManifest: null, recomposesRequestScopedHeaders: true });
+    expect(admitted).toHaveLength(1);
+    expect(admitted[0]!.headers.has(VINEXT_PARAMS_HEADER)).toBe(false);
+    expect(admitted[0]!.headers.has(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(false);
+
+    for (const kept of [
+      await render({ cache: "bypass", rawManifest, recomposesRequestScopedHeaders: true }),
+      await render({ cache: "shared", rawManifest, recomposesRequestScopedHeaders: false }),
+    ]) {
+      expect(kept.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+        encodeURIComponent("/page?q=1"),
+      );
+    }
   });
 
   it("runs authenticated probes even when the response transport bypasses caching", async () => {

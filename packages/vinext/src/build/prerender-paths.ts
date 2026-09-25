@@ -11,6 +11,7 @@ import {
   appRouteHasMainTreeLoadingBoundary,
   appRouter,
   matchAppRoute,
+  type AppRoute,
 } from "../routing/app-router.js";
 import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
 import {
@@ -23,12 +24,15 @@ import {
   classifyAppRoute,
   classifyAppRouteHandler,
   classifyPagesRoute,
+  extractExportConstNumber,
   extractExportConstString,
   extractMiddlewareMatcherConfig,
+  hasRuntimeExportedName,
 } from "./report.js";
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
+import { loadMdxEsmReader } from "../utils/mdx-scan.js";
 import { findDir } from "../utils/project.js";
 import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
@@ -37,7 +41,15 @@ import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
 import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
-import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
+import {
+  collectAppPageStaticGenerationRuntimes,
+  hasAppPageGenerateStaticParamsAtLastDynamicSegment,
+  isAppPageStaticEligible,
+  isEdgeRuntime,
+  resolveAppPageDynamicConfig,
+  resolveAppPageSegmentConfig,
+  resolveAppPageStaticGenerationRuntime,
+} from "../server/app-segment-config.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
@@ -60,6 +72,14 @@ export type PrerenderRoutePattern = {
     routeMayResolve?: boolean;
     /** A request representation may terminate before reaching the response stage. */
     requestStageMayTerminate?: boolean;
+    /**
+     * Not listed by the route's own static generation (`generateStaticParams`,
+     * `getStaticPaths` or a route without dynamic segments): picked from
+     * traffic, or, for an App page route, not listed by this route itself,
+     * which includes a route that isn't static or SSG and a path another
+     * route generates. A path both listed and picked counts as listed.
+     */
+    unlisted?: boolean;
   };
 };
 export type PrerenderPathManifest = {
@@ -724,6 +744,100 @@ function extractPagesStaticPathLocale(
   return { explicitLocalePrefix: parts[0], locale, url: `${rest || "/"}${query}` };
 }
 
+/**
+ * Whether Next.js classifies an App page route as static or SSG, read from its
+ * layout, page and parallel-slot sources with the helpers dispatch applies to
+ * the loaded modules. Only such a route has listed paths.
+ *
+ * An MDX source read without the MDX parser has unknown exports, so its route
+ * is "unreadable". Its paths are still listed: the built runtime reads the real
+ * exports and never stores a route that isn't static, while an unlisted path's
+ * render failure would be dropped instead of failing. But no probe renders an
+ * unreadable route's fallback, so it never certifies one.
+ */
+function classifyAppPageRouteStaticEligibility(
+  route: AppRoute,
+  readMdxEsm: ((source: string) => string) | null,
+): "eligible" | "ineligible" | "unreadable" {
+  let unreadable = false;
+  const readSegmentConfig = (filePath: string | null | undefined) => {
+    if (!filePath) return null;
+    let code = fs.readFileSync(filePath, "utf8");
+    if (filePath.toLowerCase().endsWith(".mdx")) {
+      let esm: string | null = null;
+      try {
+        esm = readMdxEsm?.(code) ?? null;
+      } catch {
+        // A source MDX can't parse can't build either.
+      }
+      unreadable ||= esm === null;
+      code = esm ?? "";
+    }
+    const dynamic = extractExportConstString(code, "dynamic");
+    const revalidate = extractExportConstNumber(code, "revalidate");
+    const runtime = extractExportConstString(code, "runtime");
+    return {
+      ...(dynamic === null ? {} : { dynamic }),
+      ...(hasRuntimeExportedName(code, "generateStaticParams")
+        ? { generateStaticParams() {} }
+        : {}),
+      ...(revalidate === null ? {} : { revalidate }),
+      ...(runtime === null ? {} : { runtime }),
+    };
+  };
+  const layouts = route.layouts.map(readSegmentConfig);
+  const page = readSegmentConfig(route.pagePath);
+  const parallelBranches = route.parallelSlots.map((slot) => ({
+    configLayouts: (slot.configLayoutPaths ?? []).map(readSegmentConfig),
+    configLayoutTreePositions: slot.configLayoutTreePositions ?? [],
+    isDefault: !slot.pagePath,
+    layout: readSegmentConfig(slot.layoutPath),
+    name: slot.name,
+    ownerTreePosition: slot.ownerTreePosition ?? null,
+    page: readSegmentConfig(slot.pagePath ?? slot.defaultPath),
+    routeSegments: slot.routeSegments,
+  }));
+  if (unreadable) return "unreadable";
+  const segmentConfig = resolveAppPageSegmentConfig({
+    layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page,
+    parallelBranches,
+    routeSegments: route.routeSegments,
+  });
+  const eligible = isAppPageStaticEligible({
+    dynamicConfig: segmentConfig.dynamicConfig,
+    hasGenerateStaticParams: hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+      childrenSlot: route.childrenSlot ?? null,
+      layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      page,
+      parallelBranches,
+      routeSegments: route.routeSegments,
+    }),
+    isDynamicRoute: route.isDynamic,
+    isStaticGenerationEdgeRuntime: isEdgeRuntime(
+      resolveAppPageStaticGenerationRuntime(
+        collectAppPageStaticGenerationRuntimes({
+          childrenSlot: route.childrenSlot ?? null,
+          layouts,
+          layoutTreePositions: route.layoutTreePositions,
+          page,
+          parallelBranches,
+          routeSegments: route.routeSegments,
+        }),
+      ),
+    ),
+    revalidateSeconds: segmentConfig.revalidateSeconds,
+  });
+  return eligible ? "eligible" : "ineligible";
+}
+
+/** Keys a path an App page route lists by the route and the pathname together. */
+function appPageListingKey(routePattern: string, pathname: string): string {
+  return `${routePattern}\0${pathname}`;
+}
+
 async function collectAppPaths(options: {
   appDir: string;
   baseUrl: string | null;
@@ -731,12 +845,18 @@ async function collectAppPaths(options: {
   enumerateDynamicPaths: boolean;
   pageExtensions: readonly string[];
   retryOptions?: PathDiscoveryRetryOptions;
+  root: string;
   secretHeaders: Record<string, string>;
 }): Promise<{
   fallbackRoutePatterns: PrerenderRoutePattern[];
   nonDynamicPaths: string[];
   paths: string[];
   routeHandlerPaths: string[];
+  /**
+   * Keys (`appPageListingKey`) of the paths each static or SSG App page route
+   * lists in its own static generation.
+   */
+  listedRoutePaths: Set<string>;
 }> {
   const routes = await appRouter(options.appDir, options.pageExtensions);
   const paths: string[] = [];
@@ -746,6 +866,7 @@ async function collectAppPaths(options: {
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   const nonDynamicPaths: string[] = [];
   const seenNonDynamicPaths = new Set<string>();
+  const listedRoutePaths = new Set<string>();
   const staticParamsCache = new Map<string, Promise<Record<string, string | string[]>[] | null>>();
   let requireNonEmptyStaticParams = false;
   const staticParamsMap = new Proxy({} as StaticParamsMap, {
@@ -802,6 +923,10 @@ async function collectAppPaths(options: {
     },
   });
 
+  const readMdxEsm =
+    !options.cacheComponents && options.pageExtensions.includes("mdx")
+      ? await loadMdxEsmReader(options.root)
+      : null;
   for (const route of routes) {
     const isRouteHandler = route.routePath !== null && route.pagePath === null;
     const renderEntryPath = isRouteHandler ? route.routePath : getAppRouteRenderEntryPath(route);
@@ -813,6 +938,16 @@ async function collectAppPaths(options: {
       const { type } = classifyAppRoute(renderEntryPath, route.routePath, route.isDynamic);
       if (type === "api") continue;
     }
+    // Next.js's build lists paths only for a static or SSG page route, and
+    // renders each under the route that generated it. Paths discovered for any
+    // other route, for example through a sibling page's generateStaticParams,
+    // stay warm paths but aren't listed. A cacheComponents build keeps every
+    // page route eligible, as dispatch does.
+    const staticEligibility =
+      isRouteHandler || options.cacheComponents
+        ? "eligible"
+        : classifyAppPageRouteStaticEligibility(route, readMdxEsm);
+    const isStaticEligible = staticEligibility !== "ineligible";
 
     const addDiscoveredPath = (pathname: string): void => {
       if (isRouteHandler) {
@@ -820,6 +955,7 @@ async function collectAppPaths(options: {
         return;
       }
       addPath(paths, seen, pathname);
+      if (isStaticEligible) listedRoutePaths.add(appPageListingKey(route.pattern, pathname));
     };
 
     if (!route.isDynamic) {
@@ -909,7 +1045,7 @@ async function collectAppPaths(options: {
         });
         const hasStaticFallback =
           paramSets !== null || dynamicConfig === "force-static" || dynamicConfig === "error";
-        if (hasStaticFallback && !hasDynamicSegment) {
+        if (hasStaticFallback && !hasDynamicSegment && staticEligibility === "eligible") {
           fallbackRoutePatterns.push({ kind: "app-page", pattern: route.pattern });
         }
         continue;
@@ -929,6 +1065,7 @@ async function collectAppPaths(options: {
     nonDynamicPaths,
     paths,
     routeHandlerPaths,
+    listedRoutePaths,
   };
 }
 
@@ -1120,6 +1257,7 @@ function annotateCacheabilityProbeSafety(
   config: Pick<ResolvedNextConfig, "basePath" | "headers" | "i18n" | "trailingSlash">,
   routeMayResolve: ReadonlySet<string>,
   requestStageMayTerminate: ReadonlySet<string>,
+  unlisted: ReadonlySet<string>,
   isResponsePolicyHeader: (name: string) => boolean,
 ): Record<string, PrerenderRoutePattern> {
   const cachePolicyRules = config.headers.filter((rule) =>
@@ -1171,6 +1309,7 @@ function annotateCacheabilityProbeSafety(
             canPrunePattern,
             ...(routeMayResolve.has(pathname) ? { routeMayResolve: true } : {}),
             ...(requestStageMayTerminate.has(pathname) ? { requestStageMayTerminate: true } : {}),
+            ...(unlisted.has(pathname) ? { unlisted: true } : {}),
           },
         },
       ];
@@ -1332,6 +1471,8 @@ export async function discoverPrerenderPathManifest(
   const discoveredRouteHandlerPaths: string[] = [];
   const seenRouteHandlerPaths = new Set<string>();
   const discoveredNonDynamicPathSet = new Set<string>();
+  const appListedRoutePaths = new Set<string>();
+  const candidateOnlyPathSet = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   await withPrerenderEndpoints(async () => {
     let prodServer: { server: HttpServer; port: number } | null = null;
@@ -1397,6 +1538,7 @@ export async function discoverPrerenderPathManifest(
           enumerateDynamicPaths: options.candidatePathsOnly !== true,
           pageExtensions: config.pageExtensions,
           retryOptions: pathDiscoveryRetryOptions,
+          root,
           secretHeaders,
         });
         for (const pathname of appPathResult.paths) {
@@ -1409,6 +1551,7 @@ export async function discoverPrerenderPathManifest(
           discoveredNonDynamicPathSet.add(pathname);
         }
         fallbackRoutePatterns.push(...appPathResult.fallbackRoutePatterns);
+        for (const key of appPathResult.listedRoutePaths) appListedRoutePaths.add(key);
       }
 
       if (pagesDir) {
@@ -1451,6 +1594,7 @@ export async function discoverPrerenderPathManifest(
         pathname = pathname.slice(config.basePath.length);
       else continue;
     }
+    if (!seen.has(pathname)) candidateOnlyPathSet.add(pathname);
     addPath(paths, seen, pathname);
     if (pagesDir) addPath(discoveredPagesPaths, seenPagesPaths, pathname);
   }
@@ -1591,11 +1735,28 @@ export async function discoverPrerenderPathManifest(
       "",
     ),
   );
+  // A path's listing belongs to the route that owns it at runtime. A path
+  // another route generates, for example a catch-all generating a path a more
+  // specific route owns, is build-rendered under the generating route, never
+  // under its owner. Pages pages and Route Handlers keep a traffic-picked path
+  // unlisted.
+  const unlistedPathSet = new Set(
+    Object.entries(appOwnedWarmPaths.routePatterns).flatMap(([pathname, route]) =>
+      (
+        route.kind === "app-page"
+          ? !appListedRoutePaths.has(appPageListingKey(route.pattern, pathname))
+          : candidateOnlyPathSet.has(pathname)
+      )
+        ? [pathname]
+        : [],
+    ),
+  );
   const routePatterns = annotateCacheabilityProbeSafety(
     appOwnedWarmPaths.routePatterns,
     config,
     routeMayResolveWarmPathSet,
     requestStageMayTerminateWarmPathSet,
+    unlistedPathSet,
     (name) =>
       name.trim().toLowerCase() === "cache-control" ||
       options.isResponsePolicyHeader?.(name) === true,
