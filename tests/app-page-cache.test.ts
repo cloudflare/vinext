@@ -2023,6 +2023,7 @@ describe("app page cache helpers", () => {
 describe("app page regeneration failures", () => {
   afterEach(() => {
     vi.useRealTimers();
+    setCacheHandler(new MemoryCacheHandler());
   });
 
   const staleObservation: RenderObservation = {
@@ -2128,7 +2129,11 @@ describe("app page regeneration failures", () => {
 
       await readStale({
         async isrGet() {
-          return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true, previous);
+          return buildISRCacheEntry(
+            buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation),
+            true,
+            previous,
+          );
         },
         isrSet,
         async renderFreshPageForCache() {
@@ -2140,18 +2145,33 @@ describe("app page regeneration failures", () => {
       await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
       expect(isrSet.mock.calls[0][2]).toEqual({
         cacheControl: restored,
-        tags: buildAppPageCacheTags("/stale", []),
+        tags: ["_N_T_/stale", "posts"],
       });
     },
   );
 
-  it("leaves an entry with no stored policy alone when its regeneration fails", async () => {
+  it.each([
+    {
+      entry: "no stored policy",
+      build: () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation),
+          true,
+        ),
+    },
+    {
+      // Its tags can't be recovered, so re-storing it would drop them.
+      entry: "no render observation",
+      build: () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true, { revalidate: 60 }),
+    },
+  ])("leaves an entry with $entry alone when its regeneration fails", async ({ build }) => {
     const scheduled: Array<() => Promise<void>> = [];
     const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
 
     await readStale({
       async isrGet() {
-        return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true);
+        return build();
       },
       isrSet,
       async renderFreshPageForCache() {
@@ -2162,6 +2182,69 @@ describe("app page regeneration failures", () => {
 
     await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
     expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  it("keeps the regeneration's own error when re-storing the previous entry fails", async () => {
+    const scheduled: Array<() => Promise<void>> = [];
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await readStale({
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation),
+          true,
+          { revalidate: 60 },
+        );
+      },
+      async isrSet() {
+        throw new Error("store unavailable");
+      },
+      async renderFreshPageForCache() {
+        throw new Error("regeneration failed");
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] Failed to keep the previous entry for html:/stale:",
+      expect.objectContaining({ message: "store unavailable" }),
+    );
+    consoleError.mockRestore();
+  });
+
+  it("doesn't retry a throwing regeneration until the re-stored revalidate elapses", async () => {
+    setCacheHandler(new MemoryCacheHandler());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+    const scheduled: Array<() => Promise<void>> = [];
+    const renderFreshPageForCache = async (): Promise<ReturnType<typeof freshPage>> => {
+      throw new Error("regeneration failed");
+    };
+
+    await readStale({
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation),
+          true,
+          { revalidate: 10 },
+        );
+      },
+      isrSet,
+      renderFreshPageForCache,
+      scheduled,
+    });
+    await expect(scheduled[0]()).rejects.toThrow("regeneration failed");
+
+    vi.setSystemTime(10_500);
+    const beforeRetry = await readStale({ isrGet, isrSet, renderFreshPageForCache, scheduled });
+    expect(beforeRetry?.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(scheduled).toHaveLength(1);
+
+    vi.setSystemTime(11_500);
+    const afterRetry = await readStale({ isrGet, isrSet, renderFreshPageForCache, scheduled });
+    expect(afterRetry?.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(scheduled).toHaveLength(2);
   });
 
   it("doesn't retry a failed regeneration of a revalidate = false entry for 3 s", async () => {

@@ -495,15 +495,23 @@ export async function readAppPageCacheResponse(
           }
         } catch (error) {
           // Keep the previous entry under this key only: an RSC-triggered
-          // regeneration must not write its payload under the HTML key.
-          if (previousCacheControl) {
-            await options.isrSet(isrKey, cachedValue, {
-              cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
-              tags: [
-                ...(cachedValue.renderObservation?.cacheTags ??
-                  buildAppPageCacheTags(options.cleanPathname, [])),
-              ],
-            });
+          // regeneration must not write its payload under the HTML key. Its
+          // tags come from its render observation; an entry without one can't
+          // be re-stored with the tags it was written with, so it is left alone.
+          const previousTags = cachedValue.renderObservation?.cacheTags;
+          if (previousCacheControl && previousTags) {
+            try {
+              await options.isrSet(isrKey, cachedValue, {
+                cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
+                tags: [...previousTags],
+              });
+            } catch (storeError) {
+              // Report the regeneration's own failure, not the store's.
+              console.error(
+                `[vinext] Failed to keep the previous entry for ${isrKey}:`,
+                storeError,
+              );
+            }
           }
           throw error;
         }
