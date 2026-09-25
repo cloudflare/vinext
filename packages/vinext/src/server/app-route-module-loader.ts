@@ -42,6 +42,8 @@ type LazyLoadableIntercept = {
   __pageLoader?: LazyModuleThunk | null;
   notFound?: unknown;
   __loadNotFound?: LazyModuleThunk | null;
+  ownerDefault?: unknown;
+  __loadOwnerDefault?: LazyModuleThunk | null;
   interceptLayouts?: readonly unknown[] | null;
   __loadInterceptLayouts?: LazyModuleLoaderArray | null;
   interceptLoadings?: readonly unknown[] | null;
@@ -51,6 +53,8 @@ type LazyLoadableIntercept = {
     pageLoading?: Promise<unknown> | null;
     notFound?: unknown;
     notFoundLoading?: Promise<unknown> | null;
+    ownerDefault?: unknown;
+    ownerDefaultLoading?: Promise<unknown> | null;
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
 };
@@ -166,8 +170,8 @@ function pushArrayLoads(
 async function hydrateInterceptModule(
   intercept: LazyLoadableIntercept,
   loader: LazyModuleThunk | null | undefined,
-  field: "page" | "notFound",
-  loadingField: "pageLoading" | "notFoundLoading",
+  field: "page" | "notFound" | "ownerDefault",
+  loadingField: "pageLoading" | "notFoundLoading" | "ownerDefaultLoading",
 ): Promise<void> {
   const loadState = intercept.__loadState;
   const cached = loadState?.[field];
@@ -205,6 +209,20 @@ export function loadAppInterceptPage(intercept: LazyLoadableIntercept): Promise<
 /** Hydrate an intercepting route's not-found boundary onto `intercept.notFound`. */
 export function loadAppInterceptNotFound(intercept: LazyLoadableIntercept): Promise<void> {
   return hydrateInterceptModule(intercept, intercept.__loadNotFound, "notFound", "notFoundLoading");
+}
+
+/**
+ * Hydrate the `default` module of the folder that owns a slot intercept onto
+ * `intercept.ownerDefault`. Only the intercepting route's tree holds it, in
+ * place of that folder's children, so a direct request never evaluates it.
+ */
+export function loadAppInterceptOwnerDefault(intercept: LazyLoadableIntercept): Promise<void> {
+  return hydrateInterceptModule(
+    intercept,
+    intercept.__loadOwnerDefault,
+    "ownerDefault",
+    "ownerDefaultLoading",
+  );
 }
 
 export function loadAppInterceptLayouts(

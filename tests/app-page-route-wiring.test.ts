@@ -35,10 +35,8 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
-import {
-  APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS,
-  buildPageElements as buildResolvedPageElements,
-} from "../packages/vinext/src/server/app-page-element-builder.js";
+import { buildPageElements as buildResolvedPageElements } from "../packages/vinext/src/server/app-page-element-builder.js";
+import { APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS } from "../packages/vinext/src/server/app-page-interception-markers.js";
 import { createNextBfcacheIdMap } from "../packages/vinext/src/server/app-bfcache-identity.js";
 import type { AppPageSemanticSegment } from "../packages/vinext/src/server/app-page-segment-state.js";
 import { createAppPageRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";

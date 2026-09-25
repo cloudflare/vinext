@@ -1,3 +1,7 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { toSlash } from "pathslash";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
 import {
@@ -31,6 +35,7 @@ import {
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
+import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
@@ -2068,6 +2073,86 @@ describe("buildPageElements", () => {
     const record = result as Record<string, unknown>;
     expect(record[APP_ROUTE_KEY]).toBe("route:/feed");
     expect(Object.prototype.hasOwnProperty.call(record, "page:/feed")).toBe(true);
+  });
+
+  it("wraps a slot intercept's page and metadata with the slot's layouts above the marker", async () => {
+    // Next.js builds the loader tree of app/@modal/gallery/(.)photo/page.tsx
+    // from every folder on its path, so app/@modal/gallery/layout.tsx wraps
+    // the marker's layout, the intercepting page and its metadata.
+    const appDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-intercept-ancestor-render-"));
+    try {
+      for (const file of [
+        "layout.tsx",
+        "gallery/page.tsx",
+        "gallery/photo/page.tsx",
+        "@modal/default.tsx",
+        "@modal/gallery/layout.tsx",
+        "@modal/gallery/(.)photo/layout.tsx",
+        "@modal/gallery/(.)photo/page.tsx",
+      ]) {
+        fs.mkdirSync(path.dirname(path.join(appDir, file)), { recursive: true });
+        fs.writeFileSync(
+          path.join(appDir, file),
+          "export default function Page() { return null; }\n",
+        );
+      }
+      invalidateAppRouteCache();
+      const galleryRoute = (await appRouter(appDir)).find((route) => route.pattern === "/gallery");
+      const intercept = galleryRoute?.parallelSlots[0]?.interceptingRoutes[0];
+      const layoutModules: Record<string, AppPageModule> = {
+        "@modal/gallery/layout.tsx": {
+          default: ({ children }: { children?: React.ReactNode }) =>
+            React.createElement("section", null, children),
+          metadata: { description: "Gallery layout" },
+        } as AppPageModule,
+        "@modal/gallery/(.)photo/layout.tsx": {
+          default: ({ children }: { children?: React.ReactNode }) =>
+            React.createElement("article", null, children),
+          metadata: { title: "Photo layout" },
+        } as AppPageModule,
+      };
+
+      const result = await buildPageElements(
+        createBaseOptions({
+          route: createSyntheticRoute({
+            page: createSyntheticPageModule(() => React.createElement("div", null, "Gallery")),
+            routeSegments: ["gallery"],
+            pattern: "/gallery",
+            slots: {
+              "@modal": {
+                name: "modal",
+                default: createSyntheticPageModule(() => null),
+                layoutIndex: -1,
+                routeSegments: [],
+              },
+            },
+          }),
+          routePath: "/gallery/photo",
+          opts: {
+            interceptBranchSegments: intercept?.branchSegments,
+            interceptLayouts: intercept?.layoutPaths.map(
+              (layoutPath) => layoutModules[toSlash(path.relative(appDir, layoutPath))],
+            ),
+            interceptLayoutSegments: intercept?.layoutSegments,
+            interceptPage: createSyntheticPageModule(() =>
+              React.createElement("div", null, "Photo"),
+            ),
+            interceptParams: {},
+            interceptSlotKey: "@modal",
+          },
+        }),
+      );
+      const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+
+      expect(html).toContain('<meta name="description" content="Gallery layout"/>');
+      expect(html).toContain("<title>Photo layout</title>");
+      await expect(renderElementEntry(result, "slot:modal:/")).resolves.toContain(
+        "<section><article><div>Photo</div></article></section>",
+      );
+    } finally {
+      invalidateAppRouteCache();
+      fs.rmSync(appDir, { recursive: true, force: true });
+    }
   });
 
   it("builds elements for a page that receives search params", async () => {

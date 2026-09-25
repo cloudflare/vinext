@@ -2201,7 +2201,6 @@ describe("app page regeneration failures", () => {
     isrGet: (key: string) => Promise<ISRCacheEntry | null>;
     isrSet: AppPageCacheSetter;
     renderFreshPageForCache: () => Promise<ReturnType<typeof freshPage>>;
-    revalidateSeconds?: number;
     scheduled: Array<() => Promise<void>>;
   }) {
     return readAppPageCacheResponse({
@@ -2217,7 +2216,7 @@ describe("app page regeneration failures", () => {
         return "rsc:" + pathname;
       },
       isrSet: options.isrSet,
-      revalidateSeconds: options.revalidateSeconds ?? 60,
+      revalidateSeconds: 60,
       renderFreshPageForCache: options.renderFreshPageForCache,
       scheduleBackgroundRegeneration(_key, renderFn) {
         options.scheduled.push(renderFn);
@@ -2225,7 +2224,11 @@ describe("app page regeneration failures", () => {
     });
   }
 
-  function freshPage(overrides: { cacheControl?: CacheControlMetadata; usedDynamicApi: boolean }) {
+  function freshPage(overrides: {
+    cacheControl?: CacheControlMetadata;
+    revalidateSeconds?: number | null;
+    usedDynamicApi: boolean;
+  }) {
     return {
       ...queryInvariantRegenObservations(),
       html: "<h1>fresh</h1>",
@@ -2283,18 +2286,23 @@ describe("app page regeneration failures", () => {
   );
 
   // Next.js fails a non-PPR regeneration whose render's revalidate is 0,
-  // whether a dynamic API or its fetches or cacheLife set it
-  // (`build/templates/app-page.ts`). A route without a revalidate reads the
-  // cache with a seed of 0.
+  // whether a dynamic API or the rendered tree's config, fetches or cacheLife
+  // set it (`build/templates/app-page.ts`).
   describe("a regeneration whose effective revalidate is 0 without a dynamic API", () => {
     type Case = {
       cacheControl?: CacheControlMetadata;
       label: string;
-      revalidateSeconds: number;
+      revalidateSeconds: number | null;
     };
     const cases: Case[] = [
+      { label: "a revalidate = 0 tree", revalidateSeconds: 0 },
+      {
+        cacheControl: { revalidate: 300 },
+        label: "a revalidate = 0 tree whose cacheLife is positive",
+        revalidateSeconds: 0,
+      },
       { cacheControl: { revalidate: 0 }, label: "a zero cacheLife", revalidateSeconds: 60 },
-      { label: "a route without a revalidate or cacheLife", revalidateSeconds: 0 },
+      { label: "a tree without a revalidate or cacheLife", revalidateSeconds: null },
     ];
 
     async function regenerate(
@@ -2320,9 +2328,12 @@ describe("app page regeneration failures", () => {
         },
         isrSet,
         async renderFreshPageForCache() {
-          return freshPage({ cacheControl: page.cacheControl, usedDynamicApi: false });
+          return freshPage({
+            cacheControl: page.cacheControl,
+            revalidateSeconds: page.revalidateSeconds,
+            usedDynamicApi: false,
+          });
         },
-        revalidateSeconds: page.revalidateSeconds,
         scheduled,
       });
       return { isrSet, regeneration: scheduled[0]() };
@@ -2356,11 +2367,11 @@ describe("app page regeneration failures", () => {
       ]);
     });
 
-    it("stores a route without a revalidate at its cacheLife", async () => {
+    it("stores a tree without a revalidate at its cacheLife", async () => {
       const { isrSet, regeneration } = await regenerate({
         cacheControl: { revalidate: 300 },
-        label: "a cacheLife-only route",
-        revalidateSeconds: 0,
+        label: "a cacheLife-only tree",
+        revalidateSeconds: null,
       });
 
       await expect(regeneration).resolves.toBeUndefined();

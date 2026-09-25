@@ -1,4 +1,17 @@
 import type { AppPageParams } from "./app-page-boundary.js";
+import { APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS } from "./app-page-interception-markers.js";
+
+/**
+ * A loader-tree segment without its interception marker. An intercepting
+ * route's tree keeps its markers, and `(.)[photo]` names the `photo` param.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/get-segment-param.tsx
+ */
+export function stripAppPageInterceptionMarker(segment: string): string {
+  const marker = APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS.find(({ prefix }) =>
+    segment.startsWith(prefix),
+  );
+  return marker ? segment.slice(marker.prefix.length) : segment;
+}
 
 export function getAppPageSegmentParamName(segment: string): string | null {
   if (segment.startsWith("[[...") && segment.endsWith("]]") && segment.length > 7) {
@@ -19,6 +32,17 @@ export function getAppPageSegmentParamName(segment: string): string | null {
   }
 
   return null;
+}
+
+export function createAppPageTreePath(
+  routeSegments: readonly string[] | null | undefined,
+  treePosition: number,
+): string {
+  const treePathSegments = routeSegments?.slice(0, treePosition) ?? [];
+  if (treePathSegments.length === 0) {
+    return "/";
+  }
+  return `/${treePathSegments.join("/")}`;
 }
 
 function isEmptyOptionalCatchAll(segment: string, paramValue: string | string[]): boolean {
@@ -92,4 +116,22 @@ export function resolveAppPageBranchParams(
     resolveAppPageSegmentParams(scopedSegments, treePosition, matchedParams),
   );
   return scopedParams;
+}
+
+/** Params of a layout at `treePosition` in a parallel slot's branch. */
+export function resolveSlotLayoutParams(
+  routeSegments: readonly string[],
+  treePosition: number,
+  params: AppPageParams,
+): AppPageParams {
+  return resolveAppPageBranchParams(routeSegments, treePosition, params);
+}
+
+/** Params of a sibling-page intercepting layout at `layoutSegments`. */
+export function resolveInterceptLayoutParams(
+  branchSegments: readonly string[],
+  layoutSegments: readonly string[],
+  params: AppPageParams,
+): AppPageParams {
+  return resolveAppPageBranchParams(branchSegments, layoutSegments.length, params, layoutSegments);
 }

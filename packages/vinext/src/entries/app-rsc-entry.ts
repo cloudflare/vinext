@@ -820,8 +820,15 @@ import {
   probeAppPageLayoutWithTracking as __probeAppPageLayoutWithTracking,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
-import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
-import { buildAppPageProbes as __buildAppPageProbes } from ${JSON.stringify(appPageProbePath)};
+import {
+  buildPageElements as __buildPageElements,
+  resolveSlotParamOverrides as __resolveSlotParamOverrides,
+} from ${JSON.stringify(appPageElementBuilderPath)};
+import {
+  buildAppPageInterceptSourceProbes as __buildAppPageInterceptSourceProbes,
+  buildAppPageProbes as __buildAppPageProbes,
+  resolveAppPageProbeIntercept as __resolveAppPageProbeIntercept,
+} from ${JSON.stringify(appPageProbePath)};
 import {
   dispatchAppPage as __dispatchAppPage,
 } from ${JSON.stringify(appPageDispatchPath)};
@@ -838,10 +845,15 @@ import {
 } from ${JSON.stringify(appPageRequestPath)};
 import {
   collectAppPageStaticGenerationRuntimes as __collectAppPageStaticGenerationRuntimes,
+  hasAppPageAnyGenerateStaticParams as __hasAppPageAnyGenerateStaticParams,
   hasAppPageGenerateStaticParamsAtLastDynamicSegment as __hasAppPageGenerateStaticParamsAtLastDynamicSegment,
+  isAppPageInterceptTargetDynamic as __isAppPageInterceptTargetDynamic,
+  isAppPageInterceptAttached as __isAppPageInterceptAttached,
   isAppPageStaticEligible as __isAppPageStaticEligible,
   isEdgeRuntime as __isEdgeRuntime,
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
+  resolveAppPageInterceptSegmentConfig as __resolveAppPageInterceptSegmentConfig,
+  resolveAppPageInterceptTree as __resolveAppPageInterceptTree,
   resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
   resolveAppPageStaticGenerationRuntime as __resolveAppPageStaticGenerationRuntime,
 } from ${JSON.stringify(appSegmentConfigPath)};
@@ -882,7 +894,7 @@ import { suppressHookWarningAls } from ${JSON.stringify(appHookWarningSuppressio
 import { clearAppRequestContext as __clearRequestContext, setAppNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestContextPath)};
 __configureMemoryCacheHandler({ cacheMaxMemorySize: ${JSON.stringify(cacheMaxMemorySize)} });
 import { createAppPrerenderStaticParamsResolver as __createAppPrerenderStaticParamsResolver } from ${JSON.stringify(appPrerenderStaticParamsPath)};
-import { ensureAppRouteModulesLoaded as __ensureRouteLoaded, loadAppInterceptPage as __loadAppInterceptPage } from ${JSON.stringify(appRouteModuleLoaderPath)};
+import { ensureAppRouteModulesLoaded as __ensureRouteLoaded, loadAppInterceptLayouts as __loadAppInterceptLayouts, loadAppInterceptPage as __loadAppInterceptPage } from ${JSON.stringify(appRouteModuleLoaderPath)};
 import {
   getRenderedConcreteUrlPathsForRoute as __getRenderedConcreteUrlPathsForRoute,
   initPregeneratedPathsFromGlobals as __initPregeneratedPathsFromGlobals,
@@ -920,7 +932,12 @@ const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
     }
   : undefined;
 
-function __resolveRouteFetchCacheMode(route) {
+// With an intercept, the tree a direct intercepted RSC response renders, from
+// __resolveRouteInterceptSegmentConfig.
+function __resolveRouteFetchCacheMode(route, intercept) {
+  if (intercept) {
+    return __resolveRouteInterceptSegmentConfig(route, intercept).fetchCache ?? null;
+  }
   return __resolveAppPageFetchCacheMode({
     layouts: route.layouts,
     page: route.page,
@@ -932,7 +949,12 @@ function __resolveRouteFetchCacheMode(route) {
   });
 }
 
-function __resolveRouteDynamicConfig(route) {
+// With an intercept, the tree a direct intercepted RSC response renders, from
+// __resolveRouteInterceptSegmentConfig.
+function __resolveRouteDynamicConfig(route, intercept) {
+  if (intercept) {
+    return __resolveRouteInterceptSegmentConfig(route, intercept).dynamicConfig ?? null;
+  }
   return __resolveAppPageSegmentConfig({
     layouts: route.layouts,
     page: route.page,
@@ -944,7 +966,12 @@ function __resolveRouteDynamicConfig(route) {
   }).dynamicConfig ?? null;
 }
 
-function __resolveRouteRevalidateSeconds(route) {
+// With an intercept, the tree a direct intercepted RSC response renders, from
+// __resolveRouteInterceptSegmentConfig.
+function __resolveRouteRevalidateSeconds(route, intercept) {
+  if (intercept) {
+    return __resolveRouteInterceptSegmentConfig(route, intercept).revalidateSeconds;
+  }
   return __resolveAppPageSegmentConfig({
     layouts: route.layouts,
     page: route.page,
@@ -954,6 +981,16 @@ function __resolveRouteRevalidateSeconds(route) {
       slot.page ?? slot.default,
     ]),
   }).revalidateSeconds;
+}
+
+// With an intercept, the tree a direct intercepted RSC response renders, from
+// __resolveRouteInterceptSegmentConfig.
+function __resolveRouteDynamicStaleTimeSeconds(route, intercept) {
+  if (intercept) {
+    return __resolveRouteInterceptSegmentConfig(route, intercept).dynamicStaleTimeSeconds;
+  }
+  return __resolveRouteSegmentConfig(route, __resolveRouteSegmentConfigBranches(route))
+    .dynamicStaleTimeSeconds;
 }
 
 function __resolveRouteRuntime(route) {
@@ -973,6 +1010,7 @@ function __resolveRouteSegmentConfigBranches(route) {
     layout: slot.layout,
     configLayouts: slot.configLayouts,
     configLayoutTreePositions: slot.configLayoutTreePositions,
+    default: slot.default,
     isDefault: !slot.page,
     name: slot.name,
     ownerTreePosition: slot.ownerTreePosition,
@@ -1019,15 +1057,165 @@ function __resolveRouteStaticGeneration(route, segmentConfigBranches) {
   };
 }
 
+// The tree a direct intercepted RSC response renders: the source route with
+// the intercepting branch in the intercepted slot, or in place of the source's
+// page for a sibling-page intercept.
+function __resolveRouteInterceptTree(route, intercept, keepActiveSiblings = false) {
+  const tree = __resolveAppPageInterceptTree(
+    __resolveRouteInterceptTreeOptions(route, intercept, keepActiveSiblings),
+  );
+  return { branches: tree.parallelBranches, route: { ...route, ...tree } };
+}
+
+function __resolveRouteInterceptTreeOptions(route, intercept, keepActiveSiblings = false) {
+  return {
+    childrenSlot: route.childrenSlot,
+    interceptBranchSegments: intercept.interceptBranchSegments,
+    interceptLayoutSegments: intercept.interceptLayoutSegments,
+    interceptLayouts: intercept.interceptLayouts,
+    interceptOwnerDefault: intercept.interceptOwnerDefault,
+    interceptPage: intercept.interceptPage,
+    isSiblingPageIntercept: intercept.interceptSlotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+    keepActiveSiblings,
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    parallelBranches: __resolveRouteSegmentConfigBranches(route),
+    routeSegments: route.routeSegments,
+    slotIndex: Object.keys(route.slots ?? {}).indexOf(intercept.interceptSlotKey),
+  };
+}
+
+// The segment config of a direct intercepted RSC response: Next.js's tree for
+// the intercepting route, which swaps the other slots, and a slot intercept's
+// children, for their defaults, merged with the active pages vinext renders
+// in their place, so the render and its cache entry cover both.
+function __resolveRouteInterceptSegmentConfig(route, intercept) {
+  const [interceptTree, renderedTree] = [false, true].map((keepActiveSiblings) => {
+    const tree = __resolveRouteInterceptTree(route, intercept, keepActiveSiblings);
+    return {
+      layouts: tree.route.layouts,
+      page: tree.route.page,
+      parallelBranches: tree.branches,
+    };
+  });
+  return __resolveAppPageInterceptSegmentConfig(interceptTree, renderedTree);
+}
+
 // Whether Next.js classifies a route as static or SSG, from the same inputs
-// dispatch reads for the matched route.
-function __resolveRouteStaticEligible(route) {
-  const segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
-  const segmentConfig = __resolveRouteSegmentConfig(route, segmentConfigBranches);
+// dispatch reads for the matched route. With an intercept, the route is the
+// source a direct intercepted RSC response renders, and the intercepting
+// branch takes the intercepted slot, or the source's page for a sibling-page
+// intercept: Next.js classifies the intercepting route's own tree, which is
+// dynamic when the route it intercepts, built from its folders, is. Next.js's tree
+// swaps the other slots, and a slot intercept's children, for their defaults,
+// but vinext renders their active pages, so both trees must be static. A slot
+// intercept whose slot the source lacks renders the source unchanged, so the
+// source alone classifies it.
+function __resolveRouteStaticEligible(route, intercept) {
+  if (!intercept) return __isRouteTreeStaticEligible(route, null, null);
+  if (!__isAppPageInterceptAttached(__resolveRouteInterceptTreeOptions(route, intercept))) {
+    return __isRouteTreeStaticEligible(route, null, null);
+  }
+  return [false, true].every((keepActiveSiblings) =>
+    __isRouteTreeStaticEligible(
+      route,
+      __resolveRouteInterceptTree(route, intercept, keepActiveSiblings),
+      intercept,
+    ),
+  );
+}
+
+// Whether any segment of the tree a direct intercepted RSC response renders
+// exports generateStaticParams, which sets that tree's revalidate default like
+// the matched route's hasAnyGenerateStaticParams. Next.js calls the generators
+// of the intercepting route's own tree, not those of the active sibling pages
+// vinext renders where that tree has their defaults.
+function __resolveRouteHasAnyGenerateStaticParams(route, intercept) {
+  const tree = __resolveRouteInterceptTree(route, intercept);
+  return __hasAppPageAnyGenerateStaticParams({
+    childrenSlot: tree.route.childrenSlot,
+    layouts: tree.route.layouts,
+    layoutTreePositions: tree.route.layoutTreePositions,
+    page: tree.route.page,
+    parallelBranches: tree.branches,
+    routeSegments: tree.route.routeSegments,
+  });
+}
+
+// The segment config of the intercepting route's own tree, for the
+// generated-param gate of a direct intercepted RSC response. Next.js builds
+// that route's prerender manifest entry from its own loader tree, not the
+// branch it replaces or the active sibling pages vinext renders where that
+// tree has their defaults.
+function __resolveRouteInterceptTreeSegmentConfig(route, intercept) {
+  const tree = __resolveRouteInterceptTree(route, intercept);
+  return __resolveAppPageSegmentConfig({
+    layouts: tree.route.layouts,
+    layoutTreePositions: tree.route.layoutTreePositions,
+    page: tree.route.page,
+    parallelBranches: tree.branches,
+    routeSegments: tree.route.routeSegments,
+  });
+}
+
+// Only a segment of the intercepting route's own tree turns its fallback off.
+function __resolveRouteDynamicParamsConfig(route, intercept) {
+  return __resolveRouteInterceptTreeSegmentConfig(route, intercept).dynamicParamsConfig;
+}
+
+// Only the intercepting route's own force-dynamic leaves it out of the
+// prerender manifest, and so out of the generated-param gate, in production.
+function __resolveRouteInterceptTreeDynamicConfig(route, intercept) {
+  return __resolveRouteInterceptTreeSegmentConfig(route, intercept).dynamicConfig ?? null;
+}
+
+// The generateStaticParams sources a route's generated-param gate checks.
+// With an intercept, those of the tree a direct intercepted RSC response
+// renders: Next.js calls the generators of the intercepting route's own tree.
+// A slot intercept whose slot the source lacks renders the source unchanged.
+function __resolveRouteGenerateStaticParams(route, intercept) {
+  if (
+    intercept &&
+    __isAppPageInterceptAttached(__resolveRouteInterceptTreeOptions(route, intercept))
+  ) {
+    const tree = __resolveRouteInterceptTree(route, intercept);
+    return __resolveAppPageGenerateStaticParamsSources({
+      layouts: tree.route.layouts,
+      layoutTreePositions: tree.route.layoutTreePositions,
+      page: tree.route.page,
+      parallelBranches: tree.branches,
+      routeSegments: tree.route.routeSegments,
+    });
+  }
+  return __resolveAppPageGenerateStaticParamsSources({
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
+      layout: slot.layout,
+      configLayouts: slot.configLayouts,
+      configLayoutTreePositions: slot.configLayoutTreePositions,
+      page: slot.page ?? slot.default,
+      paramNames: slot.slotParamNames,
+      patternParts: slot.slotPatternParts,
+      routeSegments: slot.routeSegments,
+    })),
+    routePatternParts: route.patternParts,
+    routeSegments: route.routeSegments,
+  });
+}
+
+function __isRouteTreeStaticEligible(route, tree, intercept) {
+  const effectiveRoute = tree?.route ?? route;
+  const segmentConfigBranches = tree?.branches ?? __resolveRouteSegmentConfigBranches(route);
+  const segmentConfig = __resolveRouteSegmentConfig(effectiveRoute, segmentConfigBranches);
   return __isAppPageStaticEligible({
-    ...__resolveRouteStaticGeneration(route, segmentConfigBranches),
+    ...__resolveRouteStaticGeneration(effectiveRoute, segmentConfigBranches),
     dynamicConfig: segmentConfig.dynamicConfig,
-    isDynamicRoute: route.isDynamic,
+    isDynamicRoute: intercept
+      ? __isAppPageInterceptTargetDynamic(intercept.interceptTargetPatternParts)
+      : route.isDynamic,
     revalidateSeconds: segmentConfig.revalidateSeconds,
   });
 }
@@ -1342,22 +1530,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const __segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
     const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
     const __staticGeneration = __resolveRouteStaticGeneration(route, __segmentConfigBranches);
-    const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
-      layouts: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page: route.page,
-      parallelBranches: Object.values(route.slots ?? {}).map((slot) => ({
-        layout: slot.layout,
-        configLayouts: slot.configLayouts,
-        configLayoutTreePositions: slot.configLayoutTreePositions,
-        page: slot.page ?? slot.default,
-        paramNames: slot.slotParamNames,
-        patternParts: slot.slotPatternParts,
-        routeSegments: slot.routeSegments,
-      })),
-      routePatternParts: route.patternParts,
-      routeSegments: route.routeSegments,
-    });
+    const __generateStaticParams = __resolveRouteGenerateStaticParams(route);
     const _asyncRouteParams = makeThenableParams(params);
     return __dispatchAppPage({
       basePath: __basePath,
@@ -1465,15 +1638,16 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         });
       },
       async probePage(probeSearchParams = searchParams) {
-        const __probeIntercept = findIntercept(
-          interceptionPathname,
-          interceptionContext,
-          interceptionId,
+        // An intercept the route has no slot for renders nothing, so it is
+        // neither loaded nor probed, as on the render path.
+        const __probeIntercept = __resolveAppPageProbeIntercept(
+          route,
+          findIntercept(interceptionPathname, interceptionContext, interceptionId),
         );
         // The intercepting-route page module is lazy (page: null + __pageLoader).
         // Resolve it before probing so buildAppPageProbes inspects the real page
         // component for dynamic bailout — matching the render path, which also
-        // hydrates it (resolveAppPageInterceptState). Without this the intercept
+        // hydrates it (resolveAppPageIntercept). Without this the intercept
         // probe branch silently inspects an undefined component and never
         // observes the page's searchParams/headers access. Shared loader, so
         // the import is isolated from the request context here too.
@@ -1486,6 +1660,33 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           intercept: __probeIntercept,
           isRscRequest,
           matchedParams: params,
+          makeThenableParams,
+        }));
+      },
+      async probeInterceptSource(sourceRoute, sourceParams, sourceSearchParams) {
+        // A source without the intercept's slot renders unchanged, so the
+        // intercept's modules are neither loaded nor probed.
+        const __probeIntercept = __resolveAppPageProbeIntercept(
+          sourceRoute,
+          findIntercept(interceptionPathname, interceptionContext, interceptionId),
+        );
+        if (__probeIntercept) {
+          await Promise.all([
+            __loadAppInterceptPage(__probeIntercept),
+            __loadAppInterceptLayouts(__probeIntercept),
+          ]);
+        }
+        return Promise.all(__buildAppPageInterceptSourceProbes({
+          route: sourceRoute,
+          pageComponent: sourceRoute.page?.default,
+          intercept: __probeIntercept,
+          sourceParams,
+          // The intercepted render matches inherited slots' params against
+          // the request path, as buildPageElements does.
+          slotParamOverrides: __resolveSlotParamOverrides(sourceRoute, cleanPathname),
+          searchParams: sourceSearchParams,
+          mountedSlotsHeader,
+          renderMode,
           makeThenableParams,
         }));
       },
@@ -1521,17 +1722,32 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       request,
       revalidateSeconds: __segmentConfig.revalidateSeconds,
       renderedPathAndSearch,
-      resolveRouteFetchCacheMode(targetRoute) {
-        return __resolveRouteFetchCacheMode(targetRoute);
+      resolveRouteFetchCacheMode(targetRoute, intercept) {
+        return __resolveRouteFetchCacheMode(targetRoute, intercept);
       },
-      resolveRouteRevalidateSeconds(targetRoute) {
-        return __resolveRouteRevalidateSeconds(targetRoute);
+      resolveRouteRevalidateSeconds(targetRoute, intercept) {
+        return __resolveRouteRevalidateSeconds(targetRoute, intercept);
       },
-      resolveRouteDynamicConfig(targetRoute) {
-        return __resolveRouteDynamicConfig(targetRoute);
+      resolveRouteDynamicConfig(targetRoute, intercept) {
+        return __resolveRouteDynamicConfig(targetRoute, intercept);
       },
-      resolveRouteStaticEligible(targetRoute) {
-        return __resolveRouteStaticEligible(targetRoute);
+      resolveRouteDynamicStaleTimeSeconds(targetRoute, intercept) {
+        return __resolveRouteDynamicStaleTimeSeconds(targetRoute, intercept);
+      },
+      resolveRouteDynamicParamsConfig(targetRoute, intercept) {
+        return __resolveRouteDynamicParamsConfig(targetRoute, intercept);
+      },
+      resolveRouteInterceptTreeDynamicConfig(targetRoute, intercept) {
+        return __resolveRouteInterceptTreeDynamicConfig(targetRoute, intercept);
+      },
+      resolveRouteGenerateStaticParams(targetRoute, intercept) {
+        return __resolveRouteGenerateStaticParams(targetRoute, intercept);
+      },
+      resolveRouteHasAnyGenerateStaticParams(targetRoute, intercept) {
+        return __resolveRouteHasAnyGenerateStaticParams(targetRoute, intercept);
+      },
+      resolveRouteStaticEligible(targetRoute, intercept) {
+        return __resolveRouteStaticEligible(targetRoute, intercept);
       },
       rootForbiddenModule,
       rootNotFoundModule,
@@ -1836,14 +2052,14 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       readFormDataWithLimit: __readFormDataWithLimit,
       renderToReadableStream,
       reportRequestError: _reportRequestError,
-      resolveRouteFetchCacheMode(targetRoute) {
-        return __resolveRouteFetchCacheMode(targetRoute);
+      resolveRouteFetchCacheMode(targetRoute, intercept) {
+        return __resolveRouteFetchCacheMode(targetRoute, intercept);
       },
-      resolveRouteRevalidateSeconds(targetRoute) {
-        return __resolveRouteRevalidateSeconds(targetRoute);
+      resolveRouteRevalidateSeconds(targetRoute, intercept) {
+        return __resolveRouteRevalidateSeconds(targetRoute, intercept);
       },
-      resolveRouteDynamicConfig(targetRoute) {
-        return __resolveRouteDynamicConfig(targetRoute);
+      resolveRouteDynamicConfig(targetRoute, intercept) {
+        return __resolveRouteDynamicConfig(targetRoute, intercept);
       },
       resolveRouteRuntime: __resolveRouteRuntime,
       request,
@@ -1866,6 +2082,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
           interceptNotFound: intercept.notFound,
           interceptNotFoundTreePosition: intercept.notFoundTreePosition,
+          interceptOwnerDefault: intercept.ownerDefault,
           interceptSlotId: intercept.slotId,
           interceptSlotKey: intercept.slotKey,
           interceptSourceMatchedUrl: interceptionContext,

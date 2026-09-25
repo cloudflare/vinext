@@ -57,6 +57,8 @@ type AppRscInterceptForMatching = {
   notFound?: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
+  ownerDefault?: unknown;
+  __loadOwnerDefault?: (() => Promise<unknown>) | null;
   params: readonly string[];
 };
 
@@ -114,6 +116,8 @@ type AppRscInterceptLoadState = {
   pageLoading: Promise<unknown> | null;
   notFound: unknown;
   notFoundLoading: Promise<unknown> | null;
+  ownerDefault?: unknown;
+  ownerDefaultLoading?: Promise<unknown> | null;
   interceptLayoutsLoading: Promise<readonly unknown[]> | null;
 };
 
@@ -140,6 +144,8 @@ type AppRscInterceptLookupEntry = {
   notFound: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
+  ownerDefault?: unknown;
+  __loadOwnerDefault?: (() => Promise<unknown>) | null;
   __loadState: AppRscInterceptLoadState;
   params: readonly string[];
   slotId: string | null;
@@ -488,11 +494,15 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             notFound: intercept.notFound,
             __loadNotFound: intercept.__loadNotFound,
             notFoundTreePosition: intercept.notFoundTreePosition,
+            ownerDefault: intercept.ownerDefault ?? null,
+            __loadOwnerDefault: intercept.__loadOwnerDefault,
             __loadState: {
               page: intercept.page,
               pageLoading: null,
               notFound: intercept.notFound,
               notFoundLoading: null,
+              ownerDefault: intercept.ownerDefault ?? null,
+              ownerDefaultLoading: null,
               interceptLayoutsLoading: null,
             },
             params: intercept.params,
