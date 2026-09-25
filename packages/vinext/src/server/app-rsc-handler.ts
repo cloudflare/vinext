@@ -9,6 +9,7 @@ import { requestContextFromRequest } from "../config/request-context.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { traceFindPageComponents } from "./pages-execution-tracing.js";
+import { resolveDevStaticFileSignal } from "./dev-static-file-signal.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import {
   getEffectiveRequestCookieHeader,
@@ -1365,6 +1366,26 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const contentType = request.headers.get("content-type") || "";
   const isProgressiveActionRequest =
     isPostRequest && !actionId && contentType.startsWith("multipart/form-data");
+  // Next.js checks public files before app routes (metadata routes are app
+  // routes). It repeats the check after every afterFiles and fallback rewrite:
+  // packages/next/src/server/lib/router-utils/resolve-routes.ts
+  const resolveFilesystemRoute = async (): Promise<Response | null> => {
+    if (!filesystemRouteEligible) return null;
+    const publicFileResponse = resolvePublicFileRoute({
+      cleanPathname,
+      middlewareContext,
+      pathname,
+      publicFiles: options.publicFiles,
+      request,
+    });
+    if (publicFileResponse) {
+      options.clearRequestContext();
+      return publicFileResponse;
+    }
+    const metadataRouteResponse = await renderMetadataRouteIfMatched();
+    return metadataRouteResponse ? composeResponseStageResponse(metadataRouteResponse) : null;
+  };
+
   let resolvedLateRewritesForAction = false;
   if (!filesystemRouteEligible && (actionId || isProgressiveActionRequest)) {
     let actionMatch: ReturnType<typeof options.matchRoute> = null;
@@ -1394,6 +1415,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
       filesystemRouteEligible = true;
+      const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
+      if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
+      const rewrittenFilesystemResponse = await resolveFilesystemRoute();
+      if (rewrittenFilesystemResponse) return rewrittenFilesystemResponse;
       actionMatch = matchCleanPathname();
       if (actionMatch) break;
     }
@@ -1424,6 +1449,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         cleanPathname = pathnameForResolvedUrl(resolvedUrl);
         cleanPathnameIsRequestPathname = false;
         filesystemRouteEligible = true;
+        const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
+        if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
+        const rewrittenFilesystemResponse = await resolveFilesystemRoute();
+        if (rewrittenFilesystemResponse) return rewrittenFilesystemResponse;
         actionMatch = matchCleanPathname();
         if (actionMatch) break;
       }
@@ -1449,24 +1478,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return Response.redirect(new URL(imageRedirect, url.origin).href, 302);
   }
 
-  const metadataRouteResponse = await renderMetadataRouteIfMatched();
-  if (metadataRouteResponse) {
-    return composeResponseStageResponse(metadataRouteResponse);
-  }
-
-  const publicFileResponse = filesystemRouteEligible
-    ? resolvePublicFileRoute({
-        cleanPathname,
-        middlewareContext,
-        pathname,
-        publicFiles: options.publicFiles,
-        request,
-      })
-    : null;
-  if (publicFileResponse) {
-    options.clearRequestContext();
-    return publicFileResponse;
-  }
+  const filesystemRouteResponse = await resolveFilesystemRoute();
+  if (filesystemRouteResponse) return filesystemRouteResponse;
 
   stripRscCacheBustingSearchParam(url);
   const resolved = new URL(resolvedUrl, url);
@@ -1986,10 +1999,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
-      const rewrittenMetadataResponse = await renderMetadataRouteIfMatched();
-      if (rewrittenMetadataResponse) {
-        return composeResponseStageResponse(rewrittenMetadataResponse);
-      }
+      const rewrittenFilesystemResponse = await resolveFilesystemRoute();
+      if (rewrittenFilesystemResponse) return rewrittenFilesystemResponse;
       match = matchCleanPathname();
       const rewrittenStaticPagesResponse = await renderPagesForMatchKind("static");
       if (rewrittenStaticPagesResponse) {
@@ -2045,10 +2056,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       filesystemRouteEligible = true;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
-      const rewrittenMetadataResponse = await renderMetadataRouteIfMatched();
-      if (rewrittenMetadataResponse) {
-        return composeResponseStageResponse(rewrittenMetadataResponse);
-      }
+      const rewrittenFilesystemResponse = await resolveFilesystemRoute();
+      if (rewrittenFilesystemResponse) return rewrittenFilesystemResponse;
       match = matchCleanPathname();
       const rewrittenStaticPagesResponse = await renderPagesForMatchKind("static");
       if (rewrittenStaticPagesResponse) {
@@ -2670,7 +2679,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     await options.ensureInstrumentation?.();
 
     const traceUrl = new URL(rawRequest.url);
-    return traceFrameworkRequest({
+    const response = await traceFrameworkRequest({
       callback: () =>
         handleAppRscRequestLifecycle(
           rawRequest,
@@ -2687,6 +2696,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
       method: rawRequest.method,
       target: traceUrl.pathname + traceUrl.search,
     });
+    return options.isDev ? resolveDevStaticFileSignal(response, rawRequest) : response;
   };
 
   return appRscHandler;

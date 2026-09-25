@@ -309,6 +309,11 @@ import { hasMdxFiles } from "./utils/mdx-scan.js";
 import { scanPublicFileRoutes } from "./utils/public-routes.js";
 import { publicFilePathVariants } from "./utils/public-file-path.js";
 import { methodNotAllowedResponse } from "./server/http-error-responses.js";
+import {
+  getDevStaticFileServerStorage,
+  serveDevPublicFile,
+} from "./server/dev-static-file-server.js";
+import type { DevStaticFileServer } from "./server/dev-static-file-signal.js";
 import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
@@ -5735,6 +5740,26 @@ export const loadServerActionClient = ${
           // promise so startup failures are propagated instead of serving
           // requests without instrumentation.
           void pagesInstrumentationReady.catch(() => {});
+          // @vitejs/plugin-rsc writes the App Router Response straight to Node,
+          // so scope a public-file server to each request for rewrites that
+          // resolve to public files (the handler returns a static-file signal).
+          // Workers and external runtimes resolve signals in their own entry.
+          const appRscEnvironment = hasAppDir ? server.environments["rsc"] : undefined;
+          const devPublicDir = server.config.publicDir;
+          if (
+            appRscEnvironment &&
+            !hasCloudflarePlugin &&
+            isRunnableDevEnvironment(appRscEnvironment) &&
+            devPublicDir
+          ) {
+            const devStaticFileServerStorage = getDevStaticFileServerStorage();
+            const serveStaticFile: DevStaticFileServer = (pathname, request) =>
+              serveDevPublicFile(devPublicDir, pathname, request, server.config.server.headers);
+            server.middlewares.use((_req, _res, next) => {
+              devStaticFileServerStorage.run(serveStaticFile, () => next());
+            });
+          }
+
           // App Router request logging in dev server
           //
           // For App Router, the RSC plugin handles requests internally.

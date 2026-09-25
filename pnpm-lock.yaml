@@ -162,6 +162,9 @@ catalogs:
     miniflare:
       specifier: 5.20260730.0-alpha
       version: 5.20260730.0-alpha
+    mrmime:
+      specifier: ^2.0.1
+      version: 2.0.1
     ms:
       specifier: 3.0.0-canary.1
       version: 3.0.0-canary.1
@@ -1161,6 +1164,9 @@ importers:
       magic-string:
         specifier: 'catalog:'
         version: 0.30.21
+      mrmime:
+        specifier: 'catalog:'
+        version: 2.0.1
       vite:
         specifier: npm:@voidzero-dev/vite-plus-core@0.3.2
         version: '@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
@@ -1399,6 +1405,8 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 0.3.2(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@4.1.11(vitest@4.1.11))(esbuild@0.28.1)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
+  tests/fixtures/app-public-rewrite: {}
 
   tests/fixtures/app-trailing-slash-isr: {}
 
