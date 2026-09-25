@@ -995,6 +995,26 @@ describe("app page render lifecycle", () => {
       expect(redirected.headers.get("cache-control")).toBe(neverCache);
     }
 
+    // As in the HTML policy, nonce-bearing and progressive action renders stay
+    // no-store, except where draft mode or the route makes them never-cache.
+    for (const [renderKind, expected] of [
+      [{ scriptNonce: "abc", peekDynamicUsage: () => true }, "no-store, must-revalidate"],
+      [{ isProgressiveActionRender: true, revalidateSeconds: 0 }, "no-store, must-revalidate"],
+      [{ scriptNonce: "abc", isDraftMode: true }, neverCache],
+      [{ scriptNonce: "abc", isRscRequest: true, peekDynamicUsage: () => true }, neverCache],
+    ] as const) {
+      const redirected = await renderAppPageLifecycle({
+        ...optionsWithoutElement,
+        ...renderKind,
+        isProduction: true,
+        isStaticEligible: true,
+        async prepareElement() {
+          return { response: Response.redirect("https://example.test/elsewhere", 307) };
+        },
+      });
+      expect(redirected.headers.get("cache-control")).toBe(expected);
+    }
+
     // A force-static render stays static after a dynamic API read.
     const forceStaticRedirect = await renderAppPageLifecycle({
       ...optionsWithoutElement,

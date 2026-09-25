@@ -990,8 +990,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       );
       const cachePolicy = {
         isDraftMode,
+        isDynamicError,
+        isForceDynamic,
+        isForceStatic,
+        isProduction: options.isProduction,
+        isProgressiveActionRender: options.isProgressiveActionRender === true,
+        isRscRequest: options.isRscRequest,
         isStaticEligible,
         middlewareContext: options.middlewareContext,
+        peekDynamicUsage,
+        revalidateSeconds: currentRevalidateSeconds,
+        scriptNonce: options.scriptNonce,
       };
       if (renderedNotFound) {
         return applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy);
