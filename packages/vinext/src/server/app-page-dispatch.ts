@@ -878,9 +878,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       mountedSlotsHeader: options.mountedSlotsHeader,
-      params: options.isRscRequest
-        ? (await resolveCacheRenderTarget()).navigationParams
-        : undefined,
+      async resolveParams() {
+        return (await resolveCacheRenderTarget()).navigationParams;
+      },
       renderedPathAndSearch: options.renderedPathAndSearch,
       renderMode: options.renderMode,
       expireSeconds: options.expireSeconds,

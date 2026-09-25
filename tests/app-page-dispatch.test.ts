@@ -848,6 +848,35 @@ describe("app page dispatch", () => {
     );
   });
 
+  it("validates generated params before hydrating a route for cached RSC hit params", async () => {
+    const ensureRouteLoaded = vi.fn(async () => {
+      throw new Error("route modules should not load for a generated-param miss");
+    });
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("not found", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      ensureRouteLoaded,
+      async generateStaticParams() {
+        return [{ slug: "known" }];
+      },
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () => null),
+      revalidateSeconds: 60,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage({ ...options, dynamicParamsConfig: false });
+
+    expect(response.status).toBe(404);
+    expect(ensureRouteLoaded).not.toHaveBeenCalled();
+  });
+
   it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),

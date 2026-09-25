@@ -303,7 +303,9 @@ describe("app page cache helpers", () => {
           return "rsc:" + pathname;
         },
         async isrSet() {},
-        params: { slug: "한글" },
+        async resolveParams() {
+          return { slug: "한글" };
+        },
         renderedPathAndSearch: "/posts/한글?q=1",
         revalidateSeconds: 60,
         async renderFreshPageForCache() {
