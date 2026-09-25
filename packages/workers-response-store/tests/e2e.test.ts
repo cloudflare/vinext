@@ -925,6 +925,52 @@ test("an entry past its SWR window keeps serving after a failed foreground regen
   assert.equal(await regenerationCount(), 1);
 });
 
+test("a regeneration whose body fails midway backs off in the background", async () => {
+  await put("/mid-body/background", "stale-body", {
+    cacheControl: "public, max-age=10, stale-while-revalidate=60",
+    age: 10,
+    revalidator: { failMidBody: true },
+  });
+
+  assert.equal(await (await read("/mid-body/background")).text(), "stale-body");
+  const entry = await waitForSettledRevision("/mid-body/background", 2);
+  assert.equal(entry.swrUntil - entry.freshUntil, 60_000);
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+
+  const fresh = await read("/mid-body/background");
+  assert.equal(fresh.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.match(
+    fresh.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=(9|10), stale-while-revalidate=60$/,
+  );
+  assert.equal(await fresh.text(), "stale-body");
+  assert.equal(await regenerationCount(), 1);
+});
+
+test("a foreground regeneration whose body fails midway returns the error and backs off", async () => {
+  await put("/mid-body/foreground", "still-active", {
+    cacheControl: "public, max-age=0",
+    revalidator: { failMidBody: true },
+  });
+
+  const failed = await read("/mid-body/foreground");
+  assert.equal(failed.status, 500);
+  // RPC reports a stream that errors as a premature disconnect.
+  assert.match(await failed.text(), /ReadableStream received over RPC disconnected prematurely/);
+  assert.equal((await metadata())[0].activeRevision, 2);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+
+  const served = await read("/mid-body/foreground");
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.match(
+    served.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=[23], stale-while-revalidate=3$/,
+  );
+  assert.equal(await served.text(), "still-active");
+  assert.equal(await regenerationCount(), 1);
+});
+
 test("a failed re-store keeps the regeneration error and releases its reservation", async () => {
   await put("/republish-failure", "still-active", {
     cacheControl: "public, max-age=0",

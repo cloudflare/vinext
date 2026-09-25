@@ -16,6 +16,7 @@ type FixtureRevalidatorOptions = {
   delayMs?: number;
   fail?: boolean;
   failOnce?: boolean;
+  failMidBody?: boolean;
 };
 
 const DEFAULT_CACHE_CONTROL = "public, max-age=60, stale-while-revalidate=60";
@@ -171,6 +172,20 @@ const responseStoreOptions = {
 
       if (options.cacheTags?.length) {
         headers.set("Cache-Tag", options.cacheTags.join(","));
+      }
+
+      if (options.failMidBody) {
+        const encoded = new TextEncoder().encode(body);
+        return new Response(
+          new ReadableStream({
+            async pull(controller) {
+              controller.enqueue(encoded);
+              await new Promise((resolve) => setTimeout(resolve, 10));
+              controller.error(new Error("Fixture mid-body regeneration failure"));
+            },
+          }),
+          { headers },
+        );
       }
 
       return new Response(body, { headers });

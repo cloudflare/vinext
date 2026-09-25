@@ -912,6 +912,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     reservation?: WriteReservation,
     cacheTags = cacheTagsFromResponse(response),
     expectedR2Etag?: string | null,
+    bufferedBody?: ArrayBuffer,
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
     const write = reservation ?? (await this.reserveWrite(metadata, cacheKey, cacheTags));
@@ -946,7 +947,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       // RPC-transferred Response streams do not retain the fixed-length marker
       // required by R2's single-part put API. Materialise only in the cache
       // Worker; bodies are never stored in the metadata Durable Object.
-      body = response.body ? await response.arrayBuffer() : new ArrayBuffer(0);
+      body = bufferedBody ?? (response.body ? await response.arrayBuffer() : new ArrayBuffer(0));
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
       throw error;
@@ -1167,6 +1168,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       ));
 
     let response: Response;
+    let body: ArrayBuffer;
     try {
       const origin =
         this.ctx.props?.revalidator ??
@@ -1182,6 +1184,9 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         args: entry.revalidator.args,
         reason,
       });
+      // Revalidators may stream, so a render can still fail mid-body. Buffer
+      // it here, before anything is published, so that failure backs off too.
+      body = response.body ? await response.arrayBuffer() : new ArrayBuffer(0);
     } catch (error) {
       await this.republishFailedRegeneration(metadata, entry, writeReservation).catch(
         (republishError) =>
@@ -1205,6 +1210,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       writeReservation,
       undefined,
       expectedR2Etag,
+      body,
     );
   }
 
