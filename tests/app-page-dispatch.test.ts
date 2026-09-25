@@ -48,6 +48,10 @@ import {
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
 import {
+  cacheabilityManifestRouteKey,
+  parseCacheabilityManifest,
+} from "../packages/vinext/src/server/cacheability-manifest.js";
+import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
@@ -989,6 +993,112 @@ describe("app page dispatch", () => {
       const response = await dispatchAppPage(options);
       await response.text();
       expect(ssrOptions).toEqual([{ isCacheCandidate: false }]);
+    }
+  });
+
+  // The deploy probe must render the way the runtime does, or the manifest it
+  // produces would certify a render the runtime never serves.
+  it("renders the Workers Cache deploy probe in cache-candidate mode without reading the cache", async () => {
+    const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () => null);
+    const ssrOptions: { isCacheCandidate?: boolean }[] = [];
+    const context: ExecutionContextLike = { waitUntil() {} };
+    const state: RouteCacheabilityState = {
+      captureDeadlineAt: Date.now() + 10_000,
+      mode: "probe",
+    };
+    Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, handleSsrOptions) {
+          ssrOptions.push({ isCacheCandidate: handleSsrOptions?.isCacheCandidate });
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+    });
+
+    const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+    await response.text();
+
+    expect(ssrOptions).toEqual([{ isCacheCandidate: true }]);
+    expect(isrGet).not.toHaveBeenCalled();
+  });
+
+  // Next.js serves a path its build never certified per request, so a Workers
+  // Cache path its manifest gives no state renders with real values from the
+  // start. A certified path, and every path without a manifest, keeps
+  // candidate mode.
+  it("renders a path its Workers Cache manifest gives no state outside cache-candidate mode", async () => {
+    const manifest = parseCacheabilityManifest(
+      JSON.stringify({
+        buildId: "build-a",
+        routes: {
+          [cacheabilityManifestRouteKey("app-page", "/posts/[slug]")]: {
+            kind: "app-page",
+            pattern: "/posts/[slug]",
+            state: "runtime-check",
+            staticPaths: { html: ["/posts/listed"] },
+          },
+        },
+        version: 1,
+      }),
+      "build-a",
+    );
+    const cases: [RouteCacheabilityState["admission"], string, boolean][] = [
+      [
+        { manifest, policy: "manifest", representation: "html", routePathname: "/posts/hello" },
+        "/posts/hello",
+        false,
+      ],
+      [
+        { manifest, policy: "manifest", representation: "html", routePathname: "/posts/listed" },
+        "/posts/listed",
+        true,
+      ],
+      [
+        // A curl-style request maps to html at admission, as it does here.
+        {
+          manifest,
+          policy: "manifest",
+          representation: "app-route",
+          routePathname: "/posts/listed",
+        },
+        "/posts/listed",
+        true,
+      ],
+      [
+        { policy: "runtime", representation: "html", routePathname: "/posts/hello" },
+        "/posts/hello",
+        true,
+      ],
+    ];
+    for (const [admission, cleanPathname, expected] of cases) {
+      const ssrOptions: { isCacheCandidate?: boolean }[] = [];
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        admission,
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      const { options } = createDispatchOptions({
+        cleanPathname,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, handleSsrOptions) {
+            ssrOptions.push({ isCacheCandidate: handleSsrOptions?.isCacheCandidate });
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+        revalidateSeconds: 60,
+        searchParams: new URLSearchParams("q=1"),
+      });
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      await response.text();
+      expect(ssrOptions, JSON.stringify(admission)).toEqual([{ isCacheCandidate: expected }]);
     }
   });
 
