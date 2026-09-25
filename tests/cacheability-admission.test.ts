@@ -1207,6 +1207,73 @@ describe("single-request cacheability admission", () => {
     },
   );
 
+  it.each(
+    (["single-stage", "response-stage"] as const).flatMap((path) => [
+      { path, header: "Cache-Control", value: "s-maxage=300", admitted: false },
+      { path, header: "CDN-Cache-Control", value: "max-age=300", admitted: false },
+      { path, header: "Cloudflare-CDN-Cache-Control", value: null, admitted: true },
+      {
+        path,
+        header: "Cloudflare-CDN-Cache-Control",
+        value: "public, max-age=300",
+        admitted: true,
+      },
+    ]),
+  )(
+    "requires a searchParams proof unless config $header wins Cloudflare precedence ($path, value: $value)",
+    async ({ path, header, value, admitted }) => {
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      try {
+        const context = createWorkerCacheabilityAdmissionContext(
+          { waitUntil() {} },
+          request,
+          null,
+          "build-a",
+          true,
+          "verbatim",
+        );
+        const state = cacheabilityState(context);
+        state.route = { kind: "app-page", pattern: "/page" };
+        state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+        const rendererHeaders = new Headers();
+        await runWithExecutionContext(context, () =>
+          applyCdnResponseHeaders(rendererHeaders, { cacheControl: "s-maxage=60" }),
+        );
+        state.frameworkResponseCachePolicy = new Headers(rendererHeaders);
+        const rendererPolicy = rendererHeaders.get("Cloudflare-CDN-Cache-Control");
+        expect(rendererPolicy).not.toBeNull();
+        // A null value repeats the renderer's own edge policy.
+        const configValue = value ?? rendererPolicy!;
+        const rendered = new Response("static", { headers: rendererHeaders });
+        const composed =
+          path === "single-stage"
+            ? await runWithExecutionContext(context, () =>
+                finalizeAppRscResponse(rendered, request, {
+                  basePath: "",
+                  configHeaders: [
+                    { source: "/page", headers: [{ key: header, value: configValue }] },
+                  ],
+                  i18nConfig: null,
+                  requestContext: requestContextFromRequest(request),
+                }),
+              )
+            : applyResponseStageCachePolicy(rendered, context, [[header, configValue]]);
+
+        const response = await finalizeWorkerCacheabilityResponse(composed, context);
+
+        if (admitted) {
+          expect(response.headers.get("Cloudflare-CDN-Cache-Control")).not.toBeNull();
+        } else {
+          expect(response.headers.get("Cache-Control")).toContain("no-store");
+          expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+        }
+        await expect(response.text()).resolves.toBe("static");
+      } finally {
+        setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      }
+    },
+  );
+
   it("checks every sibling render against the route-pattern classification", async () => {
     const route: CacheabilityManifestRoute = {
       kind: "app-page",

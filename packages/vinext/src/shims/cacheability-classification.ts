@@ -35,8 +35,8 @@ export type RouteCacheabilityState = {
   completedResponseBody?: boolean;
   /** Whether admission must translate a completed response through the active adapter. */
   applyCompletedResponsePolicy?: boolean;
-  /** Whether a next.config policy set a core- or adapter-owned cache policy header, not just Vary. */
-  configCdnCachePolicy?: boolean;
+  /** Core- or adapter-owned cache policy headers set by next.config, by lowercased name. */
+  configCdnCachePolicy?: Map<string, string>;
   explicitConfigCachePolicy?: boolean;
   explicitResponseCachePolicy?: boolean;
   finalResponseVetoReason?: string;
@@ -154,12 +154,12 @@ export function markRouteCacheabilityExplicitConfigPolicy(): void {
   state.explicitConfigCachePolicy = true;
 }
 
-/** Record that a next.config rule set a cache policy header, not just Vary. */
-export function markRouteCacheabilityConfigCdnCachePolicy(): void {
+/** Record a cache policy header, not just Vary, that a next.config rule set. */
+export function markRouteCacheabilityConfigCdnCachePolicy(name: string, value: string): void {
   const state = readRouteCacheabilityState();
   if (!state) return;
   state.explicitConfigCachePolicy = true;
-  state.configCdnCachePolicy = true;
+  (state.configCdnCachePolicy ??= new Map()).set(name.toLowerCase(), value);
 }
 
 /** Record a public cache policy supplied by the Route Handler itself. */

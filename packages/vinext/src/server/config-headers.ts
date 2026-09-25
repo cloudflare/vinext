@@ -76,7 +76,7 @@ function markExplicitConfigResponseVeto(
       continue;
     }
     if (isCdnResponsePolicyHeader(name)) {
-      markRouteCacheabilityConfigCdnCachePolicy();
+      markRouteCacheabilityConfigCdnCachePolicy(name, header.value);
     }
     if (isCdnResponsePolicyHeader(name) && isNonCacheableCdnResponsePolicy(name, header.value)) {
       markRouteCacheabilityFinalResponseUncacheable(

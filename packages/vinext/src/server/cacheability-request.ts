@@ -12,6 +12,7 @@ import {
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
   readCdnResponseCacheControl,
+  readCdnResponsePolicyHeaderName,
 } from "./cache-control.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
@@ -300,8 +301,10 @@ function recordConfigCachePolicy(
   if (!state) return;
   state.explicitConfigCachePolicy = true;
   // A Vary-only policy leaves the renderer's cache policy in place.
-  if (policyHeaders.some(([name]) => isCdnResponsePolicyHeader(name))) {
-    state.configCdnCachePolicy = true;
+  for (const [name, value] of policyHeaders) {
+    if (isCdnResponsePolicyHeader(name)) {
+      (state.configCdnCachePolicy ??= new Map()).set(name.toLowerCase(), value);
+    }
   }
 }
 
@@ -903,11 +906,15 @@ async function finalizeWorkerCacheabilityAdmission(
   // Every query can share a rendered App page's response, so the renderer's
   // policy is admitted only with proof the render left searchParams unread. A
   // later next.config policy replaces the renderer's and is cached per URL, as
-  // in Next.js, even when it matches the renderer's value. Config that leaves
-  // the renderer's policy in place (a Vary-only rule) replaces nothing.
+  // in Next.js, even when it matches the renderer's value. Config replaces it
+  // only through the header that wins the adapter's precedence; a Vary-only
+  // rule or a lower-priority header leaves the renderer's policy in place.
+  const effectivePolicyHeader = readCdnResponsePolicyHeaderName(response.headers);
   const replacesRendererPolicy =
     outcome !== rendererOutcome &&
-    (state.configCdnCachePolicy === true ||
+    ((effectivePolicyHeader !== null &&
+      state.configCdnCachePolicy?.get(effectivePolicyHeader) ===
+        response.headers.get(effectivePolicyHeader)) ||
       readCdnResponseCacheControl(response.headers) !==
         readCdnResponseCacheControl(state.frameworkResponseCachePolicy));
   if (
