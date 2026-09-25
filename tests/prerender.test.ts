@@ -1547,6 +1547,21 @@ describe("prerenderApp — default mode (app-basic)", () => {
     expect(r).toMatchObject({ route: "/dashboard", status: "rendered", revalidate: false });
   });
 
+  it("skips a client page that reads searchParams in SSR", () => {
+    // Next.js's build makes a client page that reads searchParams dynamic.
+    // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/searchparams-static-bailout/searchparams-static-bailout.test.ts
+    expect(findRoute(results, "/client-page-search-params")).toMatchObject({
+      route: "/client-page-search-params",
+      status: "skipped",
+      reason: "dynamic",
+    });
+    // force-static reads an empty query, which isn't a read.
+    expect(findRoute(results, "/client-page-search-params/force-static")).toMatchObject({
+      status: "rendered",
+      revalidate: false,
+    });
+  });
+
   it("renders layout-only routes whose content comes from parallel slots", () => {
     // Ported from Next.js: test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/parallel-routes-and-interception/parallel-routes-and-interception.test.ts

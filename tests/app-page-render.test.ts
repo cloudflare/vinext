@@ -30,11 +30,19 @@ import {
 } from "../packages/vinext/src/shims/navigation.js";
 import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
 import {
+  consumeDynamicUsage,
   headersContextFromRequest,
   markDynamicUsage,
+  peekDynamicUsage,
   runWithHeadersContext,
   runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
+import { runWithNavigationContext } from "../packages/vinext/src/shims/navigation-state.js";
+import type { ExecutionContextLike } from "../packages/vinext/src/shims/request-context.js";
 import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
@@ -1280,6 +1288,189 @@ describe("app page render lifecycle", () => {
         expect.objectContaining({ kind: "APP_PAGE" }),
         expect.anything(),
       );
+    });
+
+    // The deploy probe and the build prerender decide whether a page is static
+    // before any request can store it. Next.js's build makes a client page that
+    // reads searchParams dynamic, so neither may call it static.
+    describe("classified by the deploy probe or the build prerender", () => {
+      type ClassifyingRender = "probe" | "prerender" | "speculative prerender";
+
+      const classifyingRenders: ClassifyingRender[] = [
+        "probe",
+        "prerender",
+        "speculative prerender",
+      ];
+      const neverSettles = new Promise<never>(() => {});
+
+      function Delayed({ children, until }: { children?: ReactNode; until: Promise<void> }) {
+        React.use(until);
+        return children;
+      }
+
+      function NeverReady(): ReactNode {
+        React.use(neverSettles);
+        return null;
+      }
+
+      function clientPage(Page: (props: ClientPageProps) => ReactNode): ReactNode {
+        return React.createElement(ClientPageRoot, {
+          Component: Page as React.ComponentType<Record<string, unknown>>,
+          pageProps: {},
+        });
+      }
+
+      // The page renders after the shell, once the Suspense boundary around it
+      // resolves.
+      function afterShell(children: ReactNode): ReactNode {
+        return React.createElement(
+          React.Suspense,
+          { fallback: React.createElement("p", null, "loading") },
+          React.createElement(
+            Delayed,
+            { until: new Promise<void>((resolve) => setTimeout(resolve, 5)) },
+            children,
+          ),
+        );
+      }
+
+      // Renders like dispatch does for the given render, with the real
+      // dynamic-usage readers. SSR runs in a child scope of the render, as in
+      // handleSsr, so a mark there never reaches the render's own flag.
+      async function renderClassifying(render: ClassifyingRender, tree: ReactNode) {
+        const common = createCommonOptions();
+        const state: RouteCacheabilityState = {
+          captureDeadlineAt: Date.now() + 10_000,
+          mode: "probe",
+          route: { kind: "app-page", pattern: "/posts/[slug]" },
+        };
+        const executionContext: ExecutionContextLike = { waitUntil() {} };
+        if (render === "probe") {
+          Reflect.set(executionContext, CACHEABILITY_REQUEST_STATE, state);
+        }
+        const requestContext = createRequestContext({
+          executionContext,
+          headersContext: headersContextFromRequest(
+            new Request("https://example.test/posts/post?q=secret"),
+          ),
+        });
+        const response = await runWithRequestContext(requestContext, () =>
+          renderAppPageLifecycle({
+            ...common.options,
+            consumeDynamicUsage,
+            peekDynamicUsage,
+            getNavigationContext() {
+              return {
+                pathname: "/posts/post",
+                searchParams: new URLSearchParams("q=secret"),
+                params: { slug: "post" },
+              };
+            },
+            isPrerender: render !== "probe",
+            isSpeculativePrerender: render === "speculative prerender",
+            isProduction: true,
+            revalidateSeconds: Infinity,
+            async loadSsrHandler() {
+              return {
+                handleSsr(_rscStream, navContext, _fontData, options) {
+                  return runWithNavigationContext(async () => {
+                    if (options?.capturedRscDataRef) {
+                      options.capturedRscDataRef.value = Promise.resolve(
+                        new TextEncoder().encode("flight-data").buffer,
+                      );
+                      if (options.sideStream) void options.sideStream.getReader().cancel();
+                    }
+                    const ssrNavigationContext = navContext as NavigationContext;
+                    setNavigationContext({
+                      ...ssrNavigationContext,
+                      clientPageSearchParams: makeClientPageSsrSearchParamsThenable(
+                        ssrNavigationContext.searchParams,
+                        {},
+                      ),
+                    });
+                    // Cancelling a render that never finishes aborts it.
+                    const htmlStream = await renderToReadableStream(tree, { onError() {} });
+                    if (options?.waitForAllReady === true) await htmlStream.allReady;
+                    return {
+                      htmlStream,
+                      metadataReady: Promise.resolve(),
+                      renderComplete: htmlStream.allReady,
+                      capturedRscData: options?.capturedRscDataRef?.value ?? null,
+                    };
+                  });
+                },
+              };
+            },
+          }),
+        );
+        return { response, completion: render === "probe" ? state.completion : undefined };
+      }
+
+      async function classify(render: ClassifyingRender, tree: ReactNode) {
+        const { response, completion } = await renderClassifying(render, tree);
+        const html = await response.text();
+        return {
+          cacheControl: response.headers.get("cache-control") ?? "",
+          html,
+          outcome: await completion,
+        };
+      }
+
+      for (const render of classifyingRenders) {
+        for (const placement of ["in the shell", "after the shell"] as const) {
+          const place = placement === "in the shell" ? (tree: ReactNode) => tree : afterShell;
+
+          it(`classifies a client page that reads searchParams ${placement} as dynamic (${render})`, async () => {
+            const { cacheControl, html, outcome } = await classify(
+              render,
+              place(clientPage(ReadingClientPage)),
+            );
+
+            expect(html).toContain("q:secret");
+            if (render === "probe") {
+              expect(outcome).toMatchObject({ cacheable: false, dynamicUsage: true });
+            } else {
+              // prerender.ts skips a render whose Cache-Control says no-store.
+              expect(cacheControl).toContain("no-store");
+            }
+          });
+
+          it(`classifies a client page that never reads searchParams ${placement} as static (${render})`, async () => {
+            const { cacheControl, html, outcome } = await classify(
+              render,
+              place(clientPage(StaticClientPage)),
+            );
+
+            expect(html).toContain("static client page");
+            if (render === "probe") {
+              expect(outcome).toMatchObject({ cacheable: true });
+            } else {
+              expect(cacheControl).not.toContain("no-store");
+            }
+          });
+        }
+      }
+
+      it("stops waiting for a speculative prerender's SSR once it turns dynamic", async () => {
+        // A boundary that never resolves doesn't hold a render that is already
+        // known to be dynamic.
+        const { response } = await renderClassifying(
+          "speculative prerender",
+          React.createElement(
+            React.Fragment,
+            null,
+            afterShell(clientPage(ReadingClientPage)),
+            React.createElement(
+              React.Suspense,
+              { fallback: React.createElement("p", null, "never") },
+              React.createElement(NeverReady),
+            ),
+          ),
+        );
+
+        expect(response.headers.get("cache-control")).toContain("no-store");
+        await response.body?.cancel();
+      });
     });
   });
 
