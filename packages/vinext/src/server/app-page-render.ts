@@ -27,6 +27,7 @@ import {
   buildAppPageRscResponse,
   resolveAppPageHtmlResponsePolicy,
   resolveAppPageRscResponsePolicy,
+  resolveUncacheableCacheControl,
   type AppPageMiddlewareContext,
   type AppPageResponseTiming,
 } from "./app-page-response.js";
@@ -333,7 +334,7 @@ export function applyIneligibleRouteCachePolicy(
   response: Response,
   options: Pick<
     RenderAppPageLifecycleOptions,
-    "isDraftMode" | "isStaticEligible" | "middlewareContext"
+    "isDraftMode" | "isProduction" | "isStaticEligible" | "middlewareContext"
   >,
 ): Response {
   if (options.isStaticEligible || options.isDraftMode) return response;
@@ -349,7 +350,9 @@ export function applyIneligibleRouteCachePolicy(
     new Response(response.body, response as ResponseInit),
   );
   copyLinkHeaderProvenance(response.headers, stamped.headers);
-  applyCdnResponseHeaders(stamped.headers, { cacheControl: NEVER_CACHE_CONTROL });
+  applyCdnResponseHeaders(stamped.headers, {
+    cacheControl: resolveUncacheableCacheControl(options.isProduction),
+  });
   for (const [name, value] of middlewarePolicy) stamped.headers.set(name, value);
   return stamped;
 }

@@ -343,6 +343,40 @@ describe("app page response helpers", () => {
     });
   });
 
+  it("keeps dev's no-store header for known-dynamic responses", () => {
+    const base = {
+      isDraftMode: false,
+      isDynamicError: false,
+      isForceStatic: false,
+      isProduction: false,
+      isStaticEligible: true,
+      revalidateSeconds: 60,
+    };
+    for (const overrides of [
+      { isDraftMode: true },
+      { isForceDynamic: true },
+      { isStaticEligible: false },
+      { dynamicUsedDuringBuild: true },
+    ]) {
+      expect(
+        resolveAppPageRscResponsePolicy({
+          dynamicUsedDuringBuild: false,
+          isForceDynamic: false,
+          ...base,
+          ...overrides,
+        }),
+      ).toEqual({ cacheControl: "no-store, must-revalidate" });
+    }
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        ...base,
+        dynamicUsedDuringRender: true,
+        hasScriptNonce: false,
+        isForceDynamic: false,
+      }),
+    ).toEqual({ cacheControl: "no-store, must-revalidate", shouldWriteToCache: false });
+  });
+
   it("treats revalidate = 0 as no-store in RSC response policy", () => {
     expect(
       resolveAppPageRscResponsePolicy({

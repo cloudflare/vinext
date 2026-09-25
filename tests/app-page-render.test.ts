@@ -900,6 +900,7 @@ describe("app page render lifecycle", () => {
 
     const recovered = await renderAppPageLifecycle({
       ...common.options,
+      isProduction: true,
       isStaticEligible: false,
       async loadSsrHandler() {
         return {
@@ -915,6 +916,7 @@ describe("app page render lifecycle", () => {
     const special = await renderAppPageLifecycle({
       ...common.options,
       isRscRequest: true,
+      isProduction: true,
       isStaticEligible: false,
       probePage() {
         throw { digest: "NEXT_NOT_FOUND" };
@@ -926,6 +928,7 @@ describe("app page render lifecycle", () => {
     const { element: _element, ...optionsWithoutElement } = common.options;
     const prepared = await renderAppPageLifecycle({
       ...optionsWithoutElement,
+      isProduction: true,
       isStaticEligible: false,
       async prepareElement() {
         return { response: Response.redirect("https://example.test/elsewhere", 307) };
@@ -938,6 +941,7 @@ describe("app page render lifecycle", () => {
     // The stamped copy keeps renderer Link provenance for the config-header finalizer.
     const linked = await renderAppPageLifecycle({
       ...optionsWithoutElement,
+      isProduction: true,
       isStaticEligible: false,
       async prepareElement() {
         const linkHeader = "</framework.css>; rel=preload; as=style";
@@ -954,6 +958,7 @@ describe("app page render lifecycle", () => {
     const middlewareCacheControl = "public, max-age=60";
     const withMiddlewarePolicy = await renderAppPageLifecycle({
       ...optionsWithoutElement,
+      isProduction: true,
       isStaticEligible: false,
       middlewareContext: {
         headers: new Headers({ "cache-control": middlewareCacheControl }),
@@ -969,6 +974,21 @@ describe("app page render lifecycle", () => {
       },
     });
     expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+
+    // Dev keeps its no-store header.
+    const devRecovered = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: false,
+      isStaticEligible: false,
+      async loadSsrHandler() {
+        return {
+          async handleSsr() {
+            throw new Error("ssr-decoder");
+          },
+        };
+      },
+    });
+    expect(devRecovered.headers.get("cache-control")).toBe("no-store, must-revalidate");
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {
@@ -1284,7 +1304,7 @@ describe("app page render lifecycle", () => {
     });
 
     expect(getRequestCacheLife).toHaveBeenCalledOnce();
-    expect(response.headers.get("cache-control")).toBe("private, no-cache, no-store, max-age=0, must-revalidate");
+    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     expect(response.headers.get("x-vinext-prerender-cache-life")).toBeNull();
     await expect(response.text()).resolves.toBe("<html>dynamic</html>");
   });
