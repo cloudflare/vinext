@@ -1378,6 +1378,77 @@ test("a hard-expired entry whose re-store write fails is served as re-stored", a
   assert.equal(await regenerationCount(), 3);
 });
 
+test("a write that lands while a hard-expired read serves a re-store is served", async () => {
+  // The second write fails, as in the lost re-store above. While the test sets
+  // an arm marker, a request's second read of an entry's R2 object is held
+  // until the test sets a release marker. The markers bypass the wrapper.
+  await restartWithWrappedR2Bucket(
+    "held-restore-read.js",
+    `(() => {
+      let puts = 0;
+      return (bucket) => {
+        let gets = 0;
+        return {
+          async get(key, ...args) {
+            if (key.endsWith("/active") && ++gets === 2 && (await bucket.head("test/arm"))) {
+              await bucket.put("test/held", "");
+              while (!(await bucket.head("test/release"))) {
+                await new Promise((resolve) => setTimeout(resolve, 10));
+              }
+            }
+            return bucket.get(key, ...args);
+          },
+          head: (...args) => bucket.head(...args),
+          list: (...args) => bucket.list(...args),
+          delete: (...args) => bucket.delete(...args),
+          async put(key, value, options) {
+            if (++puts === 2) throw new Error("Injected R2 write failure");
+            return bucket.put(key, value, options);
+          },
+        };
+      };
+    })()`,
+  );
+  const path = "/restore-hard-expired/overtaken";
+  await put(path, "still-active", {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    date: new Date(Date.now() - 60_000).toUTCString(),
+    revalidator: { fail: true },
+  });
+  const failed = await read(path);
+  assert.equal(failed.status, 500);
+  await failed.arrayBuffer();
+  await waitForRestore(path);
+  assert.equal(await regenerationCount(), 1);
+
+  // The read finds the retry window in the metadata, then a new write lands
+  // before it reads the re-store's body.
+  const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
+  await bucket.put("test/arm", "");
+  const reading = read(path);
+  for (let attempt = 0; attempt < 200 && !(await bucket.head("test/held")); attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(await bucket.head("test/held"));
+  await bucket.delete("test/arm");
+  await put(path, "newer-write");
+  const written = (await metadata()).find((candidate) => candidate.cacheKey === path);
+  await bucket.put("test/release", "");
+
+  const served = await reading;
+  assert.equal(served.status, 200);
+  assert.equal(
+    served.headers.get("X-Workers-Response-Store-Revision"),
+    String(written.activeRevision),
+  );
+  assert.equal(await served.text(), "newer-write");
+  assert.equal(await regenerationCount(), 1);
+  const entry = (await metadata()).find((candidate) => candidate.cacheKey === path);
+  assert.equal(entry.activeRevision, written.activeRevision);
+  assert.equal(entry.latestRevision, written.activeRevision);
+});
+
 test("a re-store whose R2 rewrite lands before reporting failure keeps it", async () => {
   await useFailingSecondR2Write("after");
   await put("/restore-write-landed", "stale-body", {

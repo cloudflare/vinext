@@ -1412,13 +1412,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       // yet, so serve what that re-store serves instead of regenerating.
       const restored = await this.readRestoredResponse(regeneration.entry, now);
       if (restored) return restored;
-      // R2 no longer holds the revision's body, so it has to be regenerated.
+      // R2 no longer holds the revision's body, so it has to be regenerated,
+      // unless a newer write or a purge has replaced it since.
+      const { activeRevision, latestRevision } = regeneration.entry;
       regeneration = await metadata.reserveRegeneration(
         keyHash,
         cacheKey.cacheKey,
         this.objectKeyPrefix(keyHash),
         now,
+        activeRevision,
+        latestRevision,
       );
+      if (!regeneration) {
+        const winner = await this.readR2Metadata(cacheKey);
+        const stored =
+          winner.entry && (await this.readStoredResponse(winner.entry, Date.now(), winner.object));
+        if (stored) return stored;
+      }
     }
     if (!regeneration) {
       return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
