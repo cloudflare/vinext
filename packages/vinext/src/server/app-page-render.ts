@@ -85,6 +85,10 @@ import type {
 } from "./app-layout-param-observation.js";
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 import { peekDynamicUsage } from "vinext/shims/headers";
+import {
+  bindRequestContext,
+  preserveFullyBufferedBodyMetadata,
+} from "vinext/shims/unified-request-context";
 import { VINEXT_RSC_COMPLETION_METADATA_HEADER } from "./headers.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
@@ -92,7 +96,6 @@ import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing
 import type { FrameworkSpan } from "./framework-tracer.js";
 import { traceResponseStartWithCompletion } from "./response-start-tracing.js";
 import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
-import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
 import { recordRouteCacheabilityClientTraceMetadataMarker } from "vinext/shims/cacheability-classification";
 
 type AppPageBoundaryOnError = (
@@ -770,8 +773,11 @@ async function renderAppPageLifecycleImpl(
   // cannot hide it from the other.
   let dynamicUsageObserved = false;
   let dynamicUsageFinalized = false;
+  // Some readers, such as the streamed completion marker, run in the response
+  // stream's pull context rather than this render's request scope.
+  const consumeDynamicUsage = bindRequestContext(options.consumeDynamicUsage);
   const consumeRenderDynamicUsage = (): boolean => {
-    if (!dynamicUsageObserved) dynamicUsageObserved = options.consumeDynamicUsage();
+    if (!dynamicUsageObserved) dynamicUsageObserved = consumeDynamicUsage();
     return dynamicUsageObserved;
   };
   const finalizeRenderDynamicUsage = (): boolean => {
@@ -916,9 +922,11 @@ async function renderAppPageLifecycleImpl(
   const shouldWaitForAllReady =
     options.isPrerender === true && options.isSpeculativePrerender !== true;
   const shouldReadRequestCacheLifeForPrerender = options.isPrerender === true;
+  // A cache candidate's cacheLife can still lower its lifetime after headers,
+  // including under the default `revalidate = false`.
   const mayResolveCacheLifeAfterHeaders =
     options.isProgressiveActionRender !== true &&
-    (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
+    (revalidateSeconds === null || revalidateSeconds > 0) &&
     !options.isDraftMode &&
     !options.isForceDynamic &&
     !shouldBypassRscCache;

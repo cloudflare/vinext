@@ -166,6 +166,25 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  test("stores a static page with no revalidate source until it is revalidated", async () => {
+    const first = await cacheStatus("/static-default");
+    const second = await cacheStatus("/static-default");
+    assert.equal(first.status, "MISS");
+    assert.equal(second.status, "HIT");
+    assert.equal(
+      htmlValue(second.body, "static-default-render-id"),
+      htmlValue(first.body, "static-default-render-id"),
+    );
+
+    const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
+    const firstRsc = await request("/static-default.rsc?_rsc=", rscInit);
+    await firstRsc.arrayBuffer();
+    const secondRsc = await request("/static-default.rsc?_rsc=", rscInit);
+    await secondRsc.arrayBuffer();
+    assert.equal(secondRsc.status, 200);
+    assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+  });
+
   test("never stores a dynamic-segment route without generateStaticParams", async () => {
     const first = await request("/dynamic-segment/a");
     const firstBody = await first.text();

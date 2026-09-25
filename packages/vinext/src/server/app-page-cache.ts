@@ -14,6 +14,7 @@ import { setCacheStateHeaders } from "./cache-headers.js";
 import {
   buildAppPageCacheValue,
   isrCacheControl,
+  resolveRouteExpireSeconds,
   type AppPageCacheSetter,
   type ISRCacheEntry,
 } from "./isr-cache.js";
@@ -231,7 +232,9 @@ function resolveRegeneratedAppPageCacheControl(options: {
   }
 
   return isrCacheControl(revalidateSeconds, {
-    expireSeconds: options.renderCacheControl?.expire ?? options.expireSeconds,
+    expireSeconds:
+      options.renderCacheControl?.expire ??
+      resolveRouteExpireSeconds(revalidateSeconds, options.expireSeconds),
     // Carry the regenerating render's own claim onto the refreshed entry, so a
     // background regen does not quietly drop it and widen client reuse.
     staleSeconds: resolveClientStaleTimeSeconds(options.renderCacheControl),

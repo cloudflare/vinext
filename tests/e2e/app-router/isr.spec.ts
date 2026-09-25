@@ -136,15 +136,13 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("stale-while-revalidate");
   });
 
-  test("non-ISR page does not have ISR cache headers", async ({ request }) => {
-    const res = await request.get(`${baseUrl()}/about`);
+  test("static page without revalidate is cached until revalidated", async ({ request }) => {
+    // About page has no `export const revalidate`, so it gets Next.js's
+    // default `revalidate = false` and is stored after its first render.
+    const cached = await waitForCacheHit(request, "/about");
 
-    // About page has no `export const revalidate`, so no ISR headers
-    const cacheHeader = res.headers()["x-vinext-cache"];
-    // May be undefined or not present — either way, should not be MISS/HIT/STALE
-    if (cacheHeader) {
-      expect(["MISS", "HIT", "STALE"]).not.toContain(cacheHeader);
-    }
+    expect(cached.headers()["x-vinext-cache"]).toBe("HIT");
+    expect(cached.headers()["cache-control"]).toBe("s-maxage=31536000, stale-while-revalidate");
   });
 
   test("ISR page renders correctly in browser", async ({ page }) => {

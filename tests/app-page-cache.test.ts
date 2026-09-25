@@ -20,6 +20,7 @@ import {
   type RenderObservation,
 } from "../packages/vinext/src/server/cache-proof.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
+import type { CacheControlMetadata } from "../packages/vinext/src/shims/cache-handler.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
 import {
@@ -888,6 +889,58 @@ describe("app page cache helpers", () => {
       },
     ]);
   });
+
+  // Next.js pairs expireTime only with a finite revalidate, so a regenerated
+  // revalidate = false entry keeps no expire unless a cacheLife sets one.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/index.ts#L3035-L3058
+  for (const renderCacheControl of [undefined, { revalidate: Infinity, expire: 600 }]) {
+    it(`regenerates a revalidate = false App page ${renderCacheControl ? "with its cacheLife expire" : "without the route expireTime"}`, async () => {
+      const scheduledRegenerations: Array<() => Promise<void>> = [];
+      const isrSetCalls: Array<[string, CacheControlMetadata]> = [];
+
+      await readAppPageCacheResponse({
+        cleanPathname: "/static",
+        clearRequestContext() {},
+        isRscRequest: false,
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedAppPageValue("<h1>stale</h1>"), true, {
+            revalidate: Infinity,
+          });
+        },
+        isrHtmlKey(pathname) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        async isrSet(key, _data, policy) {
+          isrSetCalls.push([key, policy.cacheControl]);
+        },
+        expireSeconds: 31_536_000,
+        revalidateSeconds: Infinity,
+        async renderFreshPageForCache() {
+          return {
+            cacheControl: renderCacheControl,
+            html: "<h1>fresh</h1>",
+            rscData: new TextEncoder().encode("fresh-flight").buffer,
+            tags: ["/static", "_N_T_/static"],
+          };
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRegenerations.push(renderFn);
+        },
+      });
+      await scheduledRegenerations[0]();
+
+      const cacheControl = renderCacheControl
+        ? { revalidate: Infinity, expire: 600 }
+        : { revalidate: Infinity };
+      expect(isrSetCalls).toEqual([
+        ["rsc:/static", cacheControl],
+        ["html:/static", cacheControl],
+      ]);
+    });
+  }
 
   it("serves stale static fallback shells without regenerating the shared shell key", async () => {
     const debugCalls: Array<[string, string]> = [];

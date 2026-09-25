@@ -13,7 +13,12 @@ import {
   createEmptyAppPageRenderObservationState,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
-import { buildAppPageCacheValue, isrCacheControl, type AppPageCacheSetter } from "./isr-cache.js";
+import {
+  buildAppPageCacheValue,
+  isrCacheControl,
+  resolveRouteExpireSeconds,
+  type AppPageCacheSetter,
+} from "./isr-cache.js";
 import type { CacheControlMetadata } from "vinext/shims/cache-handler";
 import type { RenderObservation } from "./cache-proof.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
@@ -167,7 +172,6 @@ function resolveAppPageCacheControl(options: {
   revalidateSeconds: number | null;
 }): CacheControlMetadata | null {
   let revalidateSeconds = options.revalidateSeconds;
-  let expireSeconds = options.expireSeconds;
   const requestCacheLife = options.requestCacheLife;
 
   if (requestCacheLife?.revalidate !== undefined) {
@@ -176,9 +180,8 @@ function resolveAppPageCacheControl(options: {
         ? requestCacheLife.revalidate
         : Math.min(revalidateSeconds, requestCacheLife.revalidate);
   }
-  if (requestCacheLife?.expire !== undefined) {
-    expireSeconds = requestCacheLife.expire;
-  }
+  const expireSeconds =
+    requestCacheLife?.expire ?? resolveRouteExpireSeconds(revalidateSeconds, options.expireSeconds);
 
   if (revalidateSeconds === null || Number.isNaN(revalidateSeconds) || revalidateSeconds <= 0) {
     return null;

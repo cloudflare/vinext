@@ -377,6 +377,17 @@ export function runWithUnifiedStateMutation<T>(
 }
 
 /**
+ * Bind `fn` to the current request context, so it reads this request's state
+ * even when it's called from another async context, such as a response
+ * stream's pull.
+ */
+export function bindRequestContext<T>(fn: () => T): () => T {
+  const ctx = _als.getStore();
+  if (!ctx) return fn;
+  return () => _als.run(ctx, fn);
+}
+
+/**
  * Get the current unified request context.
  * Returns the ALS store when inside a `runWithRequestContext()` scope,
  * or a fresh detached context otherwise. Unlike the legacy per-shim fallback

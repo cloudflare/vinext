@@ -471,8 +471,12 @@ export class KVCacheHandler implements CacheHandler {
     if (effectiveRevalidate === 0) return Promise.resolve();
 
     const now = Date.now();
+    // `revalidate = false` never goes stale, so it gets no revalidateAt and,
+    // below, no KV TTL: the entry stays until it is invalidated.
     const revalidateAt =
-      typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
+      typeof effectiveRevalidate === "number" &&
+      effectiveRevalidate > 0 &&
+      Number.isFinite(effectiveRevalidate)
         ? now + effectiveRevalidate * 1000
         : null;
     const expireAt =
@@ -482,7 +486,9 @@ export class KVCacheHandler implements CacheHandler {
     const cacheControl: CacheControlMetadata | undefined =
       typeof effectiveRevalidate === "number"
         ? {
-            revalidate: effectiveRevalidate,
+            // JSON can't hold Infinity, so store `revalidate = false` as false,
+            // like Next.js does. Reads turn it back into Infinity.
+            revalidate: Number.isFinite(effectiveRevalidate) ? effectiveRevalidate : false,
             ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
             // Client-router reuse bound — must survive KV so warm hits replay
             // the producing render's claim (see CacheControlMetadata.stale).
@@ -535,15 +541,10 @@ export class KVCacheHandler implements CacheHandler {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
-    // Store invalidation timestamp for each tag
-    // Use a long TTL (30 days) so recent invalidations are always found
-    await Promise.all(
-      validTags.map((tag) =>
-        this.kv.put(this._tagKey(tag), String(now), {
-          expirationTtl: 30 * 24 * 3600,
-        }),
-      ),
-    );
+    // Store invalidation timestamp for each tag. Markers never expire: an
+    // entry with no TTL (`revalidate = false`) must not outlive the marker that
+    // invalidated it. Newer entries pass the marker by `lastModified`.
+    await Promise.all(validTags.map((tag) => this.kv.put(this._tagKey(tag), String(now))));
     const order = ++this._tagCacheOrder;
     // Update local tag cache immediately so invalidations are reflected
     // without waiting for the TTL to expire
@@ -684,7 +685,9 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   }
   if (obj.cacheControl !== undefined) {
     if (!isUnknownRecord(obj.cacheControl)) return null;
-    if (typeof obj.cacheControl.revalidate !== "number") return null;
+    if (typeof obj.cacheControl.revalidate !== "number" && obj.cacheControl.revalidate !== false) {
+      return null;
+    }
     if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
       return null;
     }
@@ -698,6 +701,11 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
     if (!obj.value || typeof obj.value !== "object") return null;
     const value = obj.value as Record<string, unknown>;
     if (typeof value.kind !== "string" || !VALID_KINDS.has(value.kind)) return null;
+  }
+
+  // Serve the same `revalidate = false` policy the other backends keep in memory.
+  if (obj.cacheControl?.revalidate === false) {
+    obj.cacheControl = { ...obj.cacheControl, revalidate: Infinity };
   }
 
   return raw as KVCacheEntry;

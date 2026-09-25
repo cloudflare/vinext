@@ -5,6 +5,7 @@ import {
   getRequestContext,
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
+  bindRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   consumeRenderRequestApiUsage,
@@ -30,6 +31,41 @@ describe("unified-request-context", () => {
       void runWithRequestContext(ctx, () => {
         expect(isInsideUnifiedScope()).toBe(true);
       });
+    });
+  });
+
+  describe("bindRequestContext", () => {
+    function bindIn(ctx: ReturnType<typeof createRequestContext>) {
+      let bound: (() => ReturnType<typeof getRequestContext>) | undefined;
+      void runWithRequestContext(ctx, () => {
+        bound = bindRequestContext(() => getRequestContext());
+      });
+      if (!bound) throw new Error("expected a bound function");
+      return bound;
+    }
+
+    it("reads the bound request's state when called outside its scope", () => {
+      const ctx = createRequestContext();
+      const bound = bindIn(ctx);
+
+      expect(isInsideUnifiedScope()).toBe(false);
+      expect(bound()).toBe(ctx);
+    });
+
+    it("reads the bound request's state when called inside another request", () => {
+      const first = createRequestContext();
+      const bound = bindIn(first);
+
+      let seen: ReturnType<typeof getRequestContext> | undefined;
+      void runWithRequestContext(createRequestContext(), () => {
+        seen = bound();
+      });
+      expect(seen).toBe(first);
+    });
+
+    it("returns the function unchanged outside any scope", () => {
+      const fn = () => 1;
+      expect(bindRequestContext(fn)).toBe(fn);
     });
   });
 
