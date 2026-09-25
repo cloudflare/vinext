@@ -171,6 +171,50 @@ function hasClientFreshness(cacheControl: string): boolean {
   );
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const TIME = String.raw`(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})`;
+const MONTH = "(?<month>[A-Z][a-z]{2})";
+const HTTP_DATE_FORMATS = [
+  // IMF-fixdate: Sun, 06 Nov 1994 08:49:37 GMT
+  new RegExp(
+    String.raw`^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?<day>\d{2}) ${MONTH} (?<year>\d{4}) ${TIME} GMT$`,
+  ),
+  // Obsolete rfc850-date: Sunday, 06-Nov-94 08:49:37 GMT
+  new RegExp(
+    String.raw`^(?:Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day, (?<day>\d{2})-${MONTH}-(?<year>\d{2}) ${TIME} GMT$`,
+  ),
+  // Obsolete asctime-date: Sun Nov  6 08:49:37 1994
+  new RegExp(
+    String.raw`^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) ${MONTH} (?<day> \d|\d{2}) ${TIME} (?<year>\d{4})$`,
+  ),
+];
+
+/**
+ * Parses an RFC 9110 HTTP-date. `Date.parse` also accepts values outside its
+ * grammar, such as `2099-01-01`, which a cache must treat as already expired.
+ */
+function parseHttpDate(value: string, now: number): number {
+  const fields = HTTP_DATE_FORMATS.map((format) => format.exec(value)?.groups).find(Boolean);
+  const month = MONTHS.indexOf(fields?.month ?? "");
+  if (!fields || month === -1) return Number.NaN;
+
+  const timestamp = (year: number) => {
+    const date = new Date(0);
+    date.setUTCFullYear(year, month, Number(fields.day));
+    date.setUTCHours(Number(fields.hour), Number(fields.minute), Number(fields.second));
+    return date.getTime();
+  };
+  if (fields.year!.length === 4) return timestamp(Number(fields.year));
+
+  // A two-digit year that looks more than 50 years ahead is the latest past
+  // year with those digits.
+  const current = new Date(now).getUTCFullYear();
+  const year = current - (current % 100) + Number(fields.year);
+  const limit = new Date(now);
+  limit.setUTCFullYear(current + 50);
+  return timestamp(year) > limit.getTime() ? timestamp(year - 100) : timestamp(year);
+}
+
 /**
  * Headers served for an entry re-stored after its regeneration failed. Like
  * Next.js, it is served as new: a stored `Date` moves to the re-store time, and
@@ -187,8 +231,8 @@ export function failedRegenerationHeaders(
   const restored = headers.map(([name, value]): [string, string] => {
     const lower = name.toLowerCase();
     if (lower === "date") return [name, date];
-    // An unparseable `Expires` already means expired, so only a later date moves.
-    if (lower === "expires" && Date.parse(value) > retryUntil) {
+    // An invalid `Expires` already means expired, so only a later date moves.
+    if (lower === "expires" && parseHttpDate(value, now) > retryUntil) {
       return [name, new Date(retryUntil).toUTCString()];
     }
     if (POLICY_HEADERS.has(lower)) return [name, capFreshness(value, retrySeconds)];

@@ -133,6 +133,11 @@ type PublicationResult = {
   published: boolean;
 };
 
+type R2Read = {
+  entry: StoredEntry | null;
+  object?: R2ObjectBody;
+};
+
 type RepublishSource = {
   body: ArrayBuffer;
   etag: string;
@@ -655,10 +660,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     };
   }
 
-  private async readR2Metadata(cacheKey: CacheKey): Promise<{
-    entry: StoredEntry | null;
-    object?: R2ObjectBody;
-  }> {
+  private async readR2Metadata(cacheKey: CacheKey): Promise<R2Read> {
     const object = await this.env.CACHE_BODIES.get(this.r2ObjectKey(cacheKey.keyHash));
     const entry = this.entryFromR2Metadata(cacheKey.keyHash, cacheKey.cacheKey, object);
     if (!entry && object) {
@@ -667,10 +669,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return { entry, ...(entry && object ? { object } : {}) };
   }
 
-  private async readR2MetadataCached(cacheKey: CacheKey): Promise<{
-    entry: StoredEntry | null;
-    object?: R2ObjectBody;
-  }> {
+  private async readR2MetadataCached(cacheKey: CacheKey): Promise<R2Read> {
     const readKey = this.entryReadKey(cacheKey.keyHash);
     if (entryReads.has(readKey)) return { entry: null };
 
@@ -1154,9 +1153,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     entry: StoredEntry,
     write: WriteReservation,
   ): Promise<void> {
-    const now = Date.now();
-    const policy = deriveFailedRegenerationPolicy(new Headers(entry.responseHeaders), now);
-    if (!policy) {
+    const policyHeaders = new Headers(entry.responseHeaders);
+    if (!deriveFailedRegenerationPolicy(policyHeaders)) {
       await this.releaseFailedWrite(metadata, write);
       return;
     }
@@ -1175,7 +1173,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       return;
     }
 
-    const { retrySeconds, ...freshness } = policy;
+    // The retry window starts once the body is buffered, so a slow source
+    // read cannot use it up. Eligibility does not depend on the time.
+    const now = Date.now();
+    const { retrySeconds, ...freshness } = deriveFailedRegenerationPolicy(policyHeaders, now)!;
     let publication: PublicationResult;
     try {
       publication = await metadata.publish(
@@ -1369,8 +1370,15 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
   async fetch(request: Request): Promise<Response> {
     const cacheKey = await this.deriveCacheKey(request);
+    return this.serveR2Read(cacheKey, await this.readR2MetadataCached(cacheKey));
+  }
+
+  private async serveR2Read(
+    cacheKey: CacheKey,
+    r2Read: R2Read,
+    rereadReplacedEntry = true,
+  ): Promise<Response> {
     const { keyHash } = cacheKey;
-    const r2Read = await this.readR2MetadataCached(cacheKey);
     const entry = r2Read.entry;
     const expectedR2Etag = r2Read.object?.etag;
     if (!entry) {
@@ -1423,11 +1431,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         activeRevision,
         latestRevision,
       );
-      if (!regeneration) {
-        const winner = await this.readR2Metadata(cacheKey);
-        const stored =
-          winner.entry && (await this.readStoredResponse(winner.entry, Date.now(), winner.object));
-        if (stored) return stored;
+      if (!regeneration && rereadReplacedEntry) {
+        // Read R2 again and handle what replaced the revision as a new read
+        // would: its own freshness decides whether it is served, refreshed in
+        // the background or regenerated. Only one such re-read is made.
+        return this.serveR2Read(cacheKey, await this.readR2Metadata(cacheKey), false);
       }
     }
     if (!regeneration) {
