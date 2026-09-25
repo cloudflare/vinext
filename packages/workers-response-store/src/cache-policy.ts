@@ -22,6 +22,7 @@ function parseSeconds(value: string | undefined): number | undefined {
 type CacheLifetime = {
   maxAge: number;
   reuseForbidden: boolean;
+  staleServingForbidden: boolean;
   staleWhileRevalidate: number;
 };
 
@@ -61,7 +62,7 @@ function parseCacheLifetime(headers: Headers): CacheLifetime {
       ? 0
       : (parseSeconds(directives.get("stale-while-revalidate")) ?? 0);
 
-  return { maxAge, reuseForbidden, staleWhileRevalidate };
+  return { maxAge, reuseForbidden, staleServingForbidden, staleWhileRevalidate };
 }
 
 export function deriveCachePolicy(headers: Headers, now = Date.now()): CachePolicy {
@@ -81,7 +82,9 @@ export function deriveCachePolicy(headers: Headers, now = Date.now()): CachePoli
 /**
  * Freshness for an entry re-stored after its regeneration failed, following
  * Next.js: retry after `revalidate` clamped to 3-30 s, and keep serving for at
- * least 3 s beyond that or the entry's original stale window.
+ * least 3 s beyond that or the entry's original stale window. Policies that
+ * forbid stale serving (`s-maxage`, `must-revalidate`, `proxy-revalidate`) get
+ * the retry window but no stale window, so they still hard-expire.
  *
  * Returns null for an entry that must not be reused: `private`, `no-store`,
  * `no-cache`, or a zero lifetime with no stale window. Next.js has no cache
@@ -92,14 +95,17 @@ export function deriveFailedRegenerationPolicy(
   headers: Headers,
   now = Date.now(),
 ): Pick<CachePolicy, "freshUntil" | "swrUntil"> | null {
-  const { maxAge, reuseForbidden, staleWhileRevalidate } = parseCacheLifetime(headers);
+  const { maxAge, reuseForbidden, staleServingForbidden, staleWhileRevalidate } =
+    parseCacheLifetime(headers);
   if (reuseForbidden || (maxAge === 0 && staleWhileRevalidate === 0)) return null;
   // Next.js retries `revalidate = false` entries after 3 s. An explicit
   // one-year revalidate is indistinguishable here and also retries after 3 s
   // rather than 30 s; only the retry cadence differs.
   const revalidate = maxAge === STATIC_REVALIDATE_SECONDS ? MIN_RETRY_SECONDS : maxAge;
   const retrySeconds = Math.min(Math.max(revalidate, MIN_RETRY_SECONDS), MAX_RETRY_SECONDS);
-  const expireSeconds = Math.max(retrySeconds + 3, maxAge + staleWhileRevalidate);
+  const expireSeconds = staleServingForbidden
+    ? retrySeconds
+    : Math.max(retrySeconds + 3, maxAge + staleWhileRevalidate);
 
   return {
     freshUntil: now + retrySeconds * 1000,

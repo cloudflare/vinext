@@ -918,7 +918,7 @@ test("an entry past its SWR window keeps serving after a failed foreground regen
     assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
     assert.match(
       served.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
-      /^max-age=[23], stale-while-revalidate=31535997$/,
+      /^max-age=[23], stale-while-revalidate=0$/,
     );
     assert.equal(await served.text(), "still-active");
   }
@@ -1016,6 +1016,41 @@ test("a failed regeneration does not make a non-reusable entry fresh", async () 
     await readAfterFailedRegeneration(path);
     await readAfterFailedRegeneration(path);
   }
+});
+
+test("a failed regeneration keeps policies that forbid stale serving hard-expiring", async () => {
+  const cases = [
+    { path: "/no-stale/must-revalidate", cacheControl: "public, max-age=1, must-revalidate" },
+    {
+      path: "/no-stale/proxy-revalidate",
+      cacheControl: "public, max-age=1, proxy-revalidate, stale-while-revalidate=30",
+    },
+    { path: "/no-stale/s-maxage", cacheControl: "public, s-maxage=1, stale-while-revalidate=30" },
+  ];
+
+  for (const { path, cacheControl } of cases) {
+    await put(path, "no-stale", { cacheControl, age: 1, revalidator: { fail: true } });
+    const failed = await read(path);
+    assert.equal(failed.status, 500, path);
+    await failed.arrayBuffer();
+
+    const entry = (await metadata()).find((candidate) => candidate.cacheKey === path);
+    assert.equal(entry.activeRevision, 2, path);
+    assert.equal(entry.swrUntil, entry.freshUntil, path);
+    const served = await read(path);
+    assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH", path);
+    assert.match(
+      served.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      /^max-age=[23], stale-while-revalidate=0$/,
+    );
+    assert.equal(await served.text(), "no-stale");
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 3100));
+  const expired = await read("/no-stale/must-revalidate");
+  assert.equal(expired.status, 500);
+  assert.match(await expired.text(), /Fixture regeneration failure/);
+  assert.equal(await regenerationCount(), cases.length + 1);
 });
 
 test("a failed re-store keeps the regeneration error and releases its reservation", async () => {
