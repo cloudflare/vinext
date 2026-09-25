@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
 import { afterEach, beforeEach, test, vi } from "vitest";
 
+import { failedRegenerationHeaders } from "../src/cache-policy.js";
 import type {
   ResponseStorePurgeOptions,
   ResponseStoreRefreshOptions,
@@ -22,6 +23,9 @@ const r2Root = `runtime-cache/${versionId}/r2-v1`;
 
 type PutOptions = {
   age?: number;
+  date?: string;
+  expires?: string;
+  lastModified?: string;
   bodyDelayMs?: number;
   bodyFailure?: boolean;
   cacheControl?: string;
@@ -87,6 +91,9 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   if (options.tags) headers.set("X-Response-Cache-Tag", options.tags.join(","));
   if (options.host) headers.set("X-Cache-Host", options.host);
   if (options.age !== undefined) headers.set("X-Response-Age", String(options.age));
+  if (options.date) headers.set("X-Response-Date", options.date);
+  if (options.expires) headers.set("X-Response-Expires", options.expires);
+  if (options.lastModified) headers.set("X-Response-Last-Modified", options.lastModified);
   if (options.status !== undefined) headers.set("X-Response-Status", String(options.status));
   if (options.cloudflareCacheControl) {
     headers.set("X-Response-Cloudflare-CDN-Cache-Control", options.cloudflareCacheControl);
@@ -218,6 +225,248 @@ async function onePathPerShard(shards: number): Promise<string[]> {
     }
   }
   return paths as string[];
+}
+
+// Re-exports the fixture Worker with its R2 binding replaced. `wrapBucket` is
+// the source of an expression that evaluates, once per isolate, to a function
+// from the real bucket to the one the Worker uses.
+async function restartWithWrappedR2Bucket(fileName: string, wrapBucket: string) {
+  await mf.dispose();
+  const wrapperPath = path.join(path.dirname(workerScript), fileName);
+  mf = new Miniflare({
+    compatibilityDate: "2026-04-08",
+    compatibilityFlags: ["nodejs_compat"],
+    unsafeEphemeralDurableObjects: true,
+    unsafeInspectDurableObjects: true,
+    workers: [
+      {
+        name: "user-worker",
+        compatibilityDate: "2026-04-08",
+        compatibilityFlags: ["nodejs_compat"],
+        modulesRoot: path.dirname(workerScript),
+        modules: [
+          {
+            type: "ESModule",
+            path: wrapperPath,
+            contents: `
+              import worker, { CacheMetadata, ResponseStoreRevalidator, ResponseStoreBinding as Base } from "./worker.js";
+              export { CacheMetadata, ResponseStoreRevalidator };
+              export default worker;
+              const wrapBucket = ${wrapBucket};
+              export class ResponseStoreBinding extends Base {
+                constructor(ctx, env) {
+                  super(ctx, { ...env, CACHE_BODIES: wrapBucket(env.CACHE_BODIES) });
+                }
+              }
+            `,
+          },
+          { type: "ESModule", path: workerScript },
+        ],
+        durableObjects: {
+          CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
+        },
+        r2Buckets: { CACHE_BODIES: "programmatic-cache-test" },
+        bindings: {
+          CF_VERSION_METADATA: {
+            id: "poc-v2",
+            tag: "test",
+            timestamp: "2026-09-04T00:00:00Z",
+          },
+        },
+      },
+    ],
+  });
+  worker = { fetch: mf.dispatchFetch.bind(mf) };
+}
+
+// Re-exports the fixture Worker with an R2 binding whose second write fails,
+// either before or after the object is stored. "after-head-fails" also fails
+// every HEAD, so the outcome of that write cannot be checked.
+async function useFailingSecondR2Write(mode: "before" | "after" | "after-head-fails") {
+  await restartWithWrappedR2Bucket(
+    "failing-second-r2-write.js",
+    `(() => {
+      const mode = ${JSON.stringify(mode)};
+      let puts = 0;
+      return (bucket) => ({
+        get: (...args) => bucket.get(...args),
+        head: (...args) =>
+          mode === "after-head-fails"
+            ? Promise.reject(new Error("Injected R2 HEAD failure"))
+            : bucket.head(...args),
+        list: (...args) => bucket.list(...args),
+        delete: (...args) => bucket.delete(...args),
+        async put(key, value, options) {
+          if (++puts === 2) {
+            if (mode !== "before") await bucket.put(key, value, options);
+            throw new Error("Injected R2 write failure");
+          }
+          return bucket.put(key, value, options);
+        },
+      });
+    })()`,
+  );
+}
+
+// Re-exports the fixture Worker with an R2 binding that holds its second write
+// until a third one starts, then lands the second before or after the third.
+// The third write's request performs both, since a request cannot use another
+// request's bucket.
+async function restartWithHeldSecondR2Write(order: "before" | "after") {
+  await restartWithWrappedR2Bucket(
+    "held-second-r2-write.js",
+    `(() => {
+      const order = ${JSON.stringify(order)};
+      let puts = 0;
+      let held;
+      return (bucket) => ({
+        get: (...args) => bucket.get(...args),
+        head: (...args) => bucket.head(...args),
+        list: (...args) => bucket.list(...args),
+        delete: (...args) => bucket.delete(...args),
+        async put(key, value, options) {
+          const put = ++puts;
+          if (put === 2) {
+            return new Promise((resolve, reject) => {
+              held = { key, value, options, resolve, reject };
+            });
+          }
+          if (put !== 3) return bucket.put(key, value, options);
+          const landHeld = () =>
+            bucket.put(held.key, held.value, held.options).then(held.resolve, held.reject);
+          if (order === "before") await landHeld();
+          const stored = await bucket.put(key, value, options);
+          if (order === "after") await landHeld();
+          return stored;
+        },
+      });
+    })()`,
+  );
+}
+
+// Re-exports the fixture Worker with an R2 binding whose second write fails,
+// as does every write while the test sets `test/fail-put`. While the test arms
+// `before` or `after` for read `n`, a request's nth read of an entry's R2
+// object is held before or after it reads the object, until the test releases
+// it. The markers bypass the wrapper.
+async function restartWithHeldEntryReads() {
+  await restartWithWrappedR2Bucket(
+    "held-entry-reads.js",
+    `(() => {
+      let puts = 0;
+      return (bucket) => {
+        let gets = 0;
+        const hold = async (point, n) => {
+          if (!(await bucket.head(\`test/arm-\${point}-\${n}\`))) return;
+          await bucket.put(\`test/held-\${point}-\${n}\`, "");
+          for (let wait = 0; wait < 500; wait++) {
+            if (await bucket.head(\`test/release-\${point}-\${n}\`)) return;
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        };
+        return {
+          async get(key, ...args) {
+            if (!key.endsWith("/active")) return bucket.get(key, ...args);
+            const n = ++gets;
+            await hold("before", n);
+            const object = await bucket.get(key, ...args);
+            await hold("after", n);
+            return object;
+          },
+          head: (...args) => bucket.head(...args),
+          list: (...args) => bucket.list(...args),
+          delete: (...args) => bucket.delete(...args),
+          async put(key, value, options) {
+            if (++puts === 2 || (await bucket.head("test/fail-put"))) {
+              throw new Error("Injected R2 write failure");
+            }
+            return bucket.put(key, value, options);
+          },
+        };
+      };
+    })()`,
+  );
+}
+
+// Arms a hold on a request's nth entry read. `held` waits for a request to
+// reach it, then disarms it so later requests read through.
+async function holdEntryRead(point: "before" | "after", n: number) {
+  const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
+  const marker = (name: string) => `test/${name}-${point}-${n}`;
+  await bucket.put(marker("arm"), "");
+  return {
+    async held() {
+      for (let attempt = 0; attempt < 200 && !(await bucket.head(marker("held"))); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.ok(await bucket.head(marker("held")), `entry read ${n} was not held ${point}`);
+      await bucket.delete(marker("arm"));
+    },
+    release: () => bucket.put(marker("release"), ""),
+  };
+}
+
+// Puts an entry that is past its SWR window and whose regeneration fails, and
+// makes it fail once. Its re-store's R2 write is the second write, or one made
+// while `test/fail-put` is set, so the re-store is fresh in the metadata while
+// R2 still holds the entry hard-expired.
+async function putLostHardExpiredRestore(path: string, failRestoreWrite = false) {
+  await put(path, "still-active", {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    date: new Date(Date.now() - 60_000).toUTCString(),
+    revalidator: { fail: true },
+  });
+  const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
+  if (failRestoreWrite) await bucket.put("test/fail-put", "");
+  const failed = await read(path);
+  assert.equal(failed.status, 500);
+  await failed.arrayBuffer();
+  const restored = await waitForRestore(path);
+  await bucket.delete("test/fail-put");
+  return restored;
+}
+
+async function regenerationCount(): Promise<number> {
+  const response = await worker.fetch("https://user.test/admin/stats");
+  return ((await response.json()) as { regenerationCount: number }).regenerationCount;
+}
+
+// Waits for a failed regeneration's re-store, which keeps the entry's revision
+// and makes it fresh again.
+async function waitForRestore(cacheKey: string) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const entry = (await metadata()).find((candidate) => candidate.cacheKey === cacheKey);
+    if (
+      entry &&
+      entry.freshUntil > Date.now() &&
+      (await metadataRowCount("revalidation_claims")) === 0 &&
+      (await metadataRowCount("pending_objects")) === 0
+    ) {
+      return entry;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`${cacheKey} was not re-stored`);
+}
+
+async function waitForSettledRevision(cacheKey: string, revision: number) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const entry = (await metadata()).find((candidate) => candidate.cacheKey === cacheKey);
+    if (entry?.activeRevision === revision && (await metadataRowCount("pending_objects")) === 0) {
+      return entry;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail(`${cacheKey} did not settle at revision ${revision}`);
+}
+
+async function waitForNoPendingObjects() {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if ((await metadataRowCount("pending_objects")) === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.fail("pending objects were not settled");
 }
 
 test("bounded concurrency preserves settled results", async () => {
@@ -780,7 +1029,165 @@ test("stale R2 content returns immediately and deduplicates background regenerat
   assert.equal(await metadataRowCount("pending_objects"), 0);
 });
 
-test("a failed background regeneration releases its claim for a later retry", async () => {
+test("a failed background regeneration re-stores the entry with clamped freshness", async () => {
+  const cases = [
+    {
+      path: "/backoff/10",
+      options: { cacheControl: "public, max-age=10, stale-while-revalidate=60", age: 10 },
+      retry: 10,
+      expire: 70,
+      forwarded: { "Cache-Control": "public, max-age=10, stale-while-revalidate=60" },
+    },
+    {
+      path: "/backoff/1",
+      options: { cacheControl: "public, max-age=1, stale-while-revalidate=1", age: 1 },
+      retry: 3,
+      expire: 6,
+      forwarded: { "Cache-Control": "public, max-age=1, stale-while-revalidate=1" },
+    },
+    {
+      path: "/backoff/60",
+      options: {
+        cacheControl: "public, max-age=60, stale-while-revalidate=5",
+        age: 60,
+        date: new Date(Date.now() - 60_000).toUTCString(),
+      },
+      retry: 30,
+      expire: 65,
+      forwarded: { "Cache-Control": "public, max-age=30, stale-while-revalidate=5" },
+    },
+    {
+      path: "/backoff/quoted",
+      options: {
+        cacheControl: 'public, max-age=60, stale-while-revalidate=5, ext="foo,immutable,bar"',
+        age: 60,
+      },
+      retry: 30,
+      expire: 65,
+      // A quoted extension value is not split into directives.
+      forwarded: {
+        "Cache-Control": 'public, max-age=30, stale-while-revalidate=5, ext="foo,immutable,bar"',
+      },
+    },
+    {
+      path: "/backoff/embedded",
+      options: {
+        cacheControl: 'public, max-age=1, stale-while-revalidate=1, ext="x,max-age=20,y"',
+        // Stale under either reading, so the retry window tells them apart.
+        age: 20,
+      },
+      retry: 3,
+      expire: 6,
+      // A directive inside a quoted extension value does not set the policy.
+      forwarded: {
+        "Cache-Control": 'public, max-age=1, stale-while-revalidate=1, ext="x,max-age=20,y"',
+      },
+    },
+    {
+      path: "/backoff/expires",
+      options: {
+        cacheControl: "public",
+        cloudflareCacheControl: "max-age=60, stale-while-revalidate=5",
+        expires: new Date(Date.now() + 86_400_000).toUTCString(),
+        age: 60,
+      },
+      retry: 30,
+      expire: 65,
+      forwarded: { "Cache-Control": "public" },
+    },
+    {
+      path: "/backoff/heuristic",
+      options: {
+        cacheControl: "public",
+        cloudflareCacheControl: "max-age=60, stale-while-revalidate=5",
+        lastModified: new Date(Date.now() - 30 * 86_400_000).toUTCString(),
+        age: 60,
+      },
+      retry: 30,
+      expire: 65,
+      // Without a lifetime of its own, a browser could derive a heuristic one
+      // from Last-Modified that far outlives the retry window.
+      forwarded: { "Cache-Control": "public, max-age=30" },
+    },
+    {
+      path: "/backoff/static",
+      options: {
+        cacheControl: "public, max-age=31536000, immutable",
+        cloudflareCacheControl: "max-age=31536000, stale-while-revalidate=60",
+        age: 31_536_000,
+      },
+      retry: 3,
+      expire: 31_536_060,
+      forwarded: { "Cache-Control": "public, max-age=3" },
+    },
+    {
+      path: "/backoff/cdn",
+      options: {
+        cacheControl: "public, max-age=100, stale-while-revalidate=100",
+        cdnCacheControl: "max-age=10, stale-while-revalidate=20",
+        age: 10,
+      },
+      retry: 10,
+      expire: 30,
+      forwarded: {
+        "Cache-Control": "public, max-age=10, stale-while-revalidate=100",
+        "CDN-Cache-Control": "max-age=10, stale-while-revalidate=20",
+      },
+    },
+  ];
+
+  for (const { path, options, retry, expire, forwarded } of cases) {
+    await put(path, `stale:${path}`, { ...options, revalidator: { fail: true } });
+    const stale = await read(path);
+    assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+    assert.equal(await stale.text(), `stale:${path}`);
+
+    const entry = await waitForRestore(path);
+    assert.equal(entry.activeRevision, 1);
+    assert.equal(entry.swrUntil - entry.freshUntil, (expire - retry) * 1000);
+    // The metadata row keeps the original policy for the next failure.
+    assert.deepEqual(
+      entry.responseHeaders.find(([name]: [string, string]) => name === "cache-control")?.[1],
+      options.cacheControl ?? "public, max-age=60, stale-while-revalidate=60",
+    );
+    const remaining = entry.freshUntil - Date.now();
+    assert.ok(remaining > (retry - 2) * 1000 && remaining <= retry * 1000, `${path}: ${remaining}`);
+    assert.equal(await metadataRowCount("revalidation_claims"), 0);
+
+    const fresh = await read(path);
+    assert.equal(fresh.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+    assert.equal(fresh.headers.get("X-Workers-Response-Store-Revision"), "1");
+    assert.match(
+      fresh.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      new RegExp(`^max-age=(${retry - 1}|${retry}), stale-while-revalidate=${expire - retry}$`),
+    );
+    // The re-store starts the entry's age again, so the edge can use the
+    // retry window instead of treating the response as already stale.
+    assert.match(fresh.headers.get("Age") ?? "", /^[01]$/, path);
+    // Forwarded freshness is capped at the retry window too, so downstream
+    // caches cannot hide the next retry.
+    for (const [name, value] of Object.entries(forwarded)) {
+      assert.equal(fresh.headers.get(name), value, `${path}: ${name}`);
+    }
+    // A stored Date moves to the re-store time as well, so shared caches do
+    // not derive an older apparent age from it.
+    if ("date" in options) {
+      const date = Date.parse(fresh.headers.get("Date") ?? "");
+      assert.ok(Math.abs(Date.now() - date) < 3000, `${path}: ${fresh.headers.get("Date")}`);
+    }
+    // A later Expires is capped too; a browser falls back to it without a max-age.
+    if ("expires" in options) {
+      const expires = Date.parse(fresh.headers.get("Expires") ?? "");
+      assert.ok(expires <= Date.now() + retry * 1000, `${path}: ${fresh.headers.get("Expires")}`);
+    }
+    assert.equal(await fresh.text(), `stale:${path}`);
+  }
+
+  assert.equal(await regenerationCount(), cases.length);
+  assert.equal((await r2Objects()).objects.length, cases.length);
+});
+
+test("a failed background regeneration backs off before retrying", async () => {
   await put("/stale-retry", "stale-body", {
     cacheControl: "public, max-age=0, stale-while-revalidate=30",
     revalidator: {
@@ -791,16 +1198,616 @@ test("a failed background regeneration releases its claim for a later retry", as
   });
 
   assert.equal(await (await read("/stale-retry")).text(), "stale-body");
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(await (await read("/stale-retry")).text(), "stale-body");
+  await waitForRestore("/stale-retry");
+  const backingOff = await read("/stale-retry");
+  assert.equal(backingOff.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await backingOff.text(), "stale-body");
+  assert.equal(await regenerationCount(), 1);
 
+  await new Promise((resolve) => setTimeout(resolve, 3100));
+  const retrying = await read("/stale-retry");
+  assert.equal(retrying.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await retrying.text(), "stale-body");
+  await waitForSettledRevision("/stale-retry", 3);
+  assert.equal(await (await read("/stale-retry")).text(), "retry-succeeded");
+  assert.equal(await regenerationCount(), 2);
+});
+
+test("a re-store's retry window starts once its source body is read", async () => {
+  // Buffering an entry's R2 body takes longer than the 3 s retry window. The
+  // wrapper records when it finishes, bypassing itself.
+  await restartWithWrappedR2Bucket(
+    "slow-restore-source.js",
+    `(bucket) => ({
+      async get(key, ...args) {
+        const object = await bucket.get(key, ...args);
+        if (!object) return object;
+        const { body, customMetadata, etag, size } = object;
+        return {
+          body,
+          customMetadata,
+          etag,
+          size,
+          async arrayBuffer() {
+            await new Promise((resolve) => setTimeout(resolve, 3500));
+            const buffered = await object.arrayBuffer();
+            await bucket.put("test/source-read", "", {
+              customMetadata: { at: String(Date.now()) },
+            });
+            return buffered;
+          },
+        };
+      },
+      head: (...args) => bucket.head(...args),
+      list: (...args) => bucket.list(...args),
+      delete: (...args) => bucket.delete(...args),
+      put: (...args) => bucket.put(...args),
+    })`,
+  );
+  const path = "/restore-slow-source";
+  await put(path, "stale-body", {
+    cacheControl: "public, max-age=1, stale-while-revalidate=30",
+    age: 1,
+    date: new Date(Date.now() - 60_000).toUTCString(),
+    revalidator: { fail: true },
+  });
+  const stored = (await metadata()).find((candidate) => candidate.cacheKey === path);
+  const stale = await read(path);
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await stale.text(), "stale-body");
+
+  // The metadata is published before R2, and each is read separately, so the
+  // re-store has landed only once both show its new freshness.
+  const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
+  const objectKey = `${r2Root}/${stored.keyHash}/active`;
+  let entry: any;
+  let object: Awaited<ReturnType<typeof bucket.head>> = null;
+  for (let attempt = 0; attempt < 300; attempt++) {
+    entry = (await metadata()).find((candidate) => candidate.cacheKey === path);
+    object = await bucket.head(objectKey);
+    if (
+      entry.freshUntil !== stored.freshUntil &&
+      object?.customMetadata?.freshUntil === String(entry.freshUntil)
+    ) {
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.notEqual(entry.freshUntil, stored.freshUntil, "the entry was not re-stored");
+  assert.equal(object?.customMetadata?.freshUntil, String(entry.freshUntil));
+  assert.equal(await regenerationCount(), 1);
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+
+  // The window, and the reset Date and age, start after the source read.
+  const sourceRead = Number((await bucket.head("test/source-read"))?.customMetadata?.at);
+  assert.ok(entry.freshUntil - 3000 >= sourceRead, `${entry.freshUntil - 3000} < ${sourceRead}`);
+  assert.equal(object?.customMetadata?.createdAt, String(entry.freshUntil - 3000));
+
+  const fresh = await read(path);
+  assert.equal(fresh.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(
+    fresh.headers.get("X-Workers-Response-Store-Age-Basis"),
+    `${entry.freshUntil - 3000}:0`,
+  );
+  assert.equal(fresh.headers.get("Date"), new Date(entry.freshUntil - 3000).toUTCString());
+  assert.equal(fresh.headers.get("Age"), "0");
+  assert.equal(await fresh.text(), "stale-body");
+  assert.equal(await regenerationCount(), 1);
+});
+
+test("a re-store caps only a valid HTTP-date Expires", () => {
+  const now = Date.parse("2026-09-25T12:00:00Z");
+  const retryUntil = new Date(now + 3000).toUTCString();
+  const expires = (value: string) =>
+    failedRegenerationHeaders([["Expires", value]], 3, now).find(
+      ([name]) => name === "Expires",
+    )?.[1];
+
+  // A later date in any of the three RFC 9110 formats moves to the retry window.
+  assert.equal(expires("Thu, 01 Jan 2099 00:00:00 GMT"), retryUntil);
+  assert.equal(expires("Friday, 01-Jan-49 00:00:00 GMT"), retryUntil);
+  assert.equal(expires("Thu Jan  1 00:00:00 2099"), retryUntil);
+  // A leap second is in range.
+  assert.equal(expires("Thu, 01 Jan 2099 23:59:60 GMT"), retryUntil);
+  // These are not valid HTTP-dates, even where `Date.parse` reads them as
+  // 2099, so they already mean expired and stay as they are.
+  for (const invalid of [
+    "2099-01-01",
+    "Thu, 01 Jan 2099 00:00:00 +0000",
+    "thu, 01 jan 2099 00:00:00 GMT",
+    // Out-of-range fields that `Date` would roll forward: 31 Feb is read as
+    // Tuesday 3 Mar, and hour 99 as 5 Jan.
+    "Tue, 31 Feb 2099 00:00:00 GMT",
+    "Tue Feb 31 00:00:00 2099",
+    "Thu, 01 Jan 2099 99:00:00 GMT",
+    "Thu, 01 Jan 2099 00:60:00 GMT",
+    "Thu, 01 Jan 2099 00:00:61 GMT",
+    // 1 Jan 2099 and 1 Jan 2049 are not on these weekdays.
+    "Fri, 01 Jan 2099 00:00:00 GMT",
+    "Thursday, 01-Jan-49 00:00:00 GMT",
+  ]) {
+    assert.equal(expires(invalid), invalid);
+  }
+  // A two-digit year more than 50 years ahead is in the past.
+  assert.equal(expires("Friday, 01-Jan-99 00:00:00 GMT"), "Friday, 01-Jan-99 00:00:00 GMT");
+});
+
+test("an entry past its SWR window keeps serving after a failed foreground regeneration", async () => {
+  await put("/failure", "still-active", {
+    cacheControl: "s-maxage=31536000, stale-while-revalidate",
+    age: 31_536_000,
+    revalidator: { fail: true },
+  });
+
+  const failed = await read("/failure");
+  assert.equal(failed.status, 500);
+  assert.match(await failed.text(), /Fixture regeneration failure/);
+  const entries = await metadata();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].activeRevision, 1);
+  assert.equal((await r2Objects()).objects.length, 1);
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const served = await read("/failure");
+    assert.equal(served.status, 200);
+    assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+    assert.match(
+      served.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      /^max-age=[23], stale-while-revalidate=0$/,
+    );
+    assert.match(served.headers.get("Age") ?? "", /^[01]$/);
+    assert.equal(await served.text(), "still-active");
+  }
+  assert.equal(await regenerationCount(), 1);
+});
+
+test("a regeneration whose body fails midway backs off in the background", async () => {
+  await put("/mid-body/background", "stale-body", {
+    cacheControl: "public, max-age=10, stale-while-revalidate=60",
+    age: 10,
+    revalidator: { failMidBody: true },
+  });
+
+  assert.equal(await (await read("/mid-body/background")).text(), "stale-body");
+  const entry = await waitForRestore("/mid-body/background");
+  assert.equal(entry.swrUntil - entry.freshUntil, 60_000);
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+
+  const fresh = await read("/mid-body/background");
+  assert.equal(fresh.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.match(
+    fresh.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=(9|10), stale-while-revalidate=60$/,
+  );
+  assert.equal(await fresh.text(), "stale-body");
+  assert.equal(await regenerationCount(), 1);
+});
+
+test("a foreground regeneration whose body fails midway returns the error and backs off", async () => {
+  await put("/mid-body/foreground", "still-active", {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    revalidator: { failMidBody: true },
+  });
+
+  const failed = await read("/mid-body/foreground");
+  assert.equal(failed.status, 500);
+  // RPC reports a stream that errors as a premature disconnect.
+  assert.match(await failed.text(), /ReadableStream received over RPC disconnected prematurely/);
+  const [entry] = await metadata();
+  assert.equal(entry.activeRevision, 1);
+  assert.ok(entry.freshUntil > Date.now());
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+
+  const served = await read("/mid-body/foreground");
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.match(
+    served.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+    /^max-age=[23], stale-while-revalidate=3$/,
+  );
+  assert.equal(await served.text(), "still-active");
+  assert.equal(await regenerationCount(), 1);
+});
+
+test("a failed regeneration does not make a non-reusable entry fresh", async () => {
+  const cases = [
+    { path: "/no-reuse/private", cacheControl: "private, max-age=60, stale-while-revalidate=60" },
+    { path: "/no-reuse/no-store", cacheControl: "no-store, max-age=60, stale-while-revalidate=60" },
+    { path: "/no-reuse/no-cache", cacheControl: "public, no-cache, stale-while-revalidate=30" },
+    { path: "/no-reuse/zero", cacheControl: "public, max-age=0" },
+  ];
+  let regenerations = 0;
+
+  async function readAfterFailedRegeneration(path: string) {
+    const response = await read(path);
+    assert.doesNotMatch(
+      response.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      /max-age=[1-9]/,
+      path,
+    );
+    if (response.status === 500) {
+      assert.match(await response.text(), /Fixture regeneration failure/);
+    } else {
+      assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-STALE", path);
+      assert.equal(await response.text(), "must-stay-stale");
+    }
+    regenerations++;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (
+        (await regenerationCount()) === regenerations &&
+        (await metadataRowCount("pending_objects")) === 0
+      ) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(await regenerationCount(), regenerations);
+    await waitForSettledRevision(path, 1);
+    assert.equal(await metadataRowCount("revalidation_claims"), 0);
+  }
+
+  for (const { path, cacheControl } of cases) {
+    await put(path, "must-stay-stale", { cacheControl, revalidator: { fail: true } });
+    // The failed regeneration leaves the entry as it was, so the next read
+    // regenerates again instead of serving it as fresh.
+    await readAfterFailedRegeneration(path);
+    await readAfterFailedRegeneration(path);
+  }
+});
+
+test("a failed regeneration keeps policies that forbid stale serving hard-expiring", async () => {
+  const cases = [
+    { path: "/no-stale/must-revalidate", cacheControl: "public, max-age=1, must-revalidate" },
+    {
+      path: "/no-stale/proxy-revalidate",
+      cacheControl: "public, max-age=1, proxy-revalidate, stale-while-revalidate=30",
+    },
+    { path: "/no-stale/s-maxage", cacheControl: "public, s-maxage=1, stale-while-revalidate=30" },
+  ];
+
+  for (const { path, cacheControl } of cases) {
+    await put(path, "no-stale", { cacheControl, age: 1, revalidator: { fail: true } });
+    const failed = await read(path);
+    assert.equal(failed.status, 500, path);
+    await failed.arrayBuffer();
+
+    const entry = (await metadata()).find((candidate) => candidate.cacheKey === path);
+    assert.equal(entry.activeRevision, 1, path);
+    assert.equal(entry.swrUntil, entry.freshUntil, path);
+    const served = await read(path);
+    assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH", path);
+    assert.match(
+      served.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      /^max-age=[23], stale-while-revalidate=0$/,
+    );
+    assert.equal(await served.text(), "no-stale");
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, 3100));
+  const expired = await read("/no-stale/must-revalidate");
+  assert.equal(expired.status, 500);
+  assert.match(await expired.text(), /Fixture regeneration failure/);
+  assert.equal(await regenerationCount(), cases.length + 1);
+});
+
+test("a re-store whose R2 rewrite fails leaves the source revision readable", async () => {
+  await useFailingSecondR2Write("before");
+  await put("/restore-write-lost", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { fail: true },
+  });
+
+  assert.equal(await (await read("/restore-write-lost")).text(), "stale-body");
+  const entry = await waitForRestore("/restore-write-lost");
+  assert.equal(entry.activeRevision, 1);
   await new Promise((resolve) => setTimeout(resolve, 100));
-  const fresh = await read("/stale-retry");
-  assert.equal(await fresh.text(), "retry-succeeded");
-  const stats = (await (await worker.fetch("https://user.test/admin/stats")).json()) as {
-    regenerationCount: number;
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+
+  const served = await read("/restore-write-lost");
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(served.headers.get("X-Workers-Response-Store-Revision"), "1");
+  assert.equal(await served.text(), "stale-body");
+  // The metadata still matches the R2 revision, so once the retry window ends
+  // a stale read claims a retry.
+  await new Promise((resolve) => setTimeout(resolve, entry.freshUntil - Date.now() + 100));
+  assert.equal(await regenerationCount(), 1);
+  const retrying = await read("/restore-write-lost");
+  assert.equal(retrying.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await retrying.arrayBuffer();
+  for (let attempt = 0; attempt < 100 && (await regenerationCount()) < 2; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(await regenerationCount(), 2);
+});
+
+test("a hard-expired entry whose re-store write fails is served as re-stored", async () => {
+  await useFailingSecondR2Write("before");
+  const options = {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    date: new Date(Date.now() - 60_000).toUTCString(),
+    revalidator: { fail: true },
   };
-  assert.equal(stats.regenerationCount, 2);
+  // The first entry's re-store write fails; the second one's lands.
+  const entries: any[] = [];
+  for (const path of ["/restore-hard-expired/lost", "/restore-hard-expired/landed"]) {
+    await put(path, "still-active", options);
+    const failed = await read(path);
+    assert.equal(failed.status, 500);
+    await failed.arrayBuffer();
+    entries.push(await waitForRestore(path));
+  }
+  const lostObject = await (
+    await mf.getR2Bucket("CACHE_BODIES", "user-worker")
+  ).head(`${r2Root}/${entries[0].keyHash}/active`);
+  assert.notEqual(lostObject?.customMetadata?.freshUntil, String(entries[0].freshUntil));
+
+  // Inside the retry window, the entry whose R2 object is still hard-expired
+  // is served without regenerating, exactly as the rewritten one is.
+  const [lost, landed] = await Promise.all([
+    read("/restore-hard-expired/lost"),
+    read("/restore-hard-expired/landed"),
+  ]);
+  const timing = new Set([
+    "age",
+    "cache-tag",
+    "cloudflare-cdn-cache-control",
+    "date",
+    "x-workers-response-store-age-basis",
+    "x-workers-response-store-binding-invocation",
+  ]);
+  const comparable = (response: Response) =>
+    [...response.headers].filter(([name]) => !timing.has(name));
+  assert.equal(lost.status, 200);
+  assert.deepEqual(comparable(lost), comparable(landed));
+  for (const [index, response] of [lost, landed].entries()) {
+    const restoredAt = entries[index].freshUntil - 3_000;
+    assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+    assert.equal(response.headers.get("X-Workers-Response-Store-Age-Basis"), `${restoredAt}:0`);
+    assert.equal(response.headers.get("Date"), new Date(restoredAt).toUTCString());
+    assert.match(response.headers.get("Age") ?? "", /^[0-3]$/);
+    assert.match(
+      response.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      /^max-age=[1-3], stale-while-revalidate=3$/,
+    );
+    assert.equal(await response.text(), "still-active");
+  }
+  assert.equal(await regenerationCount(), 2);
+
+  // Manual refresh still regenerates inside the retry window.
+  await refreshSelectors({ pathPrefixes: ["/restore-hard-expired/lost"] });
+  assert.equal(await regenerationCount(), 3);
+});
+
+// A write that replaces the revision is handled as a new read would handle it.
+const overtakingWrites = [
+  {
+    name: "a fresh write is served",
+    cacheControl: "public, max-age=60, stale-while-revalidate=60",
+    status: "BLOB-FRESH",
+    regenerated: false,
+  },
+  {
+    name: "a stale write is served and refreshed in the background",
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+    status: "BLOB-STALE",
+    regenerated: true,
+  },
+  {
+    name: "a no-store write is regenerated",
+    cacheControl: "no-store",
+    status: null,
+    regenerated: true,
+  },
+];
+
+for (const { name, cacheControl, status, regenerated } of overtakingWrites) {
+  test(`a write that lands while a hard-expired read serves a re-store: ${name}`, async () => {
+    await restartWithHeldEntryReads();
+    const path = "/restore-hard-expired/overtaken";
+    await putLostHardExpiredRestore(path);
+    assert.equal(await regenerationCount(), 1);
+
+    // The read finds the retry window in the metadata, then a new write lands
+    // before it reads the re-store's body.
+    const bodyRead = await holdEntryRead("before", 2);
+    const reading = read(path);
+    await bodyRead.held();
+    await put(path, "newer-write", { cacheControl, revalidator: { bodyPrefix: "regenerated" } });
+    const written = (await metadata()).find((candidate) => candidate.cacheKey === path);
+    await bodyRead.release();
+
+    const served = await reading;
+    assert.equal(served.status, 200);
+    if (status) {
+      assert.equal(served.headers.get("X-Workers-Response-Store"), status);
+      assert.equal(
+        served.headers.get("X-Workers-Response-Store-Revision"),
+        String(written.activeRevision),
+      );
+      assert.equal(await served.text(), "newer-write");
+    } else {
+      // The write may not be reused, so it is regenerated in the foreground.
+      assert.equal(served.headers.get("X-Revalidation-Reason"), "expired");
+      assert.match(await served.text(), /^regenerated:2:/);
+    }
+
+    const settledRevision = written.activeRevision + (regenerated ? 1 : 0);
+    const entry = await waitForSettledRevision(path, settledRevision);
+    assert.equal(entry.latestRevision, settledRevision);
+    assert.equal(await regenerationCount(), regenerated ? 2 : 1);
+  });
+}
+
+test("a re-read replacement is not regenerated over a write that lands before its reservation", async () => {
+  await restartWithHeldEntryReads();
+  const path = "/restore-hard-expired/reread-overtaken";
+  await putLostHardExpiredRestore(path);
+
+  // A no-store write replaces the re-store while the read waits to read its
+  // body, so the read reads R2 again and finds that write, which it has to
+  // regenerate. A fresh write lands before it reserves the regeneration.
+  const bodyRead = await holdEntryRead("before", 2);
+  const reading = read(path);
+  await bodyRead.held();
+  await put(path, "no-store-write", {
+    cacheControl: "no-store",
+    revalidator: { bodyPrefix: "regenerated" },
+  });
+  const reread = await holdEntryRead("after", 3);
+  await bodyRead.release();
+  await reread.held();
+  await put(path, "fresh-write", { revalidator: { bodyPrefix: "regenerated" } });
+  const written = (await metadata()).find((candidate) => candidate.cacheKey === path);
+  await reread.release();
+
+  const served = await reading;
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(
+    served.headers.get("X-Workers-Response-Store-Revision"),
+    String(written.activeRevision),
+  );
+  assert.equal(await served.text(), "fresh-write");
+  await waitForSettledRevision(path, written.activeRevision);
+  assert.equal(await regenerationCount(), 1);
+});
+
+test("a re-read replacement's own replacement is read again rather than missed", async () => {
+  await restartWithHeldEntryReads();
+  const path = "/restore-hard-expired/reread-replaced";
+  await putLostHardExpiredRestore(path);
+
+  // While the read waits to read the re-store's body, another hard-expired
+  // write replaces it and gets a lost re-store of its own, so the read reads
+  // R2 again and finds that re-store's retry window too.
+  const bodyRead = await holdEntryRead("before", 2);
+  const reading = read(path);
+  await bodyRead.held();
+  await putLostHardExpiredRestore(path, true);
+  assert.equal(await regenerationCount(), 2);
+
+  // A fresh write then replaces that re-store before the read reads its body.
+  const replacementBodyRead = await holdEntryRead("before", 4);
+  await bodyRead.release();
+  await replacementBodyRead.held();
+  await put(path, "fresh-write", { revalidator: { bodyPrefix: "regenerated" } });
+  const written = (await metadata()).find((candidate) => candidate.cacheKey === path);
+  await replacementBodyRead.release();
+
+  const served = await reading;
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(
+    served.headers.get("X-Workers-Response-Store-Revision"),
+    String(written.activeRevision),
+  );
+  assert.equal(await served.text(), "fresh-write");
+  await waitForSettledRevision(path, written.activeRevision);
+  assert.equal(await regenerationCount(), 2);
+});
+
+test("a re-store whose R2 rewrite lands before reporting failure keeps it", async () => {
+  await useFailingSecondR2Write("after");
+  await put("/restore-write-landed", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { fail: true },
+  });
+
+  assert.equal(await (await read("/restore-write-landed")).text(), "stale-body");
+  await waitForRestore("/restore-write-landed");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await metadataRowCount("pending_r2_tombstones"), 0);
+
+  const served = await read("/restore-write-landed");
+  assert.equal(served.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(served.headers.get("X-Workers-Response-Store-Revision"), "1");
+  assert.equal(await served.text(), "stale-body");
+  assert.equal(await regenerationCount(), 1);
+});
+
+test("an unverifiable re-store outcome does not disable later regeneration", async () => {
+  await useFailingSecondR2Write("after-head-fails");
+  await put("/restore-write-unverified", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    revalidator: { fail: true },
+  });
+
+  assert.equal(await (await read("/restore-write-unverified")).text(), "stale-body");
+  await waitForRestore("/restore-write-unverified");
+  await new Promise((resolve) => setTimeout(resolve, 3100));
+
+  const stale = await read("/restore-write-unverified");
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await stale.text(), "stale-body");
+  for (let attempt = 0; attempt < 100 && (await regenerationCount()) < 2; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(await regenerationCount(), 2);
+});
+
+test("a failed re-store keeps the regeneration error and releases its reservation", async () => {
+  await put("/republish-failure", "still-active", {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    revalidator: { fail: true },
+  });
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  await storage.exec("DROP TABLE entry_tags");
+
+  const failed = await read("/republish-failure");
+  assert.equal(failed.status, 500);
+  assert.match(await failed.text(), /Fixture regeneration failure/);
+  assert.equal((await metadata())[0].activeRevision, 1);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+});
+
+test("a failed regeneration does not replace a newer concurrent write", async () => {
+  await put("/republish-race", "old", {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    revalidator: { fail: true, delayMs: 300 },
+  });
+  const newer = put("/republish-race", "newer", { bodyDelayMs: 150 });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("pending_objects"), 1);
+
+  const failed = await read("/republish-race");
+  assert.equal(failed.status, 500);
+  assert.equal((await newer).json.backingStoreUpdated, true);
+  await waitForNoPendingObjects();
+
+  const [entry] = await metadata();
+  assert.equal(entry.activeRevision, 2);
+  assert.equal(await (await read("/republish-race")).text(), "newer");
+});
+
+test("a failed regeneration does not undo a concurrent tag purge", async () => {
+  await put("/republish-purge", "purged", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=30",
+    tags: ["republish-purge"],
+    revalidator: { fail: true, delayMs: 300 },
+  });
+  assert.equal(await (await read("/republish-purge")).text(), "purged");
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("revalidation_claims")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 1);
+
+  await purge({ tags: ["republish-purge"] });
+  await waitForNoPendingObjects();
+  assert.equal(await regenerationCount(), 1);
+  assert.deepEqual(await metadata(), []);
+  assert.equal((await read("/republish-purge")).status, 404);
 });
 
 test("hard-expired content is never returned and regeneration is committed before serving", async () => {
@@ -1681,7 +2688,7 @@ test("an expired revalidation claim cannot publish after its replacement", async
     entry.activeRevision,
     entry.cacheKey,
     "runtime-cache/poc-v2/claim-replacement",
-    100,
+    entry.freshUntil,
     1,
   );
   const second = await stub.claimRevalidation(
@@ -1689,7 +2696,7 @@ test("an expired revalidation claim cannot publish after its replacement", async
     entry.activeRevision,
     entry.cacheKey,
     "runtime-cache/poc-v2/claim-replacement",
-    102,
+    entry.freshUntil + 2,
     100,
   );
   assert.ok(first);
@@ -1728,7 +2735,7 @@ test("a revalidation claim cannot replace a newer active revision", async () => 
     entry.activeRevision,
     entry.cacheKey,
     "runtime-cache/poc-v2/claim-active-revision",
-    100,
+    entry.freshUntil,
     100,
   );
   assert.ok(claim);
@@ -1762,6 +2769,246 @@ test("a revalidation claim cannot replace a newer active revision", async () => 
     ).published,
     false,
   );
+});
+
+test("a re-store cannot publish once its source revision is replaced", async () => {
+  await put("/expected-active-revision", "seed");
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+  const prefix = "runtime-cache/poc-v2/expected-active-revision";
+  const newer = await stub.reserveWrite(entry.keyHash, entry.cacheKey, prefix, Date.now());
+  const restore = await stub.reserveWrite(entry.keyHash, entry.cacheKey, prefix, Date.now());
+
+  const candidate = {
+    statusText: "",
+    responseHeaders: [],
+    freshUntil: 1_000,
+    swrUntil: 1_000,
+    revalidator: null,
+    cacheTags: [],
+    fenceTags: [],
+  };
+  assert.equal(
+    (
+      await stub.publish(entry.keyHash, newer.revision, {
+        ...candidate,
+        objectKey: newer.objectKey,
+      })
+    ).published,
+    true,
+  );
+  assert.equal(
+    (
+      await stub.publish(
+        entry.keyHash,
+        restore.revision,
+        { ...candidate, objectKey: restore.objectKey },
+        undefined,
+        restore.objectKey,
+        entry,
+      )
+    ).published,
+    false,
+  );
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("only the first re-store of a source state publishes", async () => {
+  await put("/single-restore", "seed");
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+  const prefix = "runtime-cache/poc-v2/single-restore";
+  const first = await stub.reserveWrite(entry.keyHash, entry.cacheKey, prefix, Date.now());
+  const second = await stub.reserveWrite(entry.keyHash, entry.cacheKey, prefix, Date.now());
+  const source = {
+    activeRevision: entry.activeRevision,
+    freshUntil: entry.freshUntil,
+    swrUntil: entry.swrUntil,
+  };
+  const candidate = {
+    statusText: entry.statusText,
+    responseHeaders: entry.responseHeaders,
+    revalidator: entry.revalidator,
+    cacheTags: [],
+    fenceTags: [],
+  };
+
+  const firstResult = await stub.publish(
+    entry.keyHash,
+    first.revision,
+    { ...candidate, objectKey: first.objectKey, freshUntil: 5_000, swrUntil: 8_000 },
+    undefined,
+    first.objectKey,
+    source,
+  );
+  const secondResult = await stub.publish(
+    entry.keyHash,
+    second.revision,
+    { ...candidate, objectKey: second.objectKey, freshUntil: 6_000, swrUntil: 9_000 },
+    undefined,
+    second.objectKey,
+    source,
+  );
+  assert.equal(firstResult.published, true);
+  assert.equal(secondResult.published, false);
+
+  const [restored] = await metadata();
+  assert.equal(restored.activeRevision, entry.activeRevision);
+  assert.equal(restored.freshUntil, 5_000);
+  assert.equal(restored.swrUntil, 8_000);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("a re-stored entry cannot be claimed before its R2 rewrite lands", async () => {
+  await put("/restore-claim", "seed", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+  });
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+  const prefix = "runtime-cache/poc-v2/restore-claim";
+  const restore = await stub.reserveWrite(entry.keyHash, entry.cacheKey, prefix, Date.now());
+  const retryUntil = entry.freshUntil + 5_000;
+  assert.equal(
+    (
+      await stub.publish(
+        entry.keyHash,
+        restore.revision,
+        {
+          statusText: entry.statusText,
+          responseHeaders: entry.responseHeaders,
+          revalidator: entry.revalidator,
+          cacheTags: [],
+          fenceTags: [],
+          objectKey: restore.objectKey,
+          freshUntil: retryUntil,
+          swrUntil: retryUntil + 60_000,
+        },
+        undefined,
+        restore.objectKey,
+        entry,
+      )
+    ).published,
+    true,
+  );
+
+  // R2 still holds the stale source, so a reader claims the unchanged
+  // revision. The metadata's retry window refuses it until it ends.
+  const claim = (now: number) =>
+    stub.claimRevalidation(entry.keyHash, entry.activeRevision, entry.cacheKey, prefix, now, 100);
+  assert.equal(await claim(entry.freshUntil + 1), null);
+  assert.equal(await claim(retryUntil - 1), null);
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+  assert.ok(await claim(retryUntil));
+});
+
+test("a stale read during a held background re-store write does not regenerate", async () => {
+  await restartWithHeldSecondR2Write("before");
+  await put("/restore-held-claim", "stale-body", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+    revalidator: { fail: true },
+  });
+
+  // The first stale read's regeneration fails, and its re-store publishes
+  // while the R2 rewrite is held.
+  const first = await read("/restore-held-claim");
+  assert.equal(first.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await first.arrayBuffer();
+  let restored = false;
+  for (let attempt = 0; attempt < 100 && !restored; attempt++) {
+    const [entry] = await metadata();
+    restored = entry.freshUntil > Date.now() && (await metadataRowCount("pending_objects")) === 0;
+    if (!restored) await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(restored, "the re-store was not published");
+
+  const second = await read("/restore-held-claim");
+  assert.equal(second.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await second.text(), "stale-body");
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(await regenerationCount(), 1);
+  }
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+});
+
+test("concurrent failed foreground regenerations leave R2 and the metadata in step", async () => {
+  await put("/restore-race-foreground", "still-active", {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    revalidator: { fail: true, delayMs: 100 },
+  });
+
+  const reads = await Promise.all([
+    read("/restore-race-foreground"),
+    read("/restore-race-foreground"),
+  ]);
+  for (const response of reads) {
+    assert.equal(response.status, 500);
+    await response.arrayBuffer();
+  }
+  await waitForNoPendingObjects();
+
+  const [entry] = await metadata();
+  const object = await (
+    await mf.getR2Bucket("CACHE_BODIES", "user-worker")
+  ).head(`${r2Root}/${entry.keyHash}/active`);
+  assert.equal(object?.customMetadata?.freshUntil, String(entry.freshUntil));
+  assert.equal(object?.customMetadata?.swrUntil, String(entry.swrUntil));
+});
+
+// A failed foreground regeneration and a failed manual refresh re-store
+// successive states of the same revision: the refresh reads R2 while the first
+// re-store's rewrite is held, and the held rewrite then lands before or after
+// the refresh's. Reads inside the retry window no longer regenerate, but a
+// manual refresh still does.
+async function restoreSuccessiveStates(order: "before" | "after") {
+  await restartWithHeldSecondR2Write(order);
+  const cacheKey = `/restore-race-${order}`;
+  await put(cacheKey, "still-active", {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    revalidator: { fail: true },
+  });
+
+  const first = read(cacheKey);
+  let firstRestore: any;
+  for (let attempt = 0; attempt < 100 && !firstRestore; attempt++) {
+    const [entry] = await metadata();
+    if (entry.freshUntil > Date.now()) firstRestore = entry;
+    else await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(firstRestore, "the first re-store was not published");
+
+  const refresh = await refreshSelectors({ pathPrefixes: [cacheKey] });
+  assert.equal(refresh.response.status, 500);
+  const firstResponse = await first;
+  assert.equal(firstResponse.status, 500);
+  await firstResponse.arrayBuffer();
+  await waitForNoPendingObjects();
+
+  const [entry] = await metadata();
+  assert.equal(entry.activeRevision, firstRestore.activeRevision);
+  assert.notEqual(entry.freshUntil, firstRestore.freshUntil);
+  const object = await (
+    await mf.getR2Bucket("CACHE_BODIES", "user-worker")
+  ).head(`${r2Root}/${entry.keyHash}/active`);
+  assert.equal(object?.customMetadata?.freshUntil, String(entry.freshUntil));
+  assert.equal(object?.customMetadata?.swrUntil, String(entry.swrUntil));
+
+  const stored = await read(cacheKey);
+  assert.equal(stored.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await stored.text(), "still-active");
+}
+
+test("a re-store that loses to an earlier state's rewrite replaces it", async () => {
+  await restoreSuccessiveStates("before");
+});
+
+// Both rewrites carry the same body, so this relies on each re-store storing
+// unique bytes: R2 ETags hash the bytes, and the held write would otherwise
+// still match the source ETag it compares.
+test("an earlier state's re-store cannot overwrite a later one", async () => {
+  await restoreSuccessiveStates("after");
 });
 
 test("a write reserved after a tag purge is not rejected by its timestamp", async () => {
@@ -2238,20 +3485,6 @@ test("purge tombstones an entry before a slow regeneration can publish", async (
 
   assert.deepEqual(refreshResult.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
   assert.equal((await read("/purge-race")).status, 404);
-  assert.equal((await r2Objects()).objects.length, 1);
-});
-
-test("regeneration failure retains the last durable revision", async () => {
-  await put("/failure", "still-active", {
-    cacheControl: "public, max-age=0",
-    revalidator: { fail: true },
-  });
-  const failed = await read("/failure");
-  assert.equal(failed.status, 500);
-  assert.match(await failed.text(), /Fixture regeneration failure/);
-  const entries = await metadata();
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].activeRevision, 1);
   assert.equal((await r2Objects()).objects.length, 1);
 });
 

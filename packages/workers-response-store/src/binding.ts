@@ -1,6 +1,12 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
-import { deriveCachePolicy, edgeCacheControl, representationAge } from "./cache-policy";
+import {
+  deriveCachePolicy,
+  deriveFailedRegenerationPolicy,
+  edgeCacheControl,
+  failedRegenerationHeaders,
+  representationAge,
+} from "./cache-policy";
 import { IsolateNegativeCache } from "./isolate-negative-cache";
 import type { CacheMetadataStub } from "./metadata-do";
 
@@ -125,6 +131,17 @@ type PublicationResult = {
   edgePurgeRequired: boolean;
   entry: StoredEntry | null;
   published: boolean;
+};
+
+type R2Read = {
+  entry: StoredEntry | null;
+  object?: R2ObjectBody;
+};
+
+type RepublishSource = {
+  body: ArrayBuffer;
+  etag: string;
+  status: number;
 };
 
 class R2PublicationError extends Error {
@@ -264,6 +281,7 @@ const REFRESH_CONCURRENCY = 6;
 const ISOLATE_MISS_CACHE_CAPACITY = 1_024;
 const ISOLATE_MISS_CACHE_TTL_MS = 1_000;
 const MAX_R2_CAS_ATTEMPTS = 3;
+const MAX_REPLACED_ENTRY_READS = 3;
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const R2_CUSTOM_METADATA_SAFE_BYTES = 7 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
@@ -643,10 +661,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     };
   }
 
-  private async readR2Metadata(cacheKey: CacheKey): Promise<{
-    entry: StoredEntry | null;
-    object?: R2ObjectBody;
-  }> {
+  private async readR2Metadata(cacheKey: CacheKey): Promise<R2Read> {
     const object = await this.env.CACHE_BODIES.get(this.r2ObjectKey(cacheKey.keyHash));
     const entry = this.entryFromR2Metadata(cacheKey.keyHash, cacheKey.cacheKey, object);
     if (!entry && object) {
@@ -655,10 +670,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return { entry, ...(entry && object ? { object } : {}) };
   }
 
-  private async readR2MetadataCached(cacheKey: CacheKey): Promise<{
-    entry: StoredEntry | null;
-    object?: R2ObjectBody;
-  }> {
+  private async readR2MetadataCached(cacheKey: CacheKey): Promise<R2Read> {
     const readKey = this.entryReadKey(cacheKey.keyHash);
     if (entryReads.has(readKey)) return { entry: null };
 
@@ -726,6 +738,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     createdAt: number,
     initialAge: number,
     expectedEtag?: string | null,
+    restoreRevision?: number,
   ): Promise<boolean> {
     this.invalidateEntryRead(entry.keyHash);
     try {
@@ -741,9 +754,20 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         swrUntil: String(entry.swrUntil),
         latestRevision: String(entry.activeRevision),
       };
-      if (customMetadataSize(customMetadata) > R2_CUSTOM_METADATA_SAFE_BYTES) {
+      // R2 ETags hash an object's bytes, so a re-store, which rewrites the same
+      // body, keeps the ETag that its conditional write compares. Its response
+      // metadata goes in the body with the re-store's reservation revision,
+      // which makes each re-store's bytes and ETag unique.
+      if (
+        restoreRevision !== undefined ||
+        customMetadataSize(customMetadata) > R2_CUSTOM_METADATA_SAFE_BYTES
+      ) {
         const responseMetadata = new TextEncoder().encode(
-          JSON.stringify({ statusText: entry.statusText, responseHeaders: entry.responseHeaders }),
+          JSON.stringify({
+            statusText: entry.statusText,
+            responseHeaders: entry.responseHeaders,
+            ...(restoreRevision === undefined ? {} : { restoreRevision }),
+          }),
         );
         storedBody = new Blob([responseMetadata, body]);
         customMetadata = {
@@ -899,12 +923,13 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     reservation?: WriteReservation,
     cacheTags = cacheTagsFromResponse(response),
     expectedR2Etag?: string | null,
+    bufferedBody?: ArrayBuffer,
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
     const write = reservation ?? (await this.reserveWrite(metadata, cacheKey, cacheTags));
-    const { keyHash, objectKey: reservationObjectKey, revision } = write;
+    const { keyHash } = write;
 
-    let publication: PublicationResult;
+    let candidate: CandidateMetadata;
     let body: ArrayBuffer;
     let policy: ReturnType<typeof deriveCachePolicy>;
     try {
@@ -919,7 +944,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           lower !== "content-length"
         );
       });
-      const candidate: CandidateMetadata = {
+      candidate = {
         fenceTags: [...new Set([...write.fenceTags, ...cacheTags])],
         objectKey: this.r2ObjectKey(keyHash),
         statusText: response.statusText,
@@ -933,13 +958,42 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       // RPC-transferred Response streams do not retain the fixed-length marker
       // required by R2's single-part put API. Materialise only in the cache
       // Worker; bodies are never stored in the metadata Durable Object.
-      body = response.body ? await response.arrayBuffer() : new ArrayBuffer(0);
+      body = bufferedBody ?? (response.body ? await response.arrayBuffer() : new ArrayBuffer(0));
+    } catch (error) {
+      await this.releaseFailedWrite(metadata, write);
+      throw error;
+    }
+
+    return this.publishRevision(
+      metadata,
+      write,
+      candidate,
+      body,
+      response.status,
+      policy.createdAt,
+      policy.initialAge,
+      expectedR2Etag !== undefined ? expectedR2Etag : write.r2ObjectAbsent ? null : undefined,
+    );
+  }
+
+  private async publishRevision(
+    metadata: CacheMetadataStub,
+    write: WriteReservation,
+    candidate: CandidateMetadata,
+    body: ArrayBuffer,
+    status: number,
+    createdAt: number,
+    initialAge: number,
+    expectedR2Etag: string | null | undefined,
+  ): Promise<StoreResult> {
+    let publication: PublicationResult;
+    try {
       publication = await metadata.publish(
-        keyHash,
-        revision,
+        write.keyHash,
+        write.revision,
         candidate,
         write.claimId,
-        reservationObjectKey,
+        write.objectKey,
       );
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
@@ -960,10 +1014,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         stored = await this.writeR2Response(
           publication.entry,
           body,
-          response.status,
-          policy.createdAt,
-          policy.initialAge,
-          expectedR2Etag !== undefined ? expectedR2Etag : write.r2ObjectAbsent ? null : undefined,
+          status,
+          createdAt,
+          initialAge,
+          expectedR2Etag,
         );
       } catch (error) {
         const reconciliation = await metadata
@@ -1012,14 +1066,197 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         ? {
             response: this.createStoredResponse(
               entry,
-              NULL_BODY_STATUSES.has(response.status) ? null : body,
-              response.status,
-              policy.createdAt,
-              policy.initialAge,
+              NULL_BODY_STATUSES.has(status) ? null : body,
+              status,
+              createdAt,
+              initialAge,
             ),
           }
         : {}),
     };
+  }
+
+  private async readRepublishSource(entry: StoredEntry): Promise<RepublishSource | null> {
+    const object = await this.env.CACHE_BODIES.get(this.r2ObjectKey(entry.keyHash));
+    if (!object) return null;
+
+    const objectMetadata = object.customMetadata;
+    const status = metadataInteger(objectMetadata?.status);
+    const responseMetadataBytes = metadataInteger(objectMetadata?.responseMetadataBytes) ?? 0;
+    // Only the body of the entry being re-stored will do. Any other revision
+    // belongs to a newer write, or to one that is still being published.
+    if (
+      objectMetadata?.tombstoned === "1" ||
+      metadataInteger(objectMetadata?.latestRevision) !== entry.activeRevision ||
+      status === undefined ||
+      responseMetadataBytes > object.size
+    ) {
+      await object.body.cancel();
+      return null;
+    }
+
+    const stored = await object.arrayBuffer();
+    return {
+      body: responseMetadataBytes ? stored.slice(responseMetadataBytes) : stored,
+      etag: object.etag,
+      status,
+    };
+  }
+
+  /**
+   * The response a re-store serves, for a read that reaches it before its R2
+   * rewrite lands: the revision's R2 body with the metadata's freshness and
+   * the headers and age basis the rewrite stores. The re-store's time is its
+   * fresh-until time less the retry window.
+   */
+  private async readRestoredResponse(entry: StoredEntry, now: number): Promise<Response | null> {
+    const policy = deriveFailedRegenerationPolicy(new Headers(entry.responseHeaders), now);
+    if (!policy) return null;
+    const source = await this.readRepublishSource(entry);
+    if (!source) return null;
+
+    const restoredAt = entry.freshUntil - policy.retrySeconds * 1000;
+    return this.createStoredResponse(
+      {
+        ...entry,
+        cacheTags: [],
+        objectKey: this.r2ObjectKey(entry.keyHash),
+        responseHeaders: failedRegenerationHeaders(
+          entry.responseHeaders,
+          policy.retrySeconds,
+          restoredAt,
+        ),
+      },
+      NULL_BODY_STATUSES.has(source.status) ? null : source.body,
+      source.status,
+      restoredAt,
+      0,
+      now,
+    );
+  }
+
+  /**
+   * Re-store the entry a failed regeneration was replacing, as Next.js does,
+   * so reads keep serving it and the next regeneration waits 3-30 s. It uses
+   * the regeneration's reservation, and publishes only while that entry is
+   * still the active revision, so a newer write or a purge always wins.
+   *
+   * The re-store keeps the entry's revision and rewrites its R2 object, so a
+   * failed rewrite leaves the source object readable and still matching the
+   * metadata. Like a Next.js re-store, it serves the entry as new: its age
+   * starts again, a stored `Date` moves to the re-store time, and forwarded
+   * freshness is capped at the retry window. The metadata row keeps the
+   * original headers, so each later failure derives its window from the
+   * entry's own policy.
+   */
+  private async republishFailedRegeneration(
+    metadata: CacheMetadataStub,
+    entry: StoredEntry,
+    write: WriteReservation,
+  ): Promise<void> {
+    const policyHeaders = new Headers(entry.responseHeaders);
+    if (!deriveFailedRegenerationPolicy(policyHeaders)) {
+      await this.releaseFailedWrite(metadata, write);
+      return;
+    }
+
+    let source: RepublishSource | null;
+    try {
+      // Reads take freshness from the R2 object's custom metadata, which R2
+      // cannot update in place, so the body is written again.
+      source = await this.readRepublishSource(entry);
+    } catch (error) {
+      await this.releaseFailedWrite(metadata, write);
+      throw error;
+    }
+    if (!source) {
+      await this.releaseFailedWrite(metadata, write);
+      return;
+    }
+
+    // The retry window starts once the body is buffered, so a slow source
+    // read cannot use it up. Eligibility does not depend on the time.
+    const now = Date.now();
+    const { retrySeconds, ...freshness } = deriveFailedRegenerationPolicy(policyHeaders, now)!;
+    let publication: PublicationResult;
+    try {
+      publication = await metadata.publish(
+        write.keyHash,
+        write.revision,
+        {
+          fenceTags: [...new Set([...write.fenceTags, ...entry.cacheTags])],
+          objectKey: this.r2ObjectKey(entry.keyHash),
+          statusText: entry.statusText,
+          responseHeaders: failedRegenerationHeaders(entry.responseHeaders, retrySeconds, now),
+          ...freshness,
+          revalidator: entry.revalidator,
+          cacheTags: entry.cacheTags,
+        },
+        write.claimId,
+        write.objectKey,
+        {
+          activeRevision: entry.activeRevision,
+          freshUntil: entry.freshUntil,
+          swrUntil: entry.swrUntil,
+        },
+      );
+    } catch (error) {
+      await this.releaseFailedWrite(metadata, write);
+      throw error;
+    }
+    if (!publication.published || !publication.entry) return;
+
+    // Only one re-store publishes per source state, so this conditional
+    // rewrite has no same-revision competitor from that state. It can still
+    // lose to a newer revision, or to the re-store of an earlier state whose
+    // write was still in flight when this one read its source. If that write
+    // lands first, R2 is left on the earlier retry schedule, so it is replaced
+    // while the metadata still holds this state; if it lands later, its own
+    // conditional write fails. R2 is read before the metadata, so a later
+    // re-store that lands in between fails this rewrite instead of being
+    // replaced by it.
+    const restored = publication.entry;
+    const objectKey = this.r2ObjectKey(entry.keyHash);
+    let expectedEtag = source.etag;
+    for (let attempt = 0; attempt < MAX_R2_CAS_ATTEMPTS; attempt++) {
+      if (
+        await this.writeR2Response(
+          restored,
+          source.body,
+          source.status,
+          now,
+          0,
+          expectedEtag,
+          write.revision,
+        )
+      ) {
+        return;
+      }
+
+      const current = await this.env.CACHE_BODIES.head(objectKey);
+      const currentMetadata = current?.customMetadata;
+      if (
+        !current ||
+        currentMetadata?.tombstoned === "1" ||
+        metadataInteger(currentMetadata?.latestRevision) !== restored.activeRevision ||
+        (metadataInteger(currentMetadata?.freshUntil) === restored.freshUntil &&
+          metadataInteger(currentMetadata?.swrUntil) === restored.swrUntil)
+      ) {
+        return;
+      }
+      const latest = await metadata.getEntry(entry.keyHash);
+      if (
+        latest?.activeRevision !== restored.activeRevision ||
+        latest.freshUntil !== restored.freshUntil ||
+        latest.swrUntil !== restored.swrUntil
+      ) {
+        return;
+      }
+      expectedEtag = current.etag;
+    }
+    throw new Error(
+      `R2 revision ${restored.activeRevision} could not be re-stored after concurrent re-stores`,
+    );
   }
 
   private async regenerateEntry(
@@ -1043,6 +1280,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       ));
 
     let response: Response;
+    let body: ArrayBuffer;
     try {
       const origin =
         this.ctx.props?.revalidator ??
@@ -1058,8 +1296,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         args: entry.revalidator.args,
         reason,
       });
+      // Revalidators may stream, so a render can still fail mid-body. Buffer
+      // it here, before anything is published, so that failure backs off too.
+      body = response.body ? await response.arrayBuffer() : new ArrayBuffer(0);
     } catch (error) {
-      await this.releaseFailedWrite(metadata, writeReservation);
+      await this.republishFailedRegeneration(metadata, entry, writeReservation).catch(
+        (republishError) =>
+          console.error(
+            JSON.stringify({
+              message: "Workers Response Store could not re-store a failed regeneration's entry",
+              cacheKey: entry.cacheKey,
+              error:
+                republishError instanceof Error ? republishError.message : String(republishError),
+            }),
+          ),
+      );
       throw error;
     }
 
@@ -1071,6 +1322,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       writeReservation,
       undefined,
       expectedR2Etag,
+      body,
     );
   }
 
@@ -1119,8 +1371,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
   async fetch(request: Request): Promise<Response> {
     const cacheKey = await this.deriveCacheKey(request);
+    return this.serveR2Read(cacheKey, await this.readR2MetadataCached(cacheKey));
+  }
+
+  /**
+   * Serves one R2 read. `replacedReads` counts the reads made again because
+   * the metadata's revision changed after an earlier read. Those reads fence
+   * their reservation on the revision they observed, so a write that lands
+   * in between is read again instead of regenerated over.
+   */
+  private async serveR2Read(
+    cacheKey: CacheKey,
+    r2Read: R2Read,
+    replacedReads = 0,
+  ): Promise<Response> {
     const { keyHash } = cacheKey;
-    const r2Read = await this.readR2MetadataCached(cacheKey);
     const entry = r2Read.entry;
     const expectedR2Etag = r2Read.object?.etag;
     if (!entry) {
@@ -1147,19 +1412,46 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     await r2Read?.object?.body.cancel().catch(() => {});
     const metadata = this.getMetadata(keyHash);
-    const regeneration = await metadata.reserveRegeneration(
+    const expired = now >= entry.swrUntil;
+    // An R2 object records only its own revision, not the metadata's latest
+    // reservation, so a re-read fences only the active revision.
+    const fenced = replacedReads > 0;
+    let regeneration = await metadata.reserveRegeneration(
       keyHash,
       cacheKey.cacheKey,
       this.objectKeyPrefix(keyHash),
       now,
+      fenced ? entry.activeRevision : undefined,
+      undefined,
+      expired ? entry.activeRevision : undefined,
     );
+    if (regeneration?.entry.revalidator && !regeneration.reservation) {
+      // The metadata holds a re-store's retry window that R2 does not show
+      // yet, so serve what that re-store serves instead of regenerating.
+      const restored = await this.readRestoredResponse(regeneration.entry, now);
+      if (restored) return restored;
+      // R2 no longer holds the revision's body, so it has to be regenerated,
+      // unless a newer write or a purge has replaced it since.
+      const { activeRevision, latestRevision } = regeneration.entry;
+      regeneration = await metadata.reserveRegeneration(
+        keyHash,
+        cacheKey.cacheKey,
+        this.objectKeyPrefix(keyHash),
+        now,
+        activeRevision,
+        latestRevision,
+      );
+      if (!regeneration) return this.serveReplacedEntry(cacheKey, replacedReads);
+    }
     if (!regeneration) {
+      // A fenced reservation fails when the revision was replaced or purged.
+      if (fenced) return this.serveReplacedEntry(cacheKey, replacedReads);
       return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
     }
     const regenerated = await this.regenerateEntry(
       metadata,
       regeneration.entry,
-      now >= entry.swrUntil ? "expired" : "missing",
+      expired ? "expired" : "missing",
       regeneration.reservation
         ? {
             ...cacheKey,
@@ -1186,6 +1478,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     return response;
+  }
+
+  /**
+   * Reads R2 again and handles what replaced the revision as a new read
+   * would: its own freshness decides whether it is served, refreshed in the
+   * background or regenerated, and a purge is a miss. A key that keeps being
+   * replaced, or whose newer write has not reached R2, is a miss after
+   * `MAX_REPLACED_ENTRY_READS` reads: regenerating would replace a revision
+   * this read never saw, and whatever the last read found is not servable.
+   */
+  private async serveReplacedEntry(cacheKey: CacheKey, replacedReads: number): Promise<Response> {
+    if (replacedReads >= MAX_REPLACED_ENTRY_READS) {
+      return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
+    }
+    return this.serveR2Read(cacheKey, await this.readR2Metadata(cacheKey), replacedReads + 1);
   }
 
   getTagExpiration(tags: string[]): Promise<number> {
