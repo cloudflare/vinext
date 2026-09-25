@@ -8,7 +8,7 @@ import {
 } from "../packages/vinext/src/server/prerender-route-params.js";
 
 describe("trusted prerender stage state", () => {
-  it("authenticates route params and speculative mode once at the request boundary", () => {
+  it("authenticates route params, speculative mode and the observation nonce once at the request boundary", () => {
     const previousPrerender = process.env.VINEXT_PRERENDER;
     process.env.VINEXT_PRERENDER = "1";
     try {
@@ -16,14 +16,20 @@ describe("trusted prerender stage state", () => {
         "x-vinext-prerender-route-params": encodeURIComponent(
           JSON.stringify({ routePattern: "/post/:slug", params: { slug: "hello" } }),
         ),
+        "x-vinext-prerender-observation-nonce": "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
         "x-vinext-prerender-secret": "expected-secret",
         "x-vinext-prerender-speculative": "1",
       });
 
       expect(readTrustedPrerenderStateFromHeaders(headers, "expected-secret")).toEqual({
+        observationNonce: "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
         routeParams: { routePattern: "/post/:slug", params: { slug: "hello" } },
         speculative: true,
       });
+      headers.set("x-vinext-prerender-observation-nonce", "short");
+      expect(
+        readTrustedPrerenderStateFromHeaders(headers, "expected-secret")?.observationNonce,
+      ).toBeNull();
       expect(readTrustedPrerenderStateFromHeaders(headers, "wrong-secret")).toBeNull();
     } finally {
       if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
@@ -33,10 +39,15 @@ describe("trusted prerender stage state", () => {
 
   it("validates the complete serialized stage shape", () => {
     const state = {
+      observationNonce: "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
       routeParams: { routePattern: "/post/:slug", params: { slug: "hello" } },
       speculative: true,
     };
     expect(isTrustedPrerenderState(state)).toBe(true);
+    expect(isTrustedPrerenderState({ ...state, observationNonce: null })).toBe(true);
+    expect(isTrustedPrerenderState({ ...state, observationNonce: "short" })).toBe(false);
+    const { observationNonce: _nonce, ...withoutNonce } = state;
+    expect(isTrustedPrerenderState(withoutNonce)).toBe(false);
     expect(isTrustedPrerenderState({ ...state, secret: "must-not-cross" })).toBe(false);
     expect(isTrustedPrerenderState({ ...state, speculative: "1" })).toBe(false);
   });

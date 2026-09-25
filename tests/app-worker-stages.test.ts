@@ -244,7 +244,7 @@ describe("App Worker response stage", () => {
       new Request("https://example.com/missing"),
       undefined,
       undefined,
-      { ...notFoundStage, protocolVersion: 9 } as unknown as AppWorkerResponseStageProps,
+      { ...notFoundStage, protocolVersion: 10 } as unknown as AppWorkerResponseStageProps,
       async () => new Response("request-stage"),
       { cache: "shared" },
     );
@@ -328,6 +328,7 @@ describe("App Worker response stage", () => {
       return new Response("rendered", { headers: { "X-Vinext-Trace-Error": "forged" } });
     });
     const trustedPrerenderState = {
+      observationNonce: "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
       routeParams: { params: { slug: "hello" }, routePattern: "/post/:slug" },
       speculative: true,
     } as const;

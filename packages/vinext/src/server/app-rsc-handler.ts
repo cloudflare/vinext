@@ -30,6 +30,7 @@ import {
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
+  VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
   VINEXT_PRERENDER_STATIC_PARAMS_PATH,
@@ -122,6 +123,7 @@ import {
 } from "./request-pipeline.js";
 import {
   matchPrerenderRouteParamsPayload,
+  readPrerenderObservationNonce,
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
   type TrustedPrerenderState,
@@ -2528,16 +2530,28 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
         : process.env.VINEXT_PRERENDER === "1" &&
             rawRequest.headers.get(VINEXT_PRERENDER_SECRET_HEADER) !== null
           ? {
+              observationNonce: readPrerenderObservationNonce(rawRequest.headers),
               routeParams: readTrustedPrerenderRouteParams(rawRequest),
               speculative: rawRequest.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1",
             }
           : null;
+    // The observation nonce is never re-attached below: rendering reads it
+    // from the request context, so middleware and userland never see it.
+    // Every boundary in front of this one strips a forged nonce and re-sets
+    // only one it authenticated (the Worker entry does so without keeping the
+    // secret), so a surviving header is trusted during prerendering.
+    const prerenderObservationNonce = trustedPrerenderState
+      ? trustedPrerenderState.observationNonce
+      : process.env.VINEXT_PRERENDER === "1"
+        ? readPrerenderObservationNonce(rawRequest.headers)
+        : null;
     const prerenderRouteParamsPayload = trustedPrerenderState?.routeParams ?? null;
     const isTrustedSpeculativePrerender = trustedPrerenderState?.speculative === true;
     const filteredHeaders = executionContext?.isInternalPagesRevalidation
       ? new Headers(rawRequest.headers)
       : filterInternalHeaders(rawRequest.headers);
     filteredHeaders.delete(VINEXT_REVALIDATE_HOST_HEADER);
+    filteredHeaders.delete(VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER);
     if (isForwardedActionContext(ctx)) {
       filteredHeaders.set("x-action-forwarded", "1");
     }
@@ -2570,6 +2584,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     const requestContext = createRequestContext({
       headersContext,
       executionContext,
+      prerenderObservationNonce,
       unstableCacheRevalidation: "background",
     });
     let interceptionResponseUncacheable = false;
@@ -2629,6 +2644,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
+            mayAppendPrerenderObservations: prerenderObservationNonce !== null,
             middlewareHeaders: middlewareContext.headers,
             recordCacheability: dispatchResponseStage === undefined,
             requestContext: preMiddlewareRequestContext,

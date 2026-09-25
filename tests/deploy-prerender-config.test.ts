@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { queryInvariantPrerenderObservations } from "./render-observation-test-helpers.js";
 
 const runPrerenderMock = vi.hoisted(() => vi.fn(async () => ({ routes: [] })));
 const emitPrerenderPathManifestMock = vi.hoisted(() => vi.fn());
@@ -684,7 +685,15 @@ describe("deploy prerender config wiring", () => {
         "dist/server/vinext-prerender.json",
         JSON.stringify({
           buildId: "build-1",
-          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+          routes: [
+            {
+              route: "/about",
+              status: "rendered",
+              revalidate: 60,
+              router: "app",
+              renderObservations: queryInvariantPrerenderObservations(),
+            },
+          ],
         }),
       );
       writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");
@@ -720,7 +729,15 @@ describe("deploy prerender config wiring", () => {
         "dist/server/vinext-prerender.json",
         JSON.stringify({
           buildId: "build-1",
-          routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+          routes: [
+            {
+              route: "/about",
+              status: "rendered",
+              revalidate: 60,
+              router: "app",
+              renderObservations: queryInvariantPrerenderObservations(),
+            },
+          ],
         }),
       );
       writeFile("dist/server/prerendered-routes/about.html", "<html>About</html>");

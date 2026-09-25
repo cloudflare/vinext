@@ -21,6 +21,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   closeAfterResponse,
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import {
@@ -1329,6 +1330,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isCacheCandidate,
     isPrerender,
     isSpeculativePrerender,
+    // Authenticated at the request boundary and kept off the request.
+    prerenderObservationNonce: isPrerender ? getRequestContext().prerenderObservationNonce : null,
     isProduction: options.isProduction,
     isRscRequest: options.isRscRequest,
     traceOperation,

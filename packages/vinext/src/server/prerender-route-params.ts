@@ -1,4 +1,5 @@
 import {
+  VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -15,9 +16,30 @@ export type PrerenderRouteParamsPayload = {
 
 /** Prerender-only request state authenticated at the public request boundary. */
 export type TrustedPrerenderState = {
+  /**
+   * The nonce the prerender frames this render's observations with. Carried
+   * here rather than on the request so middleware and userland never see it.
+   */
+  observationNonce: string | null;
   routeParams: PrerenderRouteParamsPayload | null;
   speculative: boolean;
 };
+
+// Long enough to be unguessable, and safe inside an HTML comment.
+const PRERENDER_OBSERVATION_NONCE = /^[A-Za-z0-9-]{16,128}$/;
+
+export function isPrerenderObservationNonce(value: unknown): value is string {
+  return typeof value === "string" && PRERENDER_OBSERVATION_NONCE.test(value);
+}
+
+/**
+ * Read the prerender's observation nonce at an authenticated request
+ * boundary, before `filterInternalHeaders` strips it.
+ */
+export function readPrerenderObservationNonce(headers: Headers): string | null {
+  const nonce = headers.get(VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER);
+  return isPrerenderObservationNonce(nonce) ? nonce : null;
+}
 
 type PrerenderRouteParamsRouteMatch =
   | {
@@ -69,8 +91,11 @@ export function isTrustedPrerenderState(value: unknown): value is TrustedPrerend
   if (!isUnknownRecord(value)) return false;
   const keys = Object.keys(value);
   return (
-    keys.length === 2 &&
-    keys.every((key) => key === "routeParams" || key === "speculative") &&
+    keys.length === 3 &&
+    keys.every(
+      (key) => key === "observationNonce" || key === "routeParams" || key === "speculative",
+    ) &&
+    (value.observationNonce === null || isPrerenderObservationNonce(value.observationNonce)) &&
     (value.routeParams === null || isPrerenderRouteParamsPayload(value.routeParams)) &&
     typeof value.speculative === "boolean"
   );
@@ -125,6 +150,7 @@ export function readTrustedPrerenderStateFromHeaders(
   const secret = headers.get(VINEXT_PRERENDER_SECRET_HEADER);
   if (!expectedSecret || secret === null || secret !== expectedSecret) return null;
   return {
+    observationNonce: readPrerenderObservationNonce(headers),
     routeParams: readTrustedPrerenderRouteParamsFromHeaders(headers, expectedSecret),
     speculative: headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1",
   };

@@ -156,7 +156,10 @@ describe("App Router Production server worker entry compatibility", () => {
 
   it("authenticates prerender state in a Worker request-stage context", async () => {
     const capturedStates: unknown[] = [];
-    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, () => {});
+    const capturedRequests: Request[] = [];
+    Reflect.set(globalThis, CAPTURE_RSC_REQUEST, (request: Request) => {
+      capturedRequests.push(request);
+    });
     Reflect.set(globalThis, CAPTURE_PRERENDER_STATE, (state: unknown) => {
       capturedStates.push(state);
     });
@@ -195,6 +198,7 @@ describe("App Router Production server worker entry compatibility", () => {
       const request = (secret: string) =>
         new Request("https://example.com/blog/hello", {
           headers: {
+            "x-vinext-prerender-observation-nonce": "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
             "x-vinext-prerender-route-params": routeParams,
             "x-vinext-prerender-secret": secret,
             "x-vinext-prerender-speculative": "1",
@@ -217,11 +221,17 @@ describe("App Router Production server worker entry compatibility", () => {
 
       expect(capturedStates).toEqual([
         {
+          observationNonce: "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
           routeParams: { params: { slug: "hello" }, routePattern: "/blog/:slug" },
           speculative: true,
         },
         null,
       ]);
+      // The nonce travels only in the authenticated state.
+      expect(capturedRequests).toHaveLength(2);
+      for (const captured of capturedRequests) {
+        expect(captured.headers.get("x-vinext-prerender-observation-nonce")).toBeNull();
+      }
     } finally {
       await server?.close();
       Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);
@@ -485,6 +495,7 @@ describe("App Router Production server worker entry compatibility", () => {
       const prerenderRequest = () =>
         new Request("https://example.com/blog/attacker", {
           headers: {
+            "x-vinext-prerender-observation-nonce": "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
             "x-vinext-prerender-route-params": routeParams,
             "x-vinext-prerender-secret": "not-the-build-secret",
           },
@@ -536,6 +547,12 @@ describe("App Router Production server worker entry compatibility", () => {
       expect(capturedRequests[0].headers.get("x-vinext-prerender-route-params")).toBeNull();
       expect(capturedRequests[1].headers.get("x-vinext-prerender-secret")).toBeNull();
       expect(capturedRequests[1].headers.get("x-vinext-prerender-route-params")).toBe(routeParams);
+      // The observation nonce follows the same rule; the App handler then
+      // moves it off the request before middleware runs.
+      expect(capturedRequests[0].headers.get("x-vinext-prerender-observation-nonce")).toBeNull();
+      expect(capturedRequests[1].headers.get("x-vinext-prerender-observation-nonce")).toBe(
+        "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
+      );
     } finally {
       await server?.close();
       Reflect.deleteProperty(globalThis, CAPTURE_RSC_REQUEST);

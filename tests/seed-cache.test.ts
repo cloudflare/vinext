@@ -18,9 +18,16 @@ import {
   type CacheHandlerValue,
   type IncrementalCacheValue,
 } from "../packages/vinext/src/shims/cache.js";
-import { appIsrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
+import { appIsrCacheKey, isrGet } from "../packages/vinext/src/server/isr-cache.js";
 import { getRenderedConcreteUrlPathsForRoute } from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 import { seedMemoryCacheFromPrerender } from "../packages/vinext/src/server/seed-cache.js";
+import { readAppPageCacheResponse } from "../packages/vinext/src/server/app-page-cache.js";
+import {
+  buildSearchParamsReadRenderObservation,
+  malformedPrerenderObservations,
+  queryInvariantPrerenderObservations,
+  unstorablePrerenderObservations,
+} from "./render-observation-test-helpers.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -31,15 +38,26 @@ function createTempServerDir(): string {
 /**
  * Write a vinext-prerender.json manifest and corresponding pre-rendered files
  * to a temporary directory structure matching the production build layout.
+ * Rendered App routes carry the observations of a render that left the query
+ * unread, as a current build writes them, unless the route sets its own.
  */
 function setupPrerenderFixture(
   serverDir: string,
   manifest: { buildId: string; trailingSlash?: boolean; routes: unknown[] },
   files: Record<string, string>,
 ): void {
+  const routes = manifest.routes.map((route) =>
+    typeof route === "object" &&
+    route !== null &&
+    "router" in route &&
+    route.router === "app" &&
+    !("renderObservations" in route)
+      ? { ...route, renderObservations: queryInvariantPrerenderObservations() }
+      : route,
+  );
   fs.writeFileSync(
     path.join(serverDir, "vinext-prerender.json"),
-    JSON.stringify(manifest, null, 2),
+    JSON.stringify({ ...manifest, routes }, null, 2),
     "utf-8",
   );
 
@@ -110,6 +128,208 @@ describe("seedMemoryCacheFromPrerender", () => {
       expect(rscValue.rscData).toBeDefined();
       const rscText = new TextDecoder().decode(rscValue.rscData!);
       expect(rscText).toBe("RSC payload for about");
+    }
+  });
+
+  it("stores the prerender's render observations with the seeded entries", async () => {
+    const buildId = "seed-observation-test";
+    const renderObservations = queryInvariantPrerenderObservations();
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/about",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations,
+          },
+        ],
+      },
+      {
+        "about.html": "<html><body>About page</body></html>",
+        "about.rsc": "RSC payload for about",
+      },
+    );
+
+    await expect(seedMemoryCacheFromPrerender(serverDir)).resolves.toBe(1);
+
+    const htmlValue = (await getCacheHandler().get(appIsrCacheKey("/about", "html", buildId)))
+      ?.value;
+    const rscValue = (await getCacheHandler().get(appIsrCacheKey("/about", "rsc", buildId)))?.value;
+    expect(htmlValue?.kind === "APP_PAGE" && htmlValue.renderObservation).toEqual(
+      renderObservations.html,
+    );
+    expect(rscValue?.kind === "APP_PAGE" && rscValue.renderObservation).toEqual(
+      renderObservations.rsc,
+    );
+  });
+
+  it("does not seed a page whose render read searchParams", async () => {
+    const buildId = "seed-search-params-read-test";
+    const writes: string[] = [];
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/about",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: {
+              html: buildSearchParamsReadRenderObservation(),
+              rsc: buildSearchParamsReadRenderObservation(),
+            },
+          },
+        ],
+      },
+      {
+        "about.html": "<html><body>About page</body></html>",
+        "about.rsc": "RSC payload for about",
+      },
+    );
+
+    await expect(
+      seedMemoryCacheFromPrerender(serverDir, {
+        async writeAppPageEntry(key): Promise<void> {
+          writes.push(key);
+        },
+      }),
+    ).resolves.toBe(0);
+    expect(writes).toEqual([]);
+  });
+
+  it("does not seed a page from a manifest without render observations", async () => {
+    // Manifests from older builds carry no observation, so nothing proves the
+    // render left the query unread.
+    const buildId = "seed-no-observation-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/about",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: undefined,
+          },
+        ],
+      },
+      {
+        "about.html": "<html><body>About page</body></html>",
+        "about.rsc": "RSC payload for about",
+      },
+    );
+
+    await expect(seedMemoryCacheFromPrerender(serverDir)).resolves.toBe(0);
+    expect(await getCacheHandler().get(appIsrCacheKey("/about", "html", buildId))).toBeNull();
+    expect(await getCacheHandler().get(appIsrCacheKey("/about", "rsc", buildId))).toBeNull();
+  });
+
+  it("does not seed a page whose manifest observations are malformed or unstorable", async () => {
+    const buildId = "seed-malformed-observation-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [
+          {
+            route: "/null",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: { html: null, rsc: null },
+          },
+          {
+            route: "/partial",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: { html: { completeness: "complete" } },
+          },
+          ...malformedPrerenderObservations().map(({ observations }, index) => ({
+            route: `/bogus-${index}`,
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: observations,
+          })),
+          ...unstorablePrerenderObservations().map(({ observations }, index) => ({
+            route: `/unstorable-${index}`,
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: observations,
+          })),
+        ],
+      },
+      {
+        "null.html": "<html>null</html>",
+        "partial.html": "<html>partial</html>",
+        ...Object.fromEntries(
+          malformedPrerenderObservations().map((_, index) => [
+            `bogus-${index}.html`,
+            "<html>bogus</html>",
+          ]),
+        ),
+        ...Object.fromEntries(
+          unstorablePrerenderObservations().map((_, index) => [
+            `unstorable-${index}.html`,
+            "<html>unstorable</html>",
+          ]),
+        ),
+      },
+    );
+
+    await expect(seedMemoryCacheFromPrerender(serverDir)).resolves.toBe(0);
+  });
+
+  it("serves query-bearing requests from a seeded entry", async () => {
+    const buildId = "seed-query-hit-test";
+    setupPrerenderFixture(
+      serverDir,
+      {
+        buildId,
+        routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+      },
+      {
+        "about.html": "<html><body>About page</body></html>",
+        "about.rsc": "RSC payload for about",
+      },
+    );
+    await seedMemoryCacheFromPrerender(serverDir);
+
+    for (const isRscRequest of [false, true]) {
+      const response = await readAppPageCacheResponse({
+        cleanPathname: "/about",
+        clearRequestContext() {},
+        hasRequestSearchParams: true,
+        isRscRequest,
+        isrGet,
+        isrHtmlKey: (pathname) => appIsrCacheKey(pathname, "html", buildId),
+        isrRscKey: (pathname) => appIsrCacheKey(pathname, "rsc", buildId),
+        async isrSet() {
+          throw new Error("a seeded HIT must not overwrite the entry");
+        },
+        revalidateSeconds: 60,
+        async renderFreshPageForCache() {
+          throw new Error("a seeded HIT must not render");
+        },
+        scheduleBackgroundRegeneration() {
+          throw new Error("a fresh seeded entry must not regenerate");
+        },
+      });
+
+      expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+      await expect(response?.text()).resolves.toBe(
+        isRscRequest ? "RSC payload for about" : "<html><body>About page</body></html>",
+      );
     }
   });
 

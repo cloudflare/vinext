@@ -5,17 +5,39 @@ import path from "node:path";
 import { Buffer } from "node:buffer";
 import { buildPrerenderKVPairs } from "../packages/cloudflare/src/prerender-kv-populate.js";
 import { createKvKeySpace } from "../packages/cloudflare/src/cache/kv-key.js";
-import { appIsrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
+import { appIsrCacheKey, isrGet } from "../packages/vinext/src/server/isr-cache.js";
+import { KVCacheHandler } from "../packages/cloudflare/src/cache/kv-data-adapter.runtime.js";
+import { readAppPageCacheResponse } from "../packages/vinext/src/server/app-page-cache.js";
+import {
+  getCacheHandler,
+  MemoryCacheHandler,
+  setCacheHandler,
+} from "../packages/vinext/src/shims/cache.js";
+import {
+  buildSearchParamsReadRenderObservation,
+  malformedPrerenderObservations,
+  queryInvariantPrerenderObservations,
+  unstorablePrerenderObservations,
+} from "./render-observation-test-helpers.js";
 
 let serverDir: string;
 
+/**
+ * Rendered App routes carry the observations of a render that left the query
+ * unread, as a current build writes them, unless the route sets its own.
+ */
 function writePrerenderFixture(
-  manifest: Record<string, unknown>,
+  manifest: { routes: Record<string, unknown>[] } & Record<string, unknown>,
   files: Record<string, string | Buffer>,
 ): void {
+  const routes = manifest.routes.map((route) =>
+    route.router === "app" && !("renderObservations" in route)
+      ? { ...route, renderObservations: queryInvariantPrerenderObservations() }
+      : route,
+  );
   fs.writeFileSync(
     path.join(serverDir, "vinext-prerender.json"),
-    JSON.stringify(manifest, null, 2),
+    JSON.stringify({ ...manifest, routes }, null, 2),
     "utf-8",
   );
   const prerenderDir = path.join(serverDir, "prerendered-routes");
@@ -37,6 +59,7 @@ describe("buildPrerenderKVPairs", () => {
   });
 
   it("builds KV entries for prerendered App Router HTML and RSC artifacts", () => {
+    const renderObservations = queryInvariantPrerenderObservations();
     writePrerenderFixture(
       {
         buildId: "build-1",
@@ -50,6 +73,7 @@ describe("buildPrerenderKVPairs", () => {
             router: "app",
             headers: { link: "</font.woff2>; rel=preload; as=font" },
             tags: ["test-update-tag"],
+            renderObservations,
           },
         ],
       },
@@ -78,6 +102,7 @@ describe("buildPrerenderKVPairs", () => {
         kind: "APP_PAGE",
         html: "<html>About</html>",
         headers: { link: "</font.woff2>; rel=preload; as=font" },
+        renderObservation: renderObservations.html,
       },
       lastModified: 1_000,
       revalidateAt: 61_000,
@@ -94,7 +119,134 @@ describe("buildPrerenderKVPairs", () => {
       kind: "APP_PAGE",
       html: "",
       rscData: Buffer.from("flight").toString("base64"),
+      renderObservation: renderObservations.rsc,
     });
+  });
+
+  it("serves a query-bearing request from an uploaded entry through the KV adapter", async () => {
+    writePrerenderFixture(
+      {
+        buildId: "build-kv-hit",
+        routes: [{ route: "/about", status: "rendered", revalidate: 60, router: "app" }],
+      },
+      { "about.html": "<html>About</html>", "about.rsc": "flight" },
+    );
+    const store = new Map(
+      buildPrerenderKVPairs(serverDir).pairs.map((pair) => [pair.key, pair.value]),
+    );
+    const kv = {
+      async get(key: string | string[]) {
+        return Array.isArray(key)
+          ? new Map(key.map((k) => [k, store.get(k) ?? null]))
+          : (store.get(key) ?? null);
+      },
+      async put() {},
+      async delete() {},
+      async list() {
+        return { keys: [], list_complete: true };
+      },
+    };
+    const previousHandler = getCacheHandler();
+    setCacheHandler(
+      new KVCacheHandler(kv as unknown as ConstructorParameters<typeof KVCacheHandler>[0]),
+    );
+    try {
+      const response = await readAppPageCacheResponse({
+        cleanPathname: "/about",
+        clearRequestContext() {},
+        hasRequestSearchParams: true,
+        isRscRequest: false,
+        isrGet,
+        isrHtmlKey: (pathname) => appIsrCacheKey(pathname, "html", "build-kv-hit"),
+        isrRscKey: (pathname) => appIsrCacheKey(pathname, "rsc", "build-kv-hit"),
+        async isrSet() {
+          throw new Error("a HIT must not write");
+        },
+        revalidateSeconds: 60,
+        async renderFreshPageForCache() {
+          throw new Error("a HIT must not render");
+        },
+        scheduleBackgroundRegeneration() {
+          throw new Error("a fresh entry must not regenerate");
+        },
+      });
+
+      expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+      await expect(response?.text()).resolves.toBe("<html>About</html>");
+    } finally {
+      setCacheHandler(previousHandler ?? new MemoryCacheHandler());
+    }
+  });
+
+  it("skips App pages whose observations lack the proof, are malformed, unstorable or missing", () => {
+    writePrerenderFixture(
+      {
+        buildId: "build-unproven",
+        routes: [
+          {
+            route: "/search",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: {
+              html: buildSearchParamsReadRenderObservation(),
+              rsc: buildSearchParamsReadRenderObservation(),
+            },
+          },
+          // A manifest from an older build carries no observation.
+          {
+            route: "/legacy",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: undefined,
+          },
+          ...malformedPrerenderObservations().map(({ observations }, index) => ({
+            route: `/bogus-${index}`,
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: observations,
+          })),
+          ...unstorablePrerenderObservations().map(({ observations }, index) => ({
+            route: `/unstorable-${index}`,
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: observations,
+          })),
+          { route: "/about", status: "rendered", revalidate: 60, router: "app" },
+        ],
+      },
+      {
+        ...Object.fromEntries(
+          malformedPrerenderObservations().map((_, index) => [
+            `bogus-${index}.html`,
+            "<html>bogus</html>",
+          ]),
+        ),
+        ...Object.fromEntries(
+          unstorablePrerenderObservations().map((_, index) => [
+            `unstorable-${index}.html`,
+            "<html>unstorable</html>",
+          ]),
+        ),
+        "search.html": "<html>Search</html>",
+        "search.rsc": "flight",
+        "legacy.html": "<html>Legacy</html>",
+        "legacy.rsc": "flight",
+        "about.html": "<html>About</html>",
+        "about.rsc": "flight",
+      },
+    );
+
+    const { routeCount, pairs } = buildPrerenderKVPairs(serverDir);
+
+    expect(routeCount).toBe(1);
+    expect(pairs.map((pair) => pair.key)).toEqual([
+      "cache:app:v2:build-unproven:/about:html",
+      "cache:app:v2:build-unproven:/about:rsc",
+    ]);
   });
 
   it("builds an APP_ROUTE KV entry for prerendered metadata", () => {

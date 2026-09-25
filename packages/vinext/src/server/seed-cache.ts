@@ -18,9 +18,12 @@
  * - Cache keys include the buildId, so entries from a previous build are never
  *   matched by a new server process (new build = new buildId = new keys).
  * - Seeded entries are indistinguishable from entries created by the ISR
- *   render path: same cache value shape, same revalidate duration tracking,
- *   same cache key construction. The serving path does not know or care
- *   whether an entry was seeded or rendered.
+ *   render path: same cache value shape (including the render observation),
+ *   same revalidate duration tracking, same cache key construction. The
+ *   serving path does not know or care whether an entry was seeded or rendered.
+ * - Like the ISR render path, a page is only seeded when its render
+ *   observation proves the query went unread (see
+ *   `getQueryInvariantSeedObservations`).
  *
  * Concurrency model:
  * - This function runs at startup before the HTTP server begins accepting
@@ -32,6 +35,7 @@
 import fs from "node:fs";
 import path from "pathslash";
 import type { CachedAppPageValue, CachedRouteValue } from "vinext/shims/cache-handler";
+import type { RenderObservation } from "./cache-proof.js";
 import {
   appIsrCacheKey,
   isrSet,
@@ -52,6 +56,7 @@ import {
 } from "./pregenerated-concrete-paths.js";
 import {
   readPrerenderManifest,
+  getQueryInvariantSeedObservations,
   getRenderedAppRoutes,
   getRenderedMetadataRoutes,
   isFallbackShellArtifactPath,
@@ -135,6 +140,13 @@ export async function seedMemoryCacheFromPrerender(
 
     const artifactPathname = route.path ?? route.route;
     const cachePathname = normalizePregeneratedPathname(artifactPathname);
+    const renderObservations = getQueryInvariantSeedObservations(route);
+    if (!renderObservations) {
+      if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
+        console.debug("[vinext] ISR: seed skipped (searchParams not proven unread)", cachePathname);
+      }
+      continue;
+    }
     // Fallback keys support older generated entries that do not export their
     // runtime key builders. Current App Router entries inject buildAppPage*Key
     // so seeded keys match process.env.__VINEXT_BUILD_ID exactly.
@@ -161,6 +173,7 @@ export async function seedMemoryCacheFromPrerender(
         artifactPathname,
         trailingSlash,
         route.headers,
+        renderObservations.html,
         revalidateSeconds,
         expireSeconds,
         staleSeconds,
@@ -172,6 +185,7 @@ export async function seedMemoryCacheFromPrerender(
         prerenderDir,
         rscKey,
         artifactPathname,
+        renderObservations.rsc,
         revalidateSeconds,
         expireSeconds,
         staleSeconds,
@@ -232,6 +246,7 @@ async function seedHtml(
   pathname: string,
   trailingSlash: boolean,
   headers: Record<string, string | string[]> | undefined,
+  renderObservation: RenderObservation,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
   staleSeconds: number | undefined,
@@ -248,6 +263,7 @@ async function seedHtml(
     headers,
     postponed: undefined,
     status: undefined,
+    renderObservation,
   };
 
   await writeAppPageEntry(key, htmlValue, { expireSeconds, revalidateSeconds, staleSeconds, tags });
@@ -264,6 +280,7 @@ async function seedRsc(
   prerenderDir: string,
   key: string,
   pathname: string,
+  renderObservation: RenderObservation,
   revalidateSeconds: number | undefined,
   expireSeconds: number | undefined,
   staleSeconds: number | undefined,
@@ -284,6 +301,7 @@ async function seedRsc(
     headers: undefined,
     postponed: undefined,
     status: undefined,
+    renderObservation,
   };
 
   await writeAppPageEntry(key, rscValue, { expireSeconds, revalidateSeconds, staleSeconds, tags });

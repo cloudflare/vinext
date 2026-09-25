@@ -73,12 +73,14 @@ import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret } from "../build/server-manifest.js";
 import {
+  VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "./headers.js";
 import {
+  readPrerenderObservationNonce,
   readTrustedPrerenderRouteParamsFromHeaders,
   serializePrerenderRouteParamsHeader,
 } from "./prerender-route-params.js";
@@ -1135,11 +1137,15 @@ function nodeToWebRequest(
   const prerenderRouteParamsPayload = prerenderSecret
     ? readTrustedPrerenderRouteParamsFromHeaders(rawHeaders, prerenderSecret)
     : null;
-  const isTrustedSpeculativePrerender =
+  const isTrustedPrerenderRequest =
     process.env.VINEXT_PRERENDER === "1" &&
     Boolean(prerenderSecret) &&
-    rawHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret &&
-    rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
+    rawHeaders.get(VINEXT_PRERENDER_SECRET_HEADER) === prerenderSecret;
+  const isTrustedSpeculativePrerender =
+    isTrustedPrerenderRequest && rawHeaders.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
+  const trustedPrerenderObservationNonce = isTrustedPrerenderRequest
+    ? readPrerenderObservationNonce(rawHeaders)
+    : null;
   // Strip internal headers that should not be honored from external requests.
   const headers = filterInternalHeaders(rawHeaders);
   if (revalidationHostname) headers.set("host", revalidationHostname);
@@ -1151,6 +1157,10 @@ function nodeToWebRequest(
   }
   if (isTrustedSpeculativePrerender) {
     headers.set(VINEXT_PRERENDER_SPECULATIVE_HEADER, "1");
+  }
+  // The App handler moves the nonce off the request before middleware runs.
+  if (trustedPrerenderObservationNonce !== null) {
+    headers.set(VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER, trustedPrerenderObservationNonce);
   }
 
   const method = req.method ?? "GET";

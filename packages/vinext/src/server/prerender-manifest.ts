@@ -1,4 +1,11 @@
 import fs from "node:fs";
+import { hasQueryInvariantRenderProof, type RenderObservation } from "./cache-proof.js";
+import {
+  isPrerenderRenderObservations,
+  type PrerenderRenderObservations,
+} from "./prerender-render-observations.js";
+
+export type { PrerenderRenderObservations };
 
 export type PrerenderManifestRoute = {
   route: string;
@@ -19,6 +26,11 @@ export type PrerenderManifestRoute = {
   responseStatus?: number;
   routeSegments?: string[];
   tags?: string[];
+  /**
+   * Observations of the prerender's own render, stored with the seeded App
+   * page entries. Absent on manifests written by older builds.
+   */
+  renderObservations?: PrerenderRenderObservations;
 };
 
 export type PrerenderManifest = {
@@ -51,6 +63,43 @@ export function getRenderedMetadataRoutes(
   routes: PrerenderManifestRoute[],
 ): PrerenderManifestRoute[] {
   return routes.filter((route) => route.status === "rendered" && route.router === "metadata");
+}
+
+/**
+ * The observations a rendered App page's seeds are stored with, or `null` when
+ * the seeds must not be written. Seeds stand in for core's request-time writes
+ * (`finalizeAppPage*CacheResponse`), so they're only stored with an
+ * observation those would store: a successful, public render of the page's
+ * shared entries, not a mounted-slot RSC variant, proven to leave the query
+ * unread, since every query shares them. A route without observations has no
+ * proof.
+ *
+ * Those writes also skip a render that used a dynamic API, which the
+ * observation doesn't record (a `force-static` `headers()` read, say, isn't
+ * dynamic), so it can't be checked here: the prerender skips a route whose
+ * response it sees turn dynamic.
+ */
+export function getQueryInvariantSeedObservations(
+  route: PrerenderManifestRoute,
+): PrerenderRenderObservations | null {
+  const observations = route.renderObservations;
+  if (
+    !isPrerenderRenderObservations(observations) ||
+    !isStorableSeedObservation(observations.html) ||
+    !isStorableSeedObservation(observations.rsc)
+  ) {
+    return null;
+  }
+  return observations;
+}
+
+function isStorableSeedObservation(observation: RenderObservation): boolean {
+  return (
+    hasQueryInvariantRenderProof(observation) &&
+    observation.boundaryOutcome.kind === "success" &&
+    observation.cacheability === "public" &&
+    (observation.output.kind !== "app-rsc" || observation.output.mountedSlotsFingerprint === null)
+  );
 }
 
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {

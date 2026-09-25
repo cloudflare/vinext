@@ -95,7 +95,7 @@ describe("App request-stage dispatch", () => {
       appRequestUsesFullResponseGraph(
         new Request("https://example.test/docs/page"),
         createOptions({
-          trustedPrerenderState: { routeParams: null, speculative: true },
+          trustedPrerenderState: { observationNonce: null, routeParams: null, speculative: true },
         }),
       ),
     ).toBe(true);
@@ -183,6 +183,7 @@ describe("App request-stage dispatch", () => {
       prerenderDiscovery: true,
       probeMode: "probe",
       trustedPrerenderState: {
+        observationNonce: "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
         routeParams: { params: { slug: "hello" }, routePattern: "/docs/:slug" },
         speculative: true,
       },
@@ -207,6 +208,7 @@ describe("App request-stage dispatch", () => {
         scriptNonce: null,
         staticFileSignalToken: expect.any(String),
         trustedPrerenderState: {
+          observationNonce: "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f",
           routeParams: { params: { slug: "hello" }, routePattern: "/docs/:slug" },
           speculative: true,
         },
