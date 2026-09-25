@@ -2131,8 +2131,10 @@ describe("app page regeneration failures", () => {
     });
 
     await readStale({
-      async isrGet() {
-        return buildISRCacheEntry(cachedValue, true, { revalidate: 60 });
+      async isrGet(key) {
+        return key === "html:/stale"
+          ? buildISRCacheEntry(cachedValue, true, { revalidate: 60 })
+          : null;
       },
       isrSet,
       async renderFreshPageForCache() {
@@ -2243,6 +2245,97 @@ describe("app page regeneration failures", () => {
     expect(
       isrSet.mock.calls.filter(([key, data]) => key === "html:/stale" && data !== cachedValue),
     ).toEqual([]);
+  });
+
+  describe("when the regeneration's HTML write fails after its RSC write", () => {
+    const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
+    const previousRscValue = buildCachedAppPageValue(
+      "",
+      new TextEncoder().encode("stale-flight").buffer,
+      200,
+      staleObservation,
+    );
+
+    // A store that hands back copies, as a serializing one does, and gives
+    // each write a newer lastModified.
+    function failingHtmlStore(onHtmlWrite?: (store: Map<string, ISRCacheEntry>) => void) {
+      const store = new Map<string, ISRCacheEntry>([
+        ["html:/stale", buildISRCacheEntry(cachedValue, true, { revalidate: 60 })],
+        ["rsc:/stale", buildISRCacheEntry(previousRscValue, true, { revalidate: 60 })],
+      ]);
+      let writes = 0;
+      const isrSet = vi.fn<AppPageCacheSetter>(async (key, data, policy) => {
+        if (key === "html:/stale" && data !== cachedValue) {
+          onHtmlWrite?.(store);
+          throw new Error("html store failed");
+        }
+        writes++;
+        store.set(key, {
+          isStale: false,
+          value: {
+            cacheControl: policy.cacheControl,
+            lastModified: Date.now() + writes,
+            value: { ...data, rscData: data.rscData?.slice(0) },
+          },
+        });
+      });
+      return { store, isrSet };
+    }
+
+    it("keeps the RSC key's previous entry too", async () => {
+      const scheduled: Array<() => Promise<void>> = [];
+      const { store, isrSet } = failingHtmlStore();
+
+      await readStale({
+        async isrGet(key) {
+          return store.get(key) ?? null;
+        },
+        isrSet,
+        async renderFreshPageForCache() {
+          return freshPage({ usedDynamicApi: false });
+        },
+        scheduled,
+      });
+
+      await expect(scheduled[0]()).rejects.toThrow("html store failed");
+      expect(store.get("rsc:/stale")?.value.value).toEqual(previousRscValue);
+      expect(isrSet).toHaveBeenCalledWith("rsc:/stale", previousRscValue, {
+        cacheControl: { revalidate: 30 },
+        tags: ["_N_T_/stale", "posts"],
+      });
+      expect(store.get("html:/stale")?.value.value).toEqual(cachedValue);
+    });
+
+    it("doesn't replace an RSC entry another regeneration wrote meanwhile", async () => {
+      const scheduled: Array<() => Promise<void>> = [];
+      const newerRscValue = buildCachedAppPageValue(
+        "",
+        new TextEncoder().encode("newer-flight").buffer,
+        200,
+        staleObservation,
+      );
+      const { store, isrSet } = failingHtmlStore((entries) => {
+        entries.set("rsc:/stale", {
+          isStale: false,
+          value: { lastModified: Date.now() + 100, value: newerRscValue },
+        });
+      });
+
+      await readStale({
+        async isrGet(key) {
+          return store.get(key) ?? null;
+        },
+        isrSet,
+        async renderFreshPageForCache() {
+          return freshPage({ usedDynamicApi: false });
+        },
+        scheduled,
+      });
+
+      await expect(scheduled[0]()).rejects.toThrow("html store failed");
+      expect(store.get("rsc:/stale")?.value.value).toBe(newerRscValue);
+      expect(store.get("html:/stale")?.value.value).toEqual(cachedValue);
+    });
   });
 
   it.each([
