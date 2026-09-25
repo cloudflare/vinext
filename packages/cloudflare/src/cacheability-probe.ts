@@ -490,22 +490,33 @@ export async function probeStagedWorkerCacheability(options: {
   // discovery marks every other path unlisted. A path the request stage moves to
   // another route counts as listed there only when that route lists its
   // resolved pathname.
-  const isListedGroup = (group: ConcretePathGroup): boolean => {
+  const isListedAt = (
+    group: ConcretePathGroup,
+    route: Pick<PrerenderRoutePattern, "kind" | "pattern">,
+    routePathname: string,
+  ): boolean => {
     if (
-      !/(^|\/):/.test(group.pattern.route.pattern) &&
-      normalizeCacheabilityRoutePathname(group.pattern.route.pattern) === group.routePathname
+      !/(^|\/):/.test(route.pattern) &&
+      normalizeCacheabilityRoutePathname(route.pattern) === routePathname
     ) {
       return true;
     }
-    if (group.originKey === group.pattern.key) return group.listedAtOrigin;
-    return group.pattern.groups.some(
-      (candidate) =>
-        candidate.originKey === group.pattern.key &&
-        candidate.listedAtOrigin &&
-        !candidate.deferred &&
-        candidate.routePathname === group.routePathname,
+    const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
+    if (group.originKey === key) return group.listedAtOrigin;
+    return (
+      patterns
+        .get(key)
+        ?.groups.some(
+          (candidate) =>
+            candidate.originKey === key &&
+            candidate.listedAtOrigin &&
+            !candidate.deferred &&
+            candidate.routePathname === routePathname,
+        ) === true
     );
   };
+  const isListedGroup = (group: ConcretePathGroup): boolean =>
+    isListedAt(group, group.pattern.route, group.routePathname);
   const groups: ConcretePathGroup[] = Array.from(targetGroups.values(), (targetGroup) => {
     targetGroup.targets.sort((first, second) => {
       const preference = targetPreference(first) - targetPreference(second);
@@ -711,15 +722,27 @@ export async function probeStagedWorkerCacheability(options: {
       return "done";
     }
     if (
-      group.pattern.route.kind === "app-page" &&
       result.state === "probe-failed" &&
+      result.kind === "app-page" &&
       result.status! >= 500 &&
       result.reason === `route returned HTTP ${result.status}` &&
-      !isListedGroup(group)
+      target.route &&
+      // A route the request stage may not move to, or a move without its
+      // concrete pathname, fails as any other resolution below.
+      ((result.kind === target.route.kind && result.pattern === target.route.pattern) ||
+        (target.route.cacheabilityProbe?.routeMayResolve === true &&
+          result.routePathname !== undefined)) &&
+      !isListedAt(
+        group,
+        { kind: result.kind, pattern: result.pattern },
+        result.routePathname === undefined
+          ? group.routePathname
+          : normalizeCacheabilityRoutePathname(result.routePathname),
+      )
     ) {
       // Next.js's build never renders an unlisted App page path, so its
       // render error doesn't fail the deploy. The path is neither classified
-      // nor warmed.
+      // nor warmed. Listing is judged under the route the request resolved.
       group.dropped = true;
       if (
         !group.pattern.groups.some(
