@@ -8,6 +8,8 @@ export type RouteCacheabilityOutcome = {
   classificationFailure?: boolean;
   dynamicUsage?: boolean;
   reason?: string;
+  /** App pages: the render proved it left searchParams unread, so its response holds for every query. */
+  searchParamsUnread?: true;
   /** A transient classification failure that may succeed on another bounded attempt. */
   retryable?: true;
   tags?: readonly string[];

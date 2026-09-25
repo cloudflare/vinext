@@ -19,6 +19,8 @@ import {
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import { finalizeAppPageCacheabilityEvaluationResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
+import type { AppPageRenderObservationState } from "../packages/vinext/src/server/app-page-render-observation.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { applyRouteHandlerRevalidateHeader } from "../packages/vinext/src/server/app-route-handler-response.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
@@ -243,6 +245,7 @@ describe("single-request cacheability admission", () => {
     state.route = { kind: "app-page", pattern: "/page" };
     state.outcome = {
       cacheable: true,
+      searchParamsUnread: true,
       cacheControl: "s-maxage=60, stale-while-revalidate=540",
     };
     state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
@@ -265,7 +268,7 @@ describe("single-request cacheability admission", () => {
     );
     const state = cacheabilityState(context);
     state.route = { kind: "app-page", pattern: "/page" };
-    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    state.outcome = { cacheable: true, searchParamsUnread: true, cacheControl: "s-maxage=60" };
     const marker = "2d533650-6016-42c8-baf4-3f7e4e65e65c";
     state.clientTraceMetadataMarker = marker;
     const authored = '<meta name="baggage" content="application-policy"/>';
@@ -301,7 +304,7 @@ describe("single-request cacheability admission", () => {
     );
     const state = cacheabilityState(context);
     state.route = { kind: "app-page", pattern: "/page" };
-    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    state.outcome = { cacheable: true, searchParamsUnread: true, cacheControl: "s-maxage=60" };
     const authoredMarkedBlock = markClientTraceMetadataBlock(
       '<meta name="author-trace" content="keep"/>',
       "2d533650-6016-42c8-baf4-3f7e4e65e65c",
@@ -330,6 +333,7 @@ describe("single-request cacheability admission", () => {
     state.route = { kind: "app-page", pattern: "/page" };
     state.outcome = {
       cacheable: true,
+      searchParamsUnread: true,
       cacheControl: "s-maxage=60, stale-while-revalidate=540",
     };
     const body = new Uint8Array(4 * 1024 * 1024 + 1);
@@ -353,6 +357,8 @@ describe("single-request cacheability admission", () => {
     );
     const state = cacheabilityState(context);
     state.route = { kind: "app-page", pattern: "/page" };
+    // A later public policy replaces the renderer's, so it needs no
+    // searchParams proof.
     state.outcome = {
       cacheable: true,
       cacheControl: "s-maxage=120, stale-while-revalidate=31535880",
@@ -551,6 +557,7 @@ describe("single-request cacheability admission", () => {
       state.route = { kind: "app-page", pattern: "/page" };
       state.outcome = {
         cacheable: true,
+        searchParamsUnread: true,
         cacheControl: "s-maxage=60, stale-while-revalidate=540",
       };
       state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
@@ -937,6 +944,7 @@ describe("single-request cacheability admission", () => {
     state.route = { kind: "app-page", pattern: "/page" };
     state.outcome = {
       cacheable: true,
+      searchParamsUnread: true,
       cacheControl: "s-maxage=60, stale-while-revalidate=540",
     };
 
@@ -962,6 +970,7 @@ describe("single-request cacheability admission", () => {
     state.route = { kind: "app-page", pattern: "/page" };
     state.outcome = {
       cacheable: true,
+      searchParamsUnread: true,
       cacheControl: "s-maxage=60, stale-while-revalidate=540",
     };
 
@@ -987,6 +996,7 @@ describe("single-request cacheability admission", () => {
     state.route = { kind: "app-page", pattern: "/page" };
     state.outcome = {
       cacheable: true,
+      searchParamsUnread: true,
       cacheControl: "s-maxage=60, stale-while-revalidate=540",
     };
 
@@ -1045,6 +1055,44 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toContain("changed from static to dynamic");
   });
 
+  it.each<{ name: string; observation?: AppPageRenderObservationState; admitted: boolean }>([
+    {
+      name: "left searchParams unread",
+      observation: { dynamicFetches: [], requestApis: [] },
+      admitted: true,
+    },
+    {
+      name: "read searchParams",
+      observation: { dynamicFetches: [], requestApis: ["searchParams"] },
+      admitted: false,
+    },
+    { name: "has no observation", admitted: false },
+  ])("admits a rendered App page only when its render $name", async ({ observation, admitted }) => {
+    const { raw } = staticManifestRoute();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      raw,
+      "build-a",
+    );
+    cacheabilityState(context).route = { kind: "app-page", pattern: "/page" };
+    const rendered = runWithExecutionContext(context, () =>
+      finalizeAppPageCacheabilityEvaluationResponse(new Response("static"), {
+        consumeDynamicUsage: () => false,
+        ...(observation ? { consumeRenderObservationState: () => observation } : {}),
+        getPageTags: () => ["/page"],
+        isStaticEligible: true,
+        revalidateSeconds: 60,
+      }),
+    );
+
+    const response = await finalizeWorkerCacheabilityResponse(await rendered, context);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toContain(admitted ? "s-maxage=60" : "no-store");
+    await expect(response.text()).resolves.toBe("static");
+  });
+
   it("checks every sibling render against the route-pattern classification", async () => {
     const route: CacheabilityManifestRoute = {
       kind: "app-page",
@@ -1081,7 +1129,11 @@ describe("single-request cacheability admission", () => {
     );
     const staticState = cacheabilityState(staticContext);
     staticState.route = { kind: "app-page", pattern: route.pattern };
-    staticState.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    staticState.outcome = {
+      cacheable: true,
+      searchParamsUnread: true,
+      cacheControl: "s-maxage=60",
+    };
     const staticResponse = await finalizeWorkerCacheabilityResponse(
       new Response("public sibling"),
       staticContext,
@@ -1098,7 +1150,7 @@ describe("single-request cacheability admission", () => {
     );
     const rscState = cacheabilityState(rscContext);
     rscState.route = { kind: "app-page", pattern: route.pattern };
-    rscState.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    rscState.outcome = { cacheable: true, searchParamsUnread: true, cacheControl: "s-maxage=60" };
     const rscResponse = await finalizeWorkerCacheabilityResponse(
       new Response("public RSC sibling"),
       rscContext,
@@ -1189,7 +1241,7 @@ describe("single-request cacheability admission", () => {
     );
     const state = cacheabilityState(context);
     state.route = { kind: "app-page", pattern: route.pattern };
-    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    state.outcome = { cacheable: true, searchParamsUnread: true, cacheControl: "s-maxage=60" };
 
     const response = await finalizeWorkerCacheabilityResponse(
       new Response("runtime fallback"),
@@ -1295,6 +1347,7 @@ describe("single-request cacheability admission", () => {
       }
       state.outcome = {
         cacheable: true,
+        searchParamsUnread: true,
         cacheControl: "s-maxage=60, stale-while-revalidate=540",
       };
 
@@ -1347,7 +1400,7 @@ describe("single-request cacheability admission", () => {
     );
     const state = cacheabilityState(context);
     state.route = { kind: "app-page", pattern: "/page" };
-    state.outcome = { cacheable: true, cacheControl: "s-maxage=60" };
+    state.outcome = { cacheable: true, searchParamsUnread: true, cacheControl: "s-maxage=60" };
 
     const response = await finalizeWorkerCacheabilityResponse(
       new Response("still rendered"),

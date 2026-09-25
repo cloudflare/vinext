@@ -889,6 +889,17 @@ async function finalizeWorkerCacheabilityAdmission(
     }
     return responseWithCachePolicy(response, captured.body, null);
   }
+  // Every query can share a rendered App page's response, so the renderer's
+  // policy is admitted only with proof the render left searchParams unread. A
+  // later next.config policy replaces the renderer's and is cached per URL, as
+  // in Next.js.
+  if (
+    state.route.kind === "app-page" &&
+    outcome === rendererOutcome &&
+    outcome.searchParamsUnread !== true
+  ) {
+    return responseWithCachePolicy(response, captured.body, null);
+  }
   return responseWithCachePolicy(
     response,
     representation === "html" && state.clientTraceMetadataMarker
