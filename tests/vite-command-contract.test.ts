@@ -29,7 +29,9 @@ function createHybridProject(): string {
   write(
     root,
     "vite.config.ts",
-    `import { defineConfig } from "vite";
+    `import fs from "node:fs";
+import path from "node:path";
+import { defineConfig } from "vite";
 import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 
 export default defineConfig({
@@ -38,6 +40,22 @@ export default defineConfig({
       name: "contract:config-only",
       config() {
         return { define: { __CONFIG_ONLY_MARKER__: JSON.stringify("config-only-plugin-ran") } };
+      },
+    },
+    {
+      name: "contract:config-resolved-output",
+      configResolved(config) {
+        fs.mkdirSync(path.join(config.root, "dist"), { recursive: true });
+        fs.writeFileSync(path.join(config.root, "dist/config-resolved-plugin-ran"), "ok");
+      },
+    },
+    {
+      name: "contract:output-only",
+      writeBundle() {
+        const outDir = this.environment.config.build.outDir;
+        if (outDir.endsWith("dist/server")) {
+          fs.writeFileSync(path.join(outDir, "output-only-plugin-ran"), "ok");
+        }
       },
     },
     vinext({
@@ -97,12 +115,16 @@ describe("configured vinext build contract", () => {
     expect(fs.existsSync(path.join(root, "custom/server/index.js"))).toBe(true);
     expect(fs.existsSync(path.join(root, "custom/server/ssr/index.js"))).toBe(true);
     expect(fs.existsSync(path.join(root, "dist/client"))).toBe(true);
+    expect(fs.readFileSync(path.join(root, "dist/config-resolved-plugin-ran"), "utf-8")).toBe("ok");
 
     const pagesEntry = fs.readFileSync(path.join(root, "dist/server/entry.js"), "utf-8");
     expect(pagesEntry).toContain("config-only-plugin-ran");
     expect(pagesEntry).toContain("vinext-pages-production-marker");
     expect(pagesEntry).not.toContain("vinext-pages-development-marker");
     expect(pagesEntry).not.toContain("__CONFIG_ONLY_MARKER__");
+    expect(fs.readFileSync(path.join(root, "dist/server/output-only-plugin-ran"), "utf-8")).toBe(
+      "ok",
+    );
 
     const appOutput = fs
       .globSync("**/*.js", { cwd: path.join(root, "custom/server") })
@@ -112,5 +134,58 @@ describe("configured vinext build contract", () => {
     expect(appOutput).toContain("vinext-production-marker");
     expect(appOutput).not.toContain("vinext-development-marker");
     expect(appOutput).not.toContain("__CONFIG_ONLY_MARKER__");
+  }, 120_000);
+
+  it("keeps raw emptyOutDir false as the cleanup escape hatch", () => {
+    const root = createHybridProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace(
+          "export default defineConfig({",
+          `export default defineConfig({
+  build: { emptyOutDir: false },`,
+        )
+        .replace(
+          "plugins: [",
+          `plugins: [{
+    name: "override-empty-out-dir",
+    config() { return { build: { emptyOutDir: true } }; },
+  },`,
+        ),
+    );
+    write(root, "dist/keep.txt", "keep");
+
+    execFileSync(process.execPath, [CLI_PATH, "build"], {
+      cwd: root,
+      stdio: "pipe",
+      timeout: 120_000,
+    });
+
+    expect(fs.readFileSync(path.join(root, "dist/keep.txt"), "utf-8")).toBe("keep");
+  }, 120_000);
+
+  it("keeps the vinext build report when Vite logging is silent", () => {
+    const root = createHybridProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf-8")
+        .replace(
+          "export default defineConfig({",
+          'export default defineConfig({ logLevel: "silent",',
+        ),
+    );
+
+    const output = execFileSync(process.execPath, [CLI_PATH, "build"], {
+      cwd: root,
+      encoding: "utf-8",
+      stdio: "pipe",
+    });
+
+    expect(output).toContain("Build complete.");
   }, 120_000);
 });
