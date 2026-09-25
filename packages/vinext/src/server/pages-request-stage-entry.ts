@@ -405,6 +405,9 @@ async function handleRequestImpl(
     }
 
     const middlewareRequest = request;
+    // The page sees the request URL before `_next/data` normalization as
+    // `req.url`, matching prod-server's `originalRenderUrl` and Next.js.
+    const originalRenderUrl = pathname + new URL(request.url).search;
     const dataNorm = normalizeDataRequest(request);
     if (dataNorm.notFoundResponse && !vinextConfig?.skipProxyUrlNormalize) {
       return dataNorm.notFoundResponse;
@@ -493,7 +496,9 @@ async function handleRequestImpl(
           kind: "pages-page" as const,
           protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
           requestHost: new URL(req.url).host,
-          renderOptions: options ?? null,
+          renderOptions: isDataReq
+            ? { ...options, originalUrl: originalRenderUrl }
+            : (options ?? null),
           resolvedUrl,
           // Static/ISR pages cannot observe Node's response object. Keep their
           // request-specific middleware headers outside the shared artifact so
