@@ -24,6 +24,8 @@ import { finalizeAppPageCacheabilityEvaluationResponse } from "../packages/vinex
 import type { AppPageRenderObservationState } from "../packages/vinext/src/server/app-page-render-observation.js";
 import { applyCdnResponseHeaders } from "../packages/vinext/src/server/cache-control.js";
 import { applyRouteHandlerRevalidateHeader } from "../packages/vinext/src/server/app-route-handler-response.js";
+import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import { requestContextFromRequest } from "../packages/vinext/src/config/request-context.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import {
   markClientTraceMetadataBlock,
@@ -1154,6 +1156,56 @@ describe("single-request cacheability admission", () => {
     expect(response.headers.get("Cache-Control")).toBe(cacheControl);
     await expect(response.text()).resolves.toBe("static");
   });
+
+  it.each([
+    {
+      name: "a matching cache policy",
+      header: "Cache-Control",
+      value: "s-maxage=60",
+      proof: false,
+      admitted: true,
+    },
+    { name: "only Vary", header: "Vary", value: "Accept-Language", proof: false, admitted: false },
+    { name: "only Vary", header: "Vary", value: "Accept-Language", proof: true, admitted: true },
+  ])(
+    "admits a single-stage render when config sets $name (proof: $proof)",
+    async ({ header, value, proof, admitted }) => {
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        null,
+        "build-a",
+        true,
+        "verbatim",
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-page", pattern: "/page" };
+      const cacheControl = "s-maxage=60";
+      state.outcome = {
+        cacheable: true,
+        cacheControl,
+        ...(proof ? { searchParamsUnread: true as const } : {}),
+      };
+      state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": cacheControl });
+      const rendered = runWithExecutionContext(context, () =>
+        finalizeAppRscResponse(
+          new Response("static", { headers: { "Cache-Control": cacheControl } }),
+          request,
+          {
+            basePath: "",
+            configHeaders: [{ source: "/page", headers: [{ key: header, value }] }],
+            i18nConfig: null,
+            requestContext: requestContextFromRequest(request),
+          },
+        ),
+      );
+
+      const response = await finalizeWorkerCacheabilityResponse(await rendered, context);
+
+      expect(response.headers.get("Cache-Control")).toContain(admitted ? cacheControl : "no-store");
+      await expect(response.text()).resolves.toBe("static");
+    },
+  );
 
   it("checks every sibling render against the route-pattern classification", async () => {
     const route: CacheabilityManifestRoute = {

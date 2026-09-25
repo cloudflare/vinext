@@ -154,6 +154,14 @@ export function markRouteCacheabilityExplicitConfigPolicy(): void {
   state.explicitConfigCachePolicy = true;
 }
 
+/** Record that a next.config rule set a cache policy header, not just Vary. */
+export function markRouteCacheabilityConfigCdnCachePolicy(): void {
+  const state = readRouteCacheabilityState();
+  if (!state) return;
+  state.explicitConfigCachePolicy = true;
+  state.configCdnCachePolicy = true;
+}
+
 /** Record a public cache policy supplied by the Route Handler itself. */
 export function markRouteCacheabilityExplicitResponsePolicy(): void {
   const state = readRouteCacheabilityState();
