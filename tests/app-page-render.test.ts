@@ -27,8 +27,11 @@ import { createClientPageSsrSearchParamsSource } from "../packages/vinext/src/se
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import {
   setNavigationContext,
+  useSearchParams,
   type NavigationContext,
 } from "../packages/vinext/src/shims/navigation.js";
+import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
+import { finalizeWorkerCacheabilityResponse } from "../packages/vinext/src/server/cacheability-request.js";
 import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
 import {
   consumeDynamicUsage,
@@ -1342,7 +1345,10 @@ describe("app page render lifecycle", () => {
       async function renderClassifying(
         render: ClassifyingRender,
         tree: ReactNode,
-        { readsSearchParams = false }: { readsSearchParams?: boolean } = {},
+        {
+          isCacheCandidate = false,
+          readsSearchParams = false,
+        }: { isCacheCandidate?: boolean; readsSearchParams?: boolean } = {},
       ) {
         const common = createCommonOptions();
         const state: RouteCacheabilityState = {
@@ -1376,13 +1382,14 @@ describe("app page render lifecycle", () => {
                 params: { slug: "post" },
               };
             },
+            isCacheCandidate,
             isPrerender: render !== "probe",
             isSpeculativePrerender: render === "speculative prerender",
             isProduction: true,
             revalidateSeconds: Infinity,
             async loadSsrHandler() {
               return {
-                handleSsr(_rscStream, navContext, _fontData, options) {
+                handleSsr(rscStream, navContext, _fontData, options) {
                   return runWithNavigationContext(async () => {
                     if (options?.capturedRscDataRef) {
                       options.capturedRscDataRef.value = Promise.resolve(
@@ -1390,9 +1397,21 @@ describe("app page render lifecycle", () => {
                       );
                       if (options.sideStream) void options.sideStream.getReader().cancel();
                     }
+                    // A candidate render gates useSearchParams() until SSR has
+                    // read the whole Flight response, as handleSsr does.
+                    const searchParamsGate =
+                      options?.isCacheCandidate === true &&
+                      options.isStaticGeneration !== true &&
+                      options.isForceStatic !== true
+                        ? startCandidateSearchParamsGate()
+                        : null;
+                    if (searchParamsGate) {
+                      void new Response(searchParamsGate.settleWhenConsumed(rscStream)).text();
+                    }
                     const ssrNavigationContext = navContext as NavigationContext;
                     setNavigationContext({
                       ...ssrNavigationContext,
+                      searchParamsGate: searchParamsGate?.gate,
                       getClientPageSearchParams: createClientPageSsrSearchParamsSource(
                         ssrNavigationContext.searchParams,
                         {},
@@ -1413,7 +1432,11 @@ describe("app page render lifecycle", () => {
             },
           });
         });
-        return { response, completion: render === "probe" ? state.completion : undefined };
+        return {
+          response,
+          completion: render === "probe" ? state.completion : undefined,
+          executionContext,
+        };
       }
 
       async function classify(render: ClassifyingRender, tree: ReactNode) {
@@ -1472,6 +1495,34 @@ describe("app page render lifecycle", () => {
         });
         await read.response.body?.cancel();
         expect(await read.completion).not.toHaveProperty("searchParamsUnread");
+      });
+
+      // The Workers Cache deploy probe renders a static page in candidate
+      // mode. Next.js prerenders a page whose useSearchParams() sits inside
+      // Suspense once, with the fallback, and serves it for every query, so the
+      // probe must certify it static and keep the query out of its render.
+      it("certifies a static page with useSearchParams() inside Suspense in a candidate probe", async () => {
+        function SearchValue(): ReactNode {
+          return React.createElement("p", null, `q:${useSearchParams().get("q") ?? ""}`);
+        }
+        const { response, executionContext } = await renderClassifying(
+          "probe",
+          React.createElement(
+            React.Suspense,
+            { fallback: React.createElement("p", null, "search-fallback") },
+            React.createElement(SearchValue),
+          ),
+          { isCacheCandidate: true },
+        );
+        const html = await response.clone().text();
+        const envelope = (await (
+          await finalizeWorkerCacheabilityResponse(response, executionContext)
+        ).json()) as Record<string, unknown>;
+
+        expect(html).toContain("search-fallback");
+        expect(html).not.toContain("secret");
+        expect(envelope).toMatchObject({ rendererStatic: true, state: "static-candidate" });
+        expect(envelope).not.toHaveProperty("dynamicUsage");
       });
 
       it("stops waiting for a speculative prerender's SSR once it turns dynamic", async () => {
