@@ -113,6 +113,7 @@ describe("app page response helpers", () => {
       isDraftMode: false,
       isForceDynamic: false,
       isProduction: true,
+      isStaticEligible: true,
     };
     for (const config of [
       { isDynamicError: false, isForceStatic: true },
