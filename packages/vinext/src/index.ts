@@ -1450,7 +1450,8 @@ export type VinextOptions = {
    * Configure cache handlers declaratively, so you don't need a custom worker
    * entry that calls `setDataCacheHandler()` / `setCdnCacheAdapter()`. Each slot
    * is a `{ adapter, options }` descriptor pointing at an adapter module whose
-   * default export is a factory; the plugin registers them automatically on the
+   * default export is a factory function or a class (both receive
+   * `{ env, options }`); the plugin registers them automatically on the
    * first request, passing the host `env` (Worker bindings) so adapters that
    * need a binding — e.g. a KV namespace — can read it.
    *

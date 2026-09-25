@@ -9,6 +9,7 @@
  *    cdnAdapter) and their runtime factory default exports.
  */
 import fs from "node:fs";
+import { instantiateCacheAdapter } from "../packages/vinext/src/shims/cache-adapter-instantiate.js";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, expectTypeOf } from "vite-plus/test";
@@ -82,7 +83,7 @@ describe("generateCacheAdaptersModule", () => {
       `import { registerDataCacheHandler } from "vinext/shims/cache-handler";`,
     );
     expect(code).toContain(
-      "registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: undefined }));",
+      'registerDataCacheHandler(() => instantiateCacheAdapter(__vinextDataAdapterFactory, { env, options: undefined }, "data"));',
     );
     expect(code).not.toContain("__vinextCdnAdapterFactory");
     expect(code).not.toContain("registerCdnCacheAdapter");
@@ -95,7 +96,7 @@ describe("generateCacheAdaptersModule", () => {
       `import { registerCdnCacheAdapter } from "vinext/shims/cdn-cache-state";`,
     );
     expect(code).toContain(
-      "registerCdnCacheAdapter(() => __vinextCdnAdapterFactory({ env, options: undefined }));",
+      'registerCdnCacheAdapter(() => instantiateCacheAdapter(__vinextCdnAdapterFactory, { env, options: undefined }, "CDN"));',
     );
     expect(code).not.toContain("__vinextDataAdapterFactory");
     expect(code).not.toContain("registerDataCacheHandler");
@@ -106,7 +107,7 @@ describe("generateCacheAdaptersModule", () => {
       data: { adapter: "@vinext/cloudflare/cache/kv-data-adapter", options: { binding: "MY_KV" } },
     });
     expect(code).toContain(
-      `registerDataCacheHandler(() => __vinextDataAdapterFactory({ env, options: {"binding":"MY_KV"} }));`,
+      `registerDataCacheHandler(() => instantiateCacheAdapter(__vinextDataAdapterFactory, { env, options: {"binding":"MY_KV"} }, "data"));`,
     );
   });
 
@@ -138,8 +139,12 @@ describe("generateCacheAdaptersModule", () => {
     });
     expect(code).toContain(`from "@vinext/cloudflare/cache/cdn-adapter";`);
     expect(code).toContain(`from "@vinext/cloudflare/cache/kv-data-adapter";`);
-    expect(code).toContain("registerDataCacheHandler(() => __vinextDataAdapterFactory(");
-    expect(code).toContain("registerCdnCacheAdapter(() => __vinextCdnAdapterFactory(");
+    expect(code).toContain(
+      "registerDataCacheHandler(() => instantiateCacheAdapter(__vinextDataAdapterFactory, ",
+    );
+    expect(code).toContain(
+      "registerCdnCacheAdapter(() => instantiateCacheAdapter(__vinextCdnAdapterFactory, ",
+    );
     expect(code).toContain(
       "if (typeof process !== 'undefined' && process.env?.__VINEXT_PRERENDER_PATH_DISCOVERY === '1') return;",
     );
@@ -182,6 +187,49 @@ describe("generateCacheAdaptersModule", () => {
     const weird = `/tmp/some path/with"quote/adapter.js`;
     const code = generateCacheAdaptersModule({ data: { adapter: weird } });
     expect(code).toContain(`import __vinextDataAdapterFactory from ${JSON.stringify(weird)};`);
+  });
+
+  describe("instantiateCacheAdapter (the shim the generated module imports)", () => {
+    it("is imported by every registrar that configures an adapter", () => {
+      for (const cache of [
+        { data: { adapter: "my-data-adapter" } },
+        { cdn: { adapter: "my-cdn-adapter" } },
+      ]) {
+        expect(generateCacheAdaptersModule(cache)).toContain(
+          `import { instantiateCacheAdapter } from "vinext/shims/cache-adapter-instantiate";`,
+        );
+      }
+      expect(generateCacheAdaptersModule(undefined)).not.toContain("instantiateCacheAdapter");
+    });
+
+    it("calls a factory function with the { env, options } argument", () => {
+      const seen: unknown[] = [];
+      const factory = (args: unknown) => {
+        seen.push(args);
+        return { kind: "factory" };
+      };
+      const args = { env: { KV: 1 }, options: { binding: "MY_KV" } };
+      expect(instantiateCacheAdapter(factory, args, "data")).toEqual({ kind: "factory" });
+      expect(seen).toEqual([args]);
+    });
+
+    it("constructs a class default export with the same argument", () => {
+      class Handler {
+        constructor(public readonly args: unknown) {}
+      }
+      const args = { env: undefined, options: { url: "redis://x" } };
+      const adapter = instantiateCacheAdapter<Handler>(Handler, args, "data");
+      expect(adapter).toBeInstanceOf(Handler);
+      expect(adapter.args).toBe(args);
+    });
+
+    it("rejects a non-function default export with a message naming the slot", () => {
+      const args = { env: undefined, options: undefined };
+      expect(() => instantiateCacheAdapter({ get() {} }, args, "data")).toThrow(
+        "the data cache adapter module must have a default export that is a factory function or a class, got object",
+      );
+      expect(() => instantiateCacheAdapter(null, args, "CDN")).toThrow("got null");
+    });
   });
 });
 
