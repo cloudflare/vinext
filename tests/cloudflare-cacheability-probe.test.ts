@@ -394,6 +394,47 @@ describe("staged Worker cacheability probes", () => {
     expect((await probe([listed, alias])).failures).toEqual(failure);
   });
 
+  it("keeps paired representations at the original route when a moved unlisted failure is dropped", async () => {
+    const { html, route, rsc } = pairedRouteTargets();
+    // Header-sensitive routing sends only the HTML request to an unlisted,
+    // failing App page; the RSC request stays on the static source route.
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      Response.json({
+        kind: "app-page",
+        pattern: "/posts/:slug",
+        reason: "route returned HTTP 500",
+        routePathname: "/posts/unlisted",
+        state: "probe-failed",
+        status: 500,
+        version: 1,
+      }),
+    );
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl,
+      retries: 0,
+      root: createProbeRoot(),
+      targetUrl: "https://example.com",
+      targets: [rsc, html],
+    });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({
+      cacheableTargets: [rsc],
+      failures: [],
+      speculativeTargets: [rsc],
+    });
+    expect(Object.keys(result.manifest.routes)).toEqual([
+      cacheabilityManifestRouteKey(route.kind, route.pattern),
+    ]);
+    const sourceManifestRoute =
+      result.manifest.routes[cacheabilityManifestRouteKey(route.kind, route.pattern)];
+    expect(cacheabilityManifestRouteState(sourceManifestRoute!, "/source", "rsc-full")).toBe(
+      "runtime-check",
+    );
+  });
+
   it("fails the deploy for an unlisted Pages or Route Handler path whose render fails", async () => {
     for (const kind of ["pages-page", "app-route"] as const) {
       const route = { ...optimizableRoute("/posts/:slug"), kind };

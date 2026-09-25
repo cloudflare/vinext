@@ -742,6 +742,18 @@ export async function probeStagedWorkerCacheability(options: {
       // Next.js's build never renders an unlisted App page path, so its
       // render error doesn't fail the deploy. The path is neither classified
       // nor warmed. Listing is judged under the route the request resolved.
+      // A failure the request stage moved proves only its own destination, so
+      // the paired representations stay at the original route, as they do
+      // after a moved success, and only the failed primary is dropped.
+      if (
+        target.route.cacheabilityProbe?.routeMayResolve === true &&
+        (result.kind !== target.route.kind ||
+          result.pattern !== target.route.pattern ||
+          (result.routePathname !== undefined &&
+            normalizeCacheabilityRoutePathname(result.routePathname) !== group.routePathname))
+      ) {
+        deferPairedRepresentationsAtOriginalRoute(group);
+      }
       group.dropped = true;
       if (
         !group.pattern.groups.some(
