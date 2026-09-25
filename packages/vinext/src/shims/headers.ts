@@ -222,10 +222,17 @@ export function markDynamicUsage(): void {
     return;
   }
   state.dynamicUsageDetected = true;
+  // A probe scope cloned before an HMR update may not share its parent's
+  // latch, so latch each propagation target too. Set every flag before any
+  // listener runs.
+  const latches = [ensureRenderDynamicLatch(state)];
   forEachConnectionProbeTarget(state, (target) => {
     target.dynamicUsageDetected = true;
+    latches.push(ensureRenderDynamicLatch(target));
   });
-  latchRenderDynamic(ensureRenderDynamicLatch(state));
+  for (const latch of latches) {
+    latchRenderDynamic(latch);
+  }
 }
 
 function latchRenderDynamic(latch: RenderDynamicLatch): void {

@@ -242,6 +242,34 @@ describe("render dynamic latch", () => {
       });
     });
 
+    it("latches the parent of a connection probe that was already in flight", async () => {
+      const parent = preLatchRequestContext();
+      const listener = vi.fn();
+      await runWithRequestContext(parent, async () => {
+        onRenderDynamicLatched(listener);
+      });
+      // The probe scope the old instance cloned from the parent before the
+      // parent had a latch, so the two never came to share one.
+      const probe: NonNullable<typeof parent.connectionProbe> = {
+        active: true,
+        dynamicUsageTarget: parent,
+        interrupted: false,
+        interrupt() {},
+        pending: new Promise<never>(() => {}),
+      };
+      const child: Partial<typeof parent> = { ...parent, connectionProbe: probe };
+      delete child.renderDynamicLatch;
+
+      await runWithRequestContext(child as typeof parent, async () => {
+        markDynamicUsage();
+      });
+      expect(parent.dynamicUsageDetected).toBe(true);
+      expect(listener).toHaveBeenCalledOnce();
+      await runWithRequestContext(parent, async () => {
+        expect(isRenderDynamicLatched()).toBe(true);
+      });
+    });
+
     it("starts the latch set when dynamic usage was already recorded", async () => {
       await runWithRequestContext(preLatchRequestContext(true), async () => {
         await runWithUnifiedStateMutation(
