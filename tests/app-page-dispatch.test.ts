@@ -3738,6 +3738,21 @@ describe("app page dispatch", () => {
       expect(buildPageElement).toHaveBeenCalled();
     });
 
+    it("renders non-GET requests to a dynamic-segment route in a cacheComponents build", async () => {
+      const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        pprRuntime: appPagePprRuntime,
+        request: new Request("https://example.test/posts/hello", { method: "POST" }),
+        route: createDynamicSegmentRoute(),
+      });
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(200);
+      expect(buildPageElement).toHaveBeenCalled();
+    });
+
     it("reports a dynamic-segment route without generateStaticParams as uncacheable to adapter admission", async () => {
       const context: ExecutionContextLike = { waitUntil() {} };
       const state: RouteCacheabilityState = {

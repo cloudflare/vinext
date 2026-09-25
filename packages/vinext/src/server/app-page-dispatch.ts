@@ -681,15 +681,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // full-page cache candidates. Every other route renders per request and is
   // never stored, whatever its revalidate or cacheLife. cacheComponents builds
   // (PPR fallback shells) follow a different model and keep their own rules.
-  const isStaticEligible =
-    options.pprRuntime !== undefined ||
-    isAppPageStaticEligible({
-      dynamicConfig,
-      hasGenerateStaticParams: options.hasGenerateStaticParams,
-      isDynamicRoute: route.isDynamic,
-      isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
-      revalidateSeconds: options.revalidateSeconds,
-    });
+  const isNextStaticEligible = isAppPageStaticEligible({
+    dynamicConfig,
+    hasGenerateStaticParams: options.hasGenerateStaticParams,
+    isDynamicRoute: route.isDynamic,
+    isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
+    revalidateSeconds: options.revalidateSeconds,
+  });
+  const isStaticEligible = options.pprRuntime !== undefined || isNextStaticEligible;
   if (isRouteCacheabilityProbe() && (isForceDynamic || currentRevalidateSeconds === 0)) {
     markRouteCacheabilityPatternDynamic(
       isForceDynamic ? 'dynamic = "force-dynamic"' : "revalidate = 0",
@@ -729,8 +728,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return new Response("Page has no default export", { status: 500 });
   }
 
+  // The cacheComponents exemption only covers caching. Methods follow the
+  // route's own Next.js classification.
   const methodResponse = resolveAppPageMethodResponse({
-    isStaticEligible,
+    isStaticEligible: isNextStaticEligible,
     middlewareHeaders: options.middlewareContext.headers,
     request: options.request,
   });
