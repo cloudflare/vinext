@@ -9,6 +9,7 @@ import type { CdnWarmTarget } from "../packages/cloudflare/src/cdn-warm.js";
 import {
   cacheabilityManifestRouteState,
   cacheabilityManifestRouteKey,
+  parseCacheabilityManifest,
   type CacheabilityManifestRoute,
 } from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
@@ -2452,6 +2453,88 @@ describe("staged Worker cacheability probes", () => {
         state: "runtime-check",
       }),
     ]);
+  });
+
+  it("keeps the loading shell of a path whose full page used a dynamic API", async () => {
+    const root = createProbeRoot();
+    const representations = (route: ReturnType<typeof optimizableRoute>, pathname: string) => ({
+      html: { ...target(pathname), route },
+      fullRsc: {
+        headers: { Accept: "text/x-component", RSC: "1" },
+        kind: "rsc-full" as const,
+        label: `${pathname} (RSC full)`,
+        pathname: `${pathname}?_rsc`,
+        route,
+        sourcePathname: pathname,
+      },
+      loadingShell: {
+        headers: { Accept: "text/x-component", RSC: "1" },
+        kind: "rsc-loading-shell" as const,
+        label: `${pathname} (RSC loading shell)`,
+        pathname: `${pathname}?_rsc=loading`,
+        route,
+        sourcePathname: pathname,
+      },
+    });
+    const postsRoute = optimizableRoute("/posts/:slug");
+    const dashboardRoute = optimizableRoute("/dashboard");
+    const post = representations(postsRoute, "/posts/one");
+    const dashboard = representations(dashboardRoute, "/dashboard");
+
+    const result = await probeStagedWorkerCacheability({
+      buildId: "application-build",
+      fetchImpl: async (input) => {
+        const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+        // headers() below loading.tsx makes the full page dynamic.
+        return Response.json({
+          dynamicUsage: true,
+          kind: "app-page",
+          pattern: pathname === "/dashboard" ? "/dashboard" : "/posts/:slug",
+          scope: "identity",
+          state: "dynamic",
+          status: 200,
+          version: 1,
+        });
+      },
+      retries: 0,
+      root,
+      targetUrl: "https://example.com",
+      targets: [
+        post.loadingShell,
+        post.fullRsc,
+        post.html,
+        dashboard.loadingShell,
+        dashboard.fullRsc,
+        dashboard.html,
+      ],
+    });
+
+    expect(result.probed).toBe(2);
+    expect(result.cacheableTargets).toEqual([dashboard.loadingShell, post.loadingShell]);
+    expect(result.speculativeTargets).toEqual([dashboard.loadingShell, post.loadingShell]);
+    const postsEntry =
+      result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")];
+    const dashboardEntry =
+      result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/dashboard")];
+    expect(postsEntry).toBeDefined();
+    expect(dashboardEntry).toBeDefined();
+    expect(parseCacheabilityManifest(JSON.stringify(result.manifest), "application-build")).toEqual(
+      result.manifest,
+    );
+    for (const [entry, pathname] of [
+      [postsEntry!, "/posts/one"],
+      [dashboardEntry!, "/dashboard"],
+    ] as const) {
+      expect(cacheabilityManifestRouteState(entry, pathname, "rsc-loading-shell")).toBe(
+        "runtime-check",
+      );
+      expect(cacheabilityManifestRouteState(entry, pathname, "html")).toBeNull();
+      expect(cacheabilityManifestRouteState(entry, pathname, "rsc-full")).toBeNull();
+    }
+    // Only the listed path's loading shell is authorized.
+    expect(
+      cacheabilityManifestRouteState(postsEntry!, "/posts/two", "rsc-loading-shell"),
+    ).toBeNull();
   });
 
   it("classifies every nodejs.org path while storing one compact exact-path record", async () => {

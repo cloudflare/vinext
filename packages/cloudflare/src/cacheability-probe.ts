@@ -10,6 +10,7 @@ import {
   normalizeCacheabilityRoutePathname,
   type CacheabilityManifest,
   type CacheabilityManifestRoute,
+  type CacheabilityRepresentation,
 } from "vinext/internal/server/cacheability-manifest";
 import type { PrerenderRoutePattern } from "vinext/internal/build/prerender-paths";
 import {
@@ -100,27 +101,31 @@ function sharedPathPrefix(pathnames: readonly string[]): string | null {
 function compactManifestRoutePaths(route: CacheabilityManifestRoute): CacheabilityManifestRoute {
   const pathnames = [
     ...(route.runtimePaths ?? []),
+    ...Object.values(route.runtimeRepresentationPaths ?? {}).flatMap((paths) => paths ?? []),
     ...Object.values(route.staticPaths ?? {}).flatMap((paths) => paths ?? []),
   ];
   const pathPrefix = sharedPathPrefix(pathnames);
   if (!pathPrefix) return route;
 
+  const compactPathLists = (
+    lists: Partial<Record<CacheabilityRepresentation, string[]>>,
+  ): Partial<Record<CacheabilityRepresentation, string[]>> =>
+    Object.fromEntries(
+      Object.entries(lists).map(([representation, paths]) => [
+        representation,
+        paths!.map((pathname) => pathname.slice(pathPrefix.length)),
+      ]),
+    );
   const compacted: CacheabilityManifestRoute = {
     ...route,
     pathPrefix,
     ...(route.runtimePaths
       ? { runtimePaths: route.runtimePaths.map((pathname) => pathname.slice(pathPrefix.length)) }
       : {}),
-    ...(route.staticPaths
-      ? {
-          staticPaths: Object.fromEntries(
-            Object.entries(route.staticPaths).map(([representation, paths]) => [
-              representation,
-              paths!.map((pathname) => pathname.slice(pathPrefix.length)),
-            ]),
-          ),
-        }
+    ...(route.runtimeRepresentationPaths
+      ? { runtimeRepresentationPaths: compactPathLists(route.runtimeRepresentationPaths) }
       : {}),
+    ...(route.staticPaths ? { staticPaths: compactPathLists(route.staticPaths) } : {}),
   };
   return Buffer.byteLength(JSON.stringify(compacted)) < Buffer.byteLength(JSON.stringify(route))
     ? compacted
@@ -1052,9 +1057,27 @@ export async function probeStagedWorkerCacheability(options: {
 
     const rendererStaticTargets = new Map<string, CdnWarmTarget>();
     const runtimePathSet = new Set<string>();
+    const loadingShellRuntimePathSet = new Set<string>();
     for (const group of pattern.groups) {
       if (group.dropped) continue;
-      if (!group.deferred && hasNoState(group)) continue;
+      if (!group.deferred && hasNoState(group)) {
+        // A dynamic API can sit below the loading boundary, so the loading
+        // shell of a path the route would otherwise keep stays warmable. Its
+        // completed render decides admission.
+        const loadingShellTargets = group.targets.filter(
+          (target) => target.kind === "rsc-loading-shell",
+        );
+        if (
+          loadingShellTargets.length > 0 &&
+          pattern.results.get(group.resultKey)?.dynamicUsage &&
+          (hasOnDemandIsr || isListedGroup(group))
+        ) {
+          loadingShellRuntimePathSet.add(group.routePathname);
+          cacheableTargets.push(...loadingShellTargets);
+          speculativeTargets.push(...loadingShellTargets);
+        }
+        continue;
+      }
       if (group.deferred) {
         runtimePathSet.add(group.routePathname);
         cacheableTargets.push(...group.targets);
@@ -1114,6 +1137,17 @@ export async function probeStagedWorkerCacheability(options: {
       }
     }
     for (const paths of Object.values(staticPaths)) paths?.sort();
+    const loadingShellRuntimePaths = Array.from(loadingShellRuntimePathSet)
+      .filter(
+        (routePathname) =>
+          !runtimePathSet.has(routePathname) &&
+          !staticPaths["rsc-loading-shell"]?.includes(routePathname),
+      )
+      .sort();
+    const runtimeRepresentationPaths: CacheabilityManifestRoute["runtimeRepresentationPaths"] =
+      loadingShellRuntimePaths.length > 0
+        ? { "rsc-loading-shell": loadingShellRuntimePaths }
+        : undefined;
     const allObservedPathsStatic =
       pattern.results.size === pattern.resultKeys.size &&
       Array.from(pattern.results.values()).every((result) => result.state === "static-candidate");
@@ -1128,7 +1162,13 @@ export async function probeStagedWorkerCacheability(options: {
       normalizeCacheabilityRoutePathname(pattern.route.pattern) === soleGroup.routePathname;
     let route: CacheabilityManifestRoute;
     if (literalPatternNamesSolePath && !soleGroup.deferred && hasNoState(soleGroup)) {
-      continue;
+      if (!runtimeRepresentationPaths) continue;
+      route = {
+        kind: pattern.route.kind,
+        pattern: pattern.route.pattern,
+        runtimeRepresentation: "rsc-loading-shell",
+        state: "runtime-check",
+      };
     } else if (literalPatternNamesSolePath) {
       const result = pattern.results.get(soleGroup.resultKey);
       route =
@@ -1172,6 +1212,7 @@ export async function probeStagedWorkerCacheability(options: {
       isAppPage &&
       !hasOnDemandIsr &&
       runtimePathSet.size === 0 &&
+      !runtimeRepresentationPaths &&
       Object.keys(staticPaths).length === 0
     ) {
       // Without path lists or on-demand ISR, a runtime-check entry would admit
@@ -1186,6 +1227,7 @@ export async function probeStagedWorkerCacheability(options: {
           ? { allowUnknown: true, unknownState: "static-candidate" as const }
           : {}),
         ...(runtimePathSet.size > 0 ? { runtimePaths: Array.from(runtimePathSet).sort() } : {}),
+        ...(runtimeRepresentationPaths ? { runtimeRepresentationPaths } : {}),
         ...(Object.keys(staticPaths).length > 0 ? { staticPaths } : {}),
       });
     }
