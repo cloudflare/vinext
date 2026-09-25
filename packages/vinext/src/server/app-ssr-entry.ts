@@ -441,12 +441,12 @@ export async function handleSsr(
       isForceStatic: options?.isForceStatic,
       searchParamsGate: searchParamsGate?.gate,
       // A client page reading this marks the render dynamic, like a server
-      // page's searchParams. force-static reads an empty query, which isn't a
-      // read, and PPR fallback shells keep their untracked query.
+      // page's searchParams.
       clientPageSearchParams: makeClientPageSsrSearchParamsThenable(
         requiredNavigationContext.searchParams,
         {
-          observe: options?.isForceStatic !== true && options?.pprFallbackShellSignal === undefined,
+          isForceStatic: options?.isForceStatic,
+          isPprFallbackShell: options?.pprFallbackShellSignal !== undefined,
         },
       ),
     };

@@ -197,6 +197,7 @@ type BuildServerActionPageElementOptions<TRoute extends AppServerActionRoute, TI
   searchParams: URLSearchParams;
   scriptNonce?: string;
   renderMode: AppRscRenderMode;
+  isForceStatic?: boolean;
   observeMetadataSearchParamsAccess?: boolean;
   observePageSearchParamsAccess?: boolean;
 };
@@ -1908,6 +1909,7 @@ export async function handleServerActionRscRequest<
           route: actionRerenderTarget.route,
           searchParams: actionRerenderSearchParams,
           renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
+          isForceStatic: actionRerenderDynamicConfig === "force-static",
           observeMetadataSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
           observePageSearchParamsAccess: actionRerenderDynamicConfig !== "force-static",
         });

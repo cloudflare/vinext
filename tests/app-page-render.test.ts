@@ -1167,13 +1167,21 @@ describe("app page render lifecycle", () => {
       return React.createElement("p", null, `q:${String(React.use(searchParams).q)}`);
     }
 
+    function SyncReadingClientPage({ searchParams }: ClientPageProps): ReactNode {
+      return React.createElement("p", null, `q:${String(Reflect.get(searchParams, "q"))}`);
+    }
+
     function StaticClientPage(): ReactNode {
       return React.createElement("p", null, "static client page");
     }
 
     // Mirrors what handleSsr does for a client page: the query comes from the
     // SSR navigation context, never from the RSC payload.
-    async function renderClientPageCandidate(Page: (props: ClientPageProps) => ReactNode) {
+    async function renderClientPageCandidate(
+      Page: (props: ClientPageProps) => ReactNode,
+      renderOptions?: { isForceStatic?: boolean },
+    ) {
+      const isForceStatic = renderOptions?.isForceStatic === true;
       const common = createCommonOptions();
       const html = await runWithHeadersContext(
         headersContextFromRequest(new Request("https://example.test/posts/post?q=secret")),
@@ -1188,6 +1196,7 @@ describe("app page render lifecycle", () => {
               };
             },
             isCacheCandidate: true,
+            isForceStatic,
             isProduction: true,
             revalidateSeconds: Infinity,
             async loadSsrHandler() {
@@ -1204,13 +1213,18 @@ describe("app page render lifecycle", () => {
                     ...ssrNavigationContext,
                     clientPageSearchParams: makeClientPageSsrSearchParamsThenable(
                       ssrNavigationContext.searchParams,
-                      { observe: true },
+                      {
+                        isForceStatic: options?.isForceStatic,
+                        isPprFallbackShell: options?.pprFallbackShellSignal !== undefined,
+                      },
                     ),
                   });
                   return renderToReadableStream(
                     React.createElement(ClientPageRoot, {
                       Component: Page as React.ComponentType<Record<string, unknown>>,
                       pageProps: {},
+                      // What the element builder sets for a force-static route.
+                      ...(isForceStatic ? { emptySearchParams: true } : {}),
                     }),
                   );
                 },
@@ -1244,6 +1258,28 @@ describe("app page render lifecycle", () => {
 
       expect(html).toContain("q:secret");
       expect(isrSet).not.toHaveBeenCalled();
+    });
+
+    it("never stores a client page that reads searchParams synchronously during SSR", async () => {
+      const { html, isrSet } = await renderClientPageCandidate(SyncReadingClientPage);
+
+      expect(html).toContain("q:secret");
+      expect(isrSet).not.toHaveBeenCalled();
+    });
+
+    it("stores a force-static client page that reads searchParams, with an empty query", async () => {
+      // Next.js renders force-static pages with empty searchParams.
+      const { html, isrSet } = await renderClientPageCandidate(ReadingClientPage, {
+        isForceStatic: true,
+      });
+
+      expect(html).toContain("q:undefined");
+      expect(html).not.toContain("secret");
+      expect(isrSet).toHaveBeenCalledWith(
+        "html:/posts/post",
+        expect.objectContaining({ kind: "APP_PAGE" }),
+        expect.anything(),
+      );
     });
   });
 

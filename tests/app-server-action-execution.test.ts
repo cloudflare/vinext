@@ -1757,7 +1757,11 @@ describe("app server action execution helpers", () => {
   });
 
   it("passes empty request APIs to force-static action rerender targets", async () => {
-    const buildInputs: Array<{ query: string; header: string | null }> = [];
+    const buildInputs: Array<{
+      query: string;
+      header: string | null;
+      isForceStatic: boolean | undefined;
+    }> = [];
     const targetRoute: TestRoute = {
       id: "dashboard",
       page: {},
@@ -1766,10 +1770,11 @@ describe("app server action execution helpers", () => {
     };
     const response = await handleServerActionRscRequest(
       createRscOptions({
-        buildPageElement({ searchParams }) {
+        buildPageElement({ isForceStatic, searchParams }) {
           buildInputs.push({
             query: searchParams.toString(),
             header: getHeadersContext()?.headers.get("x-request-value") ?? null,
+            isForceStatic,
           });
           return "force-static-target";
         },
@@ -1791,7 +1796,8 @@ describe("app server action execution helpers", () => {
     );
 
     expect(response?.status).toBe(200);
-    expect(buildInputs).toEqual([{ query: "", header: null }]);
+    // Client pages also read an empty query in the browser.
+    expect(buildInputs).toEqual([{ query: "", header: null, isForceStatic: true }]);
   });
 
   it("observes searchParams access for dynamic-error action rerender targets", async () => {

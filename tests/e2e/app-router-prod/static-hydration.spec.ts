@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
 // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
@@ -23,11 +23,7 @@ test("force-static hydration keeps search params empty", async ({ page }) => {
 });
 
 test("a client page reads its searchParams prop from the URL in the browser", async ({ page }) => {
-  const errors: string[] = [];
-  page.on("console", (message) => {
-    if (message.type() === "error") errors.push(message.text());
-  });
-  page.on("pageerror", (error) => errors.push(error.message));
+  const errors = collectPageErrors(page);
 
   await page.goto("/client-page-search-params?q=hello");
   await waitForAppRouterHydration(page);
@@ -36,5 +32,27 @@ test("a client page reads its searchParams prop from the URL in the browser", as
   await page.getByTestId("client-page-search-params-link").click();
   await expect(page).toHaveURL(/\?q=world$/);
   await expect(page.getByTestId("client-page-search-params-q")).toHaveText("world");
+  expect(errors).toEqual([]);
+});
+
+function collectPageErrors(page: Page): string[] {
+  const errors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  page.on("pageerror", (error) => errors.push(error.message));
+  return errors;
+}
+
+test("a force-static client page keeps an empty query during navigation", async ({ page }) => {
+  const errors = collectPageErrors(page);
+
+  await page.goto("/client-page-search-params/force-static?q=hidden");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("force-static-client-page-q")).toHaveText("(none)");
+
+  await page.getByTestId("force-static-client-page-link").click();
+  await expect(page).toHaveURL(/\?q=world$/);
+  await expect(page.getByTestId("force-static-client-page-q")).toHaveText("(none)");
   expect(errors).toEqual([]);
 });

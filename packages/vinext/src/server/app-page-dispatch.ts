@@ -306,6 +306,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     searchParams: URLSearchParams,
     layoutParamAccess?: AppLayoutParamAccessTracker,
     options?: {
+      isForceStatic?: boolean;
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
       serveStreamingMetadata?: boolean;
@@ -908,6 +909,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               new URLSearchParams(),
               undefined,
               {
+                isForceStatic: revalidationDynamicConfig === "force-static",
                 observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 // Cache regeneration produces a complete static artifact, so metadata
@@ -1094,6 +1096,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         interceptSearchParams,
         interceptLayoutParamAccess,
         {
+          isForceStatic: sourceDynamicConfig === "force-static",
           observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
           observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
           serveStreamingMetadata: placeGeneratedMetadataInBody,
@@ -1177,6 +1180,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           pageSearchParams,
           layoutParamAccess,
           {
+            isForceStatic,
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
             serveStreamingMetadata: placeGeneratedMetadataInBody,

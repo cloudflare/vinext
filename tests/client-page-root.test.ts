@@ -43,8 +43,8 @@ function inRequest<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /** Set up SSR navigation state as handleSsr does for a candidate render. */
-function startCandidateSsr(options: { observe: boolean; query?: string }) {
-  const searchParams = new URLSearchParams(options.query ?? "q=secret");
+function startCandidateSsr(options?: { isPprFallbackShell?: boolean }) {
+  const searchParams = new URLSearchParams("q=secret");
   const gate = startCandidateSearchParamsGate();
   setNavigationContext({
     pathname: "/client",
@@ -52,7 +52,7 @@ function startCandidateSsr(options: { observe: boolean; query?: string }) {
     params: {},
     searchParamsGate: gate.gate,
     clientPageSearchParams: makeClientPageSsrSearchParamsThenable(searchParams, {
-      observe: options.observe,
+      isPprFallbackShell: options?.isPprFallbackShell,
     }),
   });
   return gate;
@@ -61,6 +61,7 @@ function startCandidateSsr(options: { observe: boolean; query?: string }) {
 async function renderPage(
   Component: React.ComponentType<SearchParamsProps>,
   extra?: React.ReactNode,
+  rootProps?: { emptySearchParams?: boolean },
 ): Promise<string> {
   const stream = await renderToReadableStream(
     React.createElement(
@@ -69,6 +70,7 @@ async function renderPage(
       React.createElement(ClientPageRoot, {
         Component: Component as React.ComponentType<Record<string, unknown>>,
         pageProps: { params: Promise.resolve({}) },
+        ...rootProps,
       }),
       extra,
     ),
@@ -85,7 +87,7 @@ afterEach(() => {
 describe("ClientPageRoot in SSR", () => {
   it("marks a candidate render dynamic when the page reads searchParams", async () => {
     await inRequest(async () => {
-      const gate = startCandidateSsr({ observe: true });
+      const gate = startCandidateSsr();
       const html = await renderPage(
         ReadingPage,
         React.createElement(
@@ -108,7 +110,7 @@ describe("ClientPageRoot in SSR", () => {
 
   it("marks a synchronous property read dynamic and returns the real value", async () => {
     await inRequest(async () => {
-      startCandidateSsr({ observe: true });
+      startCandidateSsr();
       const html = await renderPage(SyncReadingPage);
 
       expect(html).toContain("page:secret");
@@ -118,7 +120,7 @@ describe("ClientPageRoot in SSR", () => {
 
   it("leaves a candidate render static when the page never reads searchParams", async () => {
     await inRequest(async () => {
-      const gate = startCandidateSsr({ observe: true });
+      const gate = startCandidateSsr();
       const html = await renderPage(IgnoringPage);
 
       expect(html).toContain("page:static");
@@ -130,13 +132,37 @@ describe("ClientPageRoot in SSR", () => {
     });
   });
 
-  it("hands over the query untracked when observation is off", async () => {
-    // force-static: the navigation context already carries an empty query.
+  it("hands a force-static page an empty, untracked query", async () => {
     await inRequest(async () => {
-      startCandidateSsr({ observe: false, query: "" });
-      const html = await renderPage(ReadingPage);
+      startCandidateSsr();
+      const html = await renderPage(ReadingPage, null, { emptySearchParams: true });
 
       expect(html).toContain("page:undefined");
+      expect(html).not.toContain("secret");
+      expect(isRenderDynamicLatched()).toBe(false);
+      expect(consumeRenderRequestApiUsage()).not.toContain("searchParams");
+    });
+  });
+
+  it("hands a PPR fallback shell its query untracked", async () => {
+    await inRequest(async () => {
+      startCandidateSsr({ isPprFallbackShell: true });
+      const html = await renderPage(ReadingPage);
+
+      expect(html).toContain("page:secret");
+      expect(isRenderDynamicLatched()).toBe(false);
+      expect(consumeRenderRequestApiUsage()).not.toContain("searchParams");
+    });
+  });
+
+  it("observes a force-static navigation context's query untracked", async () => {
+    // handleSsr's own force-static guard, behind the page's emptySearchParams.
+    await inRequest(async () => {
+      const searchParams = makeClientPageSsrSearchParamsThenable(new URLSearchParams(), {
+        isForceStatic: true,
+      });
+
+      expect({ ...(await searchParams) }).toEqual({});
       expect(isRenderDynamicLatched()).toBe(false);
       expect(consumeRenderRequestApiUsage()).not.toContain("searchParams");
     });
@@ -144,7 +170,7 @@ describe("ClientPageRoot in SSR", () => {
 
   it("keeps handing the page the same promise across renders", async () => {
     await inRequest(async () => {
-      startCandidateSsr({ observe: true });
+      startCandidateSsr();
       const received: unknown[] = [];
       function RecordingPage({ searchParams }: SearchParamsProps): React.ReactNode {
         received.push(searchParams);
@@ -188,7 +214,7 @@ describe("createClientPageSearchParams", () => {
     const query = "q=one&status=y&value=z&then=x&constructor=c&tag=a&tag=b";
     const browser = createClientPageSearchParams(new URLSearchParams(query));
     const ssr = makeClientPageSsrSearchParamsThenable(new URLSearchParams(query), {
-      observe: false,
+      isPprFallbackShell: true,
     });
 
     // React's bookkeeping and the reserved names aren't query keys.
@@ -203,7 +229,7 @@ describe("createClientPageSearchParams", () => {
     const record = await createClientPageSearchParams(new URLSearchParams("q=one&__proto__=x"));
     const ssrRecord = await makeClientPageSsrSearchParamsThenable(
       new URLSearchParams("q=one&__proto__=x"),
-      { observe: false },
+      { isPprFallbackShell: true },
     );
 
     expect(Object.getPrototypeOf(record)).toBe(Object.prototype);

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
 import {
   APP_INTERCEPTION_KEY,
@@ -1174,10 +1174,71 @@ describe("buildPageElements", () => {
 
     expect(pageRoot.props.Component).toBe(ClientPage);
     expect(Object.keys(pageRoot.props)).not.toContain("searchParams");
+    expect(pageRoot.props.emptySearchParams).toBeUndefined();
     expect(Object.keys(pageRoot.props.pageProps as object)).toEqual(["params"]);
     expect(await serializeLikeFlight(pageRoot.props)).not.toContain("secret");
     expect(markDynamicUsageMock).not.toHaveBeenCalled();
     expect(markRenderRequestApiUsageMock).not.toHaveBeenCalled();
+  });
+
+  describe("client page searchParams policy", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    async function buildClientPageRoot(pageRequest: {
+      isForceStatic?: boolean;
+      isProduction?: boolean;
+    }): Promise<React.ReactElement<Record<string, unknown>>> {
+      const ClientPage = createClientReference();
+      const route = createSyntheticRoute({
+        page: createSyntheticPageModule(ClientPage),
+        layouts: [],
+        routeSegments: ["client-policy"],
+        pattern: "/client-policy",
+      });
+      const result = await buildPageElements({
+        ...createBaseOptions({
+          route,
+          routePath: "/client-policy",
+          searchParams: new URLSearchParams(),
+        }),
+        pageRequest: {
+          ...createBaseOptions().pageRequest,
+          observePageSearchParamsAccess: pageRequest.isForceStatic !== true,
+          searchParams: new URLSearchParams(),
+          ...pageRequest,
+        },
+      });
+      const pageRoot = findElementOfType(
+        (result as Record<string, React.ReactNode>)["page:/client-policy"],
+        ClientPageRoot,
+      );
+      if (!pageRoot) throw new Error("Expected ClientPageRoot element");
+      return pageRoot;
+    }
+
+    it("tells the browser a force-static page reads an empty query", async () => {
+      // The flag travels in Flight, so client navigations keep the page's
+      // searchParams empty, as SSR renders them.
+      const pageRoot = await buildClientPageRoot({ isForceStatic: true });
+
+      expect(pageRoot.props.emptySearchParams).toBe(true);
+    });
+
+    it("keeps client page searchParams empty in a static export build", async () => {
+      // Each page is rendered once without a query, so a read must not make
+      // the page dynamic and drop it from the export.
+      vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+
+      expect((await buildClientPageRoot({ isProduction: true })).props.emptySearchParams).toBe(
+        true,
+      );
+      // The dev server renders each request, with its query.
+      expect(
+        (await buildClientPageRoot({ isProduction: false })).props.emptySearchParams,
+      ).toBeUndefined();
+    });
   });
 
   it("drops the route searchParams from a client slot page's props", async () => {

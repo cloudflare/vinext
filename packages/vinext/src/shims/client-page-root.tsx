@@ -15,6 +15,9 @@
  * - Browser: client navigation state, so the value follows the URL the way
  *   `useSearchParams()` does.
  *
+ * `emptySearchParams` pages (`dynamic = "force-static"`, static export) always
+ * get an empty, untracked query, as the server renders them.
+ *
  * This module runs in the browser, so it must not import server-only modules.
  */
 import { createElement, useMemo, type ComponentType } from "react";
@@ -29,6 +32,8 @@ export type ClientPageRootProps = {
   Component: ComponentType<Record<string, unknown>>;
   /** The page's other props (`params`, slot props). Never `searchParams`. */
   pageProps: Readonly<Record<string, unknown>>;
+  /** The page always reads an empty query: `force-static`, or static export. */
+  emptySearchParams?: boolean;
 };
 
 const isServer = typeof window === "undefined";
@@ -74,16 +79,22 @@ export function createClientPageSearchParams(
 }
 
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
-export function ClientPageRoot({ Component, pageProps }: ClientPageRootProps) {
+export function ClientPageRoot({ Component, pageProps, emptySearchParams }: ClientPageRootProps) {
   let searchParams: Promise<ClientPageSearchParams>;
   if (isServer) {
     // Every App Router SSR render sets this. Without it there is no query this
-    // render may safely read, so the page gets an empty one.
+    // render may safely read, so the page gets an empty one. An empty query
+    // has nothing to read, so nothing to track.
     searchParams =
-      getNavigationContext()?.clientPageSearchParams ?? createClientPageSearchParams(null);
+      (emptySearchParams === true ? null : getNavigationContext()?.clientPageSearchParams) ??
+      createClientPageSearchParams(null);
   } else {
     const urlSearchParams = useSearchParams();
-    searchParams = useMemo(() => createClientPageSearchParams(urlSearchParams), [urlSearchParams]);
+    const isEmpty = emptySearchParams === true;
+    searchParams = useMemo(
+      () => createClientPageSearchParams(isEmpty ? null : urlSearchParams),
+      [isEmpty, urlSearchParams],
+    );
   }
   return createElement(Component, { ...pageProps, searchParams });
 }

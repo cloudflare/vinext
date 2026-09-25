@@ -160,6 +160,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   renderMode?: AppRscRenderMode;
   /** Observe page `searchParams` access for cache-safety classification. */
   observePageSearchParamsAccess?: boolean;
+  /** The route is `dynamic = "force-static"`, so pages read an empty query. */
+  isForceStatic?: boolean;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
   /** Whether generated metadata may stream into the response body. */
@@ -264,6 +266,7 @@ export async function buildPageElements<
     renderMode = APP_RSC_RENDER_MODE_NAVIGATION,
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
+    isForceStatic = false,
     serveStreamingMetadata,
     isProduction = process.env.NODE_ENV === "production",
   } = pageRequest;
@@ -570,6 +573,12 @@ export async function buildPageElements<
         },
         pageTreePosition,
       ) !== null);
+  // A client page reads an empty query in SSR and the browser alike when the
+  // server renders every page with one. A static export build renders each
+  // page once without a query, so a client page read must not make it dynamic,
+  // which would drop it from the export.
+  const hasEmptyClientPageSearchParams =
+    isForceStatic || (isProduction && process.env.__NEXT_CONFIG_OUTPUT === "export");
   const pageRenderDependency =
     EffectivePageComponent && !isReactOwnedAppComponent(EffectivePageComponent)
       ? createAppPageRenderDependency()
@@ -586,7 +595,11 @@ export async function buildPageElements<
       // query, and its RSC payload would carry it. Slot props arrive with the
       // route's searchParams attached, so drop them here.
       const { searchParams: _slotSearchParams, ...pageProps } = props;
-      return createElement(ClientPageRoot, { Component: PageComponent, pageProps });
+      return createElement(ClientPageRoot, {
+        Component: PageComponent,
+        pageProps,
+        ...(hasEmptyClientPageSearchParams ? { emptySearchParams: true } : {}),
+      });
     }
 
     if (isReactOwnedAppComponent(PageComponent)) {

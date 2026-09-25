@@ -49,15 +49,17 @@ export function makeObservedAppPageSearchParamsThenable(
  * The `searchParams` a client page receives during SSR (see
  * `shims/client-page-root.tsx`). Its RSC payload carries no query, so this is
  * the only place a client page can read it on the server, and a read counts
- * like a server page's: the render is dynamic and won't be stored. With
- * `observe` false the query is handed over without tracking.
+ * like a server page's: the render is dynamic and won't be stored.
+ *
+ * `force-static` renders read an empty query, which isn't a read, and PPR
+ * fallback shells keep their untracked query, so neither is observed.
  */
 export function makeClientPageSsrSearchParamsThenable(
   searchParams: URLSearchParams,
-  options: { observe: boolean },
+  options: { isForceStatic?: boolean; isPprFallbackShell?: boolean },
 ): ThenableParams<AppPageSearchParams> {
   const pageSearchParams = searchParamsToRecord(searchParams);
-  return options.observe
+  return options.isForceStatic !== true && options.isPprFallbackShell !== true
     ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
     : makeThenableParams(pageSearchParams);
 }
