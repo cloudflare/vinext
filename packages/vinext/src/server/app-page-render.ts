@@ -318,6 +318,22 @@ function applyRequestCacheLife(options: {
   return { expireSeconds, revalidateSeconds };
 }
 
+/**
+ * A route Next.js can't make static is never cacheable. Responses that leave
+ * the render before its response policy, such as error boundaries and special
+ * errors, get the same never-cache header as the normal render.
+ */
+function applyIneligibleRouteCachePolicy(
+  response: Response,
+  options: Pick<RenderAppPageLifecycleOptions, "isDraftMode" | "isStaticEligible">,
+): Response {
+  if (options.isStaticEligible || options.isDraftMode) return response;
+  // Some early responses have immutable headers, so stamp a copy.
+  const stamped = new Response(response.body, response);
+  applyCdnResponseHeaders(stamped.headers, { cacheControl: NEVER_CACHE_CONTROL });
+  return stamped;
+}
+
 function resolveAppPageCacheWriteRevalidateSeconds(options: {
   isDynamicError: boolean;
   isForceStatic: boolean;
@@ -671,7 +687,9 @@ export async function renderAppPageLifecycle(
 ): Promise<Response> {
   if (options.isRscRequest) {
     const prepared = await prepareAppPageElement(options);
-    return prepared instanceof Response ? prepared : renderAppPageLifecycleImpl(prepared);
+    return prepared instanceof Response
+      ? applyIneligibleRouteCachePolicy(prepared, options)
+      : renderAppPageLifecycleImpl(prepared);
   }
 
   const operation = options.traceOperation ?? (options.isPrerender ? "prerender" : "render");
@@ -686,7 +704,9 @@ export async function renderAppPageLifecycle(
     try {
       const prepared = await prepareAppPageElement(options);
       if (prepared instanceof Response) {
-        const traced = traceResponseStartWithCompletion(prepared);
+        const traced = traceResponseStartWithCompletion(
+          applyIneligibleRouteCachePolicy(prepared, options),
+        );
         resolveResponse(traced.response);
         await traced.started;
         return;
@@ -772,7 +792,7 @@ async function renderAppPageLifecycleImpl(
     classification: options.classification,
   });
   if (preRenderResult.response) {
-    return preRenderResult.response;
+    return applyIneligibleRouteCachePolicy(preRenderResult.response, options);
   }
 
   const layoutFlags = preRenderResult.layoutFlags;
@@ -1226,7 +1246,7 @@ async function renderAppPageLifecycleImpl(
   });
   options.onRenderComplete?.(htmlRender.renderComplete);
   if (htmlRender.response) {
-    return htmlRender.response;
+    return applyIneligibleRouteCachePolicy(htmlRender.response, options);
   }
   let htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
@@ -1262,7 +1282,10 @@ async function renderAppPageLifecycleImpl(
       const specialError = resolveAppPageSpecialError(captured);
       if (specialError) {
         void htmlStream.cancel().catch(() => {});
-        return options.renderPageSpecialError(specialError);
+        return applyIneligibleRouteCachePolicy(
+          await options.renderPageSpecialError(specialError),
+          options,
+        );
       }
     }
   }

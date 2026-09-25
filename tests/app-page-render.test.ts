@@ -890,6 +890,48 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("boundary:ssr-decoder");
   });
 
+  it("sends the never-cache header on early responses of a route that can't be static", async () => {
+    const common = createCommonOptions();
+    const neverCache = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+    const recovered = await renderAppPageLifecycle({
+      ...common.options,
+      isStaticEligible: false,
+      async loadSsrHandler() {
+        return {
+          async handleSsr() {
+            throw new Error("ssr-decoder");
+          },
+        };
+      },
+    });
+    expect(recovered.headers.get("cache-control")).toBe(neverCache);
+    await expect(recovered.text()).resolves.toBe("boundary:ssr-decoder");
+
+    const special = await renderAppPageLifecycle({
+      ...common.options,
+      isRscRequest: true,
+      isStaticEligible: false,
+      probePage() {
+        throw { digest: "NEXT_NOT_FOUND" };
+      },
+    });
+    expect(special.status).toBe(404);
+    expect(special.headers.get("cache-control")).toBe(neverCache);
+
+    const { element: _element, ...optionsWithoutElement } = common.options;
+    const prepared = await renderAppPageLifecycle({
+      ...optionsWithoutElement,
+      isStaticEligible: false,
+      async prepareElement() {
+        return { response: Response.redirect("https://example.test/elsewhere", 307) };
+      },
+    });
+    expect(prepared.status).toBe(307);
+    expect(prepared.headers.get("location")).toBe("https://example.test/elsewhere");
+    expect(prepared.headers.get("cache-control")).toBe(neverCache);
+  });
+
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {
     const common = createCommonOptions();
 
