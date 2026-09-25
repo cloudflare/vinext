@@ -110,6 +110,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     dynamicUsageDetected: false,
+    renderDynamicLatch: { dynamic: false, listeners: new Set() },
     renderRequestApiUsage: new Set(),
     connectionProbe: null,
     invalidDynamicUsageError: null,
@@ -362,9 +363,11 @@ export function runWithUnifiedStateMutation<T>(
   // Map fields (unstableCacheObservations, _privateCache),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,
-  // requestScopedCacheLife) still share references with the parent until
-  // replaced. requestCache is intentionally shared — nested scopes within
-  // the same request should see the same cached values. The mutate
+  // requestScopedCacheLife, renderDynamicLatch) still share references with
+  // the parent until replaced. requestCache is intentionally shared — nested
+  // scopes within the same request should see the same cached values.
+  // renderDynamicLatch must stay shared: dynamic usage in an isolated child
+  // scope has to reach gates issued later in the same render. The mutate
   // callback must replace those reference-typed slices (for example
   // `ctx.currentRequestTags = []` or `ctx.renderRequestApiUsage = new Set()`)
   // rather than mutating them in-place (for

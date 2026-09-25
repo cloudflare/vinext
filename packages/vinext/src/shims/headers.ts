@@ -50,9 +50,25 @@ type HeadersContextFromRequestOptions = {
 
 export type HeadersAccessPhase = "render" | "action" | "route-handler";
 
+/**
+ * Whether the current render has used a dynamic API. Unlike
+ * `dynamicUsageDetected`, nothing clears it, and one object is shared by every
+ * child scope of the request, so usage inside isolated scopes (such as the
+ * layout probe) stays visible to later readers.
+ */
+export type RenderDynamicLatch = {
+  dynamic: boolean;
+  listeners: Set<() => void>;
+};
+
+export function createRenderDynamicLatch(): RenderDynamicLatch {
+  return { dynamic: false, listeners: new Set() };
+}
+
 export type VinextHeadersShimState = {
   headersContext: HeadersContext | null;
   dynamicUsageDetected: boolean;
+  renderDynamicLatch: RenderDynamicLatch;
   renderRequestApiUsage: Set<RenderRequestApiKind>;
   connectionProbe: ConnectionProbeState | null;
   /** Error recorded by throwIfInsideCacheScope for dev diagnostics, persists even if caught by user code. */
@@ -93,6 +109,7 @@ const _als = getOrCreateAls<VinextHeadersShimState>("vinext.nextHeadersShim.als"
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   headersContext: null,
   dynamicUsageDetected: false,
+  renderDynamicLatch: createRenderDynamicLatch(),
   renderRequestApiUsage: new Set<RenderRequestApiKind>(),
   connectionProbe: null,
   invalidDynamicUsageError: null,
@@ -207,6 +224,34 @@ export function markDynamicUsage(): void {
   forEachConnectionProbeTarget(state, (target) => {
     target.dynamicUsageDetected = true;
   });
+  latchRenderDynamic(state.renderDynamicLatch);
+}
+
+function latchRenderDynamic(latch: RenderDynamicLatch): void {
+  if (latch.dynamic) return;
+  latch.dynamic = true;
+  const listeners = [...latch.listeners];
+  latch.listeners.clear();
+  for (const listener of listeners) listener();
+}
+
+/** Whether the current render has used a dynamic API at any point so far. */
+export function isRenderDynamicLatched(): boolean {
+  return _getState().renderDynamicLatch.dynamic;
+}
+
+/**
+ * Call `listener` once when the current render first uses a dynamic API.
+ * Returns an unsubscribe function. The listener never runs if the render is
+ * already latched; check `isRenderDynamicLatched()` first.
+ */
+export function onRenderDynamicLatched(listener: () => void): () => void {
+  const latch = _getState().renderDynamicLatch;
+  if (latch.dynamic) return () => {};
+  latch.listeners.add(listener);
+  return () => {
+    latch.listeners.delete(listener);
+  };
 }
 
 function forEachConnectionProbeTarget(
@@ -612,6 +657,7 @@ export function setHeadersContext(ctx: HeadersContext | null): void {
   if (ctx !== null) {
     state.headersContext = ctx;
     state.dynamicUsageDetected = false;
+    state.renderDynamicLatch = createRenderDynamicLatch();
     state.renderRequestApiUsage = new Set();
     state.pendingSetCookies = [];
     state.draftModeCookieHeader = null;
@@ -645,6 +691,7 @@ export function runWithHeadersContext<T>(
     return runWithUnifiedStateMutation((uCtx) => {
       uCtx.headersContext = ctx;
       uCtx.dynamicUsageDetected = false;
+      uCtx.renderDynamicLatch = createRenderDynamicLatch();
       uCtx.renderRequestApiUsage = new Set();
       uCtx.connectionProbe = null;
       uCtx.pendingSetCookies = [];
@@ -656,6 +703,7 @@ export function runWithHeadersContext<T>(
   const state: VinextHeadersShimState = {
     headersContext: ctx,
     dynamicUsageDetected: false,
+    renderDynamicLatch: createRenderDynamicLatch(),
     renderRequestApiUsage: new Set(),
     connectionProbe: null,
     invalidDynamicUsageError: null,
