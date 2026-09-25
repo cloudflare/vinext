@@ -2302,12 +2302,83 @@ test("a re-store cannot publish once its source revision is replaced", async () 
         { ...candidate, objectKey: restore.objectKey },
         undefined,
         restore.objectKey,
-        entry.activeRevision,
+        entry,
       )
     ).published,
     false,
   );
   assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("only the first re-store of a source state publishes", async () => {
+  await put("/single-restore", "seed");
+  const [entry] = await metadata();
+  const stub = await metadataStub();
+  const prefix = "runtime-cache/poc-v2/single-restore";
+  const first = await stub.reserveWrite(entry.keyHash, entry.cacheKey, prefix, Date.now());
+  const second = await stub.reserveWrite(entry.keyHash, entry.cacheKey, prefix, Date.now());
+  const source = {
+    activeRevision: entry.activeRevision,
+    freshUntil: entry.freshUntil,
+    swrUntil: entry.swrUntil,
+  };
+  const candidate = {
+    statusText: entry.statusText,
+    responseHeaders: entry.responseHeaders,
+    revalidator: entry.revalidator,
+    cacheTags: [],
+    fenceTags: [],
+  };
+
+  const firstResult = await stub.publish(
+    entry.keyHash,
+    first.revision,
+    { ...candidate, objectKey: first.objectKey, freshUntil: 5_000, swrUntil: 8_000 },
+    undefined,
+    first.objectKey,
+    source,
+  );
+  const secondResult = await stub.publish(
+    entry.keyHash,
+    second.revision,
+    { ...candidate, objectKey: second.objectKey, freshUntil: 6_000, swrUntil: 9_000 },
+    undefined,
+    second.objectKey,
+    source,
+  );
+  assert.equal(firstResult.published, true);
+  assert.equal(secondResult.published, false);
+
+  const [restored] = await metadata();
+  assert.equal(restored.activeRevision, entry.activeRevision);
+  assert.equal(restored.freshUntil, 5_000);
+  assert.equal(restored.swrUntil, 8_000);
+  assert.equal(await metadataRowCount("pending_objects"), 0);
+});
+
+test("concurrent failed foreground regenerations leave R2 and the metadata in step", async () => {
+  await put("/restore-race-foreground", "still-active", {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    revalidator: { fail: true, delayMs: 100 },
+  });
+
+  const reads = await Promise.all([
+    read("/restore-race-foreground"),
+    read("/restore-race-foreground"),
+  ]);
+  for (const response of reads) {
+    assert.equal(response.status, 500);
+    await response.arrayBuffer();
+  }
+  await waitForNoPendingObjects();
+
+  const [entry] = await metadata();
+  const object = await (
+    await mf.getR2Bucket("CACHE_BODIES", "user-worker")
+  ).head(`${r2Root}/${entry.keyHash}/active`);
+  assert.equal(object?.customMetadata?.freshUntil, String(entry.freshUntil));
+  assert.equal(object?.customMetadata?.swrUntil, String(entry.swrUntil));
 });
 
 test("a write reserved after a tag purge is not rejected by its timestamp", async () => {

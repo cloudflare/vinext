@@ -30,6 +30,8 @@ type WriteReservation = {
   revision: number;
 };
 
+type RestoredSource = Pick<StoredEntry, "activeRevision" | "freshUntil" | "swrUntil">;
+
 type RegenerationReservation = {
   entry: StoredEntry;
   reservation?: WriteReservation;
@@ -95,7 +97,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey?: string,
-    restoredRevision?: number,
+    restoredSource?: RestoredSource,
   ): Promise<PublicationResult>;
   invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
@@ -912,8 +914,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey = metadata.objectKey,
-    restoredRevision?: number,
+    restoredSource?: RestoredSource,
   ): Promise<PublicationResult> {
+    const restoredRevision = restoredSource?.activeRevision;
     return this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
         .exec<EntryRow>(
@@ -940,7 +943,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         current.pending_publishable !== 1 ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
-        (restoredRevision !== undefined && current.active_revision !== restoredRevision) ||
+        // Only the first re-store of a source state publishes; a concurrent one
+        // finds the freshness already moved and writes nothing.
+        (restoredSource !== undefined &&
+          (current.active_revision !== restoredSource.activeRevision ||
+            current.fresh_until !== restoredSource.freshUntil ||
+            current.swr_until !== restoredSource.swrUntil)) ||
         (claimId !== undefined &&
           (current.claim_id !== claimId ||
             current.claim_revision !== revision ||

@@ -1148,7 +1148,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         },
         write.claimId,
         write.objectKey,
-        entry.activeRevision,
+        {
+          activeRevision: entry.activeRevision,
+          freshUntil: entry.freshUntil,
+          swrUntil: entry.swrUntil,
+        },
       );
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
@@ -1156,6 +1160,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
     if (!publication.published || !publication.entry) return;
 
+    // Only one re-store publishes per source state, so this conditional
+    // rewrite has no same-revision competitor from that state. It can still
+    // lose to a newer revision, or to a re-store of an earlier state whose
+    // write was in flight; the next re-store starts from the metadata row and
+    // replaces whatever R2 then holds.
     await this.writeR2Response(publication.entry, source.body, source.status, now, 0, source.etag);
   }
 
