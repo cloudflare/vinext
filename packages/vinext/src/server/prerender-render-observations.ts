@@ -200,20 +200,37 @@ function isRenderObservation(value: unknown, outputKind: "app-html" | "app-rsc")
     isOutputScope(value.output, outputKind) &&
     RENDER_OBSERVATION_COMPLETENESS.has(value.completeness) &&
     isBoundaryOutcome(value.boundaryOutcome) &&
-    Array.isArray(value.requestApis) &&
-    value.requestApis.every(
-      (requestApi: unknown) =>
-        isUnknownRecord(requestApi) &&
-        hasExactKeys(requestApi, ["kind", "status"]) &&
-        RENDER_REQUEST_API_KINDS.has(requestApi.kind) &&
-        RENDER_REQUEST_API_STATUSES.has(requestApi.status),
-    ) &&
+    isRequestApiRegistry(value.requestApis) &&
     isStringArray(value.dynamicFetches) &&
     isStringArray(value.cacheTags) &&
     isStringArray(value.pathTags) &&
     RENDER_CACHEABILITY.has(value.cacheability) &&
     isDowngrade(value.downgrade)
   );
+}
+
+/**
+ * Whether `value` has one observation for every request API kind, as
+ * `buildRenderRequestApiObservations` records them. A missing kind would
+ * classify like an unread one, and a duplicate as whichever of its statuses
+ * ranks highest.
+ */
+function isRequestApiRegistry(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length !== ALL_RENDER_REQUEST_API_KINDS.length) return false;
+  const kinds = new Set<unknown>();
+  for (const requestApi of value) {
+    if (
+      !isUnknownRecord(requestApi) ||
+      !hasExactKeys(requestApi, ["kind", "status"]) ||
+      !RENDER_REQUEST_API_KINDS.has(requestApi.kind) ||
+      !RENDER_REQUEST_API_STATUSES.has(requestApi.status) ||
+      kinds.has(requestApi.kind)
+    ) {
+      return false;
+    }
+    kinds.add(requestApi.kind);
+  }
+  return true;
 }
 
 function isOutputScope(value: unknown, kind: "app-html" | "app-rsc"): boolean {

@@ -79,8 +79,9 @@ export function queryInvariantPrerenderObservations(): {
 /**
  * Prerender observations that aren't complete observations of this proof
  * model: a field value the searchParams proof doesn't accept, one per field it
- * reads, a missing field, an incomplete downgrade, another schema version, or
- * another artifact's output. Each must give no seed, without throwing.
+ * reads, a request API registry without exactly one entry per kind, a missing
+ * field, an incomplete downgrade, another schema version, or another
+ * artifact's output. Each must give no seed, without throwing.
  */
 export function malformedPrerenderObservations(): { label: string; observations: unknown }[] {
   const corrupt = (change: (observation: Record<string, unknown>) => void): unknown => {
@@ -91,21 +92,42 @@ export function malformedPrerenderObservations(): { label: string; observations:
     change(rsc);
     return { html, rsc };
   };
+  // Replace one kind's entry in the complete request API registry.
+  const replacingRequestApi = (kind: RenderRequestApiKind, entry: unknown) =>
+    corrupt((observation) => {
+      observation.requestApis = (observation.requestApis as { kind: string }[]).map((requestApi) =>
+        requestApi.kind === kind ? entry : requestApi,
+      );
+    });
   return [
     {
       label: "bogus request API kind",
-      observations: corrupt((observation) => {
-        observation.requestApis = [{ kind: "bogus", status: "notObserved" }];
-      }),
+      observations: replacingRequestApi("headers", { kind: "bogus", status: "notObserved" }),
     },
     {
       label: "bogus request API status",
+      observations: replacingRequestApi("headers", { kind: "headers", status: "bogus" }),
+    },
+    {
+      label: "a request API registry missing kinds",
       observations: corrupt((observation) => {
-        // Two entries for one kind make the proof rank the statuses.
+        observation.requestApis = [{ kind: "searchParams", status: "notObserved" }];
+      }),
+    },
+    {
+      label: "a request API registry with a duplicate kind",
+      observations: corrupt((observation) => {
         observation.requestApis = [
+          ...(observation.requestApis as unknown[]),
           { kind: "searchParams", status: "notObserved" },
-          { kind: "searchParams", status: "bogus" },
         ];
+      }),
+    },
+    {
+      label: "a request API registry repeating one kind in place of another",
+      observations: replacingRequestApi("headers", {
+        kind: "searchParams",
+        status: "notObserved",
       }),
     },
     {
