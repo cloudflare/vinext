@@ -1241,9 +1241,10 @@ describe("buildPageElements", () => {
   });
 
   it("marks a class component page that reads searchParams dynamic without a query", async () => {
-    // Flight passes a class component's props straight to it, so a read is a
-    // real read, as for a function component page. Without a query this used
-    // to be observed without marking the render dynamic, so it was stored.
+    // Kept consistent with function component pages: without a query this
+    // used to be observed without marking the render dynamic. React 19's
+    // Flight server can't render an ES class page at all, so this renders it
+    // with React DOM.
     class ClassPage extends React.Component<{ searchParams: Record<string, unknown> }> {
       render(): React.ReactNode {
         return React.createElement("div", null, `q:${String(this.props.searchParams.q)}`);

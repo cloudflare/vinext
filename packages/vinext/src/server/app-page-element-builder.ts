@@ -590,9 +590,11 @@ export async function buildPageElements<
     }
 
     if (isReactOwnedAppComponent(PageComponent)) {
-      // Class components and other exports React invokes itself. Flight hands
-      // them their props instead of serializing them, so a read is a real
-      // read, as for a function component page.
+      // Class components and other non-function exports, which React renders
+      // itself. A read marks the render dynamic only to keep this branch
+      // consistent with function component pages: React 19's Flight server
+      // calls any function that isn't a client reference as a function
+      // component, so an ES class page can't render in RSC at all.
       const invocationProps: Record<string, unknown> = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
