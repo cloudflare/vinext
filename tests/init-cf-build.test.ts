@@ -72,6 +72,8 @@ describe("experimental cf init build", () => {
         env: { ...process.env, CI: "true" },
       });
       expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
+      expect(fs.existsSync(path.join(root, ".cloudflare/types/index.d.ts"))).toBe(true);
+      expect(fs.existsSync(path.join(root, "worker-configuration.d.ts"))).toBe(false);
       const workersDir = path.join(root, ".cloudflare", "output", "v0", "workers");
       expect(
         fs.existsSync(path.join(workersDir, "default", "worker.config.json")),

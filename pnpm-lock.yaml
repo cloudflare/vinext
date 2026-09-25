@@ -7,8 +7,8 @@ settings:
 catalogs:
   cloudflare-vite-v2:
     '@cloudflare/vite-plugin':
-      specifier: 2.0.0-beta.sha-b747ec8ea
-      version: 2.0.0-beta.sha-b747ec8ea
+      specifier: 2.0.0-beta.sha-805ec1ff3
+      version: 2.0.0-beta.sha-805ec1ff3
     cf:
       specifier: 1.0.0-beta.1
       version: 1.0.0-beta.1
@@ -402,7 +402,7 @@ importers:
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: catalog:cloudflare-vite-v2
-        version: 2.0.0-beta.sha-b747ec8ea(@types/node@25.9.2)(vite@8.3.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(yaml@2.9.0))
+        version: 2.0.0-beta.sha-805ec1ff3(@types/node@25.9.2)(vite@8.3.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(yaml@2.9.0))
       '@cloudflare/workers-types':
         specifier: ^5.20260904.1
         version: 5.20260904.1
@@ -2432,9 +2432,6 @@ packages:
   '@cloudflare/build-output-utils@0.8.0':
     resolution: {integrity: sha512-LD+B+FvHYPMFOXSgnRI8AZ0V66bHcDJC4zjcdqFXdaovNYLsmZ5tXu6EJUQosbazSOPiPhSIC3TKZQ0clz6tHw==}
 
-  '@cloudflare/config@0.17.0':
-    resolution: {integrity: sha512-x7qxjLdeM7zR49UZypK4bMI/MlVyDQOpjKfePQbl+eNBnnw/aURwp0Nr8CyTNE2k8rPJKiUUTykBcNYdO/EhtA==}
-
   '@cloudflare/config@0.18.0':
     resolution: {integrity: sha512-FsIXvhDdtdGn3yXAITHLaacDHrzl8FpAkPaLbR5WDpkNa9OQ4VGTSuUPy5iq5uPp5zaRenavz+MsLjtymc3KYA==}
 
@@ -2483,8 +2480,8 @@ packages:
       vite: ^6.1.0 || ^7.0.0 || ^8.0.0
       wrangler: ^4.118.0
 
-  '@cloudflare/vite-plugin@2.0.0-beta.sha-b747ec8ea':
-    resolution: {integrity: sha512-eahVJDRJmmJxJBqvxq+KLehBBTieB8GMZ8NsO3lZLZGwWYL0rGkMKoA/rakwiGQ/cAqpm0r+rxMalRGMhEMFnQ==}
+  '@cloudflare/vite-plugin@2.0.0-beta.sha-805ec1ff3':
+    resolution: {integrity: sha512-vAHvJOPLBwQ/u4HlDb8QtUNdcTtvoiAoky7THG8340fahg3CXD9ATUxM4b70hjffBnblI8VKy0pKTYkKsSxNKw==}
     hasBin: true
     peerDependencies:
       vite: ^7.0.0 || ^8.0.0
@@ -9190,10 +9187,6 @@ packages:
     resolution: {integrity: sha512-8/dspSXDshP6nSkCpjKO7BYc2qZoYSXm7iM+QxY7qJyJpAB3onnQSaiu0cvKJlfuMGwULl55hG69FJCcCMXU1Q==}
     engines: {node: '>=22.0.0'}
 
-  miniflare@5.20260921.0-alpha:
-    resolution: {integrity: sha512-vHH/unOYvV2jA1Q9SdkmzrQhhMoksdwg5jegu6ZeKaaRzgxZhVbt1NdTpQjHF2VTgiBjgP8SiUlUMfruB3N3SQ==}
-    engines: {node: '>=22.0.0'}
-
   miniflare@5.20260921.1-alpha:
     resolution: {integrity: sha512-nvw7bDhUCMTKbpZWJ/WHQFn1FDopseuMQQGxkO3/f0r9eXeizux0ZxV3sZnEHnS0lDWb3Je0bIO2MJcFK4O8GQ==}
     engines: {node: '>=22.0.0'}
@@ -11470,10 +11463,6 @@ snapshots:
     dependencies:
       '@cloudflare/config': 0.18.0
 
-  '@cloudflare/config@0.17.0':
-    dependencies:
-      zod: 4.4.3
-
   '@cloudflare/config@0.18.0':
     dependencies:
       zod: 4.4.3
@@ -11548,11 +11537,11 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@cloudflare/vite-plugin@2.0.0-beta.sha-b747ec8ea(@types/node@25.9.2)(vite@8.3.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(yaml@2.9.0))':
+  '@cloudflare/vite-plugin@2.0.0-beta.sha-805ec1ff3(@types/node@25.9.2)(vite@8.3.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(yaml@2.9.0))':
     dependencies:
-      '@cloudflare/config': 0.17.0
+      '@cloudflare/config': 0.18.0
       '@cloudflare/unenv-preset': 2.16.2(unenv@2.0.0-rc.24)(workerd@1.20260918.1)
-      miniflare: 5.20260921.0-alpha(@types/node@25.9.2)
+      miniflare: 5.20260923.0-alpha(@types/node@25.9.2)
       unenv: 2.0.0-rc.24
       vite: 8.3.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(yaml@2.9.0)
       workerd: 1.20260918.1
@@ -17588,19 +17577,6 @@ snapshots:
       ws: 8.21.0
       youch: 4.1.0-beta.10
     transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
-
-  miniflare@5.20260921.0-alpha(@types/node@25.9.2):
-    dependencies:
-      '@cspotcode/source-map-support': 0.8.1
-      sharp: 0.35.4(@types/node@25.9.2)
-      undici: 7.29.0
-      workerd: 1.20260921.1
-      ws: 8.21.0
-      youch: 4.1.0-beta.10
-    transitivePeerDependencies:
-      - '@types/node'
       - bufferutil
       - utf-8-validate
 

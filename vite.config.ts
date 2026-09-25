@@ -31,7 +31,6 @@ export default defineConfig({
     singleQuote: false,
     trailingComma: "all",
     ignorePatterns: [
-      "apps/web/worker-configuration.d.ts",
       // Kept byte-for-byte comparable with Sentry's upstream Next.js fixture.
       "tests/e2e/sentry-nextjs-16-static/fixture/**",
       "tests/fixtures/ecosystem/**",
@@ -41,7 +40,6 @@ export default defineConfig({
   },
   lint: {
     ignorePatterns: [
-      "apps/web/worker-configuration.d.ts",
       "fixtures/ecosystem/**",
       // Kept byte-for-byte comparable with Sentry's upstream Next.js fixture.
       "tests/e2e/sentry-nextjs-16-static/fixture/**",

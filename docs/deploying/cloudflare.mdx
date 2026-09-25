@@ -36,6 +36,8 @@ npx vinext init --platform=cloudflare --experimental-cf
 
 This creates `cloudflare.config.ts`, pins the experimental Cloudflare Vite plugin and `cf`, and generates scripts for `cf build`, local Vite preview, and `vinext-cloudflare deploy`. Response Store service-binding mode declares its second Worker in the typed config and builds both Workers together. Existing Wrangler configuration is not migrated automatically; move its bindings into the typed config before enabling this option. Create any KV namespace or R2 bucket named in the initializer's next steps before deploying.
 
+For TypeScript projects, add `.cloudflare/types` to the `include` list in `tsconfig.json`. The plugin generates binding and runtime declarations there during development and builds; these files stay gitignored. Run `cf workers types` to generate them before a standalone type-check without building the app.
+
 ## 2. Authenticate
 
 <PackageManagerCommand

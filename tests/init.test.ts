@@ -894,7 +894,7 @@ describe("init — basic functionality", () => {
         scripts: Record<string, string>;
       };
       expect(pkg.devDependencies.cf).toBe("1.0.0-beta.1");
-      expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toMatch(/^2\.0\.0-beta\./);
+      expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe("2.0.0-beta.sha-805ec1ff3");
       expect(pkg.devDependencies.vite).toBe("8.3.0");
       expect(pkg.devDependencies.wrangler).toBeUndefined();
       expect(pkg.scripts["build:vinext"]).toBe("cf build");

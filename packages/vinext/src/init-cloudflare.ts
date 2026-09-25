@@ -363,6 +363,10 @@ function setupExperimentalCfPlatform(
       `Create the Response Store R2 bucket if needed: cf r2 buckets create --name=${bucket}`,
     );
   }
+  nextSteps.push(
+    'For TypeScript, add ".cloudflare/types" to the include list in tsconfig.json.',
+    "Worker types are generated during dev/build; run `cf workers types` before standalone type-checks.",
+  );
   return {
     generatedViteConfig,
     skippedViteConfig: !generatedViteConfig,

@@ -20,6 +20,7 @@
   },
   "include": [
     "next-env.d.ts",
+    ".cloudflare/types",
     "**/*.ts",
     "**/*.tsx",
     ".next/types/**/*.ts",

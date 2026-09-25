@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "cf dev",
     "build": "cf build",
+    "typegen": "cf workers types",
     "start": "vinext start",
     "deploy:cloudflare": "vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://vinext.dev",
     "db:generate": "drizzle-kit generate",
