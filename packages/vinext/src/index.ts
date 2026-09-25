@@ -3877,7 +3877,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
 
         const configuredExtensions =
-          name === "client" ? nextConfig.resolveExtensions : nextConfig.serverResolveExtensions;
+          name === "client"
+            ? nextConfig.resolveExtensions
+            : hasNitroPlugin && name === "nitro"
+              ? null
+              : nextConfig.serverResolveExtensions;
+        // Nitro's final environment bundles its own preset entry; app code is
+        // already built in the RSC/SSR service environments. Keep Vite's
+        // defaults here so app-specific replacement extensions cannot hide a
+        // framework entry such as the Bun preset's extensionless `.mjs` file.
         // Explicit resolver extensions replace vinext's defaults, matching
         // Next.js/Turbopack semantics; callers who override them must include
         // `.cjs`/`.cts` if they need extensionless imports of CJS config files.
