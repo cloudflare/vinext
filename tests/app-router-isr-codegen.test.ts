@@ -49,12 +49,13 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("isDefault: !slot.page,");
     expect(code).toContain("ownerTreePosition: slot.ownerTreePosition,");
     // The page and its layouts decide the runtime. Slots count only for a
-    // route that a slot page materializes.
+    // route with no page of its own.
     expect(code).toContain(`isStaticGenerationEdgeRuntime: __isEdgeRuntime(
         __resolveAppPageStaticGenerationRuntime(
           __collectAppPageStaticGenerationRuntimes({
             childrenSlot: route.childrenSlot,
             layouts: route.layouts,
+            layoutTreePositions: route.layoutTreePositions,
             materializedBySlot: route.materializedBySlot,
             page: route.page,
             parallelBranches: __segmentConfigBranches,

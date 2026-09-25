@@ -596,6 +596,23 @@ describe("collectAppPageStaticGenerationRuntimes", () => {
     });
     expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
   });
+
+  it("reads the root slot page of a route with no page of its own", () => {
+    // app/dashboard/layout.tsx and app/dashboard/@feed/page.tsx: Next.js
+    // builds /dashboard from the slot page. A slot the root layout owns can't
+    // supply it.
+    const runtimes = collectAppPageStaticGenerationRuntimes({
+      layouts: [{}, { runtime: "nodejs" }],
+      layoutTreePositions: [0, 1],
+      page: null,
+      parallelBranches: [
+        { name: "analytics", ownerTreePosition: 0, page: { runtime: "nodejs" } },
+        { name: "feed", ownerTreePosition: 1, page: { runtime: "edge" } },
+      ],
+    });
+    expect(runtimes).toEqual([undefined, "nodejs", undefined, "edge"]);
+    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+  });
 });
 
 describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
