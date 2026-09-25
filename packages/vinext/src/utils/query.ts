@@ -77,6 +77,30 @@ export function parseQueryString(url: string): Record<string, string | string[]>
 }
 
 /**
+ * Convert URLSearchParams into the record an App Router page receives as
+ * `searchParams`, with repeated keys promoted to arrays. The record has no
+ * prototype, so a key such as `__proto__` stays an ordinary entry.
+ */
+export function searchParamsToRecord(
+  searchParams: URLSearchParams | null | undefined,
+): Record<string, string | string[]> {
+  const record: Record<string, string | string[]> = Object.create(null);
+  searchParams?.forEach((value, key) => {
+    const currentValue = record[key];
+    if (Array.isArray(currentValue)) {
+      record[key] = [...currentValue, value];
+      return;
+    }
+    if (currentValue !== undefined) {
+      record[key] = [currentValue, value];
+      return;
+    }
+    record[key] = value;
+  });
+  return record;
+}
+
+/**
  * Convert a Next.js-style query object into URLSearchParams while preserving
  * repeated keys for array values.
  *
