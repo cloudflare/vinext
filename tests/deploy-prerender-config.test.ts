@@ -339,9 +339,10 @@ describe("deploy prerender config wiring", () => {
   });
 
   it.each([
-    ["all-route prerendering", "true", false],
-    ["explicit CDN warming", undefined, true],
-  ])("keeps %s when TPR is also enabled", async (_, prerender, warmCdn) => {
+    ["all-route prerendering", "true", false, true],
+    ["explicit CDN warming", undefined, true, false],
+    ["staged warming with configured prerendering", "true", true, false],
+  ])("keeps %s when TPR is also enabled", async (_, prerender, warmCdn, prerenderLocally) => {
     writeProject(prerender, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     writeFile(
       "wrangler.jsonc",
@@ -402,7 +403,7 @@ describe("deploy prerender config wiring", () => {
     });
 
     expect(fs.readFileSync(path.join(tmpDir, "config-load-count.txt"), "utf8")).toBe("1");
-    if (prerender) {
+    if (prerenderLocally) {
       expect(runPrerenderMock).toHaveBeenCalledOnce();
       expect(resolveTPRRoutesMock).not.toHaveBeenCalled();
       expect(discoverPrerenderPathManifestMock).not.toHaveBeenCalled();
@@ -417,7 +418,7 @@ describe("deploy prerender config wiring", () => {
     expect(discoverPrerenderPathManifestMock).toHaveBeenCalledOnce();
     expect(discoverPrerenderPathManifestMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        candidatePaths: ["/missing"],
+        candidatePaths: prerender ? [] : ["/missing"],
         requestRouting: "uncached-stage",
       }),
     );
@@ -652,10 +653,38 @@ describe("deploy prerender config wiring", () => {
   });
 
   it("passes deploy prerender concurrency through config-triggered prerender", async () => {
-    writeProject('{ routes: "*" }');
+    writeProject('{ routes: "*", concurrency: 1 }');
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     await deploy({ root: tmpDir, skipBuild: true, prerenderConcurrency: 3 });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({ root: tmpDir, concurrency: 3 }),
+    );
+  });
+
+  it("uses config-owned prerender concurrency when the deploy flag is absent", async () => {
+    writeProject('{ routes: "*", concurrency: 3 }');
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({ root: tmpDir, concurrency: 3 }),
+    );
+  });
+
+  it.each([
+    ["the prerender-all flag", { prerenderAll: true }],
+    ["static export", {}],
+  ])("keeps config-owned concurrency for %s", async (trigger, options) => {
+    writeProject('{ routes: "*", concurrency: 3 }');
+    if (trigger === "static export") {
+      writeFile("next.config.mjs", 'export default { output: "export" };\n');
+    }
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true, ...options });
 
     expect(runPrerenderMock).toHaveBeenCalledWith(
       expect.objectContaining({ root: tmpDir, concurrency: 3 }),

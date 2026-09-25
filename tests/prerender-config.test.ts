@@ -142,6 +142,14 @@ describe("vinext prerender config", () => {
     ).toEqual({ routes: "*", reason: "vinext-config" });
   });
 
+  it("keeps config-owned concurrency in the prerender decision", () => {
+    expect(
+      resolveVinextPrerenderDecision({
+        vinextPrerenderConfig: { routes: "*", concurrency: 4 },
+      }),
+    ).toEqual({ routes: "*", concurrency: 4, reason: "vinext-config" });
+  });
+
   it("returns no decision when prerendering is not configured", () => {
     expect(resolveVinextPrerenderDecision({ nextOutput: undefined })).toBeNull();
   });

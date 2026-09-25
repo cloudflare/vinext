@@ -50,13 +50,14 @@ export type BuildLifecycleContext = {
   routeRootConfig: VinextRouteRootConfig | null;
   rscBuildIdentity?: string;
   rscCompatibilityId?: string;
+  deferPostBuild?: boolean;
   skipHybridPagesBundle?: boolean;
-  skipPrerender?: boolean;
 };
 
-export type BuildLifecycleResult = {
-  prerendered: boolean;
-  standalone: boolean;
+export const VINEXT_BUILD_LIFECYCLE_CONFIG = "__vinextBuildLifecycle";
+
+export type BuildLifecycleInvocation = {
+  onComplete?: () => void;
 };
 
 type BuildLifecycleState = {
@@ -227,7 +228,7 @@ async function buildHybridPagesBundle(
 }
 
 function checkStandaloneBuildPrerequisite(context: BuildLifecycleContext): void {
-  if (context.nextConfig.output === "standalone") {
+  if (!context.deferPostBuild && context.nextConfig.output === "standalone") {
     const vinextDistDir = path.join(resolveVinextPackageRoot(), "dist");
     if (!fs.existsSync(vinextDistDir)) {
       throw new Error(
@@ -257,10 +258,7 @@ function prepareBuild(context: BuildLifecycleContext): BuildLifecycleState {
   return { pagesClientAssetsBuildSession };
 }
 
-async function finalizeBuild(
-  builder: ViteBuilder,
-  context: BuildLifecycleContext,
-): Promise<BuildLifecycleResult> {
+async function finalizeBuild(builder: ViteBuilder, context: BuildLifecycleContext): Promise<void> {
   if (context.hasAppDir && context.hasPagesDir && !context.skipHybridPagesBundle) {
     await withEnvironment(
       {
@@ -278,6 +276,10 @@ async function finalizeBuild(
     );
   }
 
+  if (context.deferPostBuild) {
+    return;
+  }
+
   if (context.nextConfig.output === "standalone") {
     const { emitStandaloneOutput } = await import("./standalone.js");
     const standalone = emitStandaloneOutput({
@@ -288,16 +290,14 @@ async function finalizeBuild(
       `  Generated standalone output in ${path.relative(context.root, standalone.standaloneDir)}/`,
     );
     console.log("  Start it with: node dist/standalone/server.js\n");
-    return { prerendered: false, standalone: true };
+    return;
   }
 
-  const prerenderDecision = context.skipPrerender
-    ? null
-    : resolveVinextPrerenderDecision({
-        prerenderAllFlag: context.prerenderAll,
-        vinextPrerenderConfig: context.prerenderConfig,
-        nextOutput: context.nextConfig.output,
-      });
+  const prerenderDecision = resolveVinextPrerenderDecision({
+    prerenderAllFlag: context.prerenderAll,
+    vinextPrerenderConfig: context.prerenderConfig,
+    nextOutput: context.nextConfig.output,
+  });
   let prerenderResult;
   if (prerenderDecision) {
     if (context.nextConfig.enablePrerenderSourceMaps) {
@@ -336,7 +336,6 @@ async function finalizeBuild(
     prerenderResult: prerenderResult ?? undefined,
   });
   console.log("\n  Build complete.\n");
-  return { prerendered: Boolean(prerenderDecision), standalone: false };
 }
 
 function disposeBuild(state: BuildLifecycleState): void {
@@ -353,11 +352,11 @@ function disposeBuild(state: BuildLifecycleState): void {
 export async function runBuildLifecycle(
   builder: ViteBuilder,
   context: BuildLifecycleContext,
-): Promise<BuildLifecycleResult> {
+): Promise<void> {
   const state = prepareBuild(context);
   try {
     await builder.buildApp();
-    return await finalizeBuild(builder, context);
+    await finalizeBuild(builder, context);
   } finally {
     disposeBuild(state);
   }
@@ -366,11 +365,17 @@ export async function runBuildLifecycle(
 export function createBuildLifecyclePlugins(options: {
   createContext: () => BuildLifecycleContext;
   isEnabled: (builder: ViteBuilder) => boolean;
+  onComplete?: () => void;
   onPrepare?: () => void;
+  shouldDeferPostBuild?: () => boolean;
   shouldPrepare: (config: UserConfig | ResolvedConfig) => boolean;
   shouldBuildPlainPages: () => boolean;
 }): Plugin[] {
   let outputPrepared = false;
+  const createContext = (): BuildLifecycleContext => ({
+    ...options.createContext(),
+    deferPostBuild: options.shouldDeferPostBuild?.(),
+  });
   const finalizePlugin: Plugin = {
     name: "vinext:build-lifecycle-finalize",
     apply: "build",
@@ -388,7 +393,9 @@ export function createBuildLifecyclePlugins(options: {
     buildApp: {
       order: "post",
       async handler(builder) {
-        if (options.isEnabled(builder)) await finalizeBuild(builder, options.createContext());
+        if (!options.isEnabled(builder)) return;
+        await finalizeBuild(builder, createContext());
+        options.onComplete?.();
       },
     },
   };
@@ -400,7 +407,7 @@ export function createBuildLifecyclePlugins(options: {
         order: "pre",
         handler(config) {
           if (outputPrepared || !options.shouldPrepare(config)) return;
-          const context = options.createContext();
+          const context = createContext();
           if (config.build.emptyOutDir === false) context.emptyOutDir = false;
           // Fail before onPrepare can install or upgrade dependencies.
           checkStandaloneBuildPrerequisite(context);

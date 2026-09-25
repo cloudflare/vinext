@@ -3,7 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createBuilder } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
+import { VINEXT_BUILD_LIFECYCLE_CONFIG } from "../packages/vinext/src/build/lifecycle.js";
 
 const CLI_PATH = path.resolve(import.meta.dirname, "../packages/vinext/dist/cli.js");
 const VP_PATH = path.resolve(import.meta.dirname, "../node_modules/.bin/vp");
@@ -574,5 +576,35 @@ describe("configured vinext build contract", () => {
             .includes("library-build"),
         ),
     ).toBe(true);
+  }, 120_000);
+
+  it("lets Cloudflare-style programmatic builds opt in without running prerender early", async () => {
+    const root = createPagesProject();
+    const configPath = path.join(root, "vite.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf8")
+        .replace(
+          "nextConfig: { generateBuildId",
+          'nextConfig: { output: "standalone", generateBuildId',
+        ),
+    );
+    let completed = false;
+    const builder = await createBuilder({
+      root,
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: {
+        onComplete() {
+          completed = true;
+        },
+      },
+    } as Parameters<typeof createBuilder>[0]);
+
+    await builder.buildApp();
+
+    expect(completed).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "dist/server/prerendered-routes/index.html"))).toBe(false);
+    expect(fs.existsSync(path.join(root, "dist/standalone"))).toBe(false);
   }, 120_000);
 });

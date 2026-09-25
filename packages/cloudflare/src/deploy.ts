@@ -22,7 +22,12 @@ import {
   discoverPrerenderPathManifest,
   emitPrerenderPathManifest,
 } from "vinext/internal/build/prerender-paths";
+import {
+  VINEXT_BUILD_LIFECYCLE_CONFIG,
+  type BuildLifecycleInvocation,
+} from "vinext/internal/build/lifecycle";
 import { runPrerender } from "vinext/internal/build/run-prerender";
+import { printBuildReport } from "vinext/internal/build/report";
 import { loadDotenv } from "vinext/internal/config/dotenv";
 import {
   findVinextNextConfigInPlugins,
@@ -540,10 +545,22 @@ async function runBuild(info: ProjectInfo, env: string | undefined): Promise<voi
   // .wrangler/deploy/config.json. A plain build() call bypasses cloudflare()'s
   // config() hook's builder.buildApp override, so writeBundle never fires on
   // the correct environment name.
+  let completed = false;
   await withCloudflareEnv(env, async () => {
-    const builder = await createBuilder({ root: info.root });
+    const invocation: BuildLifecycleInvocation = {
+      // Deploy decides platform-specific finalization only after TPR and staged
+      // warmup selection.
+      onComplete() {
+        completed = true;
+      },
+    };
+    const builder = await createBuilder({
+      root: info.root,
+      [VINEXT_BUILD_LIFECYCLE_CONFIG]: invocation,
+    } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
   });
+  if (!completed) throw new Error("[vinext] The Cloudflare build lifecycle did not complete.");
 }
 
 async function populateKVCacheFromPrerenderedArtifacts(
@@ -2165,19 +2182,29 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // output: 'export'. CDN warmup performs path discovery above, but relies on
   // the deployed Worker to render and classify each response.
   let ranPrerender = false;
-  if (shouldPrerenderLocally) {
+  let prerenderResult: Awaited<ReturnType<typeof runPrerender>> | undefined = undefined;
+  if (shouldPrerenderLocally && !ranPrerender) {
     console.log(`\n  ${formatVinextPrerenderLabel(prerenderDecision)}`);
     if (nextConfig.enablePrerenderSourceMaps) {
       process.setSourceMapsEnabled(true);
       Error.stackTraceLimit = Math.max(Error.stackTraceLimit, 50);
     }
-    await runPrerender({
+    prerenderResult = await runPrerender({
       root: info.root,
-      concurrency: options.prerenderConcurrency,
+      concurrency: options.prerenderConcurrency ?? viteConfigMetadata.prerenderConfig?.concurrency,
       nextConfig,
       routeRootConfig: viteConfigMetadata.routeRootConfig,
     });
     ranPrerender = true;
+  }
+
+  if (!options.skipBuild) {
+    await printBuildReport({
+      root: info.root,
+      pageExtensions: nextConfig.pageExtensions,
+      prerenderResult: prerenderResult ?? undefined,
+    });
+    console.log("\n  Build complete.\n");
   }
 
   if (ranPrerender) {
