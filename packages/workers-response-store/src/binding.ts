@@ -134,9 +134,7 @@ type PublicationResult = {
 
 type RepublishSource = {
   body: ArrayBuffer;
-  createdAt: number;
   etag: string;
-  initialAge: number;
   status: number;
 };
 
@@ -1071,8 +1069,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const objectMetadata = object.customMetadata;
     const status = metadataInteger(objectMetadata?.status);
-    const createdAt = metadataInteger(objectMetadata?.createdAt);
-    const initialAge = metadataInteger(objectMetadata?.initialAge);
     const responseMetadataBytes = metadataInteger(objectMetadata?.responseMetadataBytes) ?? 0;
     // Only the body of the entry being re-stored will do. Any other revision
     // belongs to a newer write, or to one that is still being published.
@@ -1080,8 +1076,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       objectMetadata?.tombstoned === "1" ||
       metadataInteger(objectMetadata?.latestRevision) !== entry.activeRevision ||
       status === undefined ||
-      createdAt === undefined ||
-      initialAge === undefined ||
       responseMetadataBytes > object.size
     ) {
       await object.body.cancel();
@@ -1091,9 +1085,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const stored = await object.arrayBuffer();
     return {
       body: responseMetadataBytes ? stored.slice(responseMetadataBytes) : stored,
-      createdAt,
       etag: object.etag,
-      initialAge,
       status,
     };
   }
@@ -1106,14 +1098,16 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
    *
    * The re-store keeps the entry's revision and rewrites its R2 object, so a
    * failed rewrite leaves the source object readable and still matching the
-   * metadata.
+   * metadata. Like a Next.js re-store, it starts the entry's age again, so the
+   * edge can cache it for the whole retry window.
    */
   private async republishFailedRegeneration(
     metadata: CacheMetadataStub,
     entry: StoredEntry,
     write: WriteReservation,
   ): Promise<void> {
-    const policy = deriveFailedRegenerationPolicy(new Headers(entry.responseHeaders));
+    const now = Date.now();
+    const policy = deriveFailedRegenerationPolicy(new Headers(entry.responseHeaders), now);
     if (!policy) {
       await this.releaseFailedWrite(metadata, write);
       return;
@@ -1157,14 +1151,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
     if (!publication.published || !publication.entry) return;
 
-    await this.writeR2Response(
-      publication.entry,
-      source.body,
-      source.status,
-      source.createdAt,
-      source.initialAge,
-      source.etag,
-    );
+    await this.writeR2Response(publication.entry, source.body, source.status, now, 0, source.etag);
   }
 
   private async regenerateEntry(

@@ -955,6 +955,9 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
       fresh.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
       new RegExp(`^max-age=(${retry - 1}|${retry}), stale-while-revalidate=${expire - retry}$`),
     );
+    // The re-store starts the entry's age again, so the edge can use the
+    // retry window instead of treating the response as already stale.
+    assert.match(fresh.headers.get("Age") ?? "", /^[01]$/, path);
     assert.equal(await fresh.text(), `stale:${path}`);
   }
 
@@ -1011,6 +1014,7 @@ test("an entry past its SWR window keeps serving after a failed foreground regen
       served.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
       /^max-age=[23], stale-while-revalidate=0$/,
     );
+    assert.match(served.headers.get("Age") ?? "", /^[01]$/);
     assert.equal(await served.text(), "still-active");
   }
   assert.equal(await regenerationCount(), 1);
