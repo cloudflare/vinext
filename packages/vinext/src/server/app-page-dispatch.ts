@@ -734,10 +734,26 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const currentRevalidateSeconds =
     options.revalidateSeconds ??
     (hasStaticRevalidateDefault || options.hasAnyGenerateStaticParams ? Infinity : null);
-  if (isRouteCacheabilityProbe() && (isForceDynamic || currentRevalidateSeconds === 0)) {
-    markRouteCacheabilityPatternDynamic(
-      isForceDynamic ? 'dynamic = "force-dynamic"' : "revalidate = 0",
-    );
+  if (isRouteCacheabilityProbe()) {
+    // A route that isn't static or SSG is never stored, so its probe reports
+    // the whole pattern dynamic, whichever of its paths discovery listed.
+    const isRouteStaticEligible =
+      options.pprRuntime !== undefined ||
+      isAppPageStaticEligible({
+        dynamicConfig: options.dynamicConfig,
+        hasGenerateStaticParams: options.hasGenerateStaticParams,
+        isDynamicRoute: route.isDynamic,
+        isStaticGenerationEdgeRuntime: options.isStaticGenerationEdgeRuntime === true,
+        revalidateSeconds: options.revalidateSeconds ?? null,
+      });
+    const patternDynamicReason = isForceDynamic
+      ? 'dynamic = "force-dynamic"'
+      : currentRevalidateSeconds === 0
+        ? "revalidate = 0"
+        : !isRouteStaticEligible
+          ? "route is not statically generated"
+          : null;
+    if (patternDynamicReason) markRouteCacheabilityPatternDynamic(patternDynamicReason);
   }
   const isPrerender = process.env.VINEXT_PRERENDER === "1";
   let traceOperation: "prerender" | "render" = isPrerender ? "prerender" : "render";

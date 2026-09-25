@@ -1026,6 +1026,45 @@ describe("app page dispatch", () => {
     expect(isrGet).not.toHaveBeenCalled();
   });
 
+  // Discovery can list paths of a route Next.js classifies as dynamic, such as
+  // one whose only generateStaticParams sits above its last dynamic segment.
+  // The probe must report the whole pattern dynamic so it gets no entry.
+  it("reports a route that isn't statically generated as pattern-dynamic to the deploy probe", async () => {
+    const cases: [Partial<Parameters<typeof createDispatchOptions>[0]>, string | undefined][] = [
+      [
+        {
+          hasAnyGenerateStaticParams: true,
+          hasGenerateStaticParams: false,
+          route: createRoute({ isDynamic: true, params: ["slug"] }),
+        },
+        "route is not statically generated",
+      ],
+      [{ isStaticGenerationEdgeRuntime: true }, "route is not statically generated"],
+      [
+        {
+          hasGenerateStaticParams: true,
+          route: createRoute({ isDynamic: true, params: ["slug"] }),
+        },
+        undefined,
+      ],
+      [{}, undefined],
+    ];
+    for (const [overrides, expected] of cases) {
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "probe",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      const { options } = createDispatchOptions({ isProduction: true, ...overrides });
+
+      const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+      await response.text();
+
+      expect(state.patternDynamicReason).toBe(expected);
+    }
+  });
+
   // Next.js serves a path its build never certified per request, so a Workers
   // Cache path its manifest gives no state renders with real values from the
   // start. A certified path, and every path without a manifest, keeps
