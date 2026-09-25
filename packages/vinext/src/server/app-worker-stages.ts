@@ -1,3 +1,5 @@
+import { keepOnlyValidatedRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
+import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-vary.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type {
   VinextResponseStageCacheability,
@@ -115,6 +117,35 @@ export function prepareSharedAppPageDispatch(
   return cache !== "bypass" && request.method.toUpperCase() === "HEAD"
     ? new Request(request, { method: "GET" })
     : request;
+}
+
+/**
+ * Build the query-free cache identity of a shared App page dispatch. The user
+ * query leaves both the URL and `resolvedUrl`; the `.rsc` suffix, an RSC
+ * request's validated `_rsc`, and the render mode stay because they select the
+ * representation. HTML identities also drop the RSC selector headers.
+ */
+export function createSharedAppPageCacheIdentity(
+  request: Request,
+  props: AppMatchedWorkerResponseStageProps,
+): NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]> {
+  const url = new URL(request.url);
+  keepOnlyValidatedRscCacheBustingSearchParam(url, props.isRscRequest);
+  const headers = new Headers(request.headers);
+  if (!props.isRscRequest) {
+    // HTML dispatch reads none of the RSC selectors: its render mode is fixed
+    // to navigation, and every other selector is RSC-gated or already in the
+    // props. Transports key these Vary fields, so keep them out of the key.
+    for (const name of VINEXT_RSC_VARY_HEADER.split(",")) headers.delete(name.trim());
+  }
+  const searchIndex = props.resolvedUrl.indexOf("?");
+  return {
+    props: {
+      ...props,
+      resolvedUrl: searchIndex === -1 ? props.resolvedUrl : props.resolvedUrl.slice(0, searchIndex),
+    },
+    request: new Request(url, { headers, method: request.method }),
+  };
 }
 
 function isAppPageParams(value: unknown): value is AppPageParams {

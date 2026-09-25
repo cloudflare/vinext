@@ -587,6 +587,400 @@ describe("createAppRscHandler", () => {
     expect(new URL(mountedRequest.url).searchParams.get("_rsc")).not.toBe("");
   });
 
+  describe("query-free cache identity", () => {
+    function useQueryFreeIdentityAdapter(
+      overrides: Partial<Pick<CdnCacheAdapter, "requiresCompletedResponseAdmission">> = {},
+    ): void {
+      setCdnCacheAdapter({
+        buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+        ownsBackgroundRevalidation: false,
+        requiresCompletedResponseAdmission: true,
+        responseStageCacheIdentity: "query-free",
+        async get() {
+          return null;
+        },
+        async revalidateTag() {},
+        async set() {},
+        ...overrides,
+      });
+    }
+
+    function pathAndSearch(url: string): string {
+      const parsed = new URL(url);
+      return `${parsed.pathname}${parsed.search}`;
+    }
+
+    it("strips the user query from shared HTML identities while dispatching the real query", async () => {
+      useQueryFreeIdentityAdapter();
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({ configHeaders: [] });
+
+      for (const method of ["GET", "HEAD"]) {
+        dispatchResponseStage.mockClear();
+        await handler(
+          new Request("https://example.test/docs/about?tab=latest&utm_source=x", { method }),
+          null,
+          false,
+          dispatchResponseStage,
+        );
+
+        const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+        expect(pathAndSearch(request.url)).toBe("/docs/about?tab=latest&utm_source=x");
+        expect(props).toMatchObject({
+          kind: "app-page",
+          resolvedUrl: "/about?tab=latest&utm_source=x",
+        });
+        expect(options.cache).toBe("shared");
+        expect(options.cacheIdentity?.request.url).toBe("https://example.test/docs/about");
+        expect(options.cacheIdentity?.request.method).toBe("GET");
+        expect(options.cacheIdentity?.props).toEqual({ ...props, resolvedUrl: "/about" });
+      }
+    });
+
+    it("drops _rsc from HTML identities, where it selects no representation", async () => {
+      useQueryFreeIdentityAdapter();
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({ configHeaders: [] });
+
+      await handler(
+        new Request(`https://example.test/docs/about?_rsc=${crypto.randomUUID()}&tab=latest`),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      expect(props).toMatchObject({ isRscRequest: false, kind: "app-page" });
+      expect(new URL(request.url).searchParams.has("_rsc")).toBe(true);
+      expect(options.cacheIdentity?.request.url).toBe("https://example.test/docs/about");
+    });
+
+    it("drops RSC selector headers from HTML identities, which never read them", async () => {
+      useQueryFreeIdentityAdapter();
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({ configHeaders: [] });
+      const rscSelectors = {
+        "Next-Router-Prefetch": "1",
+        "Next-Router-Segment-Prefetch": "/__PAGE__",
+        "Next-Router-State-Tree": crypto.randomUUID(),
+        "Next-Url": `/${crypto.randomUUID()}`,
+        RSC: "0",
+        "X-Vinext-Interception-Context": "/feed",
+        "X-Vinext-Mounted-Slots": "!!!",
+        "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+        "X-Vinext-Rsc-State-Fingerprint": crypto.randomUUID(),
+      };
+
+      await handler(
+        new Request("https://example.test/docs/about", {
+          headers: { ...rscSelectors, Accept: "text/html", "X-Custom": "kept" },
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      expect(props).toMatchObject({
+        interceptionContext: null,
+        isRscRequest: false,
+        mountedSlotsHeader: null,
+        renderMode: "navigation",
+      });
+      const identityHeaders = options.cacheIdentity!.request.headers;
+      for (const name of Object.keys(rscSelectors)) {
+        expect(request.headers.has(name)).toBe(true);
+        expect(identityHeaders.has(name)).toBe(false);
+      }
+      expect(identityHeaders.get("Accept")).toBe("text/html");
+      expect(identityHeaders.get("X-Custom")).toBe("kept");
+    });
+
+    it("keeps only the validated _rsc value in contextual RSC identities", async () => {
+      useQueryFreeIdentityAdapter();
+      const route = createPageRoute();
+      const matchRoute = (pathname: string) =>
+        pathname === "/about" ? { params: {}, route } : null;
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("rsc"),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        configRewrites: {
+          afterFiles: [],
+          beforeFiles: [{ source: "/source", destination: "/about" }],
+          fallback: [],
+        },
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+      const headers = createRscRequestHeaders({ nextUrl: "/source" });
+      const rscUrl = await createRscRequestUrl("/docs/source?tab=latest", headers);
+      const hash = new URL(rscUrl, "https://example.test").searchParams.get("_rsc");
+      expect(hash).toBeTruthy();
+
+      await handler(
+        new Request(new URL(`${rscUrl}&_rsc=ignored&%5Frsc=encoded`, "https://example.test"), {
+          headers,
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      // Rewritten RSC requests stay contextual, so the raw URL reaches dispatch.
+      expect(props).toMatchObject({ isRscRequest: true, matchKind: "resolved" });
+      expect(new URL(request.url).searchParams.getAll("_rsc")).toEqual([
+        hash,
+        "ignored",
+        "encoded",
+      ]);
+      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe(`/docs/source?_rsc=${hash}`);
+    });
+
+    it("keeps _rsc, the .rsc suffix and the render mode in shared RSC identities", async () => {
+      useQueryFreeIdentityAdapter();
+      const route = createPageRoute({ canUseCanonicalLoadingShell: true });
+      const matchRoute = (pathname: string) =>
+        pathname === "/about" ? { params: {}, route } : null;
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("rsc"),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      const navigationHeaders = createRscRequestHeaders({
+        nextUrl: "/source",
+        routerState: { pathAndSearch: "/source", routeId: "route:/source" },
+      });
+      await handler(
+        new Request(
+          new URL(
+            await createRscRequestUrl("/docs/about?tab=latest", navigationHeaders),
+            "https://example.test",
+          ),
+          { headers: navigationHeaders },
+        ),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      let [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      expect(pathAndSearch(request.url)).toBe("/docs/about?tab=latest&_rsc");
+      expect(props).toMatchObject({ renderMode: "navigation", resolvedUrl: "/about?tab=latest" });
+      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/about?_rsc");
+      expect(options.cacheIdentity!.request.headers.get(RSC_HEADER)).toBe("1");
+      expect(options.cacheIdentity!.props).toEqual({ ...props, resolvedUrl: "/about" });
+
+      dispatchResponseStage.mockClear();
+      const shellHeaders = createRscRequestHeaders({
+        prefetchRouterState: { pathAndSearch: "/source", routeId: "route:/source" },
+        renderMode: "prefetch-loading-shell",
+      });
+      await handler(
+        new Request(
+          new URL(
+            await createRscRequestUrl("/docs/about?tab=latest", shellHeaders),
+            "https://example.test",
+          ),
+          { headers: shellHeaders },
+        ),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      const shellHash = new URL(request.url).searchParams.get("_rsc");
+      expect(shellHash).toBeTruthy();
+      expect(new URL(request.url).searchParams.get("tab")).toBe("latest");
+      expect(props).toMatchObject({ renderMode: "prefetch-loading-shell" });
+      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe(
+        `/docs/about?_rsc=${shellHash}`,
+      );
+      expect(options.cacheIdentity!.request.headers.get("x-vinext-rsc-render-mode")).toBe(
+        "prefetch-loading-shell",
+      );
+      expect(options.cacheIdentity!.props).toEqual({ ...props, resolvedUrl: "/about" });
+
+      dispatchResponseStage.mockClear();
+      const suffixHeaders = createRscRequestHeaders();
+      await handler(
+        new Request("https://example.test/docs/about.rsc?tab=latest", { headers: suffixHeaders }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      expect(pathAndSearch(request.url)).toBe("/docs/about.rsc?tab=latest&_rsc");
+      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/about.rsc?_rsc");
+      expect(options.cacheIdentity!.props).toEqual({ ...props, resolvedUrl: "/about" });
+    });
+
+    it("is absent unless the adapter declares it behind completed-response admission", async () => {
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({ configHeaders: [] });
+      const request = () => new Request("https://example.test/docs/about?tab=latest");
+
+      await handler(request(), null, false, dispatchResponseStage);
+      useQueryFreeIdentityAdapter({ requiresCompletedResponseAdmission: false });
+      await handler(request(), null, false, dispatchResponseStage);
+
+      expect(dispatchResponseStage.mock.calls.map((call) => call[2])).toEqual([
+        { cache: "shared" },
+        { cache: "shared" },
+      ]);
+    });
+
+    it("is absent for bypassed, probe and non-GET dispatches", async () => {
+      useQueryFreeIdentityAdapter();
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({ configHeaders: [] });
+
+      await handler(
+        new Request("https://example.test/docs/about?tab=latest", {
+          headers: { Cookie: "__prerender_bypass=test-draft-secret" },
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      await handler(
+        new Request("https://example.test/docs/about?tab=latest"),
+        null,
+        false,
+        dispatchResponseStage,
+        "probe",
+      );
+      await handler(
+        new Request("https://example.test/docs/about?tab=latest", { method: "POST" }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(dispatchResponseStage.mock.calls.map((call) => call[2])).toEqual([
+        { cache: "bypass" },
+        { cache: "bypass" },
+        { cache: "bypass" },
+      ]);
+    });
+
+    it("is absent when a next.config public cache policy applies", async () => {
+      useQueryFreeIdentityAdapter();
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({
+        configHeaders: [
+          { source: "/about", headers: [{ key: "Cache-Control", value: "public, s-maxage=60" }] },
+        ],
+      });
+
+      await handler(
+        new Request("https://example.test/docs/about?tab=latest"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
+        ["Cache-Control", "public, s-maxage=60"],
+      ]);
+      expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    });
+
+    it("is absent for mounted-slot, interception and route-handler dispatches", async () => {
+      useQueryFreeIdentityAdapter();
+      const pageRoute = createPageRoute();
+      const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
+      const handlerRoute = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        pattern: "/route",
+        routeHandler: { GET: () => new Response("get") },
+        routeSegments: ["route"],
+      });
+      const matchRoute = (pathname: string) => {
+        if (pathname === "/about") return { params: {}, route: pageRoute };
+        if (pathname === "/feed") return { params: {}, route: sourceRoute };
+        if (pathname === "/route") return { params: {}, route: handlerRoute };
+        return null;
+      };
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("payload"),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        matchInterceptRoute: (pathname, sourcePathname) =>
+          pathname === "/photo" && sourcePathname === "/feed"
+            ? { params: {}, route: sourceRoute }
+            : null,
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      const mountedHeaders = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+      await handler(
+        new Request(
+          new URL(
+            await createRscRequestUrl("/docs/about?tab=latest", mountedHeaders),
+            "https://example.test",
+          ),
+          { headers: mountedHeaders },
+        ),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      const interceptionHeaders = createRscRequestHeaders({ interceptionContext: "/feed" });
+      await handler(
+        new Request(
+          new URL(
+            await createRscRequestUrl("/docs/photo?tab=latest", interceptionHeaders),
+            "https://example.test",
+          ),
+          { headers: interceptionHeaders },
+        ),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+      await handler(
+        new Request("https://example.test/docs/route?tab=latest"),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(
+        dispatchResponseStage.mock.calls.map(([, props, options]) => [
+          props.kind,
+          "matchKind" in props ? props.matchKind : null,
+          options,
+        ]),
+      ).toEqual([
+        ["app-page", "request", { cache: "shared" }],
+        ["app-page", "interception", { cache: "shared" }],
+        ["app-route-handler", "request", { cache: "shared" }],
+      ]);
+    });
+  });
+
   it("dispatches a matched GET through the App response stage and composes request-stage headers", async () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async (_request, props) => {
       expect(props).toMatchObject({

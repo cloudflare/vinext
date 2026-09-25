@@ -135,6 +135,14 @@ export type CdnCacheAdapter = {
   readonly requiresCompletedResponseAdmission?: boolean;
 
   /**
+   * This adapter's response-stage transport keys shared App page dispatches by
+   * `VinextResponseStageDispatchOptions.cacheIdentity` when core supplies one.
+   * Core supplies it only when completed-response admission is also required,
+   * because that admission is what makes a query-free identity safe.
+   */
+  readonly responseStageCacheIdentity?: "query-free";
+
+  /**
    * Optionally return a foreground page response while completed-response
    * admission continues on an independent body branch. Returning `null` keeps
    * the normal blocking admission path. API responses are never passed here.
