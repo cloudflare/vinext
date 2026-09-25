@@ -326,7 +326,7 @@ function applyRequestCacheLife(options: {
  * the render before its response policy, such as error boundaries and special
  * errors, get the same never-cache header as the normal render.
  */
-function applyIneligibleRouteCachePolicy(
+export function applyIneligibleRouteCachePolicy(
   response: Response,
   options: Pick<
     RenderAppPageLifecycleOptions,

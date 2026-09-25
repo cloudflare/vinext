@@ -61,7 +61,7 @@ import {
   validateAppPageDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
-import { renderAppPageLifecycle } from "./app-page-render.js";
+import { applyIneligibleRouteCachePolicy, renderAppPageLifecycle } from "./app-page-render.js";
 import {
   consumeAppPageRenderObservationState,
   discardAppPageRenderState,
@@ -975,11 +975,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         { matchedParams: options.params },
         options.middlewareContext,
       );
+      const cachePolicy = {
+        isDraftMode,
+        isStaticEligible,
+        middlewareContext: options.middlewareContext,
+      };
       if (renderedNotFound) {
-        return renderedNotFound;
+        return applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy);
       }
       options.clearRequestContext();
-      return dynamicParamsResponse;
+      return applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy);
     }
   }
 

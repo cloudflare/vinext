@@ -3755,6 +3755,44 @@ describe("app page dispatch", () => {
       });
     }
 
+    for (const fallback of ["rendered", "plain"] as const) {
+      it(`never caches a ${fallback} generated-param miss of an edge-runtime page`, async () => {
+        const middlewareCacheControl = "public, max-age=5";
+        const dispatch = async (middlewareHeaders?: Headers) => {
+          const { options } = createDispatchOptions({
+            async generateStaticParams() {
+              return [{ slug: "known" }];
+            },
+            hasGenerateStaticParams: true,
+            isProduction: true,
+            isStaticGenerationEdgeRuntime: true,
+            route: createDynamicSegmentRoute(),
+          });
+          options.renderHttpAccessFallbackPage = async () =>
+            fallback === "rendered"
+              ? new Response("not found", {
+                  headers: middlewareHeaders ?? undefined,
+                  status: 404,
+                })
+              : null;
+          if (middlewareHeaders) options.middlewareContext.headers = middlewareHeaders;
+          return dispatchAppPage({ ...options, dynamicParamsConfig: false });
+        };
+
+        const response = await dispatch();
+        expect(response.status).toBe(404);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+
+        // Middleware's own cache policy still wins.
+        if (fallback === "rendered") {
+          const withMiddlewarePolicy = await dispatch(
+            new Headers({ "cache-control": middlewareCacheControl }),
+          );
+          expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+        }
+      });
+    }
+
     it("renders non-GET requests to a dynamic-segment route without generateStaticParams", async () => {
       const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
       const { options } = createDispatchOptions({
