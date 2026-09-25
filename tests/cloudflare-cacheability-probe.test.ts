@@ -342,6 +342,58 @@ describe("staged Worker cacheability probes", () => {
     expect(unlisted.failures).toEqual([]);
   });
 
+  it("judges a moved failure against the destination's listing whichever probe completes first", async () => {
+    const sourceRoute = {
+      cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true, unlisted: true },
+      kind: "app-page" as const,
+      pattern: "/rewrite-me/:slug",
+    };
+    // The listed /posts/a is itself moved elsewhere by the request stage, which
+    // takes its group off the /posts/:slug pattern once its probe completes.
+    const listedRoute = {
+      cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true },
+      kind: "app-page" as const,
+      pattern: "/posts/:slug",
+    };
+    const probe = (targets: CdnWarmTarget[]) =>
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        concurrency: 1,
+        fetchImpl: async (input) => {
+          const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+          return pathname === "/rewrite-me/a"
+            ? Response.json({
+                kind: "app-page",
+                pattern: "/posts/:slug",
+                reason: "route returned HTTP 500",
+                routePathname: "/posts/a",
+                state: "probe-failed",
+                status: 500,
+                version: 1,
+              })
+            : Response.json({
+                kind: "app-page",
+                pattern: "/other/:slug",
+                rendererStatic: true,
+                routePathname: "/other/a",
+                state: "static-candidate",
+                status: 200,
+                version: 1,
+              });
+        },
+        retries: 0,
+        root: createProbeRoot(),
+        targetUrl: "https://example.com",
+        targets,
+      });
+    const alias = { ...target("/rewrite-me/a"), route: sourceRoute };
+    const listed = { ...target("/posts/a"), route: listedRoute };
+    const failure = ["/rewrite-me/a: route returned HTTP 500"];
+
+    expect((await probe([alias, listed])).failures).toEqual(failure);
+    expect((await probe([listed, alias])).failures).toEqual(failure);
+  });
+
   it("fails the deploy for an unlisted Pages or Route Handler path whose render fails", async () => {
     for (const kind of ["pages-page", "app-route"] as const) {
       const route = { ...optimizableRoute("/posts/:slug"), kind };

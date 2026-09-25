@@ -494,7 +494,10 @@ export async function probeStagedWorkerCacheability(options: {
   // A path is listed when its route's own static generation lists it;
   // discovery marks every other path unlisted. A path the request stage moves to
   // another route counts as listed there only when that route lists its
-  // resolved pathname.
+  // resolved pathname. Those build-time facts are fixed before any probe runs:
+  // groups move between patterns as route-moving probes complete, so the
+  // listing is never read back from them.
+  const originListedPaths = new Set<string>();
   const isListedAt = (
     group: ConcretePathGroup,
     route: Pick<PrerenderRoutePattern, "kind" | "pattern">,
@@ -508,17 +511,7 @@ export async function probeStagedWorkerCacheability(options: {
     }
     const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
     if (group.originKey === key) return group.listedAtOrigin;
-    return (
-      patterns
-        .get(key)
-        ?.groups.some(
-          (candidate) =>
-            candidate.originKey === key &&
-            candidate.listedAtOrigin &&
-            !candidate.deferred &&
-            candidate.routePathname === routePathname,
-        ) === true
-    );
+    return originListedPaths.has(`${key}\0${routePathname}`);
   };
   const isListedGroup = (group: ConcretePathGroup): boolean =>
     isListedAt(group, group.pattern.route, group.routePathname);
@@ -534,6 +527,7 @@ export async function probeStagedWorkerCacheability(options: {
       originKey: targetGroup.pattern.key,
       primary: targetGroup.targets[0],
     };
+    if (group.listedAtOrigin) originListedPaths.add(`${group.originKey}\0${group.routePathname}`);
     targetGroup.pattern.groups.push(group);
     return group;
   });
