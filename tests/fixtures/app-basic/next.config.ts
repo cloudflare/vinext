@@ -162,6 +162,12 @@ const nextConfig: NextConfig = {
           source: "/rewrite-search-param/:term",
           destination: "/search?q=from-rewrite",
         },
+        // Used by Playwright: app-router-prod/static-hydration.spec.ts — a
+        // client page's searchParams come from the rewritten query.
+        {
+          source: "/client-page-search-params/rewritten/:q",
+          destination: "/client-page-search-params?q=:q",
+        },
       ],
       afterFiles: [
         // Used by Vitest: app-router.test.ts

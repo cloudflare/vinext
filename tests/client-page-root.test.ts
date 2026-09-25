@@ -1,6 +1,7 @@
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { makeClientPageSsrSearchParamsThenable } from "../packages/vinext/src/server/app-page-search-params-observation.js";
 import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
 import {
@@ -247,5 +248,168 @@ describe("createClientPageSearchParams", () => {
     const record = await searchParams;
     expect(Reflect.get(record, "constructor")).toBe("c");
     expect(Reflect.get(record, "q")).toBe("one");
+  });
+});
+
+type BrowserModules = {
+  ClientPageRoot: typeof ClientPageRoot;
+  navigation: typeof import("../packages/vinext/src/shims/navigation.js");
+};
+
+/** Load the shims as the browser does: with a `window`. */
+async function withBrowserModules(run: (modules: BrowserModules) => Promise<void>): Promise<void> {
+  const previousWindow = Reflect.get(globalThis, "window");
+  Reflect.set(globalThis, "window", {
+    location: {
+      hash: "",
+      href: "http://localhost/feed/bar",
+      origin: "http://localhost",
+      pathname: "/feed/bar",
+      search: "",
+    },
+    history: { state: null, pushState() {}, replaceState() {} },
+    addEventListener() {},
+    removeEventListener() {},
+  });
+  try {
+    vi.resetModules();
+    const { ClientPageRoot: BrowserClientPageRoot } =
+      await import("../packages/vinext/src/shims/client-page-root.js");
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    await run({ ClientPageRoot: BrowserClientPageRoot, navigation });
+  } finally {
+    vi.resetModules();
+    if (previousWindow === undefined) {
+      Reflect.deleteProperty(globalThis, "window");
+    } else {
+      Reflect.set(globalThis, "window", previousWindow);
+    }
+  }
+}
+
+function QueryPage({ searchParams }: SearchParamsProps): React.ReactNode {
+  const record = React.use(searchParams);
+  return React.createElement("p", null, `query:${JSON.stringify(record)}`);
+}
+
+function renderInBrowser(
+  modules: BrowserModules,
+  snapshot: ReturnType<BrowserModules["navigation"]["createClientNavigationRenderSnapshot"]>,
+  pageProps: Record<string, unknown>,
+  rootProps?: { emptySearchParams?: boolean },
+): string {
+  const Context = modules.navigation.getClientNavigationRenderContext();
+  if (!Context) throw new Error("Expected client navigation render context");
+  return renderToStaticMarkup(
+    React.createElement(
+      Context.Provider,
+      { value: snapshot },
+      React.createElement(modules.ClientPageRoot, {
+        Component: QueryPage as React.ComponentType<Record<string, unknown>>,
+        pageProps,
+        ...rootProps,
+      }),
+    ),
+  );
+}
+
+describe("ClientPageRoot in the browser", () => {
+  it("reads the query the server rendered, which a rewrite may change", async () => {
+    // A rewrite from /feed/:tab to /feed?tab=:tab: the browser URL has no
+    // query, and the navigation response names the rendered one.
+    await withBrowserModules(async (modules) => {
+      const snapshot = modules.navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/feed/bar",
+        {},
+        "/feed?tab=bar",
+      );
+
+      expect(snapshot.renderedSearch).toBe("?tab=bar");
+      expect(renderInBrowser(modules, snapshot, { params: {} })).toContain(
+        "query:{&quot;tab&quot;:&quot;bar&quot;}",
+      );
+    });
+  });
+
+  it("reads the browser URL's query when the rendered one is unknown", async () => {
+    await withBrowserModules(async (modules) => {
+      const snapshot = modules.navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/feed?tab=hot",
+        {},
+      );
+
+      expect(snapshot.renderedSearch).toBeUndefined();
+      expect(renderInBrowser(modules, snapshot, { params: {} })).toContain(
+        "query:{&quot;tab&quot;:&quot;hot&quot;}",
+      );
+    });
+  });
+
+  it("keeps a mounted page's query when a later navigation changes the URL", async () => {
+    // /feed?tab=hot, then an intercepted /photo/1 opens in @modal. The router
+    // keeps the feed page's server output, so its props object is the same.
+    await withBrowserModules(async (modules) => {
+      const feedProps = { params: {} };
+      const feed = modules.navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/feed?tab=hot",
+        {},
+        "/feed?tab=hot",
+      );
+      const photo = modules.navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/photo/1",
+        { id: "1" },
+        "/photo/1",
+      );
+
+      expect(renderInBrowser(modules, feed, feedProps)).toContain("tab&quot;:&quot;hot");
+      expect(renderInBrowser(modules, photo, feedProps)).toContain("tab&quot;:&quot;hot");
+      // A new server render of the page reads the navigation that sent it.
+      expect(renderInBrowser(modules, photo, { params: {} })).toContain("query:{}");
+    });
+  });
+
+  it("keeps handing a kept page the same promise", async () => {
+    await withBrowserModules(async (modules) => {
+      const received: unknown[] = [];
+      function RecordingPage({ searchParams }: SearchParamsProps): React.ReactNode {
+        received.push(searchParams);
+        return null;
+      }
+      const Context = modules.navigation.getClientNavigationRenderContext();
+      if (!Context) throw new Error("Expected client navigation render context");
+      const pageProps = { params: {} };
+      for (const href of ["http://localhost/feed?tab=hot", "http://localhost/feed?tab=new"]) {
+        renderToStaticMarkup(
+          React.createElement(
+            Context.Provider,
+            { value: modules.navigation.createClientNavigationRenderSnapshot(href, {}) },
+            React.createElement(modules.ClientPageRoot, {
+              Component: RecordingPage as React.ComponentType<Record<string, unknown>>,
+              pageProps,
+            }),
+          ),
+        );
+      }
+
+      expect(received).toHaveLength(2);
+      expect(received[0]).toBe(received[1]);
+    });
+  });
+
+  it("keeps a force-static page's query empty during a navigation", async () => {
+    // SSR renders force-static pages with an empty query, and so does Next.js
+    // in the browser, whatever the destination URL.
+    await withBrowserModules(async (modules) => {
+      const snapshot = modules.navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/static?value=hidden",
+        {},
+        "/static?value=hidden",
+      );
+      modules.navigation.activateNavigationSnapshot();
+
+      expect(
+        renderInBrowser(modules, snapshot, { params: {} }, { emptySearchParams: true }),
+      ).toContain("query:{}");
+    });
   });
 });

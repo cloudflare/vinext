@@ -1303,7 +1303,8 @@ function parseServerStaleTimeHeaders(headers: Headers): ServerStaleTime | undefi
   return seconds === undefined ? undefined : { kind: "resolved", seconds };
 }
 
-function parseRenderedPathAndSearchHeader(value: string | null): string | null {
+/** Decode an `X-Vinext-Rendered-Path-And-Search` header value. */
+export function parseRenderedPathAndSearchHeader(value: string | null): string | null {
   if (value === null || value === "") return null;
   try {
     const decoded = decodeURIComponent(value);
@@ -2035,6 +2036,12 @@ export type ClientNavigationRenderSnapshot = {
   search: string;
   searchParams: ReadonlyURLSearchParams;
   params: Record<string, string | string[]>;
+  /**
+   * The query the server rendered this tree with, when it is known. A rewrite
+   * can change it (`/search/:q` -> `/search?q=:q`), so it can differ from
+   * `search`. Client page `searchParams` read it (see `client-page-root.tsx`).
+   */
+  renderedSearch?: string;
 };
 
 const _CLIENT_NAV_RENDER_CTX_KEY = Symbol.for("vinext.clientNavigationRenderContext");
@@ -2067,9 +2074,14 @@ export function useClientNavigationRenderSnapshot(): ClientNavigationRenderSnaps
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
+/**
+ * @param renderedPathAndSearch The path and query the server rendered for this
+ * navigation (`X-Vinext-Rendered-Path-And-Search`), when known.
+ */
 export function createClientNavigationRenderSnapshot(
   href: string,
   params: Record<string, string | string[]>,
+  renderedPathAndSearch?: string | null,
 ): ClientNavigationRenderSnapshot {
   const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
   const url = new URL(href, origin);
@@ -2079,6 +2091,9 @@ export function createClientNavigationRenderSnapshot(
     search: url.search,
     searchParams: new ReadonlyURLSearchParams(url.search),
     params,
+    ...(renderedPathAndSearch != null
+      ? { renderedSearch: new URL(renderedPathAndSearch, origin).search }
+      : {}),
   };
 }
 

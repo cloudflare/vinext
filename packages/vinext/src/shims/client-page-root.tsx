@@ -12,19 +12,22 @@
  * - SSR: the promise `app-ssr-entry.ts` puts on the navigation context. Reading
  *   it marks the render dynamic, so a render that uses the query is never
  *   stored, and a page that never reads it stays cacheable.
- * - Browser: client navigation state, so the value follows the URL the way
- *   `useSearchParams()` does.
+ * - Browser: the query the server rendered this page with, captured when the
+ *   page's server output first renders. Next.js reads it from the page's own
+ *   segment payload, so a rewritten query survives, and a page that stays
+ *   mounted (an intercepted modal's background, a kept parallel slot) keeps
+ *   its query when the URL changes.
  *
  * `emptySearchParams` pages (`dynamic = "force-static"`, static export) always
  * get an empty, untracked query, as the server renders them.
  *
  * This module runs in the browser, so it must not import server-only modules.
  */
-import { createElement, useMemo, type ComponentType } from "react";
+import { createElement, use, useMemo, type ComponentType } from "react";
 import { searchParamsToRecord } from "../utils/query.js";
 import { isWellKnownProperty } from "./internal/thenable-well-known-properties.js";
 import { getNavigationContext } from "./navigation-server.js";
-import { useSearchParams } from "./navigation.js";
+import { getClientNavigationRenderContext } from "./navigation.js";
 
 type ClientPageSearchParams = Record<string, string | string[]>;
 
@@ -78,24 +81,54 @@ export function createClientPageSearchParams(
   return promise;
 }
 
-/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
+// Keyed by the page's server-sent props object: Flight builds a new one for
+// every server render, and the router keeps the same object for as long as it
+// keeps the segment. So each server render of the page gets one promise, with
+// the query of the navigation that delivered it.
+const browserSearchParams = new WeakMap<object, Promise<ClientPageSearchParams>>();
+
+function useBrowserSearchParams(
+  pageProps: Readonly<Record<string, unknown>>,
+  emptySearchParams: boolean,
+): Promise<ClientPageSearchParams> {
+  const cached = browserSearchParams.get(pageProps);
+  if (cached) return cached;
+
+  // The first render of this server output is the render of the navigation
+  // that delivered it, and the router provides that navigation's snapshot.
+  // Only a miss reads it, so a kept page doesn't re-render on later
+  // navigations.
+  let search: string | null = null;
+  if (!emptySearchParams) {
+    const context = getClientNavigationRenderContext();
+    const snapshot = context ? use(context) : null;
+    search = snapshot ? (snapshot.renderedSearch ?? snapshot.search) : window.location.search;
+  }
+  const searchParams = createClientPageSearchParams(
+    search === null ? null : new URLSearchParams(search),
+  );
+  browserSearchParams.set(pageProps, searchParams);
+  return searchParams;
+}
+
+/* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- isServer is fixed per environment. */
 export function ClientPageRoot({ Component, pageProps, emptySearchParams }: ClientPageRootProps) {
   let searchParams: Promise<ClientPageSearchParams>;
-  if (isServer) {
-    // Every App Router SSR render sets this. Without it there is no query this
-    // render may safely read, so the page gets an empty one. An empty query
-    // has nothing to read, so nothing to track.
-    searchParams =
-      (emptySearchParams === true ? null : getNavigationContext()?.clientPageSearchParams) ??
-      createClientPageSearchParams(null);
+  if (!isServer) {
+    searchParams = useBrowserSearchParams(pageProps, emptySearchParams === true);
+  } else if (emptySearchParams === true) {
+    // Nothing to read, so nothing to track.
+    searchParams = createClientPageSearchParams(null);
   } else {
-    const urlSearchParams = useSearchParams();
-    const isEmpty = emptySearchParams === true;
-    searchParams = useMemo(
-      () => createClientPageSearchParams(isEmpty ? null : urlSearchParams),
-      [isEmpty, urlSearchParams],
-    );
+    // Every App Router SSR render sets this. Without it there is no query this
+    // render may safely read, so the page gets an empty one.
+    searchParams =
+      getNavigationContext()?.clientPageSearchParams ?? createClientPageSearchParams(null);
   }
-  return createElement(Component, { ...pageProps, searchParams });
+  // The same inputs give the same element, so React skips the page.
+  return useMemo(
+    () => createElement(Component, { ...pageProps, searchParams }),
+    [Component, pageProps, searchParams],
+  );
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */

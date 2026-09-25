@@ -44,6 +44,25 @@ function collectPageErrors(page: Page): string[] {
   return errors;
 }
 
+test("a client page reads the rewritten query in SSR, hydration and navigation", async ({
+  page,
+}) => {
+  // /client-page-search-params/rewritten/:q rewrites to ?q=:q. Next.js hands a
+  // client page the rewritten query from its segment payload.
+  const errors = collectPageErrors(page);
+
+  await page.goto("/client-page-search-params/rewritten/bar");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("client-page-search-params-q")).toHaveText("bar");
+
+  await page.goto("/client-page-search-params?q=hello");
+  await waitForAppRouterHydration(page);
+  await page.getByTestId("client-page-search-params-rewrite-link").click();
+  await expect(page).toHaveURL(/\/client-page-search-params\/rewritten\/bar$/);
+  await expect(page.getByTestId("client-page-search-params-q")).toHaveText("bar");
+  expect(errors).toEqual([]);
+});
+
 test("a force-static client page keeps an empty query during navigation", async ({ page }) => {
   const errors = collectPageErrors(page);
 

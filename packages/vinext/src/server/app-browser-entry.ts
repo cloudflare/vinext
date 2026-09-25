@@ -33,10 +33,12 @@ import {
   PREFETCH_CACHE_TTL,
   getClientNavigationRenderContext,
   getBfcacheIdMapContext,
+  getNavigationContext,
   getMountedSlotsHeader,
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
   invalidatePrefetchCache,
+  parseRenderedPathAndSearchHeader,
   preloadHybridClientRouteOwner,
   seedPrefetchResponseSnapshot,
   decodeRedirectError,
@@ -209,6 +211,7 @@ import {
 import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
   VINEXT_RSC_REDIRECT_TYPE_HEADER,
 } from "./headers.js";
@@ -886,9 +889,13 @@ async function commitSameUrlNavigatePayload(
       });
     }
   }
-  const navigationSnapshot = createClientNavigationRenderSnapshot(
-    actionInitiation.href,
-    actionInitiation.routerState.navigationSnapshot.params,
+  // The re-render keeps the URL, so the server rendered the same query.
+  const navigationSnapshot = withRenderedSearchOf(
+    createClientNavigationRenderSnapshot(
+      actionInitiation.href,
+      actionInitiation.routerState.navigationSnapshot.params,
+    ),
+    actionInitiation.routerState.navigationSnapshot,
   );
   try {
     const result = await browserNavigationController.commitSameUrlNavigatePayload(
@@ -1492,6 +1499,28 @@ function restoreEmbeddedHydrationNavigationContext(
   );
 }
 
+/**
+ * The path and query SSR rendered, from the navigation payload the document
+ * embeds: the effective query, which a rewrite may have changed, or the
+ * browser URL's when a stored document leaves the query out.
+ */
+function getHydrationRenderedPathAndSearch(): string | null {
+  const context = getNavigationContext();
+  if (!context) return null;
+  const search = context.searchParams.toString();
+  return search ? `${context.pathname}?${search}` : context.pathname;
+}
+
+/** Carry the rendered query over to a snapshot of the same URL. */
+function withRenderedSearchOf(
+  snapshot: ClientNavigationRenderSnapshot,
+  source: ClientNavigationRenderSnapshot,
+): ClientNavigationRenderSnapshot {
+  return source.renderedSearch === undefined
+    ? snapshot
+    : { ...snapshot, renderedSearch: source.renderedSearch };
+}
+
 function restorePopstateScrollPosition(
   state: unknown,
   options?: {
@@ -1783,6 +1812,7 @@ function bootstrapHydration(
   const initialNavigationSnapshot = createClientNavigationRenderSnapshot(
     window.location.href,
     latestClientParams,
+    getHydrationRenderedPathAndSearch(),
   );
   const initialParams = initialNavigationSnapshot.params;
   const initialPathAndSearch = createSnapshotPathAndSearch(initialNavigationSnapshot);
@@ -2243,6 +2273,7 @@ function bootstrapHydration(
           const cachedNavigationSnapshot = createClientNavigationRenderSnapshot(
             currentHref,
             cachedParams,
+            cachedRoute.response.renderedPathAndSearch,
           );
           const cachedPayload = cachedRoute.elements
             ? Promise.resolve(cachedRoute.elements)
@@ -2524,7 +2555,13 @@ function bootstrapHydration(
         const navParams: Record<string, string | string[]> =
           responseParams ?? (IS_STATIC_EXPORT ? resolveStaticExportRouteParams(currentHref) : {});
         // Build snapshot from local params, not latestClientParams
-        const navigationSnapshot = createClientNavigationRenderSnapshot(currentHref, navParams);
+        const navigationSnapshot = createClientNavigationRenderSnapshot(
+          currentHref,
+          navParams,
+          parseRenderedPathAndSearchHeader(
+            navResponse.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+          ),
+        );
 
         // Tee the response body so React can consume it incrementally —
         // shell parses fast, and any Suspense boundary inside (e.g. the
@@ -2949,9 +2986,10 @@ function bootstrapHydration(
         return;
       }
       clearClientNavigationCaches();
-      const navigationSnapshot = createClientNavigationRenderSnapshot(
-        window.location.href,
-        latestClientParams,
+      // Same URL, so the same rendered query.
+      const navigationSnapshot = withRenderedSearchOf(
+        createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
+        browserNavigationController.getBrowserRouterState().navigationSnapshot,
       );
       // Clear stale errors from the dev overlay before dispatching the
       // fresh tree. If the new tree renders cleanly, the overlay stays
