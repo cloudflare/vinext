@@ -75,8 +75,9 @@ export type PrerenderRoutePattern = {
     /**
      * Not listed by the route's own static generation (`generateStaticParams`,
      * `getStaticPaths` or a route without dynamic segments): picked from
-     * traffic, or discovered for an App page route that isn't static or SSG.
-     * A path both listed and picked counts as listed.
+     * traffic, or, for an App page route, not listed by this route itself,
+     * which includes a route that isn't static or SSG and a path another
+     * route generates. A path both listed and picked counts as listed.
      */
     unlisted?: boolean;
   };
@@ -832,6 +833,11 @@ function classifyAppPageRouteStaticEligibility(
   return eligible ? "eligible" : "ineligible";
 }
 
+/** Keys a path an App page route lists by the route and the pathname together. */
+function appPageListingKey(routePattern: string, pathname: string): string {
+  return `${routePattern}\0${pathname}`;
+}
+
 async function collectAppPaths(options: {
   appDir: string;
   baseUrl: string | null;
@@ -846,8 +852,11 @@ async function collectAppPaths(options: {
   nonDynamicPaths: string[];
   paths: string[];
   routeHandlerPaths: string[];
-  /** App page paths discovered only for routes that aren't static or SSG. */
-  unlistedPaths: string[];
+  /**
+   * Keys (`appPageListingKey`) of the paths each static or SSG App page route
+   * lists in its own static generation.
+   */
+  listedRoutePaths: Set<string>;
 }> {
   const routes = await appRouter(options.appDir, options.pageExtensions);
   const paths: string[] = [];
@@ -857,8 +866,7 @@ async function collectAppPaths(options: {
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   const nonDynamicPaths: string[] = [];
   const seenNonDynamicPaths = new Set<string>();
-  const listedPaths = new Set<string>();
-  const ineligiblePaths = new Set<string>();
+  const listedRoutePaths = new Set<string>();
   const staticParamsCache = new Map<string, Promise<Record<string, string | string[]>[] | null>>();
   let requireNonEmptyStaticParams = false;
   const staticParamsMap = new Proxy({} as StaticParamsMap, {
@@ -930,10 +938,11 @@ async function collectAppPaths(options: {
       const { type } = classifyAppRoute(renderEntryPath, route.routePath, route.isDynamic);
       if (type === "api") continue;
     }
-    // Next.js's build lists paths only for a static or SSG page route. Paths
-    // discovered for any other route, for example through a sibling page's
-    // generateStaticParams, stay warm paths but aren't listed. A
-    // cacheComponents build keeps every page route eligible, as dispatch does.
+    // Next.js's build lists paths only for a static or SSG page route, and
+    // renders each under the route that generated it. Paths discovered for any
+    // other route, for example through a sibling page's generateStaticParams,
+    // stay warm paths but aren't listed. A cacheComponents build keeps every
+    // page route eligible, as dispatch does.
     const staticEligibility =
       isRouteHandler || options.cacheComponents
         ? "eligible"
@@ -946,7 +955,7 @@ async function collectAppPaths(options: {
         return;
       }
       addPath(paths, seen, pathname);
-      (isStaticEligible ? listedPaths : ineligiblePaths).add(pathname);
+      if (isStaticEligible) listedRoutePaths.add(appPageListingKey(route.pattern, pathname));
     };
 
     if (!route.isDynamic) {
@@ -1056,7 +1065,7 @@ async function collectAppPaths(options: {
     nonDynamicPaths,
     paths,
     routeHandlerPaths,
-    unlistedPaths: Array.from(ineligiblePaths).filter((pathname) => !listedPaths.has(pathname)),
+    listedRoutePaths,
   };
 }
 
@@ -1462,7 +1471,8 @@ export async function discoverPrerenderPathManifest(
   const discoveredRouteHandlerPaths: string[] = [];
   const seenRouteHandlerPaths = new Set<string>();
   const discoveredNonDynamicPathSet = new Set<string>();
-  const unlistedPathSet = new Set<string>();
+  const appListedRoutePaths = new Set<string>();
+  const candidateOnlyPathSet = new Set<string>();
   const fallbackRoutePatterns: PrerenderRoutePattern[] = [];
   await withPrerenderEndpoints(async () => {
     let prodServer: { server: HttpServer; port: number } | null = null;
@@ -1541,7 +1551,7 @@ export async function discoverPrerenderPathManifest(
           discoveredNonDynamicPathSet.add(pathname);
         }
         fallbackRoutePatterns.push(...appPathResult.fallbackRoutePatterns);
-        for (const pathname of appPathResult.unlistedPaths) unlistedPathSet.add(pathname);
+        for (const key of appPathResult.listedRoutePaths) appListedRoutePaths.add(key);
       }
 
       if (pagesDir) {
@@ -1584,7 +1594,7 @@ export async function discoverPrerenderPathManifest(
         pathname = pathname.slice(config.basePath.length);
       else continue;
     }
-    if (!seen.has(pathname)) unlistedPathSet.add(pathname);
+    if (!seen.has(pathname)) candidateOnlyPathSet.add(pathname);
     addPath(paths, seen, pathname);
     if (pagesDir) addPath(discoveredPagesPaths, seenPagesPaths, pathname);
   }
@@ -1723,6 +1733,22 @@ export async function discoverPrerenderPathManifest(
       config.buildId,
       localizePagesDataPath(pathname, config.i18n),
       "",
+    ),
+  );
+  // A path's listing belongs to the route that owns it at runtime. A path
+  // another route generates, for example a catch-all generating a path a more
+  // specific route owns, is build-rendered under the generating route, never
+  // under its owner. Pages pages and Route Handlers keep a traffic-picked path
+  // unlisted.
+  const unlistedPathSet = new Set(
+    Object.entries(appOwnedWarmPaths.routePatterns).flatMap(([pathname, route]) =>
+      (
+        route.kind === "app-page"
+          ? !appListedRoutePaths.has(appPageListingKey(route.pattern, pathname))
+          : candidateOnlyPathSet.has(pathname)
+      )
+        ? [pathname]
+        : [],
     ),
   );
   const routePatterns = annotateCacheabilityProbeSafety(

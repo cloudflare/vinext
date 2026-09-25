@@ -402,6 +402,52 @@ describe("staged Worker cacheability probes", () => {
     expect(unlisted.failures).toEqual([]);
   });
 
+  it("judges a failure moved to another pathname of its own route by that pathname's listing", async () => {
+    // The request stage rewrites the listed /posts/a to /posts/b, which the same
+    // route renders. Only /posts/b's own listing says whether Next.js's build
+    // rendered it.
+    const movedRoute = {
+      cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true },
+      kind: "app-page" as const,
+      pattern: "/posts/:slug",
+    };
+    const probe = (extraTargets: CdnWarmTarget[]) =>
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        concurrency: 1,
+        fetchImpl: async (input) => {
+          const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
+          return pathname === "/posts/a"
+            ? Response.json({
+                kind: "app-page",
+                pattern: "/posts/:slug",
+                reason: "route returned HTTP 500",
+                routePathname: "/posts/b",
+                state: "probe-failed",
+                status: 500,
+                version: 1,
+              })
+            : staticProbeResponse("/posts/:slug");
+        },
+        retries: 0,
+        root: createProbeRoot(),
+        targetUrl: "https://example.com",
+        targets: [{ ...target("/posts/a"), route: movedRoute }, ...extraTargets],
+      });
+
+    expect((await probe([])).failures).toEqual([]);
+    const unlistedDestination = {
+      ...movedRoute,
+      cacheabilityProbe: { canPrunePattern: true, unlisted: true },
+    };
+    expect((await probe([{ ...target("/posts/b"), route: unlistedDestination }])).failures).toEqual(
+      [],
+    );
+    expect(
+      (await probe([{ ...target("/posts/b"), route: optimizableRoute("/posts/:slug") }])).failures,
+    ).toEqual(["/posts/a: route returned HTTP 500"]);
+  });
+
   it("judges a moved failure against the destination's listing whichever probe completes first", async () => {
     const sourceRoute = {
       cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true, unlisted: true },
@@ -2133,9 +2179,11 @@ describe("staged Worker cacheability probes", () => {
 
   it.each([
     {
+      // A literal route lists only its own path, so the resolved pathname is
+      // unlisted there and, without on-demand ISR, gets no state.
       change: "route pathname",
       expectedPattern: "/source",
-      expectedResolvedState: "static-candidate",
+      expectedResolvedState: null,
       expectedRoutePathname: "/resolved",
       pattern: "/source",
       routePathname: "/resolved",

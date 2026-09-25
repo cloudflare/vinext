@@ -413,10 +413,6 @@ export async function probeStagedWorkerCacheability(options: {
     deferred: boolean;
     /** An unlisted path whose render failed; it is left to the route rule. */
     dropped?: boolean;
-    /** Discovery listed the path for the route it was grouped under. */
-    listedAtOrigin: boolean;
-    /** The route key the path was grouped under before any request-stage move. */
-    originKey: string;
     pattern: PatternClassification;
     primary: CdnWarmTarget;
     result?: ConcretePathResult;
@@ -489,22 +485,22 @@ export async function probeStagedWorkerCacheability(options: {
     group.targets.push(target);
     targetGroups.set(concreteKey, group);
   }
-  // A path is listed when its route's own static generation lists it;
-  // discovery marks every other path unlisted. A path the request stage moves to
-  // another route counts as listed there only when that route lists its
-  // resolved pathname. Those build-time facts are fixed before any probe runs:
-  // groups move between patterns as route-moving probes complete, so the
-  // listing is never read back from them. Discovery's fact wins over the
-  // pattern's shape: a literal route that isn't static or SSG doesn't list its
-  // own path. Only a literal route discovery has no fact for lists it.
+  // A path is listed when the route that owns it at runtime lists it in its
+  // own static generation; discovery marks every other path unlisted, even one
+  // another route generates. A path the request stage moves, to another route
+  // or another pathname, counts as listed only when its destination route lists
+  // the resolved pathname. Those build-time facts are keyed by route and
+  // pathname, and fixed before any probe runs: groups move between patterns as
+  // route-moving probes complete, so the listing is never read back from them.
+  // Discovery's fact wins over the pattern's shape: a literal route that isn't
+  // static or SSG doesn't list its own path. Only a literal route discovery has
+  // no fact for lists it.
   const buildTimeListing = new Map<string, boolean>();
   const isListedAt = (
-    group: ConcretePathGroup,
     route: Pick<PrerenderRoutePattern, "kind" | "pattern">,
     routePathname: string,
   ): boolean => {
     const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
-    if (group.originKey === key) return group.listedAtOrigin;
     const listed = buildTimeListing.get(`${key}\0${routePathname}`);
     if (listed !== undefined) return listed;
     return (
@@ -513,20 +509,17 @@ export async function probeStagedWorkerCacheability(options: {
     );
   };
   const isListedGroup = (group: ConcretePathGroup): boolean =>
-    isListedAt(group, group.pattern.route, group.routePathname);
+    isListedAt(group.pattern.route, group.routePathname);
   const groups: ConcretePathGroup[] = Array.from(targetGroups.values(), (targetGroup) => {
     targetGroup.targets.sort((first, second) => {
       const preference = targetPreference(first) - targetPreference(second);
       return preference || first.sourcePathname.localeCompare(second.sourcePathname);
     });
-    const group = {
-      ...targetGroup,
-      deferred: false,
-      listedAtOrigin: targetGroup.targets[0].route!.cacheabilityProbe?.unlisted !== true,
-      originKey: targetGroup.pattern.key,
-      primary: targetGroup.targets[0],
-    };
-    buildTimeListing.set(`${group.originKey}\0${group.routePathname}`, group.listedAtOrigin);
+    const group = { ...targetGroup, deferred: false, primary: targetGroup.targets[0] };
+    buildTimeListing.set(
+      `${group.pattern.key}\0${group.routePathname}`,
+      group.primary.route!.cacheabilityProbe?.unlisted !== true,
+    );
     targetGroup.pattern.groups.push(group);
     return group;
   });
@@ -627,8 +620,6 @@ export async function probeStagedWorkerCacheability(options: {
         cacheabilityRoutePathname(target.pathname, target.kind);
       const deferredGroup: ConcretePathGroup = {
         deferred: true,
-        listedAtOrigin: group.listedAtOrigin,
-        originKey: group.pattern.key,
         pattern: group.pattern,
         primary: target,
         resultKey: routePathname,
@@ -731,7 +722,6 @@ export async function probeStagedWorkerCacheability(options: {
         (target.route.cacheabilityProbe?.routeMayResolve === true &&
           result.routePathname !== undefined)) &&
       !isListedAt(
-        group,
         { kind: result.kind, pattern: result.pattern },
         result.routePathname === undefined
           ? group.routePathname

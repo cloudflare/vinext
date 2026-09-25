@@ -294,6 +294,72 @@ describe("prerender path manifest", () => {
     expect(manifest?.fallbackRoutePatterns).toBeUndefined();
   });
 
+  it("marks a path unlisted when a route other than its runtime owner generates it", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    // Next.js's build renders each generated path under the route that
+    // generated it, so the static catch-all's paths are never build-rendered
+    // by the more specific routes that own them at runtime.
+    writeFile(
+      "app/[...slug]/page.tsx",
+      [
+        "export function generateStaticParams() { return []; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/specific/[id]/page.tsx",
+      "export const dynamic = 'force-dynamic'; export default function Page() { return null; }\n",
+    );
+    writeFile(
+      "app/static/[id]/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ id: 'own' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pattern = new URL(
+        input instanceof Request ? input.url : String(input),
+      ).searchParams.get("pattern");
+      if (pattern === "/:slug+") {
+        return Response.json([
+          { slug: ["specific", "value"] },
+          { slug: ["static", "foreign"] },
+          { slug: ["other", "value"] },
+        ]);
+      }
+      if (pattern === "/static/:id") return Response.json([{ id: "own" }]);
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(
+      expect.arrayContaining(["/specific/value", "/static/foreign", "/other/value", "/static/own"]),
+    );
+    const route = (pathname: string) => manifest?.routePatterns?.[pathname];
+    expect(route("/specific/value")).toMatchObject({
+      cacheabilityProbe: { unlisted: true },
+      pattern: "/specific/:id",
+    });
+    expect(route("/static/foreign")).toMatchObject({
+      cacheabilityProbe: { unlisted: true },
+      pattern: "/static/:id",
+    });
+    expect(route("/static/own")?.cacheabilityProbe?.unlisted).toBeUndefined();
+    expect(route("/other/value")).toMatchObject({ pattern: "/:slug+" });
+    expect(route("/other/value")?.cacheabilityProbe?.unlisted).toBeUndefined();
+  });
+
   it("doesn't count a type-only generateStaticParams export toward static generation", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
