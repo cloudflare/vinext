@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   collectAppPageStaticGenerationRuntimes,
+  collectAppPageStaticParamsWalkSegments,
   hasAppPageGenerateStaticParamsAtLastDynamicSegment,
   isAppPageStaticEligible,
   isEdgeRuntime,
@@ -796,13 +797,13 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
     ).toBe(true);
   });
 
-  // Next.js's loader tree lists slots with a matched page before `children`
-  // at each level, so a slot segment is visited before the main-tree segment
-  // at the same depth.
-  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/webpack/loaders/next-app-loader/index.ts#L733-L790
-  it("visits a matched slot before the main tree at the same depth", () => {
+  // Next.js's default build (Turbopack) puts `children` first at each level,
+  // so the main-tree segment is visited before a slot segment at the same
+  // depth.
+  // https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1504-L1511
+  it("visits the main tree before a matched slot at the same depth", () => {
     // app/[id]/page.tsx exports it; app/@modal/[id]/layout.tsx does not. The
-    // slot's [id] is a separate segment, but the main page comes after it.
+    // slot's [id] is a separate segment, visited after the main page.
     expect(
       hasAppPageGenerateStaticParamsAtLastDynamicSegment({
         layouts: [{}],
@@ -820,7 +821,27 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
         ],
         routeSegments: ["[id]"],
       }),
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  it("orders slots by folder name, whether they matched a page or render default", () => {
+    const segments = collectAppPageStaticParamsWalkSegments({
+      layouts: [{}],
+      layoutTreePositions: [0],
+      page: {},
+      parallelBranches: [
+        { name: "zeta", ownerTreePosition: 0, page: {}, routeSegments: [] },
+        { isDefault: true, name: "alpha", ownerTreePosition: 0, page: {} },
+      ],
+      routeSegments: [],
+    });
+    expect(segments.map((segment) => [segment.identity[0], segment.treePath])).toEqual([
+      ["", []],
+      ["__DEFAULT__", [1]],
+      ["@zeta", [2]],
+      ["__PAGE__", [2, 0]],
+      ["__PAGE__", [0]],
+    ]);
   });
 
   it("places a slot under the folder that owns it, not by its segment count", () => {

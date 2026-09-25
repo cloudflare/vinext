@@ -623,14 +623,21 @@ function hasGenerateStaticParamsExport(
 
 const DEFAULT_SEGMENT_NAME = "__DEFAULT__";
 
+/** Turbopack reads a folder's subfolders from a `BTreeMap`: byte order. */
+function compareFolderNames(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /**
  * Collect the loader-tree segments of an App page route from its layout, page
  * and parallel-slot modules, for `lastDynamicSegmentHasGenerateStaticParams`.
  *
- * Children follow Next.js's loader tree order: slots with a matched page come
- * first (sorted by name), then `children`, then slots that render `default`.
- * A default slot is a single `__DEFAULT__` segment without the slot's layout.
- * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/webpack/loaders/next-app-loader/index.ts#L733-L790
+ * Children follow the loader tree Next.js's default build (Turbopack) makes:
+ * `children` first, then every slot in folder-name order, whether it matched
+ * a page or renders `default`. A default slot is a single `__DEFAULT__`
+ * segment without the slot's layout.
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1489-L1511
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/app_structure.rs#L1515-L1548
  */
 export function collectAppPageStaticParamsWalkSegments(
   options: Pick<
@@ -667,12 +674,6 @@ export function collectAppPageStaticParamsWalkSegments(
   // A folder's segment takes its module from the folder's layout. The page is
   // a child segment of the deepest folder.
   for (let position = 0; position <= routeSegments.length + 1; position++) {
-    const owned = branchesByOwner.get(position) ?? [];
-    const active = owned
-      .filter((branch) => !branch.isDefault)
-      .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
-    const defaults = owned.filter((branch) => branch.isDefault);
-
     if (position <= routeSegments.length) {
       const name = position === 0 ? "" : routeSegments[position - 1];
       const layout = layoutsByPosition.get(position);
@@ -692,27 +693,33 @@ export function collectAppPageStaticParamsWalkSegments(
       break;
     }
 
-    active.forEach((branch, rank) => {
-      segments.push(...collectActiveSlotSegments(branch, [...treePath, rank]));
+    // `children` takes index 0; the slots follow it.
+    const slots = [...(branchesByOwner.get(position) ?? [])].sort((a, b) =>
+      compareFolderNames(a.name ?? "", b.name ?? ""),
+    );
+    slots.forEach((branch, index) => {
+      const slotPath = [...treePath, index + 1];
+      if (branch.isDefault) {
+        segments.push({
+          dynamic: false,
+          generateStaticParams: hasGenerateStaticParamsExport(branch.page),
+          identity: [DEFAULT_SEGMENT_NAME, branch.page ?? undefined],
+          treePath: slotPath,
+        });
+      } else {
+        segments.push(...collectActiveSlotSegments(branch, slotPath));
+      }
     });
     if (position === childrenDefaultPosition) {
       segments.push({
         dynamic: false,
         generateStaticParams: hasGenerateStaticParamsExport(options.page),
         identity: [DEFAULT_SEGMENT_NAME, options.page ?? undefined],
-        treePath: [...treePath, active.length],
+        treePath: [...treePath, 0],
       });
+      break;
     }
-    defaults.forEach((branch, index) => {
-      segments.push({
-        dynamic: false,
-        generateStaticParams: hasGenerateStaticParamsExport(branch.page),
-        identity: [DEFAULT_SEGMENT_NAME, branch.page ?? undefined],
-        treePath: [...treePath, active.length + 1 + index],
-      });
-    });
-    if (position === childrenDefaultPosition) break;
-    treePath = [...treePath, active.length];
+    treePath = [...treePath, 0];
   }
 
   return segments;
