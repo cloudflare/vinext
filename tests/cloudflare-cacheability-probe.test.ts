@@ -1663,6 +1663,87 @@ describe("staged Worker cacheability probes", () => {
       }
     });
 
+    it("gives no entry to a route without generateStaticParams whose only paths are traffic-picked", async () => {
+      const itemsRoute = optimizableRoute("/items/:id");
+      const pickedItemsRoute = {
+        ...itemsRoute,
+        cacheabilityProbe: { ...itemsRoute.cacheabilityProbe, unlisted: true },
+      };
+      const result = await probe(
+        [
+          ...pageTargets("/items/a", pickedItemsRoute),
+          ...pageTargets("/items/b", pickedItemsRoute),
+        ],
+        {},
+      );
+
+      expect(result.failures).toEqual([]);
+      expect(result.manifest.routes).toEqual({});
+      expect(result.cacheableTargets).toEqual([]);
+    });
+
+    it("doesn't treat a static-candidate result without rendererStatic as a config-policy path", async () => {
+      // The listed path used a dynamic API, so the route has no on-demand ISR.
+      const targets = [
+        ...pageTargets("/posts/dynamic", listedRoute),
+        ...pageTargets("/posts/picked", pickedRoute),
+      ];
+      const state = async (fields: Record<string, unknown>) => {
+        const result = await probe(targets, {
+          "/posts/dynamic": dynamicApi,
+          "/posts/picked": fields,
+        });
+        const route =
+          result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")];
+        return route ? cacheabilityManifestRouteState(route, "/posts/picked", "html") : null;
+      };
+
+      expect(await state({ rendererStatic: false, state: "static-candidate" })).toBeNull();
+      expect(await state(configOnly)).toBe("runtime-check");
+    });
+
+    it("counts a listed path that middleware moves toward the destination's listed set only", async () => {
+      const movedRoute = {
+        ...listedRoute,
+        cacheabilityProbe: { ...listedRoute.cacheabilityProbe, routeMayResolve: true },
+      };
+      const otherRoute = optimizableRoute("/other/:id");
+      const moved = { pattern: "/other/:id", routePathname: "/other/x" };
+      for (const destinationListsPath of [false, true]) {
+        const result = await probe(
+          [
+            ...pageTargets("/posts/moved", movedRoute),
+            ...pageTargets("/posts/picked", pickedRoute),
+            ...(destinationListsPath ? pageTargets("/other/x", otherRoute) : []),
+          ],
+          { "/posts/moved": moved },
+        );
+
+        expect(result.failures).toEqual([]);
+        // The moved path never gives its origin route on-demand ISR.
+        const origin =
+          result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")];
+        expect(origin?.allowUnknown).toBeUndefined();
+        for (const pathname of ["/posts/picked", "/posts/unprobed"]) {
+          expect(
+            origin ? cacheabilityManifestRouteState(origin, pathname, "html") : null,
+          ).toBeNull();
+        }
+        const other =
+          result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/other/:id")];
+        if (destinationListsPath) {
+          expect(cacheabilityManifestRouteState(other!, "/other/x", "html")).toBe(
+            "static-candidate",
+          );
+          expect(cacheabilityManifestRouteState(other!, "/other/unprobed", "html")).toBe(
+            "static-candidate",
+          );
+        } else {
+          expect(other).toBeUndefined();
+        }
+      }
+    });
+
     it("certifies the RSC representations of a static HTML render", async () => {
       const aboutRoute = optimizableRoute("/about");
       const rscOnly = pageTargets("/posts/rsc-only", listedRoute)[1]!;
