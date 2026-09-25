@@ -41,6 +41,7 @@ import {
   matchAppRoute,
 } from "./routing/app-router.js";
 import type { NitroRouteRuleConfig } from "./build/nitro-route-rules.js";
+import type { TracedPackages } from "./build/nitro-trace-includes.js";
 import {
   buildViteResolveExtensions,
   normalizeViteResolveExtensions,
@@ -1496,6 +1497,11 @@ type NitroSetupContext = {
     exportConditions?: string[];
     routeRules?: Record<string, NitroRouteRuleConfig>;
     traceDeps?: string[];
+    traceOpts?: {
+      hooks?: {
+        tracedPackages?: (tracedPackages: TracedPackages) => void | Promise<void>;
+      };
+    };
   };
   logger?: {
     warn?: (message: string) => void;
@@ -7430,6 +7436,22 @@ export const loadServerActionClient = ${
           }
 
           if (nitro.options.dev) return;
+
+          const { createNitroTraceIncludesHook } = await import("./build/nitro-trace-includes.js");
+          const traceIncludesHook = createNitroTraceIncludesHook(
+            root,
+            nextConfig.outputFileTracingIncludes,
+            nextConfig.outputFileTracingExcludes,
+          );
+          if (traceIncludesHook) {
+            const traceOpts = (nitro.options.traceOpts ??= {});
+            const hooks = (traceOpts.hooks ??= {});
+            const userTracedPackages = hooks.tracedPackages;
+            hooks.tracedPackages = async (tracedPackages) => {
+              traceIncludesHook(tracedPackages);
+              await userTracedPackages?.(tracedPackages);
+            };
+          }
 
           const { collectNitroRouteRules, mergeNitroRouteRules } =
             await import("./build/nitro-route-rules.js");

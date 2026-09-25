@@ -398,6 +398,12 @@ export type NextConfig = {
    * `experimental.serverComponentsExternalPackages`).
    */
   serverExternalPackages?: string[];
+  /**
+   * Extra files to include in (or exclude from) traced server output, keyed by
+   * route glob. Values are globs relative to the project root.
+   */
+  outputFileTracingIncludes?: Record<string, string[]>;
+  outputFileTracingExcludes?: Record<string, string[]>;
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
   /**
@@ -577,6 +583,13 @@ export type ResolvedNextConfig = {
    * `experimental.serverComponentsExternalPackages` in next.config.
    */
   serverExternalPackages: string[];
+  /**
+   * Project-root-relative globs from every route key of
+   * `outputFileTracingIncludes` / `outputFileTracingExcludes`. vinext emits a
+   * single server bundle, so the per-route keys are merged.
+   */
+  outputFileTracingIncludes: string[];
+  outputFileTracingExcludes: string[];
   /** Enable sourcemaps for prerender error stack traces. Defaults to true. */
   enablePrerenderSourceMaps: boolean;
   /**
@@ -1418,6 +1431,12 @@ function readStringArray(value: unknown): string[] {
     : [];
 }
 
+/** Merge the glob lists of every route key of an `outputFileTracing*` map. */
+function readOutputFileTracingGlobs(value: unknown): string[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return [...new Set(Object.values(value).flatMap((globs) => readStringArray(globs)))];
+}
+
 /**
  * Convert lightningcss feature names from `experimental.lightningCssFeatures`
  * into a numeric bitmask consumable by the `lightningcss` `transform()` /
@@ -1725,6 +1744,8 @@ export async function resolveNextConfig(
       reactMaxHeadersLength: DEFAULT_REACT_MAX_HEADERS_LENGTH,
       htmlLimitedBots: undefined,
       serverExternalPackages: [],
+      outputFileTracingIncludes: [],
+      outputFileTracingExcludes: [],
       cacheHandler: undefined,
       cacheMaxMemorySize: undefined,
       enablePrerenderSourceMaps: true,
@@ -2102,6 +2123,8 @@ export async function resolveNextConfig(
         : DEFAULT_REACT_MAX_HEADERS_LENGTH,
     htmlLimitedBots,
     serverExternalPackages,
+    outputFileTracingIncludes: readOutputFileTracingGlobs(config.outputFileTracingIncludes),
+    outputFileTracingExcludes: readOutputFileTracingGlobs(config.outputFileTracingExcludes),
     cacheHandler,
     cacheMaxMemorySize,
     enablePrerenderSourceMaps: config.enablePrerenderSourceMaps ?? true,
