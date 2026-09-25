@@ -4,13 +4,14 @@ import {
   createDevOnCaughtError,
   createOnUncaughtError,
   createProdOnCaughtError,
-  prodOnRecoverableError,
+  createProdOnRecoverableError,
 } from "../packages/vinext/src/server/app-browser-error.js";
 import {
   clearAppNavigationFailureTarget,
   handleAppNavigationFailure,
   stageAppNavigationFailureTarget,
 } from "../packages/vinext/src/client/app-nav-failure-handler.js";
+import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
 import { applyServerActionResultDecision } from "../packages/vinext/src/server/app-browser-server-action-navigation.js";
 import {
   createDiscardedServerActionRefreshScheduler,
@@ -9274,7 +9275,7 @@ describe("prodOnCaughtError (hydrateRoot prod handler)", () => {
   });
 });
 
-describe("prodOnRecoverableError (hydrateRoot prod handler)", () => {
+describe("createProdOnRecoverableError (hydrateRoot prod handler)", () => {
   function withFakeReportError<T>(fn: (reportErrorSpy: ReturnType<typeof vi.fn>) => T): T {
     const reportErrorSpy = vi.fn();
     const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, "reportError");
@@ -9296,18 +9297,38 @@ describe("prodOnRecoverableError (hydrateRoot prod handler)", () => {
 
   it("reports recoverable hydration errors through reportError", () => {
     withFakeReportError((reportErrorSpy) => {
+      const onReportedError = vi.fn();
       const err = new Error("Minified React error #418");
-      prodOnRecoverableError(err);
+      createProdOnRecoverableError(onReportedError)(err);
       expect(reportErrorSpy).toHaveBeenCalledWith(err);
+      expect(onReportedError).toHaveBeenCalledTimes(1);
     });
   });
 
   it("reports the underlying cause when React provides one", () => {
     withFakeReportError((reportErrorSpy) => {
+      const onReportedError = vi.fn();
       const cause = new Error("server/client text mismatch");
       const err = new Error("recoverable", { cause });
-      prodOnRecoverableError(err);
+      createProdOnRecoverableError(onReportedError)(err);
       expect(reportErrorSpy).toHaveBeenCalledWith(cause);
+      expect(onReportedError).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("ignores a server bail-out to client rendering", () => {
+    withFakeReportError((reportErrorSpy) => {
+      const onReportedError = vi.fn();
+      const handler = createProdOnRecoverableError(onReportedError);
+      // React's production error for a Suspense boundary the server left to
+      // client-render carries the server's onError digest on the error itself.
+      const clientRenderedBoundary = Object.assign(new Error("Minified React error #419"), {
+        digest: "BAILOUT_TO_CLIENT_SIDE_RENDERING",
+      });
+      handler(clientRenderedBoundary);
+      handler(new Error("recoverable", { cause: new BailoutToCSRError("useSearchParams()") }));
+      expect(reportErrorSpy).not.toHaveBeenCalled();
+      expect(onReportedError).not.toHaveBeenCalled();
     });
   });
 });
