@@ -21,6 +21,7 @@ import type { LayoutClassificationOptions } from "../packages/vinext/src/server/
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import { BailoutToCSRError } from "../packages/vinext/src/shims/navigation-errors.js";
 import {
   parseClientReuseManifestHeader,
   type ClientReuseManifestParseResult,
@@ -1046,6 +1047,64 @@ describe("app page render lifecycle", () => {
       },
     });
     expect(devRecovered.headers.get("cache-control")).toBe("no-store, must-revalidate");
+  });
+
+  it("fails a candidate render with a 500 when useSearchParams() bails out outside Suspense", async () => {
+    // Next.js rethrows the bail-out instead of rendering error.tsx.
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/app-render.tsx#L3477-L3488
+    const common = createCommonOptions();
+    const clearRequestContext = vi.fn();
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ssrOptions: { isCacheCandidate?: boolean }[] = [];
+
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        clearRequestContext,
+        isCacheCandidate: true,
+        isProduction: true,
+        async loadSsrHandler() {
+          return {
+            async handleSsr(_rscStream, _navContext, _fontData, options) {
+              ssrOptions.push({ isCacheCandidate: options?.isCacheCandidate });
+              throw new BailoutToCSRError("useSearchParams()");
+            },
+          };
+        },
+        routePattern: "/search",
+      });
+
+      expect(ssrOptions).toEqual([{ isCacheCandidate: true }]);
+      expect(response.status).toBe(500);
+      await expect(response.text()).resolves.toBe("Internal Server Error");
+      expect(common.renderErrorBoundaryResponse).not.toHaveBeenCalled();
+      expect(common.isrSet).not.toHaveBeenCalled();
+      expect(clearRequestContext).toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledWith(
+        'useSearchParams() should be wrapped in a suspense boundary at page "/search". Read more: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout',
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("keeps the error boundary for a bail-out outside a candidate render", async () => {
+    const common = createCommonOptions();
+    const bailout = new BailoutToCSRError("useSearchParams()");
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      async loadSsrHandler() {
+        return {
+          async handleSsr() {
+            throw bailout;
+          },
+        };
+      },
+    });
+
+    expect(common.renderErrorBoundaryResponse).toHaveBeenCalledWith(bailout, "ssr");
+    expect(response.status).toBe(200);
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {

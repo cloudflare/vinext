@@ -153,3 +153,52 @@ test("a static page with no revalidate source is served from the configured cach
     )
     .toBe(true);
 });
+
+test("useSearchParams() inside Suspense keeps the query out of a static page", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  const query = randomUUID();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await request.get(`${baseURL}/search-params/suspense?q=${query}`);
+    const body = await response.text();
+    expect(response.ok(), JSON.stringify({ backend, headers: response.headers() })).toBe(true);
+    // The server renders the fallback, and the browser reads the query.
+    expect(body).toContain('data-testid="search-fallback"');
+    expect(body).not.toContain(query);
+  }
+});
+
+test("useSearchParams() outside Suspense fails an on-demand static path", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  const url = `${baseURL}/search-params/unwrapped/${randomUUID()}?q=${randomUUID()}`;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await request.get(url);
+    await response.dispose();
+    expect(response.status(), JSON.stringify({ backend, headers: response.headers() })).toBe(500);
+  }
+});
+
+test("useSearchParams() server-renders the real query once the page is dynamic", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  const query = randomUUID();
+  const response = await request.get(`${baseURL}/search-params/dynamic?q=${query}`);
+  const headers = response.headers();
+  expect(response.ok(), JSON.stringify({ backend, headers })).toBe(true);
+  expect(/search-value[^>]*>([^<]+)</.exec(await response.text())?.[1]).toBe(query);
+  expect(headers["x-vinext-cache"]).not.toBe("HIT");
+  expect(headers["cf-cache-status"]).not.toBe("HIT");
+});

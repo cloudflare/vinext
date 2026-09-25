@@ -7,6 +7,8 @@ import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { hasDigest } from "./app-rsc-errors.js";
+import { internalServerErrorResponse } from "./http-error-responses.js";
+import { isBailoutToCSRError } from "vinext/shims/navigation-errors";
 import {
   finalizeAppPageCacheabilityEvaluationResponse,
   finalizeAppPageHtmlCacheResponse,
@@ -167,6 +169,12 @@ type RenderAppPageLifecycleOptionsBase = {
    * (`isAppPageStaticEligible`). Other routes are never full-page cached.
    */
   isStaticEligible: boolean;
+  /**
+   * Production render that may be stored under a query-free key: SSR
+   * `useSearchParams()` waits until the render is known to be dynamic, and
+   * bails out to client rendering otherwise.
+   */
+  isCacheCandidate?: boolean;
   isProgressiveActionRender?: boolean;
   isPrerender?: boolean;
   isSpeculativePrerender?: boolean;
@@ -1203,6 +1211,8 @@ async function renderAppPageLifecycleImpl(
   let dynamicUsedDuringHtmlRender = false;
   let renderEnd: number | undefined;
 
+  const isCacheCandidateHtmlRender =
+    options.isCacheCandidate === true && options.isPrerender !== true;
   const htmlRender = await renderAppPageHtmlStreamWithRecovery({
     onShellRendered() {
       if (!options.isProduction) {
@@ -1210,6 +1220,16 @@ async function renderAppPageLifecycleImpl(
       }
     },
     renderErrorBoundaryResponse(error) {
+      if (isCacheCandidateHtmlRender && isBailoutToCSRError(error)) {
+        // A gated useSearchParams() outside Suspense. Next.js rethrows the
+        // bail-out instead of rendering an error boundary, so the request
+        // fails with a 500 and nothing is stored.
+        console.error(
+          `${error.reason} should be wrapped in a suspense boundary at page "${options.routePattern}". Read more: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout`,
+        );
+        options.clearRequestContext();
+        return Promise.resolve(internalServerErrorResponse());
+      }
       const capturedRscError = rscErrorTracker.getCapturedError();
       return options.renderErrorBoundaryResponse(
         capturedRscError ?? error,
@@ -1300,6 +1320,7 @@ async function renderAppPageLifecycleImpl(
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
+        isCacheCandidate: isCacheCandidateHtmlRender,
         onSsrError: createAppPageSsrErrorHandler(onSsrError, rscErrorTracker.isCapturedError),
       });
     },

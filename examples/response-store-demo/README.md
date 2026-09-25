@@ -31,6 +31,10 @@ vinext({ cache: responseStoreAdapter({ shards: 4 }) });
 - `/pages-prewarm` exercises Pages Router ISR.
 - `/static-default` verifies that a static page with no revalidate source is stored until it's
   revalidated, as in Next.js.
+- `/search-params/suspense` verifies that `useSearchParams()` inside Suspense keeps a static page
+  cached with the fallback in its HTML, and `/search-params/unwrapped/[slug]` that a call
+  outside Suspense returns a 500, as in Next.js. `/search-params/dynamic` reads `headers()`, so it
+  server-renders the real query and is never stored.
 - `/force-dynamic` verifies that explicit build-time dynamic config bypasses response-cache lookup.
 - `/dynamic-segment/[slug]` verifies that a dynamic-segment route without `generateStaticParams`
   bypasses response-cache lookup, as in Next.js.

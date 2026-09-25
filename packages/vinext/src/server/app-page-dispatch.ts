@@ -796,10 +796,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     });
   }
 
-  if (
+  const shouldReadCache =
     !isRouteCacheabilityProbe() &&
     options.bypassInterceptionContextCache !== true &&
-    isStaticEligible &&
     shouldReadAppPageCache({
       isDraftMode,
       isForceDynamic,
@@ -808,8 +807,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       isRscRequest: options.isRscRequest,
       revalidateSeconds: currentRevalidateSeconds,
       scriptNonce: options.scriptNonce,
-    })
-  ) {
+    });
+  // A render that may be stored, and so must not let the request's query reach
+  // its output unless it turns out dynamic. PPR fallback shells follow
+  // cacheComponents' model instead.
+  const isCacheCandidate = shouldReadCache && isStaticEligible && options.pprRuntime === undefined;
+  if (shouldReadCache && isStaticEligible) {
     traceOperation = resolveAppPageTraceOperation({
       hasRequestSearchParams,
       isDynamicError,
@@ -1279,7 +1282,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     },
     handlerStart: options.handlerStart,
     hasLoadingBoundary: hasActiveLoadingBoundary,
-    omitPendingDynamicCacheState: hasRequestSearchParams,
+    omitPendingDynamicCacheState: hasRequestSearchParams && !isCacheCandidate,
     formState: options.formState ?? null,
     isProgressiveActionRender: options.isProgressiveActionRender === true,
     isDynamicError,
@@ -1288,6 +1291,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isForceStatic,
     isEdgeRuntime: options.isEdgeRuntime === true,
     isStaticEligible,
+    isCacheCandidate,
     isPrerender,
     isSpeculativePrerender,
     isProduction: options.isProduction,

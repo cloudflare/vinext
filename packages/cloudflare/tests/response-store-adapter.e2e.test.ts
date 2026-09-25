@@ -210,6 +210,60 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), /dynamic-segment/);
   });
 
+  test("keeps the query out of a static page that reads useSearchParams() inside Suspense", async () => {
+    const query = crypto.randomUUID();
+    const url = `/search-params/suspense?q=${query}`;
+    const first = await request(url);
+    const firstBody = await first.text();
+    const second = await request(url);
+    const secondBody = await second.text();
+
+    assert.equal(first.status, 200);
+    assert.equal(first.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(second.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(
+      htmlValue(secondBody, "search-suspense-render-id"),
+      htmlValue(firstBody, "search-suspense-render-id"),
+    );
+    for (const body of [firstBody, secondBody]) {
+      // The server renders the fallback, and the browser reads the query.
+      assert.equal(htmlValue(body, "search-fallback"), "loading");
+      assert.doesNotMatch(body, new RegExp(query));
+      assert.match(body, /searchParamsFromBrowser:true/);
+      assert.match(body, /"searchParams":\[\]/);
+    }
+  });
+
+  test("fails a static page that reads useSearchParams() outside Suspense", async () => {
+    const url = `/search-params/unwrapped/on-demand?q=${crypto.randomUUID()}`;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await request(url);
+      await response.text();
+      assert.equal(response.status, 500);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+    }
+    assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), /unwrapped/);
+  });
+
+  test("server-renders the real query on a page that turns dynamic", async () => {
+    const query = crypto.randomUUID();
+    const url = `/search-params/dynamic?q=${query}`;
+    const first = await request(url);
+    const firstBody = await first.text();
+    const second = await request(url);
+    const secondBody = await second.text();
+
+    for (const response of [first, second]) {
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+    }
+    assert.equal(htmlValue(firstBody, "search-value"), query);
+    assert.notEqual(
+      htmlValue(secondBody, "search-dynamic-render-id"),
+      htmlValue(firstBody, "search-dynamic-render-id"),
+    );
+  });
+
   test("runs cold fills, hits, and SWR loopback in one Worker", async () => {
     const inline = new Miniflare({
       unsafeEphemeralDurableObjects: true,

@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { SearchParamsGate } from "./search-params-gate.js";
 
 const LAYOUT_SEGMENT_CONTEXT_KEY = Symbol.for("vinext.layoutSegmentContext");
 const SERVER_INSERTED_HTML_CONTEXT_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
@@ -23,6 +24,8 @@ export type NavigationContext = {
   isStaticGeneration?: boolean;
   /** `dynamic = "force-static"` suppresses the static useSearchParams bailout. */
   isForceStatic?: boolean;
+  /** SSR-only: set for a cache-candidate render. See `search-params-gate.ts`. */
+  searchParamsGate?: SearchParamsGate;
 };
 
 type NavigationContextsGlobal = typeof globalThis & {
