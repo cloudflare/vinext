@@ -879,18 +879,18 @@ async function renderAppPageLifecycleImpl(
   const shouldWaitForAllReady =
     options.isPrerender === true && options.isSpeculativePrerender !== true;
   const shouldReadRequestCacheLifeForPrerender = options.isPrerender === true;
-  // Next.js renders these routes per request, so they are dynamic before any
-  // request API runs. Their payload is never stored, even when a cacheLife
-  // resolves during the render.
-  const isKnownDynamicRoute = options.isForceDynamic || !options.isStaticEligible;
   const mayResolveCacheLifeAfterHeaders =
     options.isProgressiveActionRender !== true &&
     (revalidateSeconds === null || (revalidateSeconds > 0 && revalidateSeconds !== Infinity)) &&
     !options.isDraftMode &&
-    !isKnownDynamicRoute &&
+    !options.isForceDynamic &&
     !shouldBypassRscCache;
+  // Only cache candidates capture the RSC payload. A dynamic route's payload is
+  // never stored, even when a cacheLife resolves during its render.
   const shouldCaptureRscForCacheMetadata =
-    (options.isProduction || options.isPrerender === true) && mayResolveCacheLifeAfterHeaders;
+    (options.isProduction || options.isPrerender === true) &&
+    mayResolveCacheLifeAfterHeaders &&
+    options.isStaticEligible;
   const createBufferedRscStream = (close: boolean): ReadableStream<Uint8Array> =>
     new ReadableStream<Uint8Array>({
       start(controller) {
@@ -963,7 +963,7 @@ async function renderAppPageLifecycleImpl(
       dynamicStaleTimeSeconds !== undefined &&
       options.isPrerender !== true &&
       !options.isForceStatic &&
-      (dynamicUsedDuringBuild || isKnownDynamicRoute);
+      (dynamicUsedDuringBuild || options.isForceDynamic);
     // The response streams before the captured render resolves its cacheLife
     // (#961) — mark the claim pending so the client bounds reuse. This is also
     // the conservative dev transport: dev does not persist ISR artifacts, but
@@ -1152,7 +1152,7 @@ async function renderAppPageLifecycleImpl(
           let kind: "dynamic" | "static";
           if (options.isForceStatic) {
             kind = "static";
-          } else if (isKnownDynamicRoute || dynamicUsedDuringHtmlRender || peekDynamicUsage()) {
+          } else if (options.isForceDynamic || dynamicUsedDuringHtmlRender || peekDynamicUsage()) {
             kind = "dynamic";
           } else {
             const observation = options.peekRenderObservationState?.();
