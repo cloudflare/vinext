@@ -171,6 +171,8 @@ function metadataRouteCacheHeader(route: MetadataRuntimeRoute): string {
 }
 
 function withMetadataRouteCacheHeader(response: Response, route: MetadataRuntimeRoute): Response {
+  // Like a Route Handler, a route's own public policy opts it into shared
+  // caching. The framework default applied below never does.
   if (
     hasCdnResponsePolicy(response.headers) &&
     !hasExplicitNonCacheableResponsePolicy(response.headers)
@@ -188,6 +190,8 @@ function withMetadataRouteCacheHeader(response: Response, route: MetadataRuntime
   });
 }
 
+// Next.js compiles metadata files into GET Route Handlers, so they share the
+// Route Handler cacheability identity.
 function beginMetadataRouteCacheability(route: MetadataRuntimeRoute): void {
   beginRouteCacheability(
     "app-route",
