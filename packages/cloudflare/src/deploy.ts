@@ -2341,7 +2341,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (tpr?.skipped) console.log(`  TPR: Skipped (${tpr.skipped})`);
   const tprRoutes = tpr?.routes ?? [];
   const wranglerOptions = {
-    env: deployEnv === "production" && !options.env ? undefined : deployEnv,
+    env: deploymentTool === "cf" ? viteMode : deployEnv,
     name: deploymentTool === "cf" ? readBuildOutputWorkerName(root) : options.name,
     config: options.config,
     verbose: options.verbose,
@@ -2445,7 +2445,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       await populateKVCacheFromPrerenderedArtifacts(
         root,
         deploymentTool,
-        deploymentTool === "cf" ? deployEnv : wranglerFallbackEnv,
+        deploymentTool === "cf" ? viteMode : wranglerFallbackEnv,
         viteConfigMetadata.cacheConfig,
       );
     } catch (error) {

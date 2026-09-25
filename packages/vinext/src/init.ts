@@ -257,10 +257,7 @@ export function getInitDependencyGroups(
     }
     if (cloudflare?.experimentalCf) {
       devDependencies[0] = "vite@8.3.0";
-      devDependencies.push(
-        "@cloudflare/vite-plugin@2.0.0-beta.sha-b747ec8ea",
-        "cf@https://pkg.pr.new/cloudflare/cf@56a42d06a99193547d5112c144f5be09c55fa099",
-      );
+      devDependencies.push("@cloudflare/vite-plugin@2.0.0-beta.sha-b747ec8ea", "cf@1.0.0-beta.1");
     } else {
       devDependencies.push("@cloudflare/vite-plugin", "wrangler");
     }

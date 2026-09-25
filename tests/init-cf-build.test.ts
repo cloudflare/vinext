@@ -45,12 +45,6 @@ describe("experimental cf init build", () => {
           "export default function Home() { return <main>cf init smoke test</main> }",
         );
       }
-      fs.symlinkSync(
-        path.join(webRoot, "node_modules"),
-        path.join(root, "node_modules"),
-        process.platform === "win32" ? "junction" : "dir",
-      );
-
       const log = vi.spyOn(console, "log").mockImplementation(() => {});
       try {
         await init({

@@ -707,7 +707,8 @@ describe("deploy prerender config wiring", () => {
     );
   });
 
-  it("loads dotenv from the selected Build Output mode", async () => {
+  it.each([undefined, "staging"])("uses Build Output mode %s for dotenv and cf", async (env) => {
+    const mode = env ?? "production";
     const envKey = "VINEXT_TEST_CF_BUILD_MODE";
     delete process.env[envKey];
     writeProjectWithInlineNextConfig(
@@ -719,11 +720,16 @@ describe("deploy prerender config wiring", () => {
     const { deploy } = await import("../packages/cloudflare/src/deploy.js");
 
     try {
-      await deploy({ root: tmpDir, skipBuild: true, env: "staging" });
+      await deploy({ root: tmpDir, skipBuild: true, env });
       expect(runPrerenderMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          nextConfig: expect.objectContaining({ buildId: "staging" }),
+          nextConfig: expect.objectContaining({ buildId: mode }),
         }),
+      );
+      expect(spawn).toHaveBeenCalledWith(
+        process.execPath,
+        [path.join(tmpDir, "node_modules/cf/bin/cf"), "deploy", "--prebuilt", "--mode", mode],
+        expect.objectContaining({ cwd: tmpDir }),
       );
     } finally {
       delete process.env[envKey];
@@ -821,8 +827,16 @@ describe("deploy prerender config wiring", () => {
       "kv-id",
       "--body",
       expect.stringMatching(/^@.*\.json$/),
+      "--mode",
+      "production",
     ]);
-    expect(calls.at(-1)?.[1]).toEqual([expect.stringContaining("/cf"), "deploy", "--prebuilt"]);
+    expect(calls.at(-1)?.[1]).toEqual([
+      expect.stringContaining("/cf"),
+      "deploy",
+      "--prebuilt",
+      "--mode",
+      "production",
+    ]);
     expect(calls.every(([, args]) => !(args as string[])[0]?.includes("wrangler"))).toBe(true);
   });
 

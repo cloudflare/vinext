@@ -5,7 +5,11 @@ saveExact: true
 blockExoticSubdeps: true
 minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
+  - "@cloudflare/build-output-utils@0.8.0"
+  - "@cloudflare/config@0.18.0"
   - "@cloudflare/vite-plugin@2.0.0-beta.sha-b747ec8ea"
+  - "cf@1.0.0-beta.1"
+  - "miniflare@5.20260923.0-alpha"
 resolutionMode: highest
 
 packages:
@@ -109,7 +113,7 @@ catalog:
 catalogs:
   cloudflare-vite-v2:
     "@cloudflare/vite-plugin": 2.0.0-beta.sha-b747ec8ea
-    cf: https://pkg.pr.new/cloudflare/cf@56a42d06a99193547d5112c144f5be09c55fa099
+    cf: 1.0.0-beta.1
     vite: 8.3.0
   sentry-nextjs-16-static:
     "@sentry/core": 11.0.0-beta.2
