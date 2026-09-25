@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import type { RenderObservation } from "./cache-proof.js";
+import { hasQueryInvariantRenderProof, type RenderObservation } from "./cache-proof.js";
 
 /** The observations of a prerendered App page's render, one per stored artifact. */
 export type PrerenderRenderObservations = {
@@ -63,6 +63,26 @@ export function getRenderedMetadataRoutes(
   routes: PrerenderManifestRoute[],
 ): PrerenderManifestRoute[] {
   return routes.filter((route) => route.status === "rendered" && route.router === "metadata");
+}
+
+/**
+ * The observations a rendered App page's seeds are stored with, or `null` when
+ * the seeds must not be written. Every query shares a page's entries, so a
+ * seed is stored only when its render is proven to leave the query unread,
+ * like core's request-time writes. A route without observations has no proof.
+ */
+export function getQueryInvariantSeedObservations(
+  route: PrerenderManifestRoute,
+): PrerenderRenderObservations | null {
+  const observations = route.renderObservations;
+  if (
+    !observations ||
+    !hasQueryInvariantRenderProof(observations.html) ||
+    !hasQueryInvariantRenderProof(observations.rsc)
+  ) {
+    return null;
+  }
+  return observations;
 }
 
 function groupRoutesByPattern(routes: PrerenderManifestRoute[]): Map<string, string[]> {

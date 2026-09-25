@@ -6,16 +6,29 @@ import { Buffer } from "node:buffer";
 import { buildPrerenderKVPairs } from "../packages/cloudflare/src/prerender-kv-populate.js";
 import { createKvKeySpace } from "../packages/cloudflare/src/cache/kv-key.js";
 import { appIsrCacheKey } from "../packages/vinext/src/server/isr-cache.js";
+import {
+  buildSearchParamsReadRenderObservation,
+  queryInvariantPrerenderObservations,
+} from "./render-observation-test-helpers.js";
 
 let serverDir: string;
 
+/**
+ * Rendered App routes carry the observations of a render that left the query
+ * unread, as a current build writes them, unless the route sets its own.
+ */
 function writePrerenderFixture(
-  manifest: Record<string, unknown>,
+  manifest: { routes: Record<string, unknown>[] } & Record<string, unknown>,
   files: Record<string, string | Buffer>,
 ): void {
+  const routes = manifest.routes.map((route) =>
+    route.router === "app" && !("renderObservations" in route)
+      ? { ...route, renderObservations: queryInvariantPrerenderObservations() }
+      : route,
+  );
   fs.writeFileSync(
     path.join(serverDir, "vinext-prerender.json"),
-    JSON.stringify(manifest, null, 2),
+    JSON.stringify({ ...manifest, routes }, null, 2),
     "utf-8",
   );
   const prerenderDir = path.join(serverDir, "prerendered-routes");
@@ -37,6 +50,7 @@ describe("buildPrerenderKVPairs", () => {
   });
 
   it("builds KV entries for prerendered App Router HTML and RSC artifacts", () => {
+    const renderObservations = queryInvariantPrerenderObservations();
     writePrerenderFixture(
       {
         buildId: "build-1",
@@ -50,6 +64,7 @@ describe("buildPrerenderKVPairs", () => {
             router: "app",
             headers: { link: "</font.woff2>; rel=preload; as=font" },
             tags: ["test-update-tag"],
+            renderObservations,
           },
         ],
       },
@@ -78,6 +93,7 @@ describe("buildPrerenderKVPairs", () => {
         kind: "APP_PAGE",
         html: "<html>About</html>",
         headers: { link: "</font.woff2>; rel=preload; as=font" },
+        renderObservation: renderObservations.html,
       },
       lastModified: 1_000,
       revalidateAt: 61_000,
@@ -94,7 +110,53 @@ describe("buildPrerenderKVPairs", () => {
       kind: "APP_PAGE",
       html: "",
       rscData: Buffer.from("flight").toString("base64"),
+      renderObservation: renderObservations.rsc,
     });
+  });
+
+  it("skips App pages whose render read searchParams or carries no observation", () => {
+    writePrerenderFixture(
+      {
+        buildId: "build-unproven",
+        routes: [
+          {
+            route: "/search",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: {
+              html: buildSearchParamsReadRenderObservation(),
+              rsc: buildSearchParamsReadRenderObservation(),
+            },
+          },
+          // A manifest from an older build carries no observation.
+          {
+            route: "/legacy",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            renderObservations: undefined,
+          },
+          { route: "/about", status: "rendered", revalidate: 60, router: "app" },
+        ],
+      },
+      {
+        "search.html": "<html>Search</html>",
+        "search.rsc": "flight",
+        "legacy.html": "<html>Legacy</html>",
+        "legacy.rsc": "flight",
+        "about.html": "<html>About</html>",
+        "about.rsc": "flight",
+      },
+    );
+
+    const { routeCount, pairs } = buildPrerenderKVPairs(serverDir);
+
+    expect(routeCount).toBe(1);
+    expect(pairs.map((pair) => pair.key)).toEqual([
+      "cache:app:v2:build-unproven:/about:html",
+      "cache:app:v2:build-unproven:/about:rsc",
+    ]);
   });
 
   it("builds an APP_ROUTE KV entry for prerendered metadata", () => {

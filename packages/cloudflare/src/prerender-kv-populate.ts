@@ -15,6 +15,7 @@ import {
   buildAppRouteCacheTags,
 } from "vinext/internal/server/app-page-cache";
 import {
+  getQueryInvariantSeedObservations,
   getRenderedAppRoutes,
   getRenderedMetadataRoutes,
   readPrerenderManifest,
@@ -133,6 +134,10 @@ export function buildPrerenderKVPairs(
     if (!fs.existsSync(htmlPath)) continue;
 
     if (typeof route.revalidate === "number" && route.revalidate <= 0) continue;
+    // Every query shares these entries, so, like core's writes, a page is only
+    // seeded when its render is proven to leave the query unread.
+    const renderObservations = getQueryInvariantSeedObservations(route);
+    if (!renderObservations) continue;
     const revalidateSeconds = typeof route.revalidate === "number" ? route.revalidate : undefined;
     const expireSeconds = typeof route.expire === "number" ? route.expire : undefined;
     const staleSeconds =
@@ -150,6 +155,7 @@ export function buildPrerenderKVPairs(
           kind: "APP_PAGE",
           html: fs.readFileSync(htmlPath, "utf-8"),
           headers: route.headers,
+          renderObservation: renderObservations.html,
         },
         tags,
         now,
@@ -170,6 +176,7 @@ export function buildPrerenderKVPairs(
             kind: "APP_PAGE",
             html: "",
             rscData,
+            renderObservation: renderObservations.rsc,
           },
           tags,
           now,
