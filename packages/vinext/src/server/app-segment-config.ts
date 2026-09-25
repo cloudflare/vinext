@@ -469,9 +469,16 @@ function treePathDepth(treePath: string): number {
 
 /**
  * The `runtime` values of an App page's file and the layouts above it, root
- * first, for `resolveAppPageStaticGenerationRuntime`. A route that only a
- * slot page materializes is built from that slot page, so its layouts are the
- * slot owner's ancestors followed by the slot's own.
+ * first, for `resolveAppPageStaticGenerationRuntime`.
+ *
+ * A route that only slot pages materialize has no page of its own, so its
+ * runtime comes from the loader tree those slots build. Next.js's default
+ * build (Turbopack) derives an App page's runtime from its whole loader tree:
+ * sibling slots' values merge (a conflict fails the build), then each
+ * enclosing layout fills in only what is still unset. A Node slot page next to
+ * an edge one makes the route edge, whichever slot sorts first.
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/segment_config.rs#L1323-L1357
+ * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/next_app/app_page_entry.rs#L40-L41
  */
 export function collectAppPageStaticGenerationRuntimes(
   options: Pick<
@@ -483,34 +490,62 @@ export function collectAppPageStaticGenerationRuntimes(
   },
 ): unknown[] {
   const layoutRuntimes = (options.layouts ?? []).map((layout) => layout?.runtime);
-  const slotPage = options.materializedBySlot
-    ? (options.parallelBranches ?? [])
-        .filter(
-          (branch): branch is ParallelAppPageSegmentConfigBranch =>
-            !!branch &&
-            !branch.isDefault &&
-            (options.childrenSlot == null ||
-              branch.ownerTreePosition === treePathDepth(options.childrenSlot.ownerTreePath)),
-        )
-        .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))[0]
-    : undefined;
-  if (!slotPage) return [...layoutRuntimes, options.page?.runtime];
-  // Next.js reads the layouts in the slot page's parent folders. Main-branch
-  // layouts below the slot's owner aren't among them.
-  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/get-static-info-including-layouts.ts
-  const ownerTreePosition = slotPage.ownerTreePosition;
-  const ancestorRuntimes =
-    ownerTreePosition == null
-      ? layoutRuntimes
-      : layoutRuntimes.filter(
-          (_, index) => (options.layoutTreePositions?.[index] ?? 0) <= ownerTreePosition,
-        );
-  return [
-    ...ancestorRuntimes,
-    slotPage.layout?.runtime,
-    ...(slotPage.configLayouts ?? []).map((layout) => layout?.runtime),
-    slotPage.page?.runtime,
-  ];
+  const slotPages = options.materializedBySlot
+    ? (options.parallelBranches ?? []).filter(
+        (branch): branch is ParallelAppPageSegmentConfigBranch =>
+          !!branch &&
+          !branch.isDefault &&
+          (options.childrenSlot == null ||
+            branch.ownerTreePosition === treePathDepth(options.childrenSlot.ownerTreePath)),
+      )
+    : [];
+  if (slotPages.length === 0) return [...layoutRuntimes, options.page?.runtime];
+
+  // Walk the slot owners from the deepest up. At each owner, its slots merge
+  // with what the deeper tree resolved, then the owner's layout fills an unset
+  // value. Main-branch layouts below the deepest owner aren't in the tree.
+  const ownerPositions = slotPages.map((branch) => branch.ownerTreePosition ?? null);
+  const deepestOwner = ownerPositions.includes(null)
+    ? null
+    : Math.max(...(ownerPositions as number[]));
+  const layoutPositions = layoutRuntimes.map(
+    (_, index) => options.layoutTreePositions?.[index] ?? index,
+  );
+  const lastPosition = deepestOwner ?? Math.max(0, ...layoutPositions);
+  let runtime: EffectiveAppPageSegmentConfig["runtime"];
+  for (let position = lastPosition; position >= 0; position--) {
+    for (const branch of slotPages) {
+      if ((branch.ownerTreePosition ?? lastPosition) !== position) continue;
+      runtime = mergeParallelRuntime(
+        runtime,
+        resolveAppPageStaticGenerationRuntime([
+          branch.layout?.runtime,
+          ...(branch.configLayouts ?? []).map((layout) => layout?.runtime),
+          branch.page?.runtime,
+        ]),
+      );
+    }
+    for (let index = layoutRuntimes.length - 1; index >= 0 && runtime === undefined; index--) {
+      if (layoutPositions[index] === position) {
+        runtime = resolveAppPageStaticGenerationRuntime([layoutRuntimes[index]]);
+      }
+    }
+  }
+  return [runtime];
+}
+
+/**
+ * Merge a sibling slot's runtime into its siblings'. Next.js fails the build
+ * when two siblings set different values; the edge one is kept here, since it
+ * keeps the route out of static generation either way.
+ */
+function mergeParallelRuntime(
+  current: EffectiveAppPageSegmentConfig["runtime"],
+  sibling: EffectiveAppPageSegmentConfig["runtime"],
+): EffectiveAppPageSegmentConfig["runtime"] {
+  if (current === undefined) return sibling;
+  if (sibling === undefined || current === sibling) return current;
+  return isEdgeRuntime(current) ? current : sibling;
 }
 
 /**

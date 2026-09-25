@@ -578,8 +578,44 @@ describe("collectAppPageStaticGenerationRuntimes", () => {
         },
       ],
     });
-    expect(runtimes).toEqual(["nodejs", undefined, "nodejs", "edge"]);
+    expect(runtimes).toEqual(["edge"]);
     expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+  });
+
+  it("makes the route edge when any sibling slot page is edge", () => {
+    // app/@alpha/page.tsx (Node) and app/@zeta/page.tsx (edge) with no
+    // app/page.tsx: Next.js merges the sibling slots' runtimes, so / is edge
+    // even though @alpha sorts first.
+    const runtimes = collectAppPageStaticGenerationRuntimes({
+      childrenSlot: { ownerTreePath: "/", state: "default" },
+      layouts: [{}],
+      layoutTreePositions: [0],
+      materializedBySlot: true,
+      page: null,
+      parallelBranches: [
+        { name: "alpha", ownerTreePosition: 0, page: {}, routeSegments: [] },
+        { name: "zeta", ownerTreePosition: 0, page: { runtime: "edge" }, routeSegments: [] },
+      ],
+    });
+    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+  });
+
+  it("lets a slot page's runtime win over an enclosing layout's", () => {
+    // app/layout.tsx sets runtime = "edge" and app/@alpha/page.tsx sets
+    // "nodejs": the merged slot value is set, so the root layout doesn't
+    // override it.
+    const runtimes = collectAppPageStaticGenerationRuntimes({
+      childrenSlot: { ownerTreePath: "/", state: "default" },
+      layouts: [{ runtime: "edge" }],
+      layoutTreePositions: [0],
+      materializedBySlot: true,
+      page: null,
+      parallelBranches: [
+        { name: "alpha", ownerTreePosition: 0, page: { runtime: "nodejs" }, routeSegments: [] },
+        { name: "zeta", ownerTreePosition: 0, page: {}, routeSegments: [] },
+      ],
+    });
+    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("nodejs");
   });
 
   it("reads the slot page even when a sibling catch-all renders the children", () => {
@@ -610,7 +646,7 @@ describe("collectAppPageStaticGenerationRuntimes", () => {
         { name: "feed", ownerTreePosition: 1, page: { runtime: "edge" } },
       ],
     });
-    expect(runtimes).toEqual([undefined, "nodejs", undefined, "edge"]);
+    expect(runtimes).toEqual(["edge"]);
     expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
   });
 
@@ -635,7 +671,7 @@ describe("collectAppPageStaticGenerationRuntimes", () => {
         { isDefault: true, name: "panel", ownerTreePosition: 1, page: {} },
       ],
     });
-    expect(runtimes).toEqual(["edge", undefined, undefined]);
+    expect(runtimes).toEqual(["edge"]);
     expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
   });
 
@@ -653,7 +689,7 @@ describe("collectAppPageStaticGenerationRuntimes", () => {
         { name: "feed", ownerTreePosition: 1, page: {}, routeSegments: ["settings"] },
       ],
     });
-    expect(runtimes).toEqual([undefined, "edge", undefined, undefined]);
+    expect(runtimes).toEqual(["edge"]);
     expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
   });
 });
