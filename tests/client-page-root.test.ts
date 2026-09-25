@@ -283,6 +283,7 @@ describe("createClientPageSearchParams", () => {
 type BrowserModules = {
   ClientPageRoot: typeof ClientPageRoot;
   navigation: typeof import("../packages/vinext/src/shims/navigation.js");
+  slot: typeof import("../packages/vinext/src/shims/slot.js");
 };
 
 /** Load the shims as the browser does: with a `window`. */
@@ -305,7 +306,8 @@ async function withBrowserModules(run: (modules: BrowserModules) => Promise<void
     const { ClientPageRoot: BrowserClientPageRoot } =
       await import("../packages/vinext/src/shims/client-page-root.js");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
-    await run({ ClientPageRoot: BrowserClientPageRoot, navigation });
+    const slot = await import("../packages/vinext/src/shims/slot.js");
+    await run({ ClientPageRoot: BrowserClientPageRoot, navigation, slot });
   } finally {
     vi.resetModules();
     if (previousWindow === undefined) {
@@ -394,6 +396,43 @@ describe("ClientPageRoot in the browser", () => {
       expect(renderInBrowser(modules, photo, feedProps)).toContain("tab&quot;:&quot;hot");
       // A new server render of the page reads the navigation that sent it.
       expect(renderInBrowser(modules, photo, { params: {} })).toContain("query:{}");
+    });
+  });
+
+  it("reads the query a refreshed kept branch rendered with", async () => {
+    // A refresh under an intercepted /photo/1 fetches the kept /feed?tab=hot
+    // source page from its own URL and merges it into the navigation's tree.
+    await withBrowserModules(async (modules) => {
+      const Context = modules.navigation.getClientNavigationRenderContext();
+      if (!Context) throw new Error("Expected client navigation render context");
+      const photo = modules.navigation.createClientNavigationRenderSnapshot(
+        "http://localhost/photo/1",
+        { id: "1" },
+        "/photo/1",
+      );
+      const renderSlot = (elements: Record<string, React.ReactNode>) =>
+        renderToStaticMarkup(
+          React.createElement(
+            Context.Provider,
+            { value: photo },
+            React.createElement(
+              modules.slot.ElementsContext.Provider,
+              { value: elements },
+              React.createElement(modules.slot.Slot, { id: "page:/feed" }),
+            ),
+          ),
+        );
+      const feedPage = () =>
+        React.createElement(modules.ClientPageRoot, {
+          Component: QueryPage as React.ComponentType<Record<string, unknown>>,
+          pageProps: { params: {} },
+        });
+
+      const refreshed = { "page:/feed": feedPage() };
+      modules.slot.setAppElementsRenderedSearch(refreshed, "?tab=hot");
+      expect(renderSlot(refreshed)).toContain("query:{&quot;tab&quot;:&quot;hot&quot;}");
+      // The navigation's own output reads the navigation's query.
+      expect(renderSlot({ "page:/feed": feedPage() })).toContain("query:{}");
     });
   });
 

@@ -16,7 +16,8 @@
  *   page's server output first renders. Next.js reads it from the page's own
  *   segment payload, so a rewritten query survives, and a page that stays
  *   mounted (an intercepted modal's background, a kept parallel slot) keeps
- *   its query when the URL changes.
+ *   its query when the URL changes. A kept branch that a refresh fetches from
+ *   its own URL carries its own query (`RenderedSearchContext`).
  *
  * `emptySearchParams` pages (`dynamic = "force-static"`, static export) always
  * get an empty, untracked query, as the server renders them.
@@ -28,6 +29,7 @@ import { searchParamsToRecord } from "../utils/query.js";
 import { isWellKnownProperty } from "./internal/thenable-well-known-properties.js";
 import { getNavigationContext } from "./navigation-server.js";
 import { getClientNavigationRenderContext } from "./navigation.js";
+import { RenderedSearchContext } from "./slot.js";
 
 type ClientPageSearchParams = Record<string, string | string[]>;
 
@@ -102,7 +104,9 @@ function useBrowserSearchParams(
   if (!emptySearchParams) {
     const context = getClientNavigationRenderContext();
     const snapshot = context ? use(context) : null;
-    search = snapshot ? (snapshot.renderedSearch ?? snapshot.search) : window.location.search;
+    search =
+      use(RenderedSearchContext) ??
+      (snapshot ? (snapshot.renderedSearch ?? snapshot.search) : window.location.search);
   }
   const searchParams = createClientPageSearchParams(
     search === null ? null : new URLSearchParams(search),

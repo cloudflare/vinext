@@ -43,6 +43,33 @@ export const ChildrenContext = React.createContext<React.ReactNode>(null);
 export const ParallelSlotsContext = React.createContext<Readonly<
   Record<string, React.ReactNode>
 > | null>(null);
+
+/**
+ * The query the server rendered a Slot's element with, when the element came
+ * from another response than the navigation that commits it: a kept branch a
+ * refresh fetched from its own URL. Client pages read it (see
+ * `client-page-root.tsx`).
+ */
+export const RenderedSearchContext = React.createContext<string | undefined>(undefined);
+
+// Keyed by element value, which merges carry over by reference.
+const renderedSearchByElement = new WeakMap<object, string>();
+
+/** Record the query the server rendered these elements with. */
+export function setAppElementsRenderedSearch(elements: AppElements, search: string): void {
+  for (const element of Object.values(elements)) {
+    if (typeof element === "object" && element !== null) {
+      renderedSearchByElement.set(element, search);
+    }
+  }
+}
+
+function getElementRenderedSearch(element: unknown): string | undefined {
+  return typeof element === "object" && element !== null
+    ? renderedSearchByElement.get(element)
+    : undefined;
+}
+
 const BfcacheIdMapContext = getBfcacheIdMapContext();
 const BfcacheSegmentIdContext = getBfcacheSegmentIdContext();
 const EMPTY_BFCACHE_STATE_KEYS: Readonly<Record<string, string>> = Object.freeze({});
@@ -630,9 +657,11 @@ export function Slot({
   }
 
   const content = (
-    <ParallelSlotsContext.Provider value={parallelSlots ?? null}>
-      <ChildrenContext.Provider value={children ?? null}>{element}</ChildrenContext.Provider>
-    </ParallelSlotsContext.Provider>
+    <RenderedSearchContext.Provider value={getElementRenderedSearch(element)}>
+      <ParallelSlotsContext.Provider value={parallelSlots ?? null}>
+        <ChildrenContext.Provider value={children ?? null}>{element}</ChildrenContext.Provider>
+      </ParallelSlotsContext.Provider>
+    </RenderedSearchContext.Provider>
   );
 
   return BfcacheIdMapContext && BfcacheSegmentIdContext ? (

@@ -164,7 +164,12 @@ import {
 } from "vinext/shims/error-boundary";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
-import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
+import {
+  BfcacheIdentityMapContext,
+  ElementsContext,
+  Slot,
+  setAppElementsRenderedSearch,
+} from "vinext/shims/slot";
 import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
@@ -589,7 +594,7 @@ async function fetchPersistedInterceptedSlotRefresh(options: {
     headers,
     signal: options.signal,
   });
-  return decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response)));
+  return decodeSupplementalRefresh(response, options.targetPathname);
 }
 
 async function fetchPersistedSourcePageRefresh(options: {
@@ -603,7 +608,28 @@ async function fetchPersistedSourcePageRefresh(options: {
     headers,
     signal: options.signal,
   });
-  return decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response)));
+  return decodeSupplementalRefresh(response, options.targetPathname);
+}
+
+/**
+ * Decode a kept branch a refresh fetched from its own URL. Its client pages
+ * read the query the server rendered it with, not the navigation's.
+ */
+async function decodeSupplementalRefresh(
+  response: Response,
+  targetPathname: string,
+): Promise<AppElements> {
+  const elements = await decodeAppElementsPromise(
+    createFromFetch<AppWireElements>(Promise.resolve(response)),
+  );
+  const renderedPathAndSearch = parseRenderedPathAndSearchHeader(
+    response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+  );
+  setAppElementsRenderedSearch(
+    elements,
+    new URL(renderedPathAndSearch ?? targetPathname, window.location.origin).search,
+  );
+  return elements;
 }
 
 function isSettledPrefetchCacheEntry(
