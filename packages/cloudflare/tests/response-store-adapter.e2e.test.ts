@@ -250,14 +250,15 @@ describe("Cloudflare Workers Response Store adapter", () => {
   });
 
   test("keeps the query out of a static page that reads useSearchParams() inside Suspense", async () => {
-    const query = crypto.randomUUID();
-    const url = `/search-params/suspense?q=${query}`;
-    const first = await request(url);
+    // One stored document serves every query, as Next.js prerenders it once.
+    const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
+    const first = await request(`/search-params/suspense?q=${firstQuery}`);
     const firstBody = await first.text();
-    const second = await request(url);
+    const second = await request(`/search-params/suspense?q=${secondQuery}`);
     const secondBody = await second.text();
 
     assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
     assert.equal(first.headers.get("x-vinext-cache"), "MISS");
     assert.equal(second.headers.get("x-vinext-cache"), "HIT");
     assert.equal(
@@ -267,7 +268,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     for (const body of [firstBody, secondBody]) {
       // The server renders the fallback, and the browser reads the query.
       assert.equal(htmlValue(body, "search-fallback"), "loading");
-      assert.doesNotMatch(body, new RegExp(query));
+      assert.doesNotMatch(body, new RegExp(`${firstQuery}|${secondQuery}`));
       assert.match(body, /searchParamsFromBrowser:true/);
       assert.match(body, /"searchParams":\[\]/);
     }
