@@ -377,6 +377,11 @@ function resolveEarlyResponseCacheControl(
   if (!options.isStaticEligible || options.isDraftMode || options.isForceDynamic) {
     return uncacheable;
   }
+  // The HTML policy checks nonce-bearing and progressive action renders next,
+  // and keeps them no-store whatever else they do.
+  if (!options.isRscRequest && (options.scriptNonce || options.isProgressiveActionRender)) {
+    return NO_STORE_CACHE_CONTROL;
+  }
   // As in the HTML response policy, only force-static and dynamic = "error"
   // without a revalidate period stay static after a dynamic API read.
   const ignoresDynamicUsage =
@@ -385,13 +390,7 @@ function resolveEarlyResponseCacheControl(
   const isKnownDynamic =
     options.revalidateSeconds === 0 ||
     (!ignoresDynamicUsage && (options.peekDynamicUsage?.() ?? peekDynamicUsage()));
-  if (!isKnownDynamic) return null;
-  // The HTML policy checks nonce-bearing and progressive action renders before
-  // the rest, and keeps them no-store.
-  if (!options.isRscRequest && (options.scriptNonce || options.isProgressiveActionRender)) {
-    return NO_STORE_CACHE_CONTROL;
-  }
-  return uncacheable;
+  return isKnownDynamic ? uncacheable : null;
 }
 
 function resolveAppPageCacheWriteRevalidateSeconds(options: {

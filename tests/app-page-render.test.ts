@@ -996,8 +996,12 @@ describe("app page render lifecycle", () => {
     }
 
     // As in the HTML policy, nonce-bearing and progressive action renders stay
-    // no-store, except where draft mode or the route makes them never-cache.
+    // no-store, with or without another dynamic signal, except where draft
+    // mode or the route makes them never-cache.
     for (const [renderKind, expected] of [
+      [{ scriptNonce: "abc" }, "no-store, must-revalidate"],
+      [{ isProgressiveActionRender: true }, "no-store, must-revalidate"],
+      [{ scriptNonce: "abc", revalidateSeconds: null }, "no-store, must-revalidate"],
       [{ scriptNonce: "abc", peekDynamicUsage: () => true }, "no-store, must-revalidate"],
       [{ isProgressiveActionRender: true, revalidateSeconds: 0 }, "no-store, must-revalidate"],
       [{ scriptNonce: "abc", isDraftMode: true }, neverCache],
