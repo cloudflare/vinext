@@ -7,20 +7,22 @@ An App Router application that serves its prerendered routes from Workers Static
 ## Run it
 
 ```sh
-pnpm build
-pnpm preview
+pnpm build    # vinext build
+pnpm start    # wrangler dev
+pnpm deploy   # vinext-cloudflare deploy
 ```
 
-Use `vinext build` (the `build` script), not `vp build`: only the vinext CLI runs the prerender phase that fills the cache.
+Use `vinext build` or `vinext-cloudflare deploy`, not `vp build`. Plain `vp build` skips the prerender phase that fills the cache.
 
 ## Routes
 
-| Route         | Behavior                                                                        |
-| ------------- | ------------------------------------------------------------------------------- |
-| `/`, `/about` | Prerendered. HTML and RSC are Static Assets cache hits, rendered at build time. |
-| `/robots.txt` | Cached metadata route, prerendered and served as a cache hit.                   |
-| `/dynamic`    | `force-dynamic`. Rendered by the Worker on every request.                       |
-| `/api/ping`   | Route handler. Runs in the Worker on every request.                             |
+| Route           | Behavior                                                                        |
+| --------------- | ------------------------------------------------------------------------------- |
+| `/`, `/about`   | Prerendered. HTML and RSC are Static Assets cache hits, rendered at build time. |
+| `/posts/[slug]` | `generateStaticParams` paths, prerendered and served as cache hits.             |
+| `/robots.txt`   | Cached metadata route, prerendered and served as a cache hit.                   |
+| `/dynamic`      | `force-dynamic`. Rendered by the Worker on every request.                       |
+| `/api/ping`     | Route handler. Runs in the Worker on every request.                             |
 
 Every page shows where it was rendered. `build-time` means the response came from the packaged prerender, not from the Worker. The layout also imports `cloudflare:workers`, which checks that the Node prerender can load a Worker bundle using native Worker modules.
 

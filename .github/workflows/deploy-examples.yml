@@ -196,7 +196,9 @@ jobs:
             worker_name: static-assets-cache
             working_directory: examples/static-assets-cache
             wrangler_config: dist/server/wrangler.json
-            vinext_build: true
+            # Build, prerender, and deploy through the `vinext-cloudflare deploy`
+            # script that `vinext init` generates.
+            cloudflare_deploy: true
           - name: static-export
             project: static-export
             working_directory: examples/static-export
@@ -253,13 +255,12 @@ jobs:
         run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc
 
       - name: Build example
-        if: matrix.example.static_export != true && matrix.example.vinext_build != true
+        if: matrix.example.static_export != true && matrix.example.cloudflare_deploy != true
         run: vp build
         working-directory: ${{ matrix.example.working_directory }}
 
-      # `vinext build` also runs the prerender phase that plain `vp build` skips.
-      - name: Build example with vinext
-        if: matrix.example.static_export == true || matrix.example.vinext_build == true
+      - name: Build static export
+        if: matrix.example.static_export == true
         run: vp exec vinext build
         working-directory: ${{ matrix.example.working_directory }}
 
@@ -287,13 +288,21 @@ jobs:
           command: d1 migrations apply vinext-metrics --remote
 
       - name: Deploy to Cloudflare Workers (Production)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.warm_cdn_cache != true && matrix.example.cloudflare_deploy != true
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: ${{ matrix.example.working_directory }}
           command: deploy --config ${{ matrix.example.wrangler_config }}
+
+      - name: Build and deploy with vinext-cloudflare (Production)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.cloudflare_deploy == true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: vp exec vinext-cloudflare deploy --config "${{ matrix.example.wrangler_config }}"
 
       - name: Bootstrap CDN warmup Worker (Production)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.bootstrap_warm_cdn == true
@@ -345,13 +354,22 @@ jobs:
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
       - name: Deploy Named Preview Worker
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.worker_name
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.worker_name && matrix.example.cloudflare_deploy != true
         working-directory: ${{ matrix.example.working_directory }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WORKER_NAME: pr-${{ github.event.pull_request.number }}-${{ matrix.example.worker_name }}
         run: vp exec wrangler deploy --config "${{ matrix.example.wrangler_config }}" --name "$WORKER_NAME"
+
+      - name: Build and deploy Named Preview Worker with vinext-cloudflare
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.worker_name && matrix.example.cloudflare_deploy == true
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKER_NAME: pr-${{ github.event.pull_request.number }}-${{ matrix.example.worker_name }}
+        run: vp exec vinext-cloudflare deploy --config "${{ matrix.example.wrangler_config }}" --name "$WORKER_NAME"
 
       # `versions upload` does not apply non-versioned workers.dev/preview URL
       # settings. A newly added assets-only Worker has no routes until this runs.
