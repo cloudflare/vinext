@@ -537,6 +537,11 @@ export function buildAppPageInterceptSourceProbes(options: {
   intercept?: AppPageProbeIntercept;
   /** The source route's params, which the intercepted render passes its tree. */
   sourceParams: AppPageParams;
+  /**
+   * The params an inherited slot renders with in place of `sourceParams`,
+   * by slot key, as `resolveSlotParamOverrides` matches them for the request.
+   */
+  slotParamOverrides?: Readonly<Record<string, AppPageParams>> | null;
   searchParams: URLSearchParams | null | undefined;
   mountedSlotsHeader: string | null | undefined;
   renderMode: AppRscRenderMode | undefined;
@@ -735,7 +740,9 @@ export function buildAppPageInterceptSourceProbes(options: {
       targetTreePosition,
       sourceParams,
     );
-    const slotParams = isIntercepted ? (intercept?.matchedParams ?? sourceParams) : sourceParams;
+    const slotParams = isIntercepted
+      ? (intercept?.matchedParams ?? sourceParams)
+      : (options.slotParamOverrides?.[slotKey] ?? sourceParams);
     // The slot's own layout wraps its page, not its default.
     const slotLayouts: AppPageProbedLayout[] = pageComponent
       ? [{ layoutModule: slot.layout, params: slotOwnerParams, treePosition: 0 }]

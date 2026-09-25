@@ -1240,6 +1240,37 @@ describe("buildAppPageInterceptSourceProbes", () => {
     expect(consumeDynamicUsage()).toBe(false);
   });
 
+  // app/[id]/@sidebar/[slug]/page.tsx inherited by app/[id]/page.tsx
+  it("passes an inherited slot the params it rematches for the request", async () => {
+    const received: Record<string, unknown>[] = [];
+    await probeSource({
+      route: {
+        layoutTreePositions: [0],
+        routeSegments: ["[id]"],
+        slots: {
+          sidebar: {
+            name: "sidebar",
+            page: {
+              default: async function SidebarPage(props: {
+                params: Promise<Record<string, unknown>>;
+              }) {
+                const params = await props.params;
+                received.push({ ...params });
+                if (params.slug) markDynamicUsage();
+                return null;
+              },
+            },
+          },
+        },
+      },
+      sourceParams: { id: "1" },
+      slotParamOverrides: { sidebar: { slug: "1" } },
+    });
+
+    expect(received).toEqual([{ slug: "1" }]);
+    expect(consumeDynamicUsage()).toBe(true);
+  });
+
   it("probes a slot's default where route wiring renders it", async () => {
     const probed: string[] = [];
     const defaultOnly = (name: string, extra: Record<string, unknown> = {}) => ({

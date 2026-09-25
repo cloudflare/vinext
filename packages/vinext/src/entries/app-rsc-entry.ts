@@ -820,7 +820,10 @@ import {
   probeAppPageLayoutWithTracking as __probeAppPageLayoutWithTracking,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
-import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
+import {
+  buildPageElements as __buildPageElements,
+  resolveSlotParamOverrides as __resolveSlotParamOverrides,
+} from ${JSON.stringify(appPageElementBuilderPath)};
 import {
   buildAppPageInterceptSourceProbes as __buildAppPageInterceptSourceProbes,
   buildAppPageProbes as __buildAppPageProbes,
@@ -1677,6 +1680,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           pageComponent: sourceRoute.page?.default,
           intercept: __probeIntercept,
           sourceParams,
+          // The intercepted render matches inherited slots' params against
+          // the request path, as buildPageElements does.
+          slotParamOverrides: __resolveSlotParamOverrides(sourceRoute, cleanPathname),
           searchParams: sourceSearchParams,
           mountedSlotsHeader,
           renderMode,

@@ -185,6 +185,9 @@ describe("generateRscEntry ISR code generation", () => {
           pageComponent: sourceRoute.page?.default,
           intercept: __probeIntercept,
           sourceParams,
+          // The intercepted render matches inherited slots' params against
+          // the request path, as buildPageElements does.
+          slotParamOverrides: __resolveSlotParamOverrides(sourceRoute, cleanPathname),
           searchParams: sourceSearchParams,
           mountedSlotsHeader,
           renderMode,
