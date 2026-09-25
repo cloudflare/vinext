@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "pathslash";
+import { parseSync } from "vite";
 
 /** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
 export const mdxScanCache = new Map<string, boolean>();
@@ -42,8 +43,8 @@ function scanDirForMdx(dir: string): boolean {
 /**
  * Keep only the ESM of an MDX module, so the JavaScript export helpers can
  * read it. MDX takes a block as ESM when an unindented line starts with
- * `import` or `export` outside a code fence, and the block runs until the next
- * blank line.
+ * `import` or `export` outside a code fence, and the block runs until the
+ * first blank line at which its JavaScript parses.
  * https://github.com/micromark/micromark-extension-mdxjs-esm
  */
 export function extractMdxEsm(source: string): string {
@@ -52,7 +53,7 @@ export function extractMdxEsm(source: string): string {
   let fence: string | null = null;
   for (const line of source.split(/\r?\n/)) {
     if (block) {
-      if (line.trim() === "") {
+      if (line.trim() === "" && isCompleteEsm(block.join("\n"))) {
         blocks.push(block.join("\n"));
         block = null;
       } else {
@@ -73,4 +74,13 @@ export function extractMdxEsm(source: string): string {
   }
   if (block) blocks.push(block.join("\n"));
   return blocks.join("\n\n");
+}
+
+function isCompleteEsm(code: string): boolean {
+  try {
+    const result = parseSync("vinext-mdx-esm.jsx", code, { lang: "jsx", sourceType: "module" });
+    return !result.errors.some((error) => error.severity === "Error");
+  } catch {
+    return false;
+  }
 }

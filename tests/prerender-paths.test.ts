@@ -1592,7 +1592,11 @@ describe("prerender path manifest", () => {
         "export const dynamic = 'force-dynamic'",
         "```",
         "",
-        'export function generateStaticParams() { return [{ slug: "hello" }] }',
+        // MDX keeps ESM open across a blank line until the JavaScript parses.
+        "export function generateStaticParams() {",
+        "",
+        '  return [{ slug: "hello" }]',
+        "}",
         "",
         "# Hello",
         "",
