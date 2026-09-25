@@ -292,6 +292,66 @@ describe("staged Worker cacheability probes", () => {
     expect(failed.failures).toEqual(["/posts/listed: route returned HTTP 500"]);
   });
 
+  it("keeps discovery's unlisted state for a literal App page route's own path", async () => {
+    // A literal force-dynamic or edge-runtime page isn't build-rendered, so
+    // discovery marks its own path unlisted.
+    const literalRoute = (unlisted: boolean) => ({
+      cacheabilityProbe: { canPrunePattern: true, ...(unlisted ? { unlisted: true } : {}) },
+      kind: "app-page" as const,
+      pattern: "/dynamic",
+    });
+    const failed500 = (pattern: string, routePathname?: string) =>
+      Response.json({
+        kind: "app-page",
+        pattern,
+        reason: "route returned HTTP 500",
+        ...(routePathname ? { routePathname } : {}),
+        state: "probe-failed",
+        status: 500,
+        version: 1,
+      });
+    const probe = (targets: CdnWarmTarget[], fetchImpl: typeof fetch) =>
+      probeStagedWorkerCacheability({
+        buildId: "application-build",
+        concurrency: 1,
+        fetchImpl,
+        retries: 0,
+        root: createProbeRoot(),
+        targetUrl: "https://example.com",
+        targets,
+      });
+
+    const unlisted = await probe([{ ...target("/dynamic"), route: literalRoute(true) }], async () =>
+      failed500("/dynamic"),
+    );
+    expect(unlisted).toMatchObject({ cacheableTargets: [], failures: [] });
+    expect(unlisted.manifest.routes).toEqual({});
+
+    const listed = await probe([{ ...target("/dynamic"), route: literalRoute(false) }], async () =>
+      failed500("/dynamic"),
+    );
+    expect(listed.failures).toEqual(["/dynamic: route returned HTTP 500"]);
+
+    // A failure the request stage moves to the literal route is judged by the
+    // same discovery fact, whichever probe completes first.
+    const alias = {
+      ...target("/rewrite-me"),
+      route: {
+        cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true, unlisted: true },
+        kind: "app-page" as const,
+        pattern: "/rewrite-me",
+      },
+    };
+    const destination = { ...target("/dynamic"), route: literalRoute(true) };
+    for (const targets of [
+      [alias, destination],
+      [destination, alias],
+    ]) {
+      const moved = await probe(targets, async () => failed500("/dynamic", "/dynamic"));
+      expect(moved.failures).toEqual([]);
+    }
+  });
+
   it("judges an unlisted render failure under the route the request stage resolved", async () => {
     const sourceRoute = {
       cacheabilityProbe: { canPrunePattern: true, routeMayResolve: true, unlisted: true },

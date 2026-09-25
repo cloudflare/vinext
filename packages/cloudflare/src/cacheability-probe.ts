@@ -494,22 +494,23 @@ export async function probeStagedWorkerCacheability(options: {
   // another route counts as listed there only when that route lists its
   // resolved pathname. Those build-time facts are fixed before any probe runs:
   // groups move between patterns as route-moving probes complete, so the
-  // listing is never read back from them.
-  const originListedPaths = new Set<string>();
+  // listing is never read back from them. Discovery's fact wins over the
+  // pattern's shape: a literal route that isn't static or SSG doesn't list its
+  // own path. Only a literal route discovery has no fact for lists it.
+  const buildTimeListing = new Map<string, boolean>();
   const isListedAt = (
     group: ConcretePathGroup,
     route: Pick<PrerenderRoutePattern, "kind" | "pattern">,
     routePathname: string,
   ): boolean => {
-    if (
-      !/(^|\/):/.test(route.pattern) &&
-      normalizeCacheabilityRoutePathname(route.pattern) === routePathname
-    ) {
-      return true;
-    }
     const key = cacheabilityManifestRouteKey(route.kind, route.pattern);
     if (group.originKey === key) return group.listedAtOrigin;
-    return originListedPaths.has(`${key}\0${routePathname}`);
+    const listed = buildTimeListing.get(`${key}\0${routePathname}`);
+    if (listed !== undefined) return listed;
+    return (
+      !/(^|\/):/.test(route.pattern) &&
+      normalizeCacheabilityRoutePathname(route.pattern) === routePathname
+    );
   };
   const isListedGroup = (group: ConcretePathGroup): boolean =>
     isListedAt(group, group.pattern.route, group.routePathname);
@@ -525,7 +526,7 @@ export async function probeStagedWorkerCacheability(options: {
       originKey: targetGroup.pattern.key,
       primary: targetGroup.targets[0],
     };
-    if (group.listedAtOrigin) originListedPaths.add(`${group.originKey}\0${group.routePathname}`);
+    buildTimeListing.set(`${group.originKey}\0${group.routePathname}`, group.listedAtOrigin);
     targetGroup.pattern.groups.push(group);
     return group;
   });
