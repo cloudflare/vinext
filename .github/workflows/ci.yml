@@ -58,6 +58,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
+      - name: Build vinext for command-level unit tests
+        run: vp run vinext#build
       - run: vp test run --project unit --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
 
   test-integration:

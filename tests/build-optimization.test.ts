@@ -284,7 +284,6 @@ describe("optimizeDeps.exclude for vinext", () => {
       const result = await (mainPlugin as any).config(mockConfig, {
         command: "build",
       });
-
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
       // Incoming excludes from other plugins must survive the merge
@@ -945,7 +944,7 @@ describe("process.env.NODE_ENV define", () => {
     );
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
-    return { mainPlugin: mainPlugin as any, tmpDir, fsp };
+    return { mainPlugin: mainPlugin as any, plugins, tmpDir, fsp };
   }
 
   it("is injected as production for build", async () => {
