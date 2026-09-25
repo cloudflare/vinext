@@ -428,6 +428,13 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
   resolveRouteRevalidateSeconds?: (route: TRoute) => number | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
+  /**
+   * `isAppPageStaticEligible` for another route, from that route's own segment
+   * config, `generateStaticParams`, dynamism and runtime. A direct intercepted
+   * RSC response renders its source route, so it takes the source's
+   * cacheability.
+   */
+  resolveRouteStaticEligible: (route: TRoute) => boolean;
   rootForbiddenModule?: AppPageModule | null;
   rootNotFoundModule?: AppPageModule | null;
   rootUnauthorizedModule?: AppPageModule | null;
@@ -1085,9 +1092,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
-      // A route that can't be static is never cacheable, like its own render.
-      // Middleware's policy still wins, merged after, as in the RSC builder.
-      if (!isStaticEligible) interceptHeaders.set("Cache-Control", NEVER_CACHE_CONTROL);
+      // This response renders the source route, so it takes the source's
+      // cacheability, not the matched target's. A source that can't be static
+      // is never cacheable, like its own render. Middleware's policy still
+      // wins, merged after, as in the RSC builder.
+      const isSourceStaticEligible =
+        options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
+      if (!isSourceStaticEligible) interceptHeaders.set("Cache-Control", NEVER_CACHE_CONTROL);
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       applyRscCompatibilityIdHeader(interceptHeaders);
       applyRscDeploymentIdHeader(interceptHeaders);

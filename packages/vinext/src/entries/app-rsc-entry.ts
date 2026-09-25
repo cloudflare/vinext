@@ -837,6 +837,7 @@ import {
 import {
   collectAppPageStaticGenerationRuntimes as __collectAppPageStaticGenerationRuntimes,
   hasAppPageGenerateStaticParamsAtLastDynamicSegment as __hasAppPageGenerateStaticParamsAtLastDynamicSegment,
+  isAppPageStaticEligible as __isAppPageStaticEligible,
   isEdgeRuntime as __isEdgeRuntime,
   resolveAppPageFetchCacheMode as __resolveAppPageFetchCacheMode,
   resolveAppPageSegmentConfig as __resolveAppPageSegmentConfig,
@@ -963,6 +964,70 @@ function __resolveRouteRuntime(route) {
       slot.page ?? slot.default,
     ]),
   }).runtime ?? null;
+}
+
+function __resolveRouteSegmentConfigBranches(route) {
+  return Object.values(route.slots ?? {}).map((slot) => ({
+    layout: slot.layout,
+    configLayouts: slot.configLayouts,
+    configLayoutTreePositions: slot.configLayoutTreePositions,
+    isDefault: !slot.page,
+    name: slot.name,
+    ownerTreePosition: slot.ownerTreePosition,
+    page: slot.page ?? slot.default,
+    routeSegments: slot.routeSegments,
+  }));
+}
+
+function __resolveRouteSegmentConfig(route, segmentConfigBranches) {
+  return __resolveAppPageSegmentConfig({
+    layouts: route.layouts,
+    layoutTreePositions: route.layoutTreePositions,
+    page: route.page,
+    parallelBranches: segmentConfigBranches,
+    parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
+    routeSegments: route.routeSegments,
+  });
+}
+
+// The parts of a route's static generation classification that come from its
+// module tree rather than its effective segment config.
+function __resolveRouteStaticGeneration(route, segmentConfigBranches) {
+  return {
+    hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+      childrenSlot: route.childrenSlot,
+      layouts: route.layouts,
+      layoutTreePositions: route.layoutTreePositions,
+      page: route.page,
+      parallelBranches: segmentConfigBranches,
+      routeSegments: route.routeSegments,
+    }),
+    isStaticGenerationEdgeRuntime: __isEdgeRuntime(
+      __resolveAppPageStaticGenerationRuntime(
+        __collectAppPageStaticGenerationRuntimes({
+          childrenSlot: route.childrenSlot,
+          layouts: route.layouts,
+          layoutTreePositions: route.layoutTreePositions,
+          materializedBySlot: route.materializedBySlot,
+          page: route.page,
+          parallelBranches: segmentConfigBranches,
+        }),
+      ),
+    ),
+  };
+}
+
+// Whether Next.js classifies a route as static or SSG, from the same inputs
+// dispatch reads for the matched route.
+function __resolveRouteStaticEligible(route) {
+  const segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
+  const segmentConfig = __resolveRouteSegmentConfig(route, segmentConfigBranches);
+  return __isAppPageStaticEligible({
+    ...__resolveRouteStaticGeneration(route, segmentConfigBranches),
+    dynamicConfig: segmentConfig.dynamicConfig,
+    isDynamicRoute: route.isDynamic,
+    revalidateSeconds: segmentConfig.revalidateSeconds,
+  });
 }
 
 ${imports.join("\n")}
@@ -1272,24 +1337,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     renderMode,
   }) {
     const PageComponent = route.page?.default;
-    const __segmentConfigBranches = Object.values(route.slots ?? {}).map((slot) => ({
-      layout: slot.layout,
-      configLayouts: slot.configLayouts,
-      configLayoutTreePositions: slot.configLayoutTreePositions,
-      isDefault: !slot.page,
-      name: slot.name,
-      ownerTreePosition: slot.ownerTreePosition,
-      page: slot.page ?? slot.default,
-      routeSegments: slot.routeSegments,
-    }));
-    const __segmentConfig = __resolveAppPageSegmentConfig({
-      layouts: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page: route.page,
-      parallelBranches: __segmentConfigBranches,
-      parallelPages: Object.values(route.slots ?? {}).map((slot) => slot.page ?? slot.default),
-      routeSegments: route.routeSegments,
-    });
+    const __segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
+    const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
+    const __staticGeneration = __resolveRouteStaticGeneration(route, __segmentConfigBranches);
     const __generateStaticParams = __resolveAppPageGenerateStaticParamsSources({
       layouts: route.layouts,
       layoutTreePositions: route.layoutTreePositions,
@@ -1343,18 +1393,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       dynamicParamsConfig: __segmentConfig.dynamicParamsConfig,
       fetchCache: __segmentConfig.fetchCache ?? null,
       isEdgeRuntime: __isEdgeRuntime(__segmentConfig.runtime),
-      isStaticGenerationEdgeRuntime: __isEdgeRuntime(
-        __resolveAppPageStaticGenerationRuntime(
-          __collectAppPageStaticGenerationRuntimes({
-            childrenSlot: route.childrenSlot,
-            layouts: route.layouts,
-            layoutTreePositions: route.layoutTreePositions,
-            materializedBySlot: route.materializedBySlot,
-            page: route.page,
-            parallelBranches: __segmentConfigBranches,
-          }),
-        ),
-      ),
+      isStaticGenerationEdgeRuntime: __staticGeneration.isStaticGenerationEdgeRuntime,
       findIntercept(pathname) {
         return findIntercept(
           pathname === cleanPathname ? interceptionPathname : pathname,
@@ -1372,14 +1411,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       },
       hasCustomGlobalError: ${globalErrorVar ? `Boolean(${globalErrorVar}?.default)` : "false"},
       hasAnyGenerateStaticParams: __generateStaticParams.length > 0,
-      hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
-        childrenSlot: route.childrenSlot,
-        layouts: route.layouts,
-        layoutTreePositions: route.layoutTreePositions,
-        page: route.page,
-        parallelBranches: __segmentConfigBranches,
-        routeSegments: route.routeSegments,
-      }),
+      hasGenerateStaticParams: __staticGeneration.hasGenerateStaticParams,
       hasPageDefaultExport: !!PageComponent,
       hasPageModule: !!route.page,
       handlerStart,
@@ -1494,6 +1526,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       },
       resolveRouteDynamicConfig(targetRoute) {
         return __resolveRouteDynamicConfig(targetRoute);
+      },
+      resolveRouteStaticEligible(targetRoute) {
+        return __resolveRouteStaticEligible(targetRoute);
       },
       rootForbiddenModule,
       rootNotFoundModule,

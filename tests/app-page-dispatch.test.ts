@@ -329,6 +329,7 @@ type CreateDispatchOptionsOverrides = {
   resolveRouteFetchCacheMode?: DispatchOptions["resolveRouteFetchCacheMode"];
   resolveRouteRevalidateSeconds?: DispatchOptions["resolveRouteRevalidateSeconds"];
   resolveRouteDynamicConfig?: DispatchOptions["resolveRouteDynamicConfig"];
+  resolveRouteStaticEligible?: DispatchOptions["resolveRouteStaticEligible"];
   route?: TestRoute;
   scheduleBackgroundRegeneration?: DispatchOptions["scheduleBackgroundRegeneration"];
   searchParams?: URLSearchParams;
@@ -431,6 +432,8 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
     resolveRouteRevalidateSeconds: overrides.resolveRouteRevalidateSeconds,
     resolveRouteDynamicConfig: overrides.resolveRouteDynamicConfig,
+    resolveRouteStaticEligible:
+      overrides.resolveRouteStaticEligible ?? ((candidate) => !candidate.isDynamic),
     route,
     runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
       return probe();
@@ -2432,10 +2435,9 @@ describe("app page dispatch", () => {
     expect(response.status).toBe(202);
     expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-from-middleware")).toBe("yes");
-    // The dynamic route has no generateStaticParams, so it can't be static.
-    expect(response.headers.get("cache-control")).toBe(
-      "private, no-cache, no-store, max-age=0, must-revalidate",
-    );
+    // The response renders the static /feed source, so the dynamic target's
+    // classification doesn't make it uncacheable.
+    expect(response.headers.get("cache-control")).toBeNull();
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
     expect(capturedInterceptOpts).toMatchObject({
       interceptGraphId: "graph-interception:/feed->/photos/:id",
@@ -2448,6 +2450,51 @@ describe("app page dispatch", () => {
       pathname: "/photos/123",
       searchParams: new URLSearchParams("from=feed"),
     });
+  });
+
+  it("sends the never-cache header on intercepted RSC of a source route that can't be static", async () => {
+    // app/photos/[id]/page.tsx generates its params, so the target is static,
+    // but app/feed/page.tsx sets dynamic = "force-dynamic".
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      isDynamic: true,
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    const resolveRouteStaticEligible = vi.fn((route: TestRoute) => route !== sourceRoute);
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      generateStaticParams: async () => [{ id: "123" }],
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      isProduction: true,
+      isRscRequest: true,
+      renderToReadableStream(element) {
+        return createStream([typeof element === "string" ? element : "unexpected-element"]);
+      },
+      resolveRouteDynamicConfig: (route) => (route === sourceRoute ? "force-dynamic" : undefined),
+      resolveRouteStaticEligible,
+      route: currentRoute,
+    });
+
+    const response = await dispatchAppPage(options);
+
+    await expect(response.text()).resolves.toBe("/feed");
+    expect(resolveRouteStaticEligible).toHaveBeenCalledWith(sourceRoute);
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
   });
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
