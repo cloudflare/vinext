@@ -236,16 +236,17 @@ async function initCommand() {
   console.log(`\n  vinext init\n`);
 
   // Parse init-specific flags
-  const port = parsed.port ?? 3001;
   const skipCheck = rawArgs.includes("--skip-check");
   const force = rawArgs.includes("--force");
+  const install = !rawArgs.includes("--no-install");
   const initOptions = await resolveInitOptions(rawArgs);
 
   await runInit({
     root: process.cwd(),
-    port,
+    port: parsed.port,
     skipCheck,
     force,
+    install,
     ...initOptions,
   });
 }
@@ -302,11 +303,12 @@ function printHelp(cmd?: string) {
   setup continues to work alongside vinext.
 
   Options:
-    -p, --port <port>    Dev server port for the vinext script (default: 3001)
+    -p, --port <port>    Dev server port for the generated Vite script (default: 3001)
     --skip-check         Skip the compatibility check step
+    --no-install         Update dependency entries without installing them
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
-    --prerender          Configure vinext build to pre-render all static routes
+    --prerender          Configure Vite builds to pre-render all static routes
                          (default: prompt, with No selected by default)
     --experimental-warm-cdn-cache
                          Add experimental CDN pre-warming to the Cloudflare deploy script

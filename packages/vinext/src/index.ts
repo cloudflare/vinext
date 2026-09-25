@@ -1461,22 +1461,20 @@ export type VinextOptions = {
    * Disabled by default. Not useful when deploying to edge platforms
    * (Cloudflare Workers, Nitro) that handle compression at the CDN layer.
    *
-   * Can also be enabled via the `--precompress` CLI flag or by setting the
-   * `VINEXT_PRECOMPRESS=1` environment variable (useful for CI pipelines
-   * that need to enable precompression without modifying vite.config.ts).
+   * Can also be enabled by setting the `VINEXT_PRECOMPRESS=1` environment
+   * variable (useful for CI pipelines that cannot modify vite.config.ts).
    * @default false
    */
   precompress?: boolean;
   /**
-   * Pre-render routes after `vinext build` without passing
-   * `--prerender-all`.
+   * Pre-render routes after `vite build`.
    *
    * Use `true` as shorthand for `{ routes: "*" }`. The object form is
    * available so future releases can support narrower route selections, but
    * currently only `"*"` is supported.
    *
-   * The `vinext build --prerender-all` and `vinext deploy --prerender-all`
-   * flags still work and take priority when present.
+   * The `vinext-cloudflare deploy --prerender-all` flag takes priority when
+   * present.
    *
    * @example
    * vinext({ prerender: true })
@@ -1668,7 +1666,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let previewBuildCredentials: PreviewBuildCredentials | undefined;
   // Per-plugin-instance binding of the Sass-aware CSS Modules Loader. The
   // `config` hook injects `Loader` as `css.modules.Loader` and
-  // `configResolved` binds the resolved config, so multiple vinext builds in
+  // `configResolved` binds the resolved config, so multiple Vite builds in
   // one process never preprocess `composes` deps with another build's config.
   const sassComposesLoader = createSassAwareFileSystemLoader();
 
@@ -2553,7 +2551,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           // Build-ID coordination across plugin instances.
           //
-          // A single `vinext build` can instantiate vinext() more than once —
+          // A single `vite build` can instantiate vinext() more than once —
           // the App Router multi-environment build (createBuilder().buildApp())
           // and the separate Pages Router SSR build for hybrid app+pages apps
           // are distinct plugin instances, each resolving its own config. Each
@@ -7708,8 +7706,8 @@ export const loadServerActionClient = ${
     // Build-time precompression: generate .br, .gz, .zst for hashed assets.
     // Runs after the client bundle is written so compressed variants are
     // available for the production server's static file cache.
-    // Opt-in via `precompress: true` in plugin options or `--precompress`
-    // CLI flag. Not useful for edge platforms (Cloudflare Workers, Nitro)
+    // Opt in via `precompress: true` or VINEXT_PRECOMPRESS=1.
+    // Not useful for edge platforms (Cloudflare Workers, Nitro)
     // that handle compression at the CDN layer.
     (() => {
       let pendingPrecompress: Promise<void> | null = null;

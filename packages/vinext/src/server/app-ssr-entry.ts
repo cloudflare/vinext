@@ -61,7 +61,7 @@ import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 import { isAppRenderAbortError } from "./app-rsc-errors.js";
 import { getNextErrorDigest } from "./next-error-digest.js";
-// @ts-expect-error — resolved by the vinext build plugin in SSR environments.
+// @ts-expect-error — resolved by the vinext Vite plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
 

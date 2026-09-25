@@ -3,9 +3,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vinext dev",
-    "build": "vinext build",
-    "preview": "vinext build && wrangler dev"
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp build && wrangler dev"
   },
   "dependencies": {
     "@vitejs/plugin-react": "catalog:",

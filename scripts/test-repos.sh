@@ -104,6 +104,16 @@ test_repo() {
   fi
   sed -i '' 's/^vinext_install=.*/vinext_install=pass/' "$result_file"
 
+  # Cloned Next.js repos need a Vite config before the direct Vite command.
+  if ! ./node_modules/.bin/vinext init --platform=node --skip-check --no-install; then
+    echo "FAILED: vinext init"
+    return 1
+  fi
+  if ! npm install --legacy-peer-deps; then
+    echo "FAILED: npm install after vinext init"
+    return 1
+  fi
+
   # Build
   echo ""
   echo "--- build ---"
@@ -124,7 +134,7 @@ test_repo() {
   local port=$((3100 + RANDOM % 900))
 
   # Start dev server in background
-  PORT=$port npx vinext dev --port "$port" &
+  PORT=$port npx vite dev --port "$port" &
   local dev_pid=$!
   echo "$dev_pid" >> "$WORK_DIR/pids"
 

@@ -25,7 +25,35 @@ function getDependencyUpgradeDeps(
   return [];
 }
 
-export function getReactUpgradeDeps(root: string): string[] {
+export function getReactUpgradeDeps(
+  root: string,
+  options: { fromManifest?: boolean } = {},
+): string[] {
+  if (options.fromManifest) {
+    // Config-only init may have no node_modules. Compare the declared lower
+    // bounds so its next install cannot keep an incompatible React pin.
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    for (const name of ["react", "react-dom"]) {
+      const declared = pkg.dependencies?.[name] ?? pkg.devDependencies?.[name];
+      const version = /^[~^]?([0-9]+(?:\.[0-9]+){0,2}(?:-[0-9A-Za-z.*-]+)?)(?:\.[x*])?$/.exec(
+        declared ?? "",
+      )?.[1];
+      // Config-only init will install stable RSDW. A declared React canary must
+      // move with it, even when its numeric version is above the stable floor.
+      if (version && (version.includes("-") || isVersionBelow(version, [19, 2, 6]))) {
+        const upgrades = ["react@latest", "react-dom@latest"];
+        const rsdw =
+          pkg.dependencies?.["react-server-dom-webpack"] ??
+          pkg.devDependencies?.["react-server-dom-webpack"];
+        if (rsdw && rsdw !== "latest") upgrades.push("react-server-dom-webpack@latest");
+        return upgrades;
+      }
+    }
+    return [];
+  }
   return getDependencyUpgradeDeps(root, {
     react: {
       minimumVersion: [19, 2, 6],

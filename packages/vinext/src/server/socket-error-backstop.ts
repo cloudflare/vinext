@@ -32,7 +32,7 @@
  *
  * **Prerender check is dynamic, not install-time.** Prerender (in
  * `build/prerender.ts` and `build/run-prerender.ts`) calls
- * `startProdServer()` from inside `vinext build` to render pages
+ * `startProdServer()` from inside `vite build` to render pages
  * against a real HTTP server. User `fetch()` calls during prerender
  * hit external APIs that can drop connections; absorbing those would
  * silently produce corrupt prerendered output instead of crashing

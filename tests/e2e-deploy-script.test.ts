@@ -4,6 +4,23 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vite-plus/test";
 
 describe("Next.js deploy harness", () => {
+  it("initializes cloned ecosystem repos before invoking Vite", () => {
+    const workflow = fs.readFileSync(path.resolve(".github/workflows/ecosystem-run.yml"), "utf8");
+    const script = fs.readFileSync(path.resolve("scripts/test-repos.sh"), "utf8");
+    const initCommand = "vinext init --platform=node --skip-check --no-install";
+
+    expect(workflow.indexOf(initCommand)).toBeGreaterThan(workflow.indexOf("Install vinext"));
+    expect(workflow.indexOf(initCommand)).toBeLessThan(workflow.indexOf("vite build"));
+    expect(script.indexOf(initCommand)).toBeGreaterThan(script.indexOf("npm install vinext"));
+    expect(script.indexOf(initCommand)).toBeLessThan(script.indexOf("npx vite dev"));
+    expect(workflow.slice(workflow.indexOf(initCommand))).toMatch(
+      /vinext init[^\n]+--no-install\n\s+npm install --legacy-peer-deps/,
+    );
+    expect(script.slice(script.indexOf(initCommand))).toMatch(
+      /vinext init[^\n]+--no-install[^\n]*\n[\s\S]*?npm install --legacy-peer-deps/,
+    );
+  });
+
   it("enables Next.js test-only client instrumentation in deploy shards", () => {
     const workflow = fs.readFileSync(
       path.resolve(".github/workflows/nextjs-deploy-suite.yml"),
@@ -244,10 +261,17 @@ describe("Next.js deploy harness", () => {
     }
   });
 
-  it("initializes fixtures for the Node deployment platform", () => {
+  it("uses the direct Vite lifecycle without breaking historical backfills", () => {
     const script = fs.readFileSync(path.resolve("scripts/e2e-deploy.sh"), "utf8");
 
-    expect(script).toContain('"${VINEXT_BIN}" init --platform=node --skip-check --force');
+    expect(script).toContain('if [ "${VINEXT_HARNESS_DIR}" != "${VINEXT_DIR}" ]; then');
+    expect(script).toContain(
+      '"${VINEXT_BIN}" init --platform=node --skip-check --force >> "${BUILD_LOG}" 2>&1',
+    );
+    expect(script).toContain('"${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1');
+    expect(script).toContain(
+      '"${VINEXT_BIN}" init --platform=node --skip-check --force --prerender',
+    );
   });
 
   it("runs the installed vinext binary directly after pnpm install", () => {
@@ -255,7 +279,8 @@ describe("Next.js deploy harness", () => {
 
     expect(script).toContain('VINEXT_BIN="./node_modules/.bin/vinext"');
     expect(script).toContain('if [ ! -x "${VINEXT_BIN}" ]; then');
-    expect(script).toContain('"${VINEXT_BIN}" build --prerender-all');
+    expect(script).toContain('VITE_BIN="./node_modules/.bin/vite"');
+    expect(script).toContain('"${VITE_BIN}" build');
     expect(script).toContain('"${VINEXT_BIN}" start --port "${PORT}" --hostname 127.0.0.1');
     expect(script).not.toContain("run_pnpm exec vinext");
   });

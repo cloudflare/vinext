@@ -4,7 +4,7 @@ import { waitForAppRouterHydration } from "../helpers";
 /**
  * Static export E2E tests for the App Router.
  *
- * These tests run against a `vinext build` output served as static files.
+ * These tests run against a `vite build` output served as static files.
  * The static export fixture uses `output: "export"` in next.config.mjs,
  * so no server-side rendering is involved — all pages are pre-rendered
  * HTML files served by a lightweight HTTP server on port 4180.
