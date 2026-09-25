@@ -101,7 +101,10 @@ import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing
 import type { FrameworkSpan } from "./framework-tracer.js";
 import { traceResponseStartWithCompletion } from "./response-start-tracing.js";
 import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
-import { recordRouteCacheabilityClientTraceMetadataMarker } from "vinext/shims/cacheability-classification";
+import {
+  isRouteCacheabilityEvaluation,
+  recordRouteCacheabilityClientTraceMetadataMarker,
+} from "vinext/shims/cacheability-classification";
 
 type AppPageBoundaryOnError = (
   error: unknown,
@@ -824,16 +827,28 @@ async function renderAppPageLifecycleImpl(
   let dynamicUsageFinalized = false;
   const isCacheCandidateHtmlRender =
     options.isCacheCandidate === true && options.isPrerender !== true && !options.isRscRequest;
+  // HTML renders that decide whether the page is static also read the
+  // request's dynamic latch: a candidate's store decision, the Worker's probe
+  // and admission, and the build prerender. The latch sees usage in child
+  // scopes that never reach this render's flag: the layout probe, and SSR, where
+  // a client page reads its searchParams. A candidate's SSR useSearchParams()
+  // gate also opens with the real query once the render latches dynamic.
+  // PPR fallback shells discard their warmup render's usage and keep their
+  // client page query untracked, so they don't read it.
+  const readsRenderDynamicLatch =
+    isCacheCandidateHtmlRender ||
+    (!options.isRscRequest &&
+      options.pprFallbackShellSignal === undefined &&
+      (options.isPrerender === true || isRouteCacheabilityEvaluation()));
   // Some readers, such as the streamed completion marker, run in the response
   // stream's pull context rather than this render's request scope.
   const readDynamicUsage = bindRequestContext(
     (): boolean =>
-      options.consumeDynamicUsage() ||
-      // A candidate's SSR useSearchParams() gate opens with the real query
-      // once the render latches dynamic. The latch also sees usage in child
-      // scopes (the layout probe, SSR) that never reach this render's flag.
-      (isCacheCandidateHtmlRender && isRenderDynamicLatched()),
+      options.consumeDynamicUsage() || (readsRenderDynamicLatch && isRenderDynamicLatched()),
   );
+  const peekRenderDynamicUsage = (): boolean =>
+    (options.peekDynamicUsage?.() ?? peekDynamicUsage()) ||
+    (readsRenderDynamicLatch && isRenderDynamicLatched());
   const consumeRenderDynamicUsage = (): boolean => {
     if (!dynamicUsageObserved) dynamicUsageObserved = readDynamicUsage();
     return dynamicUsageObserved;
@@ -1396,7 +1411,7 @@ async function renderAppPageLifecycleImpl(
   const stopSpeculativeMetadataWaitOnDynamicUsage =
     options.isSpeculativePrerender === true && shouldReadRequestCacheLifeForPrerender
       ? () => {
-          if (dynamicUsedDuringRender || (options.peekDynamicUsage?.() ?? peekDynamicUsage())) {
+          if (dynamicUsedDuringRender || peekRenderDynamicUsage()) {
             dynamicUsedDuringRender = true;
             dynamicUsedDuringHtmlRender = true;
             return true;
@@ -1409,6 +1424,16 @@ async function renderAppPageLifecycleImpl(
       htmlRender.capturedRscData,
       stopSpeculativeMetadataWaitOnDynamicUsage,
     );
+  }
+  if (stopSpeculativeMetadataWaitOnDynamicUsage) {
+    // A speculative prerender returns SSR's stream at the shell, but client
+    // code rendered after it, such as a client page reading its searchParams
+    // inside Suspense, can still make the page dynamic, and the headers must
+    // say so. Wait for SSR to finish unless the render is already dynamic.
+    // This adds no time to a static render, whose body only closes once SSR
+    // finishes anyway. A render that turns dynamic stops the wait, and
+    // prerender skips it without reading the rest of its body.
+    await waitUnlessDynamic(htmlRender.renderComplete, stopSpeculativeMetadataWaitOnDynamicUsage);
   }
   if (shouldReadRequestCacheLifeForPrerender) {
     requestCacheLifeForPrerender = readRequestCacheLifeForPrerender(options);
@@ -1618,13 +1643,21 @@ async function settleCapturedRscRenderForCacheMetadata(
     return;
   }
 
+  await waitUnlessDynamic(capturedRscDataPromise, shouldStopWaiting);
+}
+
+/**
+ * Wait for `promise` to settle, or until `shouldStopWaiting` reports that the
+ * render turned dynamic. Rejections are ignored: the response stream and the
+ * cache-write path own render error propagation.
+ */
+async function waitUnlessDynamic(
+  promise: Promise<unknown>,
+  shouldStopWaiting: () => boolean,
+): Promise<void> {
   let settled = false;
-  const settledPromise = capturedRscDataPromise
-    .catch(() => {
-      // The response stream and cache-write path own render error propagation.
-      // This pre-read only makes "use cache" metadata available before headers
-      // and ISR seed metadata are finalized.
-    })
+  const settledPromise = promise
+    .catch(() => {})
     .then(() => {
       settled = true;
     });

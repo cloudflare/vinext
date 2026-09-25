@@ -20,6 +20,8 @@ import {
 } from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { startCandidateSearchParamsGate } from "./app-ssr-search-params-gate.js";
+import { onRenderDynamicLatched } from "vinext/shims/headers";
+import { createClientPageSsrSearchParamsSource } from "./app-page-search-params-observation.js";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -36,6 +38,7 @@ import {
 } from "./html.js";
 import { renderBeforeInteractiveInlineScripts } from "./before-interactive-head.js";
 import {
+  createNavigationRuntimeRenderedSearchScript,
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
@@ -433,11 +436,29 @@ export async function handleSsr(
       options.isForceStatic !== true
         ? startCandidateSearchParamsGate()
         : null;
+    // The gate stops listening once it settles, but a client page behind a
+    // later boundary can still turn the render dynamic.
+    let rendersDynamic = false;
+    const stopWatchingDynamic = searchParamsGate
+      ? onRenderDynamicLatched(() => {
+          rendersDynamic = true;
+        })
+      : null;
+    const requiredNavigationContext = requireNavigationContext(navContext);
     const ssrNavigationContext = {
-      ...requireNavigationContext(navContext),
+      ...requiredNavigationContext,
       isStaticGeneration: options?.isStaticGeneration,
       isForceStatic: options?.isForceStatic,
       searchParamsGate: searchParamsGate?.gate,
+      // A client page reading this marks the render dynamic, like a server
+      // page's searchParams.
+      getClientPageSearchParams: createClientPageSsrSearchParamsSource(
+        requiredNavigationContext.searchParams,
+        {
+          isForceStatic: options?.isForceStatic,
+          isPprFallbackShell: options?.pprFallbackShellSignal !== undefined,
+        },
+      ),
     };
 
     await clientReferencePreloader.preload();
@@ -447,6 +468,7 @@ export async function handleSsr(
     clearServerInsertedHTML();
 
     const cleanup = (): void => {
+      stopWatchingDynamic?.();
       setNavigationContext(null);
       clearServerInsertedHTML();
     };
@@ -736,6 +758,20 @@ export async function handleSsr(
           return traceMetaHTML;
         };
         let didInjectHeadHTML = false;
+        let headHidQuery = false;
+        let didSendRenderedSearch = false;
+        // A render that turns dynamic after the head hid its query won't be
+        // stored either, so a later flush sends the query its client pages
+        // read, ahead of their HTML (see `client-page-root.tsx`).
+        const getRenderedSearchHTML = (): string => {
+          if (!headHidQuery || !rendersDynamic || didSendRenderedSearch) return "";
+          didSendRenderedSearch = true;
+          const search = ssrNavigationContext.searchParams.toString();
+          return createInlineScriptTag(
+            createNavigationRuntimeRenderedSearchScript(search ? `?${search}` : ""),
+            options?.scriptNonce,
+          );
+        };
         const getInsertedHTML = (): string => {
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
@@ -743,7 +779,7 @@ export async function handleSsr(
             options?.initialDevServerError,
             options?.scriptNonce,
           );
-          if (didInjectHeadHTML) return insertedHTML + errorMetaHTML;
+          if (didInjectHeadHTML) return insertedHTML + errorMetaHTML + getRenderedSearchHTML();
 
           didInjectHeadHTML = true;
           // A stored document must not carry the request's query, so the
@@ -751,6 +787,7 @@ export async function handleSsr(
           // already opened means the render won't be stored, so it keeps the
           // effective query (which a rewrite may have changed).
           const hidesQuery = searchParamsGate !== null && searchParamsGate.gate.decision !== "real";
+          headHidQuery = hidesQuery;
           const isSearchParamsFromBrowser =
             hidesQuery ||
             (options?.isStaticGeneration === true ? options.isForceStatic !== true : undefined);

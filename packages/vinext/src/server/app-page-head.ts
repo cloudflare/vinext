@@ -16,6 +16,7 @@ import { tagAppPageMetadataError } from "./app-page-execution.js";
 import { createAppMetadataModuleRoute, traceGenerateMetadata } from "./app-metadata-tracing.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
+import { searchParamsToRecord } from "../utils/query.js";
 
 /**
  * Wrapped {@link _resolveModuleMetadata} that tags any thrown error with the
@@ -339,24 +340,8 @@ function hasGenerateMetadata(module: AppPageHeadModule | null | undefined): bool
 export function collectAppPageSearchParams(
   searchParams: URLSearchParams | null | undefined,
 ): AppPageSearchParamsCollection {
-  const pageSearchParams: AppPageSearchParams = Object.create(null);
-  let hasSearchParams = false;
-
-  searchParams?.forEach((value, key) => {
-    hasSearchParams = true;
-    const currentValue = pageSearchParams[key];
-    if (Array.isArray(currentValue)) {
-      pageSearchParams[key] = [...currentValue, value];
-      return;
-    }
-    if (currentValue !== undefined) {
-      pageSearchParams[key] = [currentValue, value];
-      return;
-    }
-    pageSearchParams[key] = value;
-  });
-
-  return { hasSearchParams, pageSearchParams };
+  const pageSearchParams = searchParamsToRecord(searchParams);
+  return { hasSearchParams: Object.keys(pageSearchParams).length > 0, pageSearchParams };
 }
 
 function createMetadataSources(

@@ -30,6 +30,7 @@ import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
+  resolveFetchedHydrationLocation,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
@@ -89,7 +90,10 @@ import {
   type AppElementsInterception,
   type AppElementsSlotBinding,
 } from "../packages/vinext/src/server/app-elements.js";
-import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
+import {
+  createClientNavigationRenderSnapshot,
+  type ClientNavigationRenderSnapshot,
+} from "../packages/vinext/src/shims/navigation.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
@@ -3059,6 +3063,52 @@ describe("app browser entry state helpers", () => {
       await secondHmrPromise;
 
       expect(stateRef.current.routeId).toBe("route:/hmr-b");
+      expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
+    } finally {
+      detach();
+    }
+  });
+
+  it("does not commit an older decoding HMR payload while a newer update awaits its response headers", async () => {
+    const { controller, detach, stateRef, setBrowserRouterState } = createControllerHarness();
+    let resolveFirstHmrPayload!: (elements: AppElements) => void;
+    let resolveSecondHmrPayload!: (elements: AppElements) => void;
+    let resolveSecondSnapshot!: (snapshot: ClientNavigationRenderSnapshot) => void;
+    const firstHmrPayload = new Promise<AppElements>((resolve) => {
+      resolveFirstHmrPayload = resolve;
+    });
+    const secondHmrPayload = new Promise<AppElements>((resolve) => {
+      resolveSecondHmrPayload = resolve;
+    });
+    const secondSnapshot = new Promise<ClientNavigationRenderSnapshot>((resolve) => {
+      resolveSecondSnapshot = resolve;
+    });
+
+    try {
+      const firstHmrPromise = controller.hmrReplaceTree(
+        firstHmrPayload,
+        stateRef.current.navigationSnapshot,
+      );
+      // The newer update enters before its response (and so its snapshot) arrives.
+      const secondHmrPromise = controller.hmrReplaceTree(secondHmrPayload, secondSnapshot);
+
+      resolveFirstHmrPayload(createResolvedElements("route:/hmr-a", "/"));
+      await firstHmrPromise;
+
+      expect(stateRef.current.routeId).toBe("route:/initial");
+      expect(setBrowserRouterState).not.toHaveBeenCalled();
+
+      const renderedSnapshot = createClientNavigationRenderSnapshot(
+        "https://example.com/initial",
+        {},
+        "/initial?rewritten=1",
+      );
+      resolveSecondSnapshot(renderedSnapshot);
+      resolveSecondHmrPayload(createResolvedElements("route:/hmr-b", "/"));
+      await secondHmrPromise;
+
+      expect(stateRef.current.routeId).toBe("route:/hmr-b");
+      expect(stateRef.current.navigationSnapshot).toBe(renderedSnapshot);
       expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
     } finally {
       detach();
@@ -9404,6 +9454,30 @@ describe("app browser form-state hydration", () => {
     ).toEqual({
       formState: null,
       onUncaughtError,
+    });
+  });
+});
+
+describe("fetched initial Flight payload hydration", () => {
+  const location = {
+    origin: "https://example.com",
+    pathname: "/alias",
+    search: "?q=public",
+  };
+
+  it("keeps the public pathname under a rewrite's rendered query", () => {
+    // /alias rewrites to /page?q=rewritten. SSR rendered usePathname() as
+    // /alias, so hydration must too, while client pages read the rewrite's query.
+    expect(resolveFetchedHydrationLocation("/page?q=rewritten", location)).toEqual({
+      pathname: "/alias",
+      search: "?q=rewritten",
+    });
+  });
+
+  it("keeps the browser URL without a rendered path header", () => {
+    expect(resolveFetchedHydrationLocation(null, location)).toEqual({
+      pathname: "/alias",
+      search: "?q=public",
     });
   });
 });

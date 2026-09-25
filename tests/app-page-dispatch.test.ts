@@ -2978,6 +2978,8 @@ describe("app page dispatch", () => {
 
     await expect(response.text()).resolves.toBe("empty");
     expect(buildPageElement.mock.calls[0]?.[3].toString()).toBe("");
+    // Client pages read an empty query in the browser too.
+    expect(buildPageElement.mock.calls[0]?.[5]?.isForceStatic).toBe(true);
     expect(setNavigationContext).toHaveBeenLastCalledWith(
       expect.objectContaining({ searchParams: expect.any(URLSearchParams) }),
     );
@@ -3043,12 +3045,39 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("popular");
     expect(buildOptions).toEqual([
       {
+        isForceStatic: false,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
         serveStreamingMetadata: true,
       },
     ]);
   });
+
+  it.each([
+    { dynamicConfig: "force-static", isForceStatic: true },
+    { dynamicConfig: undefined, isForceStatic: false },
+  ])(
+    "tells the page builder whether the route is force-static ($dynamicConfig)",
+    async ({ dynamicConfig, isForceStatic }) => {
+      // Client pages carry it to the browser, which keeps force-static
+      // searchParams empty as SSR renders them.
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => "page");
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        dynamicConfig,
+        isRscRequest: true,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        searchParams: new URLSearchParams("tab=popular"),
+      });
+
+      await expect((await dispatchAppPage(options)).text()).resolves.toBe("page");
+      expect(buildPageElement.mock.calls.map((call) => call[5]?.isForceStatic)).toEqual([
+        isForceStatic,
+      ]);
+    },
+  );
 
   it("preserves request headers for an ordinary intercept source route", async () => {
     const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });

@@ -268,6 +268,60 @@ describe("Cloudflare Workers Response Store adapter", () => {
     );
   });
 
+  test("stores a static client page that doesn't read searchParams", async () => {
+    const query = crypto.randomUUID();
+    const url = `/client-search-params/ignores?q=${query}`;
+    const first = await cacheStatus(url);
+    const second = await cacheStatus(url);
+
+    assert.equal(first.status, "MISS");
+    assert.equal(second.status, "HIT");
+    assert.equal(
+      htmlValue(second.body, "client-search-render-id"),
+      htmlValue(first.body, "client-search-render-id"),
+    );
+    for (const { body } of [first, second]) {
+      assert.doesNotMatch(body, new RegExp(query));
+    }
+
+    // The page's searchParams no longer travel through Flight.
+    const rsc = await request(`/client-search-params/ignores.rsc?q=${query}&_rsc=`, {
+      headers: { Accept: "text/x-component", RSC: "1" },
+    });
+    assert.equal(rsc.status, 200);
+    assert.doesNotMatch(await rsc.text(), new RegExp(query));
+  });
+
+  test("never stores a static client page that reads searchParams", async () => {
+    const query = crypto.randomUUID();
+    const url = `/client-search-params/reads?q=${query}`;
+    const first = await request(url);
+    const firstBody = await first.text();
+    const second = await request(url);
+    const secondBody = await second.text();
+    const queryless = await request("/client-search-params/reads");
+    const querylessBody = await queryless.text();
+    const querylessAgain = await request("/client-search-params/reads");
+    const querylessAgainBody = await querylessAgain.text();
+
+    for (const response of [first, second, queryless, querylessAgain]) {
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT");
+    }
+    // The read makes the render dynamic, so SSR renders the real query.
+    assert.equal(htmlValue(firstBody, "client-search-value"), query);
+    assert.equal(htmlValue(querylessBody, "client-search-value"), "(none)");
+    assert.notEqual(
+      htmlValue(secondBody, "client-search-render-id"),
+      htmlValue(firstBody, "client-search-render-id"),
+    );
+    assert.notEqual(
+      htmlValue(querylessAgainBody, "client-search-render-id"),
+      htmlValue(querylessBody, "client-search-render-id"),
+    );
+    assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), /client-search-params/);
+  });
+
   test("runs cold fills, hits, and SWR loopback in one Worker", async () => {
     const inline = new Miniflare({
       unsafeEphemeralDurableObjects: true,

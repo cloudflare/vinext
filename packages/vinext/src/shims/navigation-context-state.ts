@@ -26,6 +26,13 @@ export type NavigationContext = {
   isForceStatic?: boolean;
   /** SSR-only: set for a cache-candidate render. See `search-params-gate.ts`. */
   searchParamsGate?: SearchParamsGate;
+  /**
+   * SSR-only: the `searchParams` a client page receives, one promise per page
+   * for the render, so `use()` keeps seeing the same promise and React's
+   * bookkeeping from one page's `use()` never reaches another. See
+   * `client-page-root.tsx`.
+   */
+  getClientPageSearchParams?: (pageProps: object) => Promise<Record<string, string | string[]>>;
 };
 
 type NavigationContextsGlobal = typeof globalThis & {
