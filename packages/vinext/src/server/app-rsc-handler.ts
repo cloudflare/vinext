@@ -479,6 +479,12 @@ type NavigationContextValue = {
 export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   basePath: string;
   buildId: string | null;
+  /**
+   * Serialized request-stage projection of the Workers Cache manifest. Shared
+   * App page dispatches whose manifest state is `static-candidate` drop the
+   * user query. Null outside a `vinext deploy` artifact.
+   */
+  cacheabilityRequestProjection?: string | null;
   clearRequestContext: () => void;
   configHeaders: NextHeader[];
   configRedirects: NextRedirect[];

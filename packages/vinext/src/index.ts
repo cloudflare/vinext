@@ -52,7 +52,10 @@ import {
   isImageOptimizationPath,
   resolveDevImageRedirect,
 } from "./server/image-optimization.js";
-import { CACHEABILITY_MANIFEST_MODULE } from "./server/cacheability-manifest.js";
+import {
+  CACHEABILITY_MANIFEST_MODULE,
+  CACHEABILITY_REQUEST_PROJECTION_MODULE,
+} from "./server/cacheability-manifest.js";
 import { PREGENERATED_CONCRETE_PATHS_MODULE } from "./server/pregenerated-concrete-paths.js";
 
 import { installSocketErrorBackstop } from "./server/socket-error-backstop.js";
@@ -1140,6 +1143,9 @@ const VIRTUAL_RSC_ENTRY = "virtual:vinext-rsc-entry";
 const RESOLVED_RSC_ENTRY = VIRTUAL_PREFIX + VIRTUAL_RSC_ENTRY;
 const VIRTUAL_CACHEABILITY_MANIFEST = "virtual:vinext-cacheability-manifest";
 const RESOLVED_CACHEABILITY_MANIFEST = VIRTUAL_PREFIX + VIRTUAL_CACHEABILITY_MANIFEST;
+const VIRTUAL_CACHEABILITY_REQUEST_PROJECTION = "virtual:vinext-cacheability-request-projection";
+const RESOLVED_CACHEABILITY_REQUEST_PROJECTION =
+  VIRTUAL_PREFIX + VIRTUAL_CACHEABILITY_REQUEST_PROJECTION;
 const VIRTUAL_PREGENERATED_CONCRETE_PATHS = "virtual:vinext-pregenerated-concrete-paths";
 const RESOLVED_PREGENERATED_CONCRETE_PATHS = VIRTUAL_PREFIX + VIRTUAL_PREGENERATED_CONCRETE_PATHS;
 const VIRTUAL_APP_REQUEST_ENTRY = "virtual:vinext-app-request-entry";
@@ -4198,6 +4204,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
             return RESOLVED_CACHEABILITY_MANIFEST;
           }
+          if (cleanId === VIRTUAL_CACHEABILITY_REQUEST_PROJECTION) {
+            if (
+              hasAppDir &&
+              this.environment?.name === "rsc" &&
+              this.environment.config?.command === "build"
+            ) {
+              return { id: `./${CACHEABILITY_REQUEST_PROJECTION_MODULE}`, external: true };
+            }
+            return RESOLVED_CACHEABILITY_REQUEST_PROJECTION;
+          }
           if (cleanId === VIRTUAL_PREGENERATED_CONCRETE_PATHS) {
             const isWorkerBuildEnvironment = hasAppDir
               ? this.environment?.name === "rsc"
@@ -4363,7 +4379,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return `export default ${JSON.stringify(metadata)};`;
           }
           // App Router virtual modules
-          if (id === RESOLVED_CACHEABILITY_MANIFEST) {
+          if (
+            id === RESOLVED_CACHEABILITY_MANIFEST ||
+            id === RESOLVED_CACHEABILITY_REQUEST_PROJECTION
+          ) {
             return "export default null;";
           }
           if (id === RESOLVED_PREGENERATED_CONCRETE_PATHS) {
@@ -4901,6 +4920,11 @@ export const loadServerActionClient = ${
           source: "export default null;\n",
         });
         if (hasAppDir) {
+          this.emitFile({
+            type: "asset",
+            fileName: CACHEABILITY_REQUEST_PROJECTION_MODULE,
+            source: "export default null;\n",
+          });
           this.emitFile({
             type: "asset",
             fileName: PREGENERATED_CONCRETE_PATHS_MODULE,

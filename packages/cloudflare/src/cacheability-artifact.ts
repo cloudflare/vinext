@@ -3,6 +3,8 @@ import path from "node:path";
 import { Buffer } from "node:buffer";
 import {
   CACHEABILITY_MANIFEST_MODULE,
+  CACHEABILITY_REQUEST_PROJECTION_MODULE,
+  projectCacheabilityManifestForRequestStage,
   type CacheabilityManifest,
 } from "vinext/internal/server/cacheability-manifest";
 import {
@@ -228,10 +230,26 @@ function assertManifestModuleReachable(configPath: string): void {
   }
 }
 
+function writeStringModule(modulePath: string, value: string): void {
+  const source = `export default ${JSON.stringify(value)};\n`;
+  const pendingPath = `${modulePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(pendingPath, source, "utf8");
+    fs.renameSync(pendingPath, modulePath);
+  } finally {
+    if (fs.existsSync(pendingPath)) fs.unlinkSync(pendingPath);
+  }
+}
+
 /**
  * Write the version-specific manifest into the built Worker artifact.
  * The application build already imports this stable module asset, so the
  * completed dist directory remains the exact input to the final upload.
+ *
+ * App Router builds also emit the request stage's projection module. It
+ * carries the App page routes that can admit a query-free entry, so the
+ * request stage can strip the query from those dispatches without loading the
+ * full manifest.
  */
 export function writeCacheabilityManifestArtifact(
   root: string,
@@ -253,13 +271,13 @@ export function writeCacheabilityManifestArtifact(
     throw cacheabilityManifestByteLimitError(manifestBytes);
   }
 
-  const manifestSource = `export default ${JSON.stringify(serializedManifest)};\n`;
-  const pendingManifestPath = `${manifestPath}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(pendingManifestPath, manifestSource, "utf8");
-    fs.renameSync(pendingManifestPath, manifestPath);
-  } finally {
-    if (fs.existsSync(pendingManifestPath)) fs.unlinkSync(pendingManifestPath);
+  writeStringModule(manifestPath, serializedManifest);
+  const projectionPath = path.join(serverDirectory, CACHEABILITY_REQUEST_PROJECTION_MODULE);
+  if (fs.existsSync(projectionPath) && fs.lstatSync(projectionPath).isFile()) {
+    writeStringModule(
+      projectionPath,
+      JSON.stringify(projectCacheabilityManifestForRequestStage(manifest)),
+    );
   }
   return path.relative(root, configPath);
 }

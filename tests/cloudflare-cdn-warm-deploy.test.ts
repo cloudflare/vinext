@@ -12,8 +12,10 @@ import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../packages/cloudflare/sr
 import { writeCacheabilityManifestArtifact } from "../packages/cloudflare/src/cacheability-artifact.js";
 import {
   CACHEABILITY_MANIFEST_MODULE,
+  CACHEABILITY_REQUEST_PROJECTION_MODULE,
   cacheabilityManifestRouteKey,
   type CacheabilityManifest,
+  type CacheabilityManifestRoute,
 } from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
@@ -461,6 +463,92 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     expect(
       fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
     ).toBe('export default "{\\"buildId\\":\\"build-a\\",\\"routes\\":{},\\"version\\":1}";\n');
+  });
+
+  it("writes the request stage's projection of the App page routes that admit query-free entries", () => {
+    writeTwoStageWorkerArtifact();
+    writeFile(`dist/server/${CACHEABILITY_REQUEST_PROJECTION_MODULE}`, "export default null;\n");
+    const routes: CacheabilityManifest["routes"] = {};
+    const records: CacheabilityManifestRoute[] = [
+      {
+        kind: "app-page",
+        pattern: "/blog/:slug",
+        state: "runtime-check",
+        allowUnknown: true,
+        unknownState: "static-candidate",
+        runtimePaths: ["/blog/vetoed"],
+      },
+      {
+        kind: "app-page",
+        pattern: "/about",
+        state: "runtime-check",
+        staticPaths: { html: ["/about"], "rsc-full": ["/about"] },
+      },
+      { kind: "app-page", pattern: "/fallback/:id", state: "static-candidate" },
+      {
+        kind: "app-page",
+        pattern: "/dynamic/:id",
+        state: "runtime-check",
+        runtimePaths: ["/dynamic/a"],
+      },
+      {
+        kind: "app-page",
+        pattern: "/pruned/:id",
+        state: "runtime-check",
+        runtimeRepresentation: "rsc-loading-shell",
+      },
+      { kind: "app-route", pattern: "/api/static", state: "static-candidate" },
+      {
+        kind: "pages-page",
+        pattern: "/legacy",
+        state: "runtime-check",
+        staticRepresentation: "html",
+      },
+    ];
+    for (const route of records) {
+      routes[cacheabilityManifestRouteKey(route.kind, route.pattern)] = route;
+    }
+
+    writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+      buildId: "build-a",
+      routes,
+      version: 1,
+    });
+
+    const source = fs.readFileSync(
+      path.join(tmpDir, "dist/server", CACHEABILITY_REQUEST_PROJECTION_MODULE),
+      "utf8",
+    );
+    const projection = JSON.parse(
+      JSON.parse(source.slice("export default ".length, -";\n".length)),
+    ) as CacheabilityManifest;
+    // Route records stay unchanged, so a lookup agrees with the full manifest.
+    expect(projection).toEqual({
+      buildId: "build-a",
+      routes: {
+        [cacheabilityManifestRouteKey("app-page", "/blog/:slug")]:
+          routes[cacheabilityManifestRouteKey("app-page", "/blog/:slug")],
+        [cacheabilityManifestRouteKey("app-page", "/about")]:
+          routes[cacheabilityManifestRouteKey("app-page", "/about")],
+        [cacheabilityManifestRouteKey("app-page", "/fallback/:id")]:
+          routes[cacheabilityManifestRouteKey("app-page", "/fallback/:id")],
+      },
+      version: 1,
+    });
+  });
+
+  it("writes no projection for a build without the request stage's projection module", () => {
+    writeTwoStageWorkerArtifact();
+
+    writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+      buildId: "build-a",
+      routes: {},
+      version: 1,
+    });
+
+    expect(
+      fs.existsSync(path.join(tmpDir, "dist/server", CACHEABILITY_REQUEST_PROJECTION_MODULE)),
+    ).toBe(false);
   });
 
   it("accepts a manifest over one MiB with more than 10,000 route patterns", () => {

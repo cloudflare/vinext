@@ -538,5 +538,19 @@ export default {
     expect(readStaticEntryClosure(root, "virtual:vinext-response-stage")).toContain(
       LOCAL_ADAPTER_MARKER,
     );
+    // The request stage reads the deploy's manifest projection, never the full
+    // manifest. The build emits a null placeholder that `vinext deploy` fills.
+    expect(readStaticEntryClosure(root, "virtual:vinext-request-stage")).toContain(
+      "__vinext_cacheability_request_projection.js",
+    );
+    expect(readStaticEntryClosure(root, "virtual:vinext-request-stage")).not.toContain(
+      "__vinext_cacheability_manifest.js",
+    );
+    expect(
+      fs.readFileSync(
+        path.join(root, "dist/server/__vinext_cacheability_request_projection.js"),
+        "utf8",
+      ),
+    ).toBe("export default null;\n");
   }, 60_000);
 });

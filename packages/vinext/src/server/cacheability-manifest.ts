@@ -15,6 +15,8 @@ import {
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "./app-rsc-render-mode.js";
 
 export const CACHEABILITY_MANIFEST_MODULE = "__vinext_cacheability_manifest.js";
+/** Request-stage projection of the manifest: the App page routes that can admit a query-free entry. */
+export const CACHEABILITY_REQUEST_PROJECTION_MODULE = "__vinext_cacheability_request_projection.js";
 
 export type CacheabilityRouteKind = "app-page" | "app-route" | "pages-page";
 export type CacheabilityRepresentation =
@@ -436,4 +438,35 @@ export function cacheabilityManifestPageState(
   return manifestRoute
     ? cacheabilityManifestRouteState(manifestRoute, routePathname, representation)
     : null;
+}
+
+/** Whether any path or representation of a route can resolve to `static-candidate`. */
+function canResolveStaticCandidate(route: CacheabilityManifestRoute): boolean {
+  return (
+    route.state === "static-candidate" ||
+    route.unknownState === "static-candidate" ||
+    route.staticRepresentation !== undefined ||
+    route.staticPaths !== undefined
+  );
+}
+
+/**
+ * Project the manifest onto the Workers Cache request stage, which strips the
+ * query from App page dispatches whose manifest state is `static-candidate`.
+ * The projection keeps every App page route record that can resolve to that
+ * state, unchanged, so a lookup against it returns `static-candidate` exactly
+ * when the full manifest does. Every other route is left out.
+ */
+export function projectCacheabilityManifestForRequestStage(
+  manifest: CacheabilityManifest,
+): CacheabilityManifest {
+  return {
+    buildId: manifest.buildId,
+    routes: Object.fromEntries(
+      Object.entries(manifest.routes).filter(
+        ([, route]) => route.kind === "app-page" && canResolveStaticCandidate(route),
+      ),
+    ),
+    version: 1,
+  };
 }

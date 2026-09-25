@@ -361,6 +361,7 @@ export function generateAppRequestRscEntry(
   return `
 import ${JSON.stringify(serverGlobalsPath)};
 import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler";
+import __cacheabilityRequestProjection from "virtual:vinext-cacheability-request-projection";
 import { createAppRscRouteMatcher as __createAppRscRouteMatcher } from ${JSON.stringify(appRscRouteMatchingPath)};
 import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stringify(appRequestStageDispatchPath)};
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
@@ -466,6 +467,7 @@ ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 const __requestHandler = createAppRscRequestHandler({
   basePath: __basePath,
   buildId: process.env.__VINEXT_BUILD_ID ?? null,
+  cacheabilityRequestProjection: __cacheabilityRequestProjection,
   clearRequestContext: __clearRequestContext,
   configHeaders: ${JSON.stringify(config?.headers ?? [])},
   configRedirects: ${JSON.stringify(config?.redirects ?? [])},
