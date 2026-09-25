@@ -3840,6 +3840,29 @@ describe("app page dispatch", () => {
       });
     }
 
+    it("never caches the missing default export response of a non-static page", async () => {
+      const dispatch = async (overrides: CreateDispatchOptionsOverrides) => {
+        const { options: dispatchOptions } = createDispatchOptions({
+          isProduction: true,
+          ...overrides,
+        });
+        return dispatchAppPage({ ...dispatchOptions, hasPageDefaultExport: false });
+      };
+
+      for (const response of [
+        await dispatch({ isStaticGenerationEdgeRuntime: true }),
+        await dispatch({ route: createDynamicSegmentRoute() }),
+      ]) {
+        expect(response.status).toBe(500);
+        expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+      }
+
+      // A static page's response keeps no policy of its own.
+      const staticResponse = await dispatch({});
+      expect(staticResponse.status).toBe(500);
+      expect(staticResponse.headers.get("cache-control")).toBeNull();
+    });
+
     it("renders non-GET requests to a dynamic-segment route without generateStaticParams", async () => {
       const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
       const { options } = createDispatchOptions({

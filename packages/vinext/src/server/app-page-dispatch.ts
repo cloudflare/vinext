@@ -738,7 +738,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   if (options.hasPageModule && !options.hasPageDefaultExport) {
     options.clearRequestContext();
-    return new Response("Page has no default export", { status: 500 });
+    return applyIneligibleRouteCachePolicy(
+      new Response("Page has no default export", { status: 500 }),
+      { isDraftMode, isStaticEligible, middlewareContext: options.middlewareContext },
+    );
   }
 
   // The cacheComponents exemption only covers caching. Methods follow the
