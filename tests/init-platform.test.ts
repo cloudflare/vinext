@@ -35,6 +35,7 @@ describe("Cloudflare init choices", () => {
     expect(parseCdnCacheArg(["--cdn-cache", "data-cache"])).toBe("data-cache");
     expect(parseCdnCacheArg(["--cdn-cache=response-store"])).toBe("response-store");
     expect(parseCdnCacheArg(["--cdn-cache=workers-cache"])).toBe("workers-cache");
+    expect(parseCdnCacheArg(["--cdn-cache=static-assets"])).toBe("static-assets");
     expect(parseImageOptimizationArg(["--image-optimization=none"])).toBe("none");
     expect(parseResponseStoreModeArg(["--response-store-mode=self-contained"])).toBe(
       "self-contained",
@@ -74,6 +75,19 @@ describe("Cloudflare init choices", () => {
     });
   });
 
+  it("accepts Static Assets non-interactively", async () => {
+    await expect(
+      resolveCloudflareInitOptions(
+        ["--cdn-cache=static-assets", "--data-cache=none", "--image-optimization=none"],
+        { env: { CODEX_THREAD_ID: "test" } },
+      ),
+    ).resolves.toEqual({
+      dataCache: "none",
+      cdnCache: "static-assets",
+      imageOptimization: "none",
+    });
+  });
+
   it("requires agents to pass the CDN cache choice with other Cloudflare choices", async () => {
     await expect(
       resolveCloudflareInitOptions(["--data-cache=kv", "--image-optimization=none"], {
@@ -86,7 +100,7 @@ describe("Cloudflare init choices", () => {
 
   it("rejects legacy CDN cache choices", () => {
     expect(() => parseCdnCacheArg(["--cdn-cache=kv"])).toThrow(
-      "Expected none or response-store or workers-cache or data-cache",
+      "Expected none or response-store or workers-cache or static-assets or data-cache",
     );
   });
 
@@ -111,11 +125,26 @@ describe("Cloudflare init choices", () => {
     });
     expect(prompts).toEqual([
       "  Enable caching? [y/N]: ",
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
       "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
     ]);
     expect(output.read()?.toString()).toBe("\n\n\n\n");
+  });
+
+  it("offers the read-only Static Assets cache", async () => {
+    const answers = ["yes", "4", "2", "2"];
+    await expect(
+      resolveCloudflareInitOptions([], {
+        env: {},
+        isInteractive: true,
+        question: async () => answers.shift() ?? "",
+      }),
+    ).resolves.toEqual({
+      dataCache: "none",
+      cdnCache: "static-assets",
+      imageOptimization: "none",
+    });
   });
 
   it("keeps caching disabled when the opt-in prompt is declined", async () => {
@@ -254,7 +283,7 @@ describe("Cloudflare init choices", () => {
     expect(prompts[2]).toMatch(/^  Choose a CDN cache:/);
     expect(prompts[3]).toMatch(/^  Choose image optimization:/);
     expect(output.read()?.toString()).toBe(
-      "\n  Please choose Workers Response Store (1), Workers Cache (2), or Data cache (3).\n\n\n",
+      "\n  Please choose Workers Response Store (1), Workers Cache (2), Data cache (3), or Static Assets (4).\n\n\n",
     );
   });
 });
@@ -481,7 +510,7 @@ describe("resolveInitOptions", () => {
 
     expect(prompts).toEqual([
       "  Enable caching? [y/N]: ",
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
       "  Choose a Workers Response Store mode:\n    1. Service binding (default)\n    2. Self-contained\n  Response Store mode [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
       "  Enable experimental cache pre-warm during deploy? [y/N]: ",
@@ -500,7 +529,7 @@ describe("resolveInitOptions", () => {
         { env: { CODEX_THREAD_ID: "test" } },
       ),
     ).rejects.toThrow(
-      "--prerender is only supported by Node init. For Cloudflare, use --experimental-warm-cdn-cache",
+      "--prerender is only supported by Node init. For Cloudflare, choose --cdn-cache=static-assets",
     );
   });
 
@@ -530,7 +559,7 @@ describe("resolveInitOptions", () => {
 
     expect(prompts).toEqual([
       "  Enable caching? [y/N]: ",
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
     ]);
   });

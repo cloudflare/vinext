@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { VinextCacheConfig } from "vinext/internal/cache-adapters";
+import type { VinextCacheConfig } from "vinext/internal/config/prerender";
 import { findViteConfigPath } from "vinext/internal/utils/project";
 import {
   DEFAULT_CDN_VERSION_METADATA_BINDING,

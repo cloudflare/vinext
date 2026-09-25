@@ -22,9 +22,10 @@ export function formatDeployHelp(): string {
                              traffic
     --prerender-all          Deprecated for Worker deployments; use
                              --experimental-warm-cdn-cache instead (still
-                             honored with next.config output: "export")
+                             honored for static export and cache adapters that
+                             package local prerender output)
     --prerender-concurrency <count>
-                             Maximum parallel routes for output: "export"
+                             Maximum parallel routes for local prerendering
     --experimental-warm-cdn-cache
                              Upload a Worker version, warm build-discovered paths
                              through the production URL, then promote it (experimental)

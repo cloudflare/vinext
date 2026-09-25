@@ -2273,6 +2273,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       ...({
         [VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY]: {
           appDir: options.appDir,
+          clientOutDir: options.clientOutDir,
           disableAppRouter: options.disableAppRouter,
           rscOutDir: options.rscOutDir,
           ssrOutDir: options.ssrOutDir,

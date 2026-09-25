@@ -9,6 +9,8 @@ export {
   hasVerbatimResponseVary,
   supportsCanonicalRscWarmup,
   cacheWarmupStatusSource,
+  hasCacheAdapterPrerenderOutput,
+  finalizeCacheAdapterPrerenderOutput,
   requiresRouteCacheabilityProbeManifest,
   loadVinextCacheConfigFromViteConfig,
   VINEXT_CACHE_CONFIG_PLUGIN_PROPERTY,
@@ -44,6 +46,7 @@ export const VINEXT_ROUTE_ROOT_CONFIG_PLUGIN_PROPERTY = "__vinextRouteRootConfig
 
 export type VinextRouteRootConfig = {
   appDir?: string;
+  clientOutDir?: string;
   disableAppRouter?: boolean;
   rscOutDir?: string;
   ssrOutDir?: string;

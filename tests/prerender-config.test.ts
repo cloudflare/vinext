@@ -56,9 +56,14 @@ describe("vinext prerender config", () => {
   });
 
   it("discovers route-root config through promised plugin composition", async () => {
-    const plugins = [Promise.resolve(vinext({ appDir: "custom-app", disableAppRouter: true }))];
+    const plugins = [
+      Promise.resolve(
+        vinext({ appDir: "custom-app", clientOutDir: "custom-client", disableAppRouter: true }),
+      ),
+    ];
     expect(await findVinextRouteRootConfigInPlugins(plugins)).toMatchObject({
       appDir: "custom-app",
+      clientOutDir: "custom-client",
       disableAppRouter: true,
     });
   });
