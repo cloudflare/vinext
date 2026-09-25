@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createVinextResponseStoreHandler } from "../packages/cloudflare/src/cache/response-store-adapter.worker.js";
+import {
+  createVinextResponseStoreHandler,
+  createVinextResponseStoreOptions,
+} from "../packages/cloudflare/src/cache/response-store-adapter.worker.js";
+import createResponseStoreDataCacheAdapter, {
+  captureResponseStoreRscData,
+  deferResponseStoreAdmission,
+} from "../packages/cloudflare/src/cache/response-store-data.runtime.js";
+import { createCanonicalRscRequestHeaders } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
 
 const stages = vi.hoisted(() => ({ request: vi.fn(), response: vi.fn() }));
@@ -178,5 +186,323 @@ describe("Cloudflare Response Store Worker", () => {
     expect(response.headers.get("X-Vinext-Cache")).toBe("BYPASS");
     expect(toJSON).toHaveBeenCalledOnce();
     expect(store.fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("Cloudflare Response Store Worker query-free cache identity", () => {
+  type PutOptions = { revalidator?: { id: string; args: unknown[] } };
+  type StoredEntry = { body: string; headers: Headers; options?: PutOptions };
+
+  beforeEach(() => {
+    stages.request.mockReset();
+    stages.response.mockReset();
+  });
+
+  function createMemoryStore() {
+    const entries = new Map<string, StoredEntry>();
+    const mutationResult = { backingStoreUpdated: true, edgePurgeAccepted: true };
+    const fetch = vi.fn(async (request: Request) => {
+      const entry = entries.get(request.url);
+      return entry
+        ? new Response(entry.body, { headers: entry.headers })
+        : new Response(null, { headers: { "X-Workers-Response-Store": "MISS" }, status: 404 });
+    });
+    const put = vi.fn(async (request: Request, response: Response, options?: PutOptions) => {
+      entries.set(request.url, {
+        body: await response.text(),
+        headers: new Headers(response.headers),
+        options,
+      });
+      return mutationResult;
+    });
+    return {
+      entries,
+      store: {
+        fetch,
+        getTagExpiration: vi.fn(async () => 0),
+        purge: vi.fn(async () => mutationResult),
+        put,
+        refresh: vi.fn(async () => mutationResult),
+      },
+    };
+  }
+
+  function pageProps(resolvedUrl: string) {
+    return {
+      interceptionContext: null,
+      interceptionId: null,
+      isRscRequest: false,
+      kind: "app-page",
+      matchKind: "request",
+      mountedSlotsHeader: null,
+      renderMode: "navigation",
+      resolvedUrl,
+    };
+  }
+
+  function dispatchWithIdentity(withIdentity = true, overrides: Record<string, unknown> = {}) {
+    stages.request.mockImplementation((request: Request, _env, _context, dispatchResponseStage) => {
+      const url = new URL(request.url);
+      const identityUrl = new URL(url);
+      identityUrl.search = "";
+      const props = { ...pageProps(`${url.pathname}${url.search}`), ...overrides };
+      return dispatchResponseStage(
+        request,
+        props,
+        withIdentity
+          ? {
+              cache: "shared",
+              cacheIdentity: {
+                props: { ...props, resolvedUrl: url.pathname },
+                request: new Request(identityUrl, { headers: request.headers }),
+              },
+            }
+          : { cache: "shared" },
+      );
+    });
+  }
+
+  function context() {
+    return { passThroughOnException: vi.fn(), waitUntil: vi.fn() };
+  }
+
+  function revalidatorInvocation(entry: StoredEntry | undefined) {
+    return JSON.parse(String(entry?.options?.revalidator?.args[0])) as {
+      props: { resolvedUrl: string; isRscRequest: boolean };
+      request: { url: string };
+    };
+  }
+
+  it("serves two queries from one entry keyed and replayed by the identity", async () => {
+    dispatchWithIdentity();
+    const renderedUrls: string[] = [];
+    stages.response.mockImplementation(async (request: Request, _env, _context, props) => {
+      renderedUrls.push(`${request.url} ${(props as { resolvedUrl: string }).resolvedUrl}`);
+      // Data-cache writes replay the render that produced them.
+      await createResponseStoreDataCacheAdapter().set("data-key", null, { revalidate: 60 });
+      return new Response("rendered", { headers: { "Cache-Control": "public, max-age=60" } });
+    });
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const first = await handler.fetch(
+      new Request("https://example.com/page?q=a"),
+      {} as never,
+      context(),
+    );
+    const second = await handler.fetch(
+      new Request("https://example.com/page?q=b"),
+      {} as never,
+      context(),
+    );
+
+    expect(first.headers.get("X-Vinext-Cache")).toBe("MISS");
+    expect(await first.text()).toBe("rendered");
+    expect(second.headers.get("X-Vinext-Cache")).toBe("HIT");
+    expect(await second.text()).toBe("rendered");
+    expect(renderedUrls).toEqual(["https://example.com/page?q=a /page?q=a"]);
+    const [firstKey, secondKey] = store.fetch.mock.calls.map(([request]) => request.url);
+    expect(secondKey).toBe(firstKey);
+    expect(new URL(firstKey!).pathname).toBe("/page");
+    expect(new URL(firstKey!).searchParams.has("q")).toBe(false);
+
+    const routeEntry = entries.get(firstKey!);
+    expect(routeEntry?.options?.revalidator?.id).toBe("vinext:response");
+    expect(revalidatorInvocation(routeEntry)).toMatchObject({
+      props: { resolvedUrl: "/page" },
+      request: { url: "https://example.com/page" },
+    });
+    const dataEntry = [...entries.values()].find(
+      (entry) => entry.options?.revalidator?.id === "vinext:data",
+    );
+    expect(JSON.parse(String(dataEntry?.options?.revalidator?.args[1]))).toMatchObject({
+      props: { resolvedUrl: "/page?q=a" },
+      request: { url: "https://example.com/page?q=a" },
+    });
+  });
+
+  it("keys the full request when no identity is given", async () => {
+    dispatchWithIdentity(false);
+    stages.response.mockImplementation(
+      async () => new Response("rendered", { headers: { "Cache-Control": "public, max-age=60" } }),
+    );
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    for (const query of ["a", "b"]) {
+      const response = await handler.fetch(
+        new Request(`https://example.com/page?q=${query}`),
+        {} as never,
+        context(),
+      );
+      expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+      await response.text();
+    }
+
+    expect(stages.response).toHaveBeenCalledTimes(2);
+    expect(entries.size).toBe(2);
+    expect([...entries.values()].map((entry) => revalidatorInvocation(entry).request.url)).toEqual([
+      "https://example.com/page?q=a",
+      "https://example.com/page?q=b",
+    ]);
+  });
+
+  it("stores and regenerates App page RSC without the request's params and path headers", async () => {
+    dispatchWithIdentity(true, { isRscRequest: true });
+    const rscHeaders = {
+      "Cache-Control": "public, max-age=60",
+      "X-Vinext-Params": encodeURIComponent(JSON.stringify({ slug: "page" })),
+      "X-Vinext-Rendered-Path-And-Search": encodeURIComponent("/page?q=a"),
+    };
+    stages.response.mockImplementation(async () => new Response("rsc", { headers: rscHeaders }));
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const miss = await handler.fetch(
+      new Request("https://example.com/page?q=a"),
+      {} as never,
+      context(),
+    );
+    // The request stage recomposes both headers for every App page RSC
+    // response, HITs included.
+    expect(miss.headers.get("X-Vinext-Rendered-Path-And-Search")).toBe(
+      encodeURIComponent("/page?q=a"),
+    );
+    await miss.text();
+    const [entry] = [...entries.values()];
+    expect(entry?.headers.get("Cache-Control")).toBe("public, max-age=60");
+    expect(entry?.headers.has("X-Vinext-Params")).toBe(false);
+    expect(entry?.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
+
+    stages.response.mockClear();
+    const regenerated = await createVinextResponseStoreOptions().regenerate(
+      {
+        args: entry!.options!.revalidator!.args as string[],
+        id: "vinext:response",
+        reason: "stale",
+        request: new Request("https://example.com/page"),
+      } as never,
+      { ctx: context(), env: {} } as never,
+    );
+    const [replayedRequest, , , replayedProps] = stages.response.mock.calls[0]!;
+    expect((replayedRequest as Request).url).toBe("https://example.com/page");
+    expect(replayedProps).toMatchObject({ resolvedUrl: "/page" });
+    expect(regenerated.headers.has("X-Vinext-Params")).toBe(false);
+    expect(regenerated.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
+  });
+
+  it.each([
+    ["an App route handler", "stored", { isRscRequest: false, kind: "app-route-handler" }],
+    ["an App route handler", "admitted", { isRscRequest: false, kind: "app-route-handler" }],
+    ["an App page HTML response", "stored", { isRscRequest: false, kind: "app-page" }],
+  ])("keeps params and path headers that %s returns when %s", async (_name, path, overrides) => {
+    // The request stage recomposes these headers only for App page RSC
+    // responses, so every other entry must replay them as rendered.
+    dispatchWithIdentity(overrides.kind === "app-page", overrides);
+    const routeHeaders = {
+      "Cache-Control": "public, max-age=60",
+      "X-Vinext-Params": encodeURIComponent(JSON.stringify({ slug: "route" })),
+      "X-Vinext-Rendered-Path-And-Search": encodeURIComponent("/route"),
+    };
+    stages.response.mockImplementation(async () => {
+      const response = new Response("route", { headers: routeHeaders });
+      return path === "admitted"
+        ? (deferResponseStoreAdmission(response, async (admitted) => admitted) ?? response)
+        : response;
+    });
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    for (const expectedStatus of ["MISS", "HIT"]) {
+      const ctx = context();
+      const response = await handler.fetch(
+        new Request("https://example.com/route"),
+        {} as never,
+        ctx,
+      );
+      expect(response.headers.get("X-Vinext-Cache")).toBe(expectedStatus);
+      expect(response.headers.get("X-Vinext-Params")).toBe(routeHeaders["X-Vinext-Params"]);
+      expect(response.headers.get("X-Vinext-Rendered-Path-And-Search")).toBe(
+        routeHeaders["X-Vinext-Rendered-Path-And-Search"],
+      );
+      await response.text();
+      await Promise.all(ctx.waitUntil.mock.calls.map(([promise]) => promise));
+    }
+    expect(stages.response).toHaveBeenCalledTimes(1);
+
+    const [entry] = [...entries.values()];
+    const regenerated = await createVinextResponseStoreOptions().regenerate(
+      {
+        args: entry!.options!.revalidator!.args as string[],
+        id: "vinext:response",
+        reason: "stale",
+        request: new Request("https://example.com/route"),
+      } as never,
+      { ctx: context(), env: {} } as never,
+    );
+    expect(regenerated.headers.get("X-Vinext-Params")).toBe(routeHeaders["X-Vinext-Params"]);
+    expect(regenerated.headers.get("X-Vinext-Rendered-Path-And-Search")).toBe(
+      routeHeaders["X-Vinext-Rendered-Path-And-Search"],
+    );
+  });
+
+  it("seeds the canonical RSC entry under the identity during warmup", async () => {
+    dispatchWithIdentity();
+    stages.response.mockImplementation(async () => {
+      captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+      return new Response("html", { headers: { "Cache-Control": "public, max-age=60" } });
+    });
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const warmup = await handler.fetch(
+      new Request("https://example.com/page?q=a", {
+        headers: { "user-agent": "vinext-cloudflare-cdn-warm" },
+      }),
+      {} as never,
+      context(),
+    );
+    await warmup.text();
+
+    const invocations = [...entries.values()].map(revalidatorInvocation);
+    expect(invocations).toEqual([
+      expect.objectContaining({
+        props: expect.objectContaining({ isRscRequest: false, resolvedUrl: "/page" }),
+        request: expect.objectContaining({ url: "https://example.com/page" }),
+      }),
+      expect.objectContaining({
+        props: expect.objectContaining({ isRscRequest: true, resolvedUrl: "/page" }),
+        request: expect.objectContaining({ url: "https://example.com/page?_rsc" }),
+      }),
+    ]);
+
+    // A later canonical RSC navigation with any query reaches the seeded entry.
+    stages.response.mockClear();
+    stages.request.mockImplementation((_request, _env, _context, dispatchResponseStage) => {
+      const props = { ...pageProps("/page"), isRscRequest: true };
+      return dispatchResponseStage(
+        new Request("https://example.com/page?q=b&_rsc", {
+          headers: createCanonicalRscRequestHeaders(),
+        }),
+        { ...props, resolvedUrl: "/page?q=b" },
+        {
+          cache: "shared",
+          cacheIdentity: {
+            props,
+            request: new Request("https://example.com/page?_rsc", {
+              headers: createCanonicalRscRequestHeaders(),
+            }),
+          },
+        },
+      );
+    });
+    const rsc = await handler.fetch(
+      new Request("https://example.com/page?q=b&_rsc"),
+      {} as never,
+      context(),
+    );
+    expect(rsc.headers.get("X-Vinext-Cache")).toBe("HIT");
+    expect(await rsc.text()).toBe("rsc");
+    expect(stages.response).not.toHaveBeenCalled();
   });
 });

@@ -210,15 +210,55 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.doesNotMatch(JSON.stringify((await metadataEntries()).flat()), /dynamic-segment/);
   });
 
+  test("shares one App page entry across queries and recomposes RSC params and path", async () => {
+    const pathname = "/cached/query-identity";
+    const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
+    const first = await cacheStatus(`${pathname}?q=${firstQuery}`);
+    const second = await cacheStatus(`${pathname}?utm_source=${secondQuery}`);
+    assert.equal(first.status, "MISS");
+    assert.equal(second.status, "HIT");
+    assert.equal(htmlValue(second.body, "rendered-at"), htmlValue(first.body, "rendered-at"));
+    assert.doesNotMatch(second.body, new RegExp(firstQuery));
+
+    const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
+    const firstRsc = await request(`${pathname}?q=${firstQuery}&_rsc`, rscInit);
+    const firstRscBody = await firstRsc.text();
+    const secondRsc = await request(`${pathname}?q=${secondQuery}&_rsc`, rscInit);
+    assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(await secondRsc.text(), firstRscBody);
+    const params = encodeURIComponent(JSON.stringify({ slug: "query-identity" }));
+    for (const [response, query] of [
+      [firstRsc, firstQuery],
+      [secondRsc, secondQuery],
+    ] as const) {
+      assert.equal(response.headers.get("x-vinext-params"), params);
+      assert.equal(
+        response.headers.get("x-vinext-rendered-path-and-search"),
+        encodeURIComponent(`${pathname}?q=${query}`),
+      );
+    }
+
+    const routeEntries = (await metadataEntries())
+      .flat()
+      .map((entry) => JSON.stringify(entry))
+      .filter((entry) => entry.includes('"vinext:response"') && entry.includes(pathname));
+    assert.equal(routeEntries.length, 2, JSON.stringify(routeEntries));
+    for (const entry of routeEntries) {
+      assert.doesNotMatch(entry, new RegExp(`${firstQuery}|${secondQuery}`));
+    }
+  });
+
   test("keeps the query out of a static page that reads useSearchParams() inside Suspense", async () => {
-    const query = crypto.randomUUID();
-    const url = `/search-params/suspense?q=${query}`;
-    const first = await request(url);
+    // One stored document serves every query, as Next.js prerenders it once.
+    const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
+    const first = await request(`/search-params/suspense?q=${firstQuery}`);
     const firstBody = await first.text();
-    const second = await request(url);
+    const second = await request(`/search-params/suspense?q=${secondQuery}`);
     const secondBody = await second.text();
 
     assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
     assert.equal(first.headers.get("x-vinext-cache"), "MISS");
     assert.equal(second.headers.get("x-vinext-cache"), "HIT");
     assert.equal(
@@ -228,7 +268,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     for (const body of [firstBody, secondBody]) {
       // The server renders the fallback, and the browser reads the query.
       assert.equal(htmlValue(body, "search-fallback"), "loading");
-      assert.doesNotMatch(body, new RegExp(query));
+      assert.doesNotMatch(body, new RegExp(`${firstQuery}|${secondQuery}`));
       assert.match(body, /searchParamsFromBrowser:true/);
       assert.match(body, /"searchParams":\[\]/);
     }
@@ -407,7 +447,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
   test("passes adapter sharding into the Response Store", async () => {
     await Promise.all(
       Array.from({ length: 16 }, async (_, index) => {
-        const response = await request(`/cached/local?shard=${index}`);
+        const response = await request(`/cached/shard-${index}`);
         assert.equal(response.status, 200);
         await response.arrayBuffer();
       }),
@@ -514,7 +554,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.match(rsc.headers.get("content-type") ?? "", /^text\/x-component/);
     assert.ok((await rsc.arrayBuffer()).byteLength > 0);
 
-    const retryPath = `${pathname}?retry=1`;
+    const retryPath = "/cached/intro-retry";
     const storedHtml = await request(retryPath);
     assert.equal(storedHtml.headers.get("x-vinext-cache"), "MISS");
     await storedHtml.arrayBuffer();
@@ -525,7 +565,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(retriedWarmup.headers.get("x-vinext-cache"), "MISS");
     await retriedWarmup.arrayBuffer();
 
-    const repairedRsc = await request(`${retryPath}&_rsc`, {
+    const repairedRsc = await request(`${retryPath}?_rsc`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     assert.equal(repairedRsc.headers.get("x-vinext-cache"), "HIT");
