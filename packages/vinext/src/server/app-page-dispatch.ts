@@ -68,9 +68,9 @@ import {
 } from "./app-page-render-observation.js";
 import {
   mergeMiddlewareResponseHeaders,
+  resolveUncacheableCacheControl,
   type AppPageMiddlewareContext,
 } from "./app-page-response.js";
-import { NEVER_CACHE_CONTROL } from "./cache-control.js";
 import {
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
@@ -1099,12 +1099,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         Vary: VINEXT_RSC_VARY_HEADER,
       });
       // This response renders the source route, so it takes the source's
-      // cacheability, not the matched target's. A source that can't be static
-      // is never cacheable, like its own render. Middleware's policy still
-      // wins, merged after, as in the RSC builder.
+      // cacheability, not the matched target's. A source that can't be static,
+      // or a draft-mode request, is never cacheable, like its own render.
+      // Middleware's policy still wins, merged after, as in the RSC builder.
       const isSourceStaticEligible =
         options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
-      if (!isSourceStaticEligible) interceptHeaders.set("Cache-Control", NEVER_CACHE_CONTROL);
+      if (!isSourceStaticEligible || isDraftMode) {
+        interceptHeaders.set("Cache-Control", resolveUncacheableCacheControl(options.isProduction));
+      }
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       applyRscCompatibilityIdHeader(interceptHeaders);
       applyRscDeploymentIdHeader(interceptHeaders);

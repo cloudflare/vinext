@@ -2497,6 +2497,10 @@ describe("app page dispatch", () => {
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
+    // Dev keeps its no-store header.
+    const devResponse = await dispatchAppPage({ ...options, isProduction: false });
+    expect(devResponse.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    await devResponse.text();
   });
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
