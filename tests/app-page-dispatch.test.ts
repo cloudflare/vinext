@@ -3886,6 +3886,38 @@ describe("app page dispatch", () => {
       expect(interceptGenerator).toHaveBeenCalledTimes(1);
     });
 
+    it("checks the intercepting branch's params alongside a prerendered source's", async () => {
+      // A prerendered /feed/known renders app/feed/[slug]/@modal/(.)[photo],
+      // whose generator lists only the known photo.
+      const interceptGenerator = vi.fn(async () => [{ photo: "known", slug: "known" }]);
+      const interceptPage = {
+        default: "modal-page",
+        dynamicParams: false,
+        generateStaticParams: interceptGenerator,
+      };
+      const dispatch = (photo: string) => {
+        const { options } = createGeneratedParamsDispatch({
+          cleanPathname: "/feed/known",
+          findIntercept: () => ({
+            interceptBranchSegments: ["(.)[photo]"],
+            matchedParams: { photo, slug: "known" },
+            page: interceptPage,
+            slotKey: "modal@app/feed/[slug]/@modal",
+            sourceRouteIndex: 0,
+          }),
+          isrGet: vi.fn(async () => null),
+          params: { slug: "known" },
+          resolveRouteGenerateStaticParams: () => [interceptGenerator],
+        });
+        return dispatchAppPage({ ...options, staticParamsValidationParams: { slug: "known" } });
+      };
+
+      expect((await dispatch("unknown")).status).toBe(404);
+      const known = await dispatch("known");
+      expect(known.status).toBe(200);
+      await known.text();
+    });
+
     // A cache miss of the static /feed rendering its @modal intercept with the
     // given branch, params and generators, under dynamicParams = false.
     async function dispatchStaticSourceIntercept(

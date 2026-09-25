@@ -1362,10 +1362,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             .filter((segment) => segment.startsWith("[[..."))
             .flatMap((segment) => getAppPageSegmentParamName(segment) ?? [])
         : undefined,
-      params:
-        options.staticParamsValidationParams ??
-        attachedCurrentRouteIntercept?.matchedParams ??
-        options.params,
+      // The trusted prerender values cover only the source route's params, so
+      // the intercepting branch's own matched params join them.
+      params: attachedCurrentRouteIntercept
+        ? {
+            ...attachedCurrentRouteIntercept.matchedParams,
+            ...options.staticParamsValidationParams,
+          }
+        : (options.staticParamsValidationParams ?? options.params),
     });
     if (dynamicParamsResponse) {
       // A generated-param miss belongs to a matched App route, so render the
