@@ -20,10 +20,11 @@ export function formatDeployHelp(): string {
     --verbose                Print raw output from internal Wrangler commands
     --no-promote             Do not promote the uploaded Worker version to 100%
                              traffic
-    --prerender-all          Pre-render discovered routes after building (future
-                             releases will auto-populate the remote cache)
+    --prerender-all          Deprecated for Worker deployments; use
+                             --experimental-warm-cdn-cache instead (still
+                             honored with next.config output: "export")
     --prerender-concurrency <count>
-                             Maximum number of routes to pre-render in parallel
+                             Maximum parallel routes for output: "export"
     --experimental-warm-cdn-cache
                              Upload a Worker version, warm build-discovered paths
                              through the production URL, then promote it (experimental)

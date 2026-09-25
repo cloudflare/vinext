@@ -483,6 +483,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (platform === "cloudflare" && !options.cloudflare) {
     throw new Error("Cloudflare init options must be resolved before running vinext init.");
   }
+  if (platform === "cloudflare" && options.prerender) {
+    throw new Error(
+      "Cloudflare init does not configure prerendering. Use CDN pre-warming during deploy instead.",
+    );
+  }
   const exec =
     options._exec ??
     ((cmd: string, opts: { cwd: string; stdio: string }) =>
@@ -550,7 +555,6 @@ export async function init(options: InitOptions): Promise<InitResult> {
         root,
         isAppRouter: isApp,
         existingViteConfigPath,
-        prerender: options.prerender,
         today: options._today,
       },
       options.cloudflare!,

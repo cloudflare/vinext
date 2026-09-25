@@ -410,6 +410,14 @@ describe("resolveInitPlatform", () => {
 });
 
 describe("resolveInitOptions", () => {
+  it("keeps prerender available for Node init", async () => {
+    await expect(
+      resolveInitOptions(["--platform=node", "--prerender"], {
+        env: { CODEX_THREAD_ID: "test" },
+      }),
+    ).resolves.toEqual({ platform: "node", prerender: true, cloudflare: undefined });
+  });
+
   it("defaults Cloudflare init to no cache", async () => {
     await expect(resolveInitOptions([], { env: {}, isInteractive: false })).resolves.toEqual({
       platform: "cloudflare",
@@ -423,7 +431,7 @@ describe("resolveInitOptions", () => {
     });
   });
 
-  it("shares the full vinext init option selection flow", async () => {
+  it("shares the full Cloudflare init option selection flow", async () => {
     await expect(
       resolveInitOptions(
         [
@@ -431,13 +439,12 @@ describe("resolveInitOptions", () => {
           "--cdn-cache=data-cache",
           "--data-cache=kv",
           "--image-optimization=none",
-          "--prerender",
         ],
         { env: { CODEX_THREAD_ID: "test" } },
       ),
     ).resolves.toEqual({
       platform: "cloudflare",
-      prerender: true,
+      prerender: false,
       cloudflare: {
         dataCache: "kv",
         cdnCache: "data-cache",
@@ -481,7 +488,7 @@ describe("resolveInitOptions", () => {
     ]);
   });
 
-  it("still honors an explicit prerender choice with Workers Response Store", async () => {
+  it("rejects the Node-only prerender flag for Cloudflare init", async () => {
     await expect(
       resolveInitOptions(
         [
@@ -492,7 +499,9 @@ describe("resolveInitOptions", () => {
         ],
         { env: { CODEX_THREAD_ID: "test" } },
       ),
-    ).resolves.toMatchObject({ prerender: true });
+    ).rejects.toThrow(
+      "--prerender is only supported by Node init. For Cloudflare, use --experimental-warm-cdn-cache",
+    );
   });
 
   it("does not ask about pre-warming when Data cache is selected for CDN cache", async () => {
@@ -523,7 +532,6 @@ describe("resolveInitOptions", () => {
       "  Enable caching? [y/N]: ",
       "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n  CDN cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
-      "  Pre-render all static routes after build? [y/N]: ",
     ]);
   });
 

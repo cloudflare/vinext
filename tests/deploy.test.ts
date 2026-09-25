@@ -8,7 +8,6 @@ import { PassThrough } from "node:stream";
 import {
   deploy,
   buildNodeCliInvocation,
-  buildWranglerKVBulkPutArgs,
   buildWranglerInvocation,
   buildWranglerDeployArgs,
   getZeroPercentStagingTraffic,
@@ -16,7 +15,6 @@ import {
   projectRequiresRouteCacheabilityProbeManifest,
   resolveWorkerNameForVersionOverride,
   resolveWranglerBin,
-  runWranglerKVBulkPut,
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
@@ -37,7 +35,6 @@ import {
 import {
   formatMissingCacheAdapterError,
   formatImageOptimizationHint,
-  resolveKvDataAdapterConfig,
   viteConfigHasCacheAdapter,
   viteConfigHasCloudflarePlugin,
   viteConfigHasImageAdapter,
@@ -105,18 +102,6 @@ function writeWranglerPackageForTest(
 
 function expectedWranglerBinForTest(dir: string): string {
   return fs.realpathSync(path.join(dir, "node_modules", "wrangler", "bin", "wrangler.js"));
-}
-
-function createMockChildProcess(output = "", code = 0): ChildProcess {
-  const child = new EventEmitter() as ChildProcess;
-  const childStdout = new PassThrough();
-  child.stdout = childStdout;
-  child.stderr = new PassThrough();
-  queueMicrotask(() => {
-    if (output) childStdout.write(output);
-    child.emit("close", code, null);
-  });
-  return child;
 }
 
 function readVinextPackageExports(): Record<string, unknown> {
@@ -222,61 +207,6 @@ describe("buildWranglerDeployArgs", () => {
   it("rejects null bytes without imposing an artificial length limit", () => {
     expect(() => validateWranglerEnvName("preview\0prod")).toThrow("null bytes");
     expect(validateWranglerEnvName("a".repeat(1024))).toBe("a".repeat(1024));
-  });
-});
-
-describe("buildWranglerKVBulkPutArgs", () => {
-  it("uploads a bulk JSON file to the configured KV binding", () => {
-    expect(
-      buildWranglerKVBulkPutArgs({
-        binding: "VINEXT_KV_CACHE",
-        filePath: "/tmp/prerender-kv.json",
-      }),
-    ).toEqual({
-      args: [
-        "kv",
-        "bulk",
-        "put",
-        "/tmp/prerender-kv.json",
-        "--binding",
-        "VINEXT_KV_CACHE",
-        "--remote",
-      ],
-      env: undefined,
-    });
-  });
-
-  it("passes through the Wrangler environment when deploy targets one", () => {
-    expect(
-      buildWranglerKVBulkPutArgs({
-        binding: "VINEXT_KV_CACHE",
-        env: "staging",
-        filePath: "/tmp/prerender-kv.json",
-      }),
-    ).toEqual({
-      args: [
-        "kv",
-        "bulk",
-        "put",
-        "/tmp/prerender-kv.json",
-        "--binding",
-        "VINEXT_KV_CACHE",
-        "--remote",
-        "--env",
-        "staging",
-      ],
-      env: "staging",
-    });
-  });
-
-  it("rejects null bytes in Wrangler environment names", () => {
-    expect(() =>
-      buildWranglerKVBulkPutArgs({
-        binding: "VINEXT_KV_CACHE",
-        env: "preview\0prod",
-        filePath: "/tmp/prerender-kv.json",
-      }),
-    ).toThrow("null bytes");
   });
 });
 
@@ -619,103 +549,6 @@ describe("parseWorkerDeploymentUrl", () => {
         "Deployed app triggers\n  app.example.com (custom domain) [disabled]\n",
       ),
     ).toBeNull();
-  });
-});
-
-describe("runWranglerKVBulkPut", () => {
-  it("writes prerender pairs to a temporary file and invokes Wrangler without a shell", async () => {
-    writeWranglerPackageForTest(tmpDir);
-    let observed: Parameters<typeof spawn> | undefined;
-    let bulkFilePath = "";
-    let bulkFileContent: unknown;
-    const execute = ((...args: Parameters<typeof spawn>) => {
-      observed = args;
-      const wranglerArgs = args[1] as string[];
-      bulkFilePath = wranglerArgs[4] ?? "";
-      bulkFileContent = JSON.parse(fs.readFileSync(bulkFilePath, "utf-8"));
-      return createMockChildProcess();
-    }) as typeof spawn;
-
-    await runWranglerKVBulkPut(
-      tmpDir,
-      {
-        binding: "VINEXT_KV_CACHE",
-        env: "staging",
-        pairs: [
-          {
-            key: "cache:app:v2:build:/about:html",
-            value: '{"value":{"kind":"APP_PAGE"}}',
-            expiration_ttl: 86400,
-            metadata: { tags: ["/about"] },
-          },
-        ],
-        tempDir: tmpDir,
-      },
-      execute,
-      "node.exe",
-    );
-
-    expect(observed?.[0]).toBe("node.exe");
-    expect(observed?.[1]).toEqual([
-      expectedWranglerBinForTest(tmpDir),
-      "kv",
-      "bulk",
-      "put",
-      bulkFilePath,
-      "--binding",
-      "VINEXT_KV_CACHE",
-      "--remote",
-      "--env",
-      "staging",
-    ]);
-    expect(observed?.[2]).toMatchObject({ cwd: tmpDir, shell: false, stdio: "inherit" });
-    expect(bulkFileContent).toEqual([
-      {
-        key: "cache:app:v2:build:/about:html",
-        value: '{"value":{"kind":"APP_PAGE"}}',
-        expiration_ttl: 86400,
-        metadata: { tags: ["/about"] },
-      },
-    ]);
-    expect(fs.existsSync(path.dirname(bulkFilePath))).toBe(false);
-  });
-
-  it("uploads prerender pairs in OpenNext-style chunks", async () => {
-    writeWranglerPackageForTest(tmpDir);
-    const bulkFileContents: unknown[] = [];
-    const execute = ((...args: Parameters<typeof spawn>) => {
-      const wranglerArgs = args[1] as string[];
-      bulkFileContents.push(JSON.parse(fs.readFileSync(wranglerArgs[4] ?? "", "utf-8")));
-      return createMockChildProcess();
-    }) as typeof spawn;
-
-    await runWranglerKVBulkPut(
-      tmpDir,
-      {
-        binding: "VINEXT_KV_CACHE",
-        pairs: Array.from({ length: 26 }, (_, i) => ({
-          key: `cache:app:v2:build:/route-${i}:html`,
-          value: String(i),
-        })),
-        tempDir: tmpDir,
-      },
-      execute,
-      "node.exe",
-    );
-
-    expect(bulkFileContents).toHaveLength(2);
-    expect(bulkFileContents).toEqual([
-      Array.from({ length: 25 }, (_, i) => ({
-        key: `cache:app:v2:build:/route-${i}:html`,
-        value: String(i),
-      })),
-      [
-        {
-          key: "cache:app:v2:build:/route-25:html",
-          value: "25",
-        },
-      ],
-    ]);
   });
 });
 
@@ -1375,45 +1208,6 @@ describe("viteConfigHasCacheAdapter", () => {
 
   it("returns true (does not block) when there is no Vite config to inspect", () => {
     expect(viteConfigHasCacheAdapter(tmpDir)).toBe(true);
-  });
-});
-
-describe("resolveKvDataAdapterConfig", () => {
-  it("requires a Vite cache data descriptor even when a legacy worker handler exists", () => {
-    writeFile(
-      tmpDir,
-      "worker/index.ts",
-      `import { setDataCacheHandler } from "vinext/shims/cache";
-       setDataCacheHandler(handler);`,
-    );
-
-    expect(workerEntryHasCacheHandler(tmpDir)).toBe(true);
-    expect(resolveKvDataAdapterConfig(undefined)).toBeNull();
-    expect(resolveKvDataAdapterConfig({})).toBeNull();
-  });
-
-  it("returns null for non-KV data adapters", () => {
-    expect(resolveKvDataAdapterConfig({ data: { adapter: "custom-adapter" } })).toBeNull();
-    expect(resolveKvDataAdapterConfig({ cdn: { adapter: "cdn-adapter" } })).toBeNull();
-  });
-
-  it("detects Cloudflare KV runtime descriptors and preserves options", () => {
-    expect(
-      resolveKvDataAdapterConfig({
-        data: {
-          adapter: "/project/node_modules/@vinext/cloudflare/dist/cache/kv-data-adapter.runtime.js",
-          options: { binding: "MY_KV", appPrefix: "docs", ttlSeconds: 60 },
-        },
-      }),
-    ).toEqual({ binding: "MY_KV", appPrefix: "docs", ttlSeconds: 60 });
-  });
-
-  it("uses the default KV binding when the adapter has no binding option", () => {
-    expect(
-      resolveKvDataAdapterConfig({
-        data: { adapter: "/x/cache/kv-data-adapter.runtime.js" },
-      }),
-    ).toEqual({ binding: "VINEXT_KV_CACHE" });
   });
 });
 
