@@ -839,6 +839,26 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
     ).toBe(false);
   });
 
+  it("orders slot folder names by UTF-8 bytes", () => {
+    // @豈 (U+F900) sorts before @𐀀 (U+10000) by UTF-8 bytes, but after it by
+    // UTF-16 code units.
+    const segments = collectAppPageStaticParamsWalkSegments({
+      layouts: [{}],
+      layoutTreePositions: [0],
+      page: {},
+      parallelBranches: [
+        { name: "\u{10000}", ownerTreePosition: 0, page: {}, routeSegments: [] },
+        { name: "\u{F900}", ownerTreePosition: 0, page: {}, routeSegments: [] },
+      ],
+      routeSegments: [],
+    });
+    expect(
+      segments
+        .filter((segment) => segment.treePath.length === 1 && segment.treePath[0] > 0)
+        .map((segment) => segment.identity[0]),
+    ).toEqual(["@\u{F900}", "@\u{10000}"]);
+  });
+
   it("orders slots by folder name, whether they matched a page or render default", () => {
     const segments = collectAppPageStaticParamsWalkSegments({
       layouts: [{}],
