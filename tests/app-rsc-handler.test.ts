@@ -1274,6 +1274,59 @@ describe("createAppRscHandler", () => {
       ).toEqual(["latest", "latest", "latest", "latest"]);
     });
 
+    it("keeps the query of a Pages data URL that a root catch-all App page matches", async () => {
+      // app/[...path]/page.tsx with generateStaticParams returning [] gets a
+      // fallback-only record, which answers static-candidate for any
+      // representation. A pages-data request isn't an App page representation.
+      const catchAll = createPageRoute({
+        isDynamic: true,
+        params: ["path"],
+        pattern: "/:path+",
+        routeSegments: ["[...path]"],
+      });
+      const matchRoute = (pathname: string) => ({
+        params: { path: pathname.slice(1).split("/") },
+        route: catchAll,
+      });
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({
+        cacheabilityRequestProjection: projection({
+          kind: "app-page",
+          pattern: "/:path+",
+          state: "static-candidate",
+        }),
+        configHeaders: [],
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      for (const headers of [{}, { Accept: "application/json" }] as Record<string, string>[]) {
+        await handler(
+          new Request("https://example.test/docs/_next/data/build-id/foo.json?q=1", { headers }),
+          null,
+          false,
+          dispatchResponseStage,
+        );
+      }
+      // The same route's HTML is stripped.
+      await handler(
+        new Request("https://example.test/docs/foo?q=1", { headers: { Accept: "text/html" } }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      expect(
+        dispatchResponseStage.mock.calls.map(([request]) => pathAndSearch(request.url)),
+      ).toEqual([
+        "/docs/_next/data/build-id/foo.json?q=1",
+        "/docs/_next/data/build-id/foo.json?q=1",
+        "/docs/foo",
+      ]);
+    });
+
     it("keeps the full URL under a next.config policy, for bypassed dispatches and without a projection", async () => {
       const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
         async () => new Response("page"),
@@ -1298,6 +1351,13 @@ describe("createAppRscHandler", () => {
         false,
         dispatchResponseStage,
       );
+      // A request carrying a CSP nonce renders per request.
+      await handler(
+        html({ "Content-Security-Policy": "script-src 'nonce-request-nonce'" }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
       await handler(html(), null, false, dispatchResponseStage, "probe");
       await createProductsHandler()(html(), null, false, dispatchResponseStage);
       await createProductsHandler({
@@ -1313,6 +1373,7 @@ describe("createAppRscHandler", () => {
         ]),
       ).toEqual([
         ["/docs/about?tab=latest", "/about?tab=latest", "shared"],
+        ["/docs/about?tab=latest", "/about?tab=latest", "bypass"],
         ["/docs/about?tab=latest", "/about?tab=latest", "bypass"],
         ["/docs/about?tab=latest", "/about?tab=latest", "bypass"],
         ["/docs/about?tab=latest", "/about?tab=latest", "shared"],
