@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  applyResponseStageCachePolicy,
   captureCacheabilityAdmissionBody,
   createCacheabilityAdmissionCaptureBudget,
   createWorkerCacheabilityAdmissionContext,
@@ -1092,6 +1093,41 @@ describe("single-request cacheability admission", () => {
     expect(response.headers.get("Cache-Control")).toContain(admitted ? "s-maxage=60" : "no-store");
     await expect(response.text()).resolves.toBe("static");
   });
+
+  it.each([true, false])(
+    "requires a searchParams proof when config adds only Vary (proof: %s)",
+    async (searchParamsUnread) => {
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        request,
+        null,
+        "build-a",
+        true,
+        "verbatim",
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind: "app-page", pattern: "/page" };
+      const cacheControl = "s-maxage=60, stale-while-revalidate=540";
+      state.outcome = {
+        cacheable: true,
+        cacheControl,
+        ...(searchParamsUnread ? { searchParamsUnread: true as const } : {}),
+      };
+      state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": cacheControl });
+      const rendered = applyResponseStageCachePolicy(
+        new Response("static", { headers: { "Cache-Control": cacheControl } }),
+        context,
+        [["Vary", "Accept-Language"]],
+      );
+
+      const response = await finalizeWorkerCacheabilityResponse(rendered, context);
+
+      expect(response.headers.get("Cache-Control")).toContain(
+        searchParamsUnread ? "s-maxage=60" : "no-store",
+      );
+      expect(response.headers.get("Vary")).toBe("Accept-Language");
+    },
+  );
 
   it("checks every sibling render against the route-pattern classification", async () => {
     const route: CacheabilityManifestRoute = {
