@@ -228,7 +228,8 @@ export function markDynamicUsage(): void {
 }
 
 // The fallback state persists on globalThis across HMR, so one created before
-// the latch existed has none. Create it on first access.
+// the latch existed has none. Create it on first access. Scopes cloned from a
+// state must create it on the parent first so the child shares it.
 function getRenderDynamicLatch(state: VinextHeadersShimState): RenderDynamicLatch {
   return (state.renderDynamicLatch ??= createRenderDynamicLatch());
 }
@@ -319,8 +320,11 @@ export async function runWithIsolatedDynamicUsage<T>(
     );
   }
 
+  const parentState = _getState();
   const childState: VinextHeadersShimState = {
-    ..._getState(),
+    ...parentState,
+    // Share the parent's latch, creating it first on a stale fallback state.
+    renderDynamicLatch: getRenderDynamicLatch(parentState),
     dynamicUsageDetected: false,
   };
   return await _als.run(childState, () => runInChildState(childState));
@@ -412,6 +416,8 @@ export async function runWithConnectionProbe<T>(
 
   const childState: VinextHeadersShimState = {
     ...parentState,
+    // Share the parent's latch, creating it first on a stale fallback state.
+    renderDynamicLatch: getRenderDynamicLatch(parentState),
     connectionProbe: probe,
   };
   return await _als.run(childState, () => runInChildState(childState));

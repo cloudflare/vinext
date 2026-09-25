@@ -6,6 +6,7 @@ import {
   isRenderDynamicLatched,
   markDynamicUsage,
   onRenderDynamicLatched,
+  runWithConnectionProbe,
   runWithHeadersContext,
   runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
@@ -138,7 +139,7 @@ describe("render dynamic latch", () => {
       vi.resetModules();
     });
 
-    it("creates the latch on first access after the shim reloads", async () => {
+    async function reloadWithPreLatchFallback() {
       // The shape the fallback had before the latch was added, as left on
       // globalThis by the module instance an HMR update replaced.
       globalState[fallbackKey] = {
@@ -152,7 +153,11 @@ describe("render dynamic latch", () => {
         phase: "render",
       };
       vi.resetModules();
-      const reloaded = await import("../packages/vinext/src/shims/headers.js");
+      return await import("../packages/vinext/src/shims/headers.js");
+    }
+
+    it("creates the latch on first access after the shim reloads", async () => {
+      const reloaded = await reloadWithPreLatchFallback();
 
       expect(reloaded.isRenderDynamicLatched()).toBe(false);
       const listener = vi.fn();
@@ -160,6 +165,56 @@ describe("render dynamic latch", () => {
       reloaded.markDynamicUsage();
       expect(listener).toHaveBeenCalledOnce();
       expect(reloaded.isRenderDynamicLatched()).toBe(true);
+    });
+
+    it("shares the latch it creates with an isolated child scope", async () => {
+      const reloaded = await reloadWithPreLatchFallback();
+
+      await reloaded.runWithIsolatedDynamicUsage(() => reloaded.markDynamicUsage());
+      expect(reloaded.isRenderDynamicLatched()).toBe(true);
+    });
+
+    it("shares the latch it creates with a connection probe", async () => {
+      const reloaded = await reloadWithPreLatchFallback();
+
+      await reloaded.runWithConnectionProbe(() => reloaded.markDynamicUsage());
+      expect(reloaded.isRenderDynamicLatched()).toBe(true);
+    });
+  });
+
+  describe("with a unified request context created before the latch existed", () => {
+    // A request that was in flight when an HMR update replaced the module
+    // keeps the context the old instance created, which has no latch.
+    function preLatchRequestContext() {
+      const ctx: Partial<ReturnType<typeof createRequestContext>> = createRequestContext({
+        headersContext: headersContext(),
+      });
+      delete ctx.renderDynamicLatch;
+      return ctx as ReturnType<typeof createRequestContext>;
+    }
+
+    it("shares the latch with an isolated child scope", async () => {
+      await runWithRequestContext(preLatchRequestContext(), async () => {
+        await runWithIsolatedDynamicUsage(() => markDynamicUsage());
+        expect(isRenderDynamicLatched()).toBe(true);
+      });
+    });
+
+    it("shares the latch with a connection probe", async () => {
+      await runWithRequestContext(preLatchRequestContext(), async () => {
+        await runWithConnectionProbe(() => markDynamicUsage());
+        expect(isRenderDynamicLatched()).toBe(true);
+      });
+    });
+
+    it("shares the latch with any nested unified scope", async () => {
+      await runWithRequestContext(preLatchRequestContext(), async () => {
+        await runWithUnifiedStateMutation(
+          () => {},
+          () => markDynamicUsage(),
+        );
+        expect(isRenderDynamicLatched()).toBe(true);
+      });
     });
   });
 });

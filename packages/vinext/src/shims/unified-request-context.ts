@@ -355,6 +355,9 @@ export function runWithUnifiedStateMutation<T>(
   const parentCtx = _als.getStore();
   if (!parentCtx) return fn();
 
+  // A context created before an HMR update may predate the latch. Create it on
+  // the parent so the child shares it instead of latching a copy of its own.
+  parentCtx.renderDynamicLatch ??= { dynamic: false, listeners: new Set() };
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Object/array fields (afterContext, pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
