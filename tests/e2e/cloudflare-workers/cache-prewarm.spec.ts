@@ -210,27 +210,54 @@ test("Workers Cache serves every query of a static page from one entry", async (
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
   test.skip(backend !== "workers-cache", "the query-free dispatch is specific to Workers Cache");
   if (!baseURL) throw new Error("deployed test requires a base URL");
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
 
   // Next.js serves a static page's one render for any query. Each request
   // carries a query no earlier request used, so only an entry shared across
-  // queries can report a HIT with the previous response's render.
-  let previousRenderId: string | undefined;
-  await expect
-    .poll(
-      async () => {
-        const response = await request.get(`${baseURL}/cached/featured?q=${randomUUID()}`, {
-          headers: { accept: "text/html" },
-        });
-        const headers = response.headers();
-        expect(response.ok(), JSON.stringify(headers)).toBe(true);
-        const renderId = /data-render-id-tag[^>]*>([^<]+)</.exec(await response.text())?.[1];
-        expect(renderId).toBeTruthy();
-        const shared = headers["cf-cache-status"] === "HIT" && renderId === previousRenderId;
-        previousRenderId = renderId;
-        return shared;
-      },
-      { intervals: [1_000], timeout: 45_000 },
-    )
-    .toBe(true);
+  // queries can report a HIT with the previous response's render. The query
+  // never reaches the shared render.
+  const expectSharedAcrossQueries = async (
+    label: string,
+    urlFor: (query: string) => string,
+    headers: Record<string, string>,
+    renderOf: (body: string) => string | undefined,
+  ) => {
+    let previousRender: string | undefined;
+    await expect
+      .poll(
+        async () => {
+          const query = randomUUID();
+          const response = await request.get(urlFor(query), { headers });
+          const responseHeaders = response.headers();
+          const trace = JSON.stringify({ label, headers: responseHeaders });
+          expect(response.ok(), trace).toBe(true);
+          const body = await response.text();
+          expect(body, trace).toContain("Post: featured");
+          expect(body, trace).not.toContain(query);
+          const render = renderOf(body);
+          expect(render, trace).toBeTruthy();
+          const shared = responseHeaders["cf-cache-status"] === "HIT" && render === previousRender;
+          previousRender = render;
+          return shared;
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe(true);
+  };
+
+  await expectSharedAcrossQueries(
+    "HTML",
+    (query) => `${baseURL}/cached/featured?q=${query}`,
+    { accept: "text/html" },
+    (body) => /data-render-id-tag[^>]*>([^<]+)</.exec(body)?.[1],
+  );
+  // The canonical navigation RSC request: no router-state headers, so its
+  // validated `_rsc` value is empty.
+  await expectSharedAcrossQueries(
+    "RSC navigation",
+    (query) => `${baseURL}/cached/featured?q=${query}&_rsc`,
+    { accept: "text/x-component", rsc: "1" },
+    // A HIT returns the stored payload byte for byte.
+    (body) => body,
+  );
 });
