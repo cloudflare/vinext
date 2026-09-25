@@ -549,149 +549,164 @@ describe("resolveAppPageStaticGenerationRuntime", () => {
 });
 
 describe("collectAppPageStaticGenerationRuntimes", () => {
-  it("reads the page and its layouts, not the slots", () => {
+  const resolve = (options: Parameters<typeof collectAppPageStaticGenerationRuntimes>[0]) =>
+    resolveAppPageStaticGenerationRuntime(collectAppPageStaticGenerationRuntimes(options));
+
+  it("reads the page and its layouts", () => {
     expect(
-      collectAppPageStaticGenerationRuntimes({
-        childrenSlot: { ownerTreePath: "/", state: "active" },
-        layouts: [{ runtime: "nodejs" }],
+      resolve({
+        layouts: [{ runtime: "edge" }, {}],
+        layoutTreePositions: [0, 1],
         page: {},
-        parallelBranches: [{ name: "feed", ownerTreePosition: 0, page: { runtime: "edge" } }],
+        routeSegments: ["blog"],
       }),
-    ).toEqual(["nodejs", undefined]);
+    ).toBe("edge");
+    expect(
+      resolve({
+        layouts: [{ runtime: "edge" }, {}],
+        layoutTreePositions: [0, 1],
+        page: { runtime: "nodejs" },
+        routeSegments: ["blog"],
+      }),
+    ).toBe("nodejs");
+  });
+
+  it("merges a slot page's runtime into a route with its own page", () => {
+    // app/page.tsx and app/@panel/page.tsx exporting runtime = "edge": Next.js
+    // merges every parallel branch, so / is edge.
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/", state: "active" },
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          { name: "panel", ownerTreePosition: 0, page: { runtime: "edge" }, routeSegments: [] },
+        ],
+        routeSegments: [],
+      }),
+    ).toBe("edge");
+  });
+
+  it("merges a slot's default module runtime", () => {
+    // app/@panel/default.tsx exports runtime = "edge".
+    expect(
+      resolve({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          { isDefault: true, name: "panel", ownerTreePosition: 0, page: { runtime: "edge" } },
+        ],
+        routeSegments: [],
+      }),
+    ).toBe("edge");
   });
 
   it("reads the slot page of a route that only a slot page materializes", () => {
-    // app/@feed/foo/page.tsx with no app/foo/page.tsx: Next.js builds /foo
-    // from the slot page, whose layouts include the slot's.
-    const runtimes = collectAppPageStaticGenerationRuntimes({
-      childrenSlot: { ownerTreePath: "/", state: "default" },
-      layouts: [{ runtime: "nodejs" }],
-      materializedBySlot: true,
-      page: {},
-      parallelBranches: [
-        {
-          configLayouts: [{ runtime: "nodejs" }],
-          layout: {},
-          name: "feed",
-          ownerTreePosition: 0,
-          page: { runtime: "edge" },
-          routeSegments: ["foo"],
-        },
-      ],
-    });
-    expect(runtimes).toEqual(["edge"]);
-    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+    // app/@feed/foo/page.tsx with no app/foo/page.tsx: children renders the
+    // root default, and the slot page supplies the runtime.
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/", state: "default" },
+        layouts: [{ runtime: "nodejs" }],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          {
+            configLayouts: [{ runtime: "nodejs" }],
+            configLayoutTreePositions: [1],
+            layout: {},
+            name: "feed",
+            ownerTreePosition: 0,
+            page: { runtime: "edge" },
+            routeSegments: ["foo"],
+          },
+        ],
+        routeSegments: ["foo"],
+      }),
+    ).toBe("edge");
   });
 
   it("makes the route edge when any sibling slot page is edge", () => {
     // app/@alpha/page.tsx (Node) and app/@zeta/page.tsx (edge) with no
-    // app/page.tsx: Next.js merges the sibling slots' runtimes, so / is edge
-    // even though @alpha sorts first.
-    const runtimes = collectAppPageStaticGenerationRuntimes({
-      childrenSlot: { ownerTreePath: "/", state: "default" },
-      layouts: [{}],
-      layoutTreePositions: [0],
-      materializedBySlot: true,
-      page: null,
-      parallelBranches: [
-        { name: "alpha", ownerTreePosition: 0, page: {}, routeSegments: [] },
-        { name: "zeta", ownerTreePosition: 0, page: { runtime: "edge" }, routeSegments: [] },
-      ],
-    });
-    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+    // app/page.tsx: / is edge even though @alpha sorts first.
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/", state: "default" },
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: null,
+        parallelBranches: [
+          { name: "alpha", ownerTreePosition: 0, page: {}, routeSegments: [] },
+          { name: "zeta", ownerTreePosition: 0, page: { runtime: "edge" }, routeSegments: [] },
+        ],
+        routeSegments: [],
+      }),
+    ).toBe("edge");
   });
 
-  it("lets a slot page's runtime win over an enclosing layout's", () => {
+  it("lets a branch's runtime win over an enclosing layout's", () => {
     // app/layout.tsx sets runtime = "edge" and app/@alpha/page.tsx sets
-    // "nodejs": the merged slot value is set, so the root layout doesn't
+    // "nodejs": the merged branch value is set, so the root layout doesn't
     // override it.
-    const runtimes = collectAppPageStaticGenerationRuntimes({
-      childrenSlot: { ownerTreePath: "/", state: "default" },
-      layouts: [{ runtime: "edge" }],
-      layoutTreePositions: [0],
-      materializedBySlot: true,
-      page: null,
-      parallelBranches: [
-        { name: "alpha", ownerTreePosition: 0, page: { runtime: "nodejs" }, routeSegments: [] },
-        { name: "zeta", ownerTreePosition: 0, page: {}, routeSegments: [] },
-      ],
-    });
-    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("nodejs");
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/", state: "default" },
+        layouts: [{ runtime: "edge" }],
+        layoutTreePositions: [0],
+        page: null,
+        parallelBranches: [
+          { name: "alpha", ownerTreePosition: 0, page: { runtime: "nodejs" }, routeSegments: [] },
+          { name: "zeta", ownerTreePosition: 0, page: {}, routeSegments: [] },
+        ],
+        routeSegments: [],
+      }),
+    ).toBe("nodejs");
   });
 
-  it("reads the slot page even when a sibling catch-all renders the children", () => {
-    // app/[...catchAll]/page.tsx and app/@feed/baz/page.tsx: /baz is still
-    // built from the slot page.
-    const runtimes = collectAppPageStaticGenerationRuntimes({
-      childrenSlot: { ownerTreePath: "/", state: "active" },
-      layouts: [{}],
-      materializedBySlot: true,
-      page: { runtime: "nodejs" },
-      parallelBranches: [
-        { name: "feed", ownerTreePosition: 0, page: { runtime: "edge" }, routeSegments: ["baz"] },
-      ],
-    });
-    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
-  });
-
-  it("reads the slot page of a route with no page of its own", () => {
-    // app/dashboard/layout.tsx, app/dashboard/default.tsx and
-    // app/dashboard/@feed/page.tsx: Next.js builds /dashboard from the slot
-    // page, not the children default.
-    const runtimes = collectAppPageStaticGenerationRuntimes({
-      layouts: [{}, { runtime: "nodejs" }],
-      materializedBySlot: true,
-      page: {},
-      parallelBranches: [
-        { isDefault: true, name: "analytics", ownerTreePosition: 0, page: {} },
-        { name: "feed", ownerTreePosition: 1, page: { runtime: "edge" } },
-      ],
-    });
-    expect(runtimes).toEqual(["edge"]);
-    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
-  });
-
-  it("skips main-branch layouts below the slot owner", () => {
+  it("reads the main-branch layouts of a page-less route", () => {
     // app/layout.tsx sets runtime = "edge", app/dashboard/layout.tsx sets
     // "nodejs", app/dashboard/@panel/default.tsx makes /dashboard a route, and
-    // app/@feed/dashboard/page.tsx materializes it. The dashboard layout isn't
-    // an ancestor of the slot page, so Next.js keeps the root's edge runtime.
-    const runtimes = collectAppPageStaticGenerationRuntimes({
-      layouts: [{ runtime: "edge" }, { runtime: "nodejs" }],
-      layoutTreePositions: [0, 1],
-      materializedBySlot: true,
-      page: null,
-      parallelBranches: [
-        {
-          layout: {},
-          name: "feed",
-          ownerTreePosition: 0,
-          page: {},
-          routeSegments: ["dashboard"],
-        },
-        { isDefault: true, name: "panel", ownerTreePosition: 1, page: {} },
-      ],
-    });
-    expect(runtimes).toEqual(["edge"]);
-    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+    // app/@feed/dashboard/page.tsx matches it. The dashboard layout is in the
+    // children branch, whose value the root layout doesn't override.
+    expect(
+      resolve({
+        layouts: [{ runtime: "edge" }, { runtime: "nodejs" }],
+        layoutTreePositions: [0, 1],
+        page: null,
+        parallelBranches: [
+          {
+            layout: {},
+            name: "feed",
+            ownerTreePosition: 0,
+            page: {},
+            routeSegments: ["dashboard"],
+          },
+          { isDefault: true, name: "panel", ownerTreePosition: 1, page: {} },
+        ],
+        routeSegments: ["dashboard"],
+      }),
+    ).toBe("nodejs");
   });
 
-  it("keeps the slot owner's own layout and its ancestors", () => {
+  it("stops the main branch at the folder whose default children renders", () => {
     // app/dashboard/layout.tsx sets runtime = "edge", app/dashboard/settings/
     // layout.tsx sets "nodejs", and app/dashboard/@feed/settings/page.tsx
-    // materializes /dashboard/settings.
-    const runtimes = collectAppPageStaticGenerationRuntimes({
-      childrenSlot: { ownerTreePath: "/dashboard", state: "default" },
-      layouts: [{}, { runtime: "edge" }, { runtime: "nodejs" }],
-      layoutTreePositions: [0, 1, 2],
-      materializedBySlot: true,
-      page: {},
-      parallelBranches: [
-        { name: "feed", ownerTreePosition: 1, page: {}, routeSegments: ["settings"] },
-      ],
-    });
-    expect(runtimes).toEqual(["edge"]);
-    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+    // materializes /dashboard/settings. Children renders the dashboard default,
+    // so the settings layout isn't in the tree.
+    expect(
+      resolve({
+        childrenSlot: { ownerTreePath: "/dashboard", state: "default" },
+        layouts: [{}, { runtime: "edge" }, { runtime: "nodejs" }],
+        layoutTreePositions: [0, 1, 2],
+        page: {},
+        parallelBranches: [
+          { name: "feed", ownerTreePosition: 1, page: {}, routeSegments: ["settings"] },
+        ],
+        routeSegments: ["dashboard", "settings"],
+      }),
+    ).toBe("edge");
   });
 });
 

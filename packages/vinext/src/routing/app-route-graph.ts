@@ -147,12 +147,6 @@ export type AppRoute = {
   templates: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
-  /**
-   * The route exists only because a slot page matches its URL, so Next.js
-   * builds it from that slot page rather than its children. That covers a
-   * nested slot page and a page-less route's own slot page.
-   */
-  materializedBySlot?: boolean;
   /** Stable implicit children-slot identity for parallel-slot sub-route families. */
   childrenSlot?: {
     id: string;
@@ -1425,7 +1419,6 @@ function discoverSlotSubRoutes(
         layouts: parentRoute.layouts,
         templates: parentRoute.templates,
         parallelSlots: subSlots,
-        materializedBySlot: true,
         childrenSlot: {
           id: childrenSlotId,
           ownerTreePath: childrenOwnerTreePath,
@@ -1781,12 +1774,6 @@ function directoryToAppRoute(
     includeNestedOnlySlots,
   );
 
-  // A route with no page of its own, such as app/dashboard/layout.tsx with
-  // app/dashboard/@feed/page.tsx, is built from the slot page that matches its
-  // URL. Its children `default`, if any, doesn't count as a page.
-  const materializedBySlot =
-    pagePath === null && routePath === null && parallelSlots.some((slot) => slot.pagePath !== null);
-
   return {
     ids: createAppRouteSemanticIds({
       pattern: pattern === "/" ? "/" : pattern,
@@ -1827,7 +1814,6 @@ function directoryToAppRoute(
     rootParamNames: computeRootParamNames(segments, layoutTreePositions),
     patternParts: urlSegments,
     siblingIntercepts: [],
-    ...(materializedBySlot ? { materializedBySlot: true } : {}),
   };
 }
 

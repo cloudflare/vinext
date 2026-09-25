@@ -389,7 +389,6 @@ ${interceptEntries.join(",\n")}
 ${slotEntries.join(",\n")}
     },
     childrenSlot: ${JSON.stringify(route.childrenSlot ?? null)},
-    materializedBySlot: ${route.materializedBySlot === true},
     siblingIntercepts: [
 ${siblingInterceptEntries.join(",\n")}
     ],

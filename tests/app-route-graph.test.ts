@@ -303,8 +303,6 @@ describe("App Router route graph builder", () => {
       // @foo (no subroute page) keeps its default fallback.
       const subroute = findRoute(graph.routes, "/nested/subroute");
       expect(subroute.pagePath).toBe(canonical(appDir, "nested/default.tsx"));
-      expect(subroute.materializedBySlot).toBe(true);
-      expect(nested.materializedBySlot).toBeUndefined();
       expect(subroute.childrenSlot).toEqual({
         id: "slot:children:/nested",
         ownerTreePath: "/nested",
@@ -777,28 +775,6 @@ describe("App Router route graph builder", () => {
     });
   });
 
-  it("marks a page-less route as materialized by its slot page", async () => {
-    await withTempApp(async (appDir) => {
-      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
-      await writeAppFile(appDir, "dashboard/layout.tsx", EMPTY_LAYOUT);
-      await writeAppFile(appDir, "dashboard/@feed/page.tsx", EMPTY_PAGE);
-      await writeAppFile(appDir, "settings/layout.tsx", EMPTY_LAYOUT);
-      await writeAppFile(appDir, "settings/default.tsx", EMPTY_PAGE);
-      await writeAppFile(appDir, "settings/@feed/page.tsx", EMPTY_PAGE);
-      await writeAppFile(appDir, "about/page.tsx", EMPTY_PAGE);
-      await writeAppFile(appDir, "about/@feed/page.tsx", EMPTY_PAGE);
-
-      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
-
-      expect(findRoute(graph.routes, "/dashboard").materializedBySlot).toBe(true);
-      // The children default doesn't count as a page of its own.
-      const settings = findRoute(graph.routes, "/settings");
-      expect(settings.pagePath).toBe(canonical(appDir, "settings/default.tsx"));
-      expect(settings.materializedBySlot).toBe(true);
-      expect(findRoute(graph.routes, "/about").materializedBySlot).toBeUndefined();
-    });
-  });
-
   it("keeps a standalone layout-only slot owner as a route", async () => {
     await withTempApp(async (appDir) => {
       await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
@@ -811,8 +787,6 @@ describe("App Router route graph builder", () => {
       const nested = findRoute(graph.routes, "/parallel-nested/home/nested");
 
       expect(parent.pagePath).toBeNull();
-      // Its slot has only a default, so no slot page builds the route.
-      expect(parent.materializedBySlot).toBeUndefined();
       expect(parent.parallelSlots.find((slot) => slot.name === "parallel")?.defaultPath).toBe(
         canonical(appDir, "parallel-nested/home/@parallel/default.tsx"),
       );

@@ -50,17 +50,16 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("ownerTreePosition: slot.ownerTreePosition,");
     // Any segment's generator still sets the route's revalidate default.
     expect(code).toContain("hasAnyGenerateStaticParams: __generateStaticParams.length > 0,");
-    // The page and its layouts decide the runtime. Slots count only for a
-    // route that a slot page materializes.
+    // The runtime merges across the whole loader tree, slots included.
     expect(code).toContain(`isStaticGenerationEdgeRuntime: __isEdgeRuntime(
       __resolveAppPageStaticGenerationRuntime(
         __collectAppPageStaticGenerationRuntimes({
           childrenSlot: route.childrenSlot,
           layouts: route.layouts,
           layoutTreePositions: route.layoutTreePositions,
-          materializedBySlot: route.materializedBySlot,
           page: route.page,
           parallelBranches: segmentConfigBranches,
+          routeSegments: route.routeSegments,
         }),
       ),
     ),`);

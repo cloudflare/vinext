@@ -435,11 +435,10 @@ export function isEdgeRuntime(runtime: string | undefined): boolean {
 }
 
 /**
- * Resolve the `runtime` Next.js uses to decide whether a page can be statically
- * generated: the page's own value wins, then the nearest layout's. Parallel
- * slots do not take part. `values` lists the root layout first and the page
- * last, the order `getStaticInfoIncludingLayouts` reduces them in.
- * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/get-static-info-including-layouts.ts
+ * Resolve a `runtime` from a chain of segment values, outermost first: the
+ * last valid value wins, as a child's value wins over its parent's.
+ * `collectAppPageStaticGenerationRuntimes` supplies the value Next.js uses to
+ * decide whether a page can be statically generated.
  */
 export function resolveAppPageStaticGenerationRuntime(
   values: readonly unknown[],
@@ -468,76 +467,44 @@ function treePathDepth(treePath: string): number {
 }
 
 /**
- * The `runtime` values of an App page's file and the layouts above it, root
- * first, for `resolveAppPageStaticGenerationRuntime`.
- *
- * A route that only slot pages materialize has no page of its own, so its
- * runtime comes from the loader tree those slots build. Next.js's default
- * build (Turbopack) derives an App page's runtime from its whole loader tree:
- * sibling slots' values merge (a conflict fails the build), then each
- * enclosing layout fills in only what is still unset. A Node slot page next to
- * an edge one makes the route edge, whichever slot sorts first.
+ * The `runtime` Next.js's default build (Turbopack) derives for an App page,
+ * for `resolveAppPageStaticGenerationRuntime`. It reads the whole loader tree:
+ * at each node the values of every parallel branch (children, matched slots
+ * and slots that render `default`) merge, and a conflict fails the build; the
+ * node's own layout, page or default module then fills in only an unset value.
+ * So an edge slot page next to a Node children page makes the route edge.
  * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/segment_config.rs#L1323-L1357
  * https://github.com/vercel/next.js/blob/v16.2.7/crates/next-core/src/next_app/app_page_entry.rs#L40-L41
  */
 export function collectAppPageStaticGenerationRuntimes(
-  options: Pick<
-    ResolveAppPageSegmentConfigOptions,
-    "layoutTreePositions" | "layouts" | "page" | "parallelBranches"
-  > & {
-    childrenSlot?: AppPageChildrenSlot | null;
-    materializedBySlot?: boolean;
-  },
+  options: Parameters<typeof collectAppPageStaticParamsWalkSegments>[0],
 ): unknown[] {
-  const layoutRuntimes = (options.layouts ?? []).map((layout) => layout?.runtime);
-  const slotPages = options.materializedBySlot
-    ? (options.parallelBranches ?? []).filter(
-        (branch): branch is ParallelAppPageSegmentConfigBranch =>
-          !!branch &&
-          !branch.isDefault &&
-          (options.childrenSlot == null ||
-            branch.ownerTreePosition === treePathDepth(options.childrenSlot.ownerTreePath)),
-      )
-    : [];
-  if (slotPages.length === 0) return [...layoutRuntimes, options.page?.runtime];
-
-  // Walk the slot owners from the deepest up. At each owner, its slots merge
-  // with what the deeper tree resolved, then the owner's layout fills an unset
-  // value. Main-branch layouts below the deepest owner aren't in the tree.
-  const ownerPositions = slotPages.map((branch) => branch.ownerTreePosition ?? null);
-  const deepestOwner = ownerPositions.includes(null)
-    ? null
-    : Math.max(...(ownerPositions as number[]));
-  const layoutPositions = layoutRuntimes.map(
-    (_, index) => options.layoutTreePositions?.[index] ?? index,
-  );
-  const lastPosition = deepestOwner ?? Math.max(0, ...layoutPositions);
-  let runtime: EffectiveAppPageSegmentConfig["runtime"];
-  for (let position = lastPosition; position >= 0; position--) {
-    for (const branch of slotPages) {
-      if ((branch.ownerTreePosition ?? lastPosition) !== position) continue;
-      runtime = mergeParallelRuntime(
-        runtime,
-        resolveAppPageStaticGenerationRuntime([
-          branch.layout?.runtime,
-          ...(branch.configLayouts ?? []).map((layout) => layout?.runtime),
-          branch.page?.runtime,
-        ]),
-      );
-    }
-    for (let index = layoutRuntimes.length - 1; index >= 0 && runtime === undefined; index--) {
-      if (layoutPositions[index] === position) {
-        runtime = resolveAppPageStaticGenerationRuntime([layoutRuntimes[index]]);
+  const segments = collectAppPageStaticParamsWalkSegments(options);
+  const isAt = (segment: AppPageStaticParamsWalkSegment, treePath: readonly number[]) =>
+    segment.treePath.length === treePath.length &&
+    treePath.every((index, depth) => segment.treePath[depth] === index);
+  const resolveAt = (treePath: readonly number[]): EffectiveAppPageSegmentConfig["runtime"] => {
+    let runtime: EffectiveAppPageSegmentConfig["runtime"];
+    for (const segment of segments) {
+      if (
+        segment.treePath.length === treePath.length + 1 &&
+        treePath.every((index, depth) => segment.treePath[depth] === index)
+      ) {
+        runtime = mergeParallelRuntime(runtime, resolveAt(segment.treePath));
       }
     }
-  }
-  return [runtime];
+    if (runtime !== undefined) return runtime;
+    const own = segments.find((segment) => isAt(segment, treePath));
+    const segmentModule = own?.identity[1] as AppRouteSegmentConfigModule | null | undefined;
+    return resolveAppPageStaticGenerationRuntime([segmentModule?.runtime]);
+  };
+  return [resolveAt([])];
 }
 
 /**
- * Merge a sibling slot's runtime into its siblings'. Next.js fails the build
- * when two siblings set different values; the edge one is kept here, since it
- * keeps the route out of static generation either way.
+ * Merge a parallel branch's runtime into its siblings'. Next.js fails the
+ * build when two siblings set different values; the edge one is kept here,
+ * since it keeps the route out of static generation either way.
  */
 function mergeParallelRuntime(
   current: EffectiveAppPageSegmentConfig["runtime"],
