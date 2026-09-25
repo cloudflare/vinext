@@ -44,6 +44,10 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { markDynamicUsage } from "../packages/vinext/src/shims/headers.js";
 import {
+  hasFrameworkLinkHeaders,
+  markFrameworkLinkHeaders,
+} from "../packages/vinext/src/server/app-response-header-provenance.js";
+import {
   createRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
@@ -930,6 +934,20 @@ describe("app page render lifecycle", () => {
     expect(prepared.status).toBe(307);
     expect(prepared.headers.get("location")).toBe("https://example.test/elsewhere");
     expect(prepared.headers.get("cache-control")).toBe(neverCache);
+
+    // The stamped copy keeps renderer Link provenance for the config-header finalizer.
+    const linked = await renderAppPageLifecycle({
+      ...optionsWithoutElement,
+      isStaticEligible: false,
+      async prepareElement() {
+        const linkHeader = "</framework.css>; rel=preload; as=style";
+        const response = new Response("linked", { headers: { link: linkHeader } });
+        markFrameworkLinkHeaders(response.headers, linkHeader);
+        return { response };
+      },
+    });
+    expect(linked.headers.get("cache-control")).toBe(neverCache);
+    expect(hasFrameworkLinkHeaders(linked.headers)).toBe(true);
   });
 
   it("writes paired HTML and RSC cache entries for cacheable HTML responses", async () => {

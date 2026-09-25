@@ -90,6 +90,8 @@ import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js"
 import { recordAppPageRenderError, traceAppPageRender } from "./app-page-tracing.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
 import { traceResponseStartWithCompletion } from "./response-start-tracing.js";
+import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
+import { preserveFullyBufferedBodyMetadata } from "vinext/shims/unified-request-context";
 import { recordRouteCacheabilityClientTraceMetadataMarker } from "vinext/shims/cacheability-classification";
 
 type AppPageBoundaryOnError = (
@@ -329,7 +331,11 @@ function applyIneligibleRouteCachePolicy(
 ): Response {
   if (options.isStaticEligible || options.isDraftMode) return response;
   // Some early responses have immutable headers, so stamp a copy.
-  const stamped = new Response(response.body, response);
+  const stamped = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, response as ResponseInit),
+  );
+  copyLinkHeaderProvenance(response.headers, stamped.headers);
   applyCdnResponseHeaders(stamped.headers, { cacheControl: NEVER_CACHE_CONTROL });
   return stamped;
 }
