@@ -483,37 +483,13 @@ export async function readAppPageCacheResponse(
       // above (the RSC variant when `isRscRequest`, the HTML key otherwise), so
       // reuse it instead of recomputing the hash.
       const previousCacheControl = cached.value.cacheControl;
-      options.scheduleBackgroundRegeneration(isrKey, async () => {
-        let revalidatedPage: AppPageCacheRenderResult;
-        try {
-          revalidatedPage = await options.renderFreshPageForCache();
-          if (revalidatedPage.usedDynamicApi) {
-            throw new Error(
-              `Page changed from static to dynamic at runtime ${options.cleanPathname}` +
-                "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
-            );
-          }
-        } catch (error) {
-          // Keep the previous entry under this key only: an RSC-triggered
-          // regeneration must not write its payload under the HTML key. Its
-          // tags come from its render observation; an entry without one can't
-          // be re-stored with the tags it was written with, so it is left alone.
-          const previousTags = cachedValue.renderObservation?.cacheTags;
-          if (previousCacheControl && previousTags) {
-            try {
-              await options.isrSet(isrKey, cachedValue, {
-                cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
-                tags: [...previousTags],
-              });
-            } catch (storeError) {
-              // Report the regeneration's own failure, not the store's.
-              console.error(
-                `[vinext] Failed to keep the previous entry for ${isrKey}:`,
-                storeError,
-              );
-            }
-          }
-          throw error;
+      const regenerate = async (): Promise<void> => {
+        const revalidatedPage = await options.renderFreshPageForCache();
+        if (revalidatedPage.usedDynamicApi) {
+          throw new Error(
+            `Page changed from static to dynamic at runtime ${options.cleanPathname}` +
+              "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
+          );
         }
         const cacheControl = resolveRegeneratedAppPageCacheControl({
           expireSeconds: options.expireSeconds,
@@ -576,6 +552,34 @@ export async function readAppPageCacheResponse(
 
         await Promise.all(writes);
         options.isrDebug?.("regen complete", options.cleanPathname);
+      };
+      // As in Next.js, any failure, whether rendering or storing the new
+      // entry, keeps the previous one.
+      options.scheduleBackgroundRegeneration(isrKey, async () => {
+        try {
+          await regenerate();
+        } catch (error) {
+          // Keep the previous entry under this key only: an RSC-triggered
+          // regeneration must not write its payload under the HTML key. Its
+          // tags come from its render observation; an entry without one can't
+          // be re-stored with the tags it was written with, so it is left alone.
+          const previousTags = cachedValue.renderObservation?.cacheTags;
+          if (previousCacheControl && previousTags) {
+            try {
+              await options.isrSet(isrKey, cachedValue, {
+                cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
+                tags: [...previousTags],
+              });
+            } catch (storeError) {
+              // Report the regeneration's own failure, not the store's.
+              console.error(
+                `[vinext] Failed to keep the previous entry for ${isrKey}:`,
+                storeError,
+              );
+            }
+          }
+          throw error;
+        }
       });
 
       const staleResponse = buildAppPageCachedResponse(cachedValue, {

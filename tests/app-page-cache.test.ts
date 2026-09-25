@@ -2115,6 +2115,35 @@ describe("app page regeneration failures", () => {
     },
   );
 
+  it("keeps the previous entry when storing the regenerated page fails", async () => {
+    const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
+    const scheduled: Array<() => Promise<void>> = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async (key, data) => {
+      if (data !== cachedValue && key === "html:/stale") throw new Error("store failed");
+    });
+
+    await readStale({
+      async isrGet() {
+        return buildISRCacheEntry(cachedValue, true, { revalidate: 60 });
+      },
+      isrSet,
+      async renderFreshPageForCache() {
+        return freshPage({ usedDynamicApi: false });
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).rejects.toThrow("store failed");
+    const restored = isrSet.mock.calls.filter(([, data]) => data === cachedValue);
+    expect(restored).toEqual([
+      [
+        "html:/stale",
+        cachedValue,
+        { cacheControl: { revalidate: 30 }, tags: ["_N_T_/stale", "posts"] },
+      ],
+    ]);
+  });
+
   it.each([
     { previous: { revalidate: 1 }, restored: { revalidate: 3 } },
     { previous: { revalidate: 10, expire: 12 }, restored: { revalidate: 10, expire: 13 } },
