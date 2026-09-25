@@ -1348,7 +1348,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           __collectAppPageStaticGenerationRuntimes({
             childrenSlot: route.childrenSlot,
             layouts: route.layouts,
-            layoutTreePositions: route.layoutTreePositions,
             materializedBySlot: route.materializedBySlot,
             page: route.page,
             parallelBranches: __segmentConfigBranches,

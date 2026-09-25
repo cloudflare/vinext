@@ -469,38 +469,28 @@ function treePathDepth(treePath: string): number {
 
 /**
  * The `runtime` values of an App page's file and the layouts above it, root
- * first, for `resolveAppPageStaticGenerationRuntime`. A route with no page of
- * its own, including one that only a nested slot page materializes, is built
- * from the slot page that matches its URL, so its layouts include the slot's.
+ * first, for `resolveAppPageStaticGenerationRuntime`. A route that only a
+ * slot page materializes is built from that slot page, so its layouts include
+ * the slot's.
  */
 export function collectAppPageStaticGenerationRuntimes(
-  options: Pick<
-    ResolveAppPageSegmentConfigOptions,
-    "layouts" | "layoutTreePositions" | "page" | "parallelBranches"
-  > & {
+  options: Pick<ResolveAppPageSegmentConfigOptions, "layouts" | "page" | "parallelBranches"> & {
     childrenSlot?: AppPageChildrenSlot | null;
     materializedBySlot?: boolean;
   },
 ): unknown[] {
   const layoutRuntimes = (options.layouts ?? []).map((layout) => layout?.runtime);
-  // The slots that can supply the page belong to the folder that owns the
-  // route: the children slot's owner, or a page-less route's own folder, which
-  // is where its innermost layout lives.
-  const slotOwnerTreePosition = options.childrenSlot
-    ? treePathDepth(options.childrenSlot.ownerTreePath)
-    : options.layoutTreePositions?.at(-1);
-  const slotPage =
-    options.materializedBySlot || options.page == null
-      ? (options.parallelBranches ?? [])
-          .filter(
-            (branch): branch is ParallelAppPageSegmentConfigBranch =>
-              !!branch &&
-              !branch.isDefault &&
-              (slotOwnerTreePosition === undefined ||
-                branch.ownerTreePosition === slotOwnerTreePosition),
-          )
-          .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))[0]
-      : undefined;
+  const slotPage = options.materializedBySlot
+    ? (options.parallelBranches ?? [])
+        .filter(
+          (branch): branch is ParallelAppPageSegmentConfigBranch =>
+            !!branch &&
+            !branch.isDefault &&
+            (options.childrenSlot == null ||
+              branch.ownerTreePosition === treePathDepth(options.childrenSlot.ownerTreePath)),
+        )
+        .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))[0]
+    : undefined;
   if (!slotPage) return [...layoutRuntimes, options.page?.runtime];
   return [
     ...layoutRuntimes,
