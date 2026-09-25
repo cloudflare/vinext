@@ -51,6 +51,10 @@ type CacheabilityProbeRouteState =
 
 type CacheabilityProbeResult = {
   cacheControl?: string;
+  /** The render used a dynamic API, a private cache or a route-wide dynamic config. */
+  dynamicUsage?: true;
+  /** A matching next.config header policy applied to the response. */
+  explicitConfigCachePolicy?: true;
   kind?: "app-page" | "app-route" | "pages-api" | "pages-page";
   pattern?: string;
   reason?: string;
@@ -300,14 +304,22 @@ function probeResponse(
   routeState: CacheabilityProbeRouteState,
   outcome: RouteCacheabilityOutcome,
   status: number,
-  rendererStatic?: boolean,
+  renderer?: { dynamicUsage: boolean; static: boolean },
 ): Response {
+  // Next.js's build treats a private cache and a route-wide dynamic config as
+  // dynamic usage too.
+  const dynamicUsage =
+    renderer?.dynamicUsage === true ||
+    outcome.dynamicUsage === true ||
+    state.patternDynamicReason !== undefined;
   const body: CacheabilityProbeResult = {
     cacheControl: outcome.cacheControl,
+    ...(dynamicUsage ? { dynamicUsage: true as const } : {}),
+    ...(state.explicitConfigCachePolicy ? { explicitConfigCachePolicy: true as const } : {}),
     kind: state.route?.kind,
     pattern: state.route?.pattern,
     reason: outcome.reason,
-    ...(rendererStatic !== undefined ? { rendererStatic } : {}),
+    ...(renderer ? { rendererStatic: renderer.static } : {}),
     ...(outcome.retryable ? { retryable: true as const } : {}),
     ...(state.resolvedRoutePathname ? { routePathname: state.resolvedRoutePathname } : {}),
     ...(routeState === "dynamic"
@@ -1013,6 +1025,9 @@ export async function finalizeWorkerCacheabilityResponse(
         : "dynamic",
     outcome,
     response.status,
-    rendererOutcome?.cacheable === true && rendererOutcome.dynamicUsage !== true,
+    {
+      dynamicUsage: rendererOutcome?.dynamicUsage === true,
+      static: rendererOutcome?.cacheable === true && rendererOutcome.dynamicUsage !== true,
+    },
   );
 }
