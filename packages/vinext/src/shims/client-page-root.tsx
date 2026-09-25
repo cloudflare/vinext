@@ -25,11 +25,6 @@ import { useSearchParams } from "./navigation.js";
 
 type ClientPageSearchParams = Record<string, string | string[]>;
 
-// React reads `status` and `value` to use() a settled promise without
-// suspending. The query keys are copied on as well for synchronous reads.
-type SettledClientPageSearchParams = Promise<ClientPageSearchParams> &
-  Record<string, unknown> & { status?: string; value?: unknown };
-
 export type ClientPageRootProps = {
   Component: ComponentType<Record<string, unknown>>;
   /** The page's other props (`params`, slot props). Never `searchParams`. */
@@ -38,18 +33,34 @@ export type ClientPageRootProps = {
 
 const isServer = typeof window === "undefined";
 
+function defineHiddenProperty(target: object, key: string, value: unknown): void {
+  Reflect.defineProperty(target, key, {
+    configurable: true,
+    enumerable: false,
+    value,
+    writable: true,
+  });
+}
+
 /**
  * Build an untracked `searchParams` promise, like Next.js 15's browser
  * `makeUntrackedExoticSearchParams`: a settled promise whose query keys are
  * also readable synchronously, except names Promise and React rely on.
+ *
+ * It matches the SSR thenable (`makeThenableParams`) wherever a page could
+ * tell them apart during hydration: it resolves to a plain object, and
+ * enumerating it lists only the readable query keys.
  */
 export function createClientPageSearchParams(
   searchParams: URLSearchParams | null | undefined,
 ): Promise<ClientPageSearchParams> {
-  const record = searchParamsToRecord(searchParams);
-  const promise = Promise.resolve(record) as SettledClientPageSearchParams;
-  promise.status = "fulfilled";
-  promise.value = record;
+  // Spreading keeps a `__proto__` key an own entry, on Object.prototype.
+  const record: ClientPageSearchParams = { ...searchParamsToRecord(searchParams) };
+  const promise = Promise.resolve(record);
+  // React reads `status` and `value` to use() a settled promise without
+  // suspending. Hidden from enumeration, as the SSR thenable hides them.
+  defineHiddenProperty(promise, "status", "fulfilled");
+  defineHiddenProperty(promise, "value", record);
   for (const key of Object.keys(record)) {
     if (isWellKnownProperty(key)) continue;
     Reflect.defineProperty(promise, key, {

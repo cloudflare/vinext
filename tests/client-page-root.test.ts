@@ -183,4 +183,43 @@ describe("createClientPageSearchParams", () => {
   it("builds an empty record without a query", async () => {
     expect({ ...(await createClientPageSearchParams(null)) }).toEqual({});
   });
+
+  it("enumerates like the SSR thenable, so hydration sees the same keys", async () => {
+    const query = "q=one&status=y&value=z&then=x&constructor=c&tag=a&tag=b";
+    const browser = createClientPageSearchParams(new URLSearchParams(query));
+    const ssr = makeClientPageSsrSearchParamsThenable(new URLSearchParams(query), {
+      observe: false,
+    });
+
+    // React's bookkeeping and the reserved names aren't query keys.
+    expect(Object.keys(browser)).toEqual(["q", "tag"]);
+    expect(Object.keys(browser)).toEqual(Object.keys(ssr));
+    // What `{ ...searchParams }` copies.
+    expect(Object.entries(browser)).toEqual(Object.entries(ssr));
+    expect({ ...(await browser) }).toEqual({ ...(await ssr) });
+  });
+
+  it("resolves to a plain object, like the SSR thenable", async () => {
+    const record = await createClientPageSearchParams(new URLSearchParams("q=one&__proto__=x"));
+    const ssrRecord = await makeClientPageSsrSearchParamsThenable(
+      new URLSearchParams("q=one&__proto__=x"),
+      { observe: false },
+    );
+
+    expect(Object.getPrototypeOf(record)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(record)).toBe(Object.getPrototypeOf(ssrRecord));
+    expect(record.hasOwnProperty("q")).toBe(true);
+    // A `__proto__` key stays an ordinary entry.
+    expect(Object.keys(record)).toEqual(["q", "__proto__"]);
+    expect(Object.getOwnPropertyDescriptor(record, "__proto__")?.value).toBe("x");
+  });
+
+  it("stays awaitable with a query key named constructor", async () => {
+    const searchParams = createClientPageSearchParams(new URLSearchParams("constructor=c&q=one"));
+
+    expect(searchParams.constructor).toBe(Promise);
+    const record = await searchParams;
+    expect(Reflect.get(record, "constructor")).toBe("c");
+    expect(Reflect.get(record, "q")).toBe("one");
+  });
 });

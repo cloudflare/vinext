@@ -19,7 +19,11 @@ const WELL_KNOWN_PROPERTIES = [
   "valueOf",
   "toLocaleString",
 
-  // Promise prototype
+  // Promise prototype. `await` and `then` read `constructor` to find the
+  // promise's species, so a query key of that name would break a real
+  // promise that carries the keys as own properties (the browser's client
+  // page searchParams).
+  "constructor",
   "then",
   "catch",
   "finally",
