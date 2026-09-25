@@ -965,7 +965,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               rscRenderObservation: rendered.rscRenderObservation!,
               tags: rendered.tags,
               cacheControl: rendered.cacheControl,
-              usedDynamicApi: rendered.usedDynamicApi,
+              // As in Next.js (`!isRoutePPREnabled`), dynamic API use only fails
+              // a regeneration without PPR, whose shell expects it.
+              usedDynamicApi: options.pprRuntime === undefined && rendered.usedDynamicApi,
             };
           },
         );
