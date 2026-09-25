@@ -332,6 +332,25 @@ export function runWithRequestContext<T>(
 }
 
 /**
+ * Return the state's render dynamic latch. A state created before an HMR update
+ * (a unified context, or the headers shim's fallback state, which persists on
+ * globalThis) may predate the latch, so create it on first access, starting it
+ * latched if the state has already recorded dynamic usage so that usage isn't
+ * lost. Scopes cloned from a state must call this on the parent first so the
+ * child shares the latch.
+ *
+ * @internal
+ */
+export function ensureRenderDynamicLatch(
+  state: Pick<VinextHeadersShimState, "dynamicUsageDetected" | "renderDynamicLatch">,
+): VinextHeadersShimState["renderDynamicLatch"] {
+  return (state.renderDynamicLatch ??= {
+    dynamic: state.dynamicUsageDetected,
+    listeners: new Set(),
+  });
+}
+
+/**
  * Run `fn` in a nested unified scope derived from the current request context.
  * Used by legacy runWith* wrappers to reset or override one sub-state while
  * preserving proper async isolation for continuations created inside `fn`.
@@ -357,7 +376,7 @@ export function runWithUnifiedStateMutation<T>(
 
   // A context created before an HMR update may predate the latch. Create it on
   // the parent so the child shares it instead of latching a copy of its own.
-  parentCtx.renderDynamicLatch ??= { dynamic: false, listeners: new Set() };
+  ensureRenderDynamicLatch(parentCtx);
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Object/array fields (afterContext, pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set

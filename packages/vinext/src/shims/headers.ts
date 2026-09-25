@@ -19,6 +19,7 @@ import { getOrCreateAls } from "./internal/als-registry.js";
 import { serializeSetCookie, validateCookieName } from "./internal/cookie-serialize.js";
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
+  ensureRenderDynamicLatch,
   isInsideUnifiedScope,
   getRequestContext,
   runWithUnifiedStateMutation,
@@ -224,14 +225,7 @@ export function markDynamicUsage(): void {
   forEachConnectionProbeTarget(state, (target) => {
     target.dynamicUsageDetected = true;
   });
-  latchRenderDynamic(getRenderDynamicLatch(state));
-}
-
-// The fallback state persists on globalThis across HMR, so one created before
-// the latch existed has none. Create it on first access. Scopes cloned from a
-// state must create it on the parent first so the child shares it.
-function getRenderDynamicLatch(state: VinextHeadersShimState): RenderDynamicLatch {
-  return (state.renderDynamicLatch ??= createRenderDynamicLatch());
+  latchRenderDynamic(ensureRenderDynamicLatch(state));
 }
 
 function latchRenderDynamic(latch: RenderDynamicLatch): void {
@@ -252,7 +246,7 @@ function latchRenderDynamic(latch: RenderDynamicLatch): void {
 
 /** Whether the current render has used a dynamic API at any point so far. */
 export function isRenderDynamicLatched(): boolean {
-  return getRenderDynamicLatch(_getState()).dynamic;
+  return ensureRenderDynamicLatch(_getState()).dynamic;
 }
 
 /**
@@ -261,7 +255,7 @@ export function isRenderDynamicLatched(): boolean {
  * already latched; check `isRenderDynamicLatched()` first.
  */
 export function onRenderDynamicLatched(listener: () => void): () => void {
-  const latch = getRenderDynamicLatch(_getState());
+  const latch = ensureRenderDynamicLatch(_getState());
   if (latch.dynamic) return () => {};
   latch.listeners.add(listener);
   return () => {
@@ -324,7 +318,7 @@ export async function runWithIsolatedDynamicUsage<T>(
   const childState: VinextHeadersShimState = {
     ...parentState,
     // Share the parent's latch, creating it first on a stale fallback state.
-    renderDynamicLatch: getRenderDynamicLatch(parentState),
+    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
     dynamicUsageDetected: false,
   };
   return await _als.run(childState, () => runInChildState(childState));
@@ -417,7 +411,7 @@ export async function runWithConnectionProbe<T>(
   const childState: VinextHeadersShimState = {
     ...parentState,
     // Share the parent's latch, creating it first on a stale fallback state.
-    renderDynamicLatch: getRenderDynamicLatch(parentState),
+    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
     connectionProbe: probe,
   };
   return await _als.run(childState, () => runInChildState(childState));

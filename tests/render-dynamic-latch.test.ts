@@ -139,12 +139,12 @@ describe("render dynamic latch", () => {
       vi.resetModules();
     });
 
-    async function reloadWithPreLatchFallback() {
+    async function reloadWithPreLatchFallback(dynamicUsageDetected = false) {
       // The shape the fallback had before the latch was added, as left on
       // globalThis by the module instance an HMR update replaced.
       globalState[fallbackKey] = {
         headersContext: null,
-        dynamicUsageDetected: false,
+        dynamicUsageDetected,
         renderRequestApiUsage: new Set(),
         connectionProbe: null,
         invalidDynamicUsageError: null,
@@ -167,6 +167,12 @@ describe("render dynamic latch", () => {
       expect(reloaded.isRenderDynamicLatched()).toBe(true);
     });
 
+    it("starts the latch set when dynamic usage was already recorded", async () => {
+      const reloaded = await reloadWithPreLatchFallback(true);
+
+      expect(reloaded.isRenderDynamicLatched()).toBe(true);
+    });
+
     it("shares the latch it creates with an isolated child scope", async () => {
       const reloaded = await reloadWithPreLatchFallback();
 
@@ -185,9 +191,10 @@ describe("render dynamic latch", () => {
   describe("with a unified request context created before the latch existed", () => {
     // A request that was in flight when an HMR update replaced the module
     // keeps the context the old instance created, which has no latch.
-    function preLatchRequestContext() {
+    function preLatchRequestContext(dynamicUsageDetected = false) {
       const ctx: Partial<ReturnType<typeof createRequestContext>> = createRequestContext({
         headersContext: headersContext(),
+        dynamicUsageDetected,
       });
       delete ctx.renderDynamicLatch;
       return ctx as ReturnType<typeof createRequestContext>;
@@ -203,6 +210,20 @@ describe("render dynamic latch", () => {
     it("shares the latch with a connection probe", async () => {
       await runWithRequestContext(preLatchRequestContext(), async () => {
         await runWithConnectionProbe(() => markDynamicUsage());
+        expect(isRenderDynamicLatched()).toBe(true);
+      });
+    });
+
+    it("starts the latch set when dynamic usage was already recorded", async () => {
+      await runWithRequestContext(preLatchRequestContext(true), async () => {
+        await runWithUnifiedStateMutation(
+          (ctx) => {
+            ctx.dynamicUsageDetected = false;
+          },
+          () => {
+            expect(isRenderDynamicLatched()).toBe(true);
+          },
+        );
         expect(isRenderDynamicLatched()).toBe(true);
       });
     });
