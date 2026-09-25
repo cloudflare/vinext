@@ -30,6 +30,7 @@ import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
+  resolveFetchedHydrationLocation,
 } from "../packages/vinext/src/server/app-browser-hydration.js";
 import { createAppBrowserNavigationController } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "../packages/vinext/src/server/app-browser-navigation-response.js";
@@ -9453,6 +9454,30 @@ describe("app browser form-state hydration", () => {
     ).toEqual({
       formState: null,
       onUncaughtError,
+    });
+  });
+});
+
+describe("fetched initial Flight payload hydration", () => {
+  const location = {
+    origin: "https://example.com",
+    pathname: "/alias",
+    search: "?q=public",
+  };
+
+  it("keeps the public pathname under a rewrite's rendered query", () => {
+    // /alias rewrites to /page?q=rewritten. SSR rendered usePathname() as
+    // /alias, so hydration must too, while client pages read the rewrite's query.
+    expect(resolveFetchedHydrationLocation("/page?q=rewritten", location)).toEqual({
+      pathname: "/alias",
+      search: "?q=rewritten",
+    });
+  });
+
+  it("keeps the browser URL without a rendered path header", () => {
+    expect(resolveFetchedHydrationLocation(null, location)).toEqual({
+      pathname: "/alias",
+      search: "?q=public",
     });
   });
 });

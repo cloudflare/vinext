@@ -115,6 +115,7 @@ import {
   consumeInitialFormState,
   createVinextHydrateRootOptions,
   hydrateRootInTransition,
+  resolveFetchedHydrationLocation,
 } from "./app-browser-hydration.js";
 import {
   AppElementsWire,
@@ -1751,13 +1752,13 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array> | null
     }
   }
 
-  // Like the embedded payload, carry the path and query the server rendered,
-  // which a rewrite may have changed.
-  const rendered = new URL(
+  // Like the embedded payload, carry the query the server rendered, which a
+  // rewrite may have changed, under the public pathname.
+  const rendered = resolveFetchedHydrationLocation(
     parseRenderedPathAndSearchHeader(
       rscResponse.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
-    ) ?? window.location.pathname + window.location.search,
-    window.location.origin,
+    ),
+    window.location,
   );
   restoreHydrationNavigationContext(rendered.pathname, rendered.search, params);
 

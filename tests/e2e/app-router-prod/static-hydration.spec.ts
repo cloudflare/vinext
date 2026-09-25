@@ -98,6 +98,11 @@ test("a client page hydrates with the rewritten query when it fetches its Flight
   const query = page.getByTestId("delayed-client-page-q");
   await expect(query).toHaveAttribute("data-hydrated", "true");
   await expect(query).toHaveText("bar");
+  // The response names the rewrite target, but usePathname() hydrates with
+  // the public path SSR rendered.
+  await expect(page.getByTestId("delayed-client-page-pathname")).toHaveText(
+    "/client-page-search-params/delayed-rewritten/bar",
+  );
   expect(errors).toEqual([]);
 });
 
