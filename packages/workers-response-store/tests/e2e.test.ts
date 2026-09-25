@@ -903,12 +903,14 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
       options: { cacheControl: "public, max-age=10, stale-while-revalidate=60", age: 10 },
       retry: 10,
       expire: 70,
+      forwarded: { "Cache-Control": "public, max-age=10, stale-while-revalidate=60" },
     },
     {
       path: "/backoff/1",
       options: { cacheControl: "public, max-age=1, stale-while-revalidate=1", age: 1 },
       retry: 3,
       expire: 6,
+      forwarded: { "Cache-Control": "public, max-age=1, stale-while-revalidate=1" },
     },
     {
       path: "/backoff/60",
@@ -919,15 +921,18 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
       },
       retry: 30,
       expire: 65,
+      forwarded: { "Cache-Control": "public, max-age=30, stale-while-revalidate=5" },
     },
     {
       path: "/backoff/static",
       options: {
+        cacheControl: "public, max-age=31536000, immutable",
         cloudflareCacheControl: "max-age=31536000, stale-while-revalidate=60",
         age: 31_536_000,
       },
       retry: 3,
       expire: 31_536_060,
+      forwarded: { "Cache-Control": "public, max-age=3" },
     },
     {
       path: "/backoff/cdn",
@@ -938,10 +943,14 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
       },
       retry: 10,
       expire: 30,
+      forwarded: {
+        "Cache-Control": "public, max-age=10, stale-while-revalidate=100",
+        "CDN-Cache-Control": "max-age=10, stale-while-revalidate=20",
+      },
     },
   ];
 
-  for (const { path, options, retry, expire } of cases) {
+  for (const { path, options, retry, expire, forwarded } of cases) {
     await put(path, `stale:${path}`, { ...options, revalidator: { fail: true } });
     const stale = await read(path);
     assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
@@ -950,6 +959,11 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
     const entry = await waitForRestore(path);
     assert.equal(entry.activeRevision, 1);
     assert.equal(entry.swrUntil - entry.freshUntil, (expire - retry) * 1000);
+    // The metadata row keeps the original policy for the next failure.
+    assert.deepEqual(
+      entry.responseHeaders.find(([name]: [string, string]) => name === "cache-control")?.[1],
+      options.cacheControl ?? "public, max-age=60, stale-while-revalidate=60",
+    );
     const remaining = entry.freshUntil - Date.now();
     assert.ok(remaining > (retry - 2) * 1000 && remaining <= retry * 1000, `${path}: ${remaining}`);
     assert.equal(await metadataRowCount("revalidation_claims"), 0);
@@ -964,6 +978,11 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
     // The re-store starts the entry's age again, so the edge can use the
     // retry window instead of treating the response as already stale.
     assert.match(fresh.headers.get("Age") ?? "", /^[01]$/, path);
+    // Forwarded freshness is capped at the retry window too, so downstream
+    // caches cannot hide the next retry.
+    for (const [name, value] of Object.entries(forwarded)) {
+      assert.equal(fresh.headers.get(name), value, `${path}: ${name}`);
+    }
     // A stored Date moves to the re-store time as well, so shared caches do
     // not derive an older apparent age from it.
     if ("date" in options) {

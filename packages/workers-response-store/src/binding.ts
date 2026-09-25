@@ -4,6 +4,7 @@ import {
   deriveCachePolicy,
   deriveFailedRegenerationPolicy,
   edgeCacheControl,
+  failedRegenerationHeaders,
   representationAge,
 } from "./cache-policy";
 import { IsolateNegativeCache } from "./isolate-negative-cache";
@@ -1099,8 +1100,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
    * The re-store keeps the entry's revision and rewrites its R2 object, so a
    * failed rewrite leaves the source object readable and still matching the
    * metadata. Like a Next.js re-store, it serves the entry as new: its age
-   * starts again and a stored `Date` moves to the re-store time, so the edge
-   * can cache it for the whole retry window.
+   * starts again, a stored `Date` moves to the re-store time, and forwarded
+   * freshness is capped at the retry window. The metadata row keeps the
+   * original headers, so each later failure derives its window from the
+   * entry's own policy.
    */
   private async republishFailedRegeneration(
     metadata: CacheMetadataStub,
@@ -1128,12 +1131,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       return;
     }
 
-    const date = new Date(now).toUTCString();
-    const responseHeaders = entry.responseHeaders.map(([name, value]): [string, string] => [
-      name,
-      name.toLowerCase() === "date" ? date : value,
-    ]);
-
+    const { retrySeconds, ...freshness } = policy;
     let publication: PublicationResult;
     try {
       publication = await metadata.publish(
@@ -1143,8 +1141,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           fenceTags: [...new Set([...write.fenceTags, ...entry.cacheTags])],
           objectKey: this.r2ObjectKey(entry.keyHash),
           statusText: entry.statusText,
-          responseHeaders,
-          ...policy,
+          responseHeaders: failedRegenerationHeaders(entry.responseHeaders, retrySeconds, now),
+          ...freshness,
           revalidator: entry.revalidator,
           cacheTags: entry.cacheTags,
         },

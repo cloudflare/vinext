@@ -94,7 +94,7 @@ export function deriveCachePolicy(headers: Headers, now = Date.now()): CachePoli
 export function deriveFailedRegenerationPolicy(
   headers: Headers,
   now = Date.now(),
-): Pick<CachePolicy, "freshUntil" | "swrUntil"> | null {
+): (Pick<CachePolicy, "freshUntil" | "swrUntil"> & { retrySeconds: number }) | null {
   const { maxAge, reuseForbidden, staleServingForbidden, staleWhileRevalidate } =
     parseCacheLifetime(headers);
   if (reuseForbidden || (maxAge === 0 && staleWhileRevalidate === 0)) return null;
@@ -109,8 +109,52 @@ export function deriveFailedRegenerationPolicy(
 
   return {
     freshUntil: now + retrySeconds * 1000,
+    retrySeconds,
     swrUntil: now + expireSeconds * 1000,
   };
+}
+
+const POLICY_HEADERS = new Set([
+  "cache-control",
+  "cdn-cache-control",
+  "cloudflare-cdn-cache-control",
+]);
+
+function capFreshness(cacheControl: string, maxSeconds: number): string {
+  return cacheControl
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part && part.toLowerCase() !== "immutable")
+    .map((part) => {
+      const [rawName, ...rawValue] = part.split("=");
+      const name = rawName.trim().toLowerCase();
+      if (name !== "max-age" && name !== "s-maxage") return part;
+      const seconds = parseSeconds(rawValue.join("=").trim());
+      return seconds !== undefined && seconds > maxSeconds
+        ? `${rawName.trim()}=${maxSeconds}`
+        : part;
+    })
+    .join(", ");
+}
+
+/**
+ * Headers served for an entry re-stored after its regeneration failed. Like
+ * Next.js, it is served as new: a stored `Date` moves to the re-store time, and
+ * forwarded freshness is capped at the retry window so no downstream cache
+ * keeps the entry past the next retry.
+ */
+export function failedRegenerationHeaders(
+  headers: [string, string][],
+  retrySeconds: number,
+  now = Date.now(),
+): [string, string][] {
+  const date = new Date(now).toUTCString();
+  return headers.map(([name, value]) => {
+    const lower = name.toLowerCase();
+    if (lower === "date") return [name, date];
+    if (POLICY_HEADERS.has(lower)) return [name, capFreshness(value, retrySeconds)];
+    return [name, value];
+  });
 }
 
 export function representationAge(createdAt: number, initialAge: number, now = Date.now()): number {
