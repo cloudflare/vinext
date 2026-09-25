@@ -44,6 +44,7 @@ export default {
         "tests/e2e/web-worker/fixtures/**/{vite.config.ts,*.worker.ts}",
         "tests/e2e/nextjs-worker/fixture/**/*.{js,ts,tsx}",
         "tests/e2e/cacheability-components/fixture/{next.config.ts,vite.config.ts,app/**/{page,route}.{ts,tsx}}",
+        "tests/e2e/cloudflare-static-export/fixture/{vite.config.ts,app/**/route.ts}",
       ],
       project: ["tests/**/*.{js,ts}", "!tests/fixtures/**"],
       ignoreDependencies: [
@@ -190,6 +191,7 @@ export default {
   ],
   ignoreFiles: [
     "apps/web/dist/**",
+    "tests/e2e/cloudflare-static-export/fixture/dist/**",
     "tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts",
     "tests/e2e/app-front-redirect-issue/fixture/**/*.{js,ts,tsx}",
     // stub module loaded via `path.resolve()` as a Vite alias target

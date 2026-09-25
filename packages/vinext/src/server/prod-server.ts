@@ -37,6 +37,7 @@ import {
   type ImageConfig,
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
+import { registerPrerenderCloudflareLoader } from "../build/prerender-cloudflare-loader.js";
 import {
   canonicalizeRequestPathname,
   filterInternalHeaders,
@@ -1300,6 +1301,12 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     purpose,
     silent = false,
   } = options;
+
+  if (purpose === "prerender") {
+    // Build-time servers (prerendering and path discovery) import the built
+    // Worker graph in Node, which may reference workerd-native modules.
+    registerPrerenderCloudflareLoader();
+  }
 
   const compress = !noCompression;
   // Always resolve outDir to absolute to ensure dynamic import() works

@@ -1022,8 +1022,8 @@ function printHelp(cmd?: string) {
     --skip-check         Skip the compatibility check step
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
-    --prerender          Node only: configure vinext build to pre-render all
-                         static routes (default: prompt, with No selected)
+    --prerender          Configure vinext build to pre-render static routes
+                         (Cloudflare deploy won't serve them unless using Static Assets)
     --experimental-warm-cdn-cache
                          Add experimental CDN pre-warming to the Cloudflare deploy script
                          (Response Store or Workers Cache, default: prompt with No)

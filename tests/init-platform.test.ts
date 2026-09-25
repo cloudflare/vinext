@@ -513,11 +513,12 @@ describe("resolveInitOptions", () => {
       "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
       "  Choose a Workers Response Store mode:\n    1. Service binding (default)\n    2. Self-contained\n  Response Store mode [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
+      "  Pre-render all static routes after build? (not served by Cloudflare deploy unless using Static Assets) [y/N]: ",
       "  Enable experimental cache pre-warm during deploy? [y/N]: ",
     ]);
   });
 
-  it("rejects the Node-only prerender flag for Cloudflare init", async () => {
+  it("accepts explicit Cloudflare prerendering with a non-Static Assets cache", async () => {
     await expect(
       resolveInitOptions(
         [
@@ -528,9 +529,41 @@ describe("resolveInitOptions", () => {
         ],
         { env: { CODEX_THREAD_ID: "test" } },
       ),
-    ).rejects.toThrow(
-      "--prerender is only supported by Node init. For Cloudflare, choose --cdn-cache=static-assets",
-    );
+    ).resolves.toEqual({
+      platform: "cloudflare",
+      prerender: true,
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "response-store",
+        imageOptimization: "none",
+        responseStoreMode: "service-binding",
+        warmCdnCache: false,
+        prerender: true,
+      },
+    });
+  });
+
+  it("does not allow disabling the Static Assets cache's required prerendering", async () => {
+    await expect(
+      resolveInitOptions(["--platform=cloudflare", "--cdn-cache=static-assets", "--no-prerender"], {
+        env: {},
+        isInteractive: false,
+      }),
+    ).rejects.toThrow("--no-prerender cannot be used with --cdn-cache=static-assets");
+  });
+
+  it("warns in the optional Cloudflare prerender prompt", async () => {
+    const prompts: string[] = [];
+    const answers = ["", "", "yes"];
+    await resolveInitOptions(["--platform=cloudflare"], {
+      env: {},
+      isInteractive: true,
+      question: async (prompt) => {
+        prompts.push(prompt);
+        return answers.shift() ?? "";
+      },
+    });
+    expect(prompts.some((prompt) => prompt.includes("Cloudflare deploy"))).toBe(true);
   });
 
   it("does not ask about pre-warming when Data cache is selected for CDN cache", async () => {
@@ -561,6 +594,7 @@ describe("resolveInitOptions", () => {
       "  Enable caching? [y/N]: ",
       "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
+      "  Pre-render all static routes after build? (not served by Cloudflare deploy unless using Static Assets) [y/N]: ",
     ]);
   });
 
