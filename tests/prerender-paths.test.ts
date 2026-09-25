@@ -294,6 +294,38 @@ describe("prerender path manifest", () => {
     expect(manifest?.fallbackRoutePatterns).toBeUndefined();
   });
 
+  it("doesn't count a type-only generateStaticParams export toward static generation", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[category]/page.tsx",
+      [
+        "export function generateStaticParams() { return [{ category: 'news' }]; }",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[category]/details/page.tsx",
+      [
+        "type generateStaticParams = () => unknown[];",
+        "export type { generateStaticParams };",
+        "export default function Page() { return null; }",
+      ].join("\n"),
+    );
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toContain("/news/details");
+    expect(manifest?.routePatterns?.["/news/details"]?.cacheabilityProbe?.unlisted).toBe(true);
+  });
+
   it("lists the paths of a route whose last dynamic segment's layout has generateStaticParams", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

@@ -27,7 +27,7 @@ import {
   extractExportConstNumber,
   extractExportConstString,
   extractMiddlewareMatcherConfig,
-  hasNamedExport,
+  hasRuntimeExportedName,
 } from "./report.js";
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
@@ -760,7 +760,9 @@ function isAppPageRouteStaticEligible(route: AppRoute): boolean {
     const runtime = extractExportConstString(code, "runtime");
     return {
       ...(dynamic === null ? {} : { dynamic }),
-      ...(hasNamedExport(code, "generateStaticParams") ? { generateStaticParams() {} } : {}),
+      ...(hasRuntimeExportedName(code, "generateStaticParams")
+        ? { generateStaticParams() {} }
+        : {}),
       ...(revalidate === null ? {} : { revalidate }),
       ...(runtime === null ? {} : { runtime }),
     };
