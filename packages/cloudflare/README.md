@@ -214,7 +214,8 @@ routes use the KV data adapter, the generated Worker config supplies the KV
 namespace ID for a `cf kv bulk update` upload.
 
 Named auxiliary Workers in Build Output are deployed with
-`cf deploy --prebuilt --worker <name>` before the entry Worker. The generated
+`cf deploy --prebuilt --mode <mode> --worker <name>` before the entry Worker,
+using the selected Vite build mode (`production` by default). The generated
 `cloudflare.config.ts` remains the source of truth; no auxiliary Wrangler config
 is required.
 
