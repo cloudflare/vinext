@@ -113,7 +113,7 @@ describe("prerender render observations channel", () => {
     });
   });
 
-  it("strips a malformed marker carrying the request's nonce and yields no observations", () => {
+  it("leaves a marker carrying the request's nonce but no valid observations untouched", () => {
     const malformed = [
       "not-json",
       "%E0%A4%A",
@@ -124,8 +124,9 @@ describe("prerender render observations channel", () => {
       ),
     ];
     for (const payload of malformed) {
-      expect(extractPrerenderRenderObservations(withMarker(HTML, NONCE, payload), NONCE)).toEqual({
-        html: HTML,
+      const body = withMarker(HTML, NONCE, payload);
+      expect(extractPrerenderRenderObservations(body, NONCE), payload).toEqual({
+        html: body,
         renderObservations: null,
       });
     }
@@ -133,12 +134,9 @@ describe("prerender render observations channel", () => {
 
   it("rejects field values the searchParams proof doesn't accept", () => {
     for (const { label, observations } of malformedPrerenderObservations()) {
-      const payload = encodeURIComponent(JSON.stringify(observations));
-      expect(
-        extractPrerenderRenderObservations(withMarker(HTML, NONCE, payload), NONCE),
-        label,
-      ).toEqual({
-        html: HTML,
+      const body = withMarker(HTML, NONCE, encodeURIComponent(JSON.stringify(observations)));
+      expect(extractPrerenderRenderObservations(body, NONCE), label).toEqual({
+        html: body,
         renderObservations: null,
       });
     }

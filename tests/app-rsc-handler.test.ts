@@ -30,8 +30,10 @@ import {
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
+  VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { getRequestContext } from "../packages/vinext/src/shims/unified-request-context.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
@@ -4912,6 +4914,61 @@ describe("createAppRscHandler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.getSetCookie()).toEqual([]);
     expect(response.headers.has("x-action-revalidated")).toBe(false);
+  });
+
+  it("hides the prerender's observation nonce from middleware and hands it to rendering", async () => {
+    // No Next.js test port applies: the observation nonce is vinext-specific.
+    const nonce = "0f8e6f7c-2b1a-4c3d-9e8f-7a6b5c4d3e2f";
+    const previousPrerender = process.env.VINEXT_PRERENDER;
+    process.env.VINEXT_PRERENDER = "1";
+    const middlewareNonces: (string | null)[] = [];
+    const renders: { contextNonce: string | null; requestNonce: string | null }[] = [];
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage: vi.fn(async ({ request }: { request: Request }) => {
+        renders.push({
+          contextNonce: getRequestContext().prerenderObservationNonce,
+          requestNonce: request.headers.get(VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER),
+        });
+        return new Response("page");
+      }),
+      middlewareModule: {
+        default(request: NextRequest) {
+          middlewareNonces.push(request.headers.get(VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER));
+        },
+      },
+    });
+    const request = () =>
+      new Request("https://example.test/docs/about", {
+        headers: {
+          "x-vinext-prerender-secret": "test-secret",
+          [VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER]: nonce,
+        },
+      });
+
+    try {
+      // Verified at the Node boundary, which keeps the secret on the request.
+      expect((await handler(request(), null)).status).toBe(200);
+      // Transported from an authenticated request stage.
+      expect(
+        (
+          await handler(request(), null, false, undefined, null, {
+            observationNonce: nonce,
+            routeParams: null,
+            speculative: false,
+          })
+        ).status,
+      ).toBe(200);
+    } finally {
+      if (previousPrerender === undefined) delete process.env.VINEXT_PRERENDER;
+      else process.env.VINEXT_PRERENDER = previousPrerender;
+    }
+
+    expect(middlewareNonces).toEqual([null, null]);
+    expect(renders).toEqual([
+      { contextNonce: nonce, requestNonce: null },
+      { contextNonce: nonce, requestNonce: null },
+    ]);
   });
 
   it("uses encoded prerender route params for rendering while retaining decoded params for static validation", async () => {

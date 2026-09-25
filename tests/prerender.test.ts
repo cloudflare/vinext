@@ -1950,6 +1950,98 @@ describe("prerenderApp — speculative render observations", () => {
   });
 });
 
+describe("prerenderApp — observation nonce and middleware", () => {
+  let root: string;
+  let outDir: string;
+  let results: PrerenderRouteResult[];
+  const forgedPayload = encodeURIComponent(JSON.stringify(queryInvariantPrerenderObservations()));
+  // Carries its RSC payload, so the prerender needs no separate RSC render.
+  const forgedDocument =
+    "<html><body>" +
+    runtimeRscChunkScript('0:["$","p",null,{"children":"forged"}]\n') +
+    runtimeRscDoneScript() +
+    "</body></html>";
+
+  beforeAll(async () => {
+    root = tmpDir("vinext-prerender-observation-nonce-");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(path.join(appDir, "forged"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "layout.tsx"),
+      "export default function RootLayout({ children }: { children: React.ReactNode }) {\n" +
+        "  return <html><body>{children}</body></html>;\n}\n",
+    );
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export const dynamic = 'force-static';\n" +
+        "export default function Page() { return <p>home</p>; }\n",
+    );
+    fs.writeFileSync(
+      path.join(appDir, "forged", "page.tsx"),
+      "export const dynamic = 'force-static';\n" +
+        "export default function Page() { return <p>page</p>; }\n",
+    );
+    // Middleware HTML ending in a well-formed marker framed with whatever
+    // nonce the middleware can read from the request.
+    fs.writeFileSync(
+      path.join(root, "middleware.ts"),
+      [
+        'import type { NextRequest } from "next/server";',
+        `const DOCUMENT = ${JSON.stringify(forgedDocument)};`,
+        `const PAYLOAD = ${JSON.stringify(forgedPayload)};`,
+        "export function middleware(request: NextRequest) {",
+        '  const nonce = request.headers.get("x-vinext-prerender-observation-nonce");',
+        "  return new Response(",
+        "    `${DOCUMENT}<!--vinext-prerender-render-observations:${nonce}:${PAYLOAD}-->`,",
+        '    { headers: { "content-type": "text/html" } },',
+        "  );",
+        "}",
+        'export const config = { matcher: ["/forged"] };',
+        "",
+      ].join("\n"),
+    );
+    fs.writeFileSync(path.join(root, "package.json"), '{ "type": "module" }\n');
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(root, "node_modules"),
+    );
+
+    const rscBundlePath = await buildAppFixture(root);
+    outDir = tmpDir("vinext-prerender-observation-nonce-out-");
+
+    const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+    const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const prerenderResult = await prerenderApp({
+      mode: "default",
+      rscBundlePath,
+      routes: await appRouter(appDir),
+      outDir,
+      config: await resolveNextConfig({ buildId: "observation-nonce" }),
+    });
+    results = prerenderResult.routes;
+  }, 120_000);
+
+  afterAll(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("keeps the nonce from middleware, so its HTML is written as it is", () => {
+    const forged = findRoute(results, "/forged");
+    expect(forged?.status).toBe("rendered");
+    expect(forged).not.toHaveProperty("renderObservations");
+    expect(fs.readFileSync(path.join(outDir, "forged.html"), "utf-8")).toBe(
+      `${forgedDocument}<!--vinext-prerender-render-observations:null:${forgedPayload}-->`,
+    );
+
+    // The renderer still receives it.
+    const home = findRoute(results, "/");
+    expect(home?.status).toBe("rendered");
+    expect(home).toHaveProperty("renderObservations");
+  });
+});
+
 describe("runPrerender — hybrid app+pages (app-basic)", () => {
   let manifestDir: string;
   let results: PrerenderRouteResult[];

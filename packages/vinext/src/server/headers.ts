@@ -108,7 +108,9 @@ export const VINEXT_PRERENDER_CACHE_LIFE_HEADER = "x-vinext-prerender-cache-life
 /**
  * Random per-request nonce the prerender sends with each App page request.
  * The prerender server frames the render observations it appends to the HTML
- * with it (see `server/prerender-render-observations.ts`).
+ * with it (see `server/prerender-render-observations.ts`). Internal: request
+ * boundaries strip it and carry an authenticated value in the trusted
+ * prerender state, so middleware and userland never see it.
  */
 export const VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER = "x-vinext-prerender-observation-nonce";
 
@@ -289,6 +291,7 @@ export const VINEXT_INTERNAL_HEADERS = [
   VINEXT_EXPECTED_WORKER_VERSION_HEADER.toLowerCase(),
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,

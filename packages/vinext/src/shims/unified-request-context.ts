@@ -57,6 +57,14 @@ export type UnifiedRequestContext = {
   // ── next/server after() ───────────────────────────────────────────
   /** Shared lifecycle state for work deferred until the response closes. */
   afterContext: AfterRequestContext;
+
+  // ── server/prerender-render-observations.ts ───────────────────────
+  /**
+   * The authenticated nonce a prerender request sent to frame its render
+   * observations with. Kept off the request so middleware and userland
+   * never see it.
+   */
+  prerenderObservationNonce: string | null;
 } & VinextHeadersShimState &
   I18nState &
   NavigationState &
@@ -151,6 +159,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     ssrHeadChildren: [],
     documentInitialHead: [],
     rootParams: null,
+    prerenderObservationNonce: null,
     ...opts,
   };
 }

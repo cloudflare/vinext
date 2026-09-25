@@ -61,11 +61,13 @@ import {
   RSC_HEADER,
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_QUERY_PARAM,
+  VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_REVALIDATE_HOST_HEADER,
 } from "./headers.js";
 import {
+  readPrerenderObservationNonce,
   readTrustedPrerenderRouteParams,
   serializePrerenderRouteParamsHeader,
 } from "./prerender-route-params.js";
@@ -259,6 +261,12 @@ async function handleRequest(
     // stays dropped. Never trust a header for this decision.
     const trustedPrerenderRouteParams =
       ctx.hostRuntime === "node" ? readTrustedPrerenderRouteParams(request) : null;
+    // Same for the observation nonce, which the App handler moves off the
+    // request before middleware runs.
+    const trustedPrerenderObservationNonce =
+      ctx.hostRuntime === "node" && process.env.VINEXT_PRERENDER === "1"
+        ? readPrerenderObservationNonce(request.headers)
+        : null;
     const filteredHeaders = ctx.isInternalPagesRevalidation
       ? new Headers(request.headers)
       : filterInternalHeaders(request.headers);
@@ -269,6 +277,12 @@ async function handleRequest(
     );
     if (prerenderRouteParamsHeader !== null) {
       filteredHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
+    }
+    if (trustedPrerenderObservationNonce !== null) {
+      filteredHeaders.set(
+        VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER,
+        trustedPrerenderObservationNonce,
+      );
     }
     request = cloneRequestWithHeaders(request, filteredHeaders);
   }

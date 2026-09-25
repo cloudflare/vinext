@@ -10,11 +10,14 @@
  *
  * The prerender sends a fresh random nonce with each page request
  * (`VINEXT_PRERENDER_OBSERVATION_NONCE_HEADER`), and the marker carries it.
- * The prerender strips only a marker with its own nonce, before the HTML is
- * written or read in any other way, so HTML that didn't come from the App
- * renderer (a middleware response, say) is never mistaken for the channel,
- * whatever it ends with. Only prerender servers (`VINEXT_PRERENDER=1`)
- * append the marker, and only for a request that sent a nonce.
+ * Request boundaries move the nonce off the request into the trusted
+ * prerender state, so middleware and userland never see it, and only the
+ * renderer can frame a marker with it. The prerender strips only a marker
+ * with its own nonce and a valid payload, before the HTML is written or read
+ * in any other way, so HTML that didn't come from the App renderer (a
+ * middleware response, say) is never mistaken for the channel, whatever it
+ * ends with. Only prerender servers (`VINEXT_PRERENDER=1`) append the marker,
+ * and only for a request that sent a nonce.
  */
 import {
   ALL_RENDER_REQUEST_API_KINDS,
@@ -22,6 +25,9 @@ import {
   type RenderObservationCompleteness,
   type RenderRequestApiStatus,
 } from "./cache-proof.js";
+import { isPrerenderObservationNonce } from "./prerender-route-params.js";
+
+export { isPrerenderObservationNonce };
 
 /** The observations of a prerendered App page's render, one per stored artifact. */
 export type PrerenderRenderObservations = {
@@ -33,16 +39,10 @@ const MARKER_PREFIX = "<!--vinext-prerender-render-observations:";
 const MARKER_SUFFIX = "-->";
 // encodeURIComponent output, so a match can't span other markup.
 const ENCODED_PAYLOAD = /^[A-Za-z0-9\-_.!~*'()%]*$/;
-// Long enough to be unguessable, and safe inside an HTML comment.
-const NONCE = /^[A-Za-z0-9-]{16,128}$/;
 
 /** A fresh nonce for one prerender page request. */
 export function createPrerenderObservationNonce(): string {
   return crypto.randomUUID();
-}
-
-export function isPrerenderObservationNonce(value: unknown): value is string {
-  return typeof value === "string" && NONCE.test(value);
 }
 
 /**
@@ -73,9 +73,8 @@ export function appendPrerenderRenderObservations(
 /**
  * Split a prerendered HTML body into the document and the observations the
  * render appended for the request that sent `nonce`. A body that doesn't end
- * with that request's marker keeps every byte and has no observations. A
- * marker with the nonce but a malformed payload is still stripped: only the
- * renderer knew the nonce.
+ * with that request's marker, carrying valid observations, keeps every byte
+ * and has no observations.
  */
 export function extractPrerenderRenderObservations(
   body: string,
@@ -92,13 +91,14 @@ export function extractPrerenderRenderObservations(
   const payload = body.slice(start + prefix.length, body.length - MARKER_SUFFIX.length);
   if (!ENCODED_PAYLOAD.test(payload)) return unchanged;
 
-  const html = body.slice(0, start);
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(decodeURIComponent(payload));
-    return { html, renderObservations: isPrerenderRenderObservations(parsed) ? parsed : null };
+    parsed = JSON.parse(decodeURIComponent(payload));
   } catch {
-    return { html, renderObservations: null };
+    return unchanged;
   }
+  if (!isPrerenderRenderObservations(parsed)) return unchanged;
+  return { html: body.slice(0, start), renderObservations: parsed };
 }
 
 export function isPrerenderRenderObservations(
