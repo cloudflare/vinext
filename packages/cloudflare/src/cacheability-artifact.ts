@@ -271,9 +271,22 @@ export function writeCacheabilityManifestArtifact(
     throw cacheabilityManifestByteLimitError(manifestBytes);
   }
 
-  writeStringModule(manifestPath, serializedManifest);
   const projectionPath = path.join(serverDirectory, CACHEABILITY_REQUEST_PROJECTION_MODULE);
-  if (fs.existsSync(projectionPath) && fs.lstatSync(projectionPath).isFile()) {
+  const hasProjectionModule =
+    fs.existsSync(projectionPath) && fs.lstatSync(projectionPath).isFile();
+  // Without the projection, the request stage would never drop the query for
+  // the App page paths this manifest certifies.
+  if (
+    !hasProjectionModule &&
+    Object.values(manifest.routes).some((route) => route.kind === "app-page")
+  ) {
+    throw new Error(
+      `Two-stage CDN warming requires ${CACHEABILITY_REQUEST_PROJECTION_MODULE} in the generated Worker artifact. Rebuild the app before deploying.`,
+    );
+  }
+
+  writeStringModule(manifestPath, serializedManifest);
+  if (hasProjectionModule) {
     writeStringModule(
       projectionPath,
       JSON.stringify(projectCacheabilityManifestForRequestStage(manifest)),

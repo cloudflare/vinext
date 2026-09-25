@@ -112,7 +112,8 @@ const OLD_VERSION = "11111111-1111-4111-8111-111111111111";
 const PROBE_VERSION = "22222222-2222-4222-8222-222222222222";
 const FINAL_VERSION = "33333333-3333-4333-8333-333333333333";
 
-function writeTwoStageWorkerArtifact(): void {
+// An App Router build also emits the request stage's projection module.
+function writeTwoStageWorkerArtifact({ appRouter = true } = {}): void {
   writeFile(
     "dist/server/wrangler.json",
     JSON.stringify({ main: "index.js", name: "my-worker", workers_dev: true }),
@@ -130,6 +131,9 @@ function writeTwoStageWorkerArtifact(): void {
     }),
   );
   writeFile(`dist/server/${CACHEABILITY_MANIFEST_MODULE}`, "export default null;\n");
+  if (appRouter) {
+    writeFile(`dist/server/${CACHEABILITY_REQUEST_PROJECTION_MODULE}`, "export default null;\n");
+  }
   writeFile(
     "dist/server/vinext-server.json",
     JSON.stringify({ prerenderSecret: "test-prerender-secret" }),
@@ -467,7 +471,6 @@ describe("Cloudflare CDN warmup deploy flow", () => {
 
   it("writes the request stage's projection of the App page routes that admit query-free entries", () => {
     writeTwoStageWorkerArtifact();
-    writeFile(`dist/server/${CACHEABILITY_REQUEST_PROJECTION_MODULE}`, "export default null;\n");
     const routes: CacheabilityManifest["routes"] = {};
     const records: CacheabilityManifestRoute[] = [
       {
@@ -537,18 +540,47 @@ describe("Cloudflare CDN warmup deploy flow", () => {
     });
   });
 
-  it("writes no projection for a build without the request stage's projection module", () => {
-    writeTwoStageWorkerArtifact();
+  it("writes no projection for a Pages Router build", () => {
+    writeTwoStageWorkerArtifact({ appRouter: false });
+    const route: CacheabilityManifestRoute = {
+      kind: "pages-page",
+      pattern: "/legacy",
+      state: "static-candidate",
+    };
 
     writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
       buildId: "build-a",
-      routes: {},
+      routes: { [cacheabilityManifestRouteKey(route.kind, route.pattern)]: route },
       version: 1,
     });
 
     expect(
       fs.existsSync(path.join(tmpDir, "dist/server", CACHEABILITY_REQUEST_PROJECTION_MODULE)),
     ).toBe(false);
+  });
+
+  it("rejects an App page manifest for an artifact without the request stage's projection module", () => {
+    // A stale or pre-built artifact would otherwise deploy RSC listings its
+    // request stage never strips the query for.
+    writeTwoStageWorkerArtifact({ appRouter: false });
+    const route: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/about",
+      state: "static-candidate",
+    };
+
+    expect(() =>
+      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+        buildId: "build-a",
+        routes: { [cacheabilityManifestRouteKey(route.kind, route.pattern)]: route },
+        version: 1,
+      }),
+    ).toThrow(
+      `requires ${CACHEABILITY_REQUEST_PROJECTION_MODULE} in the generated Worker artifact`,
+    );
+    expect(
+      fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
+    ).toBe("export default null;\n");
   });
 
   it("accepts a manifest over one MiB with more than 10,000 route patterns", () => {
