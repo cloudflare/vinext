@@ -177,6 +177,12 @@ const nextConfig: NextConfig = {
           has: [{ type: "header", key: "next-action" }],
           destination: "/client-page-search-params/action?q=from-action",
         },
+        // Used by Playwright: app-router/client-page-search-params-hmr.spec.ts
+        {
+          source: "/client-page-search-params/hmr",
+          has: [{ type: "cookie", key: "client-page-hmr-q" }],
+          destination: "/client-page-search-params/hmr?q=from-cookie",
+        },
       ],
       afterFiles: [
         // Used by Vitest: app-router.test.ts

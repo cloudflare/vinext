@@ -3051,11 +3051,6 @@ function bootstrapHydration(
         return;
       }
       clearClientNavigationCaches();
-      // Same URL, so the same rendered query.
-      const navigationSnapshot = withRenderedSearchOf(
-        createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
-        browserNavigationController.getBrowserRouterState().navigationSnapshot,
-      );
       // Clear stale errors from the dev overlay before dispatching the
       // fresh tree. If the new tree renders cleanly, the overlay stays
       // empty; if it throws again, devOnCaughtError/devOnUncaughtError
@@ -3070,16 +3065,30 @@ function bootstrapHydration(
           browserNavigationController.getBrowserRouterState().elements,
         ),
       });
+      const hmrResponse = await fetch(
+        await createRscRequestUrl(window.location.pathname + window.location.search, hmrHeaders),
+        { headers: hmrHeaders },
+      );
+      if (updateId !== latestRscHmrUpdateId) return;
+      // Same URL, but a rewrite can resolve another query than the tree had.
+      const renderedPathAndSearch = parseRenderedPathAndSearchHeader(
+        hmrResponse.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
+      );
+      const navigationSnapshot =
+        renderedPathAndSearch === null
+          ? withRenderedSearchOf(
+              createClientNavigationRenderSnapshot(window.location.href, latestClientParams),
+              browserNavigationController.getBrowserRouterState().navigationSnapshot,
+            )
+          : createClientNavigationRenderSnapshot(
+              window.location.href,
+              latestClientParams,
+              renderedPathAndSearch,
+            );
       await browserNavigationController.hmrReplaceTree(
         decodeAppElementsPromise(
           createFromFetch<AppWireElements>(
-            fetch(
-              await createRscRequestUrl(
-                window.location.pathname + window.location.search,
-                hmrHeaders,
-              ),
-              { headers: hmrHeaders },
-            ).then(stripRscCompletionMetadataResponse),
+            Promise.resolve(stripRscCompletionMetadataResponse(hmrResponse)),
           ),
         ),
         navigationSnapshot,
