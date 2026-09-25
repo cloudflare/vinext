@@ -1319,6 +1319,65 @@ test("a re-store whose R2 rewrite fails leaves the source revision readable", as
   assert.equal(await regenerationCount(), 2);
 });
 
+test("a hard-expired entry whose re-store write fails is served as re-stored", async () => {
+  await useFailingSecondR2Write("before");
+  const options = {
+    cacheControl: "public, max-age=1",
+    age: 1,
+    date: new Date(Date.now() - 60_000).toUTCString(),
+    revalidator: { fail: true },
+  };
+  // The first entry's re-store write fails; the second one's lands.
+  const entries: any[] = [];
+  for (const path of ["/restore-hard-expired/lost", "/restore-hard-expired/landed"]) {
+    await put(path, "still-active", options);
+    const failed = await read(path);
+    assert.equal(failed.status, 500);
+    await failed.arrayBuffer();
+    entries.push(await waitForRestore(path));
+  }
+  const lostObject = await (
+    await mf.getR2Bucket("CACHE_BODIES", "user-worker")
+  ).head(`${r2Root}/${entries[0].keyHash}/active`);
+  assert.notEqual(lostObject?.customMetadata?.freshUntil, String(entries[0].freshUntil));
+
+  // Inside the retry window, the entry whose R2 object is still hard-expired
+  // is served without regenerating, exactly as the rewritten one is.
+  const [lost, landed] = await Promise.all([
+    read("/restore-hard-expired/lost"),
+    read("/restore-hard-expired/landed"),
+  ]);
+  const timing = new Set([
+    "age",
+    "cache-tag",
+    "cloudflare-cdn-cache-control",
+    "date",
+    "x-workers-response-store-age-basis",
+    "x-workers-response-store-binding-invocation",
+  ]);
+  const comparable = (response: Response) =>
+    [...response.headers].filter(([name]) => !timing.has(name));
+  assert.equal(lost.status, 200);
+  assert.deepEqual(comparable(lost), comparable(landed));
+  for (const [index, response] of [lost, landed].entries()) {
+    const restoredAt = entries[index].freshUntil - 3_000;
+    assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+    assert.equal(response.headers.get("X-Workers-Response-Store-Age-Basis"), `${restoredAt}:0`);
+    assert.equal(response.headers.get("Date"), new Date(restoredAt).toUTCString());
+    assert.match(response.headers.get("Age") ?? "", /^[0-3]$/);
+    assert.match(
+      response.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
+      /^max-age=[1-3], stale-while-revalidate=3$/,
+    );
+    assert.equal(await response.text(), "still-active");
+  }
+  assert.equal(await regenerationCount(), 2);
+
+  // Manual refresh still regenerates inside the retry window.
+  await refreshSelectors({ pathPrefixes: ["/restore-hard-expired/lost"] });
+  assert.equal(await regenerationCount(), 3);
+});
+
 test("a re-store whose R2 rewrite lands before reporting failure keeps it", async () => {
   await useFailingSecondR2Write("after");
   await put("/restore-write-landed", "stale-body", {
@@ -2566,9 +2625,11 @@ test("concurrent failed foreground regenerations leave R2 and the metadata in st
   assert.equal(object?.customMetadata?.swrUntil, String(entry.swrUntil));
 });
 
-// Two failed foreground regenerations re-store successive states of the same
-// revision: the second reads R2 while the first re-store's rewrite is held,
-// and the held rewrite then lands before or after the second one.
+// A failed foreground regeneration and a failed manual refresh re-store
+// successive states of the same revision: the refresh reads R2 while the first
+// re-store's rewrite is held, and the held rewrite then lands before or after
+// the refresh's. Reads inside the retry window no longer regenerate, but a
+// manual refresh still does.
 async function restoreSuccessiveStates(order: "before" | "after") {
   await restartWithHeldSecondR2Write(order);
   const cacheKey = `/restore-race-${order}`;
@@ -2587,9 +2648,8 @@ async function restoreSuccessiveStates(order: "before" | "after") {
   }
   assert.ok(firstRestore, "the first re-store was not published");
 
-  const second = await read(cacheKey);
-  assert.equal(second.status, 500);
-  await second.arrayBuffer();
+  const refresh = await refreshSelectors({ pathPrefixes: [cacheKey] });
+  assert.equal(refresh.response.status, 500);
   const firstResponse = await first;
   assert.equal(firstResponse.status, 500);
   await firstResponse.arrayBuffer();

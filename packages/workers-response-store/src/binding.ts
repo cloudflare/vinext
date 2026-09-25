@@ -1104,6 +1104,38 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   }
 
   /**
+   * The response a re-store serves, for a read that reaches it before its R2
+   * rewrite lands: the revision's R2 body with the metadata's freshness and
+   * the headers and age basis the rewrite stores. The re-store's time is its
+   * fresh-until time less the retry window.
+   */
+  private async readRestoredResponse(entry: StoredEntry, now: number): Promise<Response | null> {
+    const policy = deriveFailedRegenerationPolicy(new Headers(entry.responseHeaders), now);
+    if (!policy) return null;
+    const source = await this.readRepublishSource(entry);
+    if (!source) return null;
+
+    const restoredAt = entry.freshUntil - policy.retrySeconds * 1000;
+    return this.createStoredResponse(
+      {
+        ...entry,
+        cacheTags: [],
+        objectKey: this.r2ObjectKey(entry.keyHash),
+        responseHeaders: failedRegenerationHeaders(
+          entry.responseHeaders,
+          policy.retrySeconds,
+          restoredAt,
+        ),
+      },
+      NULL_BODY_STATUSES.has(source.status) ? null : source.body,
+      source.status,
+      restoredAt,
+      0,
+      now,
+    );
+  }
+
+  /**
    * Re-store the entry a failed regeneration was replacing, as Next.js does,
    * so reads keep serving it and the next regeneration waits 3-30 s. It uses
    * the regeneration's reservation, and publishes only while that entry is
@@ -1365,19 +1397,36 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     await r2Read?.object?.body.cancel().catch(() => {});
     const metadata = this.getMetadata(keyHash);
-    const regeneration = await metadata.reserveRegeneration(
+    const expired = now >= entry.swrUntil;
+    let regeneration = await metadata.reserveRegeneration(
       keyHash,
       cacheKey.cacheKey,
       this.objectKeyPrefix(keyHash),
       now,
+      undefined,
+      undefined,
+      expired ? entry.activeRevision : undefined,
     );
+    if (regeneration?.entry.revalidator && !regeneration.reservation) {
+      // The metadata holds a re-store's retry window that R2 does not show
+      // yet, so serve what that re-store serves instead of regenerating.
+      const restored = await this.readRestoredResponse(regeneration.entry, now);
+      if (restored) return restored;
+      // R2 no longer holds the revision's body, so it has to be regenerated.
+      regeneration = await metadata.reserveRegeneration(
+        keyHash,
+        cacheKey.cacheKey,
+        this.objectKeyPrefix(keyHash),
+        now,
+      );
+    }
     if (!regeneration) {
       return new Response("Workers Response Store miss", { status: 404, headers: MISS_HEADERS });
     }
     const regenerated = await this.regenerateEntry(
       metadata,
       regeneration.entry,
-      now >= entry.swrUntil ? "expired" : "missing",
+      expired ? "expired" : "missing",
       regeneration.reservation
         ? {
             ...cacheKey,

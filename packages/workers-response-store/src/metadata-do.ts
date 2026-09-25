@@ -76,6 +76,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     createdAt: number,
     expectedActiveRevision?: number,
     expectedLatestRevision?: number,
+    retryWindowRevision?: number,
   ): Promise<RegenerationReservation | null>;
   claimRevalidation(
     keyHash: string,
@@ -875,6 +876,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     createdAt: number,
     expectedActiveRevision?: number,
     expectedLatestRevision?: number,
+    retryWindowRevision?: number,
   ): Promise<RegenerationReservation | null> {
     const result = this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
@@ -893,6 +895,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         return null;
       }
       if (!entry.revalidator) return { entry };
+      // A reader that found this revision expired in R2 while the metadata is
+      // fresh has reached a re-store whose R2 rewrite has not landed. Its
+      // retry window has not ended, so nothing is reserved.
+      if (entry.activeRevision === retryWindowRevision && entry.freshUntil > createdAt) {
+        return { entry };
+      }
 
       const revision = this.reserveRevision(keyHash, cacheKey, current);
       const objectKey = `${objectKeyPrefix}/${revision}`;
