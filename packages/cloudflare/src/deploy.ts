@@ -1744,7 +1744,6 @@ async function deployWithCacheabilityProbe(
         concurrency: options.warmCdnConcurrency,
         expectedResponseBuildId: plan.buildIdentity,
         fallbackRoutePatterns: plan.fallbackRoutePatterns,
-        loadingBoundaryRoutePatterns: plan.loadingBoundaryRoutePatterns,
         phaseTimeoutMs: options.warmCdnProbeTimeout ?? DEFAULT_CACHEABILITY_PROBE_PHASE_TIMEOUT_MS,
         retries:
           options.warmCdnProbeRetries ??

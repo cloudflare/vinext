@@ -190,7 +190,6 @@ describe("Cloudflare CDN warmup", () => {
           { kind: "app-route", pattern: "/api/posts/:slug" },
           { kind: "pages-page", pattern: "/legacy/:slug" },
         ],
-        loadingBoundaryRoutePatterns: ["/dashboard", "/posts/:slug"],
         loadingShellPaths: ["/dashboard"],
         pagesDataPaths: ["/docs/_next/data/build-a/pages.json"],
         paths: ["/dashboard", "/dynamic", "/pages"],
@@ -215,8 +214,6 @@ describe("Cloudflare CDN warmup", () => {
         { kind: "app-route", pattern: "/api/posts/:slug" },
         { kind: "pages-page", pattern: "/legacy/:slug" },
       ],
-      // Route patterns, so neither the basePath nor trailingSlash applies.
-      loadingBoundaryRoutePatterns: ["/dashboard", "/posts/:slug"],
       loadingShellPaths: ["/docs/dashboard/"],
       pagesDataPaths: ["/docs/_next/data/build-a/pages.json"],
       paths: ["/docs/dashboard/", "/docs/dynamic/", "/docs/pages/"],
@@ -350,20 +347,6 @@ describe("Cloudflare CDN warmup", () => {
     expect(() => readPrerenderWarmPlan(tmpDir, { strict: true })).toThrow(
       "prerender path manifest not found",
     );
-  });
-
-  it("rejects malformed loading-boundary route patterns", () => {
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    for (const loadingBoundaryRoutePatterns of ["/posts/:slug", ["posts/:slug"], [1]]) {
-      writeFile(
-        "dist/server/vinext-prerender-paths.json",
-        JSON.stringify({ buildId: "build-a", loadingBoundaryRoutePatterns, paths: ["/"] }),
-      );
-
-      expect(() => readPrerenderWarmPlan(tmpDir, { strict: true })).toThrow(
-        "prerender path manifest not found",
-      );
-    }
   });
 
   it("warms canonical RSC, HTML, and Pages data with browser-identical requests", async () => {
