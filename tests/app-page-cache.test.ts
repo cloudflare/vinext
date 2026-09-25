@@ -2172,9 +2172,8 @@ describe("app page regeneration failures", () => {
     expect(isrSet).toHaveBeenCalledWith("html:/stale", cachedValue, expect.anything());
   });
 
-  // Next.js's set only warns when its cache handler fails, leaving the
-  // previous page entry as it was: no backoff re-store, and the regeneration
-  // doesn't fail.
+  // Next.js's set only warns when its cache handler fails: no backoff
+  // re-store, and the regeneration doesn't fail.
   describe("when storing the regenerated page fails", () => {
     const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
     const previousRscValue = buildCachedAppPageValue(
@@ -2184,44 +2183,24 @@ describe("app page regeneration failures", () => {
       staleObservation,
     );
 
-    // A store that hands back copies, as a serializing one does, and gives
-    // each write a newer lastModified.
-    function failingStore(options: {
-      failingKey: string;
-      previousRsc?: boolean;
-      onFailedWrite?: (store: Map<string, ISRCacheEntry>) => void;
-    }) {
+    function failingStore(failingKey: string) {
       const previousHtml = buildISRCacheEntry(cachedValue, true, { revalidate: 60, expire: 300 });
       const previousRsc = buildISRCacheEntry(previousRscValue, true, {
         revalidate: 60,
         expire: 300,
       });
-      const store = new Map<string, ISRCacheEntry>([["html:/stale", previousHtml]]);
-      if (options.previousRsc !== false) store.set("rsc:/stale", previousRsc);
-      let writes = 0;
+      const store = new Map<string, ISRCacheEntry>([
+        ["html:/stale", previousHtml],
+        ["rsc:/stale", previousRsc],
+      ]);
       const isrSet = vi.fn<AppPageCacheSetter>(async (key, data, policy) => {
-        if (key === options.failingKey && data !== cachedValue && data !== previousRscValue) {
-          options.onFailedWrite?.(store);
-          throw new Error("store failed");
-        }
-        writes++;
+        if (key === failingKey) throw new Error("store failed");
         store.set(key, {
           isStale: false,
-          value: {
-            cacheControl: policy.cacheControl,
-            lastModified: Date.now() + writes,
-            value: { ...data, rscData: data.rscData?.slice(0) },
-          },
+          value: { cacheControl: policy.cacheControl, lastModified: Date.now(), value: data },
         });
       });
       return { isrSet, previousHtml, previousRsc, store };
-    }
-
-    function storedRscText(store: Map<string, ISRCacheEntry>): string | undefined {
-      const value = store.get("rsc:/stale")?.value.value;
-      return value?.kind === "APP_PAGE" && value.rscData
-        ? new TextDecoder().decode(value.rscData)
-        : undefined;
     }
 
     async function regenerate(
@@ -2239,14 +2218,12 @@ describe("app page regeneration failures", () => {
         },
         scheduled,
       });
-      await scheduled[0]();
+      await expect(scheduled[0]()).resolves.toBeUndefined();
     }
 
-    it("warns and leaves the previous page untouched when the RSC write fails", async () => {
+    it("warns and doesn't write the HTML key when the RSC write fails", async () => {
       const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const { isrSet, previousHtml, previousRsc, store } = failingStore({
-        failingKey: "rsc:/stale",
-      });
+      const { isrSet, previousHtml, previousRsc, store } = failingStore("rsc:/stale");
 
       await regenerate(store, isrSet);
 
@@ -2254,14 +2231,17 @@ describe("app page regeneration failures", () => {
         "[vinext] Failed to update prerender cache for rsc:/stale:",
         expect.objectContaining({ message: "store failed" }),
       );
+      // The RSC key is written first, and nothing follows its failed write.
       expect(isrSet.mock.calls.map(([key]) => key)).toEqual(["rsc:/stale"]);
       expect(store.get("html:/stale")).toBe(previousHtml);
       expect(store.get("rsc:/stale")).toBe(previousRsc);
     });
 
-    it("puts the RSC key's previous entry back as it was when the HTML write fails", async () => {
+    // The fresh RSC beside the stale HTML is the state an RSC-triggered
+    // regeneration leaves anyway; the stale HTML regenerates on its next request.
+    it("warns and keeps the fresh RSC when the HTML write fails", async () => {
       const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const { isrSet, previousHtml, store } = failingStore({ failingKey: "html:/stale" });
+      const { isrSet, previousHtml, store } = failingStore("html:/stale");
 
       await regenerate(store, isrSet);
 
@@ -2269,55 +2249,13 @@ describe("app page regeneration failures", () => {
         "[vinext] Failed to update prerender cache for html:/stale:",
         expect.objectContaining({ message: "store failed" }),
       );
-      expect(isrSet).toHaveBeenLastCalledWith("rsc:/stale", previousRscValue, {
-        cacheControl: { revalidate: 60, expire: 300 },
-        tags: ["_N_T_/stale", "posts"],
-      });
-      expect(store.get("rsc:/stale")?.value).toMatchObject({
-        cacheControl: { revalidate: 60, expire: 300 },
-        value: previousRscValue,
-      });
-      expect(storedRscText(store)).toBe("stale-flight");
-      expect(store.get("html:/stale")).toBe(previousHtml);
-    });
-
-    it("doesn't replace an RSC entry another regeneration wrote meanwhile", async () => {
-      vi.spyOn(console, "warn").mockImplementation(() => {});
-      const newerRsc: ISRCacheEntry = {
-        isStale: false,
-        value: {
-          lastModified: Date.now() + 100,
-          value: buildCachedAppPageValue(
-            "",
-            new TextEncoder().encode("newer-flight").buffer,
-            200,
-            staleObservation,
-          ),
-        },
-      };
-      const { isrSet, previousHtml, store } = failingStore({
-        failingKey: "html:/stale",
-        onFailedWrite(entries) {
-          entries.set("rsc:/stale", newerRsc);
-        },
-      });
-
-      await regenerate(store, isrSet);
-
-      expect(store.get("rsc:/stale")).toBe(newerRsc);
-      expect(store.get("html:/stale")).toBe(previousHtml);
-    });
-
-    it("leaves the fresh RSC when there is no previous RSC entry to put back", async () => {
-      vi.spyOn(console, "warn").mockImplementation(() => {});
-      const { isrSet, previousHtml, store } = failingStore({
-        failingKey: "html:/stale",
-        previousRsc: false,
-      });
-
-      await regenerate(store, isrSet);
-
-      expect(storedRscText(store)).toBe("fresh-flight");
+      expect(isrSet.mock.calls.map(([key]) => key)).toEqual(["rsc:/stale", "html:/stale"]);
+      const storedRsc = store.get("rsc:/stale")?.value.value;
+      expect(
+        storedRsc?.kind === "APP_PAGE" && storedRsc.rscData
+          ? new TextDecoder().decode(storedRsc.rscData)
+          : undefined,
+      ).toBe("fresh-flight");
       expect(store.get("html:/stale")).toBe(previousHtml);
     });
   });

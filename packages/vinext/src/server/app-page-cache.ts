@@ -209,16 +209,6 @@ function getCachedAppPageValue(entry: ISRCacheEntry | null): CachedAppPageValue 
   return entry?.value.value && entry.value.value.kind === "APP_PAGE" ? entry.value.value : null;
 }
 
-function hasSameBytes(stored: ArrayBuffer | undefined, written: ArrayBuffer): boolean {
-  if (!stored || stored.byteLength !== written.byteLength) return false;
-  const left = new Uint8Array(stored);
-  const right = new Uint8Array(written);
-  for (let i = 0; i < left.length; i++) {
-    if (left[i] !== right[i]) return false;
-  }
-  return true;
-}
-
 function resolveRegeneratedAppPageCacheControl(options: {
   expireSeconds?: number;
   renderCacheControl?: CacheControlMetadata;
@@ -485,19 +475,11 @@ export async function readAppPageCacheResponse(
     }
 
     if (cached?.isStale && cachedValue) {
-      // Put a key's previous entry back: after a failed render with a backoff
-      // policy, as Next.js re-stores it; after a failed store with its own
-      // policy, as Next.js's set leaves it untouched. Another regeneration can
-      // write the key too (an HTML one also writes the RSC key), so a newer
-      // entry is left alone unless `isOwnWrite` recognizes it as this
-      // regeneration's. A missing one is restored, as Next.js restores
-      // unconditionally.
-      const keepPreviousEntry = async (
-        key: string,
-        previous: ISRCacheEntry,
-        backoff: boolean,
-        isOwnWrite: (current: ISRCacheEntry) => boolean = () => false,
-      ): Promise<void> => {
+      // Re-store a key's previous entry with a backoff policy after a failed
+      // render, as Next.js does. Another regeneration can write the key too (an
+      // HTML one also writes the RSC key), so a newer entry is left alone. A
+      // missing one is restored, as Next.js restores unconditionally.
+      const keepPreviousEntry = async (key: string, previous: ISRCacheEntry): Promise<void> => {
         const previousValue = getCachedAppPageValue(previous);
         const previousCacheControl = previous.value.cacheControl;
         // Its tags come from its render observation; an entry without one can't
@@ -507,15 +489,9 @@ export async function readAppPageCacheResponse(
         if (!previousValue || !previousCacheControl || !previousTags || previous.isExpired) return;
         try {
           const current = await options.isrGet(key);
-          if (
-            !current ||
-            current.value.lastModified === previous.value.lastModified ||
-            isOwnWrite(current)
-          ) {
+          if (!current || current.value.lastModified === previous.value.lastModified) {
             await options.isrSet(key, previousValue, {
-              cacheControl: backoff
-                ? resolveRegenerationFailureCacheControl(previousCacheControl)
-                : previousCacheControl,
+              cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
               tags: [...previousTags],
             });
           }
@@ -567,15 +543,9 @@ export async function readAppPageCacheResponse(
               options.interceptionContext,
               options.interceptionId,
             );
-        // Next.js keeps a page's HTML and RSC as one entry, so an HTML-triggered
-        // regen holds the RSC key's previous entry to put back if its HTML
-        // write then fails. One that can't be read just can't be put back.
-        const previousRscEntry = options.isRscRequest
-          ? null
-          : await options.isrGet(rscKey).catch(() => null);
-        // Next.js's set only warns when its cache handler fails, so a failed
-        // store is not a failed regeneration: it neither throws nor re-stores
-        // the previous entry with a backoff policy.
+        // Next.js's IncrementalCache.set only warns when its cache handler
+        // fails, so a failed store is not a failed regeneration: it neither
+        // throws nor re-stores the previous entry with a backoff policy.
         const store = async (key: string, value: CachedAppPageValue): Promise<boolean> => {
           try {
             await options.isrSet(key, value, { cacheControl, tags: revalidatedPage.tags });
@@ -613,17 +583,10 @@ export async function readAppPageCacheResponse(
               revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
             ),
           );
-          if (!storedHtml) {
-            // Don't leave this regeneration's RSC published beside the previous
-            // HTML. Its own write is recognized by its payload, since a store
-            // may hand back a copy.
-            if (previousRscEntry) {
-              await keepPreviousEntry(rscKey, previousRscEntry, false, (current) =>
-                hasSameBytes(getCachedAppPageValue(current)?.rscData, revalidatedPage.rscData),
-              );
-            }
-            return;
-          }
+          // A failed HTML write leaves this regeneration's RSC beside the
+          // stale HTML: the state an RSC-triggered regeneration leaves anyway,
+          // and the stale HTML regenerates on its next request.
+          if (!storedHtml) return;
         }
         options.isrDebug?.("regen complete", options.cleanPathname);
       };
@@ -635,7 +598,7 @@ export async function readAppPageCacheResponse(
         } catch (error) {
           // Keep the previous entry under this key only: an RSC-triggered
           // regeneration must not write its payload under the HTML key.
-          await keepPreviousEntry(isrKey, cached, true);
+          await keepPreviousEntry(isrKey, cached);
           throw error;
         }
       });
