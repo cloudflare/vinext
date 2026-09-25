@@ -23,7 +23,10 @@ import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
-import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
+import {
+  buildPregeneratedConcretePathTable,
+  type PrerenderRenderObservations,
+} from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
 import { classifyPagesRoute, classifyAppRoute, getAppRouteRenderEntryPath } from "./report.js";
 import {
@@ -44,6 +47,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
@@ -174,6 +178,8 @@ export type PrerenderRouteResult =
       responseStatus?: number;
       /** Cache tags collected while rendering this route. */
       tags?: string[];
+      /** The App page render's observations, stored with its seeds. */
+      renderObservations?: PrerenderRenderObservations;
       /** Raw app-tree segments used to derive App Route implicit tags. */
       routeSegments?: string[];
       /** Set to true when this is a PPR fallback shell. */
@@ -1649,6 +1655,7 @@ export async function prerenderApp({
                 linkHeader,
                 html: null,
                 ok: response.ok,
+                renderObservations: null,
                 requestCacheLife: null,
                 tags: [],
                 status: response.status,
@@ -1666,6 +1673,7 @@ export async function prerenderApp({
               linkHeader,
               html,
               ok: true,
+              renderObservations: readPrerenderRenderObservationHeader(response.headers),
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
               tags: cacheTags,
@@ -1792,6 +1800,9 @@ export async function prerenderApp({
           ...(renderedStale === undefined ? {} : { stale: renderedStale }),
           router: "app",
           ...(htmlRender.tags.length > 0 ? { tags: htmlRender.tags } : {}),
+          ...(htmlRender.renderObservations
+            ? { renderObservations: htmlRender.renderObservations }
+            : {}),
           ...(htmlRender.linkHeader ? { headers: { link: htmlRender.linkHeader } } : {}),
           ...(urlPath !== routePattern ? { path: urlPath } : {}),
           ...(isFallback ? { fallback: true } : {}),
@@ -1967,6 +1978,31 @@ function readPrerenderCacheTagsHeader(headers: Headers): string[] {
   return [...new Set(value.split(",").filter(Boolean))];
 }
 
+function readPrerenderRenderObservationHeader(
+  headers: Headers,
+): PrerenderRenderObservations | null {
+  const value = headers.get(VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER);
+  if (!value) return null;
+
+  try {
+    const parsed = JSON.parse(decodeURIComponent(value)) as {
+      html?: unknown;
+      rsc?: unknown;
+    };
+    return isRenderObservationShape(parsed.html) && isRenderObservationShape(parsed.rsc)
+      ? (parsed as PrerenderRenderObservations)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRenderObservationShape(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const observation = value as { completeness?: unknown; requestApis?: unknown };
+  return typeof observation.completeness === "string" && Array.isArray(observation.requestApis);
+}
+
 function resolveRenderedExpireSeconds(options: {
   fallbackExpireSeconds: number;
   sMaxage?: number;
@@ -2021,6 +2057,7 @@ export function writePrerenderIndex(
         ...(typeof r.stale === "number" ? { stale: r.stale } : {}),
         router: r.router,
         ...(r.tags && r.tags.length > 0 ? { tags: r.tags } : {}),
+        ...(r.renderObservations ? { renderObservations: r.renderObservations } : {}),
         ...(r.routeSegments ? { routeSegments: r.routeSegments } : {}),
         ...(r.headers ? { headers: r.headers } : {}),
         ...(typeof r.responseStatus === "number" ? { responseStatus: r.responseStatus } : {}),

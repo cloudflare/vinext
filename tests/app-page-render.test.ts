@@ -53,9 +53,12 @@ import {
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
 } from "../packages/vinext/src/server/headers.js";
+import { hasQueryInvariantRenderProof } from "../packages/vinext/src/server/cache-proof.js";
+import type { PrerenderRenderObservations } from "../packages/vinext/src/server/prerender-manifest.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import type { IsrWritePolicy } from "../packages/vinext/src/server/isr-cache.js";
@@ -2045,6 +2048,81 @@ describe("app page render lifecycle", () => {
     await expect(response.text()).resolves.toBe("<html>page</html>");
     expect(common.waitUntilPromises).toHaveLength(0);
     expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("carries the prerender's HTML and RSC render observations for its seeds", async () => {
+    const common = createCommonOptions();
+    let requestApis: ("headers" | "searchParams")[] = [];
+    const consumeRenderObservationState = vi.fn(() => ({ dynamicFetches: [], requestApis }));
+
+    const renderPrerender = (readInRender: "headers" | "searchParams" | null) =>
+      renderAppPageLifecycle({
+        ...common.options,
+        consumeRenderObservationState,
+        getPageTags() {
+          return ["_N_T_/posts/post", "test-update-tag"];
+        },
+        isPrerender: true,
+        isProduction: true,
+        peekRenderObservationState() {
+          return { dynamicFetches: [], requestApis };
+        },
+        renderToReadableStream() {
+          let sent = false;
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (sent) {
+                controller.close();
+                return;
+              }
+              // Recorded while the render runs, so the response must be built
+              // from the settled render's state.
+              requestApis = readInRender ? [readInRender] : [];
+              controller.enqueue(new TextEncoder().encode("flight-data"));
+              sent = true;
+            },
+          });
+        },
+        revalidateSeconds: 60,
+      });
+    const readObservations = (response: Response): PrerenderRenderObservations => {
+      const header = response.headers.get(VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER);
+      expect(header).not.toBeNull();
+      return JSON.parse(decodeURIComponent(header!));
+    };
+
+    const response = await renderPrerender("headers");
+    const observations = readObservations(response);
+    expect(observations.html.output.kind).toBe("app-html");
+    expect(observations.rsc.output.kind).toBe("app-rsc");
+    for (const observation of [observations.html, observations.rsc]) {
+      expect(observation.completeness).toBe("complete");
+      expect(observation.cacheTags).toEqual(["_N_T_/posts/post", "test-update-tag"]);
+      expect(observation.requestApis).toContainEqual({ kind: "headers", status: "observed" });
+      expect(hasQueryInvariantRenderProof(observation)).toBe(true);
+    }
+    await expect(response.text()).resolves.toBe("<html>page</html>");
+
+    const searchParamsObservations = readObservations(await renderPrerender("searchParams"));
+    expect(hasQueryInvariantRenderProof(searchParamsObservations.html)).toBe(false);
+    expect(hasQueryInvariantRenderProof(searchParamsObservations.rsc)).toBe(false);
+    // Peeked, not consumed: the done script still reads the state while the
+    // HTML streams.
+    expect(consumeRenderObservationState).not.toHaveBeenCalled();
+    expect(common.isrSet).not.toHaveBeenCalled();
+  });
+
+  it("does not send prerender render observations outside prerendering", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      isProduction: true,
+      revalidateSeconds: 60,
+    });
+
+    expect(response.headers.get(VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER)).toBeNull();
+    await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
   it("disables HTML ISR caching when the response carries a script nonce", async () => {

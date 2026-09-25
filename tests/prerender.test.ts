@@ -26,7 +26,11 @@ import {
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import { queryInvariantPrerenderObservations } from "./render-observation-test-helpers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import {
@@ -566,6 +570,67 @@ describe("prerenderApp — RSC extraction", () => {
       });
       expect(fs.readFileSync(path.join(outDir, "index.rsc"), "utf-8")).toBe(rscPayload);
       expect(rscRequestCount).toBe(0);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records the render's observations in the manifest for the seeds", async () => {
+    const root = tmpDir("vinext-prerender-render-observation-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(appDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "page.tsx"),
+      "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
+    );
+
+    const renderObservations = queryInvariantPrerenderObservations();
+    const server = createServer((req, res) => {
+      if (req.url === "/__vinext_nonexistent_for_404__") {
+        res.statusCode = 404;
+        res.end("<html><body>not found</body></html>");
+        return;
+      }
+      res.setHeader("content-type", "text/html");
+      res.setHeader(
+        VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
+        encodeURIComponent(JSON.stringify(renderObservations)),
+      );
+      res.end(
+        "<html><body>" +
+          runtimeRscChunkScript('0:["$","div",null,{"children":"page"}]\n') +
+          runtimeRscDoneScript() +
+          "</body></html>",
+      );
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await appRouter(appDir);
+      const config = await resolveNextConfig({});
+
+      const prerenderResult = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config,
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(prerenderResult.routes, "/")).toMatchObject({
+        status: "rendered",
+        renderObservations,
+      });
+      const index = JSON.parse(fs.readFileSync(path.join(outDir, "vinext-prerender.json"), "utf8"));
+      expect(index.routes.find((route: { route: string }) => route.route === "/")).toMatchObject({
+        renderObservations,
+      });
     } finally {
       await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });
@@ -1263,6 +1328,26 @@ describe("prerenderApp — default mode (app-basic)", () => {
     }
     const html = fs.readFileSync(path.join(outDir, "static-test.html"), "utf-8");
     expect(html).toContain("searchParamsFromBrowser:false");
+  });
+
+  it("records render observations proving static renders left the query unread", async () => {
+    const { hasQueryInvariantRenderProof } =
+      await import("../packages/vinext/src/server/cache-proof.js");
+    // Explicit force-static, speculative (no config), and a Suspense-wrapped
+    // useSearchParams() bail-out, which isn't a read.
+    for (const pathname of [
+      "/static-test",
+      "/",
+      "/nextjs-compat/use-search-params-static-bailout",
+    ]) {
+      const r = findRoute(results, pathname);
+      expect(r?.status).toBe("rendered");
+      if (r?.status !== "rendered") continue;
+      expect(r.renderObservations?.html.output.kind).toBe("app-html");
+      expect(r.renderObservations?.rsc.output.kind).toBe("app-rsc");
+      expect(hasQueryInvariantRenderProof(r.renderObservations?.html)).toBe(true);
+      expect(hasQueryInvariantRenderProof(r.renderObservations?.rsc)).toBe(true);
+    }
   });
 
   it("emits the nearest Suspense fallback when useSearchParams bails out during prerender", () => {
@@ -2277,6 +2362,17 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
       if (r?.status === "rendered") {
         expect(r.outputFiles).toContain("index.html");
         expect(r.outputFiles).toContain("index.rsc");
+      }
+    });
+
+    it("records the Worker render's observations for the seeds", async () => {
+      const { hasQueryInvariantRenderProof } =
+        await import("../packages/vinext/src/server/cache-proof.js");
+      const r = findRoute(allResults, "/");
+      expect(r?.status).toBe("rendered");
+      if (r?.status === "rendered") {
+        expect(hasQueryInvariantRenderProof(r.renderObservations?.html)).toBe(true);
+        expect(hasQueryInvariantRenderProof(r.renderObservations?.rsc)).toBe(true);
       }
     });
 

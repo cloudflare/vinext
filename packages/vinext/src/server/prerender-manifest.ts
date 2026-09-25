@@ -1,4 +1,11 @@
 import fs from "node:fs";
+import type { RenderObservation } from "./cache-proof.js";
+
+/** The observations of a prerendered App page's render, one per stored artifact. */
+export type PrerenderRenderObservations = {
+  html: RenderObservation;
+  rsc: RenderObservation;
+};
 
 export type PrerenderManifestRoute = {
   route: string;
@@ -19,6 +26,11 @@ export type PrerenderManifestRoute = {
   responseStatus?: number;
   routeSegments?: string[];
   tags?: string[];
+  /**
+   * Observations of the prerender's own render, stored with the seeded App
+   * page entries. Absent on manifests written by older builds.
+   */
+  renderObservations?: PrerenderRenderObservations;
 };
 
 export type PrerenderManifest = {

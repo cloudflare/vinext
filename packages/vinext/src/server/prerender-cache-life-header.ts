@@ -1,5 +1,10 @@
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
-import { NEXT_CACHE_TAGS_HEADER, VINEXT_PRERENDER_CACHE_LIFE_HEADER } from "./headers.js";
+import {
+  NEXT_CACHE_TAGS_HEADER,
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
+} from "./headers.js";
+import type { PrerenderRenderObservations } from "./prerender-manifest.js";
 
 type PrerenderCacheLife = {
   expire?: number;
@@ -46,4 +51,18 @@ export function applyPrerenderCacheTagsHeader(
   if (cacheTags.length > 0) {
     headers.set(NEXT_CACHE_TAGS_HEADER, cacheTags.join(","));
   }
+}
+
+export function applyPrerenderRenderObservationHeader(
+  headers: Headers,
+  renderObservations: PrerenderRenderObservations | undefined,
+): void {
+  if (!renderObservations) return;
+  // Build-internal channel: build/prerender.ts stores these in the prerender
+  // manifest for the seed readers. URL-encoded because route ids and paths can
+  // hold characters a header value can't.
+  headers.set(
+    VINEXT_PRERENDER_RENDER_OBSERVATION_HEADER,
+    encodeURIComponent(JSON.stringify(renderObservations)),
+  );
 }

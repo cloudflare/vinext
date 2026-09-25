@@ -82,8 +82,10 @@ import {
   createAppPageHtmlOutputScope,
   createAppPageRenderObservation,
   createAppPageRscOutputScope,
+  createEmptyAppPageRenderObservationState,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
+import type { PrerenderRenderObservations } from "./prerender-manifest.js";
 import type {
   AppLayoutParamAccessTracker,
   StaticLayoutObservationSkipRejection,
@@ -1483,6 +1485,32 @@ async function renderAppPageLifecycleImpl(
     responseKind: "html",
   });
 
+  // The prerender returns before the cache finalizer, so its response carries
+  // this render's observations for the seeds, read at the same point as its
+  // Cache-Control. Peek, not consume: the done script still reads the state
+  // while the HTML streams.
+  let prerenderRenderObservations: PrerenderRenderObservations | undefined;
+  if (options.isPrerender === true) {
+    const observationState =
+      options.peekRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
+    const cacheTags = options.getPageTags();
+    const observePrerender = (output: typeof htmlOutputScope) =>
+      createAppPageRenderObservation({
+        boundaryOutcome: { kind: "success" },
+        cacheability: "public",
+        cacheTags,
+        cleanPathname: options.cleanPathname,
+        completeness: "complete",
+        output,
+        params: options.navigationParams,
+        state: observationState,
+      });
+    prerenderRenderObservations = {
+      html: observePrerender(htmlOutputScope),
+      rsc: observePrerender(rscOutputScope),
+    };
+  }
+
   if (htmlRender.shellErrorRecovered) {
     const response = buildAppPageHtmlResponse(safeHtmlStream, {
       cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,
@@ -1520,6 +1548,7 @@ async function renderAppPageLifecycleImpl(
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareContext: options.middlewareContext,
       policy: htmlResponsePolicy,
+      renderObservations: prerenderRenderObservations,
       requestCacheLife: requestCacheLifeForPrerender,
       timing: htmlResponseTiming,
     });
@@ -1598,6 +1627,7 @@ async function renderAppPageLifecycleImpl(
     isEdgeRuntime: options.isEdgeRuntime,
     middlewareContext: options.middlewareContext,
     policy: htmlResponsePolicy,
+    renderObservations: prerenderRenderObservations,
     requestCacheLife: requestCacheLifeForPrerender,
     timing: htmlResponseTiming,
   });
