@@ -1240,6 +1240,40 @@ describe("buildPageElements", () => {
     expect(findElementOfType(pageElement, ClientPageRoot)).toBeNull();
   });
 
+  it("marks a class component page that reads searchParams dynamic without a query", async () => {
+    // Flight passes a class component's props straight to it, so a read is a
+    // real read, as for a function component page. Without a query this used
+    // to be observed without marking the render dynamic, so it was stored.
+    class ClassPage extends React.Component<{ searchParams: Record<string, unknown> }> {
+      render(): React.ReactNode {
+        return React.createElement("div", null, `q:${String(this.props.searchParams.q)}`);
+      }
+    }
+    const route = createSyntheticRoute({
+      page: createSyntheticPageModule(ClassPage),
+      layouts: [],
+      routeSegments: ["class-page"],
+      pattern: "/class-page",
+    });
+
+    const result = await buildPageElements({
+      ...createBaseOptions({
+        route,
+        routePath: "/class-page",
+        searchParams: new URLSearchParams(),
+      }),
+      pageRequest: {
+        ...createBaseOptions().pageRequest,
+        observePageSearchParamsAccess: true,
+        searchParams: new URLSearchParams(),
+      },
+    });
+
+    await expect(renderElementEntry(result, "page:/class-page")).resolves.toContain("q:undefined");
+    expect(markDynamicUsageMock).toHaveBeenCalled();
+    expect(markRenderRequestApiUsageMock).toHaveBeenCalledWith("searchParams");
+  });
+
   it("attaches route-state slot bindings for active, default, and unmatched slots", async () => {
     function TestPage(): React.ReactNode {
       return React.createElement("div", null, "Hello");

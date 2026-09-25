@@ -558,7 +558,6 @@ export async function buildPageElements<
   void streamingMetadataOutlet?.catch(() => null);
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };
-  const hasRequestSearchParams = Object.keys(pageSearchParams).length > 0;
   const pageTreePosition = (sourcePageSegments ?? route.routeSegments ?? []).length;
   const hasPageLoadingBoundary =
     resolveAppPageLoadingModuleAtOrAbove(route, pageTreePosition) !== null ||
@@ -591,12 +590,13 @@ export async function buildPageElements<
     }
 
     if (isReactOwnedAppComponent(PageComponent)) {
+      // Class components and other exports React invokes itself. Flight hands
+      // them their props instead of serializing them, so a read is a real
+      // read, as for a function component page.
       const invocationProps: Record<string, unknown> = { ...props };
       if (searchParams) {
         invocationProps.searchParams = observePageSearchParamsAccess
-          ? makeObservedAppPageSearchParamsThenable(pageSearchParams, {
-              markDynamic: hasRequestSearchParams,
-            })
+          ? makeObservedAppPageSearchParamsThenable(pageSearchParams)
           : makeThenableParams(pageSearchParams);
       }
       return createElement(PageComponent, withUseCachePageMarker(PageComponent, invocationProps));
