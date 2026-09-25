@@ -120,9 +120,32 @@ const POLICY_HEADERS = new Set([
   "cloudflare-cdn-cache-control",
 ]);
 
+// Split cache-control on the commas between directives. A comma inside a
+// quoted extension value belongs to that value, so it is kept verbatim.
+function splitDirectives(cacheControl: string): string[] {
+  const directives: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < cacheControl.length; index++) {
+    const character = cacheControl[index];
+    if (escaped) {
+      escaped = false;
+    } else if (quoted && character === "\\") {
+      escaped = true;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      directives.push(cacheControl.slice(start, index));
+      start = index + 1;
+    }
+  }
+  directives.push(cacheControl.slice(start));
+  return directives;
+}
+
 function capFreshness(cacheControl: string, maxSeconds: number): string {
-  return cacheControl
-    .split(",")
+  return splitDirectives(cacheControl)
     .map((part) => part.trim())
     .filter((part) => part && part.toLowerCase() !== "immutable")
     .map((part) => {

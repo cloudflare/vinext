@@ -924,6 +924,19 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
       forwarded: { "Cache-Control": "public, max-age=30, stale-while-revalidate=5" },
     },
     {
+      path: "/backoff/quoted",
+      options: {
+        cacheControl: 'public, max-age=60, stale-while-revalidate=5, ext="foo,immutable,bar"',
+        age: 60,
+      },
+      retry: 30,
+      expire: 65,
+      // A quoted extension value is not split into directives.
+      forwarded: {
+        "Cache-Control": 'public, max-age=30, stale-while-revalidate=5, ext="foo,immutable,bar"',
+      },
+    },
+    {
       path: "/backoff/static",
       options: {
         cacheControl: "public, max-age=31536000, immutable",
