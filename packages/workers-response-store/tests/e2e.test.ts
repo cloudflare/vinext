@@ -1214,7 +1214,8 @@ test("a failed background regeneration backs off before retrying", async () => {
 });
 
 test("a re-store's retry window starts once its source body is read", async () => {
-  // Buffering an entry's R2 body takes longer than the 3 s retry window.
+  // Buffering an entry's R2 body takes longer than the 3 s retry window. The
+  // wrapper records when it finishes, bypassing itself.
   await restartWithWrappedR2Bucket(
     "slow-restore-source.js",
     `(bucket) => ({
@@ -1229,7 +1230,11 @@ test("a re-store's retry window starts once its source body is read", async () =
           size,
           async arrayBuffer() {
             await new Promise((resolve) => setTimeout(resolve, 3500));
-            return object.arrayBuffer();
+            const buffered = await object.arrayBuffer();
+            await bucket.put("test/source-read", "", {
+              customMetadata: { at: String(Date.now()) },
+            });
+            return buffered;
           },
         };
       },
@@ -1246,26 +1251,37 @@ test("a re-store's retry window starts once its source body is read", async () =
     date: new Date(Date.now() - 60_000).toUTCString(),
     revalidator: { fail: true },
   });
+  const stored = (await metadata()).find((candidate) => candidate.cacheKey === path);
   const stale = await read(path);
   assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
   assert.equal(await stale.text(), "stale-body");
 
+  // The metadata is published before R2, and each is read separately, so the
+  // re-store has landed only once both show its new freshness.
   const bucket = await mf.getR2Bucket("CACHE_BODIES", "user-worker");
+  const objectKey = `${r2Root}/${stored.keyHash}/active`;
   let entry: any;
+  let object: Awaited<ReturnType<typeof bucket.head>> = null;
   for (let attempt = 0; attempt < 300; attempt++) {
     entry = (await metadata()).find((candidate) => candidate.cacheKey === path);
-    const object = await bucket.head(`${r2Root}/${entry.keyHash}/active`);
+    object = await bucket.head(objectKey);
     if (
-      (await regenerationCount()) === 1 &&
-      (await metadataRowCount("revalidation_claims")) === 0 &&
+      entry.freshUntil !== stored.freshUntil &&
       object?.customMetadata?.freshUntil === String(entry.freshUntil)
     ) {
       break;
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  const remaining = entry.freshUntil - Date.now();
-  assert.ok(remaining > 2000, `retry window remaining: ${remaining}`);
+  assert.notEqual(entry.freshUntil, stored.freshUntil, "the entry was not re-stored");
+  assert.equal(object?.customMetadata?.freshUntil, String(entry.freshUntil));
+  assert.equal(await regenerationCount(), 1);
+  assert.equal(await metadataRowCount("revalidation_claims"), 0);
+
+  // The window, and the reset Date and age, start after the source read.
+  const sourceRead = Number((await bucket.head("test/source-read"))?.customMetadata?.at);
+  assert.ok(entry.freshUntil - 3000 >= sourceRead, `${entry.freshUntil - 3000} < ${sourceRead}`);
+  assert.equal(object?.customMetadata?.createdAt, String(entry.freshUntil - 3000));
 
   const fresh = await read(path);
   assert.equal(fresh.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
