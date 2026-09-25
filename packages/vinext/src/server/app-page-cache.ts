@@ -550,7 +550,12 @@ export async function readAppPageCacheResponse(
           );
         }
 
-        await Promise.all(writes);
+        // Let every write settle before a failure keeps the previous entry, so
+        // a slower sibling write can't land over the one it re-stores.
+        const failedWrite = (await Promise.allSettled(writes)).find(
+          (result) => result.status === "rejected",
+        );
+        if (failedWrite) throw failedWrite.reason;
         options.isrDebug?.("regen complete", options.cleanPathname);
       };
       // As in Next.js, any failure, whether rendering or storing the new

@@ -2144,6 +2144,35 @@ describe("app page regeneration failures", () => {
     ]);
   });
 
+  it("re-stores the previous entry only after a slower sibling write settles", async () => {
+    const cachedValue = buildCachedAppPageValue("<h1>stale</h1>", undefined, 200, staleObservation);
+    const scheduled: Array<() => Promise<void>> = [];
+    const writes: string[] = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async (key, data) => {
+      if (data === cachedValue) {
+        writes.push("restore " + key);
+        return;
+      }
+      if (key === "rsc:/stale") throw new Error("rsc store failed");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      writes.push("fresh " + key);
+    });
+
+    await readStale({
+      async isrGet() {
+        return buildISRCacheEntry(cachedValue, true, { revalidate: 60 });
+      },
+      isrSet,
+      async renderFreshPageForCache() {
+        return freshPage({ usedDynamicApi: false });
+      },
+      scheduled,
+    });
+
+    await expect(scheduled[0]()).rejects.toThrow("rsc store failed");
+    expect(writes).toEqual(["fresh html:/stale", "restore html:/stale"]);
+  });
+
   it.each([
     { previous: { revalidate: 1 }, restored: { revalidate: 3 } },
     { previous: { revalidate: 10, expire: 12 }, restored: { revalidate: 10, expire: 13 } },
