@@ -20,7 +20,7 @@ import {
   type AppPageCacheSetter,
 } from "./isr-cache.js";
 import type { CacheControlMetadata } from "vinext/shims/cache-handler";
-import type { RenderObservation } from "./cache-proof.js";
+import { hasQueryInvariantRenderProof, type RenderObservation } from "./cache-proof.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { readStreamAsText } from "../utils/text-stream.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
@@ -75,8 +75,8 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   clientTraceMetadataMarker?: string;
   consumeDynamicUsage: () => boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
-  createHtmlRenderObservation?: BuildAppPageCacheRenderObservation;
-  createRscRenderObservation?: BuildAppPageCacheRenderObservation;
+  createHtmlRenderObservation: BuildAppPageCacheRenderObservation;
+  createRscRenderObservation: BuildAppPageCacheRenderObservation;
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
@@ -100,7 +100,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
-  createRscRenderObservation?: BuildAppPageCacheRenderObservation;
+  createRscRenderObservation: BuildAppPageCacheRenderObservation;
   dynamicUsedDuringBuild: boolean;
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
@@ -352,15 +352,24 @@ export function finalizeAppPageHtmlCacheResponse(
       const pageTags = options.getPageTags();
       const observationState =
         options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
-      const htmlRenderObservation = options.createHtmlRenderObservation?.({
+      const htmlRenderObservation = options.createHtmlRenderObservation({
         cacheTags: pageTags,
         state: observationState,
       });
-      const rscRenderObservation = options.createRscRenderObservation?.({
+      const rscRenderObservation = options.createRscRenderObservation({
         cacheTags: pageTags,
         state: observationState,
       });
       const linkHeader = options.linkHeader;
+      // Every query shares these entries, so a render not proven to leave the
+      // query unread is never stored.
+      if (
+        !hasQueryInvariantRenderProof(htmlRenderObservation) ||
+        !hasQueryInvariantRenderProof(rscRenderObservation)
+      ) {
+        options.isrDebug?.("HTML cache write skipped (searchParams not proven unread)", htmlKey);
+        return;
+      }
       const writes = [
         options.isrSet(
           htmlKey,
@@ -487,10 +496,16 @@ export function scheduleAppPageRscCacheWrite(
       const pageTags = options.getPageTags();
       const observationState =
         options.consumeRenderObservationState?.() ?? createEmptyAppPageRenderObservationState();
-      const rscRenderObservation = options.createRscRenderObservation?.({
+      const rscRenderObservation = options.createRscRenderObservation({
         cacheTags: pageTags,
         state: observationState,
       });
+      // Every query shares this entry, so a render not proven to leave the
+      // query unread is never stored.
+      if (!hasQueryInvariantRenderProof(rscRenderObservation)) {
+        options.isrDebug?.("RSC cache write skipped (searchParams not proven unread)", rscKey);
+        return;
+      }
       await options.isrSet(rscKey, buildAppPageCacheValue("", rscData, 200, rscRenderObservation), {
         cacheControl,
         tags: pageTags,

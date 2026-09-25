@@ -3256,7 +3256,7 @@ describe("app page dispatch", () => {
   });
 
   it.each(["page", "metadata"] as const)(
-    "records searchParams access when stale regeneration reads them in %s",
+    "does not store a stale regeneration that reads searchParams in %s",
     async (reader) => {
       async function Page(props: Record<string, unknown>): Promise<React.ReactNode> {
         if (reader !== "page") return React.createElement("main", null, "static body");
@@ -3353,12 +3353,9 @@ describe("app page dispatch", () => {
 
       await scheduledRender();
 
-      expect(
-        written.map(
-          (value) =>
-            value.renderObservation?.requestApis.find((api) => api.kind === "searchParams")?.status,
-        ),
-      ).toEqual(["observed", "observed"]);
+      // The regeneration records the searchParams read, so neither entry is
+      // proven query-invariant and core skips both writes.
+      expect(written).toEqual([]);
     },
   );
 

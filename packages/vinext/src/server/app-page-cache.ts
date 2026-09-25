@@ -21,7 +21,7 @@ import {
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
-import { hasCompleteNegativeRequestApiProof, type RenderObservation } from "./cache-proof.js";
+import { hasQueryInvariantRenderProof, type RenderObservation } from "./cache-proof.js";
 import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
@@ -64,10 +64,10 @@ type AppPageCacheOutcomeRecorder = (metric: AppPageCacheOutcomeMetric) => void;
 type AppPageCacheRenderResult = {
   cacheControl?: CacheControlMetadata;
   html: string;
-  htmlRenderObservation?: RenderObservation;
+  htmlRenderObservation: RenderObservation;
   linkHeader?: string;
   rscData: ArrayBuffer;
-  rscRenderObservation?: RenderObservation;
+  rscRenderObservation: RenderObservation;
   tags: string[];
 };
 
@@ -206,13 +206,6 @@ function buildAppPageCachedHeaders(options: {
 
 function getCachedAppPageValue(entry: ISRCacheEntry | null): CachedAppPageValue | null {
   return entry?.value.value && entry.value.value.kind === "APP_PAGE" ? entry.value.value : null;
-}
-
-function hasQueryInvariantAppPageProof(cachedValue: CachedAppPageValue): boolean {
-  return (
-    cachedValue.renderObservation !== undefined &&
-    hasCompleteNegativeRequestApiProof(cachedValue.renderObservation, ["searchParams"])
-  );
 }
 
 function resolveRegeneratedAppPageCacheControl(options: {
@@ -409,7 +402,7 @@ export async function readAppPageCacheResponse(
     if (
       cachedValue &&
       options.hasRequestSearchParams === true &&
-      !hasQueryInvariantAppPageProof(cachedValue)
+      !hasQueryInvariantRenderProof(cachedValue.renderObservation)
     ) {
       recordAppPageCacheOutcome(options.recordCacheOutcome, {
         artifact,
@@ -473,6 +466,16 @@ export async function readAppPageCacheResponse(
           renderCacheControl: revalidatedPage.cacheControl,
           routeRevalidateSeconds: options.revalidateSeconds,
         });
+        // Every query shares these entries, so a render not proven to leave
+        // the query unread is never stored.
+        if (
+          !hasQueryInvariantRenderProof(revalidatedPage.rscRenderObservation) ||
+          (!options.isRscRequest &&
+            !hasQueryInvariantRenderProof(revalidatedPage.htmlRenderObservation))
+        ) {
+          options.isrDebug?.("regen write skipped (searchParams not proven unread)", isrKey);
+          return;
+        }
         const writes = [
           options.isrSet(
             // For an RSC request `isrKey` is already the RSC variant key, so
