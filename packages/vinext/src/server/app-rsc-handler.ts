@@ -145,13 +145,16 @@ import {
   APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER,
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   createSharedAppPageCacheIdentity,
+  isStaticCandidateAppPageDispatch,
   prepareSharedAppPageDispatch,
+  withoutAppPageDispatchQuery,
   type AppMatchedWorkerResponseStageProps,
   type AppWorkerResponseStageProps,
   type DispatchAppWorkerResponseStage,
   type RenderAppWorkerResponseStageLocally,
 } from "./app-worker-stages.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
+import { parseCacheabilityManifest, type CacheabilityManifest } from "./cacheability-manifest.js";
 import {
   consumePagesResponseStagePolicyOwner,
   withoutResponseStageVary,
@@ -248,6 +251,31 @@ function requestOptsOutOfWorkerResponseStage(
   if (isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER))) return true;
   if (request.headers.has(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER)) return true;
   return false;
+}
+
+let parsedCacheabilityRequestProjection:
+  | { buildId: string; manifest: CacheabilityManifest | null; raw: string }
+  | undefined;
+
+function readCacheabilityRequestProjection(
+  options: Pick<
+    CreateAppRscHandlerOptions<AppRscHandlerRoute>,
+    "buildId" | "cacheabilityRequestProjection"
+  >,
+): CacheabilityManifest | null {
+  const raw = options.cacheabilityRequestProjection;
+  if (!raw || !options.buildId) return null;
+  if (
+    parsedCacheabilityRequestProjection?.raw !== raw ||
+    parsedCacheabilityRequestProjection.buildId !== options.buildId
+  ) {
+    parsedCacheabilityRequestProjection = {
+      buildId: options.buildId,
+      manifest: parseCacheabilityManifest(raw, options.buildId),
+      raw,
+    };
+  }
+  return parsedCacheabilityRequestProjection.manifest;
 }
 
 function adapterUsesQueryFreeCacheIdentity(): boolean {
@@ -1149,6 +1177,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             props.kind === "app-page"
               ? prepareSharedAppPageDispatch(stageRequest, cache)
               : stageRequest;
+          let canonicalRsc: { headers: Headers; navigation: boolean } | null = null;
           if (
             cache === "shared" &&
             props.kind === "app-page" &&
@@ -1166,23 +1195,46 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                   ? canonicalizeLoadingShellRscRequestHeaders(headers)
                   : false;
             if (canonicalized) {
-              const rscPath =
-                props.renderMode === "navigation"
-                  ? createCanonicalRscRequestUrl(dispatchRequest.url)
-                  : await createRscRequestUrl(dispatchRequest.url, headers);
-              dispatchRequest = cloneRequestWithUrl(
-                cloneRequestWithHeaders(dispatchRequest, headers),
-                new URL(rscPath, dispatchRequest.url).toString(),
-              );
+              canonicalRsc = { headers, navigation: props.renderMode === "navigation" };
+              dispatchRequest = cloneRequestWithHeaders(dispatchRequest, headers);
             }
           }
-          const stageProps: AppWorkerResponseStageProps = {
+          let stageProps: AppWorkerResponseStageProps = {
             ...props,
             cacheability: {
               ...props.cacheability,
               policyHeaders: responseStagePolicy,
             },
           };
+          // Workers Cache keys a dispatch by its URL and props, and a hit runs
+          // no code, so a static-candidate path drops the user query from the
+          // dispatch itself. A next.config public policy keeps the full URL,
+          // as the query-free cache identity below does. The canonical RSC
+          // URL is built afterwards, because it keeps the request's search.
+          if (
+            cache === "shared" &&
+            responseStagePolicy === null &&
+            stageProps.kind === "app-page"
+          ) {
+            const projection = readCacheabilityRequestProjection(options);
+            if (
+              projection &&
+              isStaticCandidateAppPageDispatch(projection, dispatchRequest, stageProps)
+            ) {
+              const queryFree = withoutAppPageDispatchQuery(dispatchRequest.url, stageProps);
+              dispatchRequest = cloneRequestWithUrl(dispatchRequest, queryFree.url);
+              stageProps = queryFree.props;
+            }
+          }
+          if (canonicalRsc) {
+            const rscPath = canonicalRsc.navigation
+              ? createCanonicalRscRequestUrl(dispatchRequest.url)
+              : await createRscRequestUrl(dispatchRequest.url, canonicalRsc.headers);
+            dispatchRequest = cloneRequestWithUrl(
+              dispatchRequest,
+              new URL(rscPath, dispatchRequest.url).toString(),
+            );
+          }
           // Shared dispatches are GET/HEAD only. A next.config public policy
           // is admitted whatever the render read, so it keeps the full-URL
           // identity, as Next.js CDN caching does. Interception and mounted-slot
