@@ -32,7 +32,7 @@ import {
 import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
-import { extractMdxEsm } from "../utils/mdx-scan.js";
+import { loadMdxEsmReader } from "../utils/mdx-scan.js";
 import { findDir } from "../utils/project.js";
 import { BLOCKED_PAGES, PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
 import { VINEXT_PRERENDER_SECRET_HEADER } from "../server/headers.js";
@@ -750,11 +750,26 @@ function extractPagesStaticPathLocale(
  * layout, page and parallel-slot sources with the helpers dispatch applies to
  * the loaded modules. Only such a route has listed paths.
  */
-function isAppPageRouteStaticEligible(route: AppRoute): boolean {
+function isAppPageRouteStaticEligible(
+  route: AppRoute,
+  readMdxEsm: ((source: string) => string) | null,
+): boolean {
+  // An MDX source read without the MDX parser has unknown exports, so its
+  // route is never taken as static.
+  let unreadable = false;
   const readSegmentConfig = (filePath: string | null | undefined) => {
     if (!filePath) return null;
-    const source = fs.readFileSync(filePath, "utf8");
-    const code = filePath.toLowerCase().endsWith(".mdx") ? extractMdxEsm(source) : source;
+    let code = fs.readFileSync(filePath, "utf8");
+    if (filePath.toLowerCase().endsWith(".mdx")) {
+      let esm: string | null = null;
+      try {
+        esm = readMdxEsm?.(code) ?? null;
+      } catch {
+        // A source MDX can't parse can't build either.
+      }
+      unreadable ||= esm === null;
+      code = esm ?? "";
+    }
     const dynamic = extractExportConstString(code, "dynamic");
     const revalidate = extractExportConstNumber(code, "revalidate");
     const runtime = extractExportConstString(code, "runtime");
@@ -779,6 +794,7 @@ function isAppPageRouteStaticEligible(route: AppRoute): boolean {
     page: readSegmentConfig(slot.pagePath ?? slot.defaultPath),
     routeSegments: slot.routeSegments,
   }));
+  if (unreadable) return false;
   const segmentConfig = resolveAppPageSegmentConfig({
     layouts,
     layoutTreePositions: route.layoutTreePositions,
@@ -895,6 +911,10 @@ async function collectAppPaths(options: {
     },
   });
 
+  const readMdxEsm =
+    !options.cacheComponents && options.pageExtensions.includes("mdx")
+      ? await loadMdxEsmReader()
+      : null;
   for (const route of routes) {
     const isRouteHandler = route.routePath !== null && route.pagePath === null;
     const renderEntryPath = isRouteHandler ? route.routePath : getAppRouteRenderEntryPath(route);
@@ -911,7 +931,7 @@ async function collectAppPaths(options: {
     // generateStaticParams, stay warm paths but aren't listed. A
     // cacheComponents build keeps every page route eligible, as dispatch does.
     const isStaticEligible =
-      isRouteHandler || options.cacheComponents || isAppPageRouteStaticEligible(route);
+      isRouteHandler || options.cacheComponents || isAppPageRouteStaticEligible(route, readMdxEsm);
 
     const addDiscoveredPath = (pathname: string): void => {
       if (isRouteHandler) {

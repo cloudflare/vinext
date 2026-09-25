@@ -1,6 +1,7 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import path from "pathslash";
-import { parseSync } from "vite";
 
 /** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
 export const mdxScanCache = new Map<string, boolean>();
@@ -40,47 +41,33 @@ function scanDirForMdx(dir: string): boolean {
   return false;
 }
 
-/**
- * Keep only the ESM of an MDX module, so the JavaScript export helpers can
- * read it. MDX takes a block as ESM when an unindented line starts with
- * `import` or `export` outside a code fence, and the block runs until the
- * first blank line at which its JavaScript parses.
- * https://github.com/micromark/micromark-extension-mdxjs-esm
- */
-export function extractMdxEsm(source: string): string {
-  const blocks: string[] = [];
-  let block: string[] | null = null;
-  let fence: string | null = null;
-  for (const line of source.split(/\r?\n/)) {
-    if (block) {
-      if (line.trim() === "" && isCompleteEsm(block.join("\n"))) {
-        blocks.push(block.join("\n"));
-        block = null;
-      } else {
-        block.push(line);
-      }
-      continue;
-    }
-    const fenceMarker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
-    if (fence) {
-      if (fenceMarker?.[0] === fence[0] && fenceMarker.length >= fence.length) fence = null;
-      continue;
-    }
-    if (fenceMarker) {
-      fence = fenceMarker;
-      continue;
-    }
-    if (/^(?:import|export)\s/.test(line)) block = [line];
-  }
-  if (block) blocks.push(block.join("\n"));
-  return blocks.join("\n\n");
-}
+type MdxProcessorModule = {
+  createProcessor(): {
+    parse(source: string): { children: { type: string; value?: unknown }[] };
+  };
+};
 
-function isCompleteEsm(code: string): boolean {
+/**
+ * Load a reader that keeps only the ESM of an MDX module, so the JavaScript
+ * export helpers can read it. It takes the ESM nodes from the MDX parser that
+ * `@mdx-js/rollup` compiles with, resolved from the same place vinext loads
+ * that plugin. Returns null when that parser isn't installed.
+ */
+export async function loadMdxEsmReader(): Promise<((source: string) => string) | null> {
+  let mdx: MdxProcessorModule;
   try {
-    const result = parseSync("vinext-mdx-esm.jsx", code, { lang: "jsx", sourceType: "module" });
-    return !result.errors.some((error) => error.severity === "Error");
+    const rollupEntry = createRequire(import.meta.url).resolve("@mdx-js/rollup");
+    const mdxEntry = createRequire(rollupEntry).resolve("@mdx-js/mdx");
+    mdx = (await import(pathToFileURL(mdxEntry).href)) as MdxProcessorModule;
   } catch {
-    return false;
+    return null;
   }
+  const processor = mdx.createProcessor();
+  return (source) =>
+    processor
+      .parse(source)
+      .children.flatMap((node) =>
+        node.type === "mdxjsEsm" && typeof node.value === "string" ? [node.value] : [],
+      )
+      .join("\n\n");
 }

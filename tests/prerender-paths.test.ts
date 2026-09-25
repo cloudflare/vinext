@@ -1624,6 +1624,80 @@ describe("prerender path manifest", () => {
     expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBeUndefined();
   });
 
+  it("doesn't take MDX paragraph text that looks like an export as ESM", async () => {
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[slug]/page.mdx",
+      [
+        "An export can't interrupt a paragraph, so this is text:",
+        'export function generateStaticParams() { return [{ slug: "hello" }] }',
+        "",
+        "# Hello",
+        "",
+      ].join("\n"),
+    );
+    vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
+
+    const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+      import("../packages/vinext/src/build/prerender-paths.js"),
+      import("../packages/vinext/src/config/next-config.js"),
+    ]);
+    const nextConfig = await resolveNextConfig(
+      { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+      tmpDir,
+    );
+    const manifest = await emitPrerenderPathManifest({
+      root: tmpDir,
+      nextConfig,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(["/hello"]);
+    expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBe(true);
+  });
+
+  it("doesn't list an MDX route's paths without the MDX parser", async () => {
+    vi.resetModules();
+    vi.doMock("../packages/vinext/src/utils/mdx-scan.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../packages/vinext/src/utils/mdx-scan.js")>()),
+      loadMdxEsmReader: async () => null,
+    }));
+    try {
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      writeFile(
+        "app/[slug]/page.mdx",
+        'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
+      );
+      vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
+
+      const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+        import("../packages/vinext/src/build/prerender-paths.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+      ]);
+      const nextConfig = await resolveNextConfig(
+        { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+        tmpDir,
+      );
+      const manifest = await emitPrerenderPathManifest({
+        root: tmpDir,
+        nextConfig,
+        responseVary: "verbatim",
+      });
+
+      expect(manifest?.paths).toEqual(["/hello"]);
+      expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBe(true);
+    } finally {
+      vi.doUnmock("../packages/vinext/src/utils/mdx-scan.js");
+      vi.resetModules();
+    }
+  });
+
   it("discovers dynamic Pages MDX paths from the built runtime", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");
