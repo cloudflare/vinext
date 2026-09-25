@@ -2682,6 +2682,86 @@ describe("MetadataHead rendering", () => {
     renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
   });
 
+  // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata/metadata.test.ts
+  it("renders mixed Apple startup images and social account metadata", () => {
+    const html = renderMetadataToHtml({
+      appleWebApp: {
+        startupImage: ["/startup.png", { url: "/tablet.png", media: "(min-width: 768px)" }],
+      },
+      facebook: { appId: "12345678", admins: ["120", "122", "124"] },
+      pinterest: { richPin: true },
+    });
+    expect(html).toContain('rel="apple-touch-startup-image" href="/startup.png"');
+    expect(html).toContain('href="/tablet.png" media="(min-width: 768px)"');
+    expect(html).toContain('name="apple-mobile-web-app-status-bar-style" content="default"');
+    expect(html).toContain('property="fb:app_id" content="12345678"');
+    for (const admin of ["120", "122", "124"]) {
+      expect(html).toContain(`property="fb:admins" content="${admin}"`);
+    }
+    expect(html).toContain('property="pinterest-rich-pin" content="true"');
+  });
+
+  it("renders scalar Facebook admins and explicit false Pinterest metadata", () => {
+    const html = renderMetadataToHtml({
+      facebook: { admins: "120" },
+      pinterest: { richPin: false },
+    });
+    expect(html).toContain('property="fb:admins" content="120"');
+    expect(html).toContain('property="pinterest-rich-pin" content="false"');
+  });
+
+  it("preserves Apple startup image URLs with metadataBase and escapes their attributes", () => {
+    const metadata = {
+      metadataBase: new URL("https://example.com/base"),
+      appleWebApp: {
+        startupImage: [
+          '/startup?next="<x>&a=1',
+          { url: "/tablet.png", media: '(min-width: 768px) & "wide"' },
+        ],
+      },
+    };
+    for (const html of [
+      renderMetadataToHtml(metadata),
+      renderToStaticMarkup(React.createElement(MetadataHead, { metadata })),
+    ]) {
+      expect(html).toContain('href="/startup?next=&quot;&lt;x&gt;&amp;a=1"');
+      expect(html).toContain('href="/tablet.png"');
+      expect(html).toContain('media="(min-width: 768px) &amp; &quot;wide&quot;"');
+      expect(html).not.toContain('href="https://example.com/base');
+      expect(html.indexOf('href="/tablet.png"')).toBeLessThan(
+        html.indexOf('name="apple-mobile-web-app-status-bar-style"'),
+      );
+    }
+  });
+
+  it("renders an empty Facebook admin and places social tags after iTunes", () => {
+    const html = renderMetadataToHtml({
+      itunes: { appId: "123" },
+      facebook: { admins: "" },
+      pinterest: { richPin: false },
+    });
+    expect(html).toContain('property="fb:admins" content=""');
+    expect(html.indexOf('name="apple-itunes-app"')).toBeLessThan(
+      html.indexOf('property="fb:admins"'),
+    );
+  });
+
+  it("escapes Facebook attribute values in both metadata rendering paths", () => {
+    const metadata = {
+      facebook: { appId: 'app"&<id>', admins: ['admin"&<id>'] },
+      pinterest: { richPin: false },
+    };
+    for (const html of [
+      renderMetadataToHtml(metadata),
+      renderToStaticMarkup(React.createElement(MetadataHead, { metadata })),
+    ]) {
+      expect(html).toContain('property="fb:app_id" content="app&quot;&amp;&lt;id&gt;"');
+      expect(html).toContain('property="fb:admins" content="admin&quot;&amp;&lt;id&gt;"');
+      expect(html).not.toContain("<id>");
+    }
+  });
+
   function metadataRouteImage(url: string): { url: string } {
     const image = { url };
     Object.defineProperty(image, "metadataRoute", { value: true });

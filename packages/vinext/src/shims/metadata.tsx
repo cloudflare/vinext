@@ -242,8 +242,10 @@ export type Metadata = {
     capable?: boolean;
     title?: string;
     statusBarStyle?: string;
-    startupImage?: string | Array<{ url: string; media?: string }>;
+    startupImage?: string | Array<string | { url: string; media?: string }>;
   };
+  facebook?: { appId?: string; admins?: string | string[] };
+  pinterest?: { richPin?: string | boolean };
   formatDetection?: {
     email?: boolean;
     address?: boolean;
@@ -1364,29 +1366,27 @@ export function MetadataHead({
     if (awa.title) {
       elements.push(<meta key={key++} name="apple-mobile-web-app-title" content={awa.title} />);
     }
-    if (awa.statusBarStyle) {
-      elements.push(
-        <meta
-          key={key++}
-          name="apple-mobile-web-app-status-bar-style"
-          content={awa.statusBarStyle}
-        />,
-      );
-    }
     if (awa.startupImage) {
-      const imgs =
-        typeof awa.startupImage === "string" ? [{ url: awa.startupImage }] : awa.startupImage;
-      for (const img of imgs) {
+      const imgs = Array.isArray(awa.startupImage) ? awa.startupImage : [awa.startupImage];
+      for (const item of imgs) {
+        const img = typeof item === "string" ? { url: item } : item;
         elements.push(
           <link
             key={key++}
             rel="apple-touch-startup-image"
-            href={resolveUrl(img.url)}
+            href={img.url}
             {...(img.media ? { media: img.media } : {})}
           />,
         );
       }
     }
+    elements.push(
+      <meta
+        key={key++}
+        name="apple-mobile-web-app-status-bar-style"
+        content={awa.statusBarStyle || "default"}
+      />,
+    );
   }
 
   // iTunes
@@ -1397,6 +1397,27 @@ export function MetadataHead({
       content += `, app-argument=${appArgument}`;
     }
     elements.push(<meta key={key++} name="apple-itunes-app" content={content} />);
+  }
+
+  if (metadata.facebook) {
+    if (metadata.facebook.appId) {
+      elements.push(<meta key={key++} property="fb:app_id" content={metadata.facebook.appId} />);
+    }
+    const admins = metadata.facebook.admins;
+    if (admins !== undefined) {
+      for (const admin of Array.isArray(admins) ? admins : [admins]) {
+        elements.push(<meta key={key++} property="fb:admins" content={admin} />);
+      }
+    }
+  }
+  if (metadata.pinterest?.richPin !== undefined) {
+    elements.push(
+      <meta
+        key={key++}
+        property="pinterest-rich-pin"
+        content={String(metadata.pinterest.richPin)}
+      />,
+    );
   }
 
   // App Links
