@@ -201,6 +201,7 @@ function writeStandaloneServerEntry(filePath: string): void {
   // import gives a clearer ERR_MODULE_NOT_FOUND at startup rather than a
   // runtime error deep inside the server if the import were deferred.
   const content = `#!/usr/bin/env node
+process.env.NODE_ENV ??= "production";
 import { join } from "node:path";
 import { startProdServer } from "vinext/server/prod-server";
 

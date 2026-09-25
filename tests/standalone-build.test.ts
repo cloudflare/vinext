@@ -131,9 +131,12 @@ describe("emitStandaloneOutput", () => {
     expect(result.copiedPackages).not.toContain("typescript");
 
     expect(fs.existsSync(path.join(appRoot, "dist/standalone/server.js"))).toBe(true);
-    expect(fs.readFileSync(path.join(appRoot, "dist/standalone/server.js"), "utf-8")).toContain(
-      "startProdServer",
+    const serverJsContent = fs.readFileSync(
+      path.join(appRoot, "dist/standalone/server.js"),
+      "utf-8",
     );
+    expect(serverJsContent).toContain("startProdServer");
+    expect(serverJsContent).toContain('process.env.NODE_ENV ??= "production";');
     const standalonePkg = JSON.parse(
       fs.readFileSync(path.join(appRoot, "dist/standalone/package.json"), "utf-8"),
     ) as { type: string };
