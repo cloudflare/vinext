@@ -112,21 +112,33 @@ const OLD_VERSION = "11111111-1111-4111-8111-111111111111";
 const PROBE_VERSION = "22222222-2222-4222-8222-222222222222";
 const FINAL_VERSION = "33333333-3333-4333-8333-333333333333";
 
-// An App Router build also emits the request stage's projection module.
-function writeTwoStageWorkerArtifact({ appRouter = true } = {}): void {
+// An App Router build also emits the request stage's projection module, which
+// its request stage imports.
+function writeTwoStageWorkerArtifact({
+  appRouter = true,
+  importsProjection = appRouter,
+}: { appRouter?: boolean; importsProjection?: boolean } = {}): void {
   writeFile(
     "dist/server/wrangler.json",
     JSON.stringify({ main: "index.js", name: "my-worker", workers_dev: true }),
   );
-  writeFile("dist/server/index.js", 'void import("./response-stage.js");\n');
+  writeFile(
+    "dist/server/index.js",
+    'void import("./request-stage.js");\nvoid import("./response-stage.js");\n',
+  );
+  writeFile(
+    "dist/server/request-stage.js",
+    importsProjection ? `import "./${CACHEABILITY_REQUEST_PROJECTION_MODULE}";\n` : "",
+  );
   writeFile("dist/server/response-stage.js", `import "./${CACHEABILITY_MANIFEST_MODULE}";\n`);
   writeFile(
     "dist/server/.vite/manifest.json",
     JSON.stringify({
       "virtual:cloudflare/worker-entry": {
-        dynamicImports: ["virtual:vinext-response-stage"],
+        dynamicImports: ["virtual:vinext-request-stage", "virtual:vinext-response-stage"],
         file: "index.js",
       },
+      "virtual:vinext-request-stage": { file: "request-stage.js" },
       "virtual:vinext-response-stage": { file: "response-stage.js" },
     }),
   );
@@ -577,6 +589,30 @@ describe("Cloudflare CDN warmup deploy flow", () => {
       }),
     ).toThrow(
       `requires ${CACHEABILITY_REQUEST_PROJECTION_MODULE} in the generated Worker artifact`,
+    );
+    expect(
+      fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
+    ).toBe("export default null;\n");
+  });
+
+  it("rejects an App page manifest when the Worker graph doesn't import the projection", () => {
+    // The file exists, but no request-stage module reads it, so the request
+    // stage would keep full-query dispatches the response stage admits.
+    writeTwoStageWorkerArtifact({ importsProjection: false });
+    const route: CacheabilityManifestRoute = {
+      kind: "app-page",
+      pattern: "/about",
+      state: "static-candidate",
+    };
+
+    expect(() =>
+      writeCacheabilityManifestArtifact(tmpDir, "dist/server/wrangler.json", {
+        buildId: "build-a",
+        routes: { [cacheabilityManifestRouteKey(route.kind, route.pattern)]: route },
+        version: 1,
+      }),
+    ).toThrow(
+      `requires the generated Worker graph to statically import ${CACHEABILITY_REQUEST_PROJECTION_MODULE}`,
     );
     expect(
       fs.readFileSync(path.join(tmpDir, "dist/server", CACHEABILITY_MANIFEST_MODULE), "utf8"),
