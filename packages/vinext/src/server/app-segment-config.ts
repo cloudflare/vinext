@@ -25,7 +25,13 @@ type EffectiveAppPageSegmentConfig = {
 type ParallelAppPageSegmentConfigBranch = {
   configLayouts?: readonly (AppRouteSegmentConfigModule | null | undefined)[] | null;
   configLayoutTreePositions?: readonly number[] | null;
+  /** Whether the slot renders its `default` module instead of a matched page. */
+  isDefault?: boolean;
   layout?: AppRouteSegmentConfigModule | null;
+  /** The slot's name, which orders sibling slots in the loader tree. */
+  name?: string;
+  /** The main-tree position of the folder that owns the slot. */
+  ownerTreePosition?: number | null;
   page?: AppRouteSegmentConfigModule | null;
   routeSegments?: readonly string[] | null;
 };
@@ -441,8 +447,6 @@ export function resolveAppPageStaticGenerationRuntime(
  * it classifies the route.
  */
 export type AppPageStaticParamsWalkSegment = {
-  /** Depth in the loader tree. The root layout's segment is 0. */
-  depth: number;
   /** Whether the segment is a dynamic URL segment (`[slug]`, `[...slug]`). */
   dynamic: boolean;
   /** Whether the segment's layout (or page) exports `generateStaticParams`. */
@@ -453,7 +457,20 @@ export type AppPageStaticParamsWalkSegment = {
    * repeats the main tree's does not count twice.
    */
   identity: readonly [name: string, file: unknown];
+  /**
+   * The segment's position in the loader tree: its index among its parent's
+   * children at each level, from the root. The root layout's segment is `[]`.
+   */
+  treePath: readonly number[];
 };
+
+function compareTreePaths(a: readonly number[], b: readonly number[]): number {
+  if (a.length !== b.length) return a.length - b.length;
+  for (let index = 0; index < a.length; index++) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
+}
 
 /**
  * Whether `generateStaticParams` is exported at or below the route's last
@@ -472,14 +489,10 @@ export function lastDynamicSegmentHasGenerateStaticParams(
   segments: readonly AppPageStaticParamsWalkSegment[],
 ): boolean {
   const visited: AppPageStaticParamsWalkSegment["identity"][] = [];
-  // Stable sort: segments at the same depth keep their input order, where the
-  // main tree comes before parallel slots as in Next.js's loader tree.
-  const ordered = segments
-    .map((segment, index) => ({ index, segment }))
-    .sort((a, b) => a.segment.depth - b.segment.depth || a.index - b.index);
+  const ordered = [...segments].sort((a, b) => compareTreePaths(a.treePath, b.treePath));
   let hasGenerateStaticParams = false;
 
-  for (const { segment } of ordered) {
+  for (const segment of ordered) {
     const [name, file] = segment.identity;
     if (visited.some(([seenName, seenFile]) => seenName === name && seenFile === file)) continue;
     visited.push(segment.identity);
@@ -502,9 +515,16 @@ function hasGenerateStaticParamsExport(
   return typeof segment?.generateStaticParams === "function";
 }
 
+const DEFAULT_SEGMENT_NAME = "__DEFAULT__";
+
 /**
  * Collect the loader-tree segments of an App page route from its layout, page
  * and parallel-slot modules, for `lastDynamicSegmentHasGenerateStaticParams`.
+ *
+ * Children follow Next.js's loader tree order: slots with a matched page come
+ * first (sorted by name), then `children`, then slots that render `default`.
+ * A default slot is a single `__DEFAULT__` segment without the slot's layout.
+ * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/webpack/loaders/next-app-loader/index.ts#L733-L790
  */
 export function collectAppPageStaticParamsWalkSegments(
   options: Pick<
@@ -513,70 +533,105 @@ export function collectAppPageStaticParamsWalkSegments(
   >,
 ): AppPageStaticParamsWalkSegment[] {
   const routeSegments = options.routeSegments ?? [];
-  const layoutsByDepth = new Map<number, AppRouteSegmentConfigModule>();
+  const layoutsByPosition = new Map<number, AppRouteSegmentConfigModule>();
   options.layouts?.forEach((layout, index) => {
-    if (layout) layoutsByDepth.set(options.layoutTreePositions?.[index] ?? 0, layout);
+    if (layout) layoutsByPosition.set(options.layoutTreePositions?.[index] ?? 0, layout);
   });
 
-  const segments: AppPageStaticParamsWalkSegment[] = [];
-  // A folder's segment takes its module from the folder's layout. The page is
-  // a child segment of the deepest folder.
-  for (let depth = 0; depth <= routeSegments.length; depth++) {
-    const name = depth === 0 ? "" : routeSegments[depth - 1];
-    const layout = layoutsByDepth.get(depth);
-    segments.push({
-      depth,
-      dynamic: depth > 0 && isDynamicSegment(name),
-      generateStaticParams: hasGenerateStaticParamsExport(layout),
-      identity: [name, layout],
-    });
-  }
-  segments.push({
-    depth: routeSegments.length + 1,
-    dynamic: false,
-    generateStaticParams: hasGenerateStaticParamsExport(options.page),
-    identity: [PAGE_SEGMENT_NAME, options.page ?? undefined],
-  });
-
+  const branchesByOwner = new Map<number, ParallelAppPageSegmentConfigBranch[]>();
   for (const branch of options.parallelBranches ?? []) {
     if (!branch) continue;
-    const branchSegments = branch.routeSegments ?? [];
-    // The slot folder is a child of the main-tree folder at this depth.
-    const slotDepth = routeSegments.length - branchSegments.length + 1;
-    const configLayoutsByDepth = new Map<number, AppRouteSegmentConfigModule>();
-    branch.configLayouts?.forEach((layout, index) => {
-      if (layout) {
-        configLayoutsByDepth.set(
-          slotDepth + (branch.configLayoutTreePositions?.[index] ?? 0),
-          layout,
-        );
-      }
-    });
-
-    segments.push({
-      depth: slotDepth,
-      dynamic: false,
-      generateStaticParams: hasGenerateStaticParamsExport(branch.layout),
-      identity: [`@slot:${slotDepth}`, branch.layout ?? undefined],
-    });
-    branchSegments.forEach((name, index) => {
-      const depth = slotDepth + index + 1;
-      const layout = configLayoutsByDepth.get(depth);
-      segments.push({
-        depth,
-        dynamic: isDynamicSegment(name),
-        generateStaticParams: hasGenerateStaticParamsExport(layout),
-        identity: [name, layout],
-      });
-    });
-    segments.push({
-      depth: slotDepth + branchSegments.length + 1,
-      dynamic: false,
-      generateStaticParams: hasGenerateStaticParamsExport(branch.page),
-      identity: [PAGE_SEGMENT_NAME, branch.page ?? undefined],
-    });
+    const owner = Math.min(
+      branch.ownerTreePosition ??
+        routeSegments.length - (branch.isDefault ? 0 : (branch.routeSegments ?? []).length),
+      routeSegments.length,
+    );
+    branchesByOwner.set(owner, [...(branchesByOwner.get(owner) ?? []), branch]);
   }
 
+  const segments: AppPageStaticParamsWalkSegment[] = [];
+  let treePath: number[] = [];
+  // A folder's segment takes its module from the folder's layout. The page is
+  // a child segment of the deepest folder.
+  for (let position = 0; position <= routeSegments.length + 1; position++) {
+    const owned = branchesByOwner.get(position) ?? [];
+    const active = owned
+      .filter((branch) => !branch.isDefault)
+      .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
+    const defaults = owned.filter((branch) => branch.isDefault);
+
+    if (position <= routeSegments.length) {
+      const name = position === 0 ? "" : routeSegments[position - 1];
+      const layout = layoutsByPosition.get(position);
+      segments.push({
+        dynamic: position > 0 && isDynamicSegment(name),
+        generateStaticParams: hasGenerateStaticParamsExport(layout),
+        identity: [name, layout],
+        treePath,
+      });
+    } else {
+      segments.push({
+        dynamic: false,
+        generateStaticParams: hasGenerateStaticParamsExport(options.page),
+        identity: [PAGE_SEGMENT_NAME, options.page ?? undefined],
+        treePath,
+      });
+      break;
+    }
+
+    active.forEach((branch, rank) => {
+      segments.push(...collectActiveSlotSegments(branch, [...treePath, rank]));
+    });
+    defaults.forEach((branch, index) => {
+      segments.push({
+        dynamic: false,
+        generateStaticParams: hasGenerateStaticParamsExport(branch.page),
+        identity: [DEFAULT_SEGMENT_NAME, branch.page ?? undefined],
+        treePath: [...treePath, active.length + 1 + index],
+      });
+    });
+    treePath = [...treePath, active.length];
+  }
+
+  return segments;
+}
+
+function collectActiveSlotSegments(
+  branch: ParallelAppPageSegmentConfigBranch,
+  slotPath: readonly number[],
+): AppPageStaticParamsWalkSegment[] {
+  const branchSegments = branch.routeSegments ?? [];
+  const configLayoutsByPosition = new Map<number, AppRouteSegmentConfigModule>();
+  branch.configLayouts?.forEach((layout, index) => {
+    if (layout) configLayoutsByPosition.set(branch.configLayoutTreePositions?.[index] ?? 0, layout);
+  });
+
+  const segments: AppPageStaticParamsWalkSegment[] = [
+    {
+      dynamic: false,
+      generateStaticParams: hasGenerateStaticParamsExport(branch.layout),
+      identity: [`@${branch.name ?? ""}`, branch.layout ?? undefined],
+      treePath: slotPath,
+    },
+  ];
+  // Each folder inside the slot has one child: the next folder, then the page.
+  let treePath = [...slotPath];
+  branchSegments.forEach((name, index) => {
+    treePath = [...treePath, 0];
+    const layout = configLayoutsByPosition.get(index + 1);
+    segments.push({
+      dynamic: isDynamicSegment(name),
+      generateStaticParams: hasGenerateStaticParamsExport(layout),
+      identity: [name, layout],
+      treePath,
+    });
+  });
+  segments.push({
+    dynamic: false,
+    generateStaticParams: hasGenerateStaticParamsExport(branch.page),
+    identity: [PAGE_SEGMENT_NAME, branch.page ?? undefined],
+    treePath: [...treePath, 0],
+  });
   return segments;
 }
 

@@ -57,7 +57,7 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
    * `false` for routes Next.js classifies as dynamic (ƒ), which are never
    * cacheable even when a cacheLife resolves during the render.
    */
-  isStaticEligible?: boolean;
+  isStaticEligible: boolean;
   revalidateSeconds: number | null;
 };
 
@@ -83,7 +83,7 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
   omitPendingDynamicCacheState?: boolean;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
-  isStaticEligible?: boolean;
+  isStaticEligible: boolean;
   revalidateSeconds: number | null;
   linkHeader: string | null;
   waitUntil?: (promise: Promise<void>) => void;
@@ -109,7 +109,7 @@ type ScheduleAppPageRscCacheWriteOptions = {
   renderMode?: AppRscRenderMode;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
-  isStaticEligible?: boolean;
+  isStaticEligible: boolean;
   revalidateSeconds: number | null;
   waitUntil?: (promise: Promise<void>) => void;
 };

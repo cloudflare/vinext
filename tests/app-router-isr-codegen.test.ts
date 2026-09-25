@@ -32,6 +32,29 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('process.env.NODE_ENV === "production"');
   });
 
+  it("classifies static generation from the route's own segments and slots", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The generateStaticParams walk reads the main tree and every slot branch,
+    // including each slot's owner position and whether it renders its default.
+    expect(code)
+      .toContain(`hasGenerateStaticParams: __hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: route.layouts,
+        layoutTreePositions: route.layoutTreePositions,
+        page: route.page,
+        parallelBranches: __segmentConfigBranches,
+        routeSegments: route.routeSegments,
+      }),`);
+    expect(code).toContain("isDefault: !slot.page,");
+    expect(code).toContain("ownerTreePosition: slot.ownerTreePosition,");
+    // Only the page and its layouts decide the runtime; slots are ignored.
+    expect(code).toContain(`isStaticGenerationEdgeRuntime: __isEdgeRuntime(
+        __resolveAppPageStaticGenerationRuntime([
+          ...route.layouts.map((layout) => layout?.runtime),
+          route.page?.runtime,
+        ]),
+      ),`);
+  });
+
   it("generated handler delegates request and ctx handling to createAppRscHandler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("createAppRscHandler");

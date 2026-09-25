@@ -646,7 +646,15 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
         routeSegments: ["[id]"],
       }),
     ).toBe(true);
-    // A slot [id] folder with its own layout is a separate segment.
+  });
+
+  // Next.js's loader tree lists slots with a matched page before `children`
+  // at each level, so a slot segment is visited before the main-tree segment
+  // at the same depth.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/webpack/loaders/next-app-loader/index.ts#L733-L790
+  it("visits a matched slot before the main tree at the same depth", () => {
+    // app/[id]/page.tsx exports it; app/@modal/[id]/layout.tsx does not. The
+    // slot's [id] is a separate segment, but the main page comes after it.
     expect(
       hasAppPageGenerateStaticParamsAtLastDynamicSegment({
         layouts: [{}],
@@ -656,8 +664,49 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
           {
             configLayouts: [{}],
             configLayoutTreePositions: [1],
+            name: "modal",
+            ownerTreePosition: 0,
             page: {},
             routeSegments: ["[id]"],
+          },
+        ],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(true);
+  });
+
+  it("places a slot under the folder that owns it, not by its segment count", () => {
+    // app/(main)/[id]/page.tsx exports it; the root slot app/@panel/[id]/page.tsx
+    // does not. The slot's [id] sits one level above the main page.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: { generateStaticParams },
+        parallelBranches: [
+          { name: "panel", ownerTreePosition: 0, page: {}, routeSegments: ["[id]"] },
+        ],
+        routeSegments: ["(main)", "[id]"],
+      }),
+    ).toBe(true);
+  });
+
+  it("reads only the default module of a slot that renders its default", () => {
+    // A default slot is a single `__DEFAULT__` segment; the slot's own layout
+    // is not part of the loader tree.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          {
+            isDefault: true,
+            layout: { generateStaticParams },
+            name: "modal",
+            ownerTreePosition: 0,
+            page: {},
+            routeSegments: [],
           },
         ],
         routeSegments: ["[id]"],
@@ -665,11 +714,27 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
     ).toBe(false);
   });
 
-  it("walks segments breadth-first", () => {
+  it("walks segments breadth-first in loader tree order", () => {
     expect(
       lastDynamicSegmentHasGenerateStaticParams([
-        { depth: 2, dynamic: false, generateStaticParams: true, identity: ["__PAGE__", "page"] },
-        { depth: 1, dynamic: true, generateStaticParams: false, identity: ["[slug]", undefined] },
+        {
+          dynamic: false,
+          generateStaticParams: true,
+          identity: ["__PAGE__", "page"],
+          treePath: [1, 0],
+        },
+        {
+          dynamic: true,
+          generateStaticParams: false,
+          identity: ["[slug]", undefined],
+          treePath: [1],
+        },
+        {
+          dynamic: true,
+          generateStaticParams: false,
+          identity: ["[id]", "slot"],
+          treePath: [0, 0],
+        },
       ]),
     ).toBe(true);
     expect(lastDynamicSegmentHasGenerateStaticParams([])).toBe(false);

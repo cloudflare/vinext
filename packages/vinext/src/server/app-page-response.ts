@@ -57,9 +57,9 @@ type ResolveAppPageResponsePolicyBaseOptions = {
   isProduction: boolean;
   /**
    * `false` for routes Next.js classifies as dynamic (ƒ). Their responses are
-   * never cached, whatever their revalidate. Defaults to eligible.
+   * never cached, whatever their revalidate.
    */
-  isStaticEligible?: boolean;
+  isStaticEligible: boolean;
   expireSeconds?: number;
   revalidateSeconds: number | null;
 };

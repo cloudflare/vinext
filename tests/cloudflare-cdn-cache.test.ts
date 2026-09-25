@@ -65,6 +65,7 @@ function finalizePendingDynamicRscResponse(): Response {
       },
     }),
     {
+      isStaticEligible: true,
       capturedRscDataPromise: null,
       cleanPathname: "/dashboard",
       consumeDynamicUsage() {
@@ -463,6 +464,7 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
+        isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/dynamic-html",
         consumeDynamicUsage() {
@@ -511,6 +513,7 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
+        isStaticEligible: true,
         bypassInterceptionContextCache: true,
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/about",
@@ -551,6 +554,7 @@ describe("CloudflareCdnCacheAdapter", () => {
           },
         }),
         {
+          isStaticEligible: true,
           capturedRscDataPromise: Promise.resolve(
             new TextEncoder().encode("slot-specific-flight").buffer,
           ),
@@ -593,6 +597,7 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
+        isStaticEligible: true,
         capturedRscDataPromise: Promise.resolve(
           new TextEncoder().encode("slot-specific-flight").buffer,
         ),
@@ -633,6 +638,7 @@ describe("CloudflareCdnCacheAdapter", () => {
         },
       }),
       {
+        isStaticEligible: true,
         capturedRscDataPromise: null,
         cleanPathname: "/dashboard",
         consumeDynamicUsage() {

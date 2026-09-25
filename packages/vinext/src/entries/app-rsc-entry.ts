@@ -1275,6 +1275,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       layout: slot.layout,
       configLayouts: slot.configLayouts,
       configLayoutTreePositions: slot.configLayoutTreePositions,
+      isDefault: !slot.page,
+      name: slot.name,
+      ownerTreePosition: slot.ownerTreePosition,
       page: slot.page ?? slot.default,
       routeSegments: slot.routeSegments,
     }));
