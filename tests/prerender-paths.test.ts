@@ -1805,6 +1805,54 @@ describe("prerender path manifest", () => {
     }
   });
 
+  it("doesn't certify an unreadable MDX route's empty static params fallback", async () => {
+    vi.resetModules();
+    vi.doMock("../packages/vinext/src/utils/mdx-scan.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../packages/vinext/src/utils/mdx-scan.js")>()),
+      loadMdxEsmReader: async () => null,
+    }));
+    try {
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      // Without the parser, the layout's edge runtime can't be read, so no
+      // probe proves the fallback static.
+      writeFile(
+        "app/posts/layout.mdx",
+        'export const runtime = "edge"\n\n# Posts\n\n{props.children}\n',
+      );
+      writeFile(
+        "app/posts/[slug]/page.tsx",
+        [
+          "export function generateStaticParams() { return []; }",
+          "export default function Page() { return null; }",
+        ].join("\n"),
+      );
+      vi.mocked(fetch).mockResolvedValue(Response.json([]));
+
+      const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
+        import("../packages/vinext/src/build/prerender-paths.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+      ]);
+      const nextConfig = await resolveNextConfig(
+        { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+        tmpDir,
+      );
+      const manifest = await emitPrerenderPathManifest({
+        root: tmpDir,
+        nextConfig,
+        responseVary: "verbatim",
+      });
+
+      expect(manifest?.paths).toEqual([]);
+      expect(manifest?.fallbackRoutePatterns).toBeUndefined();
+    } finally {
+      vi.doUnmock("../packages/vinext/src/utils/mdx-scan.js");
+      vi.resetModules();
+    }
+  });
+
   it("discovers dynamic Pages MDX paths from the built runtime", async () => {
     writeFile("package.json", JSON.stringify({ type: "module" }));
     writeFile("dist/server/BUILD_ID", "build-a\n");

@@ -749,15 +749,17 @@ function extractPagesStaticPathLocale(
  * Whether Next.js classifies an App page route as static or SSG, read from its
  * layout, page and parallel-slot sources with the helpers dispatch applies to
  * the loaded modules. Only such a route has listed paths.
+ *
+ * An MDX source read without the MDX parser has unknown exports, so its route
+ * is "unreadable". Its paths are still listed: the built runtime reads the real
+ * exports and never stores a route that isn't static, while an unlisted path's
+ * render failure would be dropped instead of failing. But no probe renders an
+ * unreadable route's fallback, so it never certifies one.
  */
-function isAppPageRouteStaticEligible(
+function classifyAppPageRouteStaticEligibility(
   route: AppRoute,
   readMdxEsm: ((source: string) => string) | null,
-): boolean {
-  // An MDX source read without the MDX parser has unknown exports. Its route
-  // is taken as static: listing only permits, since the built runtime reads
-  // the real exports and never stores a route that isn't static, while an
-  // unlisted path's render failure would be dropped instead of failing.
+): "eligible" | "ineligible" | "unreadable" {
   let unreadable = false;
   const readSegmentConfig = (filePath: string | null | undefined) => {
     if (!filePath) return null;
@@ -796,7 +798,7 @@ function isAppPageRouteStaticEligible(
     page: readSegmentConfig(slot.pagePath ?? slot.defaultPath),
     routeSegments: slot.routeSegments,
   }));
-  if (unreadable) return true;
+  if (unreadable) return "unreadable";
   const segmentConfig = resolveAppPageSegmentConfig({
     layouts,
     layoutTreePositions: route.layoutTreePositions,
@@ -804,7 +806,7 @@ function isAppPageRouteStaticEligible(
     parallelBranches,
     routeSegments: route.routeSegments,
   });
-  return isAppPageStaticEligible({
+  const eligible = isAppPageStaticEligible({
     dynamicConfig: segmentConfig.dynamicConfig,
     hasGenerateStaticParams: hasAppPageGenerateStaticParamsAtLastDynamicSegment({
       childrenSlot: route.childrenSlot ?? null,
@@ -829,6 +831,7 @@ function isAppPageRouteStaticEligible(
     ),
     revalidateSeconds: segmentConfig.revalidateSeconds,
   });
+  return eligible ? "eligible" : "ineligible";
 }
 
 async function collectAppPaths(options: {
@@ -933,8 +936,11 @@ async function collectAppPaths(options: {
     // discovered for any other route, for example through a sibling page's
     // generateStaticParams, stay warm paths but aren't listed. A
     // cacheComponents build keeps every page route eligible, as dispatch does.
-    const isStaticEligible =
-      isRouteHandler || options.cacheComponents || isAppPageRouteStaticEligible(route, readMdxEsm);
+    const staticEligibility =
+      isRouteHandler || options.cacheComponents
+        ? "eligible"
+        : classifyAppPageRouteStaticEligibility(route, readMdxEsm);
+    const isStaticEligible = staticEligibility !== "ineligible";
 
     const addDiscoveredPath = (pathname: string): void => {
       if (isRouteHandler) {
@@ -1032,7 +1038,7 @@ async function collectAppPaths(options: {
         });
         const hasStaticFallback =
           paramSets !== null || dynamicConfig === "force-static" || dynamicConfig === "error";
-        if (hasStaticFallback && !hasDynamicSegment && isStaticEligible) {
+        if (hasStaticFallback && !hasDynamicSegment && staticEligibility === "eligible") {
           fallbackRoutePatterns.push({ kind: "app-page", pattern: route.pattern });
         }
         continue;
