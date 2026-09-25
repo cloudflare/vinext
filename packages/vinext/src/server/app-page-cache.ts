@@ -485,14 +485,17 @@ export async function readAppPageCacheResponse(
     }
 
     if (cached?.isStale && cachedValue) {
-      // Re-store a key's previous entry after a failed regeneration. Another
-      // regeneration can write the key too (an HTML one also writes the RSC
-      // key), so a newer entry is left alone unless `isOwnWrite` recognizes it
-      // as this regeneration's. A missing one is restored, as Next.js restores
+      // Put a key's previous entry back: after a failed render with a backoff
+      // policy, as Next.js re-stores it; after a failed store with its own
+      // policy, as Next.js's set leaves it untouched. Another regeneration can
+      // write the key too (an HTML one also writes the RSC key), so a newer
+      // entry is left alone unless `isOwnWrite` recognizes it as this
+      // regeneration's. A missing one is restored, as Next.js restores
       // unconditionally.
       const keepPreviousEntry = async (
         key: string,
         previous: ISRCacheEntry,
+        backoff: boolean,
         isOwnWrite: (current: ISRCacheEntry) => boolean = () => false,
       ): Promise<void> => {
         const previousValue = getCachedAppPageValue(previous);
@@ -510,7 +513,9 @@ export async function readAppPageCacheResponse(
             isOwnWrite(current)
           ) {
             await options.isrSet(key, previousValue, {
-              cacheControl: resolveRegenerationFailureCacheControl(previousCacheControl),
+              cacheControl: backoff
+                ? resolveRegenerationFailureCacheControl(previousCacheControl)
+                : previousCacheControl,
               tags: [...previousTags],
             });
           }
@@ -564,9 +569,23 @@ export async function readAppPageCacheResponse(
             );
         // Next.js keeps a page's HTML and RSC as one entry, so an HTML-triggered
         // regen holds the RSC key's previous entry to put back if its HTML
-        // write then fails.
-        const previousRscEntry = options.isRscRequest ? null : await options.isrGet(rscKey);
-        await options.isrSet(
+        // write then fails. One that can't be read just can't be put back.
+        const previousRscEntry = options.isRscRequest
+          ? null
+          : await options.isrGet(rscKey).catch(() => null);
+        // Next.js's set only warns when its cache handler fails, so a failed
+        // store is not a failed regeneration: it neither throws nor re-stores
+        // the previous entry with a backoff policy.
+        const store = async (key: string, value: CachedAppPageValue): Promise<boolean> => {
+          try {
+            await options.isrSet(key, value, { cacheControl, tags: revalidatedPage.tags });
+            return true;
+          } catch (storeError) {
+            console.warn(`[vinext] Failed to update prerender cache for ${key}:`, storeError);
+            return false;
+          }
+        };
+        const storedRsc = await store(
           rscKey,
           buildAppPageCacheValue(
             "",
@@ -574,53 +593,49 @@ export async function readAppPageCacheResponse(
             200,
             revalidatedPage.rscRenderObservation,
           ),
-          { cacheControl, tags: revalidatedPage.tags },
         );
+        // A failed RSC write leaves the previous page untouched, so the HTML
+        // key isn't written either.
+        if (!storedRsc) return;
 
         if (!options.isRscRequest) {
           // HTML cache is slot-state-independent (canonical), so only refresh it
           // during HTML-triggered regens. RSC-triggered regens only update the
           // requesting client's RSC slot variant; a stale HTML cache entry will
           // be regenerated independently by the next full-page HTML request.
-          //
-          // Written only once the RSC write has succeeded, so a failed RSC
-          // write leaves this key's previous entry for the failure handler to
-          // keep, and no sibling write is still pending when it does.
-          try {
-            await options.isrSet(
-              isrKey,
-              buildAppPageCacheValue(
-                revalidatedPage.html,
-                undefined,
-                200,
-                revalidatedPage.htmlRenderObservation,
-                revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
-              ),
-              { cacheControl, tags: revalidatedPage.tags },
-            );
-          } catch (error) {
+          const storedHtml = await store(
+            isrKey,
+            buildAppPageCacheValue(
+              revalidatedPage.html,
+              undefined,
+              200,
+              revalidatedPage.htmlRenderObservation,
+              revalidatedPage.linkHeader ? { link: revalidatedPage.linkHeader } : undefined,
+            ),
+          );
+          if (!storedHtml) {
             // Don't leave this regeneration's RSC published beside the previous
             // HTML. Its own write is recognized by its payload, since a store
             // may hand back a copy.
             if (previousRscEntry) {
-              await keepPreviousEntry(rscKey, previousRscEntry, (current) =>
+              await keepPreviousEntry(rscKey, previousRscEntry, false, (current) =>
                 hasSameBytes(getCachedAppPageValue(current)?.rscData, revalidatedPage.rscData),
               );
             }
-            throw error;
+            return;
           }
         }
         options.isrDebug?.("regen complete", options.cleanPathname);
       };
-      // As in Next.js, any failure, whether rendering or storing the new
-      // entry, keeps the previous one.
+      // As in Next.js, a failed render keeps the previous entry, re-stored
+      // with a backoff policy.
       options.scheduleBackgroundRegeneration(isrKey, async () => {
         try {
           await regenerate();
         } catch (error) {
           // Keep the previous entry under this key only: an RSC-triggered
           // regeneration must not write its payload under the HTML key.
-          await keepPreviousEntry(isrKey, cached);
+          await keepPreviousEntry(isrKey, cached, true);
           throw error;
         }
       });
