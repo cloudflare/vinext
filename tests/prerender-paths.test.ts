@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { toSlash } from "pathslash";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
@@ -1633,7 +1634,7 @@ describe("prerender path manifest", () => {
       "app/[slug]/page.mdx",
       [
         "An export can't interrupt a paragraph, so this is text:",
-        'export function generateStaticParams() { return [{ slug: "hello" }] }',
+        "export function generateStaticParams() {}",
         "",
         "# Hello",
         "",
@@ -1659,22 +1660,51 @@ describe("prerender path manifest", () => {
     expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBe(true);
   });
 
-  it("doesn't list an MDX route's paths without the MDX parser", async () => {
+  it("reads MDX with the parser beside an MDX plugin the app installs", async () => {
+    // vinext's own @mdx-js/rollup isn't installed; the app registers its own.
+    const rollupDir = path.dirname(
+      createRequire(new URL("../packages/vinext/package.json", import.meta.url)).resolve(
+        "@mdx-js/rollup",
+      ),
+    );
     vi.resetModules();
-    vi.doMock("../packages/vinext/src/utils/mdx-scan.js", async (importOriginal) => ({
-      ...(await importOriginal<typeof import("../packages/vinext/src/utils/mdx-scan.js")>()),
-      loadMdxEsmReader: async () => null,
-    }));
+    vi.doMock("node:module", async (importOriginal) => {
+      const actual = await importOriginal<typeof import("node:module")>();
+      const createRequireWithoutVinextMdx = (base: string | URL) => {
+        const require = actual.createRequire(base);
+        if (!String(base).includes("/utils/mdx-scan.")) return require;
+        return Object.assign((id: string) => require(id), require, {
+          resolve: (id: string, options?: { paths?: string[] }) => {
+            if (id === "@mdx-js/rollup") throw new Error(`Cannot find module '${id}'`);
+            return require.resolve(id, options);
+          },
+        });
+      };
+      return Object.assign({}, actual, { createRequire: createRequireWithoutVinextMdx });
+    });
     try {
       writeFile("package.json", JSON.stringify({ type: "module" }));
       writeFile("dist/server/BUILD_ID", "build-a\n");
       writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
       writeFile("dist/server/index.js", "export default {};\n");
+      fs.mkdirSync(path.join(tmpDir, "node_modules", "@mdx-js"), { recursive: true });
+      fs.symlinkSync(rollupDir, path.join(tmpDir, "node_modules", "@mdx-js", "rollup"), "dir");
       writeFile(
         "app/[slug]/page.mdx",
         'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
       );
-      vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
+      // Only a route read with the parser keeps its force-dynamic config.
+      writeFile(
+        "app/forced/[slug]/page.mdx",
+        [
+          'export const dynamic = "force-dynamic"',
+          'export function generateStaticParams() { return [{ slug: "hello" }] }',
+          "",
+          "# Forced",
+          "",
+        ].join("\n"),
+      );
+      vi.mocked(fetch).mockImplementation(async () => Response.json([{ slug: "hello" }]));
 
       const [{ emitPrerenderPathManifest }, { resolveNextConfig }] = await Promise.all([
         import("../packages/vinext/src/build/prerender-paths.js"),
@@ -1690,8 +1720,85 @@ describe("prerender path manifest", () => {
         responseVary: "verbatim",
       });
 
+      expect(manifest?.paths).toEqual(["/forced/hello", "/hello"]);
+      expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBeUndefined();
+      expect(manifest?.routePatterns?.["/forced/hello"]?.cacheabilityProbe?.unlisted).toBe(true);
+    } finally {
+      vi.doUnmock("node:module");
+      vi.resetModules();
+    }
+  });
+
+  it("lists an MDX route's paths without the MDX parser, so their render failures still fail", async () => {
+    vi.resetModules();
+    vi.doMock("../packages/vinext/src/utils/mdx-scan.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../packages/vinext/src/utils/mdx-scan.js")>()),
+      loadMdxEsmReader: async () => null,
+    }));
+    try {
+      writeFile("package.json", JSON.stringify({ type: "module" }));
+      writeFile("dist/server/BUILD_ID", "build-a\n");
+      writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+      writeFile("dist/server/index.js", "export default {};\n");
+      writeFile(
+        "dist/server/vinext-server.json",
+        JSON.stringify({ prerenderSecret: "probe-secret" }),
+      );
+      writeFile(
+        "app/[slug]/page.mdx",
+        'export function generateStaticParams() { return [{ slug: "hello" }] }\n\n# Hello\n',
+      );
+      vi.mocked(fetch).mockResolvedValue(Response.json([{ slug: "hello" }]));
+
+      const [
+        { emitPrerenderPathManifest },
+        { resolveNextConfig },
+        { probeStagedWorkerCacheability },
+      ] = await Promise.all([
+        import("../packages/vinext/src/build/prerender-paths.js"),
+        import("../packages/vinext/src/config/next-config.js"),
+        import("../packages/cloudflare/src/cacheability-probe.js"),
+      ]);
+      const nextConfig = await resolveNextConfig(
+        { pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] },
+        tmpDir,
+      );
+      const manifest = await emitPrerenderPathManifest({
+        root: tmpDir,
+        nextConfig,
+        responseVary: "verbatim",
+      });
+
       expect(manifest?.paths).toEqual(["/hello"]);
-      expect(manifest?.routePatterns?.["/hello"]?.cacheabilityProbe?.unlisted).toBe(true);
+      const route = manifest?.routePatterns?.["/hello"];
+      expect(route?.cacheabilityProbe?.unlisted).toBeUndefined();
+
+      const result = await probeStagedWorkerCacheability({
+        buildId: "build-a",
+        fetchImpl: async () =>
+          Response.json({
+            kind: "app-page",
+            pattern: route?.pattern,
+            reason: "route returned HTTP 500",
+            state: "probe-failed",
+            status: 500,
+            version: 1,
+          }),
+        retries: 0,
+        root: tmpDir,
+        targetUrl: "https://example.com",
+        targets: [
+          {
+            headers: { Accept: "text/html" },
+            kind: "html",
+            label: "/hello",
+            pathname: "/hello",
+            route,
+            sourcePathname: "/hello",
+          },
+        ],
+      });
+      expect(result.failures).toEqual(["/hello: route returned HTTP 500"]);
     } finally {
       vi.doUnmock("../packages/vinext/src/utils/mdx-scan.js");
       vi.resetModules();

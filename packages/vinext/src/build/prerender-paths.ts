@@ -754,8 +754,10 @@ function isAppPageRouteStaticEligible(
   route: AppRoute,
   readMdxEsm: ((source: string) => string) | null,
 ): boolean {
-  // An MDX source read without the MDX parser has unknown exports, so its
-  // route is never taken as static.
+  // An MDX source read without the MDX parser has unknown exports. Its route
+  // is taken as static: listing only permits, since the built runtime reads
+  // the real exports and never stores a route that isn't static, while an
+  // unlisted path's render failure would be dropped instead of failing.
   let unreadable = false;
   const readSegmentConfig = (filePath: string | null | undefined) => {
     if (!filePath) return null;
@@ -794,7 +796,7 @@ function isAppPageRouteStaticEligible(
     page: readSegmentConfig(slot.pagePath ?? slot.defaultPath),
     routeSegments: slot.routeSegments,
   }));
-  if (unreadable) return false;
+  if (unreadable) return true;
   const segmentConfig = resolveAppPageSegmentConfig({
     layouts,
     layoutTreePositions: route.layoutTreePositions,
@@ -836,6 +838,7 @@ async function collectAppPaths(options: {
   enumerateDynamicPaths: boolean;
   pageExtensions: readonly string[];
   retryOptions?: PathDiscoveryRetryOptions;
+  root: string;
   secretHeaders: Record<string, string>;
 }): Promise<{
   fallbackRoutePatterns: PrerenderRoutePattern[];
@@ -913,7 +916,7 @@ async function collectAppPaths(options: {
 
   const readMdxEsm =
     !options.cacheComponents && options.pageExtensions.includes("mdx")
-      ? await loadMdxEsmReader()
+      ? await loadMdxEsmReader(options.root)
       : null;
   for (const route of routes) {
     const isRouteHandler = route.routePath !== null && route.pagePath === null;
@@ -1532,6 +1535,7 @@ export async function discoverPrerenderPathManifest(
           enumerateDynamicPaths: options.candidatePathsOnly !== true,
           pageExtensions: config.pageExtensions,
           retryOptions: pathDiscoveryRetryOptions,
+          root,
           secretHeaders,
         });
         for (const pathname of appPathResult.paths) {

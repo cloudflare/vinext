@@ -50,18 +50,29 @@ type MdxProcessorModule = {
 /**
  * Load a reader that keeps only the ESM of an MDX module, so the JavaScript
  * export helpers can read it. It takes the ESM nodes from the MDX parser that
- * `@mdx-js/rollup` compiles with, resolved from the same place vinext loads
- * that plugin. Returns null when that parser isn't installed.
+ * `@mdx-js/rollup` compiles with, resolved beside the plugin vinext
+ * auto-injects or one the app installs, or from the app itself. Returns null
+ * when that parser isn't installed.
  */
-export async function loadMdxEsmReader(): Promise<((source: string) => string) | null> {
-  let mdx: MdxProcessorModule;
-  try {
-    const rollupEntry = createRequire(import.meta.url).resolve("@mdx-js/rollup");
-    const mdxEntry = createRequire(rollupEntry).resolve("@mdx-js/mdx");
-    mdx = (await import(pathToFileURL(mdxEntry).href)) as MdxProcessorModule;
-  } catch {
-    return null;
+export async function loadMdxEsmReader(root: string): Promise<((source: string) => string) | null> {
+  const fromVinext = createRequire(import.meta.url);
+  // An app that registers its own MDX plugin builds with the parser it installs.
+  const fromRoot = createRequire(path.join(root, "package.json"));
+  const candidates = [
+    () => createRequire(fromVinext.resolve("@mdx-js/rollup")).resolve("@mdx-js/mdx"),
+    () => createRequire(fromRoot.resolve("@mdx-js/rollup")).resolve("@mdx-js/mdx"),
+    () => fromRoot.resolve("@mdx-js/mdx"),
+  ];
+  let mdx: MdxProcessorModule | null = null;
+  for (const resolveEntry of candidates) {
+    try {
+      mdx = (await import(pathToFileURL(resolveEntry()).href)) as MdxProcessorModule;
+      break;
+    } catch {
+      // Try the next place the parser can be installed.
+    }
   }
+  if (!mdx) return null;
   const processor = mdx.createProcessor();
   return (source) =>
     processor
