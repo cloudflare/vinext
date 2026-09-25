@@ -255,6 +255,25 @@ test.describe("Cloudflare route-handler draft-mode cache isolation", () => {
     }
   });
 
+  // Next.js document requests surface redirect() as a 307. Ported from:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
+  for (const [router, pathname, location] of [
+    ["App", "/cdn-stage-app/redirect", "/about"],
+    ["Pages", "/cdn-stage-pages/redirect", "/pages-about"],
+  ] as const) {
+    test(`returns ${router} redirects from the cache-facing response stage`, async ({
+      request,
+    }) => {
+      const response = await request.get(`${BASE_URL}${pathname}`, {
+        headers: { Accept: "text/html" },
+        maxRedirects: 0,
+      });
+
+      expect(response.status()).toBe(307);
+      expect(response.headers()["location"]).toBe(location);
+    });
+  }
+
   test("routes revalidatePath through the cache-bearing response entrypoint", async ({
     request,
   }) => {
