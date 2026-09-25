@@ -200,3 +200,14 @@ vinext follows Next.js-style cache semantics:
 - `revalidateTag()` invalidates content associated with a cache tag.
 
 The adapter changes where entries live and how they are served, but it should not change the caching API used by application code.
+
+## Deployment-style `Cache-Control` for self-hosted servers
+
+By default, the Node prod server (`vinext start` and the standalone `server.js`) sends the same `Cache-Control` values as `next start`: a page produced by `getStaticProps` or ISR carries a shared-cache policy such as `s-maxage=60, stale-while-revalidate`, which tells a CDN in front of the server how long it may serve the entry.
+
+A deployed Next.js platform hands browsers a different value for the same page, `public, max-age=0, must-revalidate`, and keeps the revalidation policy on its own edge. Set `VINEXT_NEXT_DEPLOY_CACHE_CONTROL=1` in the server's environment to get that behaviour from vinext:
+
+- Responses whose computed policy contains `s-maxage` (ISR pages in both routers, `getStaticProps` pages, and their `/_next/data` payloads) are sent with `Cache-Control: public, max-age=0, must-revalidate`. The active CDN cache adapter still receives the real policy and clears any provider-specific cache headers it owns.
+- Responses without a shared-cache policy are unchanged: `getServerSideProps` pages keep their `private, no-cache, no-store, max-age=0, must-revalidate` default or whatever the page set itself, and Route Handlers keep the headers they return.
+
+Use it when the server sits behind a cache that you configure through a CDN cache adapter, or when you need the headers a deployed Next.js app produces (this is the mode `scripts/e2e-deploy.sh` runs the Next.js deployment test suite in). Leave it unset when a CDN in front of the server should honour `s-maxage` directly. The variable is read at request time, so it can be set in the process environment, a container image, or a systemd unit.
