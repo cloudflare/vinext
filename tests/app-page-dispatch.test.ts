@@ -746,6 +746,34 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>cached</html>");
   });
 
+  it("sends the request's params and path on a cached RSC hit", async () => {
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("cache hit should not render the page");
+      },
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer)),
+      ),
+      hasGenerateStaticParams: true,
+      params: { slug: "first" },
+      revalidateSeconds: 60,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderedPathAndSearch = "/posts/first";
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(response.headers.get("x-vinext-params")).toBe(
+      encodeURIComponent(JSON.stringify({ slug: "first" })),
+    );
+    expect(response.headers.get("x-vinext-rendered-path-and-search")).toBe(
+      encodeURIComponent("/posts/first"),
+    );
+  });
+
   it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),

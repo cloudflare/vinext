@@ -27,7 +27,11 @@ import {
 } from "../packages/vinext/src/shims/cache.js";
 import type { CacheControlMetadata } from "../packages/vinext/src/shims/cache-handler.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
-import { NEXT_ROUTER_STALE_TIME_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  NEXT_ROUTER_STALE_TIME_HEADER,
+  VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import {
   markClientTraceMetadataBlock,
   renderClientTraceMetadataTags,
@@ -280,6 +284,56 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get("Vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, Origin`);
     expect(response?.headers.get("X-Vinext-Cache")).toBe("STALE");
     await expect(response?.arrayBuffer()).resolves.toEqual(rscData);
+  });
+
+  it("composes the current request's params and path on cached RSC responses", async () => {
+    const cachedValue = buildCachedAppPageValue("<h1>cached</h1>", new ArrayBuffer(0));
+    const readCached = (isRscRequest: boolean, cacheState: "HIT" | "STALE") =>
+      readAppPageCacheResponse({
+        cleanPathname: "/posts/한글",
+        clearRequestContext() {},
+        isRscRequest,
+        async isrGet() {
+          return buildISRCacheEntry(cachedValue, cacheState === "STALE", { revalidate: 60 });
+        },
+        isrHtmlKey(pathname) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname) {
+          return "rsc:" + pathname;
+        },
+        async isrSet() {},
+        params: { slug: "한글" },
+        renderedPathAndSearch: "/posts/한글?q=1",
+        revalidateSeconds: 60,
+        async renderFreshPageForCache() {
+          throw new Error("regeneration is not awaited here");
+        },
+        scheduleBackgroundRegeneration() {},
+      });
+
+    for (const cacheState of ["HIT", "STALE"] as const) {
+      const rsc = await readCached(true, cacheState);
+      expect(rsc?.headers.get("x-vinext-cache")).toBe(cacheState);
+      expect(rsc?.headers.get(VINEXT_PARAMS_HEADER)).toBe(
+        encodeURIComponent(JSON.stringify({ slug: "한글" })),
+      );
+      expect(rsc?.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBe(
+        encodeURIComponent("/posts/한글?q=1"),
+      );
+    }
+
+    const html = await readCached(false, "HIT");
+    expect(html?.headers.get(VINEXT_PARAMS_HEADER)).toBeNull();
+    expect(html?.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)).toBeNull();
+
+    const withoutParams = buildAppPageCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isRscRequest: true,
+      params: {},
+      revalidateSeconds: 60,
+    });
+    expect(withoutParams?.headers.get(VINEXT_PARAMS_HEADER)).toBeNull();
   });
 
   it("uses stored cache-control metadata instead of global config for cached HIT responses", async () => {

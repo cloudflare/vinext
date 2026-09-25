@@ -7,7 +7,11 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { decideIsr } from "./isr-decision.js";
-import { VINEXT_MOUNTED_SLOTS_HEADER } from "./headers.js";
+import {
+  VINEXT_MOUNTED_SLOTS_HEADER,
+  VINEXT_PARAMS_HEADER,
+  VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+} from "./headers.js";
 import { applyClientStaleTimeHeader, applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -87,6 +91,10 @@ type BuildAppPageCachedResponseOptions = {
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
+  /** The current request's route params, which the client reads on RSC responses. */
+  params?: Record<string, string | string[]>;
+  /** The current request's path and query, which the client reads on RSC responses. */
+  renderedPathAndSearch?: string | null;
   revalidateSeconds: number;
 };
 
@@ -107,7 +115,9 @@ type ReadAppPageCacheResponseOptions = {
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   mountedSlotsHeader?: string | null;
+  params?: Record<string, string | string[]>;
   recordCacheOutcome?: AppPageCacheOutcomeRecorder;
+  renderedPathAndSearch?: string | null;
   renderMode?: AppRscRenderMode;
   expireSeconds?: number;
   revalidateSeconds: number;
@@ -300,6 +310,17 @@ export function buildAppPageCachedResponse(
       mountedSlotsHeader: options.mountedSlotsHeader,
       staleTimeSeconds,
     });
+    // These describe the current request, not the shared RSC bytes, so a hit
+    // composes them as a fresh render does.
+    if (options.params && Object.keys(options.params).length > 0) {
+      rscHeaders.set(VINEXT_PARAMS_HEADER, encodeURIComponent(JSON.stringify(options.params)));
+    }
+    if (options.renderedPathAndSearch) {
+      rscHeaders.set(
+        VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+        encodeURIComponent(options.renderedPathAndSearch),
+      );
+    }
     applyRscCompatibilityIdHeader(rscHeaders);
     applyRscDeploymentIdHeader(rscHeaders);
 
@@ -458,6 +479,8 @@ export async function readAppPageCacheResponse(
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
+        params: options.params,
+        renderedPathAndSearch: options.renderedPathAndSearch,
         revalidateSeconds: options.revalidateSeconds,
       });
 
@@ -636,6 +659,8 @@ export async function readAppPageCacheResponse(
         middlewareHeaders: options.middlewareHeaders,
         middlewareStatus: options.middlewareStatus,
         mountedSlotsHeader: options.mountedSlotsHeader,
+        params: options.params,
+        renderedPathAndSearch: options.renderedPathAndSearch,
         revalidateSeconds: options.revalidateSeconds,
       });
 
