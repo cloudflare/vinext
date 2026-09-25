@@ -9,7 +9,7 @@ import {
   readAppPageFallbackShellCacheResponse,
   scheduleAppPageRscCacheWrite,
 } from "../packages/vinext/src/server/app-page-cache.js";
-import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
+import type { AppPageCacheSetter, ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
@@ -1611,7 +1611,7 @@ describe("app page cache helpers", () => {
     async (unprovenBuilder) => {
       const pendingCacheWrites: Promise<void>[] = [];
       const debugCalls: Array<[string, string]> = [];
-      const isrSet = vi.fn(async () => {});
+      const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
       const finalize = (builders: typeof queryInvariantObservationBuilders) =>
         finalizeAppPageHtmlCacheResponse(
           new Response("<h1>fresh</h1>", {
