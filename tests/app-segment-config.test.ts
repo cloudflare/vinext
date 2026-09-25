@@ -613,6 +613,49 @@ describe("collectAppPageStaticGenerationRuntimes", () => {
     expect(runtimes).toEqual([undefined, "nodejs", undefined, "edge"]);
     expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
   });
+
+  it("skips main-branch layouts below the slot owner", () => {
+    // app/layout.tsx sets runtime = "edge", app/dashboard/layout.tsx sets
+    // "nodejs", app/dashboard/@panel/default.tsx makes /dashboard a route, and
+    // app/@feed/dashboard/page.tsx materializes it. The dashboard layout isn't
+    // an ancestor of the slot page, so Next.js keeps the root's edge runtime.
+    const runtimes = collectAppPageStaticGenerationRuntimes({
+      layouts: [{ runtime: "edge" }, { runtime: "nodejs" }],
+      layoutTreePositions: [0, 1],
+      materializedBySlot: true,
+      page: null,
+      parallelBranches: [
+        {
+          layout: {},
+          name: "feed",
+          ownerTreePosition: 0,
+          page: {},
+          routeSegments: ["dashboard"],
+        },
+        { isDefault: true, name: "panel", ownerTreePosition: 1, page: {} },
+      ],
+    });
+    expect(runtimes).toEqual(["edge", undefined, undefined]);
+    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+  });
+
+  it("keeps the slot owner's own layout and its ancestors", () => {
+    // app/dashboard/layout.tsx sets runtime = "edge", app/dashboard/settings/
+    // layout.tsx sets "nodejs", and app/dashboard/@feed/settings/page.tsx
+    // materializes /dashboard/settings.
+    const runtimes = collectAppPageStaticGenerationRuntimes({
+      childrenSlot: { ownerTreePath: "/dashboard", state: "default" },
+      layouts: [{}, { runtime: "edge" }, { runtime: "nodejs" }],
+      layoutTreePositions: [0, 1, 2],
+      materializedBySlot: true,
+      page: {},
+      parallelBranches: [
+        { name: "feed", ownerTreePosition: 1, page: {}, routeSegments: ["settings"] },
+      ],
+    });
+    expect(runtimes).toEqual([undefined, "edge", undefined, undefined]);
+    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+  });
 });
 
 describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {

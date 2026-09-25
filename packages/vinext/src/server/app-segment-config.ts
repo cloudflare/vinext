@@ -470,11 +470,14 @@ function treePathDepth(treePath: string): number {
 /**
  * The `runtime` values of an App page's file and the layouts above it, root
  * first, for `resolveAppPageStaticGenerationRuntime`. A route that only a
- * slot page materializes is built from that slot page, so its layouts include
- * the slot's.
+ * slot page materializes is built from that slot page, so its layouts are the
+ * slot owner's ancestors followed by the slot's own.
  */
 export function collectAppPageStaticGenerationRuntimes(
-  options: Pick<ResolveAppPageSegmentConfigOptions, "layouts" | "page" | "parallelBranches"> & {
+  options: Pick<
+    ResolveAppPageSegmentConfigOptions,
+    "layoutTreePositions" | "layouts" | "page" | "parallelBranches"
+  > & {
     childrenSlot?: AppPageChildrenSlot | null;
     materializedBySlot?: boolean;
   },
@@ -492,8 +495,18 @@ export function collectAppPageStaticGenerationRuntimes(
         .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))[0]
     : undefined;
   if (!slotPage) return [...layoutRuntimes, options.page?.runtime];
+  // Next.js reads the layouts in the slot page's parent folders. Main-branch
+  // layouts below the slot's owner aren't among them.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/build/get-static-info-including-layouts.ts
+  const ownerTreePosition = slotPage.ownerTreePosition;
+  const ancestorRuntimes =
+    ownerTreePosition == null
+      ? layoutRuntimes
+      : layoutRuntimes.filter(
+          (_, index) => (options.layoutTreePositions?.[index] ?? 0) <= ownerTreePosition,
+        );
   return [
-    ...layoutRuntimes,
+    ...ancestorRuntimes,
     slotPage.layout?.runtime,
     ...(slotPage.configLayouts ?? []).map((layout) => layout?.runtime),
     slotPage.page?.runtime,
