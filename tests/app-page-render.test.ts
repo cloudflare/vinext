@@ -22,7 +22,7 @@ import type { LayoutClassificationOptions } from "../packages/vinext/src/server/
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
-import { makeClientPageSsrSearchParamsThenable } from "../packages/vinext/src/server/app-page-search-params-observation.js";
+import { createClientPageSsrSearchParamsSource } from "../packages/vinext/src/server/app-page-search-params-observation.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import {
   setNavigationContext,
@@ -1219,7 +1219,7 @@ describe("app page render lifecycle", () => {
                   const ssrNavigationContext = navContext as NavigationContext;
                   setNavigationContext({
                     ...ssrNavigationContext,
-                    clientPageSearchParams: makeClientPageSsrSearchParamsThenable(
+                    getClientPageSearchParams: createClientPageSsrSearchParamsSource(
                       ssrNavigationContext.searchParams,
                       {
                         isForceStatic: options?.isForceStatic,
@@ -1383,7 +1383,7 @@ describe("app page render lifecycle", () => {
                     const ssrNavigationContext = navContext as NavigationContext;
                     setNavigationContext({
                       ...ssrNavigationContext,
-                      clientPageSearchParams: makeClientPageSsrSearchParamsThenable(
+                      getClientPageSearchParams: createClientPageSsrSearchParamsSource(
                         ssrNavigationContext.searchParams,
                         {},
                       ),

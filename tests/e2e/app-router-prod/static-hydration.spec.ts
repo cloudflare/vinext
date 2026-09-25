@@ -137,6 +137,22 @@ test("a client page reading React's promise fields directly hydrates as SSR rend
   expect(errors).toEqual([]);
 });
 
+test("a client page reading React's promise fields hydrates as SSR rendered it beside a page using its query", async ({
+  page,
+}) => {
+  // The page's use() must not leave React's fields on the @fields page's
+  // promise in SSR, as it doesn't in the browser.
+  const errors = collectPageErrors(page);
+
+  await page.goto("/client-page-search-params/promise-fields-sibling?q=one");
+  await waitForAppRouterHydration(page);
+  await expect(page.getByTestId("promise-fields-sibling-q")).toHaveText("one");
+  await expect(page.getByTestId("promise-fields-sibling-fields")).toHaveText(
+    "status:undefined value:undefined",
+  );
+  expect(errors).toEqual([]);
+});
+
 test("a force-static client page keeps an empty query during navigation", async ({ page }) => {
   const errors = collectPageErrors(page);
 

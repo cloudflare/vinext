@@ -9,7 +9,9 @@
  * always count as reading the query, and the RSC payload would carry it. This
  * wrapper builds the prop where the page renders instead:
  *
- * - SSR: the promise `app-ssr-entry.ts` puts on the navigation context. Reading
+ * - SSR: a promise per page from the navigation context (`app-ssr-entry.ts`),
+ *   keyed by the page's props object like the browser's, so React's
+ *   bookkeeping from one page's `use()` never shows on a sibling's. Reading
  *   it marks the render dynamic, so a render that uses the query is never
  *   stored, and a page that never reads it stays cacheable.
  * - Browser: the query the server rendered this page with, captured when the
@@ -157,7 +159,8 @@ export function ClientPageRoot({ Component, pageProps, emptySearchParams }: Clie
     // Every App Router SSR render sets this. Without it there is no query this
     // render may safely read, so the page gets an empty one.
     searchParams =
-      getNavigationContext()?.clientPageSearchParams ?? createClientPageSearchParams(null);
+      getNavigationContext()?.getClientPageSearchParams?.(pageProps) ??
+      createClientPageSearchParams(null);
   }
   // The same inputs give the same element, so React skips the page.
   return useMemo(

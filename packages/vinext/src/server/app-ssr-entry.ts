@@ -21,7 +21,7 @@ import {
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import { startCandidateSearchParamsGate } from "./app-ssr-search-params-gate.js";
 import { onRenderDynamicLatched } from "vinext/shims/headers";
-import { makeClientPageSsrSearchParamsThenable } from "./app-page-search-params-observation.js";
+import { createClientPageSsrSearchParamsSource } from "./app-page-search-params-observation.js";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
@@ -452,7 +452,7 @@ export async function handleSsr(
       searchParamsGate: searchParamsGate?.gate,
       // A client page reading this marks the render dynamic, like a server
       // page's searchParams.
-      clientPageSearchParams: makeClientPageSsrSearchParamsThenable(
+      getClientPageSearchParams: createClientPageSsrSearchParamsSource(
         requiredNavigationContext.searchParams,
         {
           isForceStatic: options?.isForceStatic,

@@ -1,7 +1,10 @@
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
-import { makeClientPageSsrSearchParamsThenable } from "../packages/vinext/src/server/app-page-search-params-observation.js";
+import {
+  createClientPageSsrSearchParamsSource,
+  makeClientPageSsrSearchParamsThenable,
+} from "../packages/vinext/src/server/app-page-search-params-observation.js";
 import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
 import {
   ClientPageRoot,
@@ -31,6 +34,13 @@ function SyncReadingPage({ searchParams }: SearchParamsProps): React.ReactNode {
   return React.createElement("p", null, `page:${String(Reflect.get(searchParams, "q"))}`);
 }
 
+/** Reads React's promise fields directly. `status` and `value` are reserved. */
+function FieldsPage({ searchParams }: SearchParamsProps): React.ReactNode {
+  const status = String(Reflect.get(searchParams, "status"));
+  const value = String(Reflect.get(searchParams, "value"));
+  return React.createElement("p", null, `status:${status} value:${value}`);
+}
+
 function SearchValue(): React.ReactNode {
   return React.createElement("p", null, `hook:${useSearchParams().get("q") ?? ""}`);
 }
@@ -51,7 +61,7 @@ function startCandidateSsr(options?: { isPprFallbackShell?: boolean }) {
     searchParams,
     params: {},
     searchParamsGate: gate.gate,
-    clientPageSearchParams: makeClientPageSsrSearchParamsThenable(searchParams, {
+    getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {
       isPprFallbackShell: options?.isPprFallbackShell,
     }),
   });
@@ -61,7 +71,7 @@ function startCandidateSsr(options?: { isPprFallbackShell?: boolean }) {
 async function renderPage(
   Component: React.ComponentType<SearchParamsProps>,
   extra?: React.ReactNode,
-  rootProps?: { emptySearchParams?: boolean },
+  rootProps?: { emptySearchParams?: boolean; pageProps?: Record<string, unknown> },
 ): Promise<string> {
   const stream = await renderToReadableStream(
     React.createElement(
@@ -199,11 +209,15 @@ describe("ClientPageRoot in SSR", () => {
         received.push(searchParams);
         return null;
       }
-      await renderPage(RecordingPage);
+      const pageProps = { params: Promise.resolve({}) };
+      await renderPage(RecordingPage, null, { pageProps });
+      await renderPage(RecordingPage, null, { pageProps });
+      // Another page, such as a parallel slot's, gets its own.
       await renderPage(RecordingPage);
 
-      expect(received).toHaveLength(2);
+      expect(received).toHaveLength(3);
       expect(received[0]).toBe(received[1]);
+      expect(received[2]).not.toBe(received[0]);
     });
   });
 });
@@ -578,11 +592,6 @@ describe("ClientPageRoot in the browser", () => {
   it("hydrates a direct read of React's promise fields as SSR rendered it", async () => {
     // `status` and `value` are reserved on both sides, so these query keys
     // don't shadow them, and neither promise carries React's bookkeeping yet.
-    function FieldsPage({ searchParams }: SearchParamsProps): React.ReactNode {
-      const status = String(Reflect.get(searchParams, "status"));
-      const value = String(Reflect.get(searchParams, "value"));
-      return React.createElement("p", null, `status:${status} value:${value}`);
-    }
     const query = "status=y&value=z";
     const ssrHtml = await inRequest(async () => {
       const searchParams = new URLSearchParams(query);
@@ -590,7 +599,7 @@ describe("ClientPageRoot in the browser", () => {
         pathname: "/client",
         searchParams,
         params: {},
-        clientPageSearchParams: makeClientPageSsrSearchParamsThenable(searchParams, {}),
+        getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {}),
       });
       return renderPage(FieldsPage);
     });
@@ -614,6 +623,57 @@ describe("ClientPageRoot in the browser", () => {
         ),
       );
 
+      expect(ssrHtml).toContain("status:undefined value:undefined");
+      expect(browserHtml).toBe(ssrHtml);
+    });
+  });
+
+  it("hydrates a sibling's promise fields as SSR rendered them when another page uses its query", async () => {
+    // Parallel client pages: one unwraps searchParams with use(), which makes
+    // React write its bookkeeping onto that page's promise. The browser builds
+    // one promise per page, so SSR must too, or the sibling sees those fields.
+    const query = "q=one";
+    const pages = (Root: typeof ClientPageRoot) =>
+      React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(Root, {
+          Component: ReadingPage as React.ComponentType<Record<string, unknown>>,
+          pageProps: { params: {} },
+        }),
+        React.createElement(Root, {
+          Component: FieldsPage as React.ComponentType<Record<string, unknown>>,
+          pageProps: { params: {} },
+        }),
+      );
+    const ssrHtml = await inRequest(async () => {
+      const searchParams = new URLSearchParams(query);
+      setNavigationContext({
+        pathname: "/client",
+        searchParams,
+        params: {},
+        getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {}),
+      });
+      return renderMarkup(pages(ClientPageRoot));
+    });
+
+    await withBrowserModules(async (modules) => {
+      const Context = modules.navigation.getClientNavigationRenderContext();
+      if (!Context) throw new Error("Expected client navigation render context");
+      const browserHtml = await renderMarkup(
+        React.createElement(
+          Context.Provider,
+          {
+            value: modules.navigation.createClientNavigationRenderSnapshot(
+              `http://localhost/client?${query}`,
+              {},
+            ),
+          },
+          pages(modules.ClientPageRoot),
+        ),
+      );
+
+      expect(ssrHtml).toContain("page:one");
       expect(ssrHtml).toContain("status:undefined value:undefined");
       expect(browserHtml).toBe(ssrHtml);
     });
