@@ -19,6 +19,30 @@ function parseSeconds(value: string | undefined): number | undefined {
   return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
+// Split cache-control on the commas between directives. A comma inside a
+// quoted extension value belongs to that value, so it is kept verbatim.
+function splitDirectives(cacheControl: string): string[] {
+  const directives: string[] = [];
+  let start = 0;
+  let quoted = false;
+  let escaped = false;
+  for (let index = 0; index < cacheControl.length; index++) {
+    const character = cacheControl[index];
+    if (escaped) {
+      escaped = false;
+    } else if (quoted && character === "\\") {
+      escaped = true;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      directives.push(cacheControl.slice(start, index));
+      start = index + 1;
+    }
+  }
+  directives.push(cacheControl.slice(start));
+  return directives;
+}
+
 type CacheLifetime = {
   maxAge: number;
   reuseForbidden: boolean;
@@ -38,7 +62,7 @@ function parseCacheLifetime(headers: Headers): CacheLifetime {
     headers.get("Cache-Control");
 
   const directives = new Map<string, string | undefined>();
-  for (const part of cacheControl?.split(",") ?? []) {
+  for (const part of cacheControl ? splitDirectives(cacheControl) : []) {
     const [rawName, ...rawValue] = part.trim().split("=");
     if (!rawName) {
       continue;
@@ -119,30 +143,6 @@ const POLICY_HEADERS = new Set([
   "cdn-cache-control",
   "cloudflare-cdn-cache-control",
 ]);
-
-// Split cache-control on the commas between directives. A comma inside a
-// quoted extension value belongs to that value, so it is kept verbatim.
-function splitDirectives(cacheControl: string): string[] {
-  const directives: string[] = [];
-  let start = 0;
-  let quoted = false;
-  let escaped = false;
-  for (let index = 0; index < cacheControl.length; index++) {
-    const character = cacheControl[index];
-    if (escaped) {
-      escaped = false;
-    } else if (quoted && character === "\\") {
-      escaped = true;
-    } else if (character === '"') {
-      quoted = !quoted;
-    } else if (character === "," && !quoted) {
-      directives.push(cacheControl.slice(start, index));
-      start = index + 1;
-    }
-  }
-  directives.push(cacheControl.slice(start));
-  return directives;
-}
 
 function capFreshness(cacheControl: string, maxSeconds: number): string {
   return splitDirectives(cacheControl)

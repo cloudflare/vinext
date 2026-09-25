@@ -984,6 +984,20 @@ test("a failed background regeneration re-stores the entry with clamped freshnes
       },
     },
     {
+      path: "/backoff/embedded",
+      options: {
+        cacheControl: 'public, max-age=1, stale-while-revalidate=1, ext="x,max-age=20,y"',
+        // Stale under either reading, so the retry window tells them apart.
+        age: 20,
+      },
+      retry: 3,
+      expire: 6,
+      // A directive inside a quoted extension value does not set the policy.
+      forwarded: {
+        "Cache-Control": 'public, max-age=1, stale-while-revalidate=1, ext="x,max-age=20,y"',
+      },
+    },
+    {
       path: "/backoff/expires",
       options: {
         cacheControl: "public",
