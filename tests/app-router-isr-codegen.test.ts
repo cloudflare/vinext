@@ -180,6 +180,11 @@ describe("generateRscEntry ISR code generation", () => {
     );
     // Its headers precede its render, so the direct intercept probes run what
     // that render includes for the request's mounted slots and render mode.
+    // A source without the intercept's slot loads none of its modules.
+    expect(code).toContain(`const __probeIntercept = __resolveAppPageProbeIntercept(
+          sourceRoute,
+          findIntercept(interceptionPathname, interceptionContext, interceptionId),
+        );`);
     expect(code).toContain(`return Promise.all(__buildAppPageInterceptSourceProbes({
           route: sourceRoute,
           pageComponent: sourceRoute.page?.default,

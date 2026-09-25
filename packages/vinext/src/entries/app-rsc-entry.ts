@@ -1664,10 +1664,11 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         }));
       },
       async probeInterceptSource(sourceRoute, sourceParams, sourceSearchParams) {
-        const __probeIntercept = findIntercept(
-          interceptionPathname,
-          interceptionContext,
-          interceptionId,
+        // A source without the intercept's slot renders unchanged, so the
+        // intercept's modules are neither loaded nor probed.
+        const __probeIntercept = __resolveAppPageProbeIntercept(
+          sourceRoute,
+          findIntercept(interceptionPathname, interceptionContext, interceptionId),
         );
         if (__probeIntercept) {
           await Promise.all([
