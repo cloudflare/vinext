@@ -38,6 +38,7 @@ import {
 } from "../packages/vinext/src/server/client-trace-metadata.js";
 import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
+import { buildAppPageRscResponse } from "../packages/vinext/src/server/app-page-response.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
@@ -336,6 +337,59 @@ describe("app page cache helpers", () => {
       revalidateSeconds: 60,
     });
     expect(withoutParams?.headers.get(VINEXT_PARAMS_HEADER)).toBeNull();
+  });
+
+  it("keeps middleware's params and path headers from a MISS on the cached RSC HIT", async () => {
+    const middlewareHeaders = new Headers({
+      [VINEXT_PARAMS_HEADER]: encodeURIComponent(JSON.stringify({ slug: "middleware" })),
+      [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent("/middleware"),
+    });
+    const params = { slug: "request" };
+    const renderedPathAndSearch = "/posts/request";
+
+    const miss = buildAppPageRscResponse(new Response("flight").body!, {
+      middlewareContext: { headers: middlewareHeaders, status: null },
+      params,
+      policy: { cacheState: "MISS" },
+      renderedPathAndSearch,
+    });
+    const hit = await readAppPageCacheResponse({
+      cleanPathname: "/posts/request",
+      clearRequestContext() {},
+      isRscRequest: true,
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer),
+          false,
+          { revalidate: 60 },
+        );
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      middlewareHeaders,
+      async resolveParams() {
+        return params;
+      },
+      renderedPathAndSearch,
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("a fresh entry does not regenerate");
+      },
+      scheduleBackgroundRegeneration() {},
+    });
+
+    expect(hit?.headers.get("x-vinext-cache")).toBe("HIT");
+    for (const header of [VINEXT_PARAMS_HEADER, VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]) {
+      expect(hit?.headers.get(header)).toBe(miss.headers.get(header));
+    }
+    expect(hit?.headers.get(VINEXT_PARAMS_HEADER)).toBe(
+      encodeURIComponent(JSON.stringify({ slug: "middleware" })),
+    );
   });
 
   it("uses stored cache-control metadata instead of global config for cached HIT responses", async () => {

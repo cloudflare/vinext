@@ -198,6 +198,7 @@ function buildAppPageCachedHeaders(options: {
   isEdgeRuntime?: boolean;
   middlewareHeaders?: Headers | null;
   mountedSlotsHeader?: string | null;
+  params?: Record<string, string | string[]>;
   staleTimeSeconds?: number;
 }): Headers {
   const headers = new Headers({
@@ -210,6 +211,11 @@ function buildAppPageCachedHeaders(options: {
   setCacheStateHeaders(headers, options.cacheState);
   applyEdgeRuntimeHeader(headers, options.isEdgeRuntime);
 
+  // Set before middleware's headers merge, so middleware's value wins as it
+  // does on a fresh RSC response.
+  if (options.params && Object.keys(options.params).length > 0) {
+    headers.set(VINEXT_PARAMS_HEADER, encodeURIComponent(JSON.stringify(options.params)));
+  }
   if (options.mountedSlotsHeader) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
@@ -313,13 +319,11 @@ export function buildAppPageCachedResponse(
       isEdgeRuntime: options.isEdgeRuntime,
       middlewareHeaders: options.middlewareHeaders,
       mountedSlotsHeader: options.mountedSlotsHeader,
+      // The params and path describe the current request, not the shared RSC
+      // bytes, so a hit composes them as a fresh render does.
+      params: options.params,
       staleTimeSeconds,
     });
-    // These describe the current request, not the shared RSC bytes, so a hit
-    // composes them as a fresh render does.
-    if (options.params && Object.keys(options.params).length > 0) {
-      rscHeaders.set(VINEXT_PARAMS_HEADER, encodeURIComponent(JSON.stringify(options.params)));
-    }
     if (options.renderedPathAndSearch) {
       rscHeaders.set(
         VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
