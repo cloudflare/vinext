@@ -55,6 +55,7 @@ describe("generateRscEntry ISR code generation", () => {
           __collectAppPageStaticGenerationRuntimes({
             childrenSlot: route.childrenSlot,
             layouts: route.layouts,
+            materializedBySlot: route.materializedBySlot,
             page: route.page,
             parallelBranches: __segmentConfigBranches,
           }),

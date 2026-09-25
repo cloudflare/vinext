@@ -147,6 +147,11 @@ export type AppRoute = {
   templates: string[];
   /** Parallel route slots (from @slot directories at the route's directory level) */
   parallelSlots: ParallelSlot[];
+  /**
+   * The route exists only because a nested slot page matches its URL, so
+   * Next.js builds it from that slot page rather than its children.
+   */
+  materializedBySlot?: boolean;
   /** Stable implicit children-slot identity for parallel-slot sub-route families. */
   childrenSlot?: {
     id: string;
@@ -1419,6 +1424,7 @@ function discoverSlotSubRoutes(
         layouts: parentRoute.layouts,
         templates: parentRoute.templates,
         parallelSlots: subSlots,
+        materializedBySlot: true,
         childrenSlot: {
           id: childrenSlotId,
           ownerTreePath: childrenOwnerTreePath,

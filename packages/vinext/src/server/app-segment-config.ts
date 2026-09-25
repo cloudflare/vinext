@@ -460,7 +460,11 @@ function resolveChildrenDefaultTreePosition(
   childrenSlot: AppPageChildrenSlot | null | undefined,
 ): number | null {
   if (!childrenSlot || childrenSlot.state === "active") return null;
-  return childrenSlot.ownerTreePath.split("/").filter(Boolean).length;
+  return treePathDepth(childrenSlot.ownerTreePath);
+}
+
+function treePathDepth(treePath: string): number {
+  return treePath.split("/").filter(Boolean).length;
 }
 
 /**
@@ -472,18 +476,21 @@ function resolveChildrenDefaultTreePosition(
 export function collectAppPageStaticGenerationRuntimes(
   options: Pick<ResolveAppPageSegmentConfigOptions, "layouts" | "page" | "parallelBranches"> & {
     childrenSlot?: AppPageChildrenSlot | null;
+    materializedBySlot?: boolean;
   },
 ): unknown[] {
   const layoutRuntimes = (options.layouts ?? []).map((layout) => layout?.runtime);
-  const childrenDefaultPosition = resolveChildrenDefaultTreePosition(options.childrenSlot);
-  if (childrenDefaultPosition === null) return [...layoutRuntimes, options.page?.runtime];
-
-  const slotPage = (options.parallelBranches ?? [])
-    .filter(
-      (branch): branch is ParallelAppPageSegmentConfigBranch =>
-        !!branch && !branch.isDefault && branch.ownerTreePosition === childrenDefaultPosition,
-    )
-    .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))[0];
+  const slotPage = options.materializedBySlot
+    ? (options.parallelBranches ?? [])
+        .filter(
+          (branch): branch is ParallelAppPageSegmentConfigBranch =>
+            !!branch &&
+            !branch.isDefault &&
+            (options.childrenSlot == null ||
+              branch.ownerTreePosition === treePathDepth(options.childrenSlot.ownerTreePath)),
+        )
+        .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""))[0]
+    : undefined;
   if (!slotPage) return [...layoutRuntimes, options.page?.runtime];
   return [
     ...layoutRuntimes,
@@ -682,17 +689,21 @@ function collectActiveSlotSegments(
     },
   ];
   // Each folder inside the slot has one child: the next folder, then the page.
+  // A slot's root page inside a route group has no segments, but the group's
+  // layout still has a tree position.
+  const depth = Math.max(branchSegments.length, ...(branch.configLayoutTreePositions ?? []));
   let treePath = [...slotPath];
-  branchSegments.forEach((name, index) => {
+  for (let index = 0; index < depth; index++) {
     treePath = [...treePath, 0];
+    const name = branchSegments[index];
     const layout = configLayoutsByPosition.get(index + 1);
     segments.push({
-      dynamic: isDynamicSegment(name),
+      dynamic: name !== undefined && isDynamicSegment(name),
       generateStaticParams: hasGenerateStaticParamsExport(layout),
-      identity: [name, layout],
+      identity: [name ?? "", layout],
       treePath,
     });
-  });
+  }
   segments.push({
     dynamic: false,
     generateStaticParams: hasGenerateStaticParamsExport(branch.page),

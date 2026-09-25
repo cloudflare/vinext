@@ -303,6 +303,8 @@ describe("App Router route graph builder", () => {
       // @foo (no subroute page) keeps its default fallback.
       const subroute = findRoute(graph.routes, "/nested/subroute");
       expect(subroute.pagePath).toBe(canonical(appDir, "nested/default.tsx"));
+      expect(subroute.materializedBySlot).toBe(true);
+      expect(nested.materializedBySlot).toBeUndefined();
       expect(subroute.childrenSlot).toEqual({
         id: "slot:children:/nested",
         ownerTreePath: "/nested",

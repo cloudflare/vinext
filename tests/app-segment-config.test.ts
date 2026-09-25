@@ -565,6 +565,7 @@ describe("collectAppPageStaticGenerationRuntimes", () => {
     const runtimes = collectAppPageStaticGenerationRuntimes({
       childrenSlot: { ownerTreePath: "/", state: "default" },
       layouts: [{ runtime: "nodejs" }],
+      materializedBySlot: true,
       page: {},
       parallelBranches: [
         {
@@ -578,6 +579,21 @@ describe("collectAppPageStaticGenerationRuntimes", () => {
       ],
     });
     expect(runtimes).toEqual(["nodejs", undefined, "nodejs", "edge"]);
+    expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
+  });
+
+  it("reads the slot page even when a sibling catch-all renders the children", () => {
+    // app/[...catchAll]/page.tsx and app/@feed/baz/page.tsx: /baz is still
+    // built from the slot page.
+    const runtimes = collectAppPageStaticGenerationRuntimes({
+      childrenSlot: { ownerTreePath: "/", state: "active" },
+      layouts: [{}],
+      materializedBySlot: true,
+      page: { runtime: "nodejs" },
+      parallelBranches: [
+        { name: "feed", ownerTreePosition: 0, page: { runtime: "edge" }, routeSegments: ["baz"] },
+      ],
+    });
     expect(resolveAppPageStaticGenerationRuntime(runtimes)).toBe("edge");
   });
 });
@@ -766,6 +782,29 @@ describe("hasAppPageGenerateStaticParamsAtLastDynamicSegment", () => {
         routeSegments: ["[id]"],
       }),
     ).toBe(false);
+  });
+
+  it("reads a route-group layout of a slot page that has no URL segments", () => {
+    // app/[id]/@details/(variant)/layout.tsx exports it, below the [id]
+    // segment it follows.
+    expect(
+      hasAppPageGenerateStaticParamsAtLastDynamicSegment({
+        layouts: [{}],
+        layoutTreePositions: [0],
+        page: {},
+        parallelBranches: [
+          {
+            configLayouts: [{ generateStaticParams }],
+            configLayoutTreePositions: [1],
+            name: "details",
+            ownerTreePosition: 1,
+            page: {},
+            routeSegments: [],
+          },
+        ],
+        routeSegments: ["[id]"],
+      }),
+    ).toBe(true);
   });
 
   it("walks segments breadth-first in loader tree order", () => {
