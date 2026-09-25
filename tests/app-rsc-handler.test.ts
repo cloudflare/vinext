@@ -659,6 +659,49 @@ describe("createAppRscHandler", () => {
       expect(options.cacheIdentity?.request.url).toBe("https://example.test/docs/about");
     });
 
+    it("drops RSC selector headers from HTML identities, which never read them", async () => {
+      useQueryFreeIdentityAdapter();
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({ configHeaders: [] });
+      const rscSelectors = {
+        "Next-Router-Prefetch": "1",
+        "Next-Router-Segment-Prefetch": "/__PAGE__",
+        "Next-Router-State-Tree": crypto.randomUUID(),
+        "Next-Url": `/${crypto.randomUUID()}`,
+        RSC: "0",
+        "X-Vinext-Interception-Context": "/feed",
+        "X-Vinext-Mounted-Slots": "!!!",
+        "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+        "X-Vinext-Rsc-State-Fingerprint": crypto.randomUUID(),
+      };
+
+      await handler(
+        new Request("https://example.test/docs/about", {
+          headers: { ...rscSelectors, Accept: "text/html", "X-Custom": "kept" },
+        }),
+        null,
+        false,
+        dispatchResponseStage,
+      );
+
+      const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      expect(props).toMatchObject({
+        interceptionContext: null,
+        isRscRequest: false,
+        mountedSlotsHeader: null,
+        renderMode: "navigation",
+      });
+      const identityHeaders = options.cacheIdentity!.request.headers;
+      for (const name of Object.keys(rscSelectors)) {
+        expect(request.headers.has(name)).toBe(true);
+        expect(identityHeaders.has(name)).toBe(false);
+      }
+      expect(identityHeaders.get("Accept")).toBe("text/html");
+      expect(identityHeaders.get("X-Custom")).toBe("kept");
+    });
+
     it("keeps only the validated _rsc value in contextual RSC identities", async () => {
       useQueryFreeIdentityAdapter();
       const route = createPageRoute();
