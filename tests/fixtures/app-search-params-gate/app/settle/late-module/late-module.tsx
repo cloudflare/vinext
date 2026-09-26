@@ -5,5 +5,7 @@ import { recordRenderEvent } from "./render-events";
 recordRenderEvent("module-evaluated");
 
 export function LateModuleSearchValue() {
-  return <span data-testid="search-value">{useSearchParams().get("q") ?? "(none)"}</span>;
+  recordRenderEvent("hook-read");
+  const q = useSearchParams().get("q");
+  return <span data-testid="search-value">{q ?? "(none)"}</span>;
 }

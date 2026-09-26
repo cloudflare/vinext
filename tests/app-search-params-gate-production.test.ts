@@ -120,6 +120,9 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     expect(miss.cache).toBe("MISS");
     expect(hit.status).toBe(200);
     expect(hit.cache).toBe("HIT");
+    // Every fixture renders its marker outside the boundary, so a missing one
+    // can't make two separate renders compare equal.
+    expect(testIdText(miss.body, "render-id")).toBeTruthy();
     expect(testIdText(hit.body, "render-id")).toBe(testIdText(miss.body, "render-id"));
     for (const { body } of [miss, hit]) {
       expect(testIdText(body, "search-fallback")).toBe("fallback");
@@ -169,7 +172,13 @@ describe("useSearchParams() in production cache-candidate renders", () => {
       Reflect.set(globalThis, EVENTS_GLOBAL, events);
       await expectStoredFallback("/settle/late-module");
       // A request polling for the stored entry can render again, after these.
-      expect(events.slice(0, 3)).toEqual(["render-started", "module-evaluated", "module-resolved"]);
+      // The late component still renders and reaches the hook, after it loads.
+      expect(events.slice(0, 4)).toEqual([
+        "render-started",
+        "module-evaluated",
+        "module-resolved",
+        "hook-read",
+      ]);
     });
 
     it("loaded through React.lazy", async () => {
