@@ -111,9 +111,16 @@ describe("useSearchParams() in production cache-candidate renders", () => {
 
   // Asserts a wrapped useSearchParams() renders its fallback, not the query,
   // and that the page is stored and served to a request with another query.
-  async function expectStoredFallback(pathname: string): Promise<PageResponse> {
+  // `afterMiss` runs once the initial MISS body has been read, before any
+  // polling request can render the page again. React can render a suspended
+  // subtree more than once, so callers check how the MISS's events begin.
+  async function expectStoredFallback(
+    pathname: string,
+    afterMiss?: () => void,
+  ): Promise<PageResponse> {
     const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
     const miss = await get(`${pathname}?q=${firstQuery}`);
+    afterMiss?.();
     const hit = await getStored(`${pathname}?q=${secondQuery}`);
 
     expect(miss.status).toBe(200);
@@ -170,40 +177,45 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     it("loaded as a module no client reference preload covers, after rendering starts", async () => {
       const events: string[] = [];
       Reflect.set(globalThis, EVENTS_GLOBAL, events);
-      await expectStoredFallback("/settle/late-module");
-      // A request polling for the stored entry can render again, after these.
-      // The late component still renders and reaches the hook, after it loads.
-      expect(events.slice(0, 4)).toEqual([
-        "render-started",
-        "module-evaluated",
-        "module-resolved",
-        "hook-read",
-      ]);
+      // The initial MISS's render reaches the hook after the module loads,
+      // before a polling request can render the page again.
+      await expectStoredFallback("/settle/late-module", () => {
+        expect(events.slice(0, 4)).toEqual([
+          "render-started",
+          "module-evaluated",
+          "module-resolved",
+          "hook-read",
+        ]);
+      });
     });
 
     it("loaded through React.lazy", async () => {
       const events: string[] = [];
       Reflect.set(globalThis, EVENTS_GLOBAL, events);
-      await expectStoredFallback("/settle/lazy");
-      // The component still renders and reaches the hook, after it loads.
-      expect(events.slice(0, 2)).toEqual(["lazy-resolved", "lazy-hook-read"]);
+      // The initial MISS's render reaches the hook after the module loads.
+      await expectStoredFallback("/settle/lazy", () => {
+        expect(events.slice(0, 2)).toEqual(["lazy-resolved", "lazy-hook-read"]);
+      });
     });
 
     it("loaded through next/dynamic", async () => {
       const events: string[] = [];
       Reflect.set(globalThis, EVENTS_GLOBAL, events);
-      await expectStoredFallback("/settle/next-dynamic");
-      expect(events.slice(0, 2)).toEqual(["next-dynamic-resolved", "next-dynamic-hook-read"]);
+      // The initial MISS's render reaches the hook after the module loads.
+      await expectStoredFallback("/settle/next-dynamic", () => {
+        expect(events.slice(0, 2)).toEqual(["next-dynamic-resolved", "next-dynamic-hook-read"]);
+      });
     });
 
     it("suspended on a client fetch", async () => {
       const events: string[] = [];
       Reflect.set(globalThis, EVENTS_GLOBAL, events);
-      await expectStoredFallback("/settle/client-fetch");
+      // The initial MISS's render reaches the hook after its data resolves.
+      await expectStoredFallback("/settle/client-fetch", () => {
+        expect(events.slice(0, 2)).toEqual(["client-fetch-resolved", "client-fetch-hook-read"]);
+      });
       // The miss's SSR fetched the data; the hit ran no code.
       expect(Reflect.get(globalThis, DATA_REQUESTS_GLOBAL)).toBe(1);
-      // The component still renders and reaches the hook, after its data resolves.
-      expect(events.slice(0, 2)).toEqual(["client-fetch-resolved", "client-fetch-hook-read"]);
     });
 
     it("renders the real query in a client page that reads searchParams under loading.tsx, and never stores it", async () => {
