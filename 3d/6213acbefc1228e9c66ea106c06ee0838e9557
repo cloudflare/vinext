@@ -1,0 +1,43 @@
+apps/web/package.json
+  s_5b89f907d88418::t_3b8326e66bfdbf 7-8
+tests/init.test.ts
+  s_ed33f3f496fc80::t_c943dbe11135b1 952
+tests/create-vinext-app.test.ts
+  s_ed33f3f496fc80::t_a1c6a5ebca22ec 459-460
+scripts/test-repos.sh
+  s_5b89f907d88418::t_bcf00265f7f61b 121,124
+tests/e2e-deploy-script.test.ts
+  s_5b89f907d88418::t_9dbd47f48a0017 15
+README.md
+  s_5b89f907d88418::t_41ebb08b2112de 134-138,674-678,695
+packages/vinext/src/cli.ts
+  s_5b89f907d88418::t_91e86c4f5070d5 20-24,32-36,50,54,62,64,68,105,108-125
+packages/vinext/src/utils/project.ts
+  s_5b89f907d88418::t_748e335cc673f0 78-118
+tests/vinext-proxy.test.ts
+  s_5b89f907d88418::t_a7f929ea643035 70-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3d6213acbefc1228e9c66ea106c06ee0838e9557",
+  "prompts": {},
+  "sessions": {
+    "s_5b89f907d88418": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c383-5c6f-7ae3-bcd1-5d165c69d5bb",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "James <james@eli.cx>"
+    },
+    "s_ed33f3f496fc80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83514f25-1087-4971-87df-c0eb2cf6c17d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
