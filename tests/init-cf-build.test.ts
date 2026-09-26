@@ -28,6 +28,27 @@ describe("experimental cf init build", () => {
       { encoding: "utf8", timeout: 30_000, env: { ...process.env, CI: "true" } },
     );
     expect(create.status, `${create.stdout}\n${create.stderr}`).toBe(0);
+    const accountId = "0123456789abcdef0123456789abcdef";
+    const observability = {
+      enabled: true,
+      headSamplingRate: 0.5,
+      redactQueryString: true,
+      issues: { enabled: false },
+      logs: { enabled: true, headSamplingRate: 0.25, invocationLogs: false, persist: false },
+      traces: { enabled: true, headSamplingRate: 0.1, persist: false },
+    };
+    const configPath = path.join(root, "cloudflare.config.ts");
+    fs.writeFileSync(
+      configPath,
+      fs
+        .readFileSync(configPath, "utf8")
+        .replace(
+          "createWorkersResponseStoreServiceBindingConfig({",
+          `createWorkersResponseStoreServiceBindingConfig({ accountId: ${JSON.stringify(accountId)},`,
+        )
+        .replace("worker: {", `worker: { observability: ${JSON.stringify(observability)},`)
+        .replace("defineConfig({", "defineConfig({ accountId: responseStore.accountId,"),
+    );
     const build = spawnSync(path.join(webRoot, "node_modules/.bin/vinext"), ["build"], {
       cwd: root,
       encoding: "utf8",
@@ -37,14 +58,18 @@ describe("experimental cf init build", () => {
     expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
     expect(fs.existsSync(path.join(root, ".cloudflare/types/index.d.ts"))).toBe(true);
     expect(fs.existsSync(path.join(root, "wrangler.jsonc"))).toBe(false);
-    expect(
-      fs.existsSync(
-        path.join(
-          root,
-          ".cloudflare/output/v0/workers/created-cf-app-response-store/worker.config.json",
-        ),
+    const outputDir = path.join(root, ".cloudflare/output/v0");
+    expect(JSON.parse(fs.readFileSync(path.join(outputDir, "config.json"), "utf8"))).toMatchObject({
+      accountId,
+    });
+    const responseStoreConfig = JSON.parse(
+      fs.readFileSync(
+        path.join(outputDir, "workers/created-cf-app-response-store/worker.config.json"),
+        "utf8",
       ),
-    ).toBe(true);
+    );
+    expect(responseStoreConfig.observability).toEqual(observability);
+    expect(responseStoreConfig).not.toHaveProperty("accountId");
     // Workspace-linked vinext resolves its dev Vite+ copy. Published consumers
     // share the app's Vite peer; model that single type identity in this fixture.
     const tsconfigPath = path.join(root, "tsconfig.json");

@@ -1,3 +1,5 @@
+import type { CloudflareConfig, WorkerConfig } from "@cloudflare/vite-plugin/experimental-config";
+
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
 const RESPONSE_STORE_ENTRYPOINT = "ResponseStoreService";
 const DEFAULT_VERSION_METADATA_BINDING = "CF_VERSION_METADATA";
@@ -53,11 +55,12 @@ export async function createWorkersResponseStoreSelfContainedConfig(
 }
 
 export async function createWorkersResponseStoreServiceBindingConfig(options: {
+  accountId?: CloudflareConfig["accountId"];
   worker: {
     name: string;
     compatibilityDate: string;
     compatibilityFlags?: string[];
-    observability?: { enabled?: boolean };
+    observability?: WorkerConfig["observability"];
   };
   bucket: string;
 }) {
@@ -75,6 +78,7 @@ export async function createWorkersResponseStoreServiceBindingConfig(options: {
   };
 
   return {
+    accountId: options.accountId,
     serviceBindingWorker,
     applicationWorker: {
       cache: { enabled: false as const },

@@ -118,10 +118,17 @@ import { defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental
 import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
 const responseStore = await createWorkersResponseStoreServiceBindingConfig({
+  accountId: "<your-account-id>",
   worker: {
     name: "example-response-store",
     compatibilityDate: "2026-09-15",
     compatibilityFlags: ["nodejs_compat"],
+    observability: {
+      enabled: true,
+      headSamplingRate: 1,
+      logs: { enabled: true, invocationLogs: true },
+      traces: { enabled: true, headSamplingRate: 0.1 },
+    },
   },
   bucket: "example-response-store-cache-bodies",
 });
@@ -129,6 +136,7 @@ const responseStore = await createWorkersResponseStoreServiceBindingConfig({
 export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
 
 export default defineConfig({
+  accountId: responseStore.accountId,
   worker: defineWorker({
     ...responseStore.applicationWorker,
     name: "example",
@@ -136,6 +144,11 @@ export default defineConfig({
   }),
 });
 ```
+
+`worker.observability` accepts the full observability configuration supported by
+your installed Cloudflare Vite plugin, including logs and traces settings.
+The optional `accountId` is returned at the top level: pass it to `defineConfig`,
+not to either Worker. It applies to both Workers in the project.
 
 The async config helpers import bindings and exports from your installed
 `@cloudflare/vite-plugin/experimental-config`. The plugin is an optional peer

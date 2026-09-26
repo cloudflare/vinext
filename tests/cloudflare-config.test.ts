@@ -201,4 +201,71 @@ describe("typed Cloudflare cache config", () => {
       },
     });
   });
+
+  it("preserves the full service Worker observability configuration", async () => {
+    const config = await createWorkersResponseStoreServiceBindingConfig({
+      worker: {
+        name: "observable-response-store",
+        compatibilityDate: "2026-09-27",
+        observability: {
+          enabled: true,
+          headSamplingRate: 0.5,
+          redactQueryString: true,
+          issues: { enabled: false },
+          logs: {
+            enabled: true,
+            headSamplingRate: 0.25,
+            invocationLogs: false,
+            persist: false,
+            destinations: ["logs-destination"],
+          },
+          traces: {
+            enabled: true,
+            headSamplingRate: 0.1,
+            persist: false,
+            destinations: ["traces-destination"],
+          },
+        },
+      },
+      bucket: "observable-response-store-bodies",
+    });
+    expect(config.serviceBindingWorker.observability).toEqual({
+      enabled: true,
+      headSamplingRate: 0.5,
+      redactQueryString: true,
+      issues: { enabled: false },
+      logs: {
+        enabled: true,
+        headSamplingRate: 0.25,
+        invocationLogs: false,
+        persist: false,
+        destinations: ["logs-destination"],
+      },
+      traces: {
+        enabled: true,
+        headSamplingRate: 0.1,
+        persist: false,
+        destinations: ["traces-destination"],
+      },
+    });
+    expect(config.applicationWorker).not.toHaveProperty("observability");
+  });
+
+  it.each([undefined, "0123456789abcdef0123456789abcdef"])(
+    "keeps accountId (%s) at the top level, outside both Workers",
+    async (accountId) => {
+      const config = await createWorkersResponseStoreServiceBindingConfig({
+        accountId,
+        worker: {
+          name: "example-response-store",
+          compatibilityDate: "2026-09-27",
+        },
+        bucket: "example-cache-bodies",
+      });
+
+      expect(config.accountId).toBe(accountId);
+      expect(config.serviceBindingWorker).not.toHaveProperty("accountId");
+      expect(config.applicationWorker).not.toHaveProperty("accountId");
+    },
+  );
 });
