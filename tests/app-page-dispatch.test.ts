@@ -4986,7 +4986,11 @@ describe("query-free App page ISR entries", () => {
       getNavigationContext: () => navigationContext,
       isProduction: true,
       renderToReadableStream: serializePayloadToStream,
-      request: new Request(`https://example.test/posts/hello${search}`),
+      // The request targets the pathname being dispatched, so a literal-route
+      // override gets a matching request.
+      request: new Request(
+        `https://example.test${overrides.cleanPathname ?? "/posts/hello"}${search}`,
+      ),
       route: createRoute({ isDynamic: true, params: ["slug"] }),
       searchParams: new URLSearchParams(search),
       setNavigationContext(next) {
@@ -5090,6 +5094,8 @@ describe("query-free App page ISR entries", () => {
     cleanPathname: "/client",
     // A literal page without generateStaticParams, as the fixture exports none.
     generateStaticParams: null,
+    // A literal route has no params.
+    params: {},
     route: createRoute({ pattern: "/client", routeSegments: ["client"] }),
   };
 
