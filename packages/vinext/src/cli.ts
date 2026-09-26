@@ -93,6 +93,7 @@ function resolveProjectViteCli(root: string): string {
 }
 
 async function proxyVite(command: ViteCommand): Promise<void> {
+  console.warn(`[vinext] Tip: migrate from \`vinext ${command}\` to \`vite ${command}\`.`);
   const root = configPreflight(command);
   const cliPath = resolveProjectViteCli(root);
   process.argv = [process.execPath, cliPath, command, ...rawArgs];

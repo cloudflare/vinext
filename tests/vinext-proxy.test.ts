@@ -57,6 +57,16 @@ afterEach(async () => {
 });
 
 describe("thin vinext command proxies", () => {
+  it.each(["dev", "build"] as const)("suggests the native Vite %s command", (command) => {
+    const root = createRoot();
+    const result = spawnSync(process.execPath, [CLI_PATH, command], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.stderr).toContain(`migrate from \`vinext ${command}\` to \`vite ${command}\``);
+  });
+
   it("fails configless commands with an actionable init error", () => {
     const root = createRoot();
     const result = spawnSync(process.execPath, [CLI_PATH, "build"], {
