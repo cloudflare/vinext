@@ -393,7 +393,7 @@ function generateTypedCloudflareConfig(
         ? "createWorkersCacheConfig"
         : undefined;
   const imports = [
-    `import { bindings, defineConfig, defineWorker${helper ? ", exports" : ""} } from "@cloudflare/vite-plugin/experimental-config";`,
+    `import { bindings, defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";`,
     ...(helper ? [`import { ${helper} } from "@vinext/cloudflare/cache/config";`] : []),
   ];
   const responseStoreName = compactResourceName(info.projectName, "-response-store", 63);
@@ -401,19 +401,17 @@ function generateTypedCloudflareConfig(
     ? compactResourceName(responseStoreName, "-cache-bodies", 63)
     : compactResourceName(info.projectName, "-response-store-cache-bodies", 63);
   const shared = serviceBinding
-    ? `const responseStore = ${helper}({
+    ? `const responseStore = await ${helper}({
   worker: { name: ${JSON.stringify(responseStoreName)}, compatibilityDate: ${JSON.stringify(today)}, compatibilityFlags: ["nodejs_compat"] },
   bucket: ${JSON.stringify(bucket)},
-  bindings,
-  exports,
 });
 
 export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
 `
     : selfContained
-      ? `const cache = ${helper}({ worker: ${JSON.stringify(info.projectName)}, bucket: ${JSON.stringify(bucket)}, bindings, exports });\n`
+      ? `const cache = await ${helper}({ worker: ${JSON.stringify(info.projectName)}, bucket: ${JSON.stringify(bucket)} });\n`
       : workersCache
-        ? `const cache = ${helper}({ bindings, exports });\n`
+        ? `const cache = await ${helper}();\n`
         : "";
   const cacheSpread = serviceBinding
     ? "responseStore.applicationWorker"

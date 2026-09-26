@@ -57,17 +57,10 @@ Cloudflare Vite plugin v2 uses Build Output and treats `cloudflare.config.ts`
 as the deployment source of truth. Declare the equivalent policies there:
 
 ```ts
-import {
-  bindings,
-  defineWorker,
-  exports as workerExports,
-} from "@cloudflare/vite-plugin/experimental-config";
+import { defineWorker } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersCacheConfig } from "@vinext/cloudflare/cache/config";
 
-const workersCache = createWorkersCacheConfig({
-  bindings,
-  exports: workerExports,
-});
+const workersCache = await createWorkersCacheConfig();
 
 export default defineWorker({
   // ...
@@ -121,23 +114,16 @@ Cloudflare Vite plugin v2 projects can define the same service-binding setup in
 `cloudflare.config.ts` without a second Wrangler config:
 
 ```ts
-import {
-  bindings,
-  defineConfig,
-  defineWorker,
-  exports,
-} from "@cloudflare/vite-plugin/experimental-config";
+import { defineConfig, defineWorker } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
-const responseStore = createWorkersResponseStoreServiceBindingConfig({
+const responseStore = await createWorkersResponseStoreServiceBindingConfig({
   worker: {
     name: "example-response-store",
     compatibilityDate: "2026-09-15",
     compatibilityFlags: ["nodejs_compat"],
   },
   bucket: "example-response-store-cache-bodies",
-  bindings,
-  exports,
 });
 
 export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
@@ -150,6 +136,11 @@ export default defineConfig({
   }),
 });
 ```
+
+The async config helpers import bindings and exports from your installed
+`@cloudflare/vite-plugin/experimental-config`. The plugin is an optional peer
+dependency of `@vinext/cloudflare`; these helpers require v2, but Wrangler-only
+projects do not need it.
 
 Register the exported auxiliary Worker with the Cloudflare Vite plugin so it
 is built alongside the application:

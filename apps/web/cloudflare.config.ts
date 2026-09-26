@@ -2,14 +2,13 @@ import {
   bindings,
   defineConfig,
   defineWorker,
-  exports,
   triggers,
 } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
 const responseStoreWorkerName =
   process.env.VINEXT_RESPONSE_STORE_WORKER_NAME || "vinext-web-response-store";
-const responseStore = createWorkersResponseStoreServiceBindingConfig({
+const responseStore = await createWorkersResponseStoreServiceBindingConfig({
   worker: {
     name: responseStoreWorkerName,
     compatibilityDate: "2026-04-08",
@@ -17,8 +16,6 @@ const responseStore = createWorkersResponseStoreServiceBindingConfig({
     observability: { enabled: true },
   },
   bucket: "vinext-web-response-store-cache-bodies",
-  bindings,
-  exports,
 });
 
 export const responseStoreServiceBinding = responseStore.serviceBindingWorker;

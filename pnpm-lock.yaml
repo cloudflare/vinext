@@ -1111,6 +1111,9 @@ importers:
         specifier: workspace:*
         version: link:../workers-response-store
     devDependencies:
+      '@cloudflare/vite-plugin':
+        specifier: catalog:cloudflare-vite-v2
+        version: 2.0.0-beta.sha-805ec1ff3(@types/node@25.9.2)(@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))
       '@types/node':
         specifier: 'catalog:'
         version: 25.9.2
@@ -11534,6 +11537,20 @@ snapshots:
       wrangler: 4.118.0(@cloudflare/workers-types@5.20260904.1)
       ws: 8.21.0
     transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  '@cloudflare/vite-plugin@2.0.0-beta.sha-805ec1ff3(@types/node@25.9.2)(@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))':
+    dependencies:
+      '@cloudflare/config': 0.18.0
+      '@cloudflare/unenv-preset': 2.16.2(unenv@2.0.0-rc.24)(workerd@1.20260918.1)
+      miniflare: 5.20260923.0-alpha(@types/node@25.9.2)
+      unenv: 2.0.0-rc.24
+      vite: '@voidzero-dev/vite-plus-core@0.3.2(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
+      workerd: 1.20260918.1
+      ws: 8.21.0
+    transitivePeerDependencies:
+      - '@types/node'
       - bufferutil
       - utf-8-validate
 

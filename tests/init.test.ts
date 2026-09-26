@@ -916,8 +916,10 @@ describe("init — basic functionality", () => {
     });
     expect(result.generatedPlatformFiles).toEqual(["cloudflare.config.ts"]);
     expect(readFile(tmpDir, "cloudflare.config.ts")).toContain(
-      "createWorkersResponseStoreServiceBindingConfig",
+      "await createWorkersResponseStoreServiceBindingConfig({",
     );
+    expect(readFile(tmpDir, "cloudflare.config.ts")).not.toMatch(/\bexports\b/);
+    expect(readFile(tmpDir, "cloudflare.config.ts")).not.toContain("  bindings,");
     expect(readFile(tmpDir, "vite.config.ts")).toContain(
       "auxiliaryWorkers: [{ config: responseStoreServiceBinding }]",
     );
