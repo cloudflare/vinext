@@ -1,0 +1,232 @@
+// Production cache-candidate renders of useSearchParams(), through real Flight
+// and SSR. Inside Suspense, the server renders the fallback and the page is
+// stored for every query; outside Suspense, a static route fails with a 500.
+// Ported from Next.js:
+// https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/missing-suspense-with-csr-bailout/missing-suspense-with-csr-bailout.test.ts
+
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createBuilder } from "vite";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import vinext from "../packages/vinext/src/index.js";
+
+const FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-search-params-gate");
+const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
+const DATA_URL_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_URL__";
+const DATA_REQUESTS_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_REQUESTS__";
+
+type PageResponse = { body: string; cache: string | null; cacheControl: string; status: number };
+
+function testIdText(html: string, testId: string): string | undefined {
+  return html.match(new RegExp(`data-testid="${testId}"[^>]*>(?:<!--[^>]*-->)*([^<]*)<`))?.[1];
+}
+
+// Copies the fixture with a node_modules of its own, so the fixture's library
+// is installed like a real package beside the workspace's dependencies.
+function createFixture(): string {
+  const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-search-params-gate-"));
+  fs.cpSync(FIXTURE_SOURCE_DIR, fixtureDir, { recursive: true });
+  fs.writeFileSync(path.join(fixtureDir, "package.json"), '{"private":true,"type":"module"}');
+  const nodeModules = path.join(fixtureDir, "node_modules");
+  fs.mkdirSync(nodeModules);
+  for (const entry of fs.readdirSync(ROOT_NODE_MODULES)) {
+    if (entry.startsWith(".vite")) continue;
+    fs.symlinkSync(path.join(ROOT_NODE_MODULES, entry), path.join(nodeModules, entry), "junction");
+  }
+  fs.renameSync(
+    path.join(fixtureDir, "gate-suspense-lib"),
+    path.join(nodeModules, "gate-suspense-lib"),
+  );
+  return fixtureDir;
+}
+
+describe("useSearchParams() in production cache-candidate renders", () => {
+  let baseUrl = "";
+  let fixtureDir = "";
+  let server: import("node:http").Server | undefined;
+
+  beforeAll(async () => {
+    fixtureDir = createFixture();
+    const builder = await createBuilder({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [vinext({ appDir: fixtureDir })],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    ({ server } = await startProdServer({
+      port: 0,
+      outDir: path.join(fixtureDir, "dist"),
+      noCompression: true,
+    }));
+    const address = server.address();
+    baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+    Reflect.set(globalThis, DATA_URL_GLOBAL, `${baseUrl}/api/client-data`);
+  }, 120_000);
+
+  afterAll(() => {
+    Reflect.deleteProperty(globalThis, DATA_URL_GLOBAL);
+    Reflect.deleteProperty(globalThis, DATA_REQUESTS_GLOBAL);
+    server?.close();
+    if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  async function get(pathname: string): Promise<PageResponse> {
+    const response = await fetch(new URL(pathname, baseUrl));
+    return {
+      body: await response.text(),
+      cache: response.headers.get("x-vinext-cache"),
+      cacheControl: response.headers.get("cache-control") ?? "",
+      status: response.status,
+    };
+  }
+
+  // The write lands after the response body ends, so poll for the stored entry.
+  async function getStored(pathname: string): Promise<PageResponse> {
+    const deadline = Date.now() + 2_000;
+    let response = await get(pathname);
+    while (response.cache !== "HIT" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      response = await get(pathname);
+    }
+    return response;
+  }
+
+  // Asserts a wrapped useSearchParams() renders its fallback, not the query,
+  // and that the page is stored and served to a request with another query.
+  async function expectStoredFallback(pathname: string): Promise<PageResponse> {
+    const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
+    const miss = await get(`${pathname}?q=${firstQuery}`);
+    const hit = await getStored(`${pathname}?q=${secondQuery}`);
+
+    expect(miss.status).toBe(200);
+    expect(miss.cache).toBe("MISS");
+    expect(hit.status).toBe(200);
+    expect(hit.cache).toBe("HIT");
+    expect(testIdText(hit.body, "render-id")).toBe(testIdText(miss.body, "render-id"));
+    for (const { body } of [miss, hit]) {
+      expect(testIdText(body, "search-fallback")).toBe("fallback");
+      expect(body).not.toContain('data-testid="search-value"');
+      expect(body).not.toContain(firstQuery);
+      expect(body).not.toContain(secondQuery);
+    }
+    return miss;
+  }
+
+  // Asserts a page renders the real query on every request and is never stored.
+  async function expectRealValuesNeverStored(pathname: string): Promise<void> {
+    const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
+    const first = await get(`${pathname}?q=${firstQuery}`);
+    const second = await get(`${pathname}?q=${secondQuery}`);
+
+    for (const [response, query] of [
+      [first, firstQuery],
+      [second, secondQuery],
+    ] as const) {
+      expect(response.status).toBe(200);
+      expect(response.cache).not.toBe("HIT");
+      expect(response.cacheControl).toContain("no-store");
+      expect(testIdText(response.body, "search-value")).toBe(query);
+      expect(response.body).not.toContain('data-testid="search-fallback"');
+    }
+    expect(testIdText(second.body, "render-id")).not.toBe(testIdText(first.body, "render-id"));
+  }
+
+  describe("settle timing: the subtree reading the query resolves late", () => {
+    // Runs first so its client module is still unloaded.
+    it("loaded cold, on the server's first request for it", async () => {
+      await expectStoredFallback("/settle/cold");
+    });
+
+    it("loaded through React.lazy", async () => {
+      await expectStoredFallback("/settle/lazy");
+    });
+
+    it("loaded through next/dynamic", async () => {
+      await expectStoredFallback("/settle/next-dynamic");
+    });
+
+    it("suspended on a client fetch", async () => {
+      await expectStoredFallback("/settle/client-fetch");
+      // The miss's SSR fetched the data; the hit ran no code.
+      expect(Reflect.get(globalThis, DATA_REQUESTS_GLOBAL)).toBe(1);
+    });
+
+    it("renders the real query in a client page that reads searchParams under loading.tsx, and never stores it", async () => {
+      const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
+      const first = await get(`/settle/client-page?q=${firstQuery}`);
+      const second = await get(`/settle/client-page?q=${secondQuery}`);
+
+      for (const [response, query] of [
+        [first, firstQuery],
+        [second, secondQuery],
+      ] as const) {
+        expect(response.status).toBe(200);
+        expect(response.cache).not.toBe("HIT");
+        expect(testIdText(response.body, "page-search-param")).toBe(query);
+        // The page's own read makes the render dynamic. Its wrapped
+        // useSearchParams() gets the real query when the render is known to be
+        // dynamic first, or else keeps the fallback in a response that isn't
+        // stored (row 12c).
+        const searchValue = testIdText(response.body, "search-value");
+        if (searchValue === undefined) {
+          expect(testIdText(response.body, "search-fallback")).toBe("fallback");
+        } else {
+          expect(searchValue).toBe(query);
+        }
+      }
+    });
+  });
+
+  describe("wrapped useSearchParams() bails out and the page is stored when the boundary is in", () => {
+    it("a client component", async () => {
+      await expectStoredFallback("/boundary/client");
+    });
+
+    it("loading.tsx", async () => {
+      await expectStoredFallback("/boundary/loading");
+    });
+
+    it("a library component", async () => {
+      await expectStoredFallback("/boundary/library");
+    });
+
+    it("a page whose shell is also blocked by a slow client component", async () => {
+      const miss = await expectStoredFallback("/boundary/slow-shell");
+      expect(testIdText(miss.body, "slow-client")).toBe("slow-ready");
+    });
+  });
+
+  describe("useSearchParams() outside Suspense", () => {
+    it("fails a static route with a 500 and stores nothing, even with an error.tsx", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const response = await get(`/missing/error-boundary?q=${crypto.randomUUID()}`);
+          expect(response.status).toBe(500);
+          expect(response.cache).not.toBe("HIT");
+          expect(response.body).not.toContain('data-testid="error-boundary"');
+        }
+        expect(consoleError).toHaveBeenCalledWith(
+          expect.stringContaining(
+            'useSearchParams() should be wrapped in a suspense boundary at page "/missing/error-boundary"',
+          ),
+        );
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+
+    it("renders the real query on a dynamic-segment route without generateStaticParams", async () => {
+      await expectRealValuesNeverStored("/missing/dynamic-segment/a");
+    });
+
+    it("renders the real query on a route a server component makes dynamic", async () => {
+      await expectRealValuesNeverStored("/missing/server-dynamic");
+    });
+  });
+});
