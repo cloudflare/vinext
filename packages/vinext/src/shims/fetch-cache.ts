@@ -1211,10 +1211,13 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // leakage. Developers who understand the implications can still force
     // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
     // This is an automatic safety bypass, not an explicit opt-out, so it does
-    // NOT mark the page dynamic via markDynamicUsage(). It still records a
-    // dynamic fetch observation: the per-user response must downgrade the
-    // page output to fresh render, or a statically cached page could leak
-    // one user's auth-keyed data to everyone else.
+    // NOT mark the page dynamic via markDynamicUsage(), and a static page that
+    // makes this fetch is still stored. Next.js does the same: an `autoNoCache`
+    // fetch doesn't make the page dynamic ("we don't consider autoNoCache to
+    // switch to dynamic for ISR", server/lib/patch-fetch.ts). The fetch is
+    // still recorded as a dynamic fetch observation, which keeps the layout
+    // that made it out of static layout reuse and marks the client navigation
+    // cache metadata dynamic.
     // Ordering is deliberate: an explicit `no-store`/`no-cache`/`revalidate: 0`
     // takes the stronger branch above and fully marks the page dynamic even
     // when auth headers are present — this bypass only handles auth-keyed
@@ -1311,8 +1314,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
         // The developer opted into caching but we couldn't build a cache key
         // (body too large / unserializable). That is an internal vinext
         // limitation, not an explicit uncached-fetch decision, so record only
-        // the observation (downgrading the page output to fresh render)
-        // without marking the whole page dynamic.
+        // the dynamic fetch observation without marking the page dynamic. A
+        // static page that makes this fetch is still stored.
         recordDynamicFetchObservation(input);
         return recordFetchOutcome(await dedupeFetch(input, fetchInit), "miss", cacheReason);
       }

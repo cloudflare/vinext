@@ -2585,9 +2585,9 @@ describe("fetch cache shim", () => {
         next: { tags: ["user-data"] },
       });
 
-      // The fetch itself is bypassed (not cached), but the per-user response
-      // must still downgrade the page output to fresh render so auth-keyed
-      // data is never statically cached and served across users.
+      // The fetch itself is bypassed (not cached) and recorded as a dynamic
+      // fetch observation. Like Next.js's `autoNoCache`, it doesn't make the
+      // page dynamic, so a static page that makes it is still stored.
       expect(peekDynamicFetchObservations()).toEqual([
         "https://api.example.com/auth-bypass-page-output",
       ]);
@@ -2604,8 +2604,8 @@ describe("fetch cache shim", () => {
 
       // An explicit `no-store` is an explicit uncached-fetch decision, so it
       // hits the no-store branch (full markDynamicUsage) before the softer
-      // auth-safety bypass: the page is fully marked dynamic, not merely
-      // downgraded via a dynamic fetch observation.
+      // auth-safety bypass: the page is marked dynamic, not merely recorded
+      // as a dynamic fetch observation.
       expect(peekDynamicFetchObservations()).toEqual([
         "https://api.example.com/nostore-auth-dynamic",
       ]);
@@ -3523,8 +3523,8 @@ describe("fetch cache shim", () => {
 
       // The developer opted into caching; failing to build a cache key is an
       // internal vinext limitation, not an explicit uncached-fetch decision.
-      // The observation downgrades the page output to fresh render, but the
-      // page is not marked dynamic.
+      // The fetch is recorded as a dynamic fetch observation, but the page is
+      // not marked dynamic.
       expect(consumeDynamicUsage()).toBe(false);
       expect(peekDynamicFetchObservations()).toContain(
         "https://api.example.com/large-body-page-output",
