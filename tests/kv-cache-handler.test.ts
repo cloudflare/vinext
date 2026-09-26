@@ -759,6 +759,24 @@ describe("KVCacheHandler", () => {
       expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/));
     });
 
+    it.each([
+      [90.9, 90],
+      [2 ** 31, 2_147_483_647],
+    ])(
+      "keeps ttlSeconds %s within the binding's integer range as %s",
+      async (ttlSeconds, expected) => {
+        await new KVCacheHandler(kv as any, { ttlSeconds }).set("ranged-ttl", {
+          kind: "FETCH",
+          data: { headers: {}, body: "{}", url: "" },
+          revalidate: false,
+        } as any);
+        expect(kv.put).toHaveBeenLastCalledWith("cache:ranged-ttl", expect.any(String), {
+          expirationTtl: expected,
+          metadata: { tags: [] },
+        });
+      },
+    );
+
     it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
       "falls back to the 30-day TTL for ttlSeconds %s, as deploy seeding does",
       async (ttlSeconds) => {
