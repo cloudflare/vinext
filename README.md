@@ -778,9 +778,10 @@ While the data adapter can store entries and serve HIT/STALE itself, the CDN ada
 The response entrypoint adds a transport-only digest of the complete stage
 identity to its Workers Cache URL. That internal key is independent of zone
 Cache Rules and prevents distinct representation, rewrite, or interception
-identities from colliding. Static App Router pages leave the query string out
-of their identity, so every query of the page shares one entry, as in Next.js.
-See [Query strings](docs/caching.mdx#query-strings).
+identities from colliding. With a staged deploy (`--experimental-warm-cdn-cache`),
+App Router pages its cacheability manifest certifies static leave the query
+string out of their identity, so every query of the page shares one entry, as
+in Next.js. See [Query strings](docs/caching.mdx#query-strings).
 
 Adapter declarations do not access the Workers runtime, so nothing throws at
 config-evaluation or dev time when bindings are unavailable. Builders may also

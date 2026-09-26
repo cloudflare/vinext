@@ -89,8 +89,9 @@ planned entry reusable before promotion.
 The response entrypoint hashes the complete transport identity into its
 Workers Cache URL, independently of zone Cache Rules, so distinct
 representation, rewrite and interception variants cannot collide. For App
-Router pages the deploy manifest marks `static-candidate`, the identity leaves
-out the query string, so every query of the page shares one entry, as in
+Router pages that the cacheability manifest of a staged
+`--experimental-warm-cdn-cache` deploy marks `static-candidate`, the identity
+leaves out the query string, so every query of the page shares one entry, as in
 Next.js. Other requests keep the query in their identity. See
 [the caching guide](https://vinext.dev/docs/guides/caching#query-strings).
 

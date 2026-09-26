@@ -420,20 +420,20 @@ You can run `vinext init --platform=cloudflare` to configure these choices. The 
 vinext stores a rendered App Router page (ISR) only when Next.js would treat its route as static or SSG:
 
 - a route without dynamic segments;
-- a dynamic-segment route with `generateStaticParams` on its last dynamic segment, in that segment's layout, a deeper layout or the page. Returning `[]` opts every path into on-demand ISR;
+- a dynamic-segment route with `generateStaticParams` on its last dynamic segment, in that segment's layout, a deeper layout or the page. Returning `[]` opts every path into on-demand ISR, unless `dynamicParams = false`, which makes unknown paths 404;
 - a route with `dynamic = "force-static"` or `dynamic = "error"`.
 
 `dynamic = "force-dynamic"`, `revalidate = 0` and `runtime = "edge"` override these rules. Every other route renders on every request and is never stored as a page, even when it exports `revalidate` or calls `cacheLife()`. Its `"use cache"` functions and cached `fetch` calls are still reused. Routes built with `cacheComponents` keep their own rules.
 
 A static page with no `revalidate` export, `fetch` revalidate or `cacheLife()` defaults to `revalidate = false`, as in Next.js. It stays cached until `revalidatePath()` or `revalidateTag()` invalidates it. This includes pages that read data without a dynamic API, such as a direct database query. Export `revalidate` or call `cacheLife()` to refresh such a page on a schedule.
 
-A static page is stored only when its render uses no dynamic API. These make the render dynamic, so the response is not stored:
+A static page is stored only when its render uses no dynamic API. Except under `force-static`, where these reads return empty values and the page is still stored, and `dynamic = "error"`, where they throw, these make the render dynamic, so the response is not stored:
 
 - `cookies()`, `headers()`, `connection()` or `unstable_noStore()`;
 - an uncached `fetch`, such as `cache: "no-store"` or `next: { revalidate: 0 }`;
 - reading `searchParams` in a page, including a `"use client"` page, or in `generateMetadata`.
 
-`useSearchParams()` in a client component does not make a page dynamic. In production, when a cacheable page calls it during server rendering, vinext renders the nearest `<Suspense>` fallback into the HTML, and the browser renders the real value after hydration, as Next.js does. If the render turns dynamic for another reason, `useSearchParams()` returns the real query instead, and the response is not stored. A call with no `<Suspense>` boundary above it fails the request with a 500 and logs Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, even when the route has an `error.tsx`. Next.js fails the build for the same code. Development always renders the real query.
+`useSearchParams()` in a client component does not make a page dynamic. In production, when a cacheable page calls it during server rendering, vinext renders the nearest `<Suspense>` fallback into the HTML, and the browser renders the real value after hydration, as Next.js does. If the render turns dynamic for another reason, `useSearchParams()` returns the real query instead, and the response is not stored. In a render that would be stored, a call with no `<Suspense>` boundary above it fails the request with a 500 and logs Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, even when the route has an `error.tsx`. Next.js fails the build for the same code. Development always renders the real query.
 
 ## Query strings
 
@@ -443,20 +443,20 @@ How each backend applies this:
 
 - **KV and in-memory:** a page's HTML and RSC entries are keyed by its path alone. An entry is written only when its render did not read `searchParams`.
 - **Workers Response Store:** the page renders with the real query, and the response is stored and regenerated under the path without it.
-- **Workers Cache:** a hit runs no code, so the key is chosen before rendering, from the cacheability manifest that `vinext deploy` writes. Each path has one of these states:
+- **Workers Cache:** a hit runs no code, so the key is chosen before rendering, from the cacheability manifest that a staged deploy writes (`--experimental-warm-cdn-cache`, see [Cache warming](#cache-warming)). Without that manifest, every Workers Cache key keeps the full query. With it, each path has one of these states:
   - `static-candidate`: paths whose deploy render was static, their RSC and loading-shell requests, and unlisted paths of a route with on-demand ISR. These share one entry across queries. If one of them uses a dynamic API at runtime, the request fails with a 500 (`changed from static to dynamic after deployment`) instead of being served uncached, like Next.js's `Page changed from static to dynamic at runtime` error.
   - `runtime-check`: paths the deploy could not certify, for example because middleware set a cookie or the response had a `Vary` header. vinext decides after rendering whether to store them, and keys them by the full URL.
   - No state: `generateStaticParams` paths whose deploy render used a dynamic API, and unlisted paths of a route without on-demand ISR. Next.js serves these per request. vinext renders them normally and stores nothing, in Workers Cache or in the KV or in-memory cache.
 
-  A route has on-demand ISR when its `generateStaticParams` returns `[]`, when it sets `dynamic = "force-static"` or `"error"`, or when every listed path the deploy rendered was static.
+  A route has on-demand ISR when its `generateStaticParams` returns `[]`, when it sets `dynamic = "force-static"` or `"error"`, or when none of the listed paths the deploy rendered used a dynamic API.
 
 With Workers Response Store and Workers Cache, a response that a `next.config` `headers()` rule makes cacheable is keyed by the full URL, as Next.js leaves those responses to CDN caching.
 
 ## Response headers
 
-In production, App page responses that vinext knows will not be stored send Next.js's `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`. That covers routes that are not static or SSG, `force-dynamic`, `revalidate = 0`, draft mode, and renders that use a dynamic API before headers are sent. Development responses send `no-store, must-revalidate`.
+In production, App page responses that vinext knows will not be stored send Next.js's `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`. That covers routes that are not static or SSG, `force-dynamic`, `revalidate = 0`, draft mode, and renders that use a dynamic API before headers are sent. A `Cache-Control` set by middleware or a `next.config` `headers()` rule is kept instead. Development responses send `no-store, must-revalidate`.
 
-A rendered page that may be stored reports `x-vinext-cache: MISS`, and a response served from the KV or in-memory cache reports `HIT` or `STALE`. An HTML miss reports `MISS` whether or not the URL has a query string. RSC requests for static pages are stored from their own render too, so the next client navigation or prefetch to the page is a `HIT`. Only `force-static` and `dynamic = "error"` routes report `STATIC` when their RSC payload is rendered.
+A rendered page that may be stored reports `x-vinext-cache: MISS`, and a response served from the KV or in-memory cache reports `HIT` or `STALE`. An HTML miss reports `MISS` whether or not the URL has a query string. An RSC miss with a query string reports no cache state, because its render can still read `searchParams` after headers are sent; it's still stored when the render doesn't. RSC requests for static pages are stored from their own render too, so the next client navigation or prefetch to the page is a `HIT`. Only `force-static` and `dynamic = "error"` routes report `STATIC` when their RSC payload is rendered.
 
 ## Freshness and revalidation
 
@@ -468,6 +468,6 @@ vinext follows Next.js-style cache semantics:
 - `revalidatePath()` invalidates content associated with a path.
 - `revalidateTag()` invalidates content associated with a cache tag.
 
-With the KV or in-memory cache, a background regeneration that fails keeps the previous entry, as in Next.js. The entry is served as fresh again and retried after its `revalidate` time, clamped to between 3 and 30 seconds; a `revalidate = false` entry is retried after 3 seconds. A regeneration that uses a dynamic API counts as a failure and logs `Page changed from static to dynamic at runtime`.
+With the KV or in-memory cache, a background regeneration of an App Router page that fails keeps the previous entry, as in Next.js. The entry is served as fresh again and retried after its `revalidate` time, clamped to between 3 and 30 seconds; a `revalidate = false` entry is retried after 3 seconds. A regeneration that uses a dynamic API counts as a failure and logs `Page changed from static to dynamic at runtime`.
 
 The adapter changes where entries live and how they are served, but it should not change the caching API used by application code.
