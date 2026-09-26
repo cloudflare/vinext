@@ -4979,10 +4979,14 @@ describe("query-free App page ISR entries", () => {
     let navigationContext: ReturnType<DispatchOptions["getNavigationContext"]> = null;
     const { options } = createDispatchOptions({
       buildPageElement: async () => suspenseSearchPayload(),
+      // A scanned /posts/[slug] route is dynamic, so it's a cache candidate
+      // only through generateStaticParams.
+      generateStaticParams: async () => [{ slug: "hello" }],
       getNavigationContext: () => navigationContext,
       isProduction: true,
       renderToReadableStream: serializePayloadToStream,
       request: new Request(`https://example.test/posts/hello${search}`),
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
       searchParams: new URLSearchParams(search),
       setNavigationContext(next) {
         navigationContext = next;
@@ -5113,12 +5117,13 @@ describe("query-free App page ISR entries", () => {
     const { isrGet, isrSet } = createCache();
     const renders: (boolean | undefined)[] = [];
     for (const revalidateSeconds of [null, 60]) {
+      // A dynamic route without generateStaticParams isn't static or SSG.
       const { body, response } = await dispatchQuery("?q=secret", {
+        generateStaticParams: null,
         isrGet,
         isrSet,
         loadSsrHandler: createProductionSsrHandler(renders),
         revalidateSeconds,
-        route: createRoute({ isDynamic: true, params: ["slug"] }),
       });
 
       expect(body).toContain("search:q=secret");
