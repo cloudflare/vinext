@@ -121,6 +121,12 @@ async function startOptionalPrerenderServerPool(
 // fatal to the build. Refs cloudflare/vinext#1982
 class PrerenderUserFunctionError extends Error {}
 
+// A generateStaticParams/getStaticPaths result that breaks the route's param
+// contract (a non-string single segment, a non-array catch-all, a dot
+// segment). Next.js throws from build/static-paths/app.ts validateParams,
+// which fails `next build` in every mode, so prerenderApp marks it fatal too.
+class InvalidStaticParamsError extends Error {}
+
 // The prerender static-params / static-paths endpoints return the real error
 // thrown by a user's generateStaticParams/getStaticPaths as `{ error }` in a 500
 // body (app-prerender-endpoints.ts). Extract that message. For our JSON envelope
@@ -591,15 +597,17 @@ export async function resolveParentParams(
 
   if (parentSegments.length === 0) return [];
 
-  let currentParams: Record<string, string | string[]>[] = [{}];
-  let resolvedAnyParent = false;
+  let currentParams: Record<string, string | string[]>[] = [];
 
   for (const generateStaticParams of parentSegments) {
     const nextParams: Record<string, string | string[]>[] = [];
     let resolvedThisParent = false;
-    const hasParentSets = resolvedAnyParent;
+    // With no parent sets yet (no earlier provider, or every earlier one
+    // returned []), Next.js calls the next generateStaticParams once with `{}`
+    // (build/static-paths/app.ts generateRouteStaticParams).
+    const hasParentSets = currentParams.length > 0;
 
-    for (const parentParams of currentParams) {
+    for (const parentParams of hasParentSets ? currentParams : [{}]) {
       const results = await generateStaticParams({ params: parentParams });
       // `null` is the CF Workers Proxy sentinel: the proxy has no
       // generateStaticParams for this pattern. Skip and let later providers run.
@@ -614,7 +622,6 @@ export async function resolveParentParams(
       }
 
       resolvedThisParent = true;
-      resolvedAnyParent = true;
       if (results.length === 0 && hasParentSets) {
         nextParams.push(parentParams);
         continue;
@@ -629,7 +636,7 @@ export async function resolveParentParams(
     }
   }
 
-  return resolvedAnyParent ? currentParams : [];
+  return currentParams;
 }
 
 type DynamicPatternParam = { name: string; optional: boolean; repeat: boolean };
@@ -651,7 +658,7 @@ export function validateDiscoveredParams(
   source: "generateStaticParams" | "getStaticPaths",
 ): Record<string, string | string[]> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${source} must return parameter objects for ${pattern}.`);
+    throw new InvalidStaticParamsError(`${source} must return parameter objects for ${pattern}.`);
   }
 
   const params = { ...(value as Record<string, unknown>) };
@@ -670,13 +677,13 @@ export function validateDiscoveredParams(
       ? Array.isArray(paramValue) && paramValue.every((entry) => typeof entry === "string")
       : typeof paramValue === "string";
     if (!valid) {
-      throw new Error(
+      throw new InvalidStaticParamsError(
         `Parameter ${name} from ${source} for ${pattern} must be ${repeat ? "an array of strings" : "a string"}.`,
       );
     }
     const values = Array.isArray(paramValue) ? paramValue : [paramValue];
     if (values.some((entry) => entry === "." || entry === "..")) {
-      throw new Error(
+      throw new InvalidStaticParamsError(
         `Parameter ${name} from ${source} for ${pattern} must not contain dot path segments.`,
       );
     }
@@ -685,11 +692,46 @@ export function validateDiscoveredParams(
 }
 
 /**
+ * The param sets of an App route that become concrete paths, following
+ * Next.js's buildAppStaticPaths (build/static-paths/app.ts). Unless every set
+ * names every pathname param (hadAllParamsGenerated), none is prerendered.
+ * Otherwise every set is checked against the route's pathname params
+ * (validateParams), and, outside a partial prerender, a set with an empty
+ * required value is skipped rather than built into a path with an empty
+ * segment. An array, including an optional catch-all's empty one, is never
+ * empty in that sense.
+ */
+export function routeStaticParamSets(
+  route: Pick<AppRoute, "pattern">,
+  paramSets: readonly unknown[],
+): Record<string, string | string[]>[] {
+  const patternParams = getDynamicPatternParams(route.pattern);
+  const objects = paramSets.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new InvalidStaticParamsError(
+        `generateStaticParams must return parameter objects for ${route.pattern}.`,
+      );
+    }
+    return value;
+  });
+  if (!objects.every((params) => patternParams.every(({ name }) => name in params))) return [];
+
+  const materializable: Record<string, string | string[]>[] = [];
+  for (const value of objects) {
+    const params = validateDiscoveredParams(value, route.pattern, "generateStaticParams");
+    if (patternParams.some(({ name, repeat }) => !repeat && params[name] === "")) continue;
+    materializable.push(params);
+  }
+  return materializable;
+}
+
+/**
  * The param sets a route's layouts generate, standing in for the route's own
  * when none of the segments at its full pattern has generateStaticParams.
  * Next.js prerenders none of a route's paths unless every set fills every
  * pathname param (build/static-paths/app.ts hadAllParamsGenerated), so
- * incomplete sets leave the route without static params (`null`).
+ * incomplete sets leave the route without static params (`null`). Complete
+ * sets still go through routeStaticParamSets.
  */
 export function layoutOnlyParamSets(
   route: Pick<AppRoute, "params" | "pattern">,
@@ -698,14 +740,7 @@ export function layoutOnlyParamSets(
   const complete =
     parentParamSets.length > 0 &&
     parentParamSets.every((params) => route.params.every((name) => name in params));
-  if (!complete) return null;
-  // Layout lookups are keyed by layout directory rather than URL pattern, so
-  // check the composed sets against the route's pattern, as Next.js validates
-  // the composed params against the route's pathname params
-  // (build/static-paths/app.ts validateParams).
-  return parentParamSets.map((params) =>
-    validateDiscoveredParams(params, route.pattern, "generateStaticParams"),
-  );
+  return complete ? parentParamSets : null;
 }
 
 // ─── Pages Router Prerender ───────────────────────────────────────────────────
@@ -1442,6 +1477,9 @@ export async function prerenderApp({
                 break;
               }
             }
+            // Check every final set, layout-only or composed with the page,
+            // against the route before building its URL.
+            if (paramSets !== null) paramSets = routeStaticParamSets(route, paramSets);
           } else {
             const results = await generateStaticParamsFn({ params: {} });
             paramSets = Array.isArray(results) || results === null ? results : [];
@@ -1536,9 +1574,12 @@ export async function prerenderApp({
             route: route.pattern,
             status: "error",
             error: `Failed to call generateStaticParams(): ${detail}`,
-            // Only a thrown user generateStaticParams (a 500 from the endpoint) is
-            // fatal to the build; transport/fetch failures stay non-fatal. #1982
-            ...(e instanceof PrerenderUserFunctionError ? { fatal: true as const } : {}),
+            // Only a thrown user generateStaticParams (a 500 from the endpoint) or
+            // a result that breaks the route's param contract is fatal to the
+            // build; transport/fetch failures stay non-fatal. #1982
+            ...(e instanceof PrerenderUserFunctionError || e instanceof InvalidStaticParamsError
+              ? { fatal: true as const }
+              : {}),
           });
         }
       } else if (type === "unknown") {

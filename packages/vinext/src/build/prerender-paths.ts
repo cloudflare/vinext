@@ -33,6 +33,7 @@ import {
   buildUrlFromParams,
   layoutOnlyParamSets,
   resolveParentParams,
+  routeStaticParamSets,
   validateDiscoveredParams,
   type StaticParamsMap,
 } from "./prerender.js";
@@ -947,6 +948,7 @@ async function collectAppPaths(options: {
             }
           }
         }
+        if (paramSets !== null) paramSets = routeStaticParamSets(route, paramSets);
       } else {
         const results = await generateStaticParams({ params: {} });
         paramSets = results === null ? null : Array.isArray(results) ? results : [];
