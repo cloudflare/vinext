@@ -5088,6 +5088,8 @@ describe("query-free App page ISR entries", () => {
         routePath: "/client",
       }).then(toDispatchElementRecord)) satisfies DispatchOptions["buildPageElement"],
     cleanPathname: "/client",
+    // A literal page without generateStaticParams, as the fixture exports none.
+    generateStaticParams: null,
     route: createRoute({ pattern: "/client", routeSegments: ["client"] }),
   };
 
