@@ -1,0 +1,21 @@
+packages/vinext/src/cli.ts
+  s_5b89f907d88418::t_9b354ec62c3e4a 50-71,127
+tests/vinext-proxy.test.ts
+  s_5b89f907d88418::t_fa2a64e46908a3 60-97,590,599-600
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "302fd70baf5923f0f4a7ddbc82f0023c0ce7d7cd",
+  "prompts": {},
+  "sessions": {
+    "s_5b89f907d88418": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c383-5c6f-7ae3-bcd1-5d165c69d5bb",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
