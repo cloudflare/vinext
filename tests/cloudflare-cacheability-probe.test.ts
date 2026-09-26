@@ -1994,9 +1994,11 @@ describe("staged Worker cacheability probes", () => {
       }
     });
 
-    it("certifies the full RSC representation of a static HTML render", async () => {
+    it("certifies the RSC representations of a static HTML render", async () => {
       const aboutRoute = optimizableRoute("/about");
+      const dashboardRoute = optimizableRoute("/dashboard");
       const rscOnly = pageTargets("/posts/rsc-only", listedRoute)[1]!;
+      const htmlOnly = pageTargets("/posts/html-only", listedRoute)[0]!;
       const loadingShell = (pathname: string, route: typeof listedRoute) => ({
         headers: { Accept: "text/x-component", RSC: "1" },
         kind: "rsc-loading-shell" as const,
@@ -2006,50 +2008,61 @@ describe("staged Worker cacheability probes", () => {
         sourcePathname: pathname,
       });
       const postShell = loadingShell("/posts/a", listedRoute);
-      const aboutShell = loadingShell("/about", aboutRoute);
+      const dashboardShell = loadingShell("/dashboard", dashboardRoute);
       const result = await probe(
         [
           ...pageTargets("/posts/a", listedRoute),
           postShell,
           rscOnly,
+          htmlOnly,
+          ...pageTargets("/dashboard", dashboardRoute),
+          dashboardShell,
           ...pageTargets("/about", aboutRoute),
-          aboutShell,
         ],
         {},
+        { loadingBoundaryRoutePatterns: ["/dashboard", "/posts/:slug"] },
       );
 
       expect(result.failures).toEqual([]);
       const posts =
         result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/posts/:slug")]!;
-      for (const representation of ["html", "rsc-full"] as const) {
-        expect(cacheabilityManifestRouteState(posts, "/posts/a", representation)).toBe(
-          "static-candidate",
-        );
+      const dashboard =
+        result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/dashboard")]!;
+      // The full render also renders every loading boundary as a Suspense
+      // fallback, so the HTML probe certified the loading shell too. The
+      // promotion follows the route, not the group's warm targets.
+      for (const [entry, pathname] of [
+        [posts, "/posts/a"],
+        [posts, "/posts/html-only"],
+        [dashboard, "/dashboard"],
+      ] as const) {
+        for (const representation of ["html", "rsc-full", "rsc-loading-shell"] as const) {
+          expect(cacheabilityManifestRouteState(entry, pathname, representation)).toBe(
+            "static-candidate",
+          );
+        }
       }
       // Probed only through RSC, so only its RSC render is certified.
       expect(cacheabilityManifestRouteState(posts, "/posts/rsc-only", "rsc-full")).toBe(
         "static-candidate",
+      );
+      expect(posts.staticPaths?.html).toEqual(["a", "html-only"]);
+      expect(posts.staticPaths?.["rsc-loading-shell"]).toEqual(["a", "html-only"]);
+      expect(dashboard.staticRepresentation).toBeUndefined();
+      // Each loading shell still passes its own completed-render admission.
+      expect(result.speculativeTargets).toEqual(
+        expect.arrayContaining([postShell, dashboardShell]),
       );
 
       const about = result.manifest.routes[cacheabilityManifestRouteKey("app-page", "/about")]!;
       expect(about.staticRepresentation).toBeUndefined();
       expect(cacheabilityManifestRouteState(about, "/about", "html")).toBe("static-candidate");
       expect(cacheabilityManifestRouteState(about, "/about", "rsc-full")).toBe("static-candidate");
-
-      // A static page's render may never reach its loading boundary, so the
-      // HTML probe proves nothing about the loading shell: its own completed
-      // render decides admission, and a dynamic API there isn't a 500.
-      for (const [entry, pathname] of [
-        [posts, "/posts/a"],
-        [about, "/about"],
-      ] as const) {
-        expect(cacheabilityManifestRouteState(entry, pathname, "rsc-loading-shell")).toBe(
-          "runtime-check",
-        );
-      }
-      expect(posts.staticPaths?.["rsc-loading-shell"]).toBeUndefined();
+      // No loading boundary, so no loading-shell render to certify.
       expect(about.staticPaths?.["rsc-loading-shell"]).toBeUndefined();
-      expect(result.speculativeTargets).toEqual(expect.arrayContaining([postShell, aboutShell]));
+      expect(cacheabilityManifestRouteState(about, "/about", "rsc-loading-shell")).not.toBe(
+        "static-candidate",
+      );
       expect(
         parseCacheabilityManifest(JSON.stringify(result.manifest), "application-build"),
       ).toEqual(result.manifest);
@@ -2713,7 +2726,8 @@ describe("staged Worker cacheability probes", () => {
       buildId: "application-build",
       fetchImpl: async (input) => {
         const pathname = new URL(input instanceof Request ? input.url : String(input)).pathname;
-        // headers() below loading.tsx makes the full page dynamic.
+        // headers() in or below loading.tsx makes the full page dynamic: the
+        // full render renders the loading boundary as a Suspense fallback.
         return Response.json({
           dynamicUsage: true,
           kind: "app-page",
@@ -2735,6 +2749,7 @@ describe("staged Worker cacheability probes", () => {
         dashboard.fullRsc,
         dashboard.html,
       ],
+      loadingBoundaryRoutePatterns: ["/dashboard", "/posts/:slug"],
     });
 
     expect(result.probed).toBe(2);
@@ -2753,6 +2768,8 @@ describe("staged Worker cacheability probes", () => {
       [postsEntry!, "/posts/one"],
       [dashboardEntry!, "/dashboard"],
     ] as const) {
+      // Never certified from the dynamic HTML render.
+      expect(entry.staticPaths).toBeUndefined();
       expect(cacheabilityManifestRouteState(entry, pathname, "rsc-loading-shell")).toBe(
         "runtime-check",
       );

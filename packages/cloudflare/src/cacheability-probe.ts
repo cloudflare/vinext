@@ -340,6 +340,8 @@ export async function probeStagedWorkerCacheability(options: {
   expectedResponseBuildId?: string;
   fallbackRoutePatterns?: readonly PrerenderRoutePattern[];
   fetchImpl?: typeof fetch;
+  /** App page route patterns with a main-tree loading boundary. */
+  loadingBoundaryRoutePatterns?: readonly string[];
   headers?: HeadersInit;
   retries?: number;
   retryDelayMs?: number;
@@ -973,9 +975,10 @@ export async function probeStagedWorkerCacheability(options: {
   // Next.js classifies every generateStaticParams result independently. A
   // path appears at most once per representation list, and never both
   // runtime-checked and static. A certified-static App page is listed under
-  // HTML and its full RSC payload, which Next.js serves from one render.
+  // HTML and its RSC representations, which Next.js serves from one render.
   // Paired representations must still pass their own completed-render
   // admission check. The shared route prefix is compacted last.
+  const loadingBoundaryRoutePatterns = new Set(options.loadingBoundaryRoutePatterns);
   for (const pattern of patterns.values()) {
     if (pattern.pruned) {
       classified += 1;
@@ -1106,14 +1109,22 @@ export async function probeStagedWorkerCacheability(options: {
       }
     }
     // The HTML probe ran SSR, so it saw every read the full RSC render can
-    // make. The loading shell renders the loading boundary, which a static
-    // page's render may never reach, so a path listed static elsewhere leaves
-    // its loading shell runtime-checked. A path probed only through RSC keeps
-    // its single listing.
+    // make. Its Flight render also renders each loading boundary as a Suspense
+    // fallback, below the same layouts, so it saw every read the loading shell
+    // can make, as Next.js's single render does. A path probed only through
+    // RSC keeps its single listing.
     const staticRepresentations = (
       representation: CdnWarmTarget["kind"],
     ): CdnWarmTarget["kind"][] =>
-      isAppPage && representation === "html" ? ["html", "rsc-full"] : [representation];
+      isAppPage && representation === "html"
+        ? [
+            "html",
+            "rsc-full",
+            ...(loadingBoundaryRoutePatterns.has(pattern.route.pattern)
+              ? (["rsc-loading-shell"] as const)
+              : []),
+          ]
+        : [representation];
     const staticPaths: CacheabilityManifestRoute["staticPaths"] = {};
     for (const [routePathname, staticTarget] of rendererStaticTargets) {
       // Conflicting observations for one resolved route identity must retain
