@@ -5230,9 +5230,18 @@ describe("query-free App page ISR entries", () => {
   // and on a `[]` generateStaticParams route (Next.js /uc-gsp).
   describe("with cacheLife({ revalidate: 60 })", () => {
     const routes = [
-      ["a literal route", {}],
+      [
+        "a literal route",
+        "/about",
+        {
+          cleanPathname: "/about",
+          params: {},
+          route: createRoute({ pattern: "/about", routeSegments: ["about"] }),
+        },
+      ],
       [
         "an empty generateStaticParams route",
+        "/posts/hello",
         {
           generateStaticParams: async () => [],
           route: createRoute({ isDynamic: true, params: ["slug"] }),
@@ -5245,7 +5254,7 @@ describe("query-free App page ISR entries", () => {
       return suspenseSearchPayload();
     };
 
-    for (const [label, routeOverrides] of routes) {
+    for (const [label, pathname, routeOverrides] of routes) {
       it(`sends s-maxage=60 on a core HIT (${label})`, async () => {
         const { isrGet, isrSet } = createCache();
         const overrides = {
@@ -5255,16 +5264,17 @@ describe("query-free App page ISR entries", () => {
           isrSet,
           loadSsrHandler: createProductionSsrHandler([]),
         };
+        const request = () => new Request(`https://example.test${pathname}`);
 
-        await dispatchQuery("", overrides);
+        await dispatchQuery("", { ...overrides, request: request() });
         expect(
           Object.fromEntries(
             isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl.revalidate]),
           ),
-        ).toEqual({ "html:/posts/hello": 60, "rsc:/posts/hello": 60 });
+        ).toEqual({ [`html:${pathname}`]: 60, [`rsc:${pathname}`]: 60 });
 
         for (const isRscRequest of [false, true]) {
-          const hit = await dispatchQuery("", { ...overrides, isRscRequest });
+          const hit = await dispatchQuery("", { ...overrides, isRscRequest, request: request() });
           expect(hit.response.headers.get("x-vinext-cache")).toBe("HIT");
           expect(hit.response.headers.get("cache-control")).toMatch(/^s-maxage=60(,|$)/);
         }
@@ -5274,7 +5284,7 @@ describe("query-free App page ISR entries", () => {
         setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
         try {
           for (const isRscRequest of [false, true]) {
-            const request = new Request("https://example.test/posts/hello", {
+            const request = new Request(`https://example.test${pathname}`, {
               headers: isRscRequest
                 ? { Accept: "text/x-component", RSC: "1" }
                 : { Accept: "text/html" },
@@ -5290,14 +5300,19 @@ describe("query-free App page ISR entries", () => {
               undefined,
               { applyCompletedResponsePolicy: true },
             );
+            let navigationContext: ReturnType<DispatchOptions["getNavigationContext"]> = null;
             const { options } = createDispatchOptions({
               ...routeOverrides,
               buildPageElement: cacheLifePage,
+              getNavigationContext: () => navigationContext,
               isProduction: true,
               isRscRequest,
               loadSsrHandler: createProductionSsrHandler([]),
               renderToReadableStream: serializePayloadToStream,
               request,
+              setNavigationContext(next) {
+                navigationContext = next;
+              },
             });
             const response = await runWithRequestContext(
               createRequestContext({
