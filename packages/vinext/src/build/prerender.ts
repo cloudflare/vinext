@@ -21,7 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import type { Server as HttpServer } from "node:http";
 import type { Route } from "../routing/pages-router.js";
-import type { AppRoute } from "../routing/app-router.js";
+import { appRouteLayoutStaticParamsGroups, type AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { buildPregeneratedConcretePathTable } from "../server/prerender-manifest.js";
 import { BLOCKED_PAGES } from "vinext/shims/constants";
@@ -39,7 +39,6 @@ import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
-  appLayoutStaticParamsPattern,
   NEXT_CACHE_TAGS_HEADER,
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
@@ -552,10 +551,10 @@ export type StaticParamsMap = Record<
  * Handles top-down generateStaticParams resolution for nested dynamic routes.
  *
  * Uses the `staticParamsMap` (pattern → generateStaticParams) exported from
- * the production bundle. Each prefix reads its layouts alone: as in Next.js,
- * which composes the segments of the route's own loader tree
- * (build/static-paths/app.ts), the page at a prefix belongs to a sibling route
- * and never supplies params.
+ * the production bundle. Each prefix reads only the route's own layouts there:
+ * as in Next.js, which composes the segments of the route's own loader tree
+ * (build/static-paths/app.ts), a page or a route group's layout at the same
+ * prefix belongs to a sibling route and never supplies params.
  */
 export async function resolveParentParams(
   childRoute: AppRoute,
@@ -580,6 +579,9 @@ export async function resolveParentParams(
   }) => Promise<unknown>;
 
   const parentSegments: GenerateStaticParamsFn[] = [];
+  const layoutKeys = new Map(
+    appRouteLayoutStaticParamsGroups(childRoute).map((group) => [group.pattern, group.key]),
+  );
 
   let prefixPattern = "";
   const prefixEnd = options.includeLastDynamicSegment ? lastDynamicIdx + 1 : lastDynamicIdx;
@@ -588,7 +590,8 @@ export async function resolveParentParams(
     prefixPattern += "/" + part;
     if (!part.startsWith(":")) continue;
 
-    const fn = staticParamsMap[appLayoutStaticParamsPattern(prefixPattern)];
+    const layoutKey = layoutKeys.get(prefixPattern);
+    const fn = layoutKey === undefined ? undefined : staticParamsMap[layoutKey];
     if (typeof fn === "function") {
       parentSegments.push(fn);
     }

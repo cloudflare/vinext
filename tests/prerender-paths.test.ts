@@ -5,7 +5,6 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { toSlash } from "pathslash";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
-import { appLayoutStaticParamsPattern } from "../packages/vinext/src/server/headers.js";
 
 const closeMock = vi.hoisted(() => vi.fn((callback: () => void) => callback()));
 const startProdServerMock = vi.hoisted(() =>
@@ -417,7 +416,7 @@ describe("prerender path manifest", () => {
       const pattern = new URL(
         input instanceof Request ? input.url : String(input),
       ).searchParams.get("pattern");
-      if (pattern === appLayoutStaticParamsPattern("/:category")) {
+      if (pattern === "layouts:[category]") {
         return Response.json([{ category: "news" }]);
       }
       return defaultFetch(input, init);
@@ -470,7 +469,7 @@ describe("prerender path manifest", () => {
         ).searchParams.get("pattern");
         // The prefix's own pattern composes the layout with the sibling page.
         if (pattern === "/:slug") return Response.json(siblingParams);
-        if (pattern === appLayoutStaticParamsPattern("/:slug")) {
+        if (pattern === "layouts:[slug]") {
           return Response.json([{ slug: "layout" }]);
         }
         return defaultFetch(input, init);
@@ -526,7 +525,7 @@ describe("prerender path manifest", () => {
       const url = new URL(input instanceof Request ? input.url : String(input));
       const pattern = url.searchParams.get("pattern");
       if (pattern === "/:slug") return Response.json([{ slug: "sibling" }]);
-      if (pattern === appLayoutStaticParamsPattern("/:slug")) {
+      if (pattern === "layouts:[slug]") {
         return Response.json([{ slug: "layout" }]);
       }
       if (pattern === "/:slug/:id") {
@@ -548,6 +547,51 @@ describe("prerender path manifest", () => {
     expect(parentParamsByPattern["/:slug/:id"]).toEqual([{ slug: "layout" }]);
     expect(manifest?.paths).toContain("/layout/1");
     expect(manifest?.paths).not.toContain("/sibling/1");
+  });
+
+  it("takes each route group's params only from the layouts in its own tree", async () => {
+    // Next.js composes a route's params from its own loader tree only, so the
+    // (b) layout at the same URL prefix never feeds /[slug]/foo, and (a)'s
+    // never feeds /[slug]/bar.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    for (const group of ["a", "b"]) {
+      writeFile(
+        `app/[slug]/(${group})/layout.tsx`,
+        [
+          `export function generateStaticParams() { return [{ slug: '${group}' }]; }`,
+          "export default function Layout({ children }) { return children; }",
+        ].join("\n"),
+      );
+    }
+    writeFile("app/[slug]/(a)/foo/page.tsx", "export default function Page() { return null; }\n");
+    writeFile("app/[slug]/(b)/bar/page.tsx", "export default function Page() { return null; }\n");
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const pattern = new URL(
+        input instanceof Request ? input.url : String(input),
+      ).searchParams.get("pattern");
+      // Composing both group layouts at /:slug leaves only (b)'s params.
+      if (pattern === "/:slug" || pattern === "layouts:/:slug") {
+        return Response.json([{ slug: "b" }]);
+      }
+      if (pattern === "layouts:[slug]/(a)") return Response.json([{ slug: "a" }]);
+      if (pattern === "layouts:[slug]/(b)") return Response.json([{ slug: "b" }]);
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(manifest?.paths).toEqual(expect.arrayContaining(["/a/foo", "/b/bar"]));
+    expect(manifest?.paths).not.toContain("/b/foo");
+    expect(manifest?.paths).not.toContain("/a/bar");
   });
 
   it("keeps traffic paths that an uncached request stage rewrites", async () => {
@@ -1762,7 +1806,7 @@ describe("prerender path manifest", () => {
     const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) =>
       new URL(input instanceof Request ? input.url : String(input)).searchParams.get("pattern") ===
-      appLayoutStaticParamsPattern("/:category")
+      "layouts:[category]"
         ? Response.json([{ category: "news" }])
         : defaultFetch(input, init),
     );
@@ -1778,7 +1822,7 @@ describe("prerender path manifest", () => {
     expect(manifest?.rscPaths).toEqual(["/news/foo"]);
     expect(manifest?.loadingShellPaths).toEqual(["/news/foo"]);
     expect(fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=layouts%3A%2F%3Acategory",
+      "http://127.0.0.1:43210/__vinext/prerender/static-params?pattern=layouts%3A%5Bcategory%5D",
       expect.any(Object),
     );
   });

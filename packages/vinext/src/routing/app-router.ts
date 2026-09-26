@@ -17,6 +17,7 @@ import { createValidFileMatcher, type ValidFileMatcher } from "./file-matcher.js
 import { createRouteTrieCache, matchRouteWithTrie } from "./route-matching.js";
 import {
   buildAppRouteGraph,
+  convertSegmentsToRouteParts,
   type AppRoute,
   type AppRouteGraphRoute,
   type RouteManifest,
@@ -101,6 +102,30 @@ export function appRouteHasMainTreeLoadingBoundary(route: AppRoute): boolean {
     ) ??
       false)
   );
+}
+
+/**
+ * Groups a route's layouts by the dynamic URL pattern prefix they sit at, for
+ * generateStaticParams. Next.js composes only the segments of a route's own
+ * loader tree, and route groups put different layouts at the same prefix, so
+ * each group's key names the deepest layout's directory, which fixes every
+ * layout above it.
+ */
+export function appRouteLayoutStaticParamsGroups(
+  route: Pick<AppRoute, "layouts" | "layoutTreePositions" | "routeSegments">,
+): { key: string; layoutPaths: string[]; pattern: string }[] {
+  const groups = new Map<string, { key: string; layoutPaths: string[]; pattern: string }>();
+  for (const [index, layoutPath] of route.layouts.entries()) {
+    const segments = route.routeSegments.slice(0, route.layoutTreePositions[index] ?? 0);
+    const urlSegments = convertSegmentsToRouteParts(segments)?.urlSegments ?? [];
+    const pattern = `/${urlSegments.join("/")}`;
+    if (!pattern.includes(":")) continue;
+    const group = groups.get(pattern) ?? { key: "", layoutPaths: [], pattern };
+    group.key = `layouts:${segments.join("/")}`;
+    group.layoutPaths.push(layoutPath);
+    groups.set(pattern, group);
+  }
+  return [...groups.values()];
 }
 
 // Trie cache — keyed by route array identity (same array = same trie)

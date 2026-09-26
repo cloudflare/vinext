@@ -1,11 +1,11 @@
 import { toSlash } from "pathslash";
 import {
   appRouteHasMainTreeLoadingBoundary,
+  appRouteLayoutStaticParamsGroups,
   computeAppRouteStaticSiblings,
   convertSegmentsToRouteParts,
   type AppRoute,
 } from "../routing/app-router.js";
-import { appLayoutStaticParamsPattern } from "../server/headers.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
@@ -487,20 +487,27 @@ function buildGenerateStaticParamsEntries(
   namesByPattern: Map<string, string[]>,
 ): string[] {
   const sourcesByPattern = new Map<string, string[]>();
-  // A deeper route's params come from its layouts, never from the page at a
-  // prefix, which belongs to a sibling route. Key the layouts alone apart.
-  const layoutSourcesByPattern = new Map<string, string[]>();
+  // A route's params come only from its own tree: never from the page at a
+  // prefix, which belongs to a sibling route, nor from another route group's
+  // layout there. Key each tree's layouts alone apart for deeper routes.
+  const layoutGroupsByKey = new Map<string, { pattern: string; sources: string[] }>();
+  const layoutSource = (layoutPath: string) => `{ load: ${imports.getLazyLoaderVar(layoutPath)} }`;
 
   for (const route of routes) {
     if (!route.isDynamic) continue;
 
-    for (const [index, layoutPath] of route.layouts.entries()) {
-      const pattern =
-        createRoutePatternPrefix(route.routeSegments, route.layoutTreePositions[index] ?? 0)
-          ?.pattern ?? null;
-      const source = `{ load: ${imports.getLazyLoaderVar(layoutPath)} }`;
-      appendStaticParamSource(sourcesByPattern, pattern, source);
-      appendStaticParamSource(layoutSourcesByPattern, pattern, source);
+    const layoutGroups = appRouteLayoutStaticParamsGroups(route);
+    for (const group of layoutGroups) {
+      if (layoutGroupsByKey.has(group.key)) continue;
+      layoutGroupsByKey.set(group.key, {
+        pattern: group.pattern,
+        sources: group.layoutPaths.map(layoutSource),
+      });
+    }
+    const ownLayoutPaths =
+      layoutGroups.find((group) => group.pattern === route.pattern)?.layoutPaths ?? [];
+    for (const layoutPath of ownLayoutPaths) {
+      appendStaticParamSource(sourcesByPattern, route.pattern, layoutSource(layoutPath));
     }
 
     if (route.pagePath) {
@@ -532,9 +539,7 @@ function buildGenerateStaticParamsEntries(
   };
   return [
     ...Array.from(sourcesByPattern, ([pattern, sources]) => entry(pattern, pattern, sources)),
-    ...Array.from(layoutSourcesByPattern, ([pattern, sources]) =>
-      entry(appLayoutStaticParamsPattern(pattern), pattern, sources),
-    ),
+    ...Array.from(layoutGroupsByKey, ([key, group]) => entry(key, group.pattern, group.sources)),
   ];
 }
 

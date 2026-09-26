@@ -69,15 +69,6 @@ export {
 /** Internal endpoint used to evaluate App Router generateStaticParams exports. */
 export const VINEXT_PRERENDER_STATIC_PARAMS_PATH = "/__vinext/prerender/static-params";
 
-/**
- * The static-params `pattern` for the layouts' generateStaticParams alone at a
- * route pattern prefix. The prefix's own pattern also composes the page there,
- * which a deeper route's params never come from.
- */
-export function appLayoutStaticParamsPattern(pattern: string): string {
-  return `layouts:${pattern}`;
-}
-
 /** Internal endpoint used to evaluate Pages Router getStaticPaths exports. */
 export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pages-static-paths";
 

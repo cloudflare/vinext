@@ -898,9 +898,8 @@ describe("App Router generated manifest construction", () => {
     });
 
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/:lang/:locale": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","locale"]),',
       '  "/:lang/:locale/other/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","locale"]),',
-      '  "layouts:/:lang/:locale": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","locale"]),',
+      '  "layouts:[lang]/[locale]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","locale"]),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/:locale/other/:slug": ["lang","locale"],',
@@ -956,7 +955,74 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.generateStaticParamsEntries).toEqual([
       '  "/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_1 }, { load: load_0 }], []),',
       '  "/:slug/details": __createAppPrerenderStaticParamsResolver([{ load: load_2 }], []),',
-      '  "layouts:/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], []),',
+      '  "layouts:[slug]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], []),',
+    ]);
+  });
+
+  it("keys layout generateStaticParams by each route's own tree", () => {
+    // app/[slug]/(a)/layout.tsx and app/[slug]/(b)/layout.tsx share the /:slug
+    // URL prefix but sit in different loader trees; Next.js never composes a
+    // route's params from a layout outside its own tree.
+    const base = {
+      routePath: null,
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      notFoundPaths: [null],
+      forbiddenPath: null,
+      forbiddenPaths: [null],
+      unauthorizedPath: null,
+      unauthorizedPaths: [null],
+      templateTreePositions: [],
+      isDynamic: true,
+      params: ["slug"],
+      siblingIntercepts: [],
+    };
+    const routes = [
+      {
+        ...base,
+        pattern: "/:slug/foo",
+        patternParts: [":slug", "foo"],
+        pagePath: "/tmp/test/app/[slug]/(a)/foo/page.tsx",
+        layouts: ["/tmp/test/app/[slug]/(a)/layout.tsx"],
+        layoutTreePositions: [2],
+        routeSegments: ["[slug]", "(a)", "foo"],
+      },
+      {
+        ...base,
+        pattern: "/:slug/bar",
+        patternParts: [":slug", "bar"],
+        pagePath: "/tmp/test/app/[slug]/(b)/bar/page.tsx",
+        layouts: ["/tmp/test/app/[slug]/(b)/layout.tsx"],
+        layoutTreePositions: [2],
+        routeSegments: ["[slug]", "(b)", "bar"],
+      },
+      {
+        ...base,
+        pattern: "/:slug",
+        patternParts: [":slug"],
+        pagePath: "/tmp/test/app/[slug]/(c)/page.tsx",
+        layouts: [],
+        layoutTreePositions: [],
+        routeSegments: ["[slug]", "(c)"],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+
+    expect(manifest.generateStaticParamsEntries).toEqual([
+      '  "/:slug/foo": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], []),',
+      '  "/:slug/bar": __createAppPrerenderStaticParamsResolver([{ load: load_2 }], []),',
+      '  "/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_4 }], []),',
+      '  "layouts:[slug]/(a)": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], []),',
+      '  "layouts:[slug]/(b)": __createAppPrerenderStaticParamsResolver([{ load: load_3 }], []),',
     ]);
   });
 
@@ -996,9 +1062,8 @@ describe("App Router generated manifest construction", () => {
     });
 
     expect(manifest.generateStaticParamsEntries).toEqual([
-      '  "/:lang/docs v2/:section": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","section"]),',
       '  "/:lang/docs v2/:section/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","section"]),',
-      '  "layouts:/:lang/docs v2/:section": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","section"]),',
+      '  "layouts:[lang]/docs%20v2/[section]": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","section"]),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/docs v2/:section/:slug": ["lang","section"],',
