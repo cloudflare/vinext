@@ -732,6 +732,26 @@ describe("KVCacheHandler", () => {
       });
     });
 
+    it("gives entries without a numeric revalidate and their markers the configured TTL", async () => {
+      const ttlSeconds = 90 * 24 * 3600;
+      const longHandler = new KVCacheHandler(kv as any, { ttlSeconds });
+      // unstable_cache writes its default `revalidate: false` as a boolean.
+      await longHandler.set(
+        "unstable-tagged",
+        { kind: "FETCH", data: { headers: {}, body: "{}", url: "" }, revalidate: false } as any,
+        { tags: ["posts"] },
+      );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:unstable-tagged", expect.any(String), {
+        expirationTtl: ttlSeconds,
+        metadata: { tags: ["posts"] },
+      });
+
+      await longHandler.revalidateTag("posts");
+      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/), {
+        expirationTtl: ttlSeconds,
+      });
+    });
+
     it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
       const entryTime = 1000;
       const invalidatedTime = 2000;

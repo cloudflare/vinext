@@ -472,7 +472,7 @@ export class KVCacheHandler implements CacheHandler {
 
     const now = Date.now();
     // `revalidate = false` never goes stale, so it gets no revalidateAt. It
-    // still gets the KV TTL below, like every entry with a revalidate policy.
+    // still gets the KV TTL below, like every entry.
     const revalidateAt =
       typeof effectiveRevalidate === "number" &&
       effectiveRevalidate > 0 &&
@@ -522,9 +522,9 @@ export class KVCacheHandler implements CacheHandler {
     // Background regen overwrites the key with a fresh entry + new revalidateAt,
     // so active pages always have something to serve. Entries only disappear after
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
-    // That includes `revalidate = false` entries, which have no revalidateAt.
-    const expirationTtl: number | undefined =
-      typeof effectiveRevalidate === "number" ? this.ttlSeconds : undefined;
+    // Every entry gets it, including `revalidate = false` and entries with no
+    // policy, so no entry outlives the tag marker that invalidated it.
+    const expirationTtl = this.ttlSeconds;
 
     // Store tags in KV metadata so revalidateByPathPrefix can discover them
     // via kv.list() without fetching entry values. Cloudflare KV limits
@@ -543,12 +543,12 @@ export class KVCacheHandler implements CacheHandler {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
-    // Store invalidation timestamp for each tag
-    // Use a long TTL (30 days) so recent invalidations are always found
+    // Store invalidation timestamp for each tag. A marker keeps the entry TTL:
+    // it's written after every entry it invalidates, so it outlives them all.
     await Promise.all(
       validTags.map((tag) =>
         this.kv.put(this._tagKey(tag), String(now), {
-          expirationTtl: 30 * 24 * 3600,
+          expirationTtl: this.ttlSeconds,
         }),
       ),
     );
