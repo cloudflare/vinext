@@ -318,7 +318,12 @@ describe("Cloudflare Workers Response Store adapter", () => {
       htmlValue(firstBody, "generated-cookies-render-id"),
       htmlValue(secondBody, "generated-cookies-render-id"),
     );
-    assert.equal((await responseEntries(pathname)).length, 0);
+    // Writes run in waitUntil after the response returns, so hold the absence
+    // through the same window the other tests poll for a publication.
+    for (let attempt = 0; attempt < 50; attempt++) {
+      assert.equal((await responseEntries(pathname)).length, 0);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
   });
 
   test("keeps a page whose cacheLife revalidates after 60 seconds fresh for 60 seconds", async () => {

@@ -16,6 +16,8 @@ const FIXTURE_SOURCE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-sea
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 const DATA_URL_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_URL__";
 const DATA_REQUESTS_GLOBAL = "__SEARCH_PARAMS_GATE_DATA_REQUESTS__";
+// Cache writes land after the response body ends, within this window.
+const CACHE_WRITE_WINDOW_MS = 2_000;
 
 type PageResponse = { body: string; cache: string | null; cacheControl: string; status: number };
 
@@ -27,19 +29,28 @@ function testIdText(html: string, testId: string): string | undefined {
 // is installed like a real package beside the workspace's dependencies.
 function createFixture(): string {
   const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-search-params-gate-"));
-  fs.cpSync(FIXTURE_SOURCE_DIR, fixtureDir, { recursive: true });
-  fs.writeFileSync(path.join(fixtureDir, "package.json"), '{"private":true,"type":"module"}');
-  const nodeModules = path.join(fixtureDir, "node_modules");
-  fs.mkdirSync(nodeModules);
-  for (const entry of fs.readdirSync(ROOT_NODE_MODULES)) {
-    if (entry.startsWith(".vite")) continue;
-    fs.symlinkSync(path.join(ROOT_NODE_MODULES, entry), path.join(nodeModules, entry), "junction");
+  try {
+    fs.cpSync(FIXTURE_SOURCE_DIR, fixtureDir, { recursive: true });
+    fs.writeFileSync(path.join(fixtureDir, "package.json"), '{"private":true,"type":"module"}');
+    const nodeModules = path.join(fixtureDir, "node_modules");
+    fs.mkdirSync(nodeModules);
+    for (const entry of fs.readdirSync(ROOT_NODE_MODULES)) {
+      if (entry.startsWith(".vite")) continue;
+      const source = path.join(ROOT_NODE_MODULES, entry);
+      const target = path.join(nodeModules, entry);
+      // A junction can only target a directory; pnpm's state files are copied.
+      if (fs.statSync(source).isDirectory()) fs.symlinkSync(source, target, "junction");
+      else fs.copyFileSync(source, target);
+    }
+    fs.renameSync(
+      path.join(fixtureDir, "gate-suspense-lib"),
+      path.join(nodeModules, "gate-suspense-lib"),
+    );
+    return fixtureDir;
+  } catch (error) {
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
+    throw error;
   }
-  fs.renameSync(
-    path.join(fixtureDir, "gate-suspense-lib"),
-    path.join(nodeModules, "gate-suspense-lib"),
-  );
-  return fixtureDir;
 }
 
 describe("useSearchParams() in production cache-candidate renders", () => {
@@ -87,7 +98,7 @@ describe("useSearchParams() in production cache-candidate renders", () => {
 
   // The write lands after the response body ends, so poll for the stored entry.
   async function getStored(pathname: string): Promise<PageResponse> {
-    const deadline = Date.now() + 2_000;
+    const deadline = Date.now() + CACHE_WRITE_WINDOW_MS;
     let response = await get(pathname);
     while (response.cache !== "HIT" && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 25));
@@ -117,6 +128,15 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     return miss;
   }
 
+  // Waits out the write window, then asserts a later request still isn't
+  // served from the cache, so a delayed write fails the test.
+  async function expectStillUnstored(pathname: string): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, CACHE_WRITE_WINDOW_MS));
+    const later = await get(`${pathname}?q=${crypto.randomUUID()}`);
+    expect(later.cache).not.toBe("HIT");
+    expect(later.cacheControl).toContain("no-store");
+  }
+
   // Asserts a page renders the real query on every request and is never stored.
   async function expectRealValuesNeverStored(pathname: string): Promise<void> {
     const [firstQuery, secondQuery] = [crypto.randomUUID(), crypto.randomUUID()];
@@ -134,6 +154,7 @@ describe("useSearchParams() in production cache-candidate renders", () => {
       expect(response.body).not.toContain('data-testid="search-fallback"');
     }
     expect(testIdText(second.body, "render-id")).not.toBe(testIdText(first.body, "render-id"));
+    await expectStillUnstored(pathname);
   }
 
   describe("settle timing: the subtree reading the query resolves late", () => {
@@ -167,6 +188,7 @@ describe("useSearchParams() in production cache-candidate renders", () => {
       ] as const) {
         expect(response.status).toBe(200);
         expect(response.cache).not.toBe("HIT");
+        expect(response.cacheControl).toContain("no-store");
         expect(testIdText(response.body, "page-search-param")).toBe(query);
         // The page's own read makes the render dynamic. Its wrapped
         // useSearchParams() gets the real query when the render is known to be
@@ -179,6 +201,7 @@ describe("useSearchParams() in production cache-candidate renders", () => {
           expect(searchValue).toBe(query);
         }
       }
+      await expectStillUnstored("/settle/client-page");
     });
   });
 
@@ -209,8 +232,10 @@ describe("useSearchParams() in production cache-candidate renders", () => {
           const response = await get(`/missing/error-boundary?q=${crypto.randomUUID()}`);
           expect(response.status).toBe(500);
           expect(response.cache).not.toBe("HIT");
+          expect(response.cacheControl).toContain("no-store");
           expect(response.body).not.toContain('data-testid="error-boundary"');
         }
+        await expectStillUnstored("/missing/error-boundary");
         expect(consoleError).toHaveBeenCalledWith(
           expect.stringContaining(
             'useSearchParams() should be wrapped in a suspense boundary at page "/missing/error-boundary"',
