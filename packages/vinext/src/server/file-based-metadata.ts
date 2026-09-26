@@ -695,6 +695,15 @@ export async function applyFileBasedMetadata(
     routePath,
     params,
     routeSegments,
+  ).filter(
+    (route) =>
+      !options?.metadataSources?.some(
+        (source) =>
+          route.routeSegments &&
+          source.routeSegments.length > route.routeSegments.length &&
+          routeSegmentsApplyWithParallelSlots(source.routeSegments, route.routeSegments) &&
+          hasOwnProperty(source.metadata, "manifest"),
+      ),
   );
 
   const basePath = options?.basePath ?? "";
@@ -748,12 +757,6 @@ export async function applyFileBasedMetadata(
       faviconEntries.push(iconEntry);
     }
   }
-  if (faviconEntries.length > 0) {
-    const nextIcons = cloneIconMap(nextMetadata.icons);
-    const normalizedIcons = normalizeIconEntries(nextIcons);
-    nextIcons.icon = [...faviconEntries, ...normalizedIcons];
-    nextMetadata.icons = nextIcons;
-  }
 
   {
     const nextIcons = cloneIconMap(nextMetadata.icons);
@@ -793,6 +796,14 @@ export async function applyFileBasedMetadata(
     if (iconEntries.length > 0 || appleEntries.length > 0) {
       nextMetadata.icons = nextIcons;
     }
+  }
+
+  // Next.js inserts the root favicon after resolving all other icons.
+  if (faviconEntries.length > 0) {
+    const nextIcons = cloneIconMap(nextMetadata.icons);
+    const normalizedIcons = normalizeIconEntries(nextIcons);
+    nextIcons.icon = [...faviconEntries, ...normalizedIcons];
+    nextMetadata.icons = nextIcons;
   }
 
   if (openGraphHeadData.length > 0) {

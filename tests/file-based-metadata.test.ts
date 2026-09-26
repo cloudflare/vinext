@@ -382,6 +382,52 @@ describe("applyFileBasedMetadata", () => {
     expect(result?.manifest).toBe("/manifest.webmanifest");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata/metadata.test.ts
+  it("allows child manifest metadata to replace a root file manifest", async () => {
+    const metadata: Metadata = { manifest: "/api/manifest" };
+    const routes: MetadataFileRoute[] = [
+      {
+        type: "manifest",
+        isDynamic: false,
+        filePath: "/tmp/app/manifest.webmanifest",
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: "/manifest.webmanifest",
+        contentType: "application/manifest+json",
+        headData: { kind: "manifest", href: "/manifest.webmanifest" },
+      },
+    ];
+    const result = await applyFileBasedMetadata(metadata, "/basic", {}, routes, {
+      routeSegments: ["basic"],
+      metadataSources: [
+        { routeSegments: [], metadata: {} },
+        { routeSegments: ["basic"], metadata },
+      ],
+    });
+    expect(result?.manifest).toBe("/api/manifest");
+  });
+
+  it("places the root favicon before other file icons", async () => {
+    const routes: MetadataFileRoute[] = (["favicon", "icon"] as const).map((kind) => {
+      const filename = kind === "favicon" ? "favicon.ico" : "icon.svg";
+      return {
+        type: kind,
+        isDynamic: false,
+        filePath: `/tmp/app/${filename}`,
+        routePrefix: "",
+        routeSegments: [],
+        servedUrl: `/${filename}`,
+        contentType: kind === "favicon" ? "image/x-icon" : "image/svg+xml",
+        headData: { kind, href: `/${filename}?hash` },
+      };
+    });
+    const result = await applyFileBasedMetadata({}, "/", {}, routes, { routeSegments: [] });
+    expect(result?.icons).toMatchObject({
+      icon: [{ url: "/favicon.ico?hash" }, { url: "/icon.svg?hash" }],
+    });
+  });
+
   it("uses raw route segments so same-prefix route groups select their own file metadata", async () => {
     const routes: MetadataFileRoute[] = [
       {

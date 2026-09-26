@@ -303,9 +303,20 @@ test.describe("Next.js compat: streamed metadata icons", () => {
 
     await page.locator("#metadata-icons-none").click();
     await expect(page).toHaveURL(/\/metadata-icons-stream\/none$/);
+    // Next.js keeps the root favicon first, including when file icons are restored.
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata/metadata.test.ts
     await expect
       .poll(() => ownedIcons(page))
       .toEqual([
+        {
+          rel: "icon",
+          pathname: "/favicon.ico",
+          sizes: "16x16",
+          type: "image/x-icon",
+          media: null,
+          color: null,
+          fetchPriority: null,
+        },
         {
           rel: "icon",
           pathname: "/icon.png",
@@ -320,15 +331,6 @@ test.describe("Next.js compat: streamed metadata icons", () => {
           pathname: "/icon",
           sizes: "32x32",
           type: "image/png",
-          media: null,
-          color: null,
-          fetchPriority: null,
-        },
-        {
-          rel: "icon",
-          pathname: "/favicon.ico",
-          sizes: "16x16",
-          type: "image/x-icon",
           media: null,
           color: null,
           fetchPriority: null,
