@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "cf dev",
+    "dev": "vinext dev",
     "build": "vinext build",
     "typegen": "cf workers types",
     "start": "vinext start",
