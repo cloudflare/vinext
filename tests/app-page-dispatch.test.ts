@@ -246,6 +246,25 @@ function buildCachedAppPageValue(
   return value;
 }
 
+// Lists `/posts/listed` as static; every other `/posts/[slug]` path has no state.
+function createPostsCacheabilityManifest() {
+  return parseCacheabilityManifest(
+    JSON.stringify({
+      buildId: "build-a",
+      routes: {
+        [cacheabilityManifestRouteKey("app-page", "/posts/[slug]")]: {
+          kind: "app-page",
+          pattern: "/posts/[slug]",
+          state: "runtime-check",
+          staticPaths: { html: ["/posts/listed"], "rsc-full": ["/posts/listed"] },
+        },
+      },
+      version: 1,
+    }),
+    "build-a",
+  );
+}
+
 function expectCachedAppPageSearchParamsObservation(value: unknown, html: string): void {
   expect(isCachedAppPageValue(value)).toBe(true);
   if (!isCachedAppPageValue(value)) {
@@ -1139,6 +1158,172 @@ describe("app page dispatch", () => {
       await response.text();
       expect(ssrOptions, JSON.stringify(admission)).toEqual([{ isCacheCandidate: expected }]);
     }
+  });
+
+  // Next.js never stores a path its build didn't certify, so a Workers Cache
+  // path its manifest gives no state never reads, serves or regenerates a core
+  // ISR entry. A certified path, and every path without a manifest, keeps the
+  // core cache.
+  it("skips the core ISR cache for a path its Workers Cache manifest gives no state", async () => {
+    const manifest = createPostsCacheabilityManifest();
+    const cases: [RouteCacheabilityState["admission"], string, boolean][] = [
+      [{ manifest, policy: "manifest", routePathname: "/posts/hello" }, "/posts/hello", false],
+      [{ manifest, policy: "manifest", routePathname: "/posts/listed" }, "/posts/listed", true],
+      [{ policy: "runtime", routePathname: "/posts/hello" }, "/posts/hello", true],
+    ];
+    for (const [admission, cleanPathname, readsCore] of cases) {
+      for (const isRscRequest of [false, true]) {
+        const label = JSON.stringify({ admission, isRscRequest });
+        const isrGet = vi.fn<DispatchOptions["isrGet"]>(async () =>
+          buildISRCacheEntry(
+            buildCachedAppPageValue(
+              isRscRequest ? "" : "<html>stale</html>",
+              new TextEncoder().encode("stale-flight").buffer,
+            ),
+            true,
+          ),
+        );
+        const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+        const scheduleBackgroundRegeneration = vi.fn();
+        const context: ExecutionContextLike = { waitUntil() {} };
+        const state: RouteCacheabilityState = {
+          admission: admission && {
+            ...admission,
+            representation: isRscRequest ? "rsc-full" : "html",
+          },
+          captureDeadlineAt: Date.now() + 10_000,
+          mode: "admit",
+        };
+        Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+        const { options } = createDispatchOptions({
+          cleanPathname,
+          isProduction: true,
+          isRscRequest,
+          isrGet,
+          isrSet,
+          revalidateSeconds: 60,
+          scheduleBackgroundRegeneration,
+        });
+
+        const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+        await response.text();
+
+        if (readsCore) {
+          expect(response.headers.get("x-vinext-cache"), label).toBe("STALE");
+          expect(isrGet, label).toHaveBeenCalled();
+          expect(scheduleBackgroundRegeneration, label).toHaveBeenCalledTimes(1);
+        } else {
+          expect(response.headers.get("x-vinext-cache"), label).not.toBe("STALE");
+          expect(isrGet, label).not.toHaveBeenCalled();
+          expect(scheduleBackgroundRegeneration, label).not.toHaveBeenCalled();
+          expect(isrSet, label).not.toHaveBeenCalled();
+        }
+      }
+    }
+  });
+
+  // A core entry another request stored under the query-free key must not
+  // reach a path Next.js serves per request: each request renders with its
+  // own query, and none stores its render.
+  it("renders a path its Workers Cache manifest gives no state with each request's query", async () => {
+    const manifest = createPostsCacheabilityManifest();
+    const sharedFlight = new TextEncoder().encode("shared-flight").buffer;
+    const cache = new Map<string, ISRCacheEntry>([
+      [
+        "html:/posts/hello",
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "<html>shared</html>",
+            sharedFlight,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+        ),
+      ],
+      [
+        "rsc:/posts/hello",
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            sharedFlight,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+        ),
+      ],
+    ]);
+    const isrGet = vi.fn<DispatchOptions["isrGet"]>(async (key) => cache.get(key) ?? null);
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data) => {
+      cache.set(key, { isStale: false, value: { lastModified: Date.now(), value: data } });
+    });
+    for (const isRscRequest of [false, true]) {
+      const renders: { isCacheCandidate?: boolean; q: string | null | undefined }[] = [];
+      const pageQueries: (string | null)[] = [];
+      for (const q of ["1", "2"]) {
+        let navigationContext: ReturnType<DispatchOptions["getNavigationContext"]> = null;
+        const waitUntilPromises: Promise<unknown>[] = [];
+        const context: ExecutionContextLike = {
+          waitUntil(promise) {
+            waitUntilPromises.push(promise);
+          },
+        };
+        const state: RouteCacheabilityState = {
+          admission: {
+            manifest,
+            policy: "manifest",
+            representation: isRscRequest ? "rsc-full" : "html",
+            routePathname: "/posts/hello",
+          },
+          captureDeadlineAt: Date.now() + 10_000,
+          mode: "admit",
+        };
+        Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+        const { options } = createDispatchOptions({
+          async buildPageElement(_route, _params, _opts, searchParams) {
+            pageQueries.push(searchParams.get("q"));
+            return React.createElement("main", null, "page");
+          },
+          cleanPathname: "/posts/hello",
+          getNavigationContext: () => navigationContext,
+          isProduction: true,
+          isRscRequest,
+          isrGet,
+          isrSet,
+          loadSsrHandler: async () => ({
+            async handleSsr(_rscStream, ssrNavigationContext, _fontData, handleSsrOptions) {
+              renders.push({
+                isCacheCandidate: handleSsrOptions?.isCacheCandidate,
+                q: ssrNavigationContext?.searchParams.get("q"),
+              });
+              void handleSsrOptions?.sideStream?.cancel().catch(() => {});
+              return createStream(["<html>page</html>"]);
+            },
+          }),
+          revalidateSeconds: 60,
+          searchParams: new URLSearchParams({ q }),
+          setNavigationContext(nextNavigationContext) {
+            navigationContext = nextNavigationContext;
+          },
+        });
+
+        const response = await runWithExecutionContext(context, () => dispatchAppPage(options));
+        expect(response.headers.get("x-vinext-cache")).not.toBe("HIT");
+        await response.text();
+        await Promise.all(waitUntilPromises);
+      }
+
+      expect(pageQueries, `isRscRequest: ${isRscRequest}`).toEqual(["1", "2"]);
+      expect(renders).toEqual(
+        isRscRequest
+          ? []
+          : [
+              { isCacheCandidate: false, q: "1" },
+              { isCacheCandidate: false, q: "2" },
+            ],
+      );
+    }
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
   });
 
   it("writes HTML-captured RSC data under the plain key when interception context is absent", async () => {

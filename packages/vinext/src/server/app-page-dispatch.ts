@@ -852,7 +852,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       revalidateSeconds: currentRevalidateSeconds,
       scriptNonce: options.scriptNonce,
     });
-  const shouldReadCache = !isRouteCacheabilityProbe() && isCacheEligibleRender;
+  // Next.js never stores a path the Workers Cache manifest gives no state, so
+  // its render neither reads, serves nor regenerates a core ISR entry. Its
+  // completed response already skips core writes under admission. PPR
+  // fallback shells follow cacheComponents' model instead.
+  const isNeverStoredPath =
+    options.pprRuntime === undefined && hasNoManifestAdmissionState(route.pattern);
+  const shouldReadCache =
+    !isRouteCacheabilityProbe() && isCacheEligibleRender && !isNeverStoredPath;
   // A render that may be stored, and so must not let the request's query reach
   // its output unless it turns out dynamic. The Workers Cache deploy probe
   // renders this way too, so its manifest matches the runtime. PPR fallback
@@ -861,7 +868,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isCacheEligibleRender &&
     isStaticEligible &&
     options.pprRuntime === undefined &&
-    !hasNoManifestAdmissionState(route.pattern);
+    !isNeverStoredPath;
   if (shouldReadCache && isStaticEligible) {
     traceOperation = resolveAppPageTraceOperation({
       hasRequestSearchParams,
