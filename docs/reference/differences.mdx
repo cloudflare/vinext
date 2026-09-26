@@ -17,7 +17,7 @@ Development, bundling, and production builds run on Vite 8 instead of the Next.j
 
 ## Deployment
 
-Cloudflare Workers is the primary native target. Standalone Node output and Nitro adapters cover other hosts. Next.js route config values such as `runtime` and `preferredRegion` are currently ignored because runtime placement belongs to the selected deployment adapter.
+Cloudflare Workers is the primary native target. Standalone Node output and Nitro adapters cover other hosts. Next.js route config values such as `runtime` and `preferredRegion` don't choose where code runs, because runtime placement belongs to the selected deployment adapter. `runtime = "edge"` still opts an App Router page out of ISR, as it does in Next.js.
 
 ## Compatibility
 
