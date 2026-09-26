@@ -239,6 +239,62 @@ describe("deploy prerender config wiring", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it.each([
+    ["disabled App Router", "disableAppRouter: true", "root", true, false, null],
+    ["active custom App Router", 'appDir: "custom"', "custom", true, false, "next.config.mjs"],
+    ["missing custom App Router", 'appDir: "custom"', "root", true, false, null],
+    ["inactive cwd config under Vite root", 'appDir: "."', "frontend", true, false, null],
+    ["active config under Vite root", 'appDir: "."', "frontend", false, true, "next.config.cjs"],
+  ] as const)(
+    "scopes the %s i18n warning during --skip-build deploy",
+    async (_variant, vinextOptions, appLocation, rootI18n, frontendI18n, expectedFilename) => {
+      writeProject(undefined);
+      if (appLocation === "custom" || appLocation === "frontend") {
+        writeFile("pages/index.tsx", "export default function Page() { return null; }\n");
+        const target = path.join(tmpDir, appLocation, "app");
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.renameSync(path.join(tmpDir, "app"), target);
+      }
+      writeFile(
+        "next.config.mjs",
+        `export default ${rootI18n ? '{ i18n: { locales: ["en", "fr"], defaultLocale: "en" } }' : "{}"};\n`,
+      );
+      if (appLocation === "frontend") {
+        writeFile(
+          "frontend/next.config.cjs",
+          `module.exports = ${frontendI18n ? '{ i18n: { locales: ["en", "fr"], defaultLocale: "en" } }' : "{}"};\n`,
+        );
+      }
+      const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+      fs.writeFileSync(
+        viteConfigPath,
+        fs
+          .readFileSync(viteConfigPath, "utf-8")
+          .replace("vinext({ ", `vinext({ ${vinextOptions}, `)
+          .replace(
+            "defineConfig({",
+            `defineConfig({ ${appLocation === "frontend" ? 'root: "frontend",' : ""}`,
+          ),
+      );
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+        await deploy({ root: tmpDir, skipBuild: true });
+        expect(
+          warn.mock.calls
+            .map(([message]) => String(message))
+            .filter((message) => message.includes("unsupported in App Router")),
+        ).toEqual(
+          expectedFilename
+            ? [expect.stringContaining(`i18n configuration in ${expectedFilename} is unsupported`)]
+            : [],
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
   it("rejects a missing CDN version binding before uploading", async () => {
     writeApiOnlyProject();
     writeFile(

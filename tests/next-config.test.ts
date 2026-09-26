@@ -199,6 +199,61 @@ describe("deprecated config warnings", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/app-dir/i18n-hybrid/i18n-hybrid.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/i18n-hybrid/i18n-hybrid.test.ts
+  it.each([
+    ["app", "js"],
+    ["src/app", "mjs"],
+  ])("warns about i18n only when %s exists", async (appPath, extension) => {
+    const root = makeTempDir();
+    const filename = `next.config.${extension}`;
+    fs.writeFileSync(path.join(root, filename), "export default {}\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const config = { i18n: { locales: ["en", "fr"], defaultLocale: "en" } };
+    try {
+      await resolveNextConfig(config, root);
+      expect(warn).not.toHaveBeenCalled();
+      fs.mkdirSync(path.join(root, appPath), { recursive: true });
+      await resolveNextConfig(config, root);
+      await resolveNextConfig(config, root);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toContain(
+        `i18n configuration in ${filename} is unsupported in App Router.`,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not warn when App Router is disabled for a Pages build", async () => {
+    const root = makeTempDir();
+    fs.mkdirSync(path.join(root, "app"));
+    fs.writeFileSync(path.join(root, "next.config.cjs"), "module.exports = {}\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await resolveNextConfig({ i18n: { locales: ["en", "fr"], defaultLocale: "en" } }, root, {
+        hasAppDir: false,
+      });
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("warns for a configured App Router outside the conventional directories", async () => {
+    const root = makeTempDir();
+    fs.writeFileSync(path.join(root, "next.config.mts"), "export default {}\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await resolveNextConfig({ i18n: { locales: ["en", "fr"], defaultLocale: "en" } }, root, {
+        hasAppDir: true,
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("unsupported in App Router"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves both URL-normalization option names", async () => {
     await expect(resolveNextConfig({ skipProxyUrlNormalize: true })).resolves.toMatchObject({
       skipProxyUrlNormalize: true,

@@ -43,6 +43,7 @@ type ConfigRootLease = {
 };
 const processWithConfigRootState = process as NodeJS.Process & {
   __vinextConfigRootState?: ConfigRootState;
+  __vinextEmittedConfigWarnings?: Set<string>;
 };
 const configRootState = (processWithConfigRootState.__vinextConfigRootState ??= {
   storage: new AsyncLocalStorage<ConfigRootLease>(),
@@ -1016,7 +1017,8 @@ function hasConfigProperty(config: NextConfig, propertyPath: string): boolean {
   return true;
 }
 
-const emittedConfigWarnings = new Set<string>();
+const emittedConfigWarnings = (processWithConfigRootState.__vinextEmittedConfigWarnings ??=
+  new Set<string>());
 
 function warnConfigOnce(message: string): void {
   if (emittedConfigWarnings.has(message)) return;
@@ -1024,8 +1026,18 @@ function warnConfigOnce(message: string): void {
   console.warn(message);
 }
 
-function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
+export function warnUnsupportedAppRouterI18n(config: NextConfig | null, root: string): void {
+  if (!config?.i18n) return;
   const configFileName = path.basename(findNextConfigPath(root) ?? "next.config.js");
+  warnConfigOnce(
+    `i18n configuration in ${configFileName} is unsupported in App Router.\nLearn more about internationalization in App Router: https://nextjs.org/docs/app/building-your-application/routing/internationalization`,
+  );
+}
+
+function warnDeprecatedConfigOptions(config: NextConfig, root: string, hasAppDir: boolean): void {
+  const configFileName = path.basename(findNextConfigPath(root) ?? "next.config.js");
+  if (hasAppDir) warnUnsupportedAppRouterI18n(config, root);
+
   const warnings = [
     [
       "experimental.middlewarePrefetch",
@@ -1684,7 +1696,7 @@ function normalizeI18nConfig(value: unknown): NextI18nConfig | null {
 export async function resolveNextConfig(
   config: NextConfig | null,
   root: string = toSlash(process.cwd()),
-  options: { dev?: boolean } = {},
+  options: { dev?: boolean; hasAppDir?: boolean } = {},
 ): Promise<ResolvedNextConfig> {
   if (!config) {
     const buildId = await resolveBuildId(undefined);
@@ -1773,7 +1785,11 @@ export async function resolveNextConfig(
     );
   }
 
-  warnDeprecatedConfigOptions(config, root);
+  warnDeprecatedConfigOptions(
+    config,
+    root,
+    options.hasAppDir ?? ["app", "src/app"].some((dir) => fs.existsSync(path.join(root, dir))),
+  );
 
   const i18n = normalizeI18nConfig(config.i18n);
 

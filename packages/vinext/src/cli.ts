@@ -38,6 +38,7 @@ import {
   loadNextConfig,
   resolveNextConfig,
   resolveNextConfigInput,
+  warnUnsupportedAppRouterI18n,
   PHASE_PRODUCTION_BUILD,
   type NextConfigInput,
 } from "./config/next-config.js";
@@ -239,6 +240,7 @@ function hasPagesDir(): boolean {
 
 type BuildViteConfigMetadata = {
   cacheConfig: VinextCacheConfig | null;
+  effectiveRoot: string;
   emptyOutDir?: boolean;
   nextConfig: NextConfigInput | null;
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
@@ -251,7 +253,13 @@ async function loadBuildViteConfigMetadata(
   mode: string,
 ): Promise<BuildViteConfigMetadata> {
   if (!hasViteConfig(root)) {
-    return { cacheConfig: null, nextConfig: null, prerenderConfig: null, routeRootConfig: null };
+    return {
+      cacheConfig: null,
+      effectiveRoot: root,
+      nextConfig: null,
+      prerenderConfig: null,
+      routeRootConfig: null,
+    };
   }
 
   // Read the raw user config before the multi-environment build so
@@ -260,6 +268,7 @@ async function loadBuildViteConfigMetadata(
   const emptyOutDir = loaded?.config.build?.emptyOutDir;
   return {
     cacheConfig: await findVinextCacheConfigInPlugins(loaded?.config.plugins),
+    effectiveRoot: path.resolve(root, loaded?.config.root ?? "."),
     emptyOutDir: typeof emptyOutDir === "boolean" ? emptyOutDir : undefined,
     nextConfig: await findVinextNextConfigInPlugins(loaded?.config.plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(loaded?.config.plugins),
@@ -513,10 +522,32 @@ async function buildApp() {
   const root = toSlash(process.cwd());
   const isApp = hasAppDir(root);
   const buildConfigMetadata = await loadBuildViteConfigMetadata(vite, root, buildMode);
+  const routeRootConfig = buildConfigMetadata.routeRootConfig;
+  let appRouterBase = buildConfigMetadata.effectiveRoot;
+  if (routeRootConfig?.appDir) {
+    appRouterBase = path.resolve(appRouterBase, routeRootConfig.appDir);
+  } else if (
+    !fs.existsSync(path.join(appRouterBase, "app")) &&
+    !fs.existsSync(path.join(appRouterBase, "pages")) &&
+    (fs.existsSync(path.join(appRouterBase, "src", "app")) ||
+      fs.existsSync(path.join(appRouterBase, "src", "pages")))
+  ) {
+    appRouterBase = path.join(appRouterBase, "src");
+  }
+  const hasActiveAppRouter =
+    !routeRootConfig?.disableAppRouter && fs.existsSync(path.join(appRouterBase, "app"));
   const rawNextConfig = buildConfigMetadata.nextConfig
     ? await resolveNextConfigInput(buildConfigMetadata.nextConfig, PHASE_PRODUCTION_BUILD)
     : await loadNextConfig(root, PHASE_PRODUCTION_BUILD);
-  const resolvedNextConfig = await resolveNextConfig(rawNextConfig, root);
+  if (hasActiveAppRouter && buildConfigMetadata.effectiveRoot !== root) {
+    const diagnosticConfig = buildConfigMetadata.nextConfig
+      ? rawNextConfig
+      : await loadNextConfig(buildConfigMetadata.effectiveRoot, PHASE_PRODUCTION_BUILD);
+    warnUnsupportedAppRouterI18n(diagnosticConfig, buildConfigMetadata.effectiveRoot);
+  }
+  const resolvedNextConfig = await resolveNextConfig(rawNextConfig, root, {
+    hasAppDir: hasActiveAppRouter && buildConfigMetadata.effectiveRoot === root,
+  });
 
   // Coordinate a single build ID across every vinext() plugin instance in this
   // build. A hybrid app+pages build runs the App Router multi-environment build

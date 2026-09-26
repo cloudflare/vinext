@@ -29,6 +29,7 @@ import {
   loadNextConfig,
   resolveNextConfig,
   resolveNextConfigInput,
+  warnUnsupportedAppRouterI18n,
   type NextConfigInput,
 } from "vinext/internal/config/next-config";
 import {
@@ -192,6 +193,7 @@ type ProjectWranglerApi = {
 
 type DeployViteConfigMetadata = {
   cacheConfig: VinextCacheConfig | null;
+  effectiveRoot: string;
   nextConfig: NextConfigInput | null;
   prerenderConfig: ResolvedVinextPrerenderConfig | null;
   routeRootConfig: VinextRouteRootConfig | null;
@@ -521,6 +523,7 @@ async function loadDeployViteConfigMetadata(root: string): Promise<DeployViteCon
     // The executed Vite config is authoritative. Source scans cannot see
     // imported or composed cache objects and must not suppress valid metadata.
     cacheConfig: await findVinextCacheConfigInPlugins(plugins),
+    effectiveRoot: path.resolve(root, loaded?.config.root ?? "."),
     nextConfig: await findVinextNextConfigInPlugins(plugins),
     prerenderConfig: await findVinextPrerenderConfigInPlugins(plugins),
     routeRootConfig: await findVinextRouteRootConfigInPlugins(plugins),
@@ -2039,13 +2042,35 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const viteConfigMetadata = await withCloudflareEnv(buildEnv, () =>
     loadDeployViteConfigMetadata(info.root),
   );
+  const routeRootConfig = viteConfigMetadata.routeRootConfig;
+  let appRouterBase = viteConfigMetadata.effectiveRoot;
+  if (routeRootConfig?.appDir) {
+    appRouterBase = path.resolve(appRouterBase, routeRootConfig.appDir);
+  } else if (
+    !fs.existsSync(path.join(appRouterBase, "app")) &&
+    !fs.existsSync(path.join(appRouterBase, "pages")) &&
+    (fs.existsSync(path.join(appRouterBase, "src", "app")) ||
+      fs.existsSync(path.join(appRouterBase, "src", "pages")))
+  ) {
+    appRouterBase = path.join(appRouterBase, "src");
+  }
+  const hasActiveAppRouter =
+    !routeRootConfig?.disableAppRouter && fs.existsSync(path.join(appRouterBase, "app"));
   const cdnAdapterConfig = resolveCdnAdapterConfig(viteConfigMetadata.cacheConfig);
   const nextConfig = await withCloudflareEnv(buildEnv, async () => {
     const inlineNextConfig = viteConfigMetadata.nextConfig;
     const rawNextConfig = inlineNextConfig
       ? await resolveNextConfigInput(inlineNextConfig, PHASE_PRODUCTION_BUILD)
       : await loadNextConfig(info.root, PHASE_PRODUCTION_BUILD);
-    return resolveNextConfig(rawNextConfig, info.root);
+    if (hasActiveAppRouter && viteConfigMetadata.effectiveRoot !== info.root) {
+      const diagnosticConfig = inlineNextConfig
+        ? rawNextConfig
+        : await loadNextConfig(viteConfigMetadata.effectiveRoot, PHASE_PRODUCTION_BUILD);
+      warnUnsupportedAppRouterI18n(diagnosticConfig, viteConfigMetadata.effectiveRoot);
+    }
+    return resolveNextConfig(rawNextConfig, info.root, {
+      hasAppDir: hasActiveAppRouter && viteConfigMetadata.effectiveRoot === info.root,
+    });
   });
 
   const shouldLoadVinextPrerenderConfig = !options.prerenderAll && nextConfig.output !== "export";
