@@ -198,7 +198,7 @@ type ResponseStoreMutationResult = {
 - Identity is the key URL's pathname plus query string; scheme and host are ignored. The key doesn't have to be the visitor's URL.
 - Every key stores its response and read metadata together in one version-scoped R2 object by default, so fresh hits and misses do not query the metadata Durable Object. No special key format is required.
 - Build the key from trusted route and vary data. Do not include arbitrary visitor headers or other unbounded input unless it intentionally creates a distinct shared response.
-- Leave out query parameters the response doesn't depend on, so requests that differ only in them share one entry. vinext, for example, keys static App Router pages without the visitor's query string, as Next.js does, while still rendering each miss with the full URL.
+- Leave out query parameters the response doesn't depend on, so requests that differ only in them share one entry. vinext, for example, keys static App Router pages without the visitor's query string, as Next.js does, while still rendering each miss with the full URL. A response that a `next.config` `headers()` rule makes cacheable keeps the full URL in its key.
 
 ### Freshness and tags
 
