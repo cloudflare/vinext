@@ -949,7 +949,7 @@ describe("init — basic functionality", () => {
       expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe("beta");
       expect(pkg.devDependencies.vite).toBe("8.3.0");
       expect(pkg.devDependencies.wrangler).toBeUndefined();
-      expect(pkg.scripts["build:vinext"]).toBe("vinext build");
+      expect(pkg.scripts["build:vinext"]).toBe("vite build");
       expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
     }
   });

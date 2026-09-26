@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vp dev --port 3001",
-    "build": "vp build",
+    "dev": "vite dev --port 3001",
+    "build": "vite build",
     "typegen": "cf workers types",
     "start": "vinext start",
     "deploy:cloudflare": "vinext-cloudflare deploy --experimental-warm-cdn-cache --warm-cdn-target https://vinext.dev",
