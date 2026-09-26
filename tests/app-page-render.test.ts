@@ -2737,6 +2737,29 @@ describe("static routes under the default revalidate = false", () => {
     await Promise.all(common.waitUntilPromises);
   });
 
+  // The literal route and the `[]` generateStaticParams route both render
+  // with revalidate = false. A cacheLife can still lower that lifetime after
+  // headers, so the client bounds its reuse, as it does for a route without a
+  // revalidate source.
+  it("marks the RSC stale time pending", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageLifecycle({
+      ...common.options,
+      consumeDynamicUsage: vi.fn(() => false),
+      dynamicStaleTimeSeconds: 60,
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: Infinity,
+    });
+
+    expect(response.headers.get(VINEXT_STALE_TIME_PENDING_HEADER)).toBe("1");
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBeNull();
+    await response.arrayBuffer();
+    await Promise.all(common.waitUntilPromises);
+    expect(common.isrSet.mock.calls.map(([key]) => key)).toEqual(["rsc:/posts/post"]);
+  });
+
   it("keeps STATIC RSC headers for force-static routes", async () => {
     const common = createCommonOptions();
 

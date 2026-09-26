@@ -2083,6 +2083,26 @@ describe("staged Worker cacheability probes", () => {
       expect(cacheabilityManifestRouteState(route, "/posts/dynamic", "html")).toBe("runtime-check");
       expect(cacheabilityManifestRouteState(route, "/posts/a", "html")).toBe("static-candidate");
     });
+
+    // Only an App page's HTML probe certifies its RSC representations. A
+    // Pages Router literal route keeps its single certified representation.
+    it("keeps staticRepresentation for a pages-page literal route", async () => {
+      const legacyRoute = { ...optimizableRoute("/legacy"), kind: "pages-page" as const };
+      const result = await probe([{ ...target("/legacy"), route: legacyRoute }], {});
+
+      expect(result.failures).toEqual([]);
+      const route = result.manifest.routes[cacheabilityManifestRouteKey("pages-page", "/legacy")];
+      expect(route).toEqual({
+        kind: "pages-page",
+        pattern: "/legacy",
+        state: "runtime-check",
+        staticRepresentation: "html",
+      });
+      expect(cacheabilityManifestRouteState(route!, "/legacy", "html")).toBe("static-candidate");
+      expect(
+        parseCacheabilityManifest(JSON.stringify(result.manifest), "application-build"),
+      ).toEqual(result.manifest);
+    });
   });
 
   it("records a rewrite source under the concrete route resolved by the request stage", async () => {

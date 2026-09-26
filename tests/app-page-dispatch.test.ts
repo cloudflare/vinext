@@ -1,4 +1,5 @@
 import React from "react";
+import { renderToReadableStream as renderToHtmlStream } from "react-dom/server.edge";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   APP_ROOT_LAYOUT_KEY,
@@ -70,6 +71,23 @@ import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
+import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
+import {
+  createWorkerCacheabilityAdmissionContext,
+  finalizeWorkerCacheabilityResponse,
+} from "../packages/vinext/src/server/cacheability-request.js";
+import {
+  setNavigationContext,
+  useSearchParams,
+  type NavigationContext,
+} from "../packages/vinext/src/shims/navigation.js";
+import { runWithNavigationContext } from "../packages/vinext/src/shims/navigation-state.js";
+import { cacheLife } from "../packages/vinext/src/shims/cache.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -4805,5 +4823,445 @@ describe("app page dispatch", () => {
         cacheControl: "s-maxage=31536000, stale-while-revalidate",
       });
     });
+  });
+});
+
+// The plan's canary and classification tests at the dispatch level: SSR runs
+// through React DOM with the candidate useSearchParams() gate, as handleSsr
+// does, and a stand-in Flight render serializes the whole page payload, so a
+// query that reached either output shows in the stored bytes.
+describe("query-free App page ISR entries", () => {
+  function SearchValue(): React.ReactNode {
+    return React.createElement("p", null, `search:${useSearchParams().toString()}`);
+  }
+
+  // A static page whose client component reads useSearchParams() inside Suspense.
+  function suspenseSearchPage(): React.ReactElement {
+    return React.createElement(
+      "main",
+      null,
+      React.createElement(
+        React.Suspense,
+        { fallback: React.createElement("p", null, "search-fallback") },
+        React.createElement(SearchValue),
+      ),
+    );
+  }
+
+  function serializePayloadToStream(payload: unknown): ReadableStream<Uint8Array> {
+    const seen = new WeakSet<object>();
+    const json = JSON.stringify(payload, (_key, value: unknown) => {
+      if (typeof value === "function") return `fn:${value.name}`;
+      if (typeof value === "symbol" || typeof value === "bigint") return String(value);
+      if (value === null || typeof value !== "object") return value;
+      if (seen.has(value)) return "[seen]";
+      seen.add(value);
+      if (React.isValidElement(value)) return { props: value.props, type: value.type };
+      if (isPromiseLike(value)) return "thenable";
+      return value;
+    });
+    return createStream([json ?? ""]);
+  }
+
+  // Mirrors handleSsr: a candidate render gates useSearchParams() until SSR
+  // has read the whole Flight response, and the side stream captures the RSC
+  // bytes an HTML miss stores under `rsc:`.
+  function createGatedSsrHandler(
+    renders: (boolean | undefined)[],
+    tree: () => React.ReactNode = suspenseSearchPage,
+  ): DispatchOptions["loadSsrHandler"] {
+    return async () => ({
+      handleSsr(rscStream, navigationContext, _fontData, ssrOptions) {
+        return runWithNavigationContext(async () => {
+          renders.push(ssrOptions?.isCacheCandidate);
+          const gate =
+            ssrOptions?.isCacheCandidate === true ? startCandidateSearchParamsGate() : null;
+          if (ssrOptions?.sideStream) {
+            const captured = new Response(ssrOptions.sideStream).arrayBuffer();
+            if (ssrOptions.capturedRscDataRef) ssrOptions.capturedRscDataRef.value = captured;
+          }
+          void new Response(gate ? gate.settleWhenConsumed(rscStream) : rscStream).text();
+          setNavigationContext({
+            ...(navigationContext as NavigationContext),
+            searchParamsGate: gate?.gate,
+          });
+          const htmlStream = await renderToHtmlStream(tree(), { onError() {} });
+          await htmlStream.allReady;
+          return htmlStream;
+        });
+      },
+    });
+  }
+
+  function createCache() {
+    const cache = new Map<string, ISRCacheEntry>();
+    const isrGet = vi.fn<DispatchOptions["isrGet"]>(async (key) => cache.get(key) ?? null);
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async (key, data, policy) => {
+      cache.set(key, {
+        isStale: false,
+        value: { cacheControl: policy.cacheControl, lastModified: Date.now(), value: data },
+      });
+    });
+    return { cache, isrGet, isrSet };
+  }
+
+  // Dispatches one production request and waits for its cache writes.
+  async function dispatchQuery(
+    search: string,
+    overrides: CreateDispatchOptionsOverrides,
+    executionContext: ExecutionContextLike = { waitUntil() {} },
+  ) {
+    const waitUntilPromises: Promise<unknown>[] = [];
+    Reflect.set(executionContext, "waitUntil", (promise: Promise<unknown>) => {
+      waitUntilPromises.push(promise);
+    });
+    let navigationContext: ReturnType<DispatchOptions["getNavigationContext"]> = null;
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => suspenseSearchPage(),
+      getNavigationContext: () => navigationContext,
+      isProduction: true,
+      renderToReadableStream: serializePayloadToStream,
+      request: new Request(`https://example.test/posts/hello${search}`),
+      searchParams: new URLSearchParams(search),
+      setNavigationContext(next) {
+        navigationContext = next;
+      },
+      ...overrides,
+    });
+    const response = await runWithRequestContext(
+      createRequestContext({
+        executionContext,
+        headersContext: headersContextFromRequest(options.request),
+      }),
+      () => runWithExecutionContext(executionContext, () => dispatchAppPage(options)),
+    );
+    const body = await response.text();
+    await Promise.all(waitUntilPromises.splice(0));
+    return { body, response };
+  }
+
+  function expectEntryFreeOf(entry: ISRCacheEntry | undefined, canary: string): void {
+    const value = entry?.value.value;
+    if (!isCachedAppPageValue(value)) throw new Error("Expected an APP_PAGE cache entry");
+    const rscText = value.rscData ? new TextDecoder().decode(value.rscData) : "";
+    expect(value.html + rscText).not.toBe("");
+    expect(value.html).not.toContain(canary);
+    expect(rscText).not.toContain(canary);
+    expect(JSON.stringify(value.headers ?? {})).not.toContain(canary);
+  }
+
+  // Ported from Next.js app-static.test.ts:4622-4700 and the plan's canary
+  // test: useSearchParams() inside Suspense keeps the page cached with the
+  // fallback, and the stored entry never carries the query.
+  it("keeps a canary query out of a static Suspense useSearchParams() page's HTML and RSC entries", async () => {
+    const canary = crypto.randomUUID();
+    const { cache, isrGet, isrSet } = createCache();
+    const renders: (boolean | undefined)[] = [];
+    const overrides = { isrGet, isrSet, loadSsrHandler: createGatedSsrHandler(renders) };
+
+    const miss = await dispatchQuery(`?canary=${canary}`, overrides);
+
+    expect(renders).toEqual([true]);
+    expect(miss.response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(miss.body).toContain("search-fallback");
+    expect(miss.body).not.toContain(canary);
+    expect([...cache.keys()].sort()).toEqual(["html:/posts/hello", "rsc:/posts/hello"]);
+    expectEntryFreeOf(cache.get("html:/posts/hello"), canary);
+    expectEntryFreeOf(cache.get("rsc:/posts/hello"), canary);
+
+    const stored = cache.get("html:/posts/hello")!.value.value as CachedAppPageValue;
+    const storedRsc = new TextDecoder().decode(
+      (cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue).rscData,
+    );
+    for (const search of ["", "?other=1"]) {
+      const html = await dispatchQuery(search, overrides);
+      expect(html.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+      expect(html.body, search).toBe(stored.html);
+      const rsc = await dispatchQuery(search, { ...overrides, isRscRequest: true });
+      expect(rsc.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+      expect(rsc.body, search).toBe(storedRsc);
+    }
+    expect(renders).toEqual([true]);
+    expect(isrSet).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a canary query out of an RSC-only miss's entry and serves it to every query", async () => {
+    const canary = crypto.randomUUID();
+    const { cache, isrGet, isrSet } = createCache();
+    const overrides = { isRscRequest: true, isrGet, isrSet };
+
+    const miss = await dispatchQuery(`?canary=${canary}`, overrides);
+
+    // A query-bearing RSC miss keeps its cache state provisional.
+    expect(miss.response.headers.get("x-vinext-cache")).toBeNull();
+    expect(miss.body).not.toContain(canary);
+    expect([...cache.keys()]).toEqual(["rsc:/posts/hello"]);
+    expectEntryFreeOf(cache.get("rsc:/posts/hello"), canary);
+    for (const search of ["", "?other=1"]) {
+      const hit = await dispatchQuery(search, overrides);
+      expect(hit.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+      expect(hit.body, search).toBe(miss.body);
+    }
+    expect(isrSet).toHaveBeenCalledTimes(1);
+  });
+
+  // A dynamic-segment route without generateStaticParams is ƒ: it renders
+  // per request, so useSearchParams() inside Suspense server-renders the real
+  // query, and nothing is stored.
+  it("renders real useSearchParams() values inside Suspense on a route that isn't static", async () => {
+    const { isrGet, isrSet } = createCache();
+    const renders: (boolean | undefined)[] = [];
+    for (const revalidateSeconds of [null, 60]) {
+      const { body, response } = await dispatchQuery("?q=secret", {
+        isrGet,
+        isrSet,
+        loadSsrHandler: createGatedSsrHandler(renders),
+        revalidateSeconds,
+        route: createRoute({ isDynamic: true, params: ["slug"] }),
+      });
+
+      expect(body).toContain("search:q=secret");
+      expect(body).not.toContain("search-fallback");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    }
+    expect(renders).toEqual([false, false]);
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  // Row 7a residual: an RSC-only render never runs SSR, so a client page's
+  // use(searchParams) never runs and the render stays static. Core stores the
+  // RSC entry, which carries no query. Next.js prerenders the HTML first and
+  // marks such a page dynamic.
+  it("stores a query-free RSC entry for an RSC-only request to a client page that reads searchParams (row 7a residual)", async () => {
+    const ClientPage = Object.assign(
+      function ClientPage(props: Record<string, unknown>) {
+        const searchParams = props.searchParams as Promise<Record<string, string>>;
+        return React.createElement("p", null, `q:${React.use(searchParams).q}`);
+      },
+      { $$typeof: Symbol.for("react.client.reference") },
+    );
+    const { cache, isrGet, isrSet } = createCache();
+    const buildPageElement: DispatchOptions["buildPageElement"] = (
+      _route,
+      params,
+      _opts,
+      searchParams,
+      layoutParamAccess,
+      buildOptions,
+    ) =>
+      buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: true,
+          mountedSlotsHeader: null,
+          observeMetadataSearchParamsAccess:
+            buildOptions?.observeMetadataSearchParamsAccess === true,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          opts: undefined,
+          request: new Request(`https://example.test/client?${searchParams}`),
+          searchParams,
+        },
+        route: {
+          layouts: [],
+          page: { default: ClientPage },
+          pattern: "/client",
+          routeSegments: ["client"],
+        },
+        routePath: "/client",
+      }).then(toDispatchElementRecord);
+
+    const { body } = await dispatchQuery("?q=secret", {
+      buildPageElement,
+      cleanPathname: "/client",
+      isRscRequest: true,
+      isrGet,
+      isrSet,
+      route: createRoute({ pattern: "/client", routeSegments: ["client"] }),
+    });
+
+    expect(body).toContain("ClientPageRoot");
+    expect(body).not.toContain("secret");
+    expect([...cache.keys()]).toEqual(["rsc:/client"]);
+    expectEntryFreeOf(cache.get("rsc:/client"), "secret");
+  });
+
+  // A Workers Cache runtime-check path keeps candidate mode, and its dispatch
+  // keeps the query, so each render sees the request's own query.
+  it("renders a runtime-check Workers Cache path in candidate mode with the request's query", async () => {
+    const manifest = parseCacheabilityManifest(
+      JSON.stringify({
+        buildId: "build-a",
+        routes: {
+          [cacheabilityManifestRouteKey("app-page", "/posts/[slug]")]: {
+            kind: "app-page",
+            pattern: "/posts/[slug]",
+            runtimePaths: ["/posts/hello"],
+            state: "runtime-check",
+          },
+        },
+        version: 1,
+      }),
+      "build-a",
+    );
+    const renders: (boolean | undefined)[] = [];
+    const pageQueries: (string | null)[] = [];
+    for (const q of ["1", "2"]) {
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        admission: {
+          manifest,
+          policy: "manifest",
+          representation: "html",
+          routePathname: "/posts/hello",
+        },
+        captureDeadlineAt: Date.now() + 10_000,
+        mode: "admit",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      await dispatchQuery(
+        `?q=${q}`,
+        {
+          async buildPageElement(_route, _params, _opts, searchParams) {
+            pageQueries.push(searchParams.get("q"));
+            return suspenseSearchPage();
+          },
+          loadSsrHandler: createGatedSsrHandler(renders),
+          revalidateSeconds: 60,
+        },
+        context,
+      );
+    }
+
+    expect(renders).toEqual([true, true]);
+    expect(pageQueries).toEqual(["1", "2"]);
+  });
+
+  // A `[]` generateStaticParams route is SSG with the revalidate = false
+  // default, so one HTML miss stores both representations, as Next.js does.
+  it("writes rsc: alongside html: on an HTML miss of an empty generateStaticParams route", async () => {
+    const { cache, isrGet, isrSet } = createCache();
+
+    const { response } = await dispatchQuery("", {
+      generateStaticParams: async () => [],
+      isrGet,
+      isrSet,
+      loadSsrHandler: createGatedSsrHandler([]),
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
+    expect(
+      Object.fromEntries(
+        isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl.revalidate]),
+      ),
+    ).toEqual({ "html:/posts/hello": Infinity, "rsc:/posts/hello": Infinity });
+    expect(cache.size).toBe(2);
+  });
+
+  // Next.js stores and sends min(route revalidate, cacheLife). A page with a
+  // cacheLife of 60 s under the revalidate = false default, on a literal route
+  // and on a `[]` generateStaticParams route (Next.js /uc-gsp).
+  describe("with cacheLife({ revalidate: 60 })", () => {
+    const routes = [
+      ["a literal route", {}],
+      [
+        "an empty generateStaticParams route",
+        {
+          generateStaticParams: async () => [],
+          route: createRoute({ isDynamic: true, params: ["slug"] }),
+        },
+      ],
+    ] as const;
+
+    const cacheLifePage = async () => {
+      cacheLife({ revalidate: 60 });
+      return suspenseSearchPage();
+    };
+
+    for (const [label, routeOverrides] of routes) {
+      it(`sends s-maxage=60 on a core HIT (${label})`, async () => {
+        const { isrGet, isrSet } = createCache();
+        const overrides = {
+          ...routeOverrides,
+          buildPageElement: cacheLifePage,
+          isrGet,
+          isrSet,
+          loadSsrHandler: createGatedSsrHandler([]),
+        };
+
+        await dispatchQuery("", overrides);
+        expect(
+          Object.fromEntries(
+            isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl.revalidate]),
+          ),
+        ).toEqual({ "html:/posts/hello": 60, "rsc:/posts/hello": 60 });
+
+        for (const isRscRequest of [false, true]) {
+          const hit = await dispatchQuery("", { ...overrides, isRscRequest });
+          expect(hit.response.headers.get("x-vinext-cache")).toBe("HIT");
+          expect(hit.response.headers.get("cache-control")).toMatch(/^s-maxage=60(,|$)/);
+        }
+      });
+
+      it(`sends Cloudflare-CDN-Cache-Control max-age=60 with browser max-age=0 from Workers Cache (${label})`, async () => {
+        setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+        try {
+          for (const isRscRequest of [false, true]) {
+            const request = new Request("https://example.test/posts/hello", {
+              headers: isRscRequest
+                ? { Accept: "text/x-component", RSC: "1" }
+                : { Accept: "text/html" },
+            });
+            const context = createWorkerCacheabilityAdmissionContext(
+              { waitUntil() {} },
+              request,
+              null,
+              "build-a",
+              true,
+              undefined,
+              undefined,
+              undefined,
+              { applyCompletedResponsePolicy: true },
+            );
+            const { options } = createDispatchOptions({
+              ...routeOverrides,
+              buildPageElement: cacheLifePage,
+              isProduction: true,
+              isRscRequest,
+              loadSsrHandler: createGatedSsrHandler([]),
+              renderToReadableStream: serializePayloadToStream,
+              request,
+            });
+            const response = await runWithRequestContext(
+              createRequestContext({
+                executionContext: context,
+                headersContext: headersContextFromRequest(request),
+              }),
+              async () =>
+                finalizeWorkerCacheabilityResponse(
+                  await runWithExecutionContext(context, () => dispatchAppPage(options)),
+                  context,
+                ),
+            );
+            await response.text();
+
+            const representation = isRscRequest ? "RSC" : "HTML";
+            expect(response.headers.get("cache-control"), representation).toBe(
+              "public, max-age=0, must-revalidate",
+            );
+            expect(response.headers.get("cloudflare-cdn-cache-control"), representation).toMatch(
+              /^public, max-age=60(,|$)/,
+            );
+          }
+        } finally {
+          setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+        }
+      });
+    }
   });
 });
