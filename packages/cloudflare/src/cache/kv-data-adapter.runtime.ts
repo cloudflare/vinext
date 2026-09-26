@@ -523,7 +523,7 @@ export class KVCacheHandler implements CacheHandler {
     // so active pages always have something to serve. Entries only disappear after
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
     // Every entry gets it, including `revalidate = false` and entries with no
-    // policy, so no entry outlives the tag marker that invalidated it.
+    // policy.
     const expirationTtl = this.ttlSeconds;
 
     // Store tags in KV metadata so revalidateByPathPrefix can discover them
@@ -543,15 +543,11 @@ export class KVCacheHandler implements CacheHandler {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
-    // Store invalidation timestamp for each tag. A marker keeps the entry TTL:
-    // it's written after every entry it invalidates, so it outlives them all.
-    await Promise.all(
-      validTags.map((tag) =>
-        this.kv.put(this._tagKey(tag), String(now), {
-          expirationTtl: this.ttlSeconds,
-        }),
-      ),
-    );
+    // Store invalidation timestamp for each tag. Markers never expire: an
+    // entry can outlive any marker TTL, for example one written under a longer
+    // `ttlSeconds` before a config change. Newer entries pass the marker by
+    // `lastModified`, and there is one small marker per revalidated tag.
+    await Promise.all(validTags.map((tag) => this.kv.put(this._tagKey(tag), String(now))));
     const order = ++this._tagCacheOrder;
     // Update local tag cache immediately so invalidations are reflected
     // without waiting for the TTL to expire

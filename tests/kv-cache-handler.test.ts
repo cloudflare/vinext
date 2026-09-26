@@ -706,7 +706,7 @@ describe("KVCacheHandler", () => {
       expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
     });
 
-    it("keeps a revalidate = false entry and its invalidation marker for 30 days", async () => {
+    it("expires a revalidate = false entry after 30 days and keeps its invalidation marker", async () => {
       await handler.set(
         "static-tagged",
         {
@@ -724,15 +724,12 @@ describe("KVCacheHandler", () => {
         metadata: { tags: ["posts"] },
       });
 
-      // The marker is written after the entry with the same TTL, so it
-      // outlives the entry it invalidates.
+      // The marker has no TTL, so it outlives every entry it invalidates.
       await handler.revalidateTag("posts");
-      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/), {
-        expirationTtl: 30 * 24 * 3600,
-      });
+      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/));
     });
 
-    it("gives entries without a numeric revalidate and their markers the configured TTL", async () => {
+    it("gives entries without a numeric revalidate the configured TTL", async () => {
       const ttlSeconds = 90 * 24 * 3600;
       const longHandler = new KVCacheHandler(kv as any, { ttlSeconds });
       // unstable_cache writes its default `revalidate: false` as a boolean.
@@ -746,10 +743,9 @@ describe("KVCacheHandler", () => {
         metadata: { tags: ["posts"] },
       });
 
-      await longHandler.revalidateTag("posts");
-      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/), {
-        expirationTtl: ttlSeconds,
-      });
+      // A marker outlives entries written under any earlier ttlSeconds.
+      await new KVCacheHandler(kv as any, { ttlSeconds: 60 }).revalidateTag("posts");
+      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/));
     });
 
     it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
