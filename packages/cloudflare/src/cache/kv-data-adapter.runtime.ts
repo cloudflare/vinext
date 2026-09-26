@@ -471,8 +471,8 @@ export class KVCacheHandler implements CacheHandler {
     if (effectiveRevalidate === 0) return Promise.resolve();
 
     const now = Date.now();
-    // `revalidate = false` never goes stale, so it gets no revalidateAt and,
-    // below, no KV TTL: the entry stays until it is invalidated.
+    // `revalidate = false` never goes stale, so it gets no revalidateAt. It
+    // still gets the KV TTL below, like every entry with a revalidate policy.
     const revalidateAt =
       typeof effectiveRevalidate === "number" &&
       effectiveRevalidate > 0 &&
@@ -522,7 +522,9 @@ export class KVCacheHandler implements CacheHandler {
     // Background regen overwrites the key with a fresh entry + new revalidateAt,
     // so active pages always have something to serve. Entries only disappear after
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
-    const expirationTtl: number | undefined = revalidateAt !== null ? this.ttlSeconds : undefined;
+    // That includes `revalidate = false` entries, which have no revalidateAt.
+    const expirationTtl: number | undefined =
+      typeof effectiveRevalidate === "number" ? this.ttlSeconds : undefined;
 
     // Store tags in KV metadata so revalidateByPathPrefix can discover them
     // via kv.list() without fetching entry values. Cloudflare KV limits
@@ -541,10 +543,15 @@ export class KVCacheHandler implements CacheHandler {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
-    // Store invalidation timestamp for each tag. Markers never expire: an
-    // entry with no TTL (`revalidate = false`) must not outlive the marker that
-    // invalidated it. Newer entries pass the marker by `lastModified`.
-    await Promise.all(validTags.map((tag) => this.kv.put(this._tagKey(tag), String(now))));
+    // Store invalidation timestamp for each tag
+    // Use a long TTL (30 days) so recent invalidations are always found
+    await Promise.all(
+      validTags.map((tag) =>
+        this.kv.put(this._tagKey(tag), String(now), {
+          expirationTtl: 30 * 24 * 3600,
+        }),
+      ),
+    );
     const order = ++this._tagCacheOrder;
     // Update local tag cache immediately so invalidations are reflected
     // without waiting for the TTL to expire

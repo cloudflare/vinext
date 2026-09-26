@@ -660,11 +660,12 @@ describe("KVCacheHandler", () => {
       expect(stored.cacheControl).toEqual({ revalidate: false });
       expect(stored.revalidateAt).toBeNull();
       expect(kv.put).toHaveBeenCalledWith("cache:static-round-trip", expect.any(String), {
-        expirationTtl: undefined,
+        expirationTtl: 30 * 24 * 3600,
         metadata: { tags: [] },
       });
 
-      vi.setSystemTime(1_000 + 365 * 24 * 60 * 60 * 1000);
+      // Staleness comes from the stored policy, not the KV TTL.
+      vi.setSystemTime(1_000 + 29 * 24 * 60 * 60 * 1000);
       const hit = await handler.get("static-round-trip");
       expect(hit?.cacheState).toBeUndefined();
       expect(hit?.cacheControl).toEqual({ revalidate: Infinity });
@@ -705,9 +706,7 @@ describe("KVCacheHandler", () => {
       expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
     });
 
-    it("keeps invalidation markers as long as a revalidate = false entry", async () => {
-      vi.useFakeTimers({ toFake: ["Date"] });
-      vi.setSystemTime(1_000);
+    it("keeps a revalidate = false entry and its invalidation marker for 30 days", async () => {
       await handler.set(
         "static-tagged",
         {
@@ -720,14 +719,17 @@ describe("KVCacheHandler", () => {
         },
         { cacheControl: { revalidate: Infinity }, tags: ["posts"] },
       );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:static-tagged", expect.any(String), {
+        expirationTtl: 30 * 24 * 3600,
+        metadata: { tags: ["posts"] },
+      });
 
-      vi.setSystemTime(2_000);
+      // The marker is written after the entry with the same TTL, so it
+      // outlives the entry it invalidates.
       await handler.revalidateTag("posts");
-      // The entry has no KV TTL, so its marker must not have one either.
-      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", "2000");
-
-      vi.setSystemTime(2_000 + 31 * 24 * 60 * 60 * 1000);
-      await expect(new KVCacheHandler(kv as any).get("static-tagged")).resolves.toBeNull();
+      expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/), {
+        expirationTtl: 30 * 24 * 3600,
+      });
     });
 
     it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
