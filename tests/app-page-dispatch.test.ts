@@ -5046,18 +5046,58 @@ describe("query-free App page ISR entries", () => {
     expect(isrSet).toHaveBeenCalledTimes(2);
   });
 
+  // A client page that reads searchParams, built by the production element
+  // builder from the query the dispatcher hands it. An RSC-only render never
+  // runs SSR, so the builder is the only route for the query into the payload.
+  const ClientSearchPage = Object.assign(
+    function ClientSearchPage(props: Record<string, unknown>) {
+      const searchParams = props.searchParams as Promise<Record<string, string>>;
+      return React.createElement("p", null, `search:${JSON.stringify(React.use(searchParams))}`);
+    },
+    { $$typeof: Symbol.for("react.client.reference") },
+  );
+
+  const clientSearchPageOverrides = {
+    buildPageElement: ((_route, params, _opts, searchParams, layoutParamAccess, buildOptions) =>
+      buildPageElements({
+        layoutParamAccess,
+        metadataRoutes: [],
+        params,
+        pageRequest: {
+          isRscRequest: true,
+          mountedSlotsHeader: null,
+          observeMetadataSearchParamsAccess:
+            buildOptions?.observeMetadataSearchParamsAccess === true,
+          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
+          opts: undefined,
+          request: new Request(`https://example.test/client?${searchParams}`),
+          searchParams,
+        },
+        route: {
+          layouts: [],
+          page: { default: ClientSearchPage },
+          pattern: "/client",
+          routeSegments: ["client"],
+        },
+        routePath: "/client",
+      }).then(toDispatchElementRecord)) satisfies DispatchOptions["buildPageElement"],
+    cleanPathname: "/client",
+    route: createRoute({ pattern: "/client", routeSegments: ["client"] }),
+  };
+
   it("keeps a canary query out of an RSC-only miss's entry and serves it to every query", async () => {
     const canary = crypto.randomUUID();
     const { cache, isrGet, isrSet } = createCache();
-    const overrides = { isRscRequest: true, isrGet, isrSet };
+    const overrides = { ...clientSearchPageOverrides, isRscRequest: true, isrGet, isrSet };
 
     const miss = await dispatchQuery(`?canary=${canary}`, overrides);
 
     // A query-bearing RSC miss keeps its cache state provisional.
     expect(miss.response.headers.get("x-vinext-cache")).toBeNull();
+    expect(miss.body).toContain("ClientPageRoot");
     expect(miss.body).not.toContain(canary);
-    expect([...cache.keys()]).toEqual(["rsc:/posts/hello"]);
-    expectEntryFreeOf(cache.get("rsc:/posts/hello"), canary);
+    expect([...cache.keys()]).toEqual(["rsc:/client"]);
+    expectEntryFreeOf(cache.get("rsc:/client"), canary);
     for (const search of ["", "?other=1"]) {
       const hit = await dispatchQuery(search, overrides);
       expect(hit.response.headers.get("x-vinext-cache"), search).toBe("HIT");
@@ -5097,52 +5137,13 @@ describe("query-free App page ISR entries", () => {
   // RSC entry, which carries no query. Next.js prerenders the HTML first and
   // marks such a page dynamic.
   it("stores a query-free RSC entry for an RSC-only request to a client page that reads searchParams (row 7a residual)", async () => {
-    const ClientPage = Object.assign(
-      function ClientPage(props: Record<string, unknown>) {
-        const searchParams = props.searchParams as Promise<Record<string, string>>;
-        return React.createElement("p", null, `q:${React.use(searchParams).q}`);
-      },
-      { $$typeof: Symbol.for("react.client.reference") },
-    );
     const { cache, isrGet, isrSet } = createCache();
-    const buildPageElement: DispatchOptions["buildPageElement"] = (
-      _route,
-      params,
-      _opts,
-      searchParams,
-      layoutParamAccess,
-      buildOptions,
-    ) =>
-      buildPageElements({
-        layoutParamAccess,
-        metadataRoutes: [],
-        params,
-        pageRequest: {
-          isRscRequest: true,
-          mountedSlotsHeader: null,
-          observeMetadataSearchParamsAccess:
-            buildOptions?.observeMetadataSearchParamsAccess === true,
-          observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
-          opts: undefined,
-          request: new Request(`https://example.test/client?${searchParams}`),
-          searchParams,
-        },
-        route: {
-          layouts: [],
-          page: { default: ClientPage },
-          pattern: "/client",
-          routeSegments: ["client"],
-        },
-        routePath: "/client",
-      }).then(toDispatchElementRecord);
 
     const { body } = await dispatchQuery("?q=secret", {
-      buildPageElement,
-      cleanPathname: "/client",
+      ...clientSearchPageOverrides,
       isRscRequest: true,
       isrGet,
       isrSet,
-      route: createRoute({ pattern: "/client", routeSegments: ["client"] }),
     });
 
     expect(body).toContain("ClientPageRoot");
