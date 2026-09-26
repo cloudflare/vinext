@@ -2645,6 +2645,34 @@ describe("resolveParentParams", () => {
     expect(calls.own).toBeUndefined();
   });
 
+  it("passes parent params through a layout that returns none", async () => {
+    // Outside Cache Components, Next.js keeps each parent set when a later
+    // generateStaticParams returns [] (build/static-paths/app.ts).
+    const child = mockRoute("/:lang/section/:slug", {
+      layoutPrefixes: ["/:lang", "/:lang/section"],
+    });
+    const staticParamsMap: StaticParamsMap = {
+      "layouts:[lang]": async () => [{ lang: "en" }],
+      "layouts:[lang]/section": async () => [],
+    };
+    await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([{ lang: "en" }]);
+  });
+
+  it("gives an App Route handler no layout params", async () => {
+    // Next.js builds a route handler's segments from route.ts alone
+    // (collectAppRouteSegments), so its layouts never supply params.
+    const handler: AppRoute = {
+      ...mockRoute("/:lang/api/:id", { layoutPrefixes: ["/:lang", "/:lang/api"] }),
+      pagePath: null,
+      routePath: "/app/[lang]/api/[id]/route.ts",
+    };
+    const staticParamsMap: StaticParamsMap = {
+      "layouts:[lang]": async () => [{ lang: "fr" }],
+      "layouts:[lang]/api": async () => [{ extra: "x" }],
+    };
+    await expect(resolveParentParams(handler, staticParamsMap)).resolves.toEqual([]);
+  });
+
   it("resolves two levels of parent dynamic segments", async () => {
     const child = mockRoute("/a/:b/c/:d/:e", { layoutPrefixes: ["/a/:b", "/a/:b/c/:d"] });
     const staticParamsMap: StaticParamsMap = {

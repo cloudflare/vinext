@@ -560,6 +560,12 @@ export type StaticParamsMap = Record<
  * `staticParamsMap[route.pattern]`, so they're left to the caller. A page or a
  * route group's layout at the same prefix belongs to a sibling route and never
  * supplies params.
+ *
+ * An App Route handler inherits no layouts: Next.js builds its segments from
+ * the route module alone (build/segment-config/app/app-segments.ts
+ * collectAppRouteSegments), so it has no parent params. A layout that returns
+ * no params passes each parent set through unchanged, as Next.js does outside
+ * Cache Components.
  */
 export async function resolveParentParams(
   childRoute: AppRoute,
@@ -568,6 +574,8 @@ export async function resolveParentParams(
   type GenerateStaticParamsFn = (opts: {
     params: Record<string, string | string[]>;
   }) => Promise<unknown>;
+
+  if (childRoute.routePath && !childRoute.pagePath) return [];
 
   const parentSegments: GenerateStaticParamsFn[] = [];
   for (const group of appRouteLayoutStaticParamsGroups(childRoute)) {
@@ -586,6 +594,7 @@ export async function resolveParentParams(
   for (const generateStaticParams of parentSegments) {
     const nextParams: Record<string, string | string[]>[] = [];
     let resolvedThisParent = false;
+    const hasParentSets = resolvedAnyParent;
 
     for (const parentParams of currentParams) {
       const results = await generateStaticParams({ params: parentParams });
@@ -596,6 +605,10 @@ export async function resolveParentParams(
 
       resolvedThisParent = true;
       resolvedAnyParent = true;
+      if (results.length === 0 && hasParentSets) {
+        nextParams.push(parentParams);
+        continue;
+      }
       for (const result of results) {
         nextParams.push({ ...parentParams, ...result });
       }
