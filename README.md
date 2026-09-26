@@ -137,17 +137,6 @@ files to `.cjs`) when an unambiguous default Vite config requires the ESM migrat
 `"type": "commonjs"` is never changed. Direct `vite dev` and `vite build` do not perform these
 wrapper compatibility steps.
 
-The old vinext-only build flags are configured on the plugin instead:
-
-```ts
-vinext({
-  prerender: { routes: "*", concurrency: 4 },
-  precompress: true,
-});
-```
-
-This replaces `--prerender-all`, `--prerender-concurrency`, and `--precompress`.
-
 `@vinext/cloudflare deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-traffic-aware-warm-cache`.
 
 `vinext init` prompts for a deployment target, defaulting to Cloudflare. Agents must ask the

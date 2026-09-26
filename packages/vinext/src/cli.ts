@@ -47,6 +47,28 @@ const rawArgs = process.argv.slice(3);
 
 type ViteCommand = "dev" | "build";
 
+const retiredVinextFlags: Record<string, string> = {
+  "-p": "This was a dev-server option; use --port with Vite dev instead.",
+  "-H": "This was a dev-server option; use --host with Vite dev instead.",
+  "--hostname": "This was a dev-server option; use --host with Vite dev instead.",
+  "--turbopack": "This was a no-op: vinext always uses Vite.",
+  "--experimental-https": "This was a no-op. Configure server.https in vite.config.ts for HTTPS.",
+  "--verbose": "Vite controls its own output; use --debug for more detail.",
+  "--prerender-all": 'Configure vinext({ prerender: { routes: "*" } }) in vite.config.ts.',
+  "--prerender-concurrency":
+    'Configure vinext({ prerender: { routes: "*", concurrency: 4 } }) in vite.config.ts.',
+  "--precompress": "Configure vinext({ precompress: true }) in vite.config.ts.",
+};
+
+function rejectRetiredVinextFlags(): void {
+  for (const arg of rawArgs) {
+    if (arg === "--") break;
+    const flag = arg.split("=", 1)[0];
+    const reason = retiredVinextFlags[flag];
+    if (reason) throw new Error(`[vinext] ${flag} is no longer supported. ${reason}`);
+  }
+}
+
 function configPreflight(command: ViteCommand): { root: string; configPath?: string } {
   const cwd = process.cwd();
   const { root: positionalRoot, shouldPreflight } = findViteRoot(command, rawArgs);
@@ -102,6 +124,7 @@ function resolveProjectViteCli(root: string): string {
 
 async function proxyVite(command: ViteCommand): Promise<void> {
   console.warn(`[vinext] Tip: migrate from \`vinext ${command}\` to \`vite ${command}\`.`);
+  rejectRetiredVinextFlags();
   const { root, configPath } = configPreflight(command);
   const cliPath = resolveProjectViteCli(root);
   process.argv = [process.execPath, cliPath, command, ...rawArgs];

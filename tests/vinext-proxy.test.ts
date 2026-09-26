@@ -57,6 +57,44 @@ afterEach(async () => {
 });
 
 describe("thin vinext command proxies", () => {
+  it.each([
+    ["dev", "-p", "--port"],
+    ["dev", "-H", "--host"],
+    ["dev", "--hostname=localhost", "--host"],
+    ["dev", "--turbopack", "no-op"],
+    ["dev", "--experimental-https", "server.https"],
+    ["build", "--verbose", "--debug"],
+    ["build", "--prerender-all", 'prerender: { routes: "*" }'],
+    ["build", "--prerender-concurrency=4", "concurrency: 4"],
+    ["build", "--prerender-concurrency", "concurrency: 4"],
+    ["build", "--precompress=true", "precompress: true"],
+  ] as const)("explains retired %s flag %s", (command, flag, guidance) => {
+    const root = createRoot();
+    writeProject(root);
+    const result = spawnSync(process.execPath, [CLI_PATH, command, flag], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`[vinext] ${flag.split("=", 1)[0]} is no longer supported`);
+    expect(result.stderr).toContain(guidance);
+    expect(result.stderr).not.toContain("Unknown option");
+  });
+
+  it("does not change native Vite command errors", () => {
+    const root = createRoot();
+    writeProject(root);
+    const result = spawnSync("vp", ["build", "--prerender-all"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Unknown option");
+    expect(result.stderr).not.toContain("[vinext]");
+  });
+
   it.each(["dev", "build"] as const)("suggests the native Vite %s command", (command) => {
     const root = createRoot();
     const result = spawnSync(process.execPath, [CLI_PATH, command], {
@@ -549,7 +587,7 @@ export default { plugins: [vinext()] };
     expect(result.stderr).not.toContain("No Vite config was found");
   });
 
-  it("leaves unknown valued option handling to Vite", () => {
+  it("rejects the retired --hostname option before reaching Vite", () => {
     const root = createRoot();
     writeProject(root);
     const result = spawnSync(process.execPath, [CLI_PATH, "build", "--hostname", "127.0.0.1"], {
@@ -558,7 +596,8 @@ export default { plugins: [vinext()] };
     });
 
     expect(result.status).toBe(1);
-    expect(`${result.stdout}\n${result.stderr}`).toContain("Unknown option");
+    expect(result.stderr).toContain("--hostname is no longer supported");
+    expect(result.stderr).toContain("--host");
     expect(result.stderr).not.toContain("No Vite config was found");
   });
 
