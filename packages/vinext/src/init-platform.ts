@@ -152,7 +152,7 @@ export function parseExperimentalCfArg(args: string[]): boolean | undefined {
   return parseBooleanArg(
     args,
     "--experimental-cf",
-    "--no-experimental-cf",
+    undefined,
     '--experimental-cf expects true or false when using the "--experimental-cf=value" form.',
   );
 }
@@ -160,7 +160,7 @@ export function parseExperimentalCfArg(args: string[]): boolean | undefined {
 function parseBooleanArg(
   args: string[],
   enabledFlag: string,
-  disabledFlag: string,
+  disabledFlag: string | undefined,
   errorMessage: string,
 ): boolean | undefined {
   for (const arg of args) {

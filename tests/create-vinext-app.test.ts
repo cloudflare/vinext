@@ -478,18 +478,21 @@ describe("create-vinext-app CLI", () => {
     },
   );
 
-  it.each(["--no-experimental-cf", "--experimental-cf=false"])(
-    "keeps the Wrangler flow with %s",
-    async (flag) => {
-      const appPath = path.join(tmpDir, "wrangler-app");
-      await withQuietConsole(() =>
-        runCreateVinextAppCli([flag, appPath, "--skip-install", "--disable-git", "--yes"]),
-      );
-      expect(fs.existsSync(path.join(appPath, "cloudflare.config.ts"))).toBe(false);
-      expect(fs.existsSync(path.join(appPath, "wrangler.jsonc"))).toBe(true);
-      expect(readPkg(appPath).devDependencies).not.toHaveProperty("cf");
-    },
-  );
+  it("keeps the Wrangler flow with --experimental-cf=false", async () => {
+    const appPath = path.join(tmpDir, "wrangler-app");
+    await withQuietConsole(() =>
+      runCreateVinextAppCli([
+        "--experimental-cf=false",
+        appPath,
+        "--skip-install",
+        "--disable-git",
+        "--yes",
+      ]),
+    );
+    expect(fs.existsSync(path.join(appPath, "cloudflare.config.ts"))).toBe(false);
+    expect(fs.existsSync(path.join(appPath, "wrangler.jsonc"))).toBe(true);
+    expect(readPkg(appPath).devDependencies).not.toHaveProperty("cf");
+  });
 
   it("rejects experimental cf with the Node platform before creating files", async () => {
     const appPath = path.join(tmpDir, "invalid-cf-app");
