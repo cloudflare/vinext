@@ -272,7 +272,7 @@ Create the namespace with `cf kv namespaces create --title=my-app-cache` and rep
 
 This is the smallest persistent setup. The same data cache can hold ISR responses and nested cached data, but every lookup goes through the application Worker and KV's eventual consistency may briefly expose older values after an update.
 
-Each KV entry expires `ttlSeconds` after it is written (30 days by default, set with `kvDataAdapter({ ttlSeconds })`). This includes pages with `revalidate = false`, which are rendered again on the next request once their entry expires.
+Each KV entry expires `ttlSeconds` after it is written (30 days by default, set with `kvDataAdapter({ ttlSeconds })`; a value below 60 seconds, KV's minimum, is raised to 60, and one that isn't a positive number falls back to 30 days). This includes pages with `revalidate = false`, which are rendered again on the next request once their entry expires.
 
 ## Static Assets response cache
 
@@ -423,17 +423,17 @@ vinext stores a rendered App Router page (ISR) only when Next.js would treat its
 - a dynamic-segment route with `generateStaticParams` on its last dynamic segment, in that segment's layout, a deeper layout or the page. Returning `[]` opts every path into on-demand ISR, unless `dynamicParams = false`, which makes unknown paths 404;
 - a route with `dynamic = "force-static"` or `dynamic = "error"`.
 
-`dynamic = "force-dynamic"`, `revalidate = 0` and `runtime = "edge"` override these rules. Every other route renders on every request and is never stored as a page, even when it exports `revalidate` or calls `cacheLife()`. Its `"use cache"` functions and cached `fetch` calls are still reused. Routes built with `cacheComponents` keep their own rules.
+`dynamic = "force-dynamic"`, `revalidate = 0` and `runtime = "edge"` override these rules. Every other route renders on every request and is never stored as a page in the ISR cache, even when it exports `revalidate` or calls `cacheLife()`. A `next.config` `headers()` rule with a public `Cache-Control` can still let a CDN or Workers Cache keep its response. Its `"use cache"` functions and cached `fetch` calls are still reused. Routes built with `cacheComponents` keep their own rules.
 
-A static page with no `revalidate` export, `fetch` revalidate or `cacheLife()` defaults to `revalidate = false`, as in Next.js. It stays cached until `revalidatePath()` or `revalidateTag()` invalidates it. This includes pages that read data without a dynamic API, such as a direct database query. Export `revalidate` or call `cacheLife()` to refresh such a page on a schedule.
+A static page with no `revalidate` export, `fetch` revalidate or `cacheLife()` defaults to `revalidate = false`, as in Next.js. It has no revalidation deadline: it's rendered again only after `revalidatePath()` or `revalidateTag()` invalidates it, or once the cache drops it, for example when its KV TTL expires or the in-memory cache restarts. This includes pages that read data without a dynamic API, such as a direct database query. Export `revalidate` or call `cacheLife()` to refresh such a page on a schedule.
 
 A static page is stored only when its render uses no dynamic API. These make the render dynamic, so the response is not stored:
 
-- `cookies()`, `headers()`, `connection()` or `unstable_noStore()`;
-- an uncached `fetch`, such as `cache: "no-store"` or `next: { revalidate: 0 }`;
+- `cookies()`, `headers()` or `connection()`, or `unstable_noStore()` outside an `unstable_cache` function;
+- a `fetch` explicitly marked uncached, such as `cache: "no-store"` or `next: { revalidate: 0 }`. A `fetch` with no cache option, or one left uncached because it sends an `Authorization` or `Cookie` header, doesn't make the page dynamic, as in Next.js;
 - reading `searchParams` in a page, including a `"use client"` page, or in `generateMetadata`.
 
-Two segment configs change this. Under `dynamic = "force-static"`, `cookies()`, `headers()` and `searchParams` return empty values, and an uncached `fetch` still runs but doesn't make the render dynamic, so the page is still stored. Under `dynamic = "error"`, reading `cookies()`, `headers()` or `searchParams` throws, and `fetch` calls only read from the cache.
+Two segment configs change this. Under `dynamic = "force-static"`, `cookies()`, `headers()` and `searchParams` return empty values, and `connection()`, `unstable_noStore()` and an uncached `fetch` (which still runs) don't make the render dynamic, so the page is still stored. Under `dynamic = "error"`, reading `cookies()`, `headers()` or `searchParams` throws, and `fetch` calls default to `force-cache`, so a miss still fetches and fills the cache.
 
 `useSearchParams()` in a client component does not make a page dynamic. In production, when a cacheable page calls it during server rendering, vinext renders the nearest `<Suspense>` fallback into the HTML, and the browser renders the real value after hydration, as Next.js does. If the render turns dynamic for another reason, `useSearchParams()` returns the real query instead, and the response is not stored. In a render that would be stored, a call with no `<Suspense>` boundary above it fails the request with a 500 and logs Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, even when the route has an `error.tsx`. Next.js fails the build for the same code. Development renders the real query, except on `force-static` routes, which always get empty search params.
 
@@ -470,6 +470,6 @@ vinext follows Next.js-style cache semantics:
 - `revalidatePath()` invalidates content associated with a path.
 - `revalidateTag()` invalidates content associated with a cache tag.
 
-With the KV or in-memory cache, a background regeneration of an App Router page that fails keeps the previous entry, as in Next.js. The entry is served as fresh again and retried after its `revalidate` time, clamped to between 3 and 30 seconds; a `revalidate = false` entry is retried after 3 seconds. A regeneration that uses a dynamic API counts as a failure and logs `Page changed from static to dynamic at runtime`.
+With the KV or in-memory cache, a background regeneration of an App Router page that fails keeps the previous entry, as in Next.js, when that entry was written by a render: it records the tags to restore. The entry is served as fresh again and retried after its `revalidate` time, clamped to between 3 and 30 seconds; a `revalidate = false` entry is retried after 3 seconds. An entry seeded at deploy records no tags, so it stays stale and is retried on the next request. Outside PPR, a regeneration that uses a dynamic API counts as a failure and logs `Page changed from static to dynamic at runtime`.
 
 The adapter changes where entries live and how they are served, but it should not change the caching API used by application code.
