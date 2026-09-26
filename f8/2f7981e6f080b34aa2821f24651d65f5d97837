@@ -1,0 +1,21 @@
+scripts/test-repos.sh
+  s_5b89f907d88418::t_bcf00265f7f61b 121,124
+tests/e2e-deploy-script.test.ts
+  s_5b89f907d88418::t_9dbd47f48a0017 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f82f7981e6f080b34aa2821f24651d65f5d97837",
+  "prompts": {},
+  "sessions": {
+    "s_5b89f907d88418": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c383-5c6f-7ae3-bcd1-5d165c69d5bb",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
