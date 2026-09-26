@@ -1835,6 +1835,38 @@ describe("prerender path manifest", () => {
     });
   });
 
+  it("validates a layout's params against the route's URL pattern", async () => {
+    // Next.js validates the composed params against the route's pathname
+    // params (build/static-paths/app.ts validateParams), so a non-repeat
+    // [id] from a layout must be a string.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[id]/layout.tsx",
+      [
+        "export function generateStaticParams() { return [{ id: ['a', 'b'] }]; }",
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n"),
+    );
+    writeFile("app/[id]/details/page.tsx", "export default function Page() { return null; }\n");
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) =>
+      new URL(input instanceof Request ? input.url : String(input)).searchParams.get("pattern") ===
+      "layouts:[id]"
+        ? Response.json([{ id: ["a", "b"] }])
+        : defaultFetch(input, init),
+    );
+
+    const { emitPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+
+    await expect(
+      emitPrerenderPathManifest({ responseVary: "verbatim", root: tmpDir }),
+    ).rejects.toThrow("Parameter id from generateStaticParams for /:id/details must be a string.");
+  });
+
   it("discovers a static child route from parent-layout generateStaticParams", async () => {
     // Next.js supports parent layouts generating params for static child pages:
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-prefetch-static/app/[region]/(default)/layout.js

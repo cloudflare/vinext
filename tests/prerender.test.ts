@@ -2658,6 +2658,24 @@ describe("resolveParentParams", () => {
     await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([{ lang: "en" }]);
   });
 
+  it("rejects a layout that returns no params under static export", async () => {
+    // With output: "export", Next.js fails any generateStaticParams that
+    // returns [] before passing parent sets through (build/static-paths/app.ts
+    // callGenerateStaticParams).
+    const child = mockRoute("/:lang/section/:slug", {
+      layoutPrefixes: ["/:lang", "/:lang/section"],
+    });
+    const staticParamsMap: StaticParamsMap = {
+      "layouts:[lang]": async () => [{ lang: "en" }],
+      "layouts:[lang]/section": async () => [],
+    };
+    await expect(
+      resolveParentParams(child, staticParamsMap, { staticExport: true }),
+    ).rejects.toThrow(
+      'Page "/:lang/section/:slug" returned an empty array from "generateStaticParams()". With "output: export", at least one route must be generated.',
+    );
+  });
+
   it("gives an App Route handler no layout params", async () => {
     // Next.js builds a route handler's segments from route.ts alone
     // (collectAppRouteSegments), so its layouts never supply params.

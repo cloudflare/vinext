@@ -988,8 +988,15 @@ async function collectAppPaths(options: {
           const childResults = await generateStaticParams({ params: parentParams });
           if (childResults === null) {
             // The route's own segments have no generateStaticParams, so its
-            // layouts' params stand alone.
-            paramSets = layoutOnlyParamSets(route, parentParamSets);
+            // layouts' params stand alone. Their lookups are keyed by layout
+            // directory rather than URL pattern, so check the composed sets
+            // against the route's pattern, as Next.js validates the composed
+            // params against the route's pathname params
+            // (build/static-paths/app.ts validateParams).
+            paramSets =
+              layoutOnlyParamSets(route, parentParamSets)?.map((params) =>
+                validateDiscoveredParams(params, route.pattern, "generateStaticParams"),
+              ) ?? null;
             break;
           }
           if (Array.isArray(childResults)) {

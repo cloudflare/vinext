@@ -565,11 +565,14 @@ export type StaticParamsMap = Record<
  * the route module alone (build/segment-config/app/app-segments.ts
  * collectAppRouteSegments), so it has no parent params. A layout that returns
  * no params passes each parent set through unchanged, as Next.js does outside
- * Cache Components.
+ * Cache Components, except under `output: "export"`, where Next.js rejects any
+ * generateStaticParams that returns no params (build/static-paths/app.ts
+ * callGenerateStaticParams).
  */
 export async function resolveParentParams(
   childRoute: AppRoute,
   staticParamsMap: StaticParamsMap,
+  options: { staticExport?: boolean } = {},
 ): Promise<Record<string, string | string[]>[]> {
   type GenerateStaticParamsFn = (opts: {
     params: Record<string, string | string[]>;
@@ -602,6 +605,13 @@ export async function resolveParentParams(
       // generateStaticParams for this pattern. Skip and let later providers run.
       if (results === null) continue;
       if (!Array.isArray(results)) return [];
+      if (options.staticExport && results.length === 0) {
+        throw new Error(
+          `Page "${childRoute.pattern}" returned an empty array from "generateStaticParams()". ` +
+            `With "output: export", at least one route must be generated. ` +
+            `See more info here: https://nextjs.org/docs/messages/generate-static-params`,
+        );
+      }
 
       resolvedThisParent = true;
       resolvedAnyParent = true;
@@ -1346,7 +1356,9 @@ export async function prerenderApp({
             continue;
           }
 
-          const parentParamSets = await resolveParentParams(route, staticParamsMap);
+          const parentParamSets = await resolveParentParams(route, staticParamsMap, {
+            staticExport: mode === "export",
+          });
           let paramSets: Record<string, string | string[]>[] | null;
 
           if (parentParamSets.length > 0) {
