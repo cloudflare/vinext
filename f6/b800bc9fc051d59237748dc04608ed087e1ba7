@@ -1,0 +1,19 @@
+tests/create-vinext-app.test.ts
+  s_ed33f3f496fc80::t_a1c6a5ebca22ec 459-460
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f6b800bc9fc051d59237748dc04608ed087e1ba7",
+  "prompts": {},
+  "sessions": {
+    "s_ed33f3f496fc80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83514f25-1087-4971-87df-c0eb2cf6c17d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
