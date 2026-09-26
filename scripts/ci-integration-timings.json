@@ -139,6 +139,12 @@
       "p75Ms": 308,
       "samples": 5
     },
+    "tests/app-search-params-gate-production.test.ts": {
+      "estimateMs": 11610,
+      "medianMs": 11610,
+      "p75Ms": 11610,
+      "samples": 1
+    },
     "tests/cjs.test.ts": {
       "estimateMs": 6446,
       "medianMs": 6398,

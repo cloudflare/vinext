@@ -304,6 +304,18 @@ describe("Cloudflare Workers Response Store adapter", () => {
     // The listed path renders statically and is stored.
     assert.equal((await cacheStatus("/generated-cookies/listed")).status, "MISS");
     assert.equal((await cacheStatus("/generated-cookies/listed")).status, "HIT");
+    // An unlisted path that skips cookies() is stored too, so the bailout
+    // below comes from the cookie read, not from the path being unlisted.
+    const staticUnlisted = "/generated-cookies/static-unlisted";
+    const staticMiss = await cacheStatus(staticUnlisted);
+    assert.equal(staticMiss.status, "MISS");
+    await waitForResponseEntries(staticUnlisted, 1);
+    const staticHit = await cacheStatus(staticUnlisted);
+    assert.equal(staticHit.status, "HIT");
+    assert.equal(
+      htmlValue(staticHit.body, "generated-cookies-render-id"),
+      htmlValue(staticMiss.body, "generated-cookies-render-id"),
+    );
 
     const pathname = "/generated-cookies/on-demand";
     const first = await request(pathname);
@@ -326,10 +338,12 @@ describe("Cloudflare Workers Response Store adapter", () => {
       htmlValue(secondBody, "generated-cookies-render-id"),
     );
     // Writes run in waitUntil after the response returns, so hold the absence
-    // through the same window the other tests poll for a publication.
+    // through the same window the other tests poll for a publication, checking
+    // after every delay, including the last.
+    assert.equal((await responseEntries(pathname)).length, 0);
     for (let attempt = 0; attempt < 50; attempt++) {
-      assert.equal((await responseEntries(pathname)).length, 0);
       await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal((await responseEntries(pathname)).length, 0);
     }
   });
 
