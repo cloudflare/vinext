@@ -2122,6 +2122,7 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
   async function prerenderLayoutApp(
     files: Record<string, string>,
     staticParamsByKey: Record<string, unknown>,
+    mode: "default" | "export" = "default",
   ) {
     const root = tmpDir("vinext-prerender-layout-contract-");
     const appDir = path.join(root, "app");
@@ -2154,7 +2155,7 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
       const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
       const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
       const result = await prerenderApp({
-        mode: "default",
+        mode,
         rscBundlePath: path.join(root, "dist", "server", "index.js"),
         routes: await appRouter(appDir),
         outDir: path.join(root, "out"),
@@ -2222,6 +2223,25 @@ describe("prerenderApp — layout generateStaticParams contract", () => {
     });
     expect(renderedPaths.filter((pathname) => pathname.includes("/mid/"))).toEqual([]);
   });
+
+  // Next.js fails an export build whose generated params leave out a pathname
+  // param (build/static-paths/app.ts buildAppStaticPaths), instead of
+  // prerendering none of them as a normal build does.
+  it("fails a static export whose composed sets are incomplete", async () => {
+    const { result, renderedPaths } = await prerenderLayoutApp(
+      { "[lang]/layout.tsx": layout, "[lang]/[slug]/page.tsx": page },
+      { "layouts:[lang]": [{ lang: "en" }], "/:lang/:slug": [{ slug: "x" }, {}] },
+      "export",
+    );
+
+    expect(result.routes.find((route) => route.route === "/:lang/:slug")).toMatchObject({
+      status: "error",
+      error: expect.stringContaining(
+        'Page "/:lang/:slug" returned incomplete params from "generateStaticParams()". With "output: export", every params object must include all dynamic route parameters. Missing: "slug".',
+      ),
+    });
+    expect(renderedPaths.filter((pathname) => pathname.startsWith("/en"))).toEqual([]);
+  });
 });
 
 describe("routeStaticParamSets", () => {
@@ -2243,6 +2263,11 @@ describe("routeStaticParamSets", () => {
     expect(routeStaticParamSets({ pattern: "/:a/:b" }, [{ a: "x", b: "y" }, { a: "z" }])).toEqual(
       [],
     );
+    expect(() =>
+      routeStaticParamSets({ pattern: "/:a/:b" }, [{ a: "x", b: "y" }, { a: "z" }], {
+        staticExport: true,
+      }),
+    ).toThrow('Missing: "b".');
   });
 
   it("rejects a set whose value does not fit its segment", () => {

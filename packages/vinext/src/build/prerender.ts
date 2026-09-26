@@ -699,11 +699,13 @@ export function validateDiscoveredParams(
  * (validateParams), and, outside a partial prerender, a set with an empty
  * required value is skipped rather than built into a path with an empty
  * segment. An array, including an optional catch-all's empty one, is never
- * empty in that sense.
+ * empty in that sense. Under `output: "export"` incomplete sets fail the
+ * build instead, as Next.js requires every export path to be generated.
  */
 export function routeStaticParamSets(
   route: Pick<AppRoute, "pattern">,
   paramSets: readonly unknown[],
+  options: { staticExport?: boolean } = {},
 ): Record<string, string | string[]>[] {
   const patternParams = getDynamicPatternParams(route.pattern);
   const objects = paramSets.map((value) => {
@@ -714,7 +716,17 @@ export function routeStaticParamSets(
     }
     return value;
   });
-  if (!objects.every((params) => patternParams.every(({ name }) => name in params))) return [];
+  const missingParamNames = patternParams
+    .filter(({ name }) => objects.some((params) => !(name in params)))
+    .map(({ name }) => name);
+  if (missingParamNames.length > 0) {
+    if (options.staticExport && objects.length > 0) {
+      throw new InvalidStaticParamsError(
+        `Page "${route.pattern}" returned incomplete params from "generateStaticParams()". With "output: export", every params object must include all dynamic route parameters. Missing: ${missingParamNames.map((name) => `"${name}"`).join(", ")}. See more info here: https://nextjs.org/docs/messages/generate-static-params`,
+      );
+    }
+    return [];
+  }
 
   const materializable: Record<string, string | string[]>[] = [];
   for (const value of objects) {
@@ -1479,7 +1491,11 @@ export async function prerenderApp({
             }
             // Check every final set, layout-only or composed with the page,
             // against the route before building its URL.
-            if (paramSets !== null) paramSets = routeStaticParamSets(route, paramSets);
+            if (paramSets !== null) {
+              paramSets = routeStaticParamSets(route, paramSets, {
+                staticExport: mode === "export",
+              });
+            }
           } else {
             const results = await generateStaticParamsFn({ params: {} });
             paramSets = Array.isArray(results) || results === null ? results : [];
