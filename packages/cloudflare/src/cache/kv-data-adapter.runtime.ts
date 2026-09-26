@@ -35,7 +35,7 @@ import {
 } from "vinext/shims/request-context";
 import { isUnknownRecord, readCacheControlNumberField } from "../utils/cache-control-metadata.js";
 import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
-import { createKvKeySpace, type KvKeySpace } from "./kv-key.js";
+import { createKvKeySpace, resolveKvExpirationTtlSeconds, type KvKeySpace } from "./kv-key.js";
 
 export { ENTRY_PREFIX } from "./kv-key.js";
 
@@ -107,8 +107,6 @@ const MAX_TAG_LENGTH = 256;
 
 /** The runtime rejects a lower `cacheTtl` with "Cache TTL must be at least 30". */
 const MIN_KV_CACHE_TTL_SECONDS = 30;
-/** KV rejects an `expirationTtl` below 60 seconds, and every entry sets one. */
-const MIN_KV_EXPIRATION_TTL_SECONDS = 60;
 
 /** Cloudflare caps a bulk `get()` at 100 keys per call. */
 const KV_BULK_GET_LIMIT = 100;
@@ -221,10 +219,7 @@ export class KVCacheHandler implements CacheHandler {
     this.kv = kvNamespace;
     this.keySpace = createKvKeySpace(options?.appPrefix);
     this.ctx = options?.ctx;
-    this.ttlSeconds = Math.max(
-      MIN_KV_EXPIRATION_TTL_SECONDS,
-      options?.ttlSeconds ?? 30 * 24 * 3600,
-    );
+    this.ttlSeconds = resolveKvExpirationTtlSeconds(options?.ttlSeconds);
     this._tagCacheTtl = options?.tagCacheTtlMs ?? 5_000;
     const entryCacheTtl = options?.entryCacheTtlSeconds;
     this._entryReadOptions =

@@ -759,6 +759,21 @@ describe("KVCacheHandler", () => {
       expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/));
     });
 
+    it.each([0, -5, Number.NaN, Number.POSITIVE_INFINITY])(
+      "falls back to the 30-day TTL for ttlSeconds %s, as deploy seeding does",
+      async (ttlSeconds) => {
+        await new KVCacheHandler(kv as any, { ttlSeconds }).set("invalid-ttl", {
+          kind: "FETCH",
+          data: { headers: {}, body: "{}", url: "" },
+          revalidate: false,
+        } as any);
+        expect(kv.put).toHaveBeenLastCalledWith("cache:invalid-ttl", expect.any(String), {
+          expirationTtl: 30 * 24 * 3600,
+          metadata: { tags: [] },
+        });
+      },
+    );
+
     it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
       const entryTime = 1000;
       const invalidatedTime = 2000;
