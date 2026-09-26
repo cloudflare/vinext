@@ -632,6 +632,58 @@ export async function resolveParentParams(
   return resolvedAnyParent ? currentParams : [];
 }
 
+type DynamicPatternParam = { name: string; optional: boolean; repeat: boolean };
+
+function getDynamicPatternParams(pattern: string): DynamicPatternParam[] {
+  return pattern
+    .split("/")
+    .filter((segment) => segment.startsWith(":"))
+    .map((segment) => ({
+      name: segment.slice(1, segment.endsWith("+") || segment.endsWith("*") ? -1 : undefined),
+      optional: segment.endsWith("*"),
+      repeat: segment.endsWith("+") || segment.endsWith("*"),
+    }));
+}
+
+export function validateDiscoveredParams(
+  value: unknown,
+  pattern: string,
+  source: "generateStaticParams" | "getStaticPaths",
+): Record<string, string | string[]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${source} must return parameter objects for ${pattern}.`);
+  }
+
+  const params = { ...(value as Record<string, unknown>) };
+  for (const { name, optional, repeat } of getDynamicPatternParams(pattern)) {
+    const hasValue = Object.prototype.hasOwnProperty.call(params, name);
+    let paramValue = params[name];
+    if (
+      optional &&
+      hasValue &&
+      (paramValue === null || paramValue === undefined || paramValue === false)
+    ) {
+      paramValue = [];
+      params[name] = paramValue;
+    }
+    const valid = repeat
+      ? Array.isArray(paramValue) && paramValue.every((entry) => typeof entry === "string")
+      : typeof paramValue === "string";
+    if (!valid) {
+      throw new Error(
+        `Parameter ${name} from ${source} for ${pattern} must be ${repeat ? "an array of strings" : "a string"}.`,
+      );
+    }
+    const values = Array.isArray(paramValue) ? paramValue : [paramValue];
+    if (values.some((entry) => entry === "." || entry === "..")) {
+      throw new Error(
+        `Parameter ${name} from ${source} for ${pattern} must not contain dot path segments.`,
+      );
+    }
+  }
+  return params as Record<string, string | string[]>;
+}
+
 /**
  * The param sets a route's layouts generate, standing in for the route's own
  * when none of the segments at its full pattern has generateStaticParams.
@@ -640,13 +692,20 @@ export async function resolveParentParams(
  * incomplete sets leave the route without static params (`null`).
  */
 export function layoutOnlyParamSets(
-  route: Pick<AppRoute, "params">,
+  route: Pick<AppRoute, "params" | "pattern">,
   parentParamSets: Record<string, string | string[]>[],
 ): Record<string, string | string[]>[] | null {
   const complete =
     parentParamSets.length > 0 &&
     parentParamSets.every((params) => route.params.every((name) => name in params));
-  return complete ? parentParamSets : null;
+  if (!complete) return null;
+  // Layout lookups are keyed by layout directory rather than URL pattern, so
+  // check the composed sets against the route's pattern, as Next.js validates
+  // the composed params against the route's pathname params
+  // (build/static-paths/app.ts validateParams).
+  return parentParamSets.map((params) =>
+    validateDiscoveredParams(params, route.pattern, "generateStaticParams"),
+  );
 }
 
 // ─── Pages Router Prerender ───────────────────────────────────────────────────

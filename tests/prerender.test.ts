@@ -2048,6 +2048,73 @@ describe("prerenderApp — layout generateStaticParams", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // Next.js validates the composed layout params against the route's pathname
+  // params (build/static-paths/app.ts validateParams), so a non-string value
+  // for a single dynamic segment is rejected rather than rendered.
+  it("rejects a layout-only param set whose values do not fit the route pattern", async () => {
+    const root = tmpDir("vinext-prerender-layout-gsp-invalid-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    fs.mkdirSync(path.join(appDir, "[id]", "details"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "[id]", "layout.tsx"),
+      [
+        "export function generateStaticParams() { return [{ id: ['a', 'b'] }]; }",
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n"),
+    );
+    fs.writeFileSync(
+      path.join(appDir, "[id]", "details", "page.tsx"),
+      "export default function Page() { return null; }\n",
+    );
+
+    const renderedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        res.setHeader("content-type", "application/json");
+        const pattern = url.searchParams.get("pattern");
+        res.end(JSON.stringify(pattern === "layouts:[id]" ? [{ id: ["a", "b"] }] : null));
+        return;
+      }
+      renderedPaths.push(url.pathname);
+      res.setHeader("content-type", "text/html");
+      res.end(
+        "<html><body>" +
+          runtimeRscChunkScript(`0:["$","div",null,{}]\n`) +
+          runtimeRscDoneScript() +
+          "</body></html>",
+      );
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode: "export",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({ output: "export" }),
+        _prodServer: { server, port },
+      });
+
+      expect(result.routes.find((route) => route.route === "/:id/details")).toMatchObject({
+        status: "error",
+        error: expect.stringContaining(
+          "Parameter id from generateStaticParams for /:id/details must be a string.",
+        ),
+      });
+      expect(renderedPaths.filter((pathname) => pathname.endsWith("/details"))).toEqual([]);
+      expect(fs.existsSync(path.join(outDir, "a%2Cb"))).toBe(false);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => {
