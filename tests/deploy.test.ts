@@ -668,7 +668,7 @@ describe("cf Build Output deployment", () => {
     expect(observed?.[2]).toMatchObject({ shell: false });
   });
 
-  it("deploys named Build Output Workers before the default Worker", async () => {
+  it("deploys only the default Worker even when named Build Output Workers exist", async () => {
     writeCfPackageForTest(tmpDir);
     const auxiliaryDir = path.join(
       tmpDir,
@@ -693,33 +693,21 @@ describe("cf Build Output deployment", () => {
       "https://app.example.workers.dev",
     );
 
-    expect(invocations).toHaveLength(3);
+    expect(invocations).toHaveLength(1);
     expect(invocations[0]?.[0]).toBe(process.execPath);
     const cfBin = fs.realpathSync(path.join(tmpDir, "node_modules", "cf", "bin", "cf"));
     expect(invocations.map(([, args]) => args)).toEqual([
-      [cfBin, "deploy", "--prebuilt", "--mode", "staging", "--worker", "a-service"],
-      [
-        cfBin,
-        "deploy",
-        "--prebuilt",
-        "--mode",
-        "staging",
-        "--worker",
-        "z-response-store-service-binding",
-      ],
       [cfBin, "deploy", "--prebuilt", "--mode", "staging"],
     ]);
     for (const [, , options] of invocations) {
       expect(options).toMatchObject({ cwd: tmpDir, shell: false });
     }
     expect(invocations.map(([, , options]) => options?.stdio)).toEqual([
-      "inherit",
-      "inherit",
       ["inherit", "pipe", "pipe"],
     ]);
   });
 
-  it("does not deploy the default Worker if a named Worker fails", async () => {
+  it("reports a failed default Worker deployment without deploying named Workers", async () => {
     writeCfPackageForTest(tmpDir);
     mkdir(tmpDir, ".cloudflare/output/v0/workers/response-store");
     const invocations: Parameters<typeof spawn>[] = [];
@@ -729,7 +717,7 @@ describe("cf Build Output deployment", () => {
     }) as typeof spawn;
 
     await expect(runCfDeploy(tmpDir, {}, execute)).rejects.toThrow(
-      "cf deploy failed for auxiliary Worker response-store with exit code 1",
+      "cf deploy failed with exit code 1",
     );
     expect(invocations).toHaveLength(1);
   });

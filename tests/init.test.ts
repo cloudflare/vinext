@@ -904,7 +904,7 @@ describe("init — basic functionality", () => {
 
   it("generates a typed Response Store auxiliary Worker without a separate deploy script", async () => {
     setupProject(tmpDir);
-    const { result } = await runInit(tmpDir, {
+    const { result, output } = await runInit(tmpDir, {
       install: false,
       cloudflare: {
         dataCache: "none",
@@ -920,6 +920,8 @@ describe("init — basic functionality", () => {
     );
     expect(readFile(tmpDir, "cloudflare.config.ts")).not.toMatch(/\bexports\b/);
     expect(readFile(tmpDir, "cloudflare.config.ts")).not.toContain("  bindings,");
+    expect(output).toContain("cf deploy --prebuilt --mode production --worker");
+    expect(output).toContain("vinext-cloudflare deploy only deploys the application Worker.");
     expect(readFile(tmpDir, "vite.config.ts")).toContain(
       "auxiliaryWorkers: [{ config: responseStoreServiceBinding }]",
     );

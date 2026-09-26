@@ -4451,7 +4451,7 @@ describe("createMultiStageChunkFileNames", () => {
     }
   }, 30_000);
 
-  it("applies stage isolation to every server output but not the App SSR renderer", async () => {
+  it("applies App stage isolation only to the RSC environment", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-stage-output-hooks-"));
     try {
@@ -4503,6 +4503,22 @@ describe("createMultiStageChunkFileNames", () => {
         }),
       ).toBeUndefined();
       expect(ssrEmit).not.toHaveBeenCalled();
+
+      const auxiliaryEmit = vi.fn();
+      const auxiliaryContext = {
+        emitFile: auxiliaryEmit,
+        environment: {
+          config: { build: { ssr: true }, consumer: "server" },
+          name: "response_store_service_binding",
+        },
+      };
+      await (outputPlugin as any).buildStart.call(auxiliaryContext);
+      expect(
+        await (outputPlugin as any).outputOptions.call(auxiliaryContext, {
+          chunkFileNames: "auxiliary/[name].js",
+        }),
+      ).toBeUndefined();
+      expect(auxiliaryEmit).not.toHaveBeenCalled();
 
       const customClientEmit = vi.fn();
       const customClientContext = {

@@ -204,11 +204,17 @@ deploy needs neither `wrangler.jsonc` nor the Wrangler package. If prerendered
 routes use the KV data adapter, the generated Worker config supplies the KV
 namespace ID for a `cf kv bulk update` upload.
 
-Named auxiliary Workers in Build Output are deployed with
-`cf deploy --prebuilt --mode <mode> --worker <name>` before the entry Worker,
-using the selected Vite build mode (`production` by default). The generated
-`cloudflare.config.ts` remains the source of truth; no auxiliary Wrangler config
-is required.
+`vinext-cloudflare deploy` only deploys the entry Worker. It never deploys named
+auxiliary Workers, including during staged warming or `--no-promote` uploads.
+Deploy a configured Response Store Worker explicitly after building, when first
+setting it up or when its code/config changes:
+
+```sh
+cf deploy --prebuilt --mode production --worker example-response-store
+```
+
+Use the mode and Worker name from your build. `cloudflare.config.ts` remains the
+source of truth; no auxiliary Wrangler config is required.
 
 Experimental staged CDN warming uses `cf` to upload a version, read deployment
 status, stage and promote traffic, and apply triggers. Typed-config projects do

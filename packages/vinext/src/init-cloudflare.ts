@@ -362,6 +362,13 @@ function setupExperimentalCfPlatform(
     nextSteps.push(
       `Create the Response Store R2 bucket if needed: cf r2 buckets create --name=${bucket}`,
     );
+    if (serviceBinding) {
+      nextSteps.push(
+        "After `cf build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
+        `   cf deploy --prebuilt --mode production --worker ${compactResourceName(projectInfo.projectName, "-response-store", 63)}`,
+        "vinext-cloudflare deploy only deploys the application Worker.",
+      );
+    }
   }
   nextSteps.push(
     'For TypeScript, add ".cloudflare/types" to the include list in tsconfig.json.',

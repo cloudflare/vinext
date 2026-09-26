@@ -1573,6 +1573,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // createBuilder().buildApp(), but it still bundles for the browser beside
     // the real `ssr` environment. Legacy `vite build --ssr` names its sole
     // environment `ssr`, so only server consumers ever own stage entries.
+    // In App Router builds only `rsc` owns the app's request/response stages;
+    // auxiliary Workers are also server environments but must keep their own entries.
     isServerEnvironment(environment) && (!hasAppDir || environment.name === "rsc");
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;

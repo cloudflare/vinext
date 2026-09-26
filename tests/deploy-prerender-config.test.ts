@@ -736,6 +736,71 @@ describe("deploy prerender config wiring", () => {
     }
   });
 
+  it.each([
+    { warmCdnCache: false, warmCdnPromote: true },
+    { warmCdnCache: false, warmCdnPromote: false },
+    { warmCdnCache: true, warmCdnPromote: true },
+  ])("never implicitly deploys auxiliary Workers with cf: %j", async (options) => {
+    writeApiOnlyProject();
+    fs.rmSync(path.join(tmpDir, "wrangler.jsonc"));
+    writeCfBuildOutputScaffolding();
+    writeFile(
+      ".cloudflare/output/v0/workers/default/worker.config.json",
+      JSON.stringify({
+        name: "test-worker",
+        env: { CF_VERSION_METADATA: { type: "version-metadata" } },
+      }),
+    );
+    writeFile(
+      ".cloudflare/output/v0/workers/response-store/worker.config.json",
+      JSON.stringify({ name: "response-store" }),
+    );
+    const originalExecute = vi.mocked(execFileSync).getMockImplementation()!;
+    vi.mocked(execFileSync).mockImplementation(((_file, args) => {
+      const cfArgs = args as string[];
+      if (cfArgs.includes("versions") && cfArgs.includes("create")) {
+        return JSON.stringify({
+          id: "22222222-2222-4222-8222-222222222222",
+          preview_url: "https://preview.example.workers.dev",
+        });
+      }
+      if (cfArgs.includes("list")) {
+        return JSON.stringify({
+          deployments: [
+            {
+              id: "active-deployment",
+              versions: [{ version_id: "11111111-1111-4111-8111-111111111111", percentage: 100 }],
+            },
+          ],
+        });
+      }
+      return "Deployed test-worker\n  https://app.example.workers.dev\n";
+    }) as typeof execFileSync);
+    try {
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+      await deploy({ root: tmpDir, skipBuild: true, ...options });
+
+      const directDeploy = !options.warmCdnCache && options.warmCdnPromote;
+      expect(spawn).toHaveBeenCalledTimes(directDeploy ? 1 : 0);
+      if (directDeploy) {
+        expect(vi.mocked(spawn).mock.calls[0]?.[1]).toEqual([
+          path.join(tmpDir, "node_modules/cf/bin/cf"),
+          "deploy",
+          "--prebuilt",
+          "--mode",
+          "production",
+        ]);
+      }
+      expect(
+        vi
+          .mocked(execFileSync)
+          .mock.calls.some(([, args]) => (args as string[]).includes("response-store")),
+      ).toBe(false);
+    } finally {
+      vi.mocked(execFileSync).mockImplementation(originalExecute);
+    }
+  });
+
   it("keeps production dotenv mode for legacy Wrangler environments", async () => {
     const envKey = "VINEXT_TEST_WRANGLER_BUILD_MODE";
     delete process.env[envKey];

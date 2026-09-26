@@ -883,65 +883,40 @@ export async function runCfDeploy(
   root: string,
   options: Pick<DeployOptions, "preview" | "env">,
   execute: typeof spawn = spawn,
-  worker?: string,
 ): Promise<string> {
   const { args, mode } = buildCfDeployArgs(options);
-  let url = "(URL not detected in cf output)";
-  for (const selected of worker ? [worker] : [...cfAuxiliaryWorkers(root), undefined]) {
-    console.log(
-      selected
-        ? `\n  Deploying auxiliary Build Output Worker: ${selected}...`
-        : mode
-          ? `\n  Deploying Build Output in mode: ${mode}...`
-          : "\n  Deploying Build Output...",
-    );
-
-    const child = execute(
-      process.execPath,
-      [resolveCfBin(root), ...args, ...(selected ? ["--worker", selected] : [])],
-      {
-        cwd: root,
-        stdio: selected ? "inherit" : ["inherit", "pipe", "pipe"],
-        shell: false,
-      },
-    );
-    let output = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => {
-      const text = chunk.toString();
-      output += text;
-      process.stdout.write(text);
+  console.log(
+    mode ? `\n  Deploying Build Output in mode: ${mode}...` : "\n  Deploying Build Output...",
+  );
+  const child = execute(process.execPath, [resolveCfBin(root), ...args], {
+    cwd: root,
+    stdio: ["inherit", "pipe", "pipe"],
+    shell: false,
+  });
+  let output = "";
+  child.stdout?.on("data", (chunk: Buffer | string) => {
+    const text = chunk.toString();
+    output += text;
+    process.stdout.write(text);
+  });
+  child.stderr?.on("data", (chunk: Buffer | string) => {
+    const text = chunk.toString();
+    output += text;
+    process.stderr.write(text);
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (code === 0) resolve();
+      else
+        reject(
+          new Error(
+            `cf deploy failed with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}.`,
+          ),
+        );
     });
-    child.stderr?.on("data", (chunk: Buffer | string) => {
-      const text = chunk.toString();
-      output += text;
-      process.stderr.write(text);
-    });
-    await new Promise<void>((resolve, reject) => {
-      child.once("error", reject);
-      child.once("close", (code, signal) => {
-        if (code === 0) resolve();
-        else
-          reject(
-            new Error(
-              `cf deploy failed${selected ? ` for auxiliary Worker ${selected}` : ""} with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}.`,
-            ),
-          );
-      });
-    });
-    if (!selected) url = parseWorkerDeploymentUrl(output) ?? url;
-  }
-  return url;
-}
-
-function cfAuxiliaryWorkers(root: string): string[] {
-  const workersDir = path.join(root, ".cloudflare", "output", "v0", "workers");
-  if (!fs.existsSync(workersDir)) return [];
-
-  return fs
-    .readdirSync(workersDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name !== "default")
-    .map((entry) => entry.name)
-    .sort();
+  });
+  return parseWorkerDeploymentUrl(output) ?? "(URL not detected in cf output)";
 }
 
 export function hasCdnWarmRequests(
@@ -2455,16 +2430,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
     }
   }
 
-  // Step 7: Deploy via wrangler
+  // Step 7: Deploy the entry Worker via the selected CLI.
   let url: string | undefined;
 
   if (shouldWarmCdnCache) {
     try {
-      if (deploymentTool === "cf") {
-        for (const worker of cfAuxiliaryWorkers(root)) {
-          await runCfDeploy(root, wranglerOptions, spawn, worker);
-        }
-      }
       url = await deployWithCdnWarmup(root, [], {
         ...wranglerOptions,
         allowEmptyWarmPlan: tprRoutes.length > 0 && !options.warmCdnCache,
@@ -2539,9 +2509,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
   if (url === undefined) {
     if (deploymentTool === "cf" && options.warmCdnPromote === false) {
-      for (const worker of cfAuxiliaryWorkers(root)) {
-        await runCfDeploy(root, wranglerOptions, spawn, worker);
-      }
       const upload = runCfVersionUpload(root, wranglerOptions);
       url = upload.previewUrl ?? "(Preview URL not detected in cf output)";
     } else if (deploymentTool === "cf") {
