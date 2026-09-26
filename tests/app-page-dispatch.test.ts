@@ -4971,6 +4971,7 @@ describe("query-free App page ISR entries", () => {
     search: string,
     overrides: CreateDispatchOptionsOverrides,
     executionContext: ExecutionContextLike = { waitUntil() {} },
+    onResponse?: () => void,
   ) {
     const waitUntilPromises: Promise<unknown>[] = [];
     Reflect.set(executionContext, "waitUntil", (promise: Promise<unknown>) => {
@@ -5000,6 +5001,7 @@ describe("query-free App page ISR entries", () => {
       }),
       () => runWithExecutionContext(executionContext, () => dispatchAppPage(options)),
     );
+    onResponse?.();
     const body = await response.text();
     await Promise.all(waitUntilPromises.splice(0));
     return { body, response };
@@ -5240,6 +5242,7 @@ describe("query-free App page ISR entries", () => {
         "/about",
         {
           cleanPathname: "/about",
+          generateStaticParams: null,
           params: {},
           route: createRoute({ pattern: "/about", routeSegments: ["about"] }),
         },
@@ -5254,24 +5257,57 @@ describe("query-free App page ISR entries", () => {
       ],
     ] as const;
 
-    const cacheLifePage = async () => {
-      cacheLife({ revalidate: 60 });
-      return suspenseSearchPayload();
-    };
+    // Page code runs while Flight renders, so this stand-in calls cacheLife()
+    // after the RSC stream's first chunk, once dispatch has returned the
+    // response's headers, in the render's request context.
+    function createDeferredCacheLifeRender() {
+      const events: string[] = [];
+      let resolveHeaders!: () => void;
+      const headersSent = new Promise<void>((resolve) => {
+        resolveHeaders = resolve;
+      });
+      const renderToReadableStream: DispatchOptions["renderToReadableStream"] = (payload) => {
+        ssrFlight.payload = payload;
+        events.push("stream");
+        return new ReadableStream({
+          async start(controller) {
+            const json = JSON.stringify(await serializeFlightValue(payload, new WeakSet()));
+            controller.enqueue(new TextEncoder().encode(json));
+            await headersSent;
+            cacheLife({ revalidate: 60 });
+            events.push("cacheLife");
+            controller.close();
+          },
+        });
+      };
+      return {
+        events,
+        onResponse: () => {
+          events.push("headers");
+          resolveHeaders();
+        },
+        overrides: {
+          buildPageElement: async () => suspenseSearchPayload(),
+          renderToReadableStream,
+        },
+      };
+    }
 
     for (const [label, pathname, routeOverrides] of routes) {
       it(`sends s-maxage=60 on a core HIT (${label})`, async () => {
         const { isrGet, isrSet } = createCache();
+        const render = createDeferredCacheLifeRender();
         const overrides = {
           ...routeOverrides,
-          buildPageElement: cacheLifePage,
+          ...render.overrides,
           isrGet,
           isrSet,
           loadSsrHandler: createProductionSsrHandler([]),
         };
         const request = () => new Request(`https://example.test${pathname}`);
 
-        await dispatchQuery("", { ...overrides, request: request() });
+        await dispatchQuery("", { ...overrides, request: request() }, undefined, render.onResponse);
+        expect(render.events).toEqual(["stream", "headers", "cacheLife"]);
         expect(
           Object.fromEntries(
             isrSet.mock.calls.map(([key, , policy]) => [key, policy.cacheControl.revalidate]),
@@ -5305,15 +5341,15 @@ describe("query-free App page ISR entries", () => {
               undefined,
               { applyCompletedResponsePolicy: true },
             );
+            const render = createDeferredCacheLifeRender();
             let navigationContext: ReturnType<DispatchOptions["getNavigationContext"]> = null;
             const { options } = createDispatchOptions({
               ...routeOverrides,
-              buildPageElement: cacheLifePage,
+              ...render.overrides,
               getNavigationContext: () => navigationContext,
               isProduction: true,
               isRscRequest,
               loadSsrHandler: createProductionSsrHandler([]),
-              renderToReadableStream: serializePayloadToStream,
               request,
               setNavigationContext(next) {
                 navigationContext = next;
@@ -5324,15 +5360,18 @@ describe("query-free App page ISR entries", () => {
                 executionContext: context,
                 headersContext: headersContextFromRequest(request),
               }),
-              async () =>
-                finalizeWorkerCacheabilityResponse(
-                  await runWithExecutionContext(context, () => dispatchAppPage(options)),
-                  context,
-                ),
+              async () => {
+                const dispatched = await runWithExecutionContext(context, () =>
+                  dispatchAppPage(options),
+                );
+                render.onResponse();
+                return finalizeWorkerCacheabilityResponse(dispatched, context);
+              },
             );
             await response.text();
 
             const representation = isRscRequest ? "RSC" : "HTML";
+            expect(render.events, representation).toEqual(["stream", "headers", "cacheLife"]);
             expect(response.headers.get("cache-control"), representation).toBe(
               "public, max-age=0, must-revalidate",
             );
