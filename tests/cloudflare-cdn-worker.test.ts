@@ -830,6 +830,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     }
 
     expect(digests.runtime![0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(digests.runtime![1]).toMatch(/^[0-9a-f]{64}$/);
     expect(digests.runtime![0]).not.toBe(digests.runtime![1]);
     expect(digests.static![0]).toMatch(/^[0-9a-f]{64}$/);
     expect(digests.static![0]).toBe(digests.static![1]);
