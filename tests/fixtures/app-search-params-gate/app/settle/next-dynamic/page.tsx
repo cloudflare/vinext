@@ -7,7 +7,7 @@ export default function Page() {
   return (
     <main>
       <RenderId />
-      <DynamicSearchValue />
+      <DynamicSearchValue hookReadEvent="next-dynamic-hook-read" />
     </main>
   );
 }

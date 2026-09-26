@@ -303,6 +303,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
   test("never stores an on-demand generateStaticParams path whose render reads cookies()", async () => {
     // The listed path renders statically and is stored.
     assert.equal((await cacheStatus("/generated-cookies/listed")).status, "MISS");
+    await waitForResponseEntries("/generated-cookies/listed", 1);
     assert.equal((await cacheStatus("/generated-cookies/listed")).status, "HIT");
     // An unlisted path that skips cookies() is stored too, so the bailout
     // below comes from the cookie read, not from the path being unlisted.
@@ -351,6 +352,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const pathname = "/cache-life";
     const requestedAt = Date.now();
     const first = await cacheStatus(pathname);
+    await waitForResponseEntries(pathname, 1);
     const hit = await request(pathname);
     const hitBody = await hit.text();
     const [entry, ...otherEntries] = await responseEntries(pathname);

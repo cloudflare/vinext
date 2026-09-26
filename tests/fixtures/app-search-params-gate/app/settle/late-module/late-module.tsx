@@ -1,5 +1,5 @@
 import { useSearchParams } from "next/navigation";
-import { recordRenderEvent } from "./render-events";
+import { recordRenderEvent } from "../../render-events";
 
 // No "use client": only the lazy loader imports this, so nothing preloads it.
 recordRenderEvent("module-evaluated");

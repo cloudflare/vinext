@@ -1,7 +1,7 @@
 "use client";
 
 import { lazy } from "react";
-import { recordRenderEvent } from "./render-events";
+import { recordRenderEvent } from "../../render-events";
 
 // Rendered before the boundary, so it marks when SSR has started rendering.
 export function RenderStarted() {

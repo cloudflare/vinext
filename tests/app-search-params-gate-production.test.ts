@@ -182,17 +182,28 @@ describe("useSearchParams() in production cache-candidate renders", () => {
     });
 
     it("loaded through React.lazy", async () => {
+      const events: string[] = [];
+      Reflect.set(globalThis, EVENTS_GLOBAL, events);
       await expectStoredFallback("/settle/lazy");
+      // The component still renders and reaches the hook, after it loads.
+      expect(events.slice(0, 2)).toEqual(["lazy-resolved", "lazy-hook-read"]);
     });
 
     it("loaded through next/dynamic", async () => {
+      const events: string[] = [];
+      Reflect.set(globalThis, EVENTS_GLOBAL, events);
       await expectStoredFallback("/settle/next-dynamic");
+      expect(events.slice(0, 2)).toEqual(["next-dynamic-resolved", "next-dynamic-hook-read"]);
     });
 
     it("suspended on a client fetch", async () => {
+      const events: string[] = [];
+      Reflect.set(globalThis, EVENTS_GLOBAL, events);
       await expectStoredFallback("/settle/client-fetch");
       // The miss's SSR fetched the data; the hit ran no code.
       expect(Reflect.get(globalThis, DATA_REQUESTS_GLOBAL)).toBe(1);
+      // The component still renders and reaches the hook, after its data resolves.
+      expect(events.slice(0, 2)).toEqual(["client-fetch-resolved", "client-fetch-hook-read"]);
     });
 
     it("renders the real query in a client page that reads searchParams under loading.tsx, and never stores it", async () => {
