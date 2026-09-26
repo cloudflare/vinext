@@ -743,6 +743,17 @@ describe("KVCacheHandler", () => {
         metadata: { tags: ["posts"] },
       });
 
+      // KV rejects an expirationTtl below 60 seconds.
+      await new KVCacheHandler(kv as any, { ttlSeconds: 30 }).set("short-ttl", {
+        kind: "FETCH",
+        data: { headers: {}, body: "{}", url: "" },
+        revalidate: false,
+      } as any);
+      expect(kv.put).toHaveBeenLastCalledWith("cache:short-ttl", expect.any(String), {
+        expirationTtl: 60,
+        metadata: { tags: [] },
+      });
+
       // A marker outlives entries written under any earlier ttlSeconds.
       await new KVCacheHandler(kv as any, { ttlSeconds: 60 }).revalidateTag("posts");
       expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/));
