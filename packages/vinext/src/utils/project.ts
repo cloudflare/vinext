@@ -75,6 +75,47 @@ export function renameCJSConfigs(root: string): Array<[string, string]> {
   return renamed;
 }
 
+/** Preserve the old CLI's ESM migration for projects with a legacy Vite config. */
+export function ensureViteConfigCompatibility(
+  root: string,
+): { renamed: Array<[string, string]>; addedTypeModule: boolean } | null {
+  const config = findViteConfigPath(root);
+  if (!config || !/\.(?:ts|js)$/.test(config)) return null;
+
+  const pkgPath = path.join(root, "package.json");
+  if (!fs.existsSync(pkgPath)) return null;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
+    if (pkg.type !== undefined) return null;
+    // A CommonJS vite.config.js is already valid; changing its package boundary breaks it.
+    if (
+      config.endsWith(".js") &&
+      /\b(?:module\.exports|require\s*\()/.test(fs.readFileSync(config, "utf-8"))
+    )
+      return null;
+
+    // Don't replace an existing .cjs file while preserving legacy CommonJS configs.
+    for (const fileName of CJS_CONFIG_FILES) {
+      const source = path.join(root, fileName);
+      const destination = path.join(root, fileName.replace(/\.js$/, ".cjs"));
+      if (
+        fs.existsSync(source) &&
+        fs.existsSync(destination) &&
+        /\bmodule\.exports\b|\brequire\s*\(/.test(fs.readFileSync(source, "utf-8"))
+      )
+        return null;
+    }
+
+    const renamed = renameCJSConfigs(root);
+    pkg.type = "module";
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+    return { renamed, addedTypeModule: true };
+  } catch {
+    // Let Vite report config or filesystem errors in its normal way.
+    return null;
+  }
+}
+
 // ─── Ancestor Directory Walking ──────────────────────────────────────────────
 
 /**

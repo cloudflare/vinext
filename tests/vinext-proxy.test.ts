@@ -67,6 +67,129 @@ describe("thin vinext command proxies", () => {
     expect(result.stderr).toContain(`migrate from \`vinext ${command}\` to \`vite ${command}\``);
   });
 
+  it.each(["build", "dev"] as const)(
+    "preloads legacy dotenv for static config imports during %s",
+    async (command) => {
+      const root = createRoot();
+      writeProject(root);
+      write(root, ".env.staging", "CONFIG_ONLY_VALUE=from-staging\n");
+      write(
+        root,
+        "config-env.ts",
+        `
+if (process.env.CONFIG_ONLY_VALUE !== "from-staging") {
+  throw new Error("missing config-time dotenv: " + process.env.CONFIG_ONLY_VALUE);
+}
+export const loaded = true;
+`,
+      );
+      write(
+        root,
+        "vite.config.ts",
+        `
+import "./config-env.ts";
+import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+export default { plugins: [vinext()] };
+`,
+      );
+
+      if (command === "build") {
+        const result = spawnSync(
+          process.execPath,
+          [CLI_PATH, command, "--mode", "staging", "--logLevel", "silent"],
+          { cwd: root, encoding: "utf-8" },
+        );
+        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+        expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
+      } else {
+        child = spawn(process.execPath, [CLI_PATH, command, "--mode", "staging", "--port", "0"], {
+          cwd: root,
+          stdio: "pipe",
+        });
+        const info = await waitFor(() => {
+          const current = readLockfile(getLockfilePath(root));
+          return current && current.port > 0 ? current : undefined;
+        });
+        const response = await fetch(info.appUrl);
+        expect(await response.text()).toContain("proxy");
+      }
+    },
+    120_000,
+  );
+
+  it("preserves the legacy ESM config migration before Vite loads a build config", () => {
+    const root = createRoot();
+    writeProject(root);
+    write(root, "package.json", '{"name":"legacy-project"}\n');
+    write(root, "postcss.config.js", "module.exports = { plugins: {} };\n");
+
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--logLevel", "silent"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"))).toMatchObject({
+      name: "legacy-project",
+      type: "module",
+    });
+    expect(fs.existsSync(path.join(root, "postcss.config.cjs"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "postcss.config.js"))).toBe(false);
+  }, 120_000);
+
+  it("respects an explicit CommonJS package boundary", () => {
+    const root = createRoot();
+    writeProject(root);
+    write(root, "package.json", '{"type":"commonjs"}\n');
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--logLevel", "silent"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8")).type).toBe(
+      "commonjs",
+    );
+  }, 120_000);
+
+  it("does not rewrite a CommonJS vite.config.js or its package boundary", () => {
+    const root = createRoot();
+    writeProject(root, "vite.config.js");
+    write(root, "package.json", '{"name":"commonjs-vite-config"}\n');
+    write(root, "vite.config.js", "module.exports = { plugins: [] };\n");
+
+    spawnSync(process.execPath, [CLI_PATH, "build", "--logLevel", "silent"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"))).toEqual({
+      name: "commonjs-vite-config",
+    });
+    expect(fs.readFileSync(path.join(root, "vite.config.js"), "utf-8")).toContain("module.exports");
+  }, 120_000);
+
+  it("does not overwrite existing .cjs configs during compatibility migration", () => {
+    const root = createRoot();
+    writeProject(root);
+    write(root, "package.json", '{"name":"config-collision"}\n');
+    write(root, "postcss.config.js", "module.exports = { plugins: {} };\n");
+    write(root, "postcss.config.cjs", "module.exports = { existing: true };\n");
+
+    spawnSync(process.execPath, [CLI_PATH, "build", "--logLevel", "silent"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+
+    expect(fs.readFileSync(path.join(root, "postcss.config.cjs"), "utf-8")).toContain(
+      "existing: true",
+    );
+    expect(fs.existsSync(path.join(root, "postcss.config.js"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8"))).toEqual({
+      name: "config-collision",
+    });
+  }, 120_000);
+
   it("fails configless commands with an actionable init error", () => {
     const root = createRoot();
     const result = spawnSync(process.execPath, [CLI_PATH, "build"], {

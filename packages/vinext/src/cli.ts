@@ -17,7 +17,11 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { detectPackageManager, findViteConfigPath } from "./utils/project.js";
+import {
+  detectPackageManager,
+  ensureViteConfigCompatibility,
+  findViteConfigPath,
+} from "./utils/project.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit } from "./init.js";
 import { resolveInitOptions } from "./init-platform.js";
@@ -25,7 +29,11 @@ import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
 import { parseArgs } from "./cli-args.js";
 import { generateRouteTypes } from "./typegen.js";
-import { findViteRoot, valueOptionName } from "./utils/vite-cli-invocation.js";
+import {
+  findViteRoot,
+  getViteCliInvocation,
+  valueOptionName,
+} from "./utils/vite-cli-invocation.js";
 
 const VERSION = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"))
   .version as string;
@@ -39,11 +47,11 @@ const rawArgs = process.argv.slice(3);
 
 type ViteCommand = "dev" | "build";
 
-function configPreflight(command: ViteCommand): string {
+function configPreflight(command: ViteCommand): { root: string; configPath?: string } {
   const cwd = process.cwd();
   const { root: positionalRoot, shouldPreflight } = findViteRoot(command, rawArgs);
   const root = positionalRoot ? path.resolve(cwd, positionalRoot) : cwd;
-  if (!shouldPreflight) return root;
+  if (!shouldPreflight) return { root };
 
   let explicitConfig: string | undefined;
   let explicitConfigCount = 0;
@@ -51,13 +59,13 @@ function configPreflight(command: ViteCommand): string {
     const arg = rawArgs[index];
     if (arg === "--") break;
     if (valueOptionName(arg) !== "--config" && valueOptionName(arg) !== "-c") continue;
-    if (++explicitConfigCount > 1) return root;
+    if (++explicitConfigCount > 1) return { root };
     explicitConfig = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : rawArgs[++index];
-    if (!explicitConfig || explicitConfig.startsWith("-")) return root;
+    if (!explicitConfig || explicitConfig.startsWith("-")) return { root };
   }
 
   const configPath = explicitConfig ? path.resolve(cwd, explicitConfig) : findViteConfigPath(root);
-  if (configPath && fs.existsSync(configPath)) return root;
+  if (configPath && fs.existsSync(configPath)) return { root, configPath };
 
   throw new Error(
     `[vinext] No Vite config was found for this project. Run \`vinext init\` to create one, then retry \`vinext ${command}\`.`,
@@ -94,9 +102,27 @@ function resolveProjectViteCli(root: string): string {
 
 async function proxyVite(command: ViteCommand): Promise<void> {
   console.warn(`[vinext] Tip: migrate from \`vinext ${command}\` to \`vite ${command}\`.`);
-  const root = configPreflight(command);
+  const { root, configPath } = configPreflight(command);
   const cliPath = resolveProjectViteCli(root);
   process.argv = [process.execPath, cliPath, command, ...rawArgs];
+  if (configPath) {
+    const invocation = getViteCliInvocation();
+    if (invocation) loadDotenv({ root, mode: invocation.mode });
+    if (configPath === findViteConfigPath(root)) {
+      const migrated = ensureViteConfigCompatibility(root);
+      if (migrated) {
+        for (const [oldName, newName] of migrated.renamed) {
+          console.warn(
+            `  [vinext] Renamed ${oldName} → ${newName} (required for "type": "module")`,
+          );
+        }
+        console.warn(
+          `  [vinext] Added "type": "module" to package.json (required for Vite ESM config loading).\n` +
+            "  Run `vinext init` to review all project configuration.",
+        );
+      }
+    }
+  }
   await import(/* @vite-ignore */ pathToFileURL(cliPath).href);
 }
 

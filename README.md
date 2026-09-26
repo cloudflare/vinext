@@ -131,9 +131,11 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 `vinext dev` and `vinext build` remain as thin aliases for the project-local Vite commands.
 They require a Vite config; if one is missing, run `vinext init`. Vite owns their options,
-output, and exit behavior.
-For an older configured project without `"type": "module"`, run `vinext init` once to
-migrate its package and CommonJS config files. The aliases no longer edit them at startup.
+output, and exit behavior. For older configured projects, the aliases still preload dotenv
+before Vite evaluates the config and add `"type": "module"` (renaming known CommonJS config
+files to `.cjs`) when an unambiguous default Vite config requires the ESM migration. An explicit
+`"type": "commonjs"` is never changed. Direct `vite dev` and `vite build` do not perform these
+wrapper compatibility steps.
 
 The old vinext-only build flags are configured on the plugin instead:
 
@@ -669,9 +671,11 @@ One caveat: modules whose JSX is lowered earlier in the pipeline are not memoize
 
 vinext automatically loads dotenv files for `dev`, `build`, `start`, and `deploy`.
 
-Vite evaluates all static config imports before plugin hooks, regardless of import order. Unlike
-the old CLI, the thin aliases cannot preload `.env` before config evaluation. For config-time
-values, use Vite's [`loadEnv(mode, process.cwd(), "")`](https://vite.dev/config/#using-environment-variables-in-config)
+Vite evaluates all static config imports before plugin hooks, regardless of import order.
+`vinext dev` and `vinext build` preload dotenv from the project root before handing off to Vite,
+preserving the old CLI's config-time behavior. Direct `vite dev` and `vite build` do not. For
+config-time values that work with either command, use Vite's
+[`loadEnv(mode, process.cwd(), "")`](https://vite.dev/config/#using-environment-variables-in-config)
 in a config factory and read its returned values rather than relying on `process.env` in a static
 import. The empty prefix includes server-only variables; use your custom `envDir` in place of
 `process.cwd()` if you have one.
@@ -688,6 +692,7 @@ Modes:
 
 - `vite dev` uses `development`
 - `vite build`, `vinext start`, and `@vinext/cloudflare deploy` use `production`
+- `vinext dev` and `vinext build` use the corresponding mode, including `--mode` overrides
 
 Variable expansion (`$VAR` / `${VAR}`) is supported.
 
