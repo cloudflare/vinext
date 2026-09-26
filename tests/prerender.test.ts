@@ -1974,6 +1974,82 @@ describe("prerender — generateStaticParams/getStaticPaths errors (#1982)", () 
   });
 });
 
+describe("prerenderApp — layout generateStaticParams", () => {
+  // Next.js walks every segment of a route's loader tree top-down, passing each
+  // parent param set to the next generateStaticParams, layouts included
+  // (build/static-paths/app.ts generateRouteStaticParams).
+  it("composes the last dynamic segment's layout with the layouts above it under output: 'export'", async () => {
+    const root = tmpDir("vinext-prerender-layout-gsp-");
+    const outDir = path.join(root, "out");
+    const appDir = path.join(root, "app");
+    const writeAppFile = (relativePath: string, content: string) => {
+      const filePath = path.join(appDir, relativePath);
+      fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, content);
+    };
+    const layout = (params: string) =>
+      [
+        `export function generateStaticParams() { return [${params}]; }`,
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n");
+    const page = "export default function Page() { return null; }\n";
+    writeAppFile("[lang]/layout.tsx", layout("{ lang: 'en' }"));
+    writeAppFile("[lang]/[category]/layout.tsx", layout("{ category: 'news' }"));
+    writeAppFile("[lang]/[category]/details/page.tsx", page);
+    writeAppFile("single/[topic]/layout.tsx", layout("{ topic: 'sport' }"));
+    writeAppFile("single/[topic]/details/page.tsx", page);
+
+    const staticParamsByKey: Record<string, unknown> = {
+      "layouts:[lang]": [{ lang: "en" }],
+      "layouts:[lang]/[category]": [{ category: "news" }],
+      "layouts:single/[topic]": [{ topic: "sport" }],
+    };
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(staticParamsByKey[url.searchParams.get("pattern") ?? ""] ?? null));
+        return;
+      }
+      res.setHeader("content-type", "text/html");
+      res.end(
+        "<html><body>" +
+          runtimeRscChunkScript(`0:["$","div",null,{}]\n`) +
+          runtimeRscDoneScript() +
+          "</body></html>",
+      );
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const result = await prerenderApp({
+        mode: "export",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({ output: "export" }),
+        _prodServer: { server, port },
+      });
+
+      expect(findRoute(result.routes, "/en/news/details")).toMatchObject({
+        route: "/:lang/:category/details",
+        status: "rendered",
+      });
+      expect(findRoute(result.routes, "/single/sport/details")).toMatchObject({
+        route: "/single/:topic/details",
+        status: "rendered",
+      });
+      expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => {
   async function prerenderDynamicRootParamRoute(
     cacheComponents: boolean,
@@ -2460,14 +2536,10 @@ describe("resolveParentParams", () => {
       { category: "layout" },
     ]);
     await expect(
-      resolveParentParams(
-        mockRoute("/:category/details", { layoutPrefixes: ["/:category"] }),
-        {
-          "/:category": async () => [],
-          "layouts:[category]": async () => [{ category: "layout" }],
-        },
-        { includeLastDynamicSegment: true },
-      ),
+      resolveParentParams(mockRoute("/:category/details", { layoutPrefixes: ["/:category"] }), {
+        "/:category": async () => [],
+        "layouts:[category]": async () => [{ category: "layout" }],
+      }),
     ).resolves.toEqual([{ category: "layout" }]);
   });
 
@@ -2523,15 +2595,54 @@ describe("resolveParentParams", () => {
     expect(result).toEqual([{ category: "electronics" }, { category: "clothing" }]);
   });
 
-  it("can include a provider for the last dynamic segment", async () => {
+  it("includes the last dynamic segment's layout when static segments follow it", async () => {
     const child = mockRoute("/:category/foo", { layoutPrefixes: ["/:category"] });
     const staticParamsMap: StaticParamsMap = {
       "layouts:[category]": async () => [{ category: "news" }],
     };
 
-    await expect(
-      resolveParentParams(child, staticParamsMap, { includeLastDynamicSegment: true }),
-    ).resolves.toEqual([{ category: "news" }]);
+    await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([
+      { category: "news" },
+    ]);
+  });
+
+  it("composes every layout above the route's own pattern top-down", async () => {
+    // Next.js walks every segment of the route's loader tree top-down, passing
+    // each parent param set to the next generateStaticParams, static segments
+    // included (build/static-paths/app.ts generateRouteStaticParams).
+    const child = mockRoute("/:lang/:category/details/more", {
+      layoutPrefixes: [
+        "/:lang",
+        "/:lang/:category",
+        "/:lang/:category/details",
+        "/:lang/:category/details/more",
+      ],
+    });
+    const calls: Record<string, Record<string, string | string[]>[]> = {};
+    const record =
+      (key: string, result: Record<string, string>[]) =>
+      async ({ params }: { params: Record<string, string | string[]> }) => {
+        (calls[key] ??= []).push(params);
+        return result;
+      };
+    const staticParamsMap: StaticParamsMap = {
+      "layouts:[lang]": record("lang", [{ lang: "en" }, { lang: "fr" }]),
+      "layouts:[lang]/[category]": record("category", [{ category: "news" }]),
+      "layouts:[lang]/[category]/details": record("details", [{ extra: "x" }]),
+      // The route's own layout composes with its page instead.
+      "layouts:[lang]/[category]/details/more": record("own", [{ own: "no" }]),
+    };
+
+    await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([
+      { lang: "en", category: "news", extra: "x" },
+      { lang: "fr", category: "news", extra: "x" },
+    ]);
+    expect(calls.category).toEqual([{ lang: "en" }, { lang: "fr" }]);
+    expect(calls.details).toEqual([
+      { lang: "en", category: "news" },
+      { lang: "fr", category: "news" },
+    ]);
+    expect(calls.own).toBeUndefined();
   });
 
   it("resolves two levels of parent dynamic segments", async () => {

@@ -433,6 +433,60 @@ describe("prerender path manifest", () => {
     expect(manifest?.routePatterns?.["/news/details"]?.cacheabilityProbe?.unlisted).toBeUndefined();
   });
 
+  it("composes the last dynamic segment's layout with the layouts above it", async () => {
+    // Next.js walks every segment of the route's loader tree top-down and
+    // passes each parent param set to the next generateStaticParams
+    // (build/static-paths/app.ts generateRouteStaticParams), so both layouts
+    // feed /[lang]/[category]/details even though its page has none.
+    writeFile("package.json", JSON.stringify({ type: "module" }));
+    writeFile("dist/server/BUILD_ID", "build-a\n");
+    writeFile("dist/server/RSC_BUILD_ID", "rsc-build-a\n");
+    writeFile("dist/server/index.js", "export default {};\n");
+    writeFile(
+      "app/[lang]/layout.tsx",
+      [
+        "export function generateStaticParams() { return [{ lang: 'en' }]; }",
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[lang]/[category]/layout.tsx",
+      [
+        "export function generateStaticParams() { return [{ category: 'news' }]; }",
+        "export default function Layout({ children }) { return children; }",
+      ].join("\n"),
+    );
+    writeFile(
+      "app/[lang]/[category]/details/page.tsx",
+      "export default function Page() { return null; }\n",
+    );
+    const categoryParentParams: unknown[] = [];
+    const defaultFetch = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const pattern = url.searchParams.get("pattern");
+      if (pattern === "layouts:[lang]") return Response.json([{ lang: "en" }]);
+      if (pattern === "layouts:[lang]/[category]") {
+        categoryParentParams.push(JSON.parse(url.searchParams.get("parentParams") ?? "{}"));
+        return Response.json([{ category: "news" }]);
+      }
+      return defaultFetch(input, init);
+    });
+
+    const { discoverPrerenderPathManifest } =
+      await import("../packages/vinext/src/build/prerender-paths.js");
+    const manifest = await discoverPrerenderPathManifest({
+      root: tmpDir,
+      responseVary: "verbatim",
+    });
+
+    expect(categoryParentParams).toEqual([{ lang: "en" }]);
+    expect(manifest?.paths).toContain("/en/news/details");
+    expect(
+      manifest?.routePatterns?.["/en/news/details"]?.cacheabilityProbe?.unlisted,
+    ).toBeUndefined();
+  });
+
   it.each([
     ["returns its own params", [{ slug: "sibling" }]],
     ["returns no params", []],

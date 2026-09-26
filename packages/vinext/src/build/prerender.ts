@@ -547,51 +547,32 @@ export type StaticParamsMap = Record<
 >;
 
 /**
- * Resolve parent dynamic segment params for a route.
+ * Resolve the params a route's layouts above its own pattern generate.
  * Handles top-down generateStaticParams resolution for nested dynamic routes.
  *
  * Uses the `staticParamsMap` (pattern → generateStaticParams) exported from
- * the production bundle. Each prefix reads only the route's own layouts there:
- * as in Next.js, which composes the segments of the route's own loader tree
- * (build/static-paths/app.ts), a page or a route group's layout at the same
- * prefix belongs to a sibling route and never supplies params.
+ * the production bundle. As in Next.js, which walks every segment of the
+ * route's own loader tree top-down and passes each parent param set to the
+ * next generateStaticParams (build/static-paths/app.ts
+ * generateRouteStaticParams), every layout of the route contributes, including
+ * one at the last dynamic segment when static segments follow it. The layouts
+ * at the route's full pattern compose with its page under
+ * `staticParamsMap[route.pattern]`, so they're left to the caller. A page or a
+ * route group's layout at the same prefix belongs to a sibling route and never
+ * supplies params.
  */
 export async function resolveParentParams(
   childRoute: AppRoute,
   staticParamsMap: StaticParamsMap,
-  options: { includeLastDynamicSegment?: boolean } = {},
 ): Promise<Record<string, string | string[]>[]> {
-  const { patternParts } = childRoute;
-
-  // The last dynamic segment belongs to the child route itself — its params
-  // are resolved by the child's own generateStaticParams. We only collect
-  // params from earlier (parent) dynamic segments.
-  let lastDynamicIdx = -1;
-  for (let i = patternParts.length - 1; i >= 0; i--) {
-    if (patternParts[i].startsWith(":")) {
-      lastDynamicIdx = i;
-      break;
-    }
-  }
-
   type GenerateStaticParamsFn = (opts: {
     params: Record<string, string | string[]>;
   }) => Promise<unknown>;
 
   const parentSegments: GenerateStaticParamsFn[] = [];
-  const layoutKeys = new Map(
-    appRouteLayoutStaticParamsGroups(childRoute).map((group) => [group.pattern, group.key]),
-  );
-
-  let prefixPattern = "";
-  const prefixEnd = options.includeLastDynamicSegment ? lastDynamicIdx + 1 : lastDynamicIdx;
-  for (let i = 0; i < prefixEnd; i++) {
-    const part = patternParts[i];
-    prefixPattern += "/" + part;
-    if (!part.startsWith(":")) continue;
-
-    const layoutKey = layoutKeys.get(prefixPattern);
-    const fn = layoutKey === undefined ? undefined : staticParamsMap[layoutKey];
+  for (const group of appRouteLayoutStaticParamsGroups(childRoute)) {
+    if (group.pattern === childRoute.pattern) continue;
+    const fn = staticParamsMap[group.key];
     if (typeof fn === "function") {
       parentSegments.push(fn);
     }
@@ -626,6 +607,23 @@ export async function resolveParentParams(
   }
 
   return resolvedAnyParent ? currentParams : [];
+}
+
+/**
+ * The param sets a route's layouts generate, standing in for the route's own
+ * when none of the segments at its full pattern has generateStaticParams.
+ * Next.js prerenders none of a route's paths unless every set fills every
+ * pathname param (build/static-paths/app.ts hadAllParamsGenerated), so
+ * incomplete sets leave the route without static params (`null`).
+ */
+export function layoutOnlyParamSets(
+  route: Pick<AppRoute, "params">,
+  parentParamSets: Record<string, string | string[]>[],
+): Record<string, string | string[]>[] | null {
+  const complete =
+    parentParamSets.length > 0 &&
+    parentParamSets.every((params) => route.params.every((name) => name in params));
+  return complete ? parentParamSets : null;
 }
 
 // ─── Pages Router Prerender ───────────────────────────────────────────────────
@@ -1342,9 +1340,10 @@ export async function prerenderApp({
             paramSets = [];
             for (const parentParams of parentParamSets) {
               const childResults = await generateStaticParamsFn({ params: parentParams });
-              // null means route has no generateStaticParams (CF Workers Proxy case)
+              // null means the route's own segments have no generateStaticParams
+              // (CF Workers Proxy case), so its layouts' params stand alone.
               if (childResults === null) {
-                paramSets = null;
+                paramSets = layoutOnlyParamSets(route, parentParamSets);
                 break;
               }
               if (Array.isArray(childResults)) {

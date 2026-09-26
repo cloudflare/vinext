@@ -29,7 +29,12 @@ import {
   extractMiddlewareMatcherConfig,
   hasRuntimeExportedName,
 } from "./report.js";
-import { buildUrlFromParams, resolveParentParams, type StaticParamsMap } from "./prerender.js";
+import {
+  buildUrlFromParams,
+  layoutOnlyParamSets,
+  resolveParentParams,
+  type StaticParamsMap,
+} from "./prerender.js";
 import { readPrerenderSecret } from "./server-manifest.js";
 import { startProdServer } from "../server/prod-server.js";
 import { loadMdxEsmReader } from "../utils/mdx-scan.js";
@@ -982,7 +987,9 @@ async function collectAppPaths(options: {
         for (const parentParams of parentParamSets) {
           const childResults = await generateStaticParams({ params: parentParams });
           if (childResults === null) {
-            paramSets = null;
+            // The route's own segments have no generateStaticParams, so its
+            // layouts' params stand alone.
+            paramSets = layoutOnlyParamSets(route, parentParamSets);
             break;
           }
           if (Array.isArray(childResults)) {
@@ -993,14 +1000,7 @@ async function collectAppPaths(options: {
         }
       } else {
         const results = await generateStaticParams({ params: {} });
-        if (results === null) {
-          const layoutParamSets = await resolveParentParams(route, staticParamsMap, {
-            includeLastDynamicSegment: true,
-          });
-          paramSets = layoutParamSets.length > 0 ? layoutParamSets : null;
-        } else {
-          paramSets = Array.isArray(results) ? results : [];
-        }
+        paramSets = results === null ? null : Array.isArray(results) ? results : [];
       }
 
       if (!paramSets?.length) {
