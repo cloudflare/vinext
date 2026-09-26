@@ -1,0 +1,29 @@
+apps/web/package.json
+  s_5b89f907d88418::t_3b8326e66bfdbf 7-8
+tests/init.test.ts
+  s_ed33f3f496fc80::t_c943dbe11135b1 952
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "059380b3af2e0eaca33b355511897efdd584c16b",
+  "prompts": {},
+  "sessions": {
+    "s_5b89f907d88418": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c383-5c6f-7ae3-bcd1-5d165c69d5bb",
+        "model": "gpt-6-sol"
+      },
+      "human_author": "James <james@eli.cx>"
+    },
+    "s_ed33f3f496fc80": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83514f25-1087-4971-87df-c0eb2cf6c17d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "James <james@eli.cx>"
+    }
+  }
+}
