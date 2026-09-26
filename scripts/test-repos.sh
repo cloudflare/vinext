@@ -118,10 +118,10 @@ test_repo() {
   echo ""
   echo "--- build ---"
   sed -i '' 's/^build=.*/build=fail/' "$result_file"
-  if npm run build 2>&1; then
+  if ./node_modules/.bin/vite build 2>&1; then
     sed -i '' 's/^build=.*/build=pass/' "$result_file"
   else
-    echo "FAILED: npm run build"
+    echo "FAILED: vite build"
     # Don't return — still try dev server
   fi
 

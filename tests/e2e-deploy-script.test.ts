@@ -12,6 +12,7 @@ describe("Next.js deploy harness", () => {
     expect(workflow.indexOf(initCommand)).toBeGreaterThan(workflow.indexOf("Install vinext"));
     expect(workflow.indexOf(initCommand)).toBeLessThan(workflow.indexOf("vite build"));
     expect(script.indexOf(initCommand)).toBeGreaterThan(script.indexOf("npm install vinext"));
+    expect(script.slice(script.indexOf(initCommand))).toContain("./node_modules/.bin/vite build");
     expect(script.indexOf(initCommand)).toBeLessThan(script.indexOf("npx vite dev"));
     expect(workflow.slice(workflow.indexOf(initCommand))).toMatch(
       /vinext init[^\n]+--no-install\n\s+npm install --legacy-peer-deps/,
