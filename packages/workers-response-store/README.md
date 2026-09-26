@@ -125,8 +125,9 @@ export default {
 
     // Cache identity is the key's pathname + query string. Use a canonical GET
     // request with only information that is safe to share between visitors.
-    // Leave out query parameters the response doesn't depend on, so requests
-    // that differ only in them share one entry.
+    // This minimal sample keeps the full query, so every query variant gets its
+    // own entry. Leave out query parameters the response doesn't depend on, so
+    // requests that differ only in them share one entry.
     const cacheRequest = new Request(request.url);
     const cached = await responseStore.fetch(cacheRequest);
     if (!isResponseStoreMiss(cached)) {
