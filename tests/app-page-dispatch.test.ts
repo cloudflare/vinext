@@ -1,6 +1,5 @@
 import React from "react";
-import { renderToReadableStream as renderToHtmlStream } from "react-dom/server.edge";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import {
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
@@ -71,23 +70,40 @@ import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
-import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
 import {
   createWorkerCacheabilityAdmissionContext,
   finalizeWorkerCacheabilityResponse,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import {
-  setNavigationContext,
   useSearchParams,
   type NavigationContext,
 } from "../packages/vinext/src/shims/navigation.js";
-import { runWithNavigationContext } from "../packages/vinext/src/shims/navigation-state.js";
 import { cacheLife } from "../packages/vinext/src/shims/cache.js";
 import {
   DefaultCdnCacheAdapter,
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+
+// handleSsr's build-time modules. The stand-in Flight client hands SSR the
+// payload the stand-in Flight render last serialized, once it has read the
+// stream's first chunk, and keeps draining the rest.
+const ssrFlight = vi.hoisted(() => ({ payload: undefined as unknown }));
+vi.mock("virtual:vite-rsc/client-references", () => ({ default: {} }));
+vi.mock("virtual:vinext-pages-client-assets", () => ({ default: {} }));
+vi.mock("@vitejs/plugin-rsc/ssr", () => ({
+  async createFromReadableStream(stream: ReadableStream<Uint8Array>) {
+    const payload = ssrFlight.payload;
+    const reader = stream.getReader();
+    await reader.read();
+    void (async () => {
+      while (!(await reader.read()).done) {
+        // drain
+      }
+    })();
+    return payload;
+  },
+}));
 
 type TestRoute = {
   __buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
@@ -4826,11 +4842,31 @@ describe("app page dispatch", () => {
   });
 });
 
-// The plan's canary and classification tests at the dispatch level: SSR runs
-// through React DOM with the candidate useSearchParams() gate, as handleSsr
-// does, and a stand-in Flight render serializes the whole page payload, so a
-// query that reached either output shows in the stored bytes.
+// The plan's canary and classification tests at the dispatch level. SSR runs
+// through the production handleSsr, candidate useSearchParams() gate included.
+// A stand-in Flight render serializes the whole page payload, awaiting every
+// thenable as Flight does, so a query that reached either output shows in the
+// stored bytes. The stand-in Flight client hands SSR the payload it rendered.
 describe("query-free App page ISR entries", () => {
+  const ROUTE_ID = "route:/posts/[slug]";
+  let productionHandleSsr: typeof import("../packages/vinext/src/server/app-ssr-entry.js").handleSsr;
+
+  beforeAll(async () => {
+    // handleSsr reads plugin-rsc's build-time `import.meta.viteRsc`, which
+    // only the RSC plugin's transform provides. Vitest's import.meta is a
+    // plain object, so give it an empty bootstrap for this block.
+    Object.defineProperty(Object.prototype, "viteRsc", {
+      configurable: true,
+      value: { loadBootstrapScriptContent: async () => "" },
+    });
+    ({ handleSsr: productionHandleSsr } =
+      await import("../packages/vinext/src/server/app-ssr-entry.js"));
+  });
+
+  afterAll(() => {
+    Reflect.deleteProperty(Object.prototype, "viteRsc");
+  });
+
   function SearchValue(): React.ReactNode {
     return React.createElement("p", null, `search:${useSearchParams().toString()}`);
   }
@@ -4848,47 +4884,72 @@ describe("query-free App page ISR entries", () => {
     );
   }
 
-  function serializePayloadToStream(payload: unknown): ReadableStream<Uint8Array> {
-    const seen = new WeakSet<object>();
-    const json = JSON.stringify(payload, (_key, value: unknown) => {
-      if (typeof value === "function") return `fn:${value.name}`;
-      if (typeof value === "symbol" || typeof value === "bigint") return String(value);
-      if (value === null || typeof value !== "object") return value;
-      if (seen.has(value)) return "[seen]";
-      seen.add(value);
-      if (React.isValidElement(value)) return { props: value.props, type: value.type };
-      if (isPromiseLike(value)) return "thenable";
-      return value;
+  function suspenseSearchPayload(): Readonly<Record<string, React.ReactNode>> {
+    return toDispatchElementRecord({
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [],
+        rootLayoutTreePath: null,
+        routeId: ROUTE_ID,
+      }),
+      [ROUTE_ID]: suspenseSearchPage(),
     });
-    return createStream([json ?? ""]);
   }
 
-  // Mirrors handleSsr: a candidate render gates useSearchParams() until SSR
-  // has read the whole Flight response, and the side stream captures the RSC
-  // bytes an HTML miss stores under `rsc:`.
-  function createGatedSsrHandler(
+  // Flight awaits a promise and sends its value, so a thenable's resolved
+  // value and its own enumerable properties are both serialized.
+  async function serializeFlightValue(value: unknown, seen: WeakSet<object>): Promise<unknown> {
+    if (typeof value === "function") return `fn:${value.name}`;
+    if (typeof value === "symbol" || typeof value === "bigint") return String(value);
+    if (value === null || typeof value !== "object") return value;
+    if (seen.has(value)) return "[seen]";
+    seen.add(value);
+    if (React.isValidElement(value)) {
+      return {
+        props: await serializeFlightValue(value.props, seen),
+        type: await serializeFlightValue(value.type, seen),
+      };
+    }
+    if (Array.isArray(value)) {
+      return Promise.all(value.map((item) => serializeFlightValue(item, seen)));
+    }
+    const record = Object.fromEntries(
+      await Promise.all(
+        Object.keys(value).map(async (key) => [
+          key,
+          await serializeFlightValue(Reflect.get(value, key), seen),
+        ]),
+      ),
+    );
+    if (isPromiseLike(value)) {
+      return { resolved: await serializeFlightValue(await value, seen), thenable: record };
+    }
+    return record;
+  }
+
+  function serializePayloadToStream(payload: unknown): ReadableStream<Uint8Array> {
+    ssrFlight.payload = payload;
+    return new ReadableStream({
+      async start(controller) {
+        const json = JSON.stringify(await serializeFlightValue(payload, new WeakSet()));
+        controller.enqueue(new TextEncoder().encode(json));
+        controller.close();
+      },
+    });
+  }
+
+  function createProductionSsrHandler(
     renders: (boolean | undefined)[],
-    tree: () => React.ReactNode = suspenseSearchPage,
   ): DispatchOptions["loadSsrHandler"] {
     return async () => ({
-      handleSsr(rscStream, navigationContext, _fontData, ssrOptions) {
-        return runWithNavigationContext(async () => {
-          renders.push(ssrOptions?.isCacheCandidate);
-          const gate =
-            ssrOptions?.isCacheCandidate === true ? startCandidateSearchParamsGate() : null;
-          if (ssrOptions?.sideStream) {
-            const captured = new Response(ssrOptions.sideStream).arrayBuffer();
-            if (ssrOptions.capturedRscDataRef) ssrOptions.capturedRscDataRef.value = captured;
-          }
-          void new Response(gate ? gate.settleWhenConsumed(rscStream) : rscStream).text();
-          setNavigationContext({
-            ...(navigationContext as NavigationContext),
-            searchParamsGate: gate?.gate,
-          });
-          const htmlStream = await renderToHtmlStream(tree(), { onError() {} });
-          await htmlStream.allReady;
-          return htmlStream;
-        });
+      handleSsr(rscStream, navigationContext, fontData, ssrOptions) {
+        renders.push(ssrOptions?.isCacheCandidate);
+        return productionHandleSsr(
+          rscStream,
+          navigationContext as NavigationContext,
+          { ...fontData, preloads: [...fontData.preloads] },
+          ssrOptions,
+        );
       },
     });
   }
@@ -4917,7 +4978,7 @@ describe("query-free App page ISR entries", () => {
     });
     let navigationContext: ReturnType<DispatchOptions["getNavigationContext"]> = null;
     const { options } = createDispatchOptions({
-      buildPageElement: async () => suspenseSearchPage(),
+      buildPageElement: async () => suspenseSearchPayload(),
       getNavigationContext: () => navigationContext,
       isProduction: true,
       renderToReadableStream: serializePayloadToStream,
@@ -4957,13 +5018,13 @@ describe("query-free App page ISR entries", () => {
     const canary = crypto.randomUUID();
     const { cache, isrGet, isrSet } = createCache();
     const renders: (boolean | undefined)[] = [];
-    const overrides = { isrGet, isrSet, loadSsrHandler: createGatedSsrHandler(renders) };
+    const overrides = { isrGet, isrSet, loadSsrHandler: createProductionSsrHandler(renders) };
 
     const miss = await dispatchQuery(`?canary=${canary}`, overrides);
 
     expect(renders).toEqual([true]);
     expect(miss.response.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(miss.body).toContain("search-fallback");
+    expect(miss.body).toContain("<p>search-fallback</p>");
     expect(miss.body).not.toContain(canary);
     expect([...cache.keys()].sort()).toEqual(["html:/posts/hello", "rsc:/posts/hello"]);
     expectEntryFreeOf(cache.get("html:/posts/hello"), canary);
@@ -5015,13 +5076,13 @@ describe("query-free App page ISR entries", () => {
       const { body, response } = await dispatchQuery("?q=secret", {
         isrGet,
         isrSet,
-        loadSsrHandler: createGatedSsrHandler(renders),
+        loadSsrHandler: createProductionSsrHandler(renders),
         revalidateSeconds,
         route: createRoute({ isDynamic: true, params: ["slug"] }),
       });
 
       expect(body).toContain("search:q=secret");
-      expect(body).not.toContain("search-fallback");
+      expect(body).not.toContain("<p>search-fallback</p>");
       expect(response.headers.get("cache-control")).toBe(
         "private, no-cache, no-store, max-age=0, must-revalidate",
       );
@@ -5128,9 +5189,9 @@ describe("query-free App page ISR entries", () => {
         {
           async buildPageElement(_route, _params, _opts, searchParams) {
             pageQueries.push(searchParams.get("q"));
-            return suspenseSearchPage();
+            return suspenseSearchPayload();
           },
-          loadSsrHandler: createGatedSsrHandler(renders),
+          loadSsrHandler: createProductionSsrHandler(renders),
           revalidateSeconds: 60,
         },
         context,
@@ -5150,7 +5211,7 @@ describe("query-free App page ISR entries", () => {
       generateStaticParams: async () => [],
       isrGet,
       isrSet,
-      loadSsrHandler: createGatedSsrHandler([]),
+      loadSsrHandler: createProductionSsrHandler([]),
       route: createRoute({ isDynamic: true, params: ["slug"] }),
     });
 
@@ -5180,7 +5241,7 @@ describe("query-free App page ISR entries", () => {
 
     const cacheLifePage = async () => {
       cacheLife({ revalidate: 60 });
-      return suspenseSearchPage();
+      return suspenseSearchPayload();
     };
 
     for (const [label, routeOverrides] of routes) {
@@ -5191,7 +5252,7 @@ describe("query-free App page ISR entries", () => {
           buildPageElement: cacheLifePage,
           isrGet,
           isrSet,
-          loadSsrHandler: createGatedSsrHandler([]),
+          loadSsrHandler: createProductionSsrHandler([]),
         };
 
         await dispatchQuery("", overrides);
@@ -5233,7 +5294,7 @@ describe("query-free App page ISR entries", () => {
               buildPageElement: cacheLifePage,
               isProduction: true,
               isRscRequest,
-              loadSsrHandler: createGatedSsrHandler([]),
+              loadSsrHandler: createProductionSsrHandler([]),
               renderToReadableStream: serializePayloadToStream,
               request,
             });
