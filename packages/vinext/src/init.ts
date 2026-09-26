@@ -256,7 +256,7 @@ export function getInitDependencyGroups(
     if (cloudflare?.experimentalCf) {
       devDependencies[0] = "vite@8.3.0";
       // V2 SHA prereleases are not chronological semver versions; follow the beta tag.
-      devDependencies.push("@cloudflare/vite-plugin@beta", "cf@^1.0.0-0");
+      devDependencies.push("@cloudflare/vite-plugin@beta", "cf@latest");
     } else {
       devDependencies.push("@cloudflare/vite-plugin", "wrangler");
     }

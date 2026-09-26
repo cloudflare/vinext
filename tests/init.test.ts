@@ -898,7 +898,7 @@ describe("init — basic functionality", () => {
         devDependencies: Record<string, string>;
         scripts: Record<string, string>;
       };
-      expect(pkg.devDependencies.cf).toBe("^1.0.0-0");
+      expect(pkg.devDependencies.cf).toBe("latest");
       expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe("beta");
       expect(pkg.devDependencies.vite).toBe("8.3.0");
       expect(pkg.devDependencies.wrangler).toBeUndefined();
@@ -1292,7 +1292,7 @@ describe("init — CJS config renaming", () => {
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 describe("init — dependency installation", () => {
-  it("installs the current cf release ranges as quoted package-manager arguments", async () => {
+  it("installs the current cf release tags as quoted package-manager arguments", async () => {
     setupProject(tmpDir);
     const { execCalls } = await runInit(tmpDir, {
       cloudflare: {
@@ -1304,8 +1304,7 @@ describe("init — dependency installation", () => {
     });
     const install = execCalls.find(({ cmd }) => cmd.includes("@cloudflare/vite-plugin@"));
     expect(install?.cmd).toContain('"@cloudflare/vite-plugin@beta"');
-    // cmd.exe treats an unquoted caret as an escape character.
-    expect(install?.cmd).toContain('"cf@^1.0.0-0"');
+    expect(install?.cmd).toContain('"cf@latest"');
   });
 
   it("prints dependencies as a dashed list", async () => {

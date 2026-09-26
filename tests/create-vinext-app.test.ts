@@ -465,7 +465,7 @@ describe("create-vinext-app CLI", () => {
       });
       expect(pkg.devDependencies).toMatchObject({
         "@cloudflare/vite-plugin": "beta",
-        cf: "^1.0.0-0",
+        cf: "latest",
         vite: "8.3.0",
       });
       expect(pkg.devDependencies).not.toHaveProperty("wrangler");
