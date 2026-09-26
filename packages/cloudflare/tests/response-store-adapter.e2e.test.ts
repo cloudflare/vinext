@@ -65,7 +65,9 @@ async function metadataEntries(): Promise<unknown[][]> {
 }
 
 type StoredResponseEntry = {
+  activeRevision?: unknown;
   freshUntil?: unknown;
+  objectKey?: unknown;
   responseHeaders?: unknown;
   revalidator?: { id?: unknown };
 };
@@ -78,15 +80,33 @@ async function responseEntries(pathname: string): Promise<StoredResponseEntry[]>
   );
 }
 
+// Whether the R2 body backing each entry holds the entry's active revision.
+// The store publishes metadata before it uploads the body, and reads MISS
+// until the upload lands.
+async function bodiesStored(entries: StoredResponseEntry[]): Promise<boolean> {
+  const bucket = await miniflare.getR2Bucket("CACHE_BODIES", "cache");
+  const stored = await Promise.all(
+    entries.map(async (entry) => {
+      assert.equal(typeof entry.objectKey, "string", JSON.stringify(entry));
+      const object = await bucket.head(entry.objectKey as string);
+      return object?.customMetadata?.latestRevision === String(entry.activeRevision);
+    }),
+  );
+  return stored.every(Boolean);
+}
+
 // Writes run in waitUntil after the response returns, so poll for them, then
-// fail unless exactly `count` entries were published.
+// fail unless exactly `count` entries were published and each body is readable.
 async function waitForResponseEntries(pathname: string, count: number): Promise<void> {
   let entries = await responseEntries(pathname);
-  for (let attempt = 0; attempt < 50 && entries.length < count; attempt++) {
+  let stored = entries.length >= count && (await bodiesStored(entries));
+  for (let attempt = 0; attempt < 50 && !stored; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 50));
     entries = await responseEntries(pathname);
+    stored = entries.length >= count && (await bodiesStored(entries));
   }
   assert.equal(entries.length, count, JSON.stringify(entries));
+  assert.ok(stored, `R2 bodies not stored for ${JSON.stringify(entries)}`);
 }
 
 beforeEach(async () => {
