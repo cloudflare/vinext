@@ -2,268 +2,168 @@ import path, { toSlash } from "pathslash";
 import type { InlineConfig } from "vite";
 import { findViteConfigPath } from "./project.js";
 
-type ViteCliCommand = "dev" | "build";
-
-export type ViteCliInvocation = {
-  command: ViteCliCommand;
+type Command = "dev" | "build";
+type Invocation = {
+  command: Command;
   mode: string;
   root: string;
   rootArg?: string;
   configFile?: string;
 };
 
-let buildInvocationClaimed = false;
+let buildClaimed = false;
 
-const SHORT_OPTIONS = new Set(["c", "d", "f", "h", "l", "m", "v", "w"]);
-
-const REQUIRED_VALUE_OPTIONS = new Set([
-  "--assetsDir",
-  "--assetsInlineLimit",
-  "--config",
-  "--configLoader",
-  "--filter",
-  "--logLevel",
-  "--mode",
-  "--outDir",
-  "--port",
-  "--target",
-  "-c",
-  "-f",
-  "-l",
-  "-m",
-]);
-const OPTIONAL_VALUE_OPTIONS = new Set([
-  "--base",
-  "--debug",
-  "--host",
-  "--manifest",
-  "--minify",
-  "--open",
-  "--profile",
-  "--sourcemap",
-  "--ssr",
-  "--ssrManifest",
-  "-d",
-]);
-const BOOLEAN_OPTIONS = new Set([
-  "--app",
-  "--clearScreen",
-  "--cors",
-  "--emptyOutDir",
-  "--experimentalBundle",
-  "--force",
-  "--strictPort",
-  "--watch",
-  "-w",
-]);
-const VALUELESS_OPTIONS = new Set(["--help", "-h", "--version", "-v"]);
-const COMMAND_ONLY_OPTIONS: Record<ViteCliCommand, Set<string>> = {
-  dev: new Set([
-    "--host",
-    "--port",
-    "--open",
-    "--cors",
-    "--strictPort",
-    "--force",
-    "--experimentalBundle",
-  ]),
-  build: new Set([
-    "--target",
-    "--outDir",
-    "--assetsDir",
-    "--assetsInlineLimit",
-    "--ssr",
-    "--sourcemap",
-    "--minify",
-    "--manifest",
-    "--ssrManifest",
-    "--emptyOutDir",
-    "--watch",
-    "-w",
-    "--app",
-  ]),
-};
-
-function optionName(arg: string): string {
-  const equalsIndex = arg.indexOf("=");
-  return equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
-}
-
-function clusteredShortOptions(arg: string): string[] | undefined {
-  const name = optionName(arg);
-  if (!name.startsWith("-") || name.startsWith("--") || name.length <= 2) return undefined;
-  const options = name.slice(1);
-  return Array.from(options).every((option) => SHORT_OPTIONS.has(option))
-    ? Array.from(options, (option) => `-${option}`)
-    : undefined;
-}
+// Only options whose values could be mistaken for a positional root. Vite
+// remains responsible for validation and options not listed here.
+const valued = new Set(
+  "--config -c --mode -m --logLevel -l --filter -f --configLoader --port --outDir --target --assetsDir --assetsInlineLimit".split(
+    " ",
+  ),
+);
+const optional = new Set(
+  "--base --debug -d --host --open --profile --ssr --sourcemap --minify --manifest --ssrManifest".split(
+    " ",
+  ),
+);
+const flags = new Set(
+  "--app --clearScreen --cors --emptyOutDir --experimentalBundle --force --strictPort --watch -w --help -h --version -v".split(
+    " ",
+  ),
+);
+const devOnly = new Set(
+  "--host --port --open --cors --strictPort --force --experimentalBundle".split(" "),
+);
+const buildOnly = new Set(
+  "--target --outDir --assetsDir --assetsInlineLimit --ssr --sourcemap --minify --manifest --ssrManifest --emptyOutDir --watch -w --app".split(
+    " ",
+  ),
+);
 
 export function valueOptionName(arg: string): string {
-  return clusteredShortOptions(arg)?.at(-1) ?? optionName(arg);
+  const name = arg.split("=", 1)[0];
+  if (!name.startsWith("-") || name.startsWith("--") || name.length <= 2) return name;
+  const parts = name
+    .slice(1)
+    .split("")
+    .map((part) => `-${part}`);
+  return parts.every((part) => valued.has(part) || optional.has(part) || flags.has(part))
+    ? parts.at(-1)!
+    : name;
 }
 
-function optionHasInlineValue(arg: string): boolean {
-  return arg.includes("=");
+function consumesNext(arg: string, next: string | undefined): boolean {
+  if (arg.includes("=")) return false;
+  const name = valueOptionName(arg);
+  if (valued.has(name)) return true;
+  if (optional.has(name)) return next !== undefined && !next.startsWith("-");
+  return flags.has(name) && /^(?:true|false)$/.test(next ?? "");
 }
 
-function viteOptionConsumesNext(arg: string, next: string | undefined): boolean {
-  if (optionHasInlineValue(arg)) return false;
-  const option = valueOptionName(arg);
-  if (REQUIRED_VALUE_OPTIONS.has(option)) return true;
-  if (OPTIONAL_VALUE_OPTIONS.has(option)) return next !== undefined && !next.startsWith("-");
-  if (VALUELESS_OPTIONS.has(option)) return /^(?:true|false)$/.test(next ?? "");
-  // CAC does not consume a separate value following --no-*.
-  return BOOLEAN_OPTIONS.has(option) && /^(?:true|false)$/.test(next ?? "");
-}
-
-function requiredOptionValueIsMissing(arg: string, next: string | undefined): boolean {
-  if (!REQUIRED_VALUE_OPTIONS.has(valueOptionName(arg))) return false;
-  return optionHasInlineValue(arg)
-    ? arg.slice(arg.indexOf("=") + 1) === ""
-    : next === undefined || next.startsWith("-");
-}
-
-export function findViteRoot(
-  command: ViteCliCommand,
-  args: string[],
-): { root?: string; shouldPreflight: boolean } {
+function parse(args: string[], command: Command) {
   let root: string | undefined;
-  let shouldPreflight = true;
-  let ambiguousRoot = false;
-  const otherCommand = command === "dev" ? "build" : "dev";
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
+  let mode: string | undefined;
+  let config: string | undefined;
+  let preflight = true;
+  let uncertainRoot = false;
+  let configs = 0;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (arg === "--") break;
-    const clusteredOptions = clusteredShortOptions(arg);
-    const option = clusteredOptions?.at(-1) ?? optionName(arg);
-    const earlierGlobalOption = clusteredOptions
-      ?.slice(0, -1)
-      .some((name) => name === "--help" || name === "-h");
+    const name = valueOptionName(arg);
+    const normalized = name.startsWith("--no-") ? `--${name.slice(5)}` : name;
+    const inline = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : undefined;
+    const takesNext = consumesNext(arg, args[i + 1]);
+    const value = inline ?? (takesNext ? args[i + 1] : undefined);
+    if (name === "--config" || name === "-c") {
+      configs++;
+      if (command === "dev") config = value;
+      else config ??= value;
+    } else if (name === "--mode" || name === "-m") {
+      mode = value;
+    }
     if (
-      earlierGlobalOption ||
-      ((option === "--help" || option === "-h") &&
-        (optionHasInlineValue(arg)
-          ? arg.slice(arg.indexOf("=") + 1) !== "false"
-          : args[index + 1] !== "false"))
-    ) {
-      shouldPreflight = false;
+      ((name === "--help" || name === "-h") && value !== "false") ||
+      (/^-[^-]*h/.test(arg) && arg.length > 2)
+    )
+      preflight = false;
+    if (valued.has(name) && (!value || value.startsWith("-"))) {
+      preflight = false;
+      if (!root) uncertainRoot = true;
     }
-    if (clusteredOptions?.slice(0, -1).some((name) => REQUIRED_VALUE_OPTIONS.has(name))) {
-      shouldPreflight = false;
-    }
-    if (requiredOptionValueIsMissing(arg, args[index + 1])) {
-      shouldPreflight = false;
-      continue;
-    }
-    const normalizedOptions = (clusteredOptions ?? [option]).map((name) =>
-      name.startsWith("--no-") ? `--${name.slice(5)}` : name,
-    );
-    if (option.startsWith("--no-") && REQUIRED_VALUE_OPTIONS.has(normalizedOptions[0])) {
-      shouldPreflight = false;
-    }
-    if (normalizedOptions.some((name) => COMMAND_ONLY_OPTIONS[otherCommand].has(name))) {
-      shouldPreflight = false;
-    }
-    if (viteOptionConsumesNext(arg, args[index + 1])) {
-      index++;
-      continue;
-    }
+    if ((command === "build" ? devOnly : buildOnly).has(normalized)) preflight = false;
     if (arg.startsWith("-")) {
-      const normalizedOption = option.startsWith("--no-") ? `--${option.slice(5)}` : option;
       if (
-        (option.startsWith("--no-") && optionHasInlineValue(arg)) ||
-        (!clusteredOptions &&
-          !REQUIRED_VALUE_OPTIONS.has(normalizedOption) &&
-          !OPTIONAL_VALUE_OPTIONS.has(normalizedOption) &&
-          !VALUELESS_OPTIONS.has(normalizedOption) &&
-          !BOOLEAN_OPTIONS.has(normalizedOption))
+        (!valued.has(normalized) && !optional.has(normalized) && !flags.has(normalized)) ||
+        (name.startsWith("--no-") && (valued.has(normalized) || inline !== undefined)) ||
+        (/^-[^-]{2,}/.test(arg) &&
+          arg
+            .slice(1)
+            .split("=", 1)[0]
+            .split("")
+            .slice(0, -1)
+            .some((part) => valued.has(`-${part}`)))
       ) {
-        shouldPreflight = false;
-        if (root === undefined) ambiguousRoot = true;
+        preflight = false;
+        if (!root) uncertainRoot = true;
       }
+      if (takesNext) i++;
       continue;
     }
-    if (root !== undefined) shouldPreflight = false;
+    if (root) preflight = false;
     else root = arg;
   }
-  return { root: ambiguousRoot ? undefined : root, shouldPreflight };
+  if (configs > 1) preflight = false;
+  return { root: uncertainRoot ? undefined : root, mode, config, preflight };
 }
 
-function commandArguments(argv: string[]): { command: ViteCliCommand; args: string[] } | undefined {
+export function findViteRoot(command: Command, args: string[]) {
+  const { root, preflight } = parse(args, command);
+  return { root, shouldPreflight: preflight };
+}
+
+function commandArguments(argv: string[]): { command: Command; args: string[] } | undefined {
   const entry = toSlash(argv[1] ?? "");
-  const isViteEntry =
+  const vite =
     entry.endsWith("/vite/bin/vite.js") ||
     entry.endsWith("/vite/node/cli.js") ||
     entry.endsWith("/dist/vite/node/cli.js");
   let args = argv.slice(2);
-  if (!isViteEntry) {
+  if (!vite) {
     if (path.basename(entry) !== "vp") return undefined;
     if (args[0] === "-C") args = args.slice(2);
     if (args[0] === "exec" && args[1] === "vite") args = args.slice(2);
   }
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (arg === "--") break;
-    if (viteOptionConsumesNext(arg, args[index + 1])) {
-      index++;
+    if (arg.startsWith("-")) {
+      if (consumesNext(arg, args[i + 1])) i++;
       continue;
     }
-    if (arg.startsWith("-")) continue;
-    if (arg === "build") {
-      return { command: "build", args: args.slice(0, index).concat(args.slice(index + 1)) };
-    }
-    if (arg === "dev" || arg === "serve") {
-      return { command: "dev", args: args.slice(0, index).concat(args.slice(index + 1)) };
-    }
-    if (arg === "preview" || arg === "optimize") return undefined;
-    return isViteEntry ? { command: "dev", args } : undefined;
+    if (arg === "build")
+      return { command: "build", args: args.slice(0, i).concat(args.slice(i + 1)) };
+    if (arg === "dev" || arg === "serve")
+      return { command: "dev", args: args.slice(0, i).concat(args.slice(i + 1)) };
+    return vite && arg !== "preview" && arg !== "optimize" ? { command: "dev", args } : undefined;
   }
-  return isViteEntry ? { command: "dev", args } : undefined;
+  return vite ? { command: "dev", args } : undefined;
 }
 
-/** Resolve the root and mode before Vite evaluates the project config. */
-export function getViteCliInvocation(argv: string[] = process.argv): ViteCliInvocation | undefined {
+export function getViteCliInvocation(argv: string[] = process.argv): Invocation | undefined {
   const invocation = commandArguments(argv);
   if (!invocation) return undefined;
-  let mode: string | undefined;
-  let root: string | undefined;
-  let configFile: string | undefined;
-  for (let index = 0; index < invocation.args.length; index += 1) {
-    const arg = invocation.args[index];
-    if (arg === "--") break;
-    const option = valueOptionName(arg);
-    if (option === "--config" || option === "-c") {
-      const value = optionHasInlineValue(arg)
-        ? arg.slice(arg.indexOf("=") + 1)
-        : invocation.args[++index];
-      // Vite dev keeps the last repeated --config, while Vite build keeps
-      // the first. Match the installed CLI when identifying its config.
-      if (invocation.command === "dev") configFile = value;
-      else configFile ??= value;
-      continue;
-    }
-    if (option === "--mode" || option === "-m") {
-      mode = optionHasInlineValue(arg) ? arg.slice(arg.indexOf("=") + 1) : invocation.args[++index];
-      continue;
-    }
-    if (viteOptionConsumesNext(arg, invocation.args[index + 1])) {
-      index++;
-      continue;
-    }
-    if (arg.startsWith("-")) continue;
-    root ??= arg;
-  }
+  const { root, mode, config } = parse(invocation.args, invocation.command);
+  const cwd = toSlash(process.cwd());
   return {
     command: invocation.command,
     mode: mode || (invocation.command === "build" ? "production" : "development"),
-    root: path.resolve(toSlash(process.cwd()), root ?? "."),
+    root: path.resolve(cwd, root ?? "."),
     ...(root ? { rootArg: root } : {}),
-    ...(configFile ? { configFile: path.resolve(toSlash(process.cwd()), configFile) } : {}),
+    ...(config ? { configFile: path.resolve(cwd, config) } : {}),
   };
 }
 
-/** Match the Vite config loaded by the outer CLI, not one loaded by a nested server. */
+/** Only the config loaded by the outer CLI may claim its dev lifecycle. */
 export function isViteCliConfigFile(
   configFile: string,
   inlineConfig?: Pick<InlineConfig, "root" | "configFile">,
@@ -286,17 +186,12 @@ export function isViteCliConfigFile(
   return expected !== undefined && path.resolve(configFile) === expected;
 }
 
-/** Distinguish real Vite/Vite+ CLI commands from programmatic API callers. */
-export function isViteCliInvocation(
-  command: ViteCliCommand,
-  argv: string[] = process.argv,
-): boolean {
+export function isViteCliInvocation(command: Command, argv: string[] = process.argv): boolean {
   return commandArguments(argv)?.command === command;
 }
 
-/** Claim the single application lifecycle owned by a top-level Vite CLI build. */
 export function claimViteCliBuildInvocation(argv: string[] = process.argv): boolean {
-  if (buildInvocationClaimed || !isViteCliInvocation("build", argv)) return false;
-  buildInvocationClaimed = true;
+  if (buildClaimed || !isViteCliInvocation("build", argv)) return false;
+  buildClaimed = true;
   return true;
 }
