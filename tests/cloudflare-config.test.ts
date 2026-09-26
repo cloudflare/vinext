@@ -11,6 +11,33 @@ import {
 } from "../packages/cloudflare/src/cache/config.js";
 
 describe("typed Cloudflare cache config", () => {
+  it("keeps web previews on the existing main-managed Response Store Worker", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import assert from "node:assert/strict";
+         import { readFileSync } from "node:fs";
+         import config, { responseStoreServiceBinding } from "./apps/web/cloudflare.config.ts";
+         assert.equal(responseStoreServiceBinding.name, "vinext-web-response-store");
+         assert.equal(config.worker.env.RESPONSE_STORE.worker.name, "vinext-web-response-store");
+         const workflow = readFileSync(".github/workflows/deploy-examples.yml", "utf8");
+         const step = workflow.split("- name: Deploy configured Response Store service with cf")[1].split("\\n      - name:")[0];
+         assert.ok(step.includes("if: github.event_name == 'push' && github.ref == 'refs/heads/main' &&"));
+         assert.ok(!step.includes("github.event.pull_request"));
+         assert.ok(!workflow.includes("VINEXT_RESPONSE_STORE_WORKER_NAME"));
+         assert.ok(!workflow.includes("Delete web Response Store preview Worker"));`,
+      ],
+      {
+        cwd: path.resolve(import.meta.dirname, ".."),
+        encoding: "utf8",
+        env: { ...process.env, VINEXT_RESPONSE_STORE_WORKER_NAME: "pr-unexpected-response-store" },
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+  });
+
   it.each([undefined, "2.0.0-beta.1", "2.0.0-beta.2"])(
     "loads the consumer's optional plugin peer (%s) only when called",
     (version) => {

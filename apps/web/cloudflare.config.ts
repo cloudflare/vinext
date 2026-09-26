@@ -6,11 +6,9 @@ import {
 } from "@cloudflare/vite-plugin/experimental-config";
 import { createWorkersResponseStoreServiceBindingConfig } from "@vinext/cloudflare/cache/config";
 
-const responseStoreWorkerName =
-  process.env.VINEXT_RESPONSE_STORE_WORKER_NAME || "vinext-web-response-store";
 const responseStore = await createWorkersResponseStoreServiceBindingConfig({
   worker: {
-    name: responseStoreWorkerName,
+    name: "vinext-web-response-store",
     compatibilityDate: "2026-04-08",
     compatibilityFlags: ["nodejs_compat"],
     observability: { enabled: true },

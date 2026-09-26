@@ -248,8 +248,6 @@ jobs:
 
       - name: Build example
         if: matrix.example.static_export != true
-        env:
-          VINEXT_RESPONSE_STORE_WORKER_NAME: ${{ matrix.example.response_store_worker && github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, matrix.example.response_store_worker) || '' }}
         run: |
           if [[ -f cloudflare.config.ts ]]; then
             vp run build
@@ -286,12 +284,12 @@ jobs:
         run: vp run db:migrate:remote
 
       - name: Deploy configured Response Store service with cf
-        if: matrix.example.response_store_worker && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != ''
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.example.response_store_worker && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != ''
         working-directory: ${{ matrix.example.working_directory }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          RESPONSE_STORE_WORKER_NAME: ${{ github.event_name == 'pull_request' && format('pr-{0}-{1}', github.event.pull_request.number, matrix.example.response_store_worker) || matrix.example.response_store_worker }}
+          RESPONSE_STORE_WORKER_NAME: ${{ matrix.example.response_store_worker }}
         run: vp exec cf deploy --prebuilt --mode production --worker "$RESPONSE_STORE_WORKER_NAME"
 
       - name: Deploy to Cloudflare Workers (Production)
@@ -516,16 +514,6 @@ jobs:
           elif [[ -n "$SERVICE_NAME" ]]; then
             vp exec wrangler delete "$SERVICE_NAME" --force
           fi
-
-      - name: Delete web Response Store preview Worker
-        if: github.event.action == 'closed'
-        continue-on-error: true
-        working-directory: apps/web
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          WEB_SERVICE_NAME: pr-${{ github.event.pull_request.number }}-vinext-web-response-store
-        run: vp exec cf workers delete "$WEB_SERVICE_NAME" --force
 
       - name: Delete named preview Workers
         if: github.event.action == 'closed'
