@@ -102,31 +102,15 @@ describe("Next.js compat: app-rendering", () => {
       expect(html).toMatch(/id="page-now"[^>]*>\d+/);
     });
 
-    // This tests that subsequent requests get fresh timestamps (revalidation works).
-    // In dev mode, vinext always re-renders (no ISR caching), so timestamps should differ.
-    // SKIP: The use(getData()) pattern with Date.now() in the ISR layout produces identical
-    // timestamps across requests. The async function getData() returns a cached promise at
-    // module scope in the RSC environment, so Date.now() is evaluated once.
-    //
-    // ROOT CAUSE: vinext's RSC module instances persist across requests in dev mode.
-    // Next.js re-executes server components fresh per request by invalidating the module cache.
-    // Note: The ISR cache has been removed from dev mode (issue #228), but this test still
-    // fails because the underlying module caching issue is separate from ISR.
-    //
-    // TO FIX: The RSC environment needs to invalidate/re-import server component modules on
-    // each request so that top-level expressions like Date.now() get re-evaluated. This may
-    // involve calling server.moduleGraph.invalidateModule() for RSC modules before each render,
-    // or using Vite's ssrLoadModule with a cache-bust query param.
-    //
-    // VERIFY: Once fixed, also confirm that the "Invalid hook call" warnings from use() go away
-    // (they may be related to the same module caching causing duplicate React instances).
-    it.skip("should produce different timestamps on subsequent requests", async () => {
+    // Next.js: test/e2e/app-dir/app-rendering/rendering.test.ts
+    // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-rendering/rendering.test.ts
+    // Development requests re-render without ISR caching, so both timestamps change.
+    it("should render fresh timestamps before the revalidation window", async () => {
       const { html: html1 } = await fetchHtml(baseUrl, "/nextjs-compat/isr-multiple/nested");
       const layoutNow1 = html1.match(/id="layout-now"[^>]*>(\d+)/)?.[1];
       const pageNow1 = html1.match(/id="page-now"[^>]*>(\d+)/)?.[1];
 
-      // Wait for revalidation window (revalidate = 1 second)
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
       const { html: html2 } = await fetchHtml(baseUrl, "/nextjs-compat/isr-multiple/nested");
       const layoutNow2 = html2.match(/id="layout-now"[^>]*>(\d+)/)?.[1];
