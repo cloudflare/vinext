@@ -104,15 +104,20 @@ test.describe("Next.js compat: metadata (browser)", () => {
   });
 
   // Next.js: 'should support title template'
-  // Source: metadata.test.ts#L34-L38
-  test("title template applies correctly", async ({ page }) => {
+  // Source: https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata/metadata.test.ts#L37-L41
+  test("title template does not apply to the same-segment page", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/metadata-title-template`);
-    await expect(page).toHaveTitle("Page | Layout");
+    await expect(page).toHaveTitle("Page");
   });
 
   test("title template applies to child page", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/metadata-title-template/child`);
     await expect(page).toHaveTitle("Extra Page | Layout");
+  });
+
+  test("parallel slot layout template does not apply to its colocated page", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/metadata-parallel-title-template`);
+    await expect(page).toHaveTitle("Slot Page");
   });
 
   // Next.js: 'should support opengraph tags'

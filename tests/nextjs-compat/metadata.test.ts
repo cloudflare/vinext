@@ -55,13 +55,12 @@ describe("Next.js compat: metadata", () => {
 
   // ── Title template ───────────────────────────────────────────
   // Next.js: 'should support title template'
-  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L34-L38
+  // Source: https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata/metadata.test.ts#L37-L41
 
-  it("should apply title template from layout", async () => {
+  it("should ignore the title template from the same-segment layout", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template");
-    // Layout has template "%s | Layout", page has title "Page"
-    // Result should be "Page | Layout"
-    expect(html).toContain("<title>Page | Layout</title>");
+    // The colocated layout's template only applies to descendant segments.
+    expect(html).toContain("<title>Page</title>");
   });
 
   // Next.js: 'should support stashed title in one layer'
@@ -71,6 +70,19 @@ describe("Next.js compat: metadata", () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/child");
     // Layout template "%s | Layout", child page title "Extra Page"
     expect(html).toContain("<title>Extra Page | Layout</title>");
+  });
+
+  it("should scope templates to descendant segments through route groups", async () => {
+    const grouped = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/grouped");
+    expect(grouped.html).toContain("<title>Grouped Page | Layout</title>");
+
+    const child = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/grouped/child");
+    expect(child.html).toContain("<title>Grouped Child | Grouped Layout</title>");
+  });
+
+  it("should ignore a parallel layout template on its colocated slot page", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-parallel-title-template");
+    expect(html).toContain("<title>Slot Page</title>");
   });
 
   // ── Basic metadata tags ──────────────────────────────────────

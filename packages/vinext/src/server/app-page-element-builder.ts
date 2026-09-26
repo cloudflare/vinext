@@ -377,10 +377,19 @@ export async function buildPageElements<
     slotParams: slotParamOverrides,
     slots: route.slots ?? null,
   });
+  const interceptSourcePageSegments = opts?.interceptSourcePageSegments;
+  const interceptBranchSegments = opts?.interceptBranchSegments;
+  const interceptLayouts = opts?.interceptLayouts ?? [];
+  const interceptLayoutSegments = opts?.interceptLayoutSegments;
+  const hasInterceptLayoutPositions =
+    interceptSourcePageSegments &&
+    interceptBranchSegments &&
+    interceptLayoutSegments &&
+    interceptLayouts.every((layout, index) => !layout || interceptLayoutSegments[index]);
   const primaryParallelRouteHeadInput = isSiblingIntercept
     ? {
         head: {
-          layoutModules: opts?.interceptLayouts ?? [],
+          layoutModules: interceptLayouts,
           layoutParams: (opts?.interceptLayoutSegments ?? []).map((segments) =>
             resolveInterceptLayoutParams(
               opts?.interceptBranchSegments ?? segments,
@@ -388,6 +397,19 @@ export async function buildPageElements<
               effectiveParams,
             ),
           ),
+          ...(hasInterceptLayoutPositions
+            ? {
+                layoutTreePositions: interceptLayouts.flatMap((layout, index) =>
+                  layout
+                    ? [
+                        interceptSourcePageSegments.length -
+                          interceptBranchSegments.length +
+                          interceptLayoutSegments[index].length,
+                      ]
+                    : [],
+                ),
+              }
+            : {}),
           pageModule: effectivePageModule ?? null,
           params: effectiveParams,
           routeSegments: opts?.interceptSourcePageSegments ?? route.routeSegments ?? [],

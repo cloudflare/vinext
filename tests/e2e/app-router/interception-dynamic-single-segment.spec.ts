@@ -112,5 +112,6 @@ test.describe("interception-dynamic-single-segment", () => {
 
     await expect(page.locator("#modal")).toContainText("Modal: Nested static interception");
     await expect(page.locator("#modal")).not.toContainText("Modal: Dynamic fallback");
+    await expect(page).toHaveTitle("Intercepted Page | Ancestor");
   });
 });

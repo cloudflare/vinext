@@ -70,5 +70,6 @@ test.describe("interception-segments-two-levels-above", () => {
     // The layout.tsx inside (..)(..)hoge/ must wrap the intercepting page
     await expect(page.locator("#intercept-layout-wrapper")).toBeVisible();
     await expect(page.locator("#intercept-layout-wrapper #intercepted")).toBeVisible();
+    await expect(page).toHaveTitle("Intercepted");
   });
 });

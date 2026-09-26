@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import path from "node:path";
+import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-graph.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import {
   collectAppPageSearchParams,
   prepareAppPageHead,
@@ -8,6 +11,146 @@ import {
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 
 describe("app page head resolution", () => {
+  // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata/metadata.test.ts
+  it.each([
+    { segments: ["title-template"], positions: [0, 1], expected: "Page" },
+    { segments: ["title-template", "extra"], positions: [0, 1, 2], expected: "Page | Layout" },
+    {
+      segments: ["title-template", "extra", "inner"],
+      positions: [0, 1, 2],
+      expected: "Page | Extra Layout",
+    },
+  ])(
+    "only inherits title templates from ancestor segments: $segments",
+    async ({ segments, positions, expected }) => {
+      const layouts = [
+        {},
+        { metadata: { title: { template: "%s | Layout", default: "Layout" } } },
+        { metadata: { title: { template: "%s | Extra Layout", default: "Extra Layout" } } },
+      ].slice(0, positions.length);
+      const result = await resolveAppPageHead<Record<string, unknown>>({
+        layoutModules: layouts,
+        layoutTreePositions: positions,
+        metadataRoutes: [],
+        pageModule: { metadata: { title: "Page" } },
+        params: {},
+        routePath: "/" + segments.join("/"),
+        routeSegments: segments,
+      });
+      expect(result.metadata?.title).toBe(expected);
+    },
+  );
+
+  it.each([
+    { routeSegments: null, layoutTreePositions: undefined },
+    { routeSegments: [], layoutTreePositions: undefined },
+    { routeSegments: [], layoutTreePositions: [0] },
+  ])(
+    "keeps ordered title merging when layout positions are unavailable: $routeSegments $layoutTreePositions",
+    async ({ routeSegments, layoutTreePositions }) => {
+      const result = await resolveAppPageHead<Record<string, unknown>>({
+        layoutModules: [
+          { metadata: { title: "Root" } },
+          { metadata: { title: { default: "Layout", template: "%s | Layout" } } },
+        ],
+        layoutTreePositions,
+        metadataRoutes: [],
+        pageModule: { metadata: { title: "Page" } },
+        params: {},
+        routePath: "/",
+        routeSegments,
+      });
+
+      expect(result.metadata?.title).toBe("Page | Layout");
+    },
+  );
+
+  it("does not apply a colocated parallel layout template to its slot page", async () => {
+    const appDir = path.resolve(import.meta.dirname, "fixtures/app-basic/app");
+    const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+    const route = graph.routes.find(
+      (entry) => entry.pattern === "/nextjs-compat/metadata-parallel-title-template",
+    );
+    const slot = route?.parallelSlots.find((entry) => entry.name === "slot");
+    expect(slot?.routeSegments).toEqual([]);
+    expect(route?.routeSegments).toEqual(["nextjs-compat", "metadata-parallel-title-template"]);
+
+    const parallelRoutes = resolveActiveParallelRouteHeadInputs({
+      layoutTreePositions: route!.layoutTreePositions,
+      params: {},
+      routeSegments: route!.routeSegments,
+      slots: {
+        slot: {
+          layout: { metadata: { title: { default: "Slot", template: "%s | Slot" } } },
+          layoutIndex: slot!.layoutIndex,
+          page: { metadata: { title: "Slot Page" } },
+          routeSegments: slot!.routeSegments,
+        },
+      },
+    });
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [{ metadata: { title: { default: "Ancestor", template: "%s | Ancestor" } } }],
+      layoutTreePositions: [0],
+      metadataRoutes: [],
+      pageModule: {},
+      parallelRoutes: parallelRoutes.map((entry) => entry.head),
+      params: {},
+      routePath: route!.pattern,
+      routeSegments: route!.routeSegments,
+    });
+
+    expect(result.metadata?.title).toBe("Slot Page | Ancestor");
+  });
+
+  it("applies only ancestor intercept layout templates to an intercepted page", async () => {
+    // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts
+    const appDir = path.resolve(import.meta.dirname, "fixtures/app-basic/app");
+    const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+    const route = graph.routes.find((entry) => entry.pattern === "/interception-dyn-single");
+    const slot = route?.parallelSlots.find((entry) => entry.name === "modal");
+    const intercept = slot?.interceptingRoutes.find(
+      (entry) => entry.targetPattern === "/interception-dyn-single/explicit-layout/deeper",
+    );
+    expect(route?.routeSegments).toEqual(["interception-dyn-single"]);
+    expect(intercept?.branchSegments).toEqual(["explicit-layout", "deeper"]);
+    expect(intercept?.layoutSegments).toEqual([["explicit-layout"], ["explicit-layout", "deeper"]]);
+    expect(intercept?.sourcePageSegments).toEqual([
+      "interception-dyn-single",
+      "@modal",
+      "(.)explicit-layout",
+      "deeper",
+    ]);
+
+    const parallelRoutes = resolveActiveParallelRouteHeadInputs({
+      interceptBranchSegments: intercept!.branchSegments,
+      interceptLayoutSegments: intercept!.layoutSegments,
+      interceptLayouts: [
+        { metadata: { title: { default: "Ancestor", template: "%s | Ancestor" } } },
+        { metadata: { title: { default: "Colocated", template: "%s | Colocated" } } },
+      ],
+      interceptPage: { metadata: { title: "Intercepted Page" } },
+      interceptSlotKey: "modal",
+      interceptSourcePageSegments: intercept!.sourcePageSegments,
+      layoutTreePositions: route!.layoutTreePositions,
+      params: {},
+      routeSegments: route!.routeSegments,
+      slots: { modal: { layoutIndex: slot!.layoutIndex, routeSegments: slot!.routeSegments } },
+    });
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: {},
+      parallelRoutes: parallelRoutes.map((entry) => entry.head),
+      params: {},
+      routePath: route!.pattern,
+      routeSegments: route!.routeSegments,
+    });
+
+    expect(result.metadata?.title).toBe("Intercepted Page | Ancestor");
+  });
+
   it("prepares viewport independently while generated metadata is pending", async () => {
     // Ported from Next.js: test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
     // https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata-streaming/metadata-streaming.test.ts
@@ -753,7 +896,7 @@ describe("app page head resolution", () => {
         head: {
           layoutModules: [slotLayout, interceptLayout],
           layoutParams: [{ locale: "en" }, { locale: "en", photo: "42" }],
-          layoutTreePositions: [0, 2],
+          layoutTreePositions: [0, 4],
           pageModule: interceptPage,
           params: { locale: "en", photo: "42", comment: "7" },
           routeSegments: ["[locale]", "@modal", "(.)photos", "[photo]", "[comment]"],

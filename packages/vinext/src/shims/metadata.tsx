@@ -346,6 +346,7 @@ type IconsMap = {
 type IconsMetadata = IconInput | IconInput[] | IconsMap;
 
 export type MetadataMergeEntry = {
+  contributesTitleTemplate?: boolean;
   contributesTitle?: boolean;
   isPage?: boolean;
   metadata: Metadata;
@@ -566,6 +567,7 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
     if (
       contributesTitle &&
       !isPage &&
+      entry.contributesTitleTemplate !== false &&
       meta.title &&
       typeof meta.title === "object" &&
       meta.title.template

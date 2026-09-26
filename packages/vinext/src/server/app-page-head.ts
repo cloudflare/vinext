@@ -67,6 +67,7 @@ export type OrderedAppPageMetadataSource<TModule extends AppPageHeadModule = App
 
 type AppPageHeadLayout<TModule extends AppPageHeadModule> = {
   module: TModule;
+  sourceTreePosition?: number;
   treePosition: number;
 };
 
@@ -178,7 +179,7 @@ type AppPageSearchParamsCollection = {
 };
 
 type ResolvedParallelRouteMetadata = {
-  metadataResults: (Metadata | null)[];
+  metadataEntries: MetadataMergeEntry[];
   metadataSources: AppPageHeadSource[];
 };
 
@@ -219,6 +220,10 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
         slot.notFoundTreePosition === 0 ? (slot.notFound ?? null) : null;
       const interceptNotFound = options.interceptNotFound ?? inheritedSlotNotFound;
       const interceptRouteSegments = options.interceptSourcePageSegments ?? options.routeSegments;
+      const interceptBranchOffset =
+        options.interceptSourcePageSegments && options.interceptBranchSegments
+          ? interceptRouteSegments.length - options.interceptBranchSegments.length
+          : null;
       const interceptNotFoundRouteSegments = options.interceptNotFound
         ? (options.interceptNotFoundBranchSegments ?? interceptRouteSegments).slice(
             0,
@@ -261,7 +266,12 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
           ],
           layoutTreePositions: [
             ...(slot.layout ? [0] : []),
-            ...interceptLayouts.filter(isPresent).map(() => options.routeSegments.length),
+            ...interceptLayouts.filter(isPresent).map((_, index) => {
+              const segments = options.interceptLayoutSegments?.[index];
+              return interceptBranchOffset !== null && segments
+                ? interceptBranchOffset + segments.length
+                : options.routeSegments.length;
+            }),
           ],
           pageModule: options.interceptPage,
           params: options.interceptParams ?? options.params,
@@ -427,6 +437,7 @@ function createLayoutInputs<TModule extends AppPageHeadModule>(
     }
     layoutInputs.push({
       module: layoutModule,
+      sourceTreePosition: layoutTreePositions[index],
       treePosition: layoutTreePositions[index] ?? 0,
     });
   }
@@ -544,7 +555,7 @@ async function resolveParallelRouteMetadata<TModule extends AppPageHeadModule>(
   const routeSegments = parallelRoute.routeSegments ?? fallbackRouteSegments;
   const moduleRoutePrefixSegments = parallelRoute.moduleRoutePrefixSegments ?? [];
   const moduleRouteSegments = parallelRoute.moduleRouteSegments ?? routeSegments;
-  const metadataResults: (Metadata | null)[] = [];
+  const metadataEntries: MetadataMergeEntry[] = [];
   const metadataSources: AppPageHeadSource[] = [];
   let accumulatedMetadata = parent;
   const layoutModules = getParallelRouteModules(parallelRoute);
@@ -568,7 +579,15 @@ async function resolveParallelRouteMetadata<TModule extends AppPageHeadModule>(
       undefined,
       accumulatedMetadata,
     );
-    metadataResults.push(layoutMetadata);
+    if (layoutMetadata) {
+      metadataEntries.push({
+        metadata: layoutMetadata,
+        contributesTitleTemplate:
+          parallelRoute.routeSegments == null ||
+          layoutTreePositions[index] === undefined ||
+          layoutTreePositions[index] < routeSegments.length,
+      });
+    }
     // Parallel route metadata sources are scoped to the active slot branch because
     // the route tree input does not carry per-layout segment positions inside that branch.
     metadataSources.push({ metadata: layoutMetadata, routeSegments });
@@ -590,12 +609,12 @@ async function resolveParallelRouteMetadata<TModule extends AppPageHeadModule>(
       accumulatedMetadata,
       searchParamsObserver,
     );
-    metadataResults.push(pageMetadata);
+    if (pageMetadata) metadataEntries.push({ isPage: true, metadata: pageMetadata });
     // Keep the page source scoped to the same active slot branch as its layouts.
     metadataSources.push({ metadata: pageMetadata, routeSegments });
   }
 
-  return { metadataResults, metadataSources };
+  return { metadataEntries, metadataSources };
 }
 
 function resolveParallelRouteViewport<TModule extends AppPageHeadModule>(
@@ -810,7 +829,7 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     pageMetadataPromise,
     parallelRouteMetadataPromise,
   ]).then(async ([layoutMetadataResults, pageMetadata, parallelRouteMetadata]) => {
-    const parallelMetadataResults = parallelRouteMetadata.flatMap((head) => head.metadataResults);
+    const parallelMetadataEntries = parallelRouteMetadata.flatMap((head) => head.metadataEntries);
     const parallelMetadataSources = parallelRouteMetadata.flatMap((head) => head.metadataSources);
 
     // Active parallel slot metadata is suppressed from contributing the primary
@@ -825,11 +844,27 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     // Reference: https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
     const primaryPageHasTitle = pageMetadata != null && pageMetadata.title !== undefined;
     const metadataEntries: MetadataMergeEntry[] = [
-      ...layoutMetadataResults.filter(isPresent).map((entry) => ({ metadata: entry })),
+      ...layoutMetadataResults.flatMap((metadata, index) =>
+        metadata
+          ? [
+              {
+                metadata,
+                // A layout template applies to descendant route segments, never the
+                // page sharing that layout's segment. Keep absent source positions
+                // compatible with callers that supply only an ordered module list.
+                contributesTitleTemplate:
+                  options.routeSegments == null ||
+                  layoutInputs[index].sourceTreePosition === undefined ||
+                  layoutInputs[index].treePosition < routeSegments.length,
+              },
+            ]
+          : [],
+      ),
       ...(pageMetadata ? [{ isPage: true, metadata: pageMetadata }] : []),
-      ...parallelMetadataResults
-        .filter(isPresent)
-        .map((entry) => ({ contributesTitle: !primaryPageHasTitle, metadata: entry })),
+      ...parallelMetadataEntries.map((entry) => ({
+        ...entry,
+        contributesTitle: !primaryPageHasTitle,
+      })),
     ];
 
     const resolvedMetadataBase =
