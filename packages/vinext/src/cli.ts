@@ -107,7 +107,16 @@ async function proxyVite(command: ViteCommand): Promise<void> {
   process.argv = [process.execPath, cliPath, command, ...rawArgs];
   if (configPath) {
     const invocation = getViteCliInvocation();
-    if (invocation) loadDotenv({ root, mode: invocation.mode });
+    if (invocation) {
+      if (!process.env.NODE_ENV) {
+        Reflect.set(
+          process.env,
+          "NODE_ENV",
+          command === "build" ? "production" : invocation.mode === "test" ? "test" : "development",
+        );
+      }
+      loadDotenv({ root, mode: invocation.mode });
+    }
     if (configPath === findViteConfigPath(root)) {
       const migrated = ensureViteConfigCompatibility(root);
       if (migrated) {

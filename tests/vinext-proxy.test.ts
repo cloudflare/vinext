@@ -72,13 +72,16 @@ describe("thin vinext command proxies", () => {
     async (command) => {
       const root = createRoot();
       writeProject(root);
-      write(root, ".env.staging", "CONFIG_ONLY_VALUE=from-staging\n");
+      write(root, ".env.staging", "CONFIG_ONLY_VALUE=from-staging\nEXPANDED=$NODE_ENV\n");
       write(
         root,
         "config-env.ts",
         `
 if (process.env.CONFIG_ONLY_VALUE !== "from-staging") {
   throw new Error("missing config-time dotenv: " + process.env.CONFIG_ONLY_VALUE);
+}
+if (process.env.EXPANDED !== ${JSON.stringify(command === "build" ? "production" : "development")}) {
+  throw new Error("wrong config-time NODE_ENV expansion: " + process.env.EXPANDED);
 }
 export const loaded = true;
 `,
@@ -92,12 +95,14 @@ import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
 export default { plugins: [vinext()] };
 `,
       );
+      const env = { ...process.env };
+      Reflect.deleteProperty(env, "NODE_ENV");
 
       if (command === "build") {
         const result = spawnSync(
           process.execPath,
           [CLI_PATH, command, "--mode", "staging", "--logLevel", "silent"],
-          { cwd: root, encoding: "utf-8" },
+          { cwd: root, encoding: "utf-8", env },
         );
         expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
         expect(fs.existsSync(path.join(root, "dist/server/entry.js"))).toBe(true);
@@ -105,6 +110,7 @@ export default { plugins: [vinext()] };
         child = spawn(process.execPath, [CLI_PATH, command, "--mode", "staging", "--port", "0"], {
           cwd: root,
           stdio: "pipe",
+          env,
         });
         const info = await waitFor(() => {
           const current = readLockfile(getLockfilePath(root));
@@ -116,6 +122,29 @@ export default { plugins: [vinext()] };
     },
     120_000,
   );
+
+  it("keeps an explicit caller NODE_ENV while expanding build dotenv", () => {
+    const root = createRoot();
+    writeProject(root);
+    write(root, ".env.production", "EXPANDED=$NODE_ENV\n");
+    write(
+      root,
+      "vite.config.ts",
+      `
+import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};
+if (process.env.EXPANDED !== "test") throw new Error("explicit NODE_ENV was not preserved");
+export default { plugins: [vinext()] };
+`,
+    );
+
+    const result = spawnSync(process.execPath, [CLI_PATH, "build", "--logLevel", "silent"], {
+      cwd: root,
+      encoding: "utf-8",
+      env: { ...process.env, NODE_ENV: "test" },
+    });
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+  }, 120_000);
 
   it("preserves the legacy ESM config migration before Vite loads a build config", () => {
     const root = createRoot();
