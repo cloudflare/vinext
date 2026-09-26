@@ -240,12 +240,12 @@ describe("createVinextApp", () => {
 
     expect(readPkg(appPath).packageManager).toMatch(/^pnpm(?:@|$)/);
     expect(calls).toContain(
-      "pnpm add vinext react-server-dom-webpack @vinext/cloudflare @cloudflare/workers-response-store",
+      'pnpm add "vinext" "react-server-dom-webpack" "@vinext/cloudflare" "@cloudflare/workers-response-store"',
     );
     expect(calls).toContain(
-      "pnpm add -D vite @vitejs/plugin-react @vitejs/plugin-rsc @cloudflare/vite-plugin wrangler",
+      'pnpm add -D "vite" "@vitejs/plugin-react" "@vitejs/plugin-rsc" "@cloudflare/vite-plugin" "wrangler"',
     );
-    expect(calls.some((command) => command.split(/\s+/).includes("next"))).toBe(false);
+    expect(calls.some((command) => command.split(/\s+/).includes('"next"'))).toBe(false);
     expect(calls.some((command) => command.includes("typegen"))).toBe(false);
   });
 
@@ -460,10 +460,12 @@ describe("create-vinext-app CLI", () => {
         build: "cf build",
         start: "vite preview",
         deploy: "vinext-cloudflare deploy",
+        "deploy:response-store":
+          "cf deploy --prebuilt --mode production --worker cf-app-response-store",
       });
       expect(pkg.devDependencies).toMatchObject({
-        "@cloudflare/vite-plugin": "2.0.0-beta.sha-805ec1ff3",
-        cf: "1.0.0-beta.1",
+        "@cloudflare/vite-plugin": "beta",
+        cf: "^1.0.0-0",
         vite: "8.3.0",
       });
       expect(pkg.devDependencies).not.toHaveProperty("wrangler");

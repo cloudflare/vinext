@@ -365,7 +365,7 @@ function setupExperimentalCfPlatform(
     if (serviceBinding) {
       nextSteps.push(
         "After `cf build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
-        `   cf deploy --prebuilt --mode production --worker ${compactResourceName(projectInfo.projectName, "-response-store", 63)}`,
+        `   ${context.packageManager ?? "npm"} run deploy:response-store`,
         "vinext-cloudflare deploy only deploys the application Worker.",
       );
     }
@@ -670,7 +670,7 @@ function setTopLevelJsonProperty(code: string, name: string, value: unknown): st
   return `${code.slice(0, property.valueStart)}${serialized}${code.slice(property.valueEnd)}`;
 }
 
-function compactResourceName(name: string, suffix: string, maxLength: number): string {
+export function compactResourceName(name: string, suffix: string, maxLength: number): string {
   const fullName = `${name}${suffix}`;
   if (fullName.length <= maxLength) return fullName;
   const hash = createHash("sha256").update(name).digest("hex").slice(0, 8);

@@ -29,6 +29,7 @@ import {
   hasViteConfig,
 } from "./utils/project.js";
 import {
+  compactResourceName,
   setupCloudflarePlatform,
   usesCommonJsViteConfig,
   validateCloudflarePlatformSetup,
@@ -208,13 +209,10 @@ export function addScripts(
             ? "vinext-cloudflare deploy --config dist/server/wrangler.json --experimental-warm-cdn-cache"
             : "vinext-cloudflare deploy --config dist/server/wrangler.json",
       );
-      if (
-        options.deployResponseStore &&
-        !options.experimentalCf &&
-        !pkg.scripts["deploy:response-store"]
-      ) {
-        pkg.scripts["deploy:response-store"] =
-          "wrangler deploy --config wrangler.response-store.jsonc";
+      if (options.deployResponseStore && !pkg.scripts["deploy:response-store"]) {
+        pkg.scripts["deploy:response-store"] = options.experimentalCf
+          ? `cf deploy --prebuilt --mode production --worker ${compactResourceName(detectProject(root).projectName, "-response-store", 63)}`
+          : "wrangler deploy --config wrangler.response-store.jsonc";
         added.push("deploy:response-store");
       }
     }
@@ -257,7 +255,8 @@ export function getInitDependencyGroups(
     }
     if (cloudflare?.experimentalCf) {
       devDependencies[0] = "vite@8.3.0";
-      devDependencies.push("@cloudflare/vite-plugin@2.0.0-beta.sha-805ec1ff3", "cf@1.0.0-beta.1");
+      // V2 SHA prereleases are not chronological semver versions; follow the beta tag.
+      devDependencies.push("@cloudflare/vite-plugin@beta", "cf@^1.0.0-0");
     } else {
       devDependencies.push("@cloudflare/vite-plugin", "wrangler");
     }
@@ -388,7 +387,7 @@ async function installDeps(
   const baseCmd = detectPackageManager(root);
   // Strip " -D" for non-dev installs (keeps deps in "dependencies", not "devDependencies")
   const installCmd = dev ? baseCmd : baseCmd.replace(/ -D$/, "");
-  const depsStr = deps.join(" ");
+  const depsStr = deps.map((dep) => JSON.stringify(dep)).join(" ");
 
   return (
     (await exec(`${installCmd} ${depsStr}`, {

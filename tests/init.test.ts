@@ -342,7 +342,7 @@ describe("addScripts", () => {
     expect(pkg.scripts["dev:vinext"]).toBe("vinext dev --port 4000");
   });
 
-  it("does not overwrite existing scripts", () => {
+  it.each([false, true])("does not overwrite existing scripts (cf: %s)", (experimentalCf) => {
     setupProject(tmpDir, {
       router: "app",
       extraPkg: {
@@ -354,7 +354,10 @@ describe("addScripts", () => {
       },
     });
 
-    const added = addScripts(tmpDir, 3001, "cloudflare", { deployResponseStore: true });
+    const added = addScripts(tmpDir, 3001, "cloudflare", {
+      deployResponseStore: true,
+      experimentalCf,
+    });
 
     expect(added).not.toContain("dev:vinext");
     expect(added).not.toContain("deploy:vinext");
@@ -363,7 +366,9 @@ describe("addScripts", () => {
 
     const pkg = readPkg(tmpDir) as { scripts: Record<string, string> };
     expect(pkg.scripts["dev:vinext"]).toBe("custom-command");
-    expect(pkg.scripts["start:vinext"]).toBe("wrangler dev --config dist/server/wrangler.json");
+    expect(pkg.scripts["start:vinext"]).toBe(
+      experimentalCf ? "vite preview" : "wrangler dev --config dist/server/wrangler.json",
+    );
     expect(pkg.scripts["deploy:vinext"]).toBe("custom-deploy");
     expect(pkg.scripts["deploy:response-store"]).toBe("custom-response-store-deploy");
   });
@@ -893,8 +898,8 @@ describe("init — basic functionality", () => {
         devDependencies: Record<string, string>;
         scripts: Record<string, string>;
       };
-      expect(pkg.devDependencies.cf).toBe("1.0.0-beta.1");
-      expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe("2.0.0-beta.sha-805ec1ff3");
+      expect(pkg.devDependencies.cf).toBe("^1.0.0-0");
+      expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe("beta");
       expect(pkg.devDependencies.vite).toBe("8.3.0");
       expect(pkg.devDependencies.wrangler).toBeUndefined();
       expect(pkg.scripts["build:vinext"]).toBe("cf build");
@@ -902,7 +907,7 @@ describe("init — basic functionality", () => {
     }
   });
 
-  it("generates a typed Response Store auxiliary Worker without a separate deploy script", async () => {
+  it("generates a typed Response Store auxiliary Worker with an explicit cf deploy script", async () => {
     setupProject(tmpDir);
     const { result, output } = await runInit(tmpDir, {
       install: false,
@@ -920,14 +925,14 @@ describe("init — basic functionality", () => {
     );
     expect(readFile(tmpDir, "cloudflare.config.ts")).not.toMatch(/\bexports\b/);
     expect(readFile(tmpDir, "cloudflare.config.ts")).not.toContain("  bindings,");
-    expect(output).toContain("cf deploy --prebuilt --mode production --worker");
+    expect(output).toContain("run deploy:response-store");
     expect(output).toContain("vinext-cloudflare deploy only deploys the application Worker.");
     expect(readFile(tmpDir, "vite.config.ts")).toContain(
       "auxiliaryWorkers: [{ config: responseStoreServiceBinding }]",
     );
     expect(
       (readPkg(tmpDir) as { scripts: Record<string, string> }).scripts["deploy:response-store"],
-    ).toBeUndefined();
+    ).toBe("cf deploy --prebuilt --mode production --worker test-project-response-store");
     const vite = readFile(tmpDir, "vite.config.ts");
     const typedConfig = readFile(tmpDir, "cloudflare.config.ts");
     await runInit(tmpDir, {
@@ -1287,6 +1292,22 @@ describe("init — CJS config renaming", () => {
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 describe("init — dependency installation", () => {
+  it("installs the current cf release ranges as quoted package-manager arguments", async () => {
+    setupProject(tmpDir);
+    const { execCalls } = await runInit(tmpDir, {
+      cloudflare: {
+        dataCache: "none",
+        cdnCache: "none",
+        imageOptimization: "none",
+        experimentalCf: true,
+      },
+    });
+    const install = execCalls.find(({ cmd }) => cmd.includes("@cloudflare/vite-plugin@"));
+    expect(install?.cmd).toContain('"@cloudflare/vite-plugin@beta"');
+    // cmd.exe treats an unquoted caret as an escape character.
+    expect(install?.cmd).toContain('"cf@^1.0.0-0"');
+  });
+
   it("prints dependencies as a dashed list", async () => {
     setupProject(tmpDir, { router: "pages" });
 

@@ -133,6 +133,12 @@ describe("experimental cf init build", () => {
       expect(fs.readdirSync(workersDir).includes(`init-cf-${name}-response-store`)).toBe(
         responseStoreMode === "service-binding",
       );
+      const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+      expect(pkg.scripts["deploy:response-store"]).toBe(
+        responseStoreMode === "service-binding"
+          ? `cf deploy --prebuilt --mode production --worker init-cf-${name}-response-store`
+          : undefined,
+      );
       if (name === "service-binding") {
         const preview = spawn(
           path.join(webRoot, "node_modules", ".bin", "vite"),
