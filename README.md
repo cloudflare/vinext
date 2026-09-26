@@ -30,7 +30,7 @@ These are active compatibility areas, not permanent exclusions:
 - **Cache Components and Partial Prerendering:** `"use cache"` is partially implemented, but full `cacheComponents` behavior is still incomplete. Cache profiles, tags, partial shells, resume behavior, prefetching, and some dev/build cache semantics do not yet match Next.js in every case.
 - **Build-time image and font optimization:** images can be optimized at request time on Cloudflare, but vinext does not yet reproduce Next.js's complete build-time image pipeline. Google Fonts are loaded from the CDN, and local font CSS is injected at runtime rather than extracted during the build.
 - **Native modules in App Router development:** packages such as `sharp`, `resvg`, `satori`, `lightningcss`, and `@napi-rs/canvas` can fail in Vite's RSC development environment. Production builds support more of these cases than development mode.
-- **Platform-specific and advanced Next.js behavior:** `preferredRegion` route config is ignored, and `runtime` is only used to turn off ISR for `runtime = "edge"` App Router pages, and some recently introduced or undocumented Next.js behavior may not yet be reproduced.
+- **Platform-specific and advanced Next.js behavior:** `preferredRegion` route config is ignored, and `runtime` doesn't choose where a route runs (a `runtime = "edge"` App Router page is still never ISR-cached, as in Next.js), and some recently introduced or undocumented Next.js behavior may not yet be reproduced.
 
 Run `vinext check` against an existing application before migrating. If a gap is not listed here, check the [open issues](https://github.com/cloudflare/vinext/issues) or file a focused reproduction.
 
