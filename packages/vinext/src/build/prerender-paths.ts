@@ -942,9 +942,8 @@ async function collectAppPaths(options: {
     }
     // Next.js's build lists paths only for a static or SSG page route, and
     // renders each under the route that generated it. Paths discovered for any
-    // other route, for example through a sibling page's generateStaticParams,
-    // stay warm paths but aren't listed. A cacheComponents build keeps every
-    // page route eligible, as dispatch does.
+    // other route stay warm paths but aren't listed. A cacheComponents build
+    // keeps every page route eligible, as dispatch does.
     const staticEligibility =
       isRouteHandler || options.cacheComponents
         ? "eligible"

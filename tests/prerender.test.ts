@@ -26,7 +26,10 @@ import {
   type PrerenderRouteResult,
   type StaticParamsMap,
 } from "../packages/vinext/src/build/prerender.js";
-import { VINEXT_PRERENDER_SPECULATIVE_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  appLayoutStaticParamsPattern,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import {
@@ -2421,7 +2424,7 @@ describe("resolveParentParams", () => {
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-root-params-getters/generate-static-params.test.ts
     const child = mockRoute("/:lang/:locale/other/:slug");
     const staticParamsMap: StaticParamsMap = {
-      "/:lang/:locale": async () => [
+      [appLayoutStaticParamsPattern("/:lang/:locale")]: async () => [
         { lang: "en", locale: "us" },
         { lang: "es", locale: "es" },
       ],
@@ -2433,6 +2436,30 @@ describe("resolveParentParams", () => {
       { lang: "en", locale: "us" },
       { lang: "es", locale: "es" },
     ]);
+  });
+
+  it("resolves parent params from layouts, never from a sibling page at the same prefix", async () => {
+    // Next.js composes a route's params from the generateStaticParams of the
+    // segments in its own loader tree only (build/static-paths/app.ts).
+    const child = mockRoute("/shop/:category/:item");
+    const staticParamsMap: StaticParamsMap = {
+      "/shop/:category": async () => [{ category: "sibling" }],
+      [appLayoutStaticParamsPattern("/shop/:category")]: async () => [{ category: "layout" }],
+    };
+
+    await expect(resolveParentParams(child, staticParamsMap)).resolves.toEqual([
+      { category: "layout" },
+    ]);
+    await expect(
+      resolveParentParams(
+        mockRoute("/:category/details"),
+        {
+          "/:category": async () => [],
+          [appLayoutStaticParamsPattern("/:category")]: async () => [{ category: "layout" }],
+        },
+        { includeLastDynamicSegment: true },
+      ),
+    ).resolves.toEqual([{ category: "layout" }]);
   });
 
   it("returns empty array when parent has no generateStaticParams", async () => {
@@ -2454,8 +2481,8 @@ describe("resolveParentParams", () => {
       return [{ item: "shoes" }];
     };
     const staticParamsMap: StaticParamsMap = {
-      "/shop/:category": async () => null,
-      "/shop/:category/:item": itemGenerateStaticParams,
+      [appLayoutStaticParamsPattern("/shop/:category")]: async () => null,
+      [appLayoutStaticParamsPattern("/shop/:category/:item")]: itemGenerateStaticParams,
     };
 
     const missingProviderResult = await resolveParentParams(child, staticParamsMap);
@@ -2465,8 +2492,8 @@ describe("resolveParentParams", () => {
 
     calls.length = 0;
     const malformedProviderResult = await resolveParentParams(child, {
-      "/shop/:category": async () => undefined,
-      "/shop/:category/:item": itemGenerateStaticParams,
+      [appLayoutStaticParamsPattern("/shop/:category")]: async () => undefined,
+      [appLayoutStaticParamsPattern("/shop/:category/:item")]: itemGenerateStaticParams,
     });
 
     expect(malformedProviderResult).toEqual([]);
@@ -2476,7 +2503,10 @@ describe("resolveParentParams", () => {
   it("resolves single parent dynamic segment", async () => {
     const child = mockRoute("/shop/:category/:item");
     const staticParamsMap: StaticParamsMap = {
-      "/shop/:category": async () => [{ category: "electronics" }, { category: "clothing" }],
+      [appLayoutStaticParamsPattern("/shop/:category")]: async () => [
+        { category: "electronics" },
+        { category: "clothing" },
+      ],
     };
     const result = await resolveParentParams(child, staticParamsMap);
     expect(result).toEqual([{ category: "electronics" }, { category: "clothing" }]);
@@ -2485,7 +2515,7 @@ describe("resolveParentParams", () => {
   it("can include a provider for the last dynamic segment", async () => {
     const child = mockRoute("/:category/foo");
     const staticParamsMap: StaticParamsMap = {
-      "/:category": async () => [{ category: "news" }],
+      [appLayoutStaticParamsPattern("/:category")]: async () => [{ category: "news" }],
     };
 
     await expect(
@@ -2496,8 +2526,8 @@ describe("resolveParentParams", () => {
   it("resolves two levels of parent dynamic segments", async () => {
     const child = mockRoute("/a/:b/c/:d/:e");
     const staticParamsMap: StaticParamsMap = {
-      "/a/:b": async () => [{ b: "1" }, { b: "2" }],
-      "/a/:b/c/:d": async ({ params }) => {
+      [appLayoutStaticParamsPattern("/a/:b")]: async () => [{ b: "1" }, { b: "2" }],
+      [appLayoutStaticParamsPattern("/a/:b/c/:d")]: async ({ params }) => {
         if (params.b === "1") return [{ d: "x" }];
         return [{ d: "y" }, { d: "z" }];
       },
@@ -2513,7 +2543,7 @@ describe("resolveParentParams", () => {
   it("skips static segments between dynamic parents", async () => {
     const child = mockRoute("/shop/:category/details/:item");
     const staticParamsMap: StaticParamsMap = {
-      "/shop/:category": async () => [{ category: "shoes" }],
+      [appLayoutStaticParamsPattern("/shop/:category")]: async () => [{ category: "shoes" }],
     };
     const result = await resolveParentParams(child, staticParamsMap);
     expect(result).toEqual([{ category: "shoes" }]);
@@ -2534,7 +2564,7 @@ describe("resolveParentParams", () => {
   it("resolves parent with catch-all child segment", async () => {
     const child = mockRoute("/shop/:category/:rest+");
     const staticParamsMap: StaticParamsMap = {
-      "/shop/:category": async () => [{ category: "electronics" }],
+      [appLayoutStaticParamsPattern("/shop/:category")]: async () => [{ category: "electronics" }],
     };
     const result = await resolveParentParams(child, staticParamsMap);
     expect(result).toEqual([{ category: "electronics" }]);

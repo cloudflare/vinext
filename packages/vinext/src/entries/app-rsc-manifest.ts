@@ -5,6 +5,7 @@ import {
   convertSegmentsToRouteParts,
   type AppRoute,
 } from "../routing/app-router.js";
+import { appLayoutStaticParamsPattern } from "../server/headers.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
@@ -486,17 +487,20 @@ function buildGenerateStaticParamsEntries(
   namesByPattern: Map<string, string[]>,
 ): string[] {
   const sourcesByPattern = new Map<string, string[]>();
+  // A deeper route's params come from its layouts, never from the page at a
+  // prefix, which belongs to a sibling route. Key the layouts alone apart.
+  const layoutSourcesByPattern = new Map<string, string[]>();
 
   for (const route of routes) {
     if (!route.isDynamic) continue;
 
     for (const [index, layoutPath] of route.layouts.entries()) {
-      appendStaticParamSource(
-        sourcesByPattern,
+      const pattern =
         createRoutePatternPrefix(route.routeSegments, route.layoutTreePositions[index] ?? 0)
-          ?.pattern ?? null,
-        `{ load: ${imports.getLazyLoaderVar(layoutPath)} }`,
-      );
+          ?.pattern ?? null;
+      const source = `{ load: ${imports.getLazyLoaderVar(layoutPath)} }`;
+      appendStaticParamSource(sourcesByPattern, pattern, source);
+      appendStaticParamSource(layoutSourcesByPattern, pattern, source);
     }
 
     if (route.pagePath) {
@@ -520,12 +524,18 @@ function buildGenerateStaticParamsEntries(
     }
   }
 
-  return Array.from(sourcesByPattern.entries()).map(([pattern, sources]) => {
+  const entry = (key: string, pattern: string, sources: string[]): string => {
     const rootParamNames = namesByPattern.get(pattern) ?? [];
-    return `  ${JSON.stringify(pattern)}: __createAppPrerenderStaticParamsResolver([${sources.join(
+    return `  ${JSON.stringify(key)}: __createAppPrerenderStaticParamsResolver([${sources.join(
       ", ",
     )}], ${JSON.stringify(rootParamNames)}),`;
-  });
+  };
+  return [
+    ...Array.from(sourcesByPattern, ([pattern, sources]) => entry(pattern, pattern, sources)),
+    ...Array.from(layoutSourcesByPattern, ([pattern, sources]) =>
+      entry(appLayoutStaticParamsPattern(pattern), pattern, sources),
+    ),
+  ];
 }
 
 function buildRootParamNameEntries(namesByPattern: Map<string, string[]>): string[] {

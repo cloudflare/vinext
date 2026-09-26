@@ -900,10 +900,63 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.generateStaticParamsEntries).toEqual([
       '  "/:lang/:locale": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","locale"]),',
       '  "/:lang/:locale/other/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","locale"]),',
+      '  "layouts:/:lang/:locale": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","locale"]),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/:locale/other/:slug": ["lang","locale"],',
       '  "/:lang/:locale": ["lang","locale"],',
+    ]);
+  });
+
+  it("keys a prefix's layout generateStaticParams apart from the page there", () => {
+    // Next.js composes a route's params from its own loader tree only
+    // (build/static-paths/app.ts), so /[slug]/details reads the [slug] layout
+    // without the sibling app/[slug]/page.tsx.
+    const route = {
+      pattern: "/:slug",
+      patternParts: [":slug"],
+      pagePath: "/tmp/test/app/[slug]/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/[slug]/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      notFoundPaths: [null],
+      forbiddenPath: null,
+      forbiddenPaths: [null],
+      unauthorizedPath: null,
+      unauthorizedPaths: [null],
+      routeSegments: ["[slug]"],
+      templateTreePositions: [],
+      layoutTreePositions: [1],
+      isDynamic: true,
+      params: ["slug"],
+      siblingIntercepts: [],
+    } satisfies AppRoute;
+    const routes = [
+      route,
+      {
+        ...route,
+        pattern: "/:slug/details",
+        patternParts: [":slug", "details"],
+        pagePath: "/tmp/test/app/[slug]/details/page.tsx",
+        routeSegments: ["[slug]", "details"],
+      },
+    ] satisfies AppRoute[];
+
+    const manifest = buildAppRscManifestCode({
+      routes,
+      metadataRoutes: [],
+      globalErrorPath: null,
+    });
+
+    expect(manifest.generateStaticParamsEntries).toEqual([
+      '  "/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_1 }, { load: load_0 }], []),',
+      '  "/:slug/details": __createAppPrerenderStaticParamsResolver([{ load: load_2 }], []),',
+      '  "layouts:/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], []),',
     ]);
   });
 
@@ -945,6 +998,7 @@ describe("App Router generated manifest construction", () => {
     expect(manifest.generateStaticParamsEntries).toEqual([
       '  "/:lang/docs v2/:section": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","section"]),',
       '  "/:lang/docs v2/:section/:slug": __createAppPrerenderStaticParamsResolver([{ load: load_0 }], ["lang","section"]),',
+      '  "layouts:/:lang/docs v2/:section": __createAppPrerenderStaticParamsResolver([{ load: load_1 }], ["lang","section"]),',
     ]);
     expect(manifest.rootParamNameEntries).toEqual([
       '  "/:lang/docs v2/:section/:slug": ["lang","section"],',

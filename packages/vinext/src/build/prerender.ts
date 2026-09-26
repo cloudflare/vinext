@@ -39,6 +39,7 @@ import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import {
+  appLayoutStaticParamsPattern,
   NEXT_CACHE_TAGS_HEADER,
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
@@ -551,7 +552,10 @@ export type StaticParamsMap = Record<
  * Handles top-down generateStaticParams resolution for nested dynamic routes.
  *
  * Uses the `staticParamsMap` (pattern → generateStaticParams) exported from
- * the production bundle.
+ * the production bundle. Each prefix reads its layouts alone: as in Next.js,
+ * which composes the segments of the route's own loader tree
+ * (build/static-paths/app.ts), the page at a prefix belongs to a sibling route
+ * and never supplies params.
  */
 export async function resolveParentParams(
   childRoute: AppRoute,
@@ -584,7 +588,7 @@ export async function resolveParentParams(
     prefixPattern += "/" + part;
     if (!part.startsWith(":")) continue;
 
-    const fn = staticParamsMap[prefixPattern];
+    const fn = staticParamsMap[appLayoutStaticParamsPattern(prefixPattern)];
     if (typeof fn === "function") {
       parentSegments.push(fn);
     }
