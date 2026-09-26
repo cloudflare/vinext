@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { init } from "../packages/vinext/src/init.js";
 
 const webRoot = path.resolve(import.meta.dirname, "../apps/web");
@@ -11,6 +12,56 @@ const tempRoot = fs.mkdtempSync(path.join(webRoot, ".init-cf-build-"));
 afterAll(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
 
 describe("experimental cf init build", () => {
+  it("builds and type-checks a create-vinext-app --experimental-cf project", () => {
+    const root = path.join(tempRoot, "created-cf-app");
+    const create = spawnSync(
+      process.execPath,
+      [
+        path.resolve(import.meta.dirname, "../packages/create-vinext-app/dist/cli.js"),
+        root,
+        "--experimental-cf",
+        "--cdn-cache=response-store",
+        "--skip-install",
+        "--disable-git",
+        "--yes",
+      ],
+      { encoding: "utf8", timeout: 30_000, env: { ...process.env, CI: "true" } },
+    );
+    expect(create.status, `${create.stdout}\n${create.stderr}`).toBe(0);
+    const build = spawnSync(path.join(webRoot, "node_modules/.bin/cf"), ["build"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 120_000,
+      env: { ...process.env, CI: "true" },
+    });
+    expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
+    expect(fs.existsSync(path.join(root, ".cloudflare/types/index.d.ts"))).toBe(true);
+    expect(fs.existsSync(path.join(root, "wrangler.jsonc"))).toBe(false);
+    expect(
+      fs.existsSync(
+        path.join(
+          root,
+          ".cloudflare/output/v0/workers/created-cf-app-response-store/worker.config.json",
+        ),
+      ),
+    ).toBe(true);
+    // Workspace-linked vinext resolves its dev Vite+ copy. Published consumers
+    // share the app's Vite peer; model that single type identity in this fixture.
+    const tsconfigPath = path.join(root, "tsconfig.json");
+    const tsconfig = JSON.parse(fs.readFileSync(tsconfigPath, "utf8"));
+    tsconfig.compilerOptions.paths.vite = [
+      path.join(webRoot, "node_modules/vite/dist/node/index.d.ts"),
+    ];
+    fs.writeFileSync(tsconfigPath, JSON.stringify(tsconfig));
+    const tsc = fileURLToPath(new URL("bin/tsc", import.meta.resolve("typescript/package.json")));
+    const types = spawnSync(process.execPath, [tsc, "--project", "tsconfig.json"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    expect(types.status, `${types.stdout}\n${types.stderr}`).toBe(0);
+  }, 150_000);
+
   it.each([
     ["service-binding", "app", "response-store", "service-binding"],
     ["pages-service-binding", "pages", "response-store", "service-binding"],

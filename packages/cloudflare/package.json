@@ -66,7 +66,7 @@
     "vitest": "catalog:"
   },
   "peerDependencies": {
-    "@cloudflare/vite-plugin": "^1.0.0 || ^2.0.0-0",
+    "@cloudflare/vite-plugin": "*",
     "vinext": "workspace:^"
   },
   "peerDependenciesMeta": {

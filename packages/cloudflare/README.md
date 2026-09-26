@@ -200,9 +200,7 @@ npx @vinext/cloudflare deploy
 Projects with `cloudflare.config.ts` opt into the experimental Cloudflare Vite
 plugin v2 path and deploy their generated Build Output with `cf`. Existing
 Wrangler-configured projects continue to use Wrangler. A normal typed-config
-deploy needs neither `wrangler.jsonc` nor the Wrangler package. If prerendered
-routes use the KV data adapter, the generated Worker config supplies the KV
-namespace ID for a `cf kv bulk update` upload.
+deploy needs neither `wrangler.jsonc` nor the Wrangler package.
 
 `vinext-cloudflare deploy` only deploys the entry Worker. It never deploys named
 auxiliary Workers, including during staged warming or `--no-promote` uploads.

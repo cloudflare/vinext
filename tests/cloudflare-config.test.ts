@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -38,7 +38,18 @@ describe("typed Cloudflare cache config", () => {
     expect(result.status, result.stderr).toBe(0);
   });
 
-  it.each([undefined, "2.0.0-beta.1", "2.0.0-beta.2"])(
+  it("leaves the optional plugin peer open to minor-version prereleases", () => {
+    const pkg = JSON.parse(
+      readFileSync(
+        path.resolve(import.meta.dirname, "../packages/cloudflare/package.json"),
+        "utf8",
+      ),
+    );
+    expect(pkg.peerDependencies["@cloudflare/vite-plugin"]).toBe("*");
+    expect(pkg.peerDependenciesMeta["@cloudflare/vite-plugin"].optional).toBe(true);
+  });
+
+  it.each([undefined, "2.0.0-beta.1", "2.1.0-beta.1", "2.5.3-beta.sha-example"])(
     "loads the consumer's optional plugin peer (%s) only when called",
     (version) => {
       const root = mkdtempSync(path.join(tmpdir(), "vinext-config-peer-"));

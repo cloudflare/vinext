@@ -403,6 +403,7 @@ describe("create-vinext-app CLI", () => {
     try {
       await runCreateVinextAppCli(["--help"]);
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("Usage: create-vinext-app"));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining("--experimental-cf"));
     } finally {
       logSpy.mockRestore();
     }
@@ -429,5 +430,74 @@ describe("create-vinext-app CLI", () => {
       'cache: responseStoreAdapter({ mode: "self-contained" })',
     );
     expect(fs.existsSync(path.join(appPath, "wrangler.response-store.jsonc"))).toBe(false);
+  });
+
+  it.each(["--experimental-cf", "--experimental-cf=true"])(
+    "generates a cf project through the shared init flow with %s",
+    async (flag) => {
+      const appPath = path.join(tmpDir, "cf-app");
+      await withQuietConsole(() =>
+        runCreateVinextAppCli([
+          flag,
+          appPath,
+          "--cdn-cache=response-store",
+          "--skip-install",
+          "--disable-git",
+          "--use-pnpm",
+          "--yes",
+        ]),
+      );
+
+      expect(readFile(appPath, "cloudflare.config.ts")).toContain(
+        "await createWorkersResponseStoreServiceBindingConfig",
+      );
+      expect(readFile(appPath, "vite.config.ts")).toContain("auxiliaryWorkers:");
+      expect(fs.existsSync(path.join(appPath, "wrangler.jsonc"))).toBe(false);
+      expect(fs.existsSync(path.join(appPath, "wrangler.response-store.jsonc"))).toBe(false);
+      const pkg = readPkg(appPath);
+      expect(pkg.scripts).toEqual({
+        dev: "vinext dev",
+        build: "cf build",
+        start: "vite preview",
+        deploy: "vinext-cloudflare deploy",
+      });
+      expect(pkg.devDependencies).toMatchObject({
+        "@cloudflare/vite-plugin": "2.0.0-beta.sha-805ec1ff3",
+        cf: "1.0.0-beta.1",
+        vite: "8.3.0",
+      });
+      expect(pkg.devDependencies).not.toHaveProperty("wrangler");
+      expect(readFile(appPath, ".gitignore")).toContain(".cloudflare/");
+      expect(JSON.parse(readFile(appPath, "tsconfig.json")).include).toContain(".cloudflare/types");
+      expect(
+        JSON.parse(readFile(appPath, "tsconfig.json")).compilerOptions.allowImportingTsExtensions,
+      ).toBe(true);
+      expect(readFile(appPath, "app/page.tsx")).toContain("with cf");
+      expect(readFile(appPath, "README.md")).toContain("previews the built Worker locally");
+      expect(readFile(appPath, "README.md")).not.toContain("Wrangler");
+    },
+  );
+
+  it.each(["--no-experimental-cf", "--experimental-cf=false"])(
+    "keeps the Wrangler flow with %s",
+    async (flag) => {
+      const appPath = path.join(tmpDir, "wrangler-app");
+      await withQuietConsole(() =>
+        runCreateVinextAppCli([flag, appPath, "--skip-install", "--disable-git", "--yes"]),
+      );
+      expect(fs.existsSync(path.join(appPath, "cloudflare.config.ts"))).toBe(false);
+      expect(fs.existsSync(path.join(appPath, "wrangler.jsonc"))).toBe(true);
+      expect(readPkg(appPath).devDependencies).not.toHaveProperty("cf");
+    },
+  );
+
+  it("rejects experimental cf with the Node platform before creating files", async () => {
+    const appPath = path.join(tmpDir, "invalid-cf-app");
+    await expect(
+      withQuietConsole(() =>
+        runCreateVinextAppCli([appPath, "--platform=node", "--experimental-cf", "--yes"]),
+      ),
+    ).rejects.toThrow("--experimental-cf requires --platform=cloudflare");
+    expect(fs.existsSync(appPath)).toBe(false);
   });
 });
