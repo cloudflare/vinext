@@ -469,6 +469,13 @@ export class KVCacheHandler implements CacheHandler {
       effectiveRevalidate = data.revalidate;
     }
     if (effectiveRevalidate === 0) return Promise.resolve();
+    if (
+      typeof effectiveRevalidate === "number" &&
+      !Number.isFinite(effectiveRevalidate) &&
+      effectiveRevalidate !== Infinity
+    ) {
+      return Promise.resolve();
+    }
 
     const now = Date.now();
     const revalidateAt =
@@ -684,7 +691,11 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   }
   if (obj.cacheControl !== undefined) {
     if (!isUnknownRecord(obj.cacheControl)) return null;
-    if (typeof obj.cacheControl.revalidate !== "number") return null;
+    // `null` is the JSON encoding of `Infinity` used by static pages.
+    if (typeof obj.cacheControl.revalidate !== "number" && obj.cacheControl.revalidate !== null) {
+      return null;
+    }
+    if (obj.cacheControl.revalidate === null) obj.cacheControl.revalidate = Infinity;
     if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
       return null;
     }
