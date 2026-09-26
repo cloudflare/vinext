@@ -456,8 +456,8 @@ describe("create-vinext-app CLI", () => {
       expect(fs.existsSync(path.join(appPath, "wrangler.response-store.jsonc"))).toBe(false);
       const pkg = readPkg(appPath);
       expect(pkg.scripts).toEqual({
-        dev: "vinext dev",
-        build: "vinext build",
+        dev: "vite dev",
+        build: "vite build",
         start: "vite preview",
         deploy: "vinext-cloudflare deploy",
         "deploy:response-store":
