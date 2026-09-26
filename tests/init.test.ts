@@ -902,10 +902,48 @@ describe("init — basic functionality", () => {
       expect(pkg.devDependencies["@cloudflare/vite-plugin"]).toBe("beta");
       expect(pkg.devDependencies.vite).toBe("8.3.0");
       expect(pkg.devDependencies.wrangler).toBeUndefined();
-      expect(pkg.scripts["build:vinext"]).toBe("cf build");
+      expect(pkg.scripts["build:vinext"]).toBe("vinext build");
       expect(pkg.scripts["deploy:vinext"]).toBe("vinext-cloudflare deploy");
     }
   });
+
+  it.each(["service-binding", "self-contained", "workers-cache", "none"] as const)(
+    "formats the generated typed %s config",
+    async (mode) => {
+      setupProject(tmpDir);
+      await runInit(tmpDir, {
+        install: false,
+        _today: "2026-09-23",
+        cloudflare: {
+          dataCache: mode === "service-binding" ? "kv" : "none",
+          cdnCache:
+            mode === "service-binding" || mode === "self-contained" ? "response-store" : mode,
+          responseStoreMode: mode === "self-contained" ? "self-contained" : "service-binding",
+          imageOptimization: mode === "service-binding" ? "cloudflare-images" : "none",
+          experimentalCf: true,
+        },
+      });
+      const config = readFile(tmpDir, "cloudflare.config.ts");
+      expect(config).not.toMatch(/\n[ \t]+\n/);
+      expect(config).not.toMatch(/,\n\s*\n    },/);
+      if (mode === "service-binding") {
+        expect(config).toContain(
+          '  worker: {\n    name: "test-project-response-store",\n    compatibilityDate: "2026-09-23",\n    compatibilityFlags: ["nodejs_compat"],\n  },',
+        );
+        expect(config).toContain(
+          "export const responseStoreServiceBinding = responseStore.serviceBindingWorker;\n\nexport default",
+        );
+      } else if (mode === "self-contained") {
+        expect(config).toContain(
+          'const cache = await createWorkersResponseStoreSelfContainedConfig({\n  worker: "test-project",\n  bucket: "test-project-response-store-cache-bodies",\n});\n\nexport default',
+        );
+      } else if (mode === "workers-cache") {
+        expect(config).toContain(
+          "const cache = await createWorkersCacheConfig();\n\nexport default",
+        );
+      }
+    },
+  );
 
   it("generates a typed Response Store auxiliary Worker with an explicit cf deploy script", async () => {
     setupProject(tmpDir);

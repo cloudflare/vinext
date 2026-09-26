@@ -364,7 +364,7 @@ function setupExperimentalCfPlatform(
     );
     if (serviceBinding) {
       nextSteps.push(
-        "After `cf build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
+        "After `vinext build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
         `   ${context.packageManager ?? "npm"} run deploy:response-store`,
         "vinext-cloudflare deploy only deploys the application Worker.",
       );
@@ -409,22 +409,40 @@ function generateTypedCloudflareConfig(
     : compactResourceName(info.projectName, "-response-store-cache-bodies", 63);
   const shared = serviceBinding
     ? `const responseStore = await ${helper}({
-  worker: { name: ${JSON.stringify(responseStoreName)}, compatibilityDate: ${JSON.stringify(today)}, compatibilityFlags: ["nodejs_compat"] },
+  worker: {
+    name: ${JSON.stringify(responseStoreName)},
+    compatibilityDate: ${JSON.stringify(today)},
+    compatibilityFlags: ["nodejs_compat"],
+  },
   bucket: ${JSON.stringify(bucket)},
 });
 
 export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
+
 `
     : selfContained
-      ? `const cache = await ${helper}({ worker: ${JSON.stringify(info.projectName)}, bucket: ${JSON.stringify(bucket)} });\n`
+      ? `const cache = await ${helper}({
+  worker: ${JSON.stringify(info.projectName)},
+  bucket: ${JSON.stringify(bucket)},
+});
+
+`
       : workersCache
-        ? `const cache = await ${helper}();\n`
+        ? `const cache = await ${helper}();\n\n`
         : "";
   const cacheSpread = serviceBinding
     ? "responseStore.applicationWorker"
     : helper
       ? "cache"
       : undefined;
+  const envBindings = [
+    ...(cacheSpread ? [`...${cacheSpread}.env`] : []),
+    "ASSETS: bindings.assets()",
+    ...(options.imageOptimization === "cloudflare-images" ? ["IMAGES: bindings.images()"] : []),
+    ...(options.dataCache === "kv"
+      ? ['VINEXT_KV_CACHE: bindings.kv({ id: "<your-kv-namespace-id>" })']
+      : []),
+  ];
   return `${imports.join("\n")}
 
 ${shared}export default defineConfig({
@@ -435,8 +453,7 @@ ${shared}export default defineConfig({
     compatibilityFlags: ["nodejs_compat"],
     assets: { notFoundHandling: "none" },
     env: {
-      ${cacheSpread ? `...${cacheSpread}.env,\n      ` : ""}ASSETS: bindings.assets(),
-      ${options.imageOptimization === "cloudflare-images" ? "IMAGES: bindings.images(),\n      " : ""}${options.dataCache === "kv" ? 'VINEXT_KV_CACHE: bindings.kv({ id: "<your-kv-namespace-id>" }),\n      ' : ""}
+      ${envBindings.join(",\n      ")},
     },
   }),
 });

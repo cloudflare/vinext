@@ -188,7 +188,7 @@ export function addScripts(
     };
 
     addScript("dev", port === false ? "vinext dev" : `vinext dev --port ${port}`);
-    addScript("build", options.experimentalCf ? "cf build" : "vinext build");
+    addScript("build", "vinext build");
     addScript(
       "start",
       platform === "cloudflare"

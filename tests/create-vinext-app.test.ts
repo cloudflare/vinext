@@ -457,7 +457,7 @@ describe("create-vinext-app CLI", () => {
       const pkg = readPkg(appPath);
       expect(pkg.scripts).toEqual({
         dev: "vinext dev",
-        build: "cf build",
+        build: "vinext build",
         start: "vite preview",
         deploy: "vinext-cloudflare deploy",
         "deploy:response-store":

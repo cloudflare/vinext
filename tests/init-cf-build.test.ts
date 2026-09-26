@@ -28,7 +28,7 @@ describe("experimental cf init build", () => {
       { encoding: "utf8", timeout: 30_000, env: { ...process.env, CI: "true" } },
     );
     expect(create.status, `${create.stdout}\n${create.stderr}`).toBe(0);
-    const build = spawnSync(path.join(webRoot, "node_modules/.bin/cf"), ["build"], {
+    const build = spawnSync(path.join(webRoot, "node_modules/.bin/vinext"), ["build"], {
       cwd: root,
       encoding: "utf8",
       timeout: 120_000,
@@ -115,8 +115,8 @@ describe("experimental cf init build", () => {
       } finally {
         log.mockRestore();
       }
-      const cf = path.join(webRoot, "node_modules", ".bin", "cf");
-      const build = spawnSync(cf, ["build"], {
+      const vinext = path.join(webRoot, "node_modules", ".bin", "vinext");
+      const build = spawnSync(vinext, ["build"], {
         cwd: root,
         encoding: "utf-8",
         timeout: 120_000,
